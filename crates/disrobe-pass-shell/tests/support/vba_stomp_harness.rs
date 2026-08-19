@@ -211,7 +211,7 @@ fn stream_paths(ole: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn rehost_under(ole: &[u8], project_storage: &str, extra_root: &[(&str, &[u8])]) -> Vec<u8> {
+fn rehost_under(ole: &[u8], project_storages: &[&str], extra_root: &[(&str, &[u8])]) -> Vec<u8> {
     let out_cursor: Cursor<Vec<u8>> = Cursor::new(Vec::<u8>::new());
     let mut out: cfb::CompoundFile<Cursor<Vec<u8>>> =
         cfb::CompoundFile::create(out_cursor).expect("create compound file");
@@ -222,20 +222,23 @@ fn rehost_under(ole: &[u8], project_storage: &str, extra_root: &[(&str, &[u8])])
         handle.write_all(body).expect("write root stream");
         handle.flush().expect("flush root stream");
     }
-    out.create_storage_all(format!("/{project_storage}"))
-        .expect("create project storage");
-    for path in stream_paths(ole) {
-        let body: Vec<u8> = read_ole_stream(ole, &path);
-        let target: String = format!("/{project_storage}{path}");
-        let parent: &str = target.rsplit_once('/').map_or("/", |(head, _)| head);
-        if !parent.is_empty() {
-            out.create_storage_all(parent)
-                .expect("create parent storage");
+    let paths: Vec<String> = stream_paths(ole);
+    for project_storage in project_storages {
+        out.create_storage_all(format!("/{project_storage}"))
+            .expect("create project storage");
+        for path in &paths {
+            let body: Vec<u8> = read_ole_stream(ole, path);
+            let target: String = format!("/{project_storage}{path}");
+            let parent: &str = target.rsplit_once('/').map_or("/", |(head, _)| head);
+            if !parent.is_empty() {
+                out.create_storage_all(parent)
+                    .expect("create parent storage");
+            }
+            let mut handle: cfb::Stream<Cursor<Vec<u8>>> =
+                out.create_new_stream(&target).expect("create stream");
+            handle.write_all(&body).expect("write stream");
+            handle.flush().expect("flush stream");
         }
-        let mut handle: cfb::Stream<Cursor<Vec<u8>>> =
-            out.create_new_stream(&target).expect("create stream");
-        handle.write_all(&body).expect("write stream");
-        handle.flush().expect("flush stream");
     }
     out.flush().expect("flush compound file");
     out.into_inner().into_inner()
@@ -244,7 +247,7 @@ fn rehost_under(ole: &[u8], project_storage: &str, extra_root: &[(&str, &[u8])])
 pub(crate) fn legacy_doc_container(vba_project: &[u8]) -> Vec<u8> {
     rehost_under(
         vba_project,
-        "Macros",
+        &["Macros"],
         &[("WordDocument", &[0xEC, 0xA5, 0xC1, 0x00])],
     )
 }
@@ -252,8 +255,18 @@ pub(crate) fn legacy_doc_container(vba_project: &[u8]) -> Vec<u8> {
 pub(crate) fn legacy_xls_container(vba_project: &[u8]) -> Vec<u8> {
     rehost_under(
         vba_project,
-        "_VBA_PROJECT_CUR",
+        &["_VBA_PROJECT_CUR"],
         &[("Workbook", &[0x09, 0x08, 0x10, 0x00])],
+    )
+}
+
+pub(crate) const SECOND_PROJECT_STORAGE: &str = "/_VBA_PROJECT_CUR/VBA";
+
+pub(crate) fn two_project_container(vba_project: &[u8]) -> Vec<u8> {
+    rehost_under(
+        vba_project,
+        &["Macros", "_VBA_PROJECT_CUR"],
+        &[("WordDocument", &[0xEC, 0xA5, 0xC1, 0x00])],
     )
 }
 

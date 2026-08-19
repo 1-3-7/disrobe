@@ -14,15 +14,16 @@ mod vba_source_grade;
 mod vba_stomp_harness;
 
 use disrobe_pass_shell::{
-    ContainerKind, Error, ExtractedProject, ModuleStompReport, StompReport, StompVerdict,
-    analyze_stomp, extract_from_bytes,
+    ContainerKind, Error, ExtractedProject, ModuleStompReport, PCodeWall, PCodeWallDetail,
+    RealPCodeReport, StompReport, StompVerdict, analyze_stomp, disassemble_pcode_real,
+    extract_from_bytes,
 };
 
 use vba_source_grade::read_corpus;
 use vba_stomp_harness::{
-    legacy_doc_container, legacy_xls_container, module_text_offset, pptm_container,
-    repack_ooxml_with_vba_project, stomp_by_truncating_at_source, stomp_to_empty_source,
-    stomp_with_decoy_source, stomp_with_junk_source,
+    SECOND_PROJECT_STORAGE, legacy_doc_container, legacy_xls_container, module_text_offset,
+    pptm_container, repack_ooxml_with_vba_project, stomp_by_truncating_at_source,
+    stomp_to_empty_source, stomp_with_decoy_source, stomp_with_junk_source, two_project_container,
 };
 
 const HELLO_MODULE: &str = "Module1";
@@ -256,6 +257,45 @@ fn the_registered_shell_pass_recovers_a_stomped_legacy_container() {
             form.label()
         );
     }
+}
+
+#[test]
+fn a_container_holding_two_vba_projects_names_the_one_it_left_unread() {
+    let project: Vec<u8> = hello_project();
+    let single: Vec<u8> = legacy_doc_container(&project);
+    let both: Vec<u8> = two_project_container(&project);
+    let one: RealPCodeReport =
+        disassemble_pcode_real(&single).expect("disassemble the single-project container");
+    assert!(
+        one.walls
+            .iter()
+            .all(|w: &PCodeWallDetail| w.kind != PCodeWall::MultipleVbaProjects),
+        "one project must not raise the several-projects wall; walls={:?}",
+        one.walls
+    );
+    let two: RealPCodeReport =
+        disassemble_pcode_real(&both).expect("disassemble the two-project container");
+    let flagged: Vec<&PCodeWallDetail> = two
+        .walls
+        .iter()
+        .filter(|w: &&PCodeWallDetail| w.kind == PCodeWall::MultipleVbaProjects)
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "a container with two VBA projects must raise exactly one wall; walls={:?}",
+        two.walls
+    );
+    assert!(
+        flagged[0].reason.contains(SECOND_PROJECT_STORAGE),
+        "the wall must name the storage recovery did not read; got {:?}",
+        flagged[0].reason
+    );
+    assert_eq!(
+        two.modules.len(),
+        one.modules.len(),
+        "the project that was read must still be disassembled in full"
+    );
 }
 
 #[test]
