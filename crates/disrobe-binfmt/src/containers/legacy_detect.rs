@@ -5,7 +5,7 @@ pub const STUFFIT_CLASSIC: &[u8; 4] = b"SIT!";
 pub const STUFFIT_CLASSIC_SECONDARY: &[u8; 4] = b"rLau";
 pub const STUFFIT_CLASSIC_SECONDARY_OFFSET: usize = 10;
 pub const STUFFIT_5: &[u8; 16] = b"StuffIt (c)1997-";
-pub const STUFFIT_X: &[u8; 7] = b"StuffIt";
+pub const STUFFIT_X: &[u8; 8] = b"StuffIt!";
 
 const QNX6_SUPERBLOCK_MAGIC: u32 = 0x6819_1122;
 const QNX_IFS_STARTUP: &[u8; 4] = &[0xeb, 0x7e, 0xff, 0x00];
@@ -125,10 +125,29 @@ mod tests {
         assert!(VERSION5.starts_with(STUFFIT_5));
         assert_eq!(STUFFIT_5.len(), 16);
         assert!(
-            STUFFIT_5.starts_with(STUFFIT_X),
-            "the StuffIt 5 banner begins with the same bytes as the StuffIt X prefix, so \
-             detect_stuffit must test version 5 first"
+            !STUFFIT_5.starts_with(STUFFIT_X),
+            "the StuffIt X signature carries the bang that separates it from the version 5 \
+             banner, so neither prefix can swallow the other and detection does not rest on \
+             the order the two are tested in"
         );
+    }
+
+    #[test]
+    fn prose_that_opens_with_the_product_name_is_not_a_stuffit_archive() {
+        const REFERENCE_TEXT: &[u8] =
+            include_bytes!("../../tests/fixtures/stuffit/stuffit-method2-input.txt");
+        assert!(
+            REFERENCE_TEXT.starts_with(b"StuffIt "),
+            "this case only means something while the committed reference payload still opens \
+             with the product name"
+        );
+        assert_eq!(
+            detect_stuffit(REFERENCE_TEXT),
+            None,
+            "a text file that happens to open with the word StuffIt carries no archive, and \
+             admitting it credits the format with member bytes it never produced"
+        );
+        assert_eq!(detect_stuffit(b"StuffIt is a product name"), None);
     }
 
     #[test]
