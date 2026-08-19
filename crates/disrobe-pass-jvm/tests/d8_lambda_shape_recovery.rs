@@ -17,6 +17,10 @@ const DEBUG_DEX: &[u8] =
 const AUTHORED: &str = include_str!("fixtures/d8_lambda_shapes/DesugarShapeProbe.java");
 const HARNESS: &str = include_str!("fixtures/d8_lambda_shapes/DesugarShapeHarness.java.in");
 const PROVENANCE: &str = include_str!("fixtures/d8_lambda_shapes/provenance.toml");
+const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+const EDGECASES_SOURCE: &str = include_str!("../../../corpus/jvm/megafile/EdgeCases.java");
+const EDGECASES_UNIT: &str = "EdgeCases.java";
+const EDGECASES_RECALL_FLOOR: usize = 13;
 
 const RELEASE_SHA256: &str = "0d0355dceb5de7938eebd0647661ca5ead3436cdc5408b2167730abe97d03b23";
 const DEBUG_SHA256: &str = "fc189f089d04b21e35e11074e24b94e0d98fd5dd7244269d770530cd96d1a341";
@@ -511,6 +515,120 @@ fn a_program_interface_without_the_matching_abstract_method_keeps_the_desugaring
         body.contains("new DesugarShapeProbe$"),
         "a program interface whose abstract method does not match the implementation must \
          abstain, saw {body}"
+    );
+}
+
+fn declares_any_method(line: &str) -> Option<String> {
+    if !line.starts_with("    ") || line.starts_with("     ") || !line.ends_with('{') {
+        return None;
+    }
+    let trimmed: &str = line.trim();
+    if trimmed.starts_with("class ")
+        || trimmed.contains(" class ")
+        || trimmed.contains(" interface ")
+        || trimmed.contains(" enum ")
+        || trimmed.contains(" record ")
+        || trimmed.starts_with("static {")
+    {
+        return None;
+    }
+    let open: usize = trimmed.find('(')?;
+    let head: &str = trimmed.get(..open)?;
+    let name: &str = head.rsplit([' ', '\t']).next()?;
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|value: char| value.is_ascii_alphanumeric() || value == '_' || value == '$')
+    {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+fn top_level_method_bodies(source: &str) -> BTreeMap<String, String> {
+    let mut bodies: BTreeMap<String, String> = BTreeMap::new();
+    let mut current: Option<(String, String)> = None;
+    for line in source.lines() {
+        if let Some((name, body)) = current.as_mut() {
+            if line == "    }" {
+                bodies.entry(name.clone()).or_default().push_str(body);
+                current = None;
+            } else {
+                body.push_str(line);
+                body.push('\n');
+            }
+            continue;
+        }
+        current = declares_any_method(line).map(|name: String| (name, String::new()));
+    }
+    bodies
+}
+
+fn carries_lambda(body: &str) -> bool {
+    body.lines().any(|line: &str| {
+        let trimmed: &str = line.trim();
+        !trimmed.starts_with("case ")
+            && !trimmed.starts_with("default ")
+            && trimmed.contains(" -> ")
+    })
+}
+
+fn lambda_bearing_methods(source: &str) -> BTreeSet<String> {
+    top_level_method_bodies(source)
+        .into_iter()
+        .filter(|(_, body): &(String, String)| carries_lambda(body))
+        .map(|(name, _): (String, String)| name)
+        .collect()
+}
+
+fn authored_owner(method: &str) -> String {
+    method.strip_prefix("lambda$").map_or_else(
+        || method.to_owned(),
+        |rest: &str| rest.split('$').next().unwrap_or(rest).to_owned(),
+    )
+}
+
+#[test]
+fn real_edgecases_lambdas_land_in_the_methods_the_author_wrote_them_in() {
+    let authored: BTreeSet<String> = lambda_bearing_methods(EDGECASES_SOURCE);
+    assert!(
+        authored.len() > 10,
+        "corpus/jvm/megafile/EdgeCases.java must carry lambdas to grade against, saw {authored:?}"
+    );
+
+    let dex: DexFile = parse_dex(EDGECASES_DEX).expect("parse the real D8 megafile artifact");
+    let recovered: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
+    let unit: &String = recovered
+        .sources
+        .get(EDGECASES_UNIT)
+        .expect("recover the EdgeCases compilation unit");
+    let returned: BTreeSet<String> = lambda_bearing_methods(unit)
+        .iter()
+        .map(|method: &String| authored_owner(method))
+        .collect();
+
+    let misplaced: Vec<&String> = returned
+        .iter()
+        .filter(|method: &&String| !authored.contains(*method))
+        .collect();
+    assert!(
+        misplaced.is_empty(),
+        "every recovered lambda must sit in a method the author wrote a lambda in; these did \
+         not: {misplaced:?}"
+    );
+    assert!(
+        returned.len() >= EDGECASES_RECALL_FLOOR,
+        "recovered lambda methods fell below the recorded floor: {} of {}",
+        returned.len(),
+        authored.len()
+    );
+    eprintln!(
+        "d8 lambda recovery on the real EdgeCases artifact: {}/{} authored lambda-bearing methods \
+         return a lambda expression, graded against corpus/jvm/megafile/EdgeCases.java; still \
+         unrecovered: {:?}",
+        returned.len(),
+        authored.len(),
+        authored.difference(&returned).collect::<Vec<&String>>()
     );
 }
 
