@@ -1152,7 +1152,7 @@ impl Lifter<'_> {
         }
         let resolved_value: bool =
             self.resolve_short_circuits(offset) | self.resolve_ternary(offset);
-        if pending_value_arm {
+        if pending_value_arm && !stack_analysis.value_joins.contains(&offset) {
             return;
         }
         if let Some(&height) = stack_analysis.entry_heights.get(&offset) {
@@ -1172,24 +1172,38 @@ impl Lifter<'_> {
                     .push(Stmt::Comment(STACK_CONFLICT_MARKER.to_owned()));
             }
             let entries: Vec<Vec<Expr>> = self.incoming_stacks.remove(&offset).unwrap_or_default();
+            let is_merge: bool = stack_analysis.switch_entries.contains(&offset)
+                || stack_analysis.value_joins.contains(&offset);
+            let mut observed: Vec<Vec<Expr>> = entries;
+            if !stack_analysis.disconnected_entries.contains(&offset) {
+                observed.push(self.stack.clone());
+            }
+            let heights_disagree: bool = observed
+                .iter()
+                .any(|entry: &Vec<Expr>| entry.len() != height);
+            if is_merge
+                && !resolved_value
+                && !self.stack_tracking_exhausted
+                && !untracked_entry
+                && heights_disagree
+            {
+                self.statements
+                    .push(Stmt::Comment(STACK_HEIGHT_CONFLICT_MARKER.to_owned()));
+                self.opaque_operands = self.opaque_operands.saturating_add(1);
+                self.stack.clear();
+                self.reconcile_entry_height(offset, height, is_exc_target, true);
+                return;
+            }
             let tracked_values: Option<Vec<Expr>> = if resolved_value
                 || self.stack_tracking_exhausted
                 || untracked_entry
                 || !stack_analysis.forward_entries.contains(&offset)
-                || !(stack_analysis.switch_entries.contains(&offset)
-                    || stack_analysis.value_joins.contains(&offset))
+                || !is_merge
             {
                 None
             } else {
-                let mut entries: Vec<Vec<Expr>> = entries;
-                if !stack_analysis.disconnected_entries.contains(&offset) {
-                    entries.push(self.stack.clone());
-                }
-                if entries.is_empty()
-                    || entries
-                        .iter()
-                        .any(|entry: &Vec<Expr>| entry.len() != height)
-                {
+                let entries: Vec<Vec<Expr>> = observed;
+                if entries.is_empty() || heights_disagree {
                     None
                 } else {
                     Some(
@@ -1216,9 +1230,15 @@ impl Lifter<'_> {
                 self.stack = values;
                 return;
             }
-            let replace_values: bool = !resolved_value
-                && (stack_analysis.value_joins.contains(&offset)
-                    || stack_analysis.switch_entries.contains(&offset));
+            let replace_values: bool = !resolved_value && is_merge;
+            if !replace_values && is_merge && self.stack.len() > height {
+                self.statements
+                    .push(Stmt::Comment(STACK_HEIGHT_CONFLICT_MARKER.to_owned()));
+                self.opaque_operands = self.opaque_operands.saturating_add(1);
+                self.stack.clear();
+                self.reconcile_entry_height(offset, height, is_exc_target, true);
+                return;
+            }
             self.reconcile_entry_height(offset, height, is_exc_target, replace_values);
         } else if stack_analysis.unreconciled.contains(&offset) {
             self.stack.clear();
@@ -1818,7 +1838,15 @@ fn block_entry_heights(
             }
         }
     }
-    let mut value_joins: BTreeSet<usize> = BTreeSet::new();
+    let mut value_joins: BTreeSet<usize> = predecessors
+        .iter()
+        .filter(|(target, sources): &(&usize, &BTreeSet<usize>)| {
+            sources.len() > 1
+                && !exc_targets.contains(*target)
+                && sources.iter().all(|source: &usize| source < *target)
+        })
+        .map(|(target, _): (&usize, &BTreeSet<usize>)| *target)
+        .collect();
     let normal_reachable: BTreeSet<usize> = reachable_from_seeds(
         &succs,
         &valid_offsets,
@@ -8009,8 +8037,85 @@ mod tests {
         );
     }
 
+    fn branch_join_body(else_arm_value: u8) -> Vec<u8> {
+        vec![
+            0x24,
+            0x00,
+            0x11,
+            0x06,
+            0x00,
+            0x00,
+            0x24,
+            0x01,
+            0x10,
+            0x07,
+            0x00,
+            0x00,
+            0x29,
+            0x24,
+            else_arm_value,
+            0x10,
+            0x00,
+            0x00,
+            0x00,
+            0x48,
+        ]
+    }
+
+    fn branch_join_return(lifted: &LiftedBody) -> Expr {
+        lifted
+            .statements
+            .iter()
+            .find_map(|statement: &Stmt| match statement {
+                Stmt::Return(Some(value)) => Some(value.clone()),
+                _ => None,
+            })
+            .expect("branch join returns a value")
+    }
+
     #[test]
-    fn non_switch_join_does_not_truncate_the_legacy_stack() {
+    fn branch_join_never_selects_one_predecessor_operand() {
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(branch_join_body(0x02));
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(
+            branch_join_return(&lifted),
+            Expr::Phi { block: 19, slot: 0 },
+            "a two-way branch join carrying different operands must merge them, not keep the \
+             linearly last predecessor: {:?}",
+            lifted.statements
+        );
+        assert!(
+            !lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == STACK_HEIGHT_CONFLICT_MARKER
+            )),
+            "predecessors that agree on height must not raise a height refusal"
+        );
+        assert_eq!(lifted.opaque_operands, 1);
+        assert!(!lifted.structurally_recovered);
+    }
+
+    #[test]
+    fn branch_join_preserves_an_identical_operand_from_every_predecessor() {
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(branch_join_body(0x01));
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert_eq!(branch_join_return(&lifted), Expr::IntLit(1));
+        assert_eq!(lifted.opaque_operands, 0);
+        assert!(
+            !lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason)
+                    if reason == STACK_HEIGHT_CONFLICT_MARKER || reason == STACK_CONFLICT_MARKER
+            )),
+            "predecessors that agree on one operand must reconcile without a refusal: {:?}",
+            lifted.statements
+        );
+    }
+
+    #[test]
+    fn branch_join_with_mismatched_incoming_depths_is_refused_with_a_named_reason() {
         let code: Vec<u8> = vec![
             0x24, 0x00, 0x11, 0x07, 0x00, 0x00, 0x24, 0x01, 0x02, 0x10, 0x06, 0x00, 0x00, 0x24,
             0x02, 0x10, 0x00, 0x00, 0x00, 0x48,
@@ -8018,15 +8123,20 @@ mod tests {
         let abc: AbcFile = bare_abc();
         let body: MethodBody = body_with_code(code);
         let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
-        let returned: &Expr = lifted
-            .statements
-            .iter()
-            .find_map(|statement: &Stmt| match statement {
-                Stmt::Return(Some(value)) => Some(value),
-                _ => None,
-            })
-            .expect("non-switch join returns a value");
-        assert_eq!(returned, &Expr::IntLit(2));
+        assert!(
+            lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == STACK_HEIGHT_CONFLICT_MARKER
+            )),
+            "a join whose predecessors disagree on operand depth must name its refusal: {:?}",
+            lifted.statements
+        );
+        assert_eq!(
+            branch_join_return(&lifted),
+            Expr::Phi { block: 19, slot: 0 },
+            "a refused join must not hand back one predecessor's operand"
+        );
+        assert!(!lifted.structurally_recovered);
     }
 
     #[test]
