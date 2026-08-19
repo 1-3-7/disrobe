@@ -183,7 +183,10 @@ pub use innosetup::{
     recover_inno_named_files_with_limits, unfilter_instructions,
 };
 pub use installshield::{
-    InstallShieldFile, InstallShieldHeader, detect_installshield, installshield_external_hint,
+    InstallShieldArchive, InstallShieldCompression, InstallShieldFile, InstallShieldFileGroup,
+    InstallShieldHeader, InstallShieldLayout, InstallShieldMemberState, InstallShieldVolume,
+    deobfuscate_installshield, detect_installshield, installshield_display_name,
+    installshield_layout, installshield_major_version, parse_installshield_header,
     walk_installshield,
 };
 pub use iso::{

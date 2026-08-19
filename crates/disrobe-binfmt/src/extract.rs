@@ -2394,44 +2394,34 @@ fn extract_installshield(
     out_dir: &Path,
     quota: ExtractionQuota,
 ) -> Result<ExtractionResult> {
-    let files: Vec<crate::containers::InstallShieldFile> =
-        crate::containers::walk_installshield(bytes, quota.max_total_uncompressed)?;
-    std::fs::create_dir_all(out_dir)?;
     let installer_quota: ExtractionQuota = ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
         max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
         ..quota
     };
-    let mut guard: QuotaGuard = QuotaGuard::new(installer_quota);
-    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(files.len());
+    let archive: crate::containers::InstallShieldArchive =
+        crate::containers::walk_installshield(bytes, installer_quota)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(archive.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
-    for file in &files {
-        let safe_name: String = match sanitize_entry_path(&file.name) {
+    let mut violations: Vec<String> = archive.integrity_violations.clone();
+    for file in archive.recovered() {
+        let safe_name: String = match sanitize_entry_path(&file.path) {
             Ok(s) => s,
             Err(e) => {
                 violations.push(format!("installshield-slip: {e}"));
                 continue;
             }
         };
-        let size: u64 = file.data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, size) {
-            violations.push(format!("installshield-quota `{safe_name}`: {e}"));
-            continue;
-        }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &file.data)?;
-        let compression: EntryCompression = if file.compressed {
-            EntryCompression::Deflate
-        } else {
-            EntryCompression::Stored
-        };
+        let compression: EntryCompression = installshield_entry_compression(file.compression);
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
             name: safe_name,
             disk_path: Some(disk_path),
-            uncompressed_size: size,
-            compressed_size: size,
+            uncompressed_size: file.expanded_size,
+            compressed_size: file.compressed_size,
             compression,
             is_executable: false,
         });
@@ -2441,8 +2431,20 @@ fn extract_installshield(
         entries: entries_out,
         encoding,
         integrity_violations: violations,
-        quota: QuotaSummary::from(guard.report()),
+        quota: QuotaSummary::from(&archive.quota),
     })
+}
+
+const fn installshield_entry_compression(
+    method: crate::containers::InstallShieldCompression,
+) -> EntryCompression {
+    match method {
+        crate::containers::InstallShieldCompression::Stored => EntryCompression::Stored,
+        crate::containers::InstallShieldCompression::FramedDeflate
+        | crate::containers::InstallShieldCompression::FullFlushDeflate => {
+            EntryCompression::Deflate
+        }
+    }
 }
 
 const fn nsis_entry_compression(method: crate::containers::NsisCompression) -> EntryCompression {

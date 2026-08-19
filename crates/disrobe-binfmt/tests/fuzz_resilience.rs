@@ -895,6 +895,7 @@ reached_when_not_empty! {
     FvExtraction => files,
     GptTable => partitions,
     HfsVolume => files,
+    disrobe_binfmt::containers::InstallShieldArchive => files,
     Jffs2Walk => files,
     MbrTable => partitions,
     MinidumpFile => streams,
@@ -1119,7 +1120,7 @@ fn probe_container_parsers(bytes: &[u8]) -> Hits {
     hits.record(extract_flatpak_bundle(bytes));
     hits.record(locate_hfsplus_volumes(bytes));
     hits.record(parse_hfsplus(bytes));
-    hits.record(walk_installshield(bytes, WALK_CAP));
+    hits.record(walk_installshield(bytes, quota));
     hits.record(walk_jffs2(bytes, WALK_CAP));
     hits.record(parse_mbr(bytes));
     hits.record(parse_gpt(bytes));

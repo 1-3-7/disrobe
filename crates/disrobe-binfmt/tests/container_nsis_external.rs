@@ -1,7 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use disrobe_binfmt::containers::installshield::{
-    InstallshieldExternalHint, installshield_external_hint,
-};
 use disrobe_binfmt::containers::nsis::{NsisHeader, detect_nsis};
 
 const NSIS_FIRSTHEADER_MAGIC: [u8; 16] = [
@@ -21,11 +18,4 @@ fn nsis_signature_detected_in_pe_tail_synthetic() {
     assert_eq!(header.offset, 2048);
     assert_eq!(header.header_size, 4096);
     assert_eq!(header.archive_size, 65_536);
-}
-
-#[test]
-fn installshield_external_hint_present() {
-    let hint: InstallshieldExternalHint = installshield_external_hint();
-    assert_eq!(hint.tool_binary, "i6comp");
-    assert!(!hint.install_hint.is_empty());
 }

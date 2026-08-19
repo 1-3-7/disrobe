@@ -131,6 +131,7 @@ const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
 const TAG_UEFI_FV: &str = "uefi-fv";
 const TAG_EROFS: &str = "erofs";
+const TAG_INSTALLSHIELD: &str = "installshield";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -167,7 +168,12 @@ const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
 const fn tag_specificity(tag: &str) -> u16 {
     if matches!(
         tag.as_bytes(),
-        b"dotnet-single-file" | b"inno-setup" | b"appimage" | b"uefi-fv" | b"erofs"
+        b"dotnet-single-file"
+            | b"inno-setup"
+            | b"appimage"
+            | b"uefi-fv"
+            | b"erofs"
+            | b"installshield"
     ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
@@ -182,6 +188,7 @@ const fn tag_marker(tag: &str) -> &'static str {
         b"appimage" => "elf+validated-filesystem",
         b"uefi-fv" => "fv-header+checksum",
         b"erofs" => "superblock+root-inode",
+        b"installshield" => "isc-signature+cabinet-descriptor",
         _ => "container-magic",
     }
 }
@@ -322,6 +329,7 @@ fn inventory_entries(tag: &str, bytes: &[u8]) -> Inventory {
         TAG_TAR => tar_inventory(bytes),
         TAG_ARC => arc_inventory(bytes),
         TAG_ARJ => arj_inventory(bytes),
+        TAG_INSTALLSHIELD => installshield_inventory(bytes),
         _ => Inventory::ExtractionRequired,
     }
 }
@@ -434,6 +442,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_LZH => extract_lzh_members(bytes),
         TAG_STUFFIT => extract_stuffit_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
+        TAG_INSTALLSHIELD => extract_installshield_members(bytes),
         TAG_APPIMAGE => extract_appimage_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         TAG_UEFI_FV => extract_uefi_fv_members(bytes),
@@ -967,6 +976,55 @@ fn extract_innosetup_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>>
     Ok(members)
 }
 
+const fn installshield_chain_quota() -> crate::quota::ExtractionQuota {
+    crate::quota::ExtractionQuota {
+        max_entries: MAX_MEMBER_COUNT,
+        max_total_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    }
+}
+
+fn walk_installshield_for_chain(
+    bytes: &[u8],
+) -> CoreResult<crate::containers::InstallShieldArchive> {
+    crate::containers::walk_installshield(bytes, installshield_chain_quota())
+        .map_err(|error: crate::error::Error| fail(format!("InstallShield cabinet: {error}")))
+}
+
+fn extract_installshield_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let archive: crate::containers::InstallShieldArchive = walk_installshield_for_chain(bytes)?;
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(archive.recovered_count());
+    for file in archive.recovered() {
+        let name: String = crate::quota::sanitize_entry_path(&file.path).map_err(
+            |error: crate::error::Error| fail(format!("InstallShield member path: {error}")),
+        )?;
+        if !names.insert(name.clone()) {
+            return Err(fail(format!(
+                "InstallShield cabinet contains duplicate normalized path `{name}`"
+            )));
+        }
+        members.push((name, file.data.clone()));
+    }
+    Ok(members)
+}
+
+fn installshield_inventory(bytes: &[u8]) -> Inventory {
+    match walk_installshield_for_chain(bytes) {
+        Ok(archive) => Inventory::Listed(
+            archive
+                .recovered()
+                .map(|file: &crate::containers::InstallShieldFile| {
+                    (file.path.clone(), file.expanded_size)
+                })
+                .collect(),
+        ),
+        Err(error) => Inventory::Unreadable(error.to_string()),
+    }
+}
+
 fn extract_rpm_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
     extract_rpm_members_with_output_cap(bytes, MAX_MEMBER_BYTES)
 }
@@ -1258,6 +1316,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::detect_innosetup(bytes).is_some() {
         return Some(TAG_INNOSETUP);
+    }
+    if crate::containers::detect_installshield(bytes).is_some() {
+        return Some(TAG_INSTALLSHIELD);
     }
     if crate::containers::detect_uefi_fv(bytes) {
         return Some(TAG_UEFI_FV);

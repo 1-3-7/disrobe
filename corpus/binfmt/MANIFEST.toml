@@ -717,3 +717,30 @@ format = "dotnet-single-file bundle major 1, PE apphost"
 tool = "Microsoft.NET.HostModel 8.0.29 Bundler, driven with targetFrameworkVersion 3.1"
 provenance = "real"
 note = "major 1 is what .NET Core 3.x wrote. The header stops after the bundle id, and the writer records every entry as type 0 (Unknown), so a reader cannot tell an assembly from a symbol file by type on this version"
+
+[[fixtures]]
+path = "installshield/wireplay-user1.cab"
+format = "InstallShield legacy cabinet, common header version 0x01000004 (unshield major version 0)"
+tool = "InstallShield 5 setup builder, 1997"
+provenance = "installshield/PROVENANCE.txt; byte copy of dpcb1197-Wireplay/DOS/_user1.cab from unshield test/v0/wireplay/test_data.zip"
+size_bytes = 9_668
+sha256 = "30ee8b8ad02d6e1a5e1a67de039303236b7f01b4b31cea722b99255240d3834d"
+note = "8 file records, 3 recoverable and 5 carrying the invalid flag; compressed members use the full-flush raw-DEFLATE representation. installshield/wireplay-user1.cab.tsv pins the reference inventory"
+
+[[fixtures]]
+path = "installshield/wireplay-sys1.cab"
+format = "InstallShield legacy cabinet, common header version 0x01000004 (unshield major version 0)"
+tool = "InstallShield 5 setup builder, 1997"
+provenance = "installshield/PROVENANCE.txt; byte copy of dpcb1197-Wireplay/DOS/_sys1.cab from unshield test/v0/wireplay/test_data.zip"
+size_bytes = 386_984
+sha256 = "6036fe6e7eb763c80a63de3765b0a33e6498cd968ba582d2bd2d7bb1418a7dc2"
+note = "7 recoverable members across 5 file groups; four expand past 64 KiB so the multi-chunk decode loop runs, and _isres.dll and _IsRes.Dll differ only by case. installshield/wireplay-sys1.cab.tsv pins the reference inventory"
+
+[[fixtures]]
+path = "installshield/cve-2015-1386.hdr"
+format = "InstallShield legacy header, common header version 0x01005201 (unshield major version 5)"
+tool = "CVE-2015-1386 proof of concept"
+provenance = "installshield/PROVENANCE.txt; byte copy of unshield test/v5/CVE-2015-1386/data1.hdr"
+size_bytes = 3_113
+sha256 = "6ed3cc2918dfb2611a112db5c88b40765c8ecdc661df40bc3c5fec0f176810c8"
+note = "the only committed artifact whose version field decodes to major 5; 3 records carry the invalid flag and the fourth carries a directory-traversal member name. unshield's own suite asserts that extracting it fails, and disrobe must recover nothing from it"
