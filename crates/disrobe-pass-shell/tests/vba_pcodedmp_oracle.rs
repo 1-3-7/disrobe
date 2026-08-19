@@ -127,6 +127,13 @@ fn the_hash_pin_rejects_an_edited_dump() {
     let p: Provenance = provenance();
     let first: &Dump = p.dump.first().expect("at least one pinned dump");
     let mut bytes: Vec<u8> = std::fs::read(golden_path(&first.file)).expect("read the dump");
+    assert_eq!(
+        sha256_hex(&bytes),
+        first.sha256,
+        "{}: the hasher must reproduce the pinned digest of the unedited dump, otherwise the \
+         inequality below would hold for a hasher that reads nothing",
+        first.file
+    );
     bytes.push(b'\n');
     assert_ne!(
         sha256_hex(&bytes),
