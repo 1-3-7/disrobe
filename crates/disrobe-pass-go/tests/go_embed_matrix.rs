@@ -16,50 +16,65 @@ struct Target {
     kind: ImageKind,
     pointer_size: u8,
     endian: Endian,
+    position_independent: bool,
 }
 
-const MATRIX: [Target; 7] = [
+const MATRIX: [Target; 8] = [
     Target {
         file: "goembed_pe32_le.exe",
         kind: ImageKind::Pe,
         pointer_size: 4,
         endian: Endian::Little,
+        position_independent: false,
     },
     Target {
         file: "goembed_pe64_le.exe",
         kind: ImageKind::Pe,
         pointer_size: 8,
         endian: Endian::Little,
+        position_independent: false,
     },
     Target {
         file: "goembed_elf32_le",
         kind: ImageKind::Elf,
         pointer_size: 4,
         endian: Endian::Little,
+        position_independent: false,
     },
     Target {
         file: "goembed_elf64_le",
         kind: ImageKind::Elf,
         pointer_size: 8,
         endian: Endian::Little,
+        position_independent: false,
     },
     Target {
         file: "goembed_elf32_be",
         kind: ImageKind::Elf,
         pointer_size: 4,
         endian: Endian::Big,
+        position_independent: false,
     },
     Target {
         file: "goembed_elf64_be",
         kind: ImageKind::Elf,
         pointer_size: 8,
         endian: Endian::Big,
+        position_independent: false,
     },
     Target {
         file: "goembed_macho64_le",
         kind: ImageKind::MachO,
         pointer_size: 8,
         endian: Endian::Little,
+        position_independent: false,
+    },
+    Target {
+        file: "goembed_pie_elf64_le",
+        kind: ImageKind::Elf,
+        pointer_size: 8,
+        endian: Endian::Little,
+        position_independent: true,
     },
 ];
 
@@ -119,7 +134,7 @@ fn reference_tree() -> BTreeMap<String, Vec<u8>> {
 #[test]
 fn every_declared_container_width_and_endianness_recovers_the_tracked_tree() {
     let reference: BTreeMap<String, Vec<u8>> = reference_tree();
-    let mut covered: BTreeSet<(ImageKind, u8, Endian)> = BTreeSet::new();
+    let mut covered: BTreeSet<(ImageKind, u8, Endian, bool)> = BTreeSet::new();
     let mut graded_files: usize = 0;
 
     for target in &MATRIX {
@@ -203,13 +218,19 @@ fn every_declared_container_width_and_endianness_recovers_the_tracked_tree() {
             graded_files += 1;
         }
 
-        covered.insert((target.kind, target.pointer_size, target.endian));
+        covered.insert((
+            target.kind,
+            target.pointer_size,
+            target.endian,
+            target.position_independent,
+        ));
     }
 
     assert_eq!(
         covered.len(),
         MATRIX.len(),
-        "every matrix row must be a distinct container, pointer width and endianness triple"
+        "every matrix row must be a distinct container, pointer width, endianness and \
+         position-independence combination"
     );
     assert_eq!(
         graded_files,

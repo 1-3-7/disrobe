@@ -61,7 +61,9 @@ The toolchain generation is identified by which construction verifies the record
 depends on trusting the version string an image reports, and a map whose members are all above the
 boundary is reported as unable to distinguish two generations rather than being assigned one.
 Recovery is graded against the exact files each fixture was built from, across PE, ELF, and Mach-O
-at both pointer widths and both byte orders. A directory record, a zero-length member, and a member
+at both pointer widths, both byte orders, and both position-dependent and position-independent
+links. Go's internal linker materializes the record pointers even in a position-independent
+image, so the same discovery path serves both. A directory record, a zero-length member, and a member
 whose contents are not valid UTF-8 are all covered.
 
 The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; <!-- m:go_typename_count -->838 of 838<!-- /m --> type names (100%) are recovered at HEAD, a count the gate now pins by equality, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. Big-endian recovery has its own oracle: a cross-built stripped linux/s390x binary is parsed as a big-endian ELF and its named type and itab pairs are recovered by back-searching the metadata tables, graded against the build (`go_bigendian_recovery.rs`).

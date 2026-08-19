@@ -14,21 +14,24 @@ Command, run once per row of the matrix below, from this directory:
 
     go build -trimpath -ldflags "-s -w" -o <output> .
 
-with `GOOS`, `GOARCH` and `CGO_ENABLED=0` set per row. `-trimpath` keeps build paths out of the
+with `GOOS`, `GOARCH` and `CGO_ENABLED=0` set per row, adding `-buildmode=pie` for the row
+that names it. A darwin arm64 build is position independent whether or not the flag is
+given, so that row is marked yes without carrying the flag. `-trimpath` keeps build paths out of the
 image. `-ldflags "-s -w"` drops the symbol table and DWARF, which cuts each image by about a third
 and also proves recovery does not depend on symbols.
 
 ## Matrix
 
-| Image | GOOS | GOARCH | Container | Pointer width | Byte order |
-| --- | --- | --- | --- | ---: | --- |
-| `goembed_pe32_le.exe` | windows | 386 | PE | 4 | little |
-| `goembed_pe64_le.exe` | windows | amd64 | PE | 8 | little |
-| `goembed_elf32_le` | linux | 386 | ELF | 4 | little |
-| `goembed_elf64_le` | linux | amd64 | ELF | 8 | little |
-| `goembed_elf32_be` | linux | mips | ELF | 4 | big |
-| `goembed_elf64_be` | linux | s390x | ELF | 8 | big |
-| `goembed_macho64_le` | darwin | arm64 | Mach-O | 8 | little |
+| Image | GOOS | GOARCH | Container | Pointer width | Byte order | Position independent |
+| --- | --- | --- | --- | ---: | --- | --- |
+| `goembed_pe32_le.exe` | windows | 386 | PE | 4 | little | no |
+| `goembed_pe64_le.exe` | windows | amd64 | PE | 8 | little | no |
+| `goembed_elf32_le` | linux | 386 | ELF | 4 | little | no |
+| `goembed_elf64_le` | linux | amd64 | ELF | 8 | little | no |
+| `goembed_elf32_be` | linux | mips | ELF | 4 | big | no |
+| `goembed_elf64_be` | linux | s390x | ELF | 8 | big | no |
+| `goembed_macho64_le` | darwin | arm64 | Mach-O | 8 | little | yes |
+| `goembed_pie_elf64_le` | linux | amd64 | ELF | 8 | little | yes |
 
 ## What the assets cover
 
