@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::code_table::{DartCodeTable, parse_code_table};
 use super::dart_graph::{
     DartGraphLimits, DartGraphSnapshotRole, DartGraphSnapshotSummary, DartParsedGraph,
     parse_dart_graph,
@@ -13,6 +14,7 @@ use super::dart_graph_inventory::{
 use super::dart_graph_layout::{
     DartPinnedLayout, has_pinned_dart_graph_layout, pinned_dart_graph_layout,
 };
+use super::demangler::{DartNameKind, DemangledName, demangle};
 use super::{LibAppLayout, SnapshotSection};
 use crate::error::{Error, Result};
 
@@ -206,7 +208,33 @@ pub struct DartGraphRecoveryReport {
     pub vm_snapshot: Option<DartGraphSnapshotSummary>,
     pub isolate_snapshot: Option<DartGraphSnapshotSummary>,
     pub inventory: DartPinnedInventory,
+    pub code_names: DartCodeNameTable,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartCodeName {
+    pub instructions_offset: u64,
+    pub code_index: u64,
+    pub qualified_name: String,
+    pub member_name: String,
+    pub class_name: Option<String>,
+    pub library_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartCodeBoundary {
+    pub instructions_offset: u64,
+    pub payload_length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DartCodeNameTable {
+    pub entries: Vec<DartCodeName>,
+    pub boundaries: Vec<DartCodeBoundary>,
+    pub table_entry_count: usize,
+    pub distinct_offset_count: usize,
+    pub reason: String,
 }
 
 impl DartGraphRecoveryReport {
@@ -391,6 +419,36 @@ fn recover_pinned_data_blobs(
         DartGraphNameMode,
         String,
     ) = classify_names(&inventory, options.obfuscation_hint);
+    let code_names: DartCodeNameTable = match parse_code_table(
+        isolate_data,
+        isolate_instructions_len,
+        isolate_graph.summary.instruction_count,
+        isolate_graph.summary.instruction_table_data_offset,
+        layout.code_table,
+    ) {
+        Ok(table) => {
+            let entries: Vec<DartCodeName> = build_code_names(&inventory, &table);
+            let mut offsets: Vec<u64> = entries
+                .iter()
+                .map(|entry: &DartCodeName| entry.instructions_offset)
+                .collect::<Vec<u64>>();
+            offsets.dedup();
+            DartCodeNameTable {
+                boundaries: code_boundaries(&table, isolate_instructions_len),
+                table_entry_count: table.len(),
+                distinct_offset_count: offsets.len(),
+                reason: String::new(),
+                entries,
+            }
+        }
+        Err(error) => DartCodeNameTable {
+            entries: Vec::new(),
+            boundaries: Vec::new(),
+            table_entry_count: 0,
+            distinct_offset_count: 0,
+            reason: error.to_string(),
+        },
+    };
     let warnings: Vec<String> = match name_mode {
         DartGraphNameMode::Opaque => vec![
             "this recovery path does not reconstruct identifiers removed by obfuscation; a matching Flutter symbol map can restore them"
@@ -412,8 +470,79 @@ fn recover_pinned_data_blobs(
         vm_snapshot: Some(vm_graph.summary),
         isolate_snapshot: Some(isolate_graph.summary),
         inventory,
+        code_names,
         warnings,
     })
+}
+
+fn code_boundaries(table: &DartCodeTable, image_len: usize) -> Vec<DartCodeBoundary> {
+    let total: usize = table.len();
+    (0..total)
+        .filter_map(|ordinal: usize| {
+            let index: u64 = u64::try_from(ordinal).ok()?.checked_add(1)?;
+            let (start, end): (u64, u64) = table.payload_span(index, image_len)?;
+            Some(DartCodeBoundary {
+                instructions_offset: start,
+                payload_length: end.saturating_sub(start),
+            })
+        })
+        .collect::<Vec<DartCodeBoundary>>()
+}
+
+fn build_code_names(inventory: &DartPinnedInventory, table: &DartCodeTable) -> Vec<DartCodeName> {
+    let mut entries: Vec<DartCodeName> = Vec::new();
+    for library in &inventory.libraries {
+        for class in &library.classes {
+            for method in &class.methods {
+                let Some(code_index) = method.code_index else {
+                    continue;
+                };
+                let Some(instructions_offset) = table.instructions_offset(code_index) else {
+                    continue;
+                };
+                let Some(raw_member) = method.name.as_deref() else {
+                    continue;
+                };
+                let demangled: DemangledName = demangle(raw_member);
+                let member: String = demangled.scrubbed;
+                let class_name: Option<String> = class
+                    .name
+                    .as_deref()
+                    .map(|name: &str| demangle(name).scrubbed)
+                    .filter(|name: &String| !name.is_empty() && name != "::");
+                let qualified: String = match demangled.kind {
+                    DartNameKind::Constructor | DartNameKind::NamedConstructor => {
+                        format!("new {member}")
+                    }
+                    DartNameKind::Getter | DartNameKind::Setter | DartNameKind::Method => {
+                        class_name.as_ref().map_or_else(
+                            || member.clone(),
+                            |owner: &String| format!("{owner}.{member}"),
+                        )
+                    }
+                };
+                entries.push(DartCodeName {
+                    instructions_offset,
+                    code_index,
+                    qualified_name: qualified,
+                    member_name: member,
+                    class_name,
+                    library_url: library.url.clone(),
+                });
+            }
+        }
+    }
+    entries.sort_by(|left: &DartCodeName, right: &DartCodeName| {
+        left.instructions_offset
+            .cmp(&right.instructions_offset)
+            .then_with(|| left.qualified_name.cmp(&right.qualified_name))
+            .then_with(|| left.code_index.cmp(&right.code_index))
+    });
+    entries.dedup_by(|left: &mut DartCodeName, right: &mut DartCodeName| {
+        left.instructions_offset == right.instructions_offset
+            && left.qualified_name == right.qualified_name
+    });
+    entries
 }
 
 pub(super) struct DartPinnedGraph {
@@ -533,6 +662,13 @@ fn unsupported_report(
             declared: DartGraphDeclaredObjects::default(),
             residue: DartGraphAttributionResidue::default(),
             libraries: Vec::new(),
+        },
+        code_names: DartCodeNameTable {
+            entries: Vec::new(),
+            boundaries: Vec::new(),
+            table_entry_count: 0,
+            distinct_offset_count: 0,
+            reason: reason.to_owned(),
         },
         warnings: vec![reason.to_owned()],
     }

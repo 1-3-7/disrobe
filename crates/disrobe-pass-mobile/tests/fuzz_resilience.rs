@@ -6,6 +6,7 @@ use std::time::Duration;
 use disrobe_pass_mobile::apk_recon;
 use disrobe_pass_mobile::arsc;
 use disrobe_pass_mobile::axml;
+use disrobe_pass_mobile::flutter;
 use disrobe_pass_mobile::hermes;
 use disrobe_pass_mobile::ios;
 use disrobe_pass_mobile::react_native;
@@ -24,6 +25,14 @@ const SATURATION_VALUE: u8 = u8::MAX;
 const SATURATION_SPARSITY: u32 = 2;
 const MAX_SCATTERED_INSERTS: usize = 48;
 const ENTROPY_SPAN_SEED: u64 = 0x4D4F_4249_0001_0003;
+
+const DART_SNAPSHOT_MAGIC_LE: [u8; 4] = [0xf5, 0xf5, 0xdc, 0xdc];
+const DART_KERNEL_MAGIC_BE: [u8; 4] = [0x90, 0xab, 0xcd, 0xef];
+const DART_SNAPSHOT_SEED_BYTES: usize = 512;
+const DART_VERSION_HASH: &str = "ace654289f5abc240509fc941453ebc5";
+const DART_FEATURES: &str = "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers";
+const HOSTILE_TABLE_LENGTHS: [usize; 5] = [0, 1, 3_237, usize::MAX / 8, usize::MAX];
+const HOSTILE_TABLE_OFFSETS: [usize; 4] = [0, 64, usize::MAX / 2, usize::MAX];
 
 const RICH_APK: &str = "corpus/apk/fixture-rich.apk";
 const MANIFEST_ENTRY: &str = "AndroidManifest.xml";
@@ -121,9 +130,31 @@ fn fixture_entry(relative: &str, name: &str) -> Vec<u8> {
     out
 }
 
+fn dart_snapshot_seed() -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(DART_SNAPSHOT_SEED_BYTES);
+    out.extend_from_slice(&DART_SNAPSHOT_MAGIC_LE);
+    out.extend_from_slice(&(DART_SNAPSHOT_SEED_BYTES as u64).to_le_bytes());
+    out.extend_from_slice(&3_u64.to_le_bytes());
+    out.extend_from_slice(DART_VERSION_HASH.as_bytes());
+    out.extend_from_slice(DART_FEATURES.as_bytes());
+    out.push(0);
+    out.resize(DART_SNAPSHOT_SEED_BYTES, 0);
+    out
+}
+
+fn dart_kernel_seed() -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(64);
+    out.extend_from_slice(&DART_KERNEL_MAGIC_BE);
+    out.extend_from_slice(&130_u32.to_le_bytes());
+    out.resize(64, 0);
+    out
+}
+
 fn corpus() -> Vec<CorpusEntry> {
     vec![
         CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("dart-snapshot-header", dart_snapshot_seed()),
+        CorpusEntry::new("dart-kernel-header", dart_kernel_seed()),
         CorpusEntry::new("axml-header", axml_seed()),
         CorpusEntry::new("arsc-header", arsc_seed()),
         CorpusEntry::new("hermes-header", hermes_seed()),
@@ -185,6 +216,43 @@ fn probe(bytes: &[u8]) {
     let _ = xamarin::extract_xamarin_bundle(bytes);
     let _ = react_native::detect_bundle_format(bytes);
     let _ = react_native::extract_from_apk_or_ipa(bytes);
+    probe_dart(bytes);
+}
+
+fn probe_dart(bytes: &[u8]) {
+    let _ = flutter::parse_dart_snapshot(bytes);
+    let _ = flutter::parse_snapshot_framing(bytes);
+    let _ = flutter::has_dart_aot_snapshot(bytes);
+    let _ = flutter::parse_libapp_so(bytes);
+    let _ = flutter::parse_flutter_apk(bytes);
+    let _ = flutter::parse_flutter_obfuscation_map(bytes);
+    let _ = flutter::decompile_dart_aot(bytes);
+    let _ = flutter::decompile_dart_kernel(bytes);
+    let _ = flutter::decompile_libapp_so(bytes);
+    let _ = flutter::decompile_libapp_so_structured(bytes);
+    let _ = flutter::decompile_libapp_so_recovery(bytes);
+    let _ = flutter::disassemble_libapp_so(bytes);
+    let _ = flutter::lift_libapp_aot(bytes);
+    let _ = flutter::recover_dart_pinned_elf(bytes, &flutter::DartGraphRecoveryOptions::default());
+    let _ = flutter::recover_dart_pinned_standalone(
+        bytes,
+        bytes,
+        bytes,
+        bytes,
+        &flutter::DartGraphRecoveryOptions::default(),
+    );
+    let _ = flutter::rodata_image_offset(bytes);
+    for length in HOSTILE_TABLE_LENGTHS {
+        for offset in HOSTILE_TABLE_OFFSETS {
+            let _ = flutter::parse_code_table(
+                bytes,
+                bytes.len(),
+                length,
+                offset,
+                flutter::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT.code_table,
+            );
+        }
+    }
 }
 
 fn check(case: &StressCase<'_>) {
@@ -276,6 +344,53 @@ fn a_fixture_entry_that_does_not_exist_fails_loudly() {
         outcome.is_err(),
         "a missing archive member must abort the suite rather than yield an empty seed"
     );
+}
+
+#[test]
+fn the_dart_snapshot_seed_reaches_the_snapshot_reader_before_it_is_mutated() {
+    let seed: Vec<u8> = dart_snapshot_seed();
+    let header: flutter::DartSnapshotHeader =
+        flutter::parse_dart_snapshot(&seed).expect("the dart seed must parse as a snapshot header");
+    assert_eq!(
+        header.version_hash, DART_VERSION_HASH,
+        "the seed must carry the pinned version hash, otherwise every mutated case is rejected \
+         at the magic check and the cluster reader is never entered"
+    );
+    assert_eq!(
+        header.features, DART_FEATURES,
+        "the seed must carry the pinned feature tuple so the pinned layout is selected"
+    );
+    let kernel_seed: Vec<u8> = dart_kernel_seed();
+    assert!(
+        flutter::is_dart_kernel(&kernel_seed),
+        "the kernel seed must be recognised as a kernel so the kernel reader is entered"
+    );
+}
+
+#[test]
+fn a_hostile_instructions_table_descriptor_never_allocates_without_bound() {
+    let seed: Vec<u8> = dart_snapshot_seed();
+    for length in HOSTILE_TABLE_LENGTHS {
+        for offset in HOSTILE_TABLE_OFFSETS {
+            let outcome: Result<flutter::DartCodeTable, disrobe_pass_mobile::Error> =
+                flutter::parse_code_table(
+                    &seed,
+                    seed.len(),
+                    length,
+                    offset,
+                    flutter::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT.code_table,
+                );
+            let error: disrobe_pass_mobile::Error = outcome.expect_err(
+                "a header-only seed carries no read-only image, so every case must fail",
+            );
+            let rendered: String = error.to_string();
+            assert!(
+                rendered.starts_with("DR-MOB-"),
+                "a hostile instructions-table descriptor must fail with a typed diagnostic, got \
+                 {rendered}"
+            );
+        }
+    }
 }
 
 #[test]

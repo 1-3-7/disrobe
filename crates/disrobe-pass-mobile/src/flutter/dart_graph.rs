@@ -120,6 +120,7 @@ pub(super) struct DartGraphNode {
     pub(super) pool_slots: Vec<DartPoolSlot>,
     pub(super) text_is_escaped: bool,
     pub(super) type_flags: Option<u64>,
+    pub(super) code_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -775,9 +776,11 @@ impl DartGraphParser<'_> {
         let reference_count: usize = self.layout.declarations.function.reference_count;
         for reference in cluster.start_reference..cluster.end_reference {
             let references: Vec<u32> = self.read_references(reference_count)?;
-            let _code_index: u64 = self.cursor.read_unsigned("function code index")?;
+            let code_index: u64 = self.cursor.read_unsigned("function code index")?;
             let _kind_tag: u32 = self.cursor.read_u32("function kind tag")?;
-            self.node_mut(reference)?.references = references;
+            let node: &mut DartGraphNode = self.node_mut(reference)?;
+            node.references = references;
+            node.code_index = Some(code_index);
         }
         Ok(())
     }

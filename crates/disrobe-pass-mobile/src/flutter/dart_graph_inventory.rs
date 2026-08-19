@@ -65,6 +65,7 @@ pub struct DartPinnedMethodInventory {
     pub name: Option<String>,
     pub signature: Option<String>,
     pub parameter_count: Option<usize>,
+    pub code_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +232,7 @@ pub(super) fn build_pinned_inventory(
                     name,
                     signature,
                     parameter_count,
+                    code_index: node.code_index,
                 });
             }
             DartGraphNodeKind::Field => {

@@ -216,6 +216,27 @@ pub enum Error {
 
     #[error("DR-MOB-0047: Dart pinned snapshot header at offset {offset} is malformed: {reason}")]
     DartGraphInvalidHeader { offset: usize, reason: &'static str },
+
+    #[error("DR-MOB-0048: Dart instructions table is not readable: {reason}")]
+    DartCodeTableUnavailable { reason: &'static str },
+
+    #[error(
+        "DR-MOB-0049: Dart instructions table at offset {offset} declares {declared} entries but the snapshot preamble declares {expected}"
+    )]
+    DartCodeTableLengthMismatch {
+        offset: usize,
+        declared: usize,
+        expected: usize,
+    },
+
+    #[error(
+        "DR-MOB-0050: Dart instructions table entry {index} has payload offset {offset}, which is not ascending within the {limit}-byte instructions image"
+    )]
+    DartCodeTableEntryOutOfOrder {
+        index: usize,
+        offset: u64,
+        limit: usize,
+    },
 }
 
 impl From<zip::result::ZipError> for Error {

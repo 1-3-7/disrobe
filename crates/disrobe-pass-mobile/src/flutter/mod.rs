@@ -13,6 +13,7 @@ pub mod arm64_traversal;
 pub(crate) mod call_args;
 pub mod cid_table;
 pub mod cluster;
+pub mod code_table;
 pub mod dart_graph;
 pub mod dart_graph_inventory;
 pub mod dart_graph_layout;
@@ -43,6 +44,7 @@ pub use cluster::{
     ClusterFramingStatus, DartClusterRole, DartClusterSchemaReport, DartObservedCluster,
     DartReadStream, DartSnapshotFraming, attach_cluster_schema, parse_snapshot_framing,
 };
+pub use code_table::{DartCodeTable, DartCodeTableEntry, parse_code_table, rodata_image_offset};
 pub use dart_graph::{DartGraphClusterSummary, DartGraphLimits, DartGraphSnapshotSummary};
 pub use dart_graph_inventory::{
     DartGraphAttributionResidue, DartGraphDeclaredObjects, DartGraphInventoryCounts,
@@ -58,9 +60,9 @@ pub use dart_graph_layout::{
     has_pinned_dart_graph_layout, pinned_dart_graph_layout,
 };
 pub use dart_graph_recovery::{
-    DartGraphBlobSizes, DartGraphNameMode, DartGraphObfuscationHint, DartGraphRecoveryOptions,
-    DartGraphRecoveryReport, DartGraphRecoveryStatus, recover_dart_pinned_elf,
-    recover_dart_pinned_standalone,
+    DartCodeBoundary, DartCodeName, DartCodeNameTable, DartGraphBlobSizes, DartGraphNameMode,
+    DartGraphObfuscationHint, DartGraphRecoveryOptions, DartGraphRecoveryReport,
+    DartGraphRecoveryStatus, recover_dart_pinned_elf, recover_dart_pinned_standalone,
 };
 pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
 pub use disasm::{

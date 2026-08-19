@@ -279,6 +279,7 @@ pub struct AotLiftReport {
     pub abi_resolved: bool,
     pub function_count: usize,
     pub named_function_count: usize,
+    pub cluster_named_function_count: usize,
     pub structured_function_count: usize,
     pub flat_fallback_count: usize,
     pub functions: Vec<DartLiftedFunction>,
@@ -312,6 +313,10 @@ const INLINE_DOUBLE_NOTE: &str = "double literals that gen_snapshot materializes
 
 const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes and are never fabricated. field access surfaces by offset only";
 
+const CLUSTER_NAME_NOTE: &str = "this image carries no dart function symbol table, so function boundaries and names come from the isolate snapshot instructions table joined through each code object's owning function";
+
+const CLUSTER_NAME_UNAVAILABLE_NOTE: &str = "this image carries no dart function symbol table and the isolate snapshot cluster walk could not supply offset-to-name coverage";
+
 const POOL_UNAVAILABLE_NOTE: &str = "this image does not present a readable pair of VM and isolate snapshot blobs, so object-pool slot attribution is unavailable and call arguments that read the pool render as slot references";
 
 const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are honestly absent rather than reconstructed";
@@ -320,11 +325,25 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
     dbg_section("dart.aot-lift");
     let layout: super::LibAppLayout = super::parse_libapp_so(bytes)?;
     let recovery: super::DartLibAppRecovery = super::decompile_libapp_so_recovery(bytes)?;
-    let disasm: Arm64Disassembly = if layout.function_symbols.is_empty() {
+    let (cluster_symbols, cluster_named, cluster_note): (
+        Vec<DartFunctionSymbol>,
+        usize,
+        Option<String>,
+    ) = if layout.function_symbols.is_empty() {
+        cluster_derived_symbols(bytes)
+    } else {
+        (Vec::new(), 0, None)
+    };
+    let symbols: &[DartFunctionSymbol] = if layout.function_symbols.is_empty() {
+        &cluster_symbols
+    } else {
+        &layout.function_symbols
+    };
+    let disasm: Arm64Disassembly = if symbols.is_empty() {
         super::disassemble_libapp_so(bytes)?
     } else {
         let instructions: Vec<u8> = super::isolate_instruction_bytes(bytes)?;
-        disassemble_symtab_functions(&instructions, &layout.function_symbols)
+        disassemble_symtab_functions(&instructions, symbols)
     };
     dbg_kv("aot.functions", || disasm.function_count.to_string());
     let isolate_data: Vec<u8> = super::isolate_data_bytes(bytes)?;
@@ -345,14 +364,74 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
     let mut report: AotLiftReport = lift_functions(
         &recovery.version_hash,
         &disasm,
-        &layout.function_symbols,
+        symbols,
         &isolate_data,
         pool.as_ref(),
     );
+    report.cluster_named_function_count = cluster_named;
+    if let Some(note) = cluster_note {
+        report.notes.push(note);
+    }
     if let Some(note) = unavailable {
         report.notes.push(note);
     }
     Ok(report)
+}
+
+#[must_use]
+fn cluster_derived_symbols(bytes: &[u8]) -> (Vec<DartFunctionSymbol>, usize, Option<String>) {
+    let report: super::DartGraphRecoveryReport =
+        match super::recover_dart_pinned_elf(bytes, &super::DartGraphRecoveryOptions::default()) {
+            Ok(report) => report,
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    0,
+                    Some(format!("{CLUSTER_NAME_UNAVAILABLE_NOTE}: {error}")),
+                );
+            }
+        };
+    if report.code_names.entries.is_empty() || report.code_names.boundaries.is_empty() {
+        let reason: String = if report.code_names.reason.is_empty() {
+            "the pinned cluster walk resolved no code object to a declared function".to_owned()
+        } else {
+            report.code_names.reason
+        };
+        return (
+            Vec::new(),
+            0,
+            Some(format!("{CLUSTER_NAME_UNAVAILABLE_NOTE}: {reason}")),
+        );
+    }
+    let mut names: BTreeMap<u64, &str> = BTreeMap::new();
+    for entry in &report.code_names.entries {
+        names
+            .entry(entry.instructions_offset)
+            .or_insert(entry.qualified_name.as_str());
+    }
+    let mut symbols: Vec<DartFunctionSymbol> =
+        Vec::with_capacity(report.code_names.boundaries.len());
+    let mut named: usize = 0;
+    for boundary in &report.code_names.boundaries {
+        let name: Option<&&str> = names.get(&boundary.instructions_offset);
+        if name.is_some() {
+            named = named.saturating_add(1);
+        }
+        symbols.push(DartFunctionSymbol {
+            offset: usize::try_from(boundary.instructions_offset).unwrap_or(usize::MAX),
+            address: boundary.instructions_offset,
+            size: boundary.payload_length,
+            name: name.map_or_else(String::new, |resolved: &&str| (*resolved).to_owned()),
+        });
+    }
+    let total: usize = symbols.len();
+    (
+        symbols,
+        named,
+        Some(format!(
+            "{CLUSTER_NAME_NOTE}: {named} of {total} instructions-table payloads carry a declared owning function",
+        )),
+    )
 }
 
 #[must_use]
@@ -372,12 +451,13 @@ fn disassemble_symtab_functions(
             .map_or(instructions.len(), |next: &&DartFunctionSymbol| next.offset);
         let size_limit: usize = symbol.offset.saturating_add(symbol.size as usize);
         let limit: usize = size_limit.min(next_offset);
+        let declared: Option<String> = (!symbol.name.is_empty()).then(|| symbol.name.clone());
         functions.push(super::disasm::disassemble_range(
             instructions,
             0,
             symbol.offset,
             limit,
-            Some(symbol.name.clone()),
+            declared,
         ));
     }
     let total_instructions: usize = functions
@@ -509,6 +589,7 @@ pub fn lift_functions(
         abi_resolved,
         function_count: functions.len(),
         named_function_count,
+        cluster_named_function_count: 0,
         structured_function_count,
         flat_fallback_count,
         functions,
@@ -1018,6 +1099,9 @@ impl SymbolIndex {
         let mut intervals: Vec<(u64, u64, String)> = Vec::with_capacity(symbols.len());
         for symbol in symbols {
             let start: u64 = symbol.offset as u64;
+            if symbol.name.is_empty() {
+                continue;
+            }
             exact.entry(start).or_insert_with(|| symbol.name.clone());
             if symbol.size > 0 {
                 intervals.push((start, start + symbol.size, symbol.name.clone()));

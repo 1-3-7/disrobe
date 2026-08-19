@@ -92,6 +92,13 @@ pub struct DartPatchClassBodyLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DartCodeTableLayout {
+    pub object_header_bytes: usize,
+    pub descriptor_bytes: usize,
+    pub entry_stride: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct DartDeclarationBodyLayouts {
     pub class: DartClassBodyLayout,
     pub function: DartFunctionBodyLayout,
@@ -114,6 +121,7 @@ pub struct DartPinnedLayout {
     pub instance_header_words: usize,
     pub word_32_parts: usize,
     pub declarations: DartDeclarationBodyLayouts,
+    pub code_table: DartCodeTableLayout,
 }
 
 const DART_3_12_2_DECLARATIONS: DartDeclarationBodyLayouts = DartDeclarationBodyLayouts {
@@ -284,6 +292,12 @@ const DART_3_12_2_CLUSTERS: &[DartClusterBodyEntry] = &[
     },
 ];
 
+const DART_3_12_2_CODE_TABLE: DartCodeTableLayout = DartCodeTableLayout {
+    object_header_bytes: 20,
+    descriptor_bytes: 12,
+    entry_stride: 8,
+};
+
 pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT: DartPinnedLayout = DartPinnedLayout {
     version_hash: DART_3_12_VERSION_HASH,
     features: DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES,
@@ -297,6 +311,7 @@ pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT: DartPinnedLayout = DartPinne
     instance_header_words: 2,
     word_32_parts: 2,
     declarations: DART_3_12_2_DECLARATIONS,
+    code_table: DART_3_12_2_CODE_TABLE,
 };
 
 pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT: DartPinnedLayout = DartPinnedLayout {
@@ -312,6 +327,7 @@ pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT: DartPinnedLayout = Dar
     instance_header_words: 2,
     word_32_parts: 2,
     declarations: DART_3_12_2_DECLARATIONS,
+    code_table: DART_3_12_2_CODE_TABLE,
 };
 
 pub const PINNED_DART_GRAPH_LAYOUTS: &[DartPinnedLayout] = &[
