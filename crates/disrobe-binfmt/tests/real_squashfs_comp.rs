@@ -8,6 +8,8 @@ use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::squashfs::{
     SquashfsCompression, SquashfsSuperblock, parse_squashfs_superblock,
 };
+use disrobe_binfmt::extract::extract_to_with_quota;
+use disrobe_binfmt::quota::ExtractionQuota;
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
 const FORMAT_DIR: &str = "squashfs-comp";
@@ -105,4 +107,82 @@ fn squashfs_lz4_recovers_members_byte_exact() {
 #[test]
 fn squashfs_lzo_recovers_members_byte_exact() {
     assert_compressor_recovers_members("lzo", SquashfsCompression::Lzo);
+}
+
+const REAL_TAGS: [&str; 5] = ["gzip", "xz", "zstd", "lzo", "lz4"];
+const EXTERNAL_TOOL_CLAIMS: [&str; 3] = ["external", "decoder", "unsquashfs"];
+
+const fn tight_quota() -> ExtractionQuota {
+    ExtractionQuota {
+        max_entries: 8,
+        max_total_uncompressed: 64 * 1024,
+        max_per_entry_uncompressed: 16,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    }
+}
+
+#[test]
+fn a_real_image_whose_regular_entries_all_hit_the_quota_keeps_its_quota_diagnosis() {
+    for tag in REAL_TAGS {
+        let image: Vec<u8> = load_image(tag);
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir(&format!("{tag}-quota"));
+        let result: ExtractionResult = extract_to_with_quota(
+            ContainerKind::Squashfs,
+            &image,
+            scratch.path(),
+            tight_quota(),
+        )
+        .unwrap_or_else(|error: disrobe_binfmt::Error| {
+            panic!(
+                "{tag}: a quota refusal must stay a per-entry violation rather than becoming a \
+                 whole-image failure, got {error}"
+            )
+        });
+        assert!(
+            result.entries.is_empty(),
+            "{tag}: no entry may be written once every regular member exceeds the quota"
+        );
+        assert_eq!(
+            result.integrity_violations.len(),
+            2,
+            "{tag}: both regular members must record a quota violation: {:?}",
+            result.integrity_violations
+        );
+        for line in &result.integrity_violations {
+            assert!(
+                line.starts_with("squashfs-quota "),
+                "{tag}: a quota refusal must keep its precise tag: {line}"
+            );
+            let folded: String = line.to_ascii_lowercase();
+            for claim in EXTERNAL_TOOL_CLAIMS {
+                assert!(
+                    !folded.contains(claim),
+                    "{tag}: a quota refusal must not blame a missing decoder: {line}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn every_real_compressor_extracts_in_process_without_a_violation() {
+    for tag in REAL_TAGS {
+        let image: Vec<u8> = load_image(tag);
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir(&format!("{tag}-clean"));
+        let result: ExtractionResult = extract_to(ContainerKind::Squashfs, &image, scratch.path())
+            .unwrap_or_else(|error: disrobe_binfmt::Error| {
+                panic!("{tag}: real image must extract in process: {error}")
+            });
+        assert_eq!(
+            result.entries.len(),
+            2,
+            "{tag}: both regular members must be written"
+        );
+        assert!(
+            result.integrity_violations.is_empty(),
+            "{tag}: a clean real image must record no violation: {:?}",
+            result.integrity_violations
+        );
+    }
 }

@@ -371,6 +371,21 @@ fn extract_oci_tarball(
     Ok(result)
 }
 
+fn squashfs_unmaterialized_reason(
+    files: &[crate::containers::SquashfsFile],
+    compression: crate::containers::squashfs::SquashfsCompression,
+) -> String {
+    let symlinks: usize = files
+        .iter()
+        .filter(|file: &&crate::containers::SquashfsFile| file.is_symlink)
+        .count();
+    format!(
+        "squashfs walked {} entries under compressor {compression:?} and wrote no regular file: \
+         {symlinks} of them are symlink entries, which this extractor records without materializing",
+        files.len()
+    )
+}
+
 fn squashfs_walk_to_disk(
     bytes: &[u8],
     base: usize,
@@ -419,10 +434,9 @@ fn squashfs_walk_to_disk(
         });
     }
     if entries_out.is_empty() && !walk.files.is_empty() && violations.is_empty() {
-        return Err(Error::Squashfs(format!(
-            "squashfs walked {} inodes but no regular file was written (compressor={:?}); lzo/lz4 squashfs need an external decoder",
-            walk.files.len(),
-            walk.superblock.compression
+        return Err(Error::Squashfs(squashfs_unmaterialized_reason(
+            &walk.files,
+            walk.superblock.compression,
         )));
     }
     Ok(ExtractionResult {
@@ -5993,6 +6007,83 @@ mod tests {
     use std::io::Write as _;
 
     use super::*;
+
+    fn squashfs_entry(path: &str, is_symlink: bool) -> crate::containers::SquashfsFile {
+        crate::containers::SquashfsFile {
+            path: path.to_owned(),
+            data: Vec::new(),
+            is_executable: false,
+            is_symlink,
+            symlink_target: if is_symlink {
+                Some("../target".to_owned())
+            } else {
+                None
+            },
+        }
+    }
+
+    const EXTERNAL_TOOL_CLAIMS: [&str; 6] = [
+        "external",
+        "decoder",
+        "unsquashfs",
+        "install",
+        "another tool",
+        "not supported",
+    ];
+
+    #[test]
+    fn a_symlink_only_squashfs_states_the_counts_and_claims_no_missing_decoder() {
+        for compression in [
+            crate::containers::squashfs::SquashfsCompression::Gzip,
+            crate::containers::squashfs::SquashfsCompression::Xz,
+            crate::containers::squashfs::SquashfsCompression::Zstd,
+            crate::containers::squashfs::SquashfsCompression::Lzma,
+            crate::containers::squashfs::SquashfsCompression::Lzo,
+            crate::containers::squashfs::SquashfsCompression::Lz4,
+        ] {
+            let files: Vec<crate::containers::SquashfsFile> = vec![
+                squashfs_entry("bin/sh", true),
+                squashfs_entry("bin/busybox", true),
+                squashfs_entry("usr/bin/env", true),
+            ];
+            let reason: String = squashfs_unmaterialized_reason(&files, compression);
+            assert!(
+                reason.contains("walked 3 entries"),
+                "the walked count must be stated: {reason}"
+            );
+            assert!(
+                reason.contains("3 of them are symlink entries"),
+                "the symlink count must be stated: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("{compression:?}")),
+                "the compressor must be named: {reason}"
+            );
+            let folded: String = reason.to_ascii_lowercase();
+            for claim in EXTERNAL_TOOL_CLAIMS {
+                assert!(
+                    !folded.contains(claim),
+                    "`{claim}` must not appear in a squashfs diagnostic for a codec this crate \
+                     decodes in process: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_squashfs_diagnostic_counts_symlinks_separately_from_the_walked_total() {
+        let files: Vec<crate::containers::SquashfsFile> = vec![
+            squashfs_entry("a.txt", false),
+            squashfs_entry("link-a", true),
+            squashfs_entry("link-b", true),
+        ];
+        let reason: String = squashfs_unmaterialized_reason(
+            &files,
+            crate::containers::squashfs::SquashfsCompression::Lzo,
+        );
+        assert!(reason.contains("walked 3 entries"), "{reason}");
+        assert!(reason.contains("2 of them are symlink entries"), "{reason}");
+    }
 
     fn temp_dir(suffix: &str) -> disrobe_core::scratch::ScratchDir {
         let purpose: String = format!("binfmt-extract-{suffix}");
