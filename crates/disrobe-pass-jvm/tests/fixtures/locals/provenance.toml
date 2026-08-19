@@ -1,0 +1,39 @@
+schema = "disrobe.jvm.local-naming-fixture/v1"
+source = "ParamProbe.java"
+source_sha256 = "5100be58a89ae9a829c46ccde4e2e87762cb7e26fc839a3a0d29347b738886d5"
+harness = "Harness.java"
+harness_sha256 = "81d52e13086c315faa14125d5aaa55b3a0bbef16a9adbfea909aa0a053592b34"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes ParamProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+notes = "ParamProbe writes a constant into a register that holds a declared parameter and then reads it after the join, which is the shape that separates the two names the renderer used for one register. LocalProbe covers a temporary that lives across a branch join and a category-two temporary; both need a hoisted declaration before their unit compiles, so they are graded structurally."
+behavioural_class = "ParamProbe"
+structural_class = "LocalProbe"
+
+[[artifact]]
+path = "ParamProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/ParamProbe.class classes/LocalProbe.class"
+sha256 = "0a45fc31fde46ed6b96239d9ecb3a8242ff26834196cbc70b85af3f61e971e0d"
+bytes = 1204
+
+[behavior]
+harness_main = "Harness.main"
+expected_stdout = "8\n6\n26\n31\n5\n6\n"

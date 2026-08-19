@@ -194,7 +194,7 @@ pub(crate) fn lift_insn(
                 .map_or_else(|| Expr::Opaque("?".to_string()), |&r| file.read(ctx, r));
             LiftOutcome::Statement(format!("return {}", value.render()))
         }
-        0x12..=0x19 => const_value(ctx, file, regs, insn),
+        0x12..=0x19 => const_value(file, regs, insn),
         0x1A | 0x1B => const_string(ctx, file, regs, insn),
         0x1C => const_class(ctx, file, regs, insn),
         0x1F => check_cast(ctx, file, regs, insn),
@@ -255,12 +255,7 @@ fn move_register(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16])
     }
 }
 
-fn const_value(
-    ctx: &MethodContext<'_>,
-    file: &mut RegisterFile,
-    regs: &[u16],
-    insn: &DalvikInsn,
-) -> LiftOutcome {
+fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> LiftOutcome {
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
@@ -276,12 +271,8 @@ fn const_value(
     } else {
         value.to_string()
     };
-    file.write_materialized(dest, Expr::Const(literal.clone()));
-    if ctx.inline_temporaries {
-        LiftOutcome::None
-    } else {
-        LiftOutcome::Statement(format!("{} = {literal}", lvalue(dest)))
-    }
+    file.write(dest, Expr::Const(literal));
+    LiftOutcome::None
 }
 
 fn const_string(
@@ -297,12 +288,8 @@ fn const_string(
         .index
         .and_then(|i| ctx.string_at(i))
         .map_or_else(|| "\"\"".to_string(), |s| format!("{s:?}"));
-    file.write_materialized(dest, Expr::Const(text.clone()));
-    if ctx.inline_temporaries {
-        LiftOutcome::None
-    } else {
-        LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
-    }
+    file.write(dest, Expr::Const(text));
+    LiftOutcome::None
 }
 
 fn const_class(
@@ -319,8 +306,8 @@ fn const_class(
         |value: &str| source_type(ctx, value),
     );
     let text: String = format!("{ty}.class");
-    file.write_materialized(dest, Expr::Const(text.clone()));
-    LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
+    file.write(dest, Expr::Const(text));
+    LiftOutcome::None
 }
 
 fn check_cast(
@@ -1187,10 +1174,6 @@ pub(crate) fn seed_block_registers(ctx: &MethodContext<'_>, file: &mut RegisterF
 
 const fn is_category_two(descriptor: &str) -> bool {
     matches!(descriptor.as_bytes().first(), Some(b'J' | b'D'))
-}
-
-fn lvalue(reg: u16) -> String {
-    format!("var{reg}")
 }
 
 const fn cast_target(op: u8) -> &'static str {
