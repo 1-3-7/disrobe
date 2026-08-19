@@ -786,9 +786,149 @@ fn lift_method(
     };
     let mut out: String = String::new();
     render_region(&mut render, &root, &mut out, 2);
+    let declarations: String = temporary_declarations(dex, &built.insns, &out);
     MethodBody {
-        text: format!("{blackobf_note}{out}"),
+        text: format!("{blackobf_note}{declarations}{out}"),
         fully_lifted: render.fully_lifted,
+    }
+}
+
+fn assigned_temporaries(body: &str) -> std::collections::BTreeSet<u16> {
+    let mut assigned: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
+    for line in body.lines() {
+        let trimmed: &str = line.trim_start();
+        let Some(rest): Option<&str> = trimmed.strip_prefix("var") else {
+            continue;
+        };
+        let Some((digits, _)): Option<(&str, &str)> = rest.split_once(" = ") else {
+            continue;
+        };
+        if let Ok(register) = digits.parse::<u16>() {
+            assigned.insert(register);
+        }
+    }
+    assigned
+}
+
+fn temporary_declarations(dex: &DexFile, insns: &[DalvikInsn], body: &str) -> String {
+    let assigned: std::collections::BTreeSet<u16> = assigned_temporaries(body);
+    if assigned.is_empty() {
+        return String::new();
+    }
+    let inferred: BTreeMap<u16, Option<String>> = temporary_types(dex, insns);
+    let mut out: String = String::new();
+    for register in assigned {
+        let Some(Some(rendered)) = inferred.get(&register) else {
+            continue;
+        };
+        let _ = writeln!(out, "        {rendered} var{register};");
+    }
+    out
+}
+
+fn temporary_types(dex: &DexFile, insns: &[DalvikInsn]) -> BTreeMap<u16, Option<String>> {
+    let mut types: BTreeMap<u16, Option<String>> = BTreeMap::new();
+    let mut pending_return: Option<String> = None;
+    for insn in insns {
+        if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
+            pending_return = insn
+                .index
+                .and_then(|index: u32| dex.method_ids.get(index as usize))
+                .map(|method: &crate::dex::MethodId| method.proto.return_type.clone());
+            continue;
+        }
+        let produced: Option<(u16, String)> =
+            destination_type(dex, insn, pending_return.as_deref());
+        if !matches!(insn.op, 0x0A..=0x0C) {
+            pending_return = None;
+        }
+        let Some((register, rendered)) = produced else {
+            if let Some(&register) = insn.regs.first()
+                && writes_first_register(insn.op)
+            {
+                types.insert(register, None);
+            }
+            continue;
+        };
+        match types.get(&register) {
+            Some(Some(seen)) if *seen != rendered => {
+                types.insert(register, None);
+            }
+            Some(None) => {}
+            _ => {
+                types.insert(register, Some(rendered));
+            }
+        }
+    }
+    types
+}
+
+const fn writes_first_register(op: u8) -> bool {
+    matches!(
+        op,
+        0x01..=0x0D
+            | 0x12..=0x1C
+            | 0x1F..=0x23
+            | 0x2D..=0x31
+            | 0x44..=0x4A
+            | 0x52..=0x58
+            | 0x60..=0x66
+            | 0x7B..=0xE2
+    )
+}
+
+fn field_type(dex: &DexFile, insn: &DalvikInsn) -> Option<String> {
+    let field: &crate::dex::FieldId = dex.field_ids.get(insn.index? as usize)?;
+    Some(descriptor::parse_field(&field.type_name)?.render())
+}
+
+fn declared_type(descriptor_text: &str) -> Option<String> {
+    Some(descriptor::parse_field(descriptor_text)?.render())
+}
+
+fn destination_type(
+    dex: &DexFile,
+    insn: &DalvikInsn,
+    pending_return: Option<&str>,
+) -> Option<(u16, String)> {
+    let &register: &u16 = insn.regs.first()?;
+    let rendered: String = match insn.op {
+        0x0A..=0x0C => declared_type(pending_return?)?,
+        0x0D => "Throwable".to_owned(),
+        0x12..=0x15 => "int".to_owned(),
+        0x16..=0x19 => "long".to_owned(),
+        0x1A | 0x1B => "String".to_owned(),
+        0x1C => "Class".to_owned(),
+        0x1F | 0x22 => declared_type(dex.type_names.get(insn.index? as usize)?)?,
+        0x20 => "boolean".to_owned(),
+        0x21 | 0x44 | 0x2D..=0x31 => "int".to_owned(),
+        0x45 => "long".to_owned(),
+        0x47 => "boolean".to_owned(),
+        0x48 => "byte".to_owned(),
+        0x49 => "char".to_owned(),
+        0x4A => "short".to_owned(),
+        0x52..=0x58 | 0x60..=0x66 => field_type(dex, insn)?,
+        0x7B | 0x7C | 0x84 | 0x87 | 0x8A | 0x8D..=0x8F => scalar_cast_type(insn.op).to_owned(),
+        0x7D | 0x7E | 0x81 | 0x85 | 0x88 => "long".to_owned(),
+        0x7F | 0x82 | 0x86 | 0x8B => "float".to_owned(),
+        0x80 | 0x83 | 0x89 | 0x8C => "double".to_owned(),
+        0x90..=0x97 | 0xB0..=0xB7 | 0xD0..=0xE2 => "int".to_owned(),
+        0x9B..=0xA2 | 0xBB..=0xC2 => "long".to_owned(),
+        0xA6..=0xAA | 0xC6..=0xCA => "float".to_owned(),
+        0xAB..=0xAF | 0xCB..=0xCF => "double".to_owned(),
+        0x98..=0x9A | 0xB8..=0xBA => "int".to_owned(),
+        0xA3..=0xA5 | 0xC3..=0xC5 => "long".to_owned(),
+        _ => return None,
+    };
+    Some((register, rendered))
+}
+
+const fn scalar_cast_type(op: u8) -> &'static str {
+    match op {
+        0x8D => "byte",
+        0x8E => "char",
+        0x8F => "short",
+        _ => "int",
     }
 }
 

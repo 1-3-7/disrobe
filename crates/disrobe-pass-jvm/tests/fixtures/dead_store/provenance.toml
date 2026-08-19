@@ -2,7 +2,7 @@ schema = "disrobe.jvm.dead-store-fixture/v1"
 source = "AccumulateProbe.java"
 source_sha256 = "ea72b3b5e240ed4c7a2083cfb8b7f8dea7b101db20f047e815054cd74b8cae55"
 harness = "Harness.java"
-harness_sha256 = "56ed0c43af32cbdee37c2f0478385dbbdc42853753b9a992c8bd0534fb36eef3"
+harness_sha256 = "ba964ce60b23cd060be3ce7f336e10ed91b1b1f93d7749b484822b249106f183"
 
 [javac]
 vendor = "Eclipse Temurin"
@@ -21,9 +21,8 @@ url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
 android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
 
 [shapes]
-notes = "Every method folds its result back into a register that is also one of its own operands, which is what javac and D8 emit for a left-associative accumulation. AccumulateProbe takes only parameters and touches no field, so its recovered unit compiles and can be graded on computed values: accumulate covers three-address addition, scale covers multiply then add, widen covers category-two arithmetic, and negate covers unary. CastProbe carries the long-to-int cast and a two-operand fold, both of which need a scratch register that the emitter writes without declaring, so that class is graded structurally rather than by recompilation."
-behavioural_class = "AccumulateProbe"
-structural_class = "CastProbe"
+notes = "Every method folds its result back into a register that is also one of its own operands, which is what javac and D8 emit for a left-associative accumulation. AccumulateProbe takes only parameters and touches no field, so its recovered unit compiles and can be graded on computed values: accumulate covers three-address addition, scale covers multiply then add, widen covers category-two arithmetic, and negate covers unary. CastProbe carries the long-to-int cast and a two-operand fold. Both needed a scratch register that the emitter used to write without declaring; once the temporary is declared and the dead const store is gone, that class compiles too, so both classes are graded on computed values."
+behavioural_classes = ["AccumulateProbe", "CastProbe"]
 
 [[artifact]]
 path = "AccumulateProbe-min21.dex"
@@ -36,4 +35,4 @@ bytes = 1140
 
 [behavior]
 harness_main = "Harness.main"
-expected_stdout = "10\n0\n18\n36\n-8\n"
+expected_stdout = "10\n0\n18\n36\n-8\n6\n65\n"

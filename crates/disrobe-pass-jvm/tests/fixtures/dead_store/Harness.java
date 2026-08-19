@@ -5,5 +5,7 @@ public final class Harness {
         System.out.println(AccumulateProbe.scale(3, 5));
         System.out.println(AccumulateProbe.widen(6L, 7L));
         System.out.println(AccumulateProbe.negate(9));
+        System.out.println(CastProbe.narrow(5L));
+        System.out.println(CastProbe.mixed(9, 4));
     }
 }

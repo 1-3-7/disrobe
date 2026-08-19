@@ -6,5 +6,11 @@ public final class Harness {
         System.out.println(ParamProbe.paramConstChain(-2, 9));
         System.out.println(ParamProbe.paramTextLength("ab", 1));
         System.out.println(ParamProbe.paramTextLength("abcdef", 0));
+        System.out.println(TempProbe.wideTemp(4L, 1));
+        System.out.println(TempProbe.wideTemp(4L, 0));
+        System.out.println(TempProbe.intTemp(5, 1));
+        System.out.println(TempProbe.intTemp(5, 0));
+        System.out.println(TempProbe.textTemp("  pad  ", 1));
+        System.out.println(TempProbe.textTemp("  pad  ", 0));
     }
 }

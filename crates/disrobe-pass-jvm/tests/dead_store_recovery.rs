@@ -15,7 +15,7 @@ const HARNESS: &str = include_str!("fixtures/dead_store/Harness.java");
 const PROVENANCE: &str = include_str!("fixtures/dead_store/provenance.toml");
 const DEX_SHA256: &str = "bf496dcb806b98ece649eadbec6e4080c075334c8f418ac2ffee07f2f777438c";
 const SOURCE_SHA256: &str = "ea72b3b5e240ed4c7a2083cfb8b7f8dea7b101db20f047e815054cd74b8cae55";
-const EXPECTED_STDOUT: &str = "10\n0\n18\n36\n-8\n";
+const EXPECTED_STDOUT: &str = "10\n0\n18\n36\n-8\n6\n65\n";
 const BEHAVIOURAL_UNIT: &str = "AccumulateProbe.java";
 const STRUCTURAL_UNIT: &str = "CastProbe.java";
 const BEHAVIOURAL_METHODS: [&str; 4] = ["accumulate", "scale", "widen", "negate"];
@@ -56,26 +56,29 @@ fn self_referencing_assignments(source: &str) -> Vec<String> {
     offenders
 }
 
-fn compile_and_run(label: &str, probe: &str) -> Vec<u8> {
+fn compile_and_run(label: &str, units: &[(&str, &str)]) -> Vec<u8> {
     let javac: PathBuf =
         common::find_on_path("javac").expect("the dead-store gate requires javac on PATH");
     let java: PathBuf =
         common::find_on_path("java").expect("the dead-store gate requires java on PATH");
     let scratch: ScratchDir = ScratchDir::create(label).expect("create Java scratch directory");
-    let probe_path: PathBuf = scratch.path().join("AccumulateProbe.java");
     let harness_path: PathBuf = scratch.path().join("Harness.java");
-    std::fs::write(&probe_path, probe).expect("write the probe");
     std::fs::write(&harness_path, HARNESS).expect("write the harness");
+    let mut paths: Vec<PathBuf> = vec![harness_path];
+    for (name, source) in units {
+        let path: PathBuf = scratch.path().join(name);
+        std::fs::write(&path, source).expect("write a unit");
+        paths.push(path);
+    }
     let compiled: Output = Command::new(javac)
         .arg("-d")
         .arg(scratch.path())
-        .arg(&probe_path)
-        .arg(&harness_path)
+        .args(&paths)
         .output()
         .expect("run javac");
     assert!(
         compiled.status.success(),
-        "javac rejected {label}:\n{}\n----\n{probe}",
+        "javac rejected {label}:\n{}\n----\n{units:?}",
         String::from_utf8_lossy(&compiled.stderr)
     );
     let executed: Output = Command::new(java)
@@ -93,12 +96,7 @@ fn compile_and_run(label: &str, probe: &str) -> Vec<u8> {
 }
 
 fn authored_reference(label: &str) -> Vec<u8> {
-    let stripped: String = AUTHORED
-        .split("\nfinal class CastProbe {")
-        .next()
-        .expect("the authored file splits at the second class")
-        .to_owned();
-    compile_and_run(label, &stripped)
+    compile_and_run(label, &[("AccumulateProbe.java", AUTHORED)])
 }
 
 #[test]
@@ -129,13 +127,20 @@ fn fixture_folds_every_result_back_into_an_operand_register() {
 fn the_recovered_methods_compute_the_authored_values() {
     let reference: Vec<u8> = authored_reference("dead-store-authored-reference");
     let sources: DecompiledDex = recovered();
-    let unit: String = recovered_unit(&sources, BEHAVIOURAL_UNIT);
-    let produced: Vec<u8> = compile_and_run("dead-store-recovered", &unit);
+    let accumulate: String = recovered_unit(&sources, BEHAVIOURAL_UNIT);
+    let cast: String = recovered_unit(&sources, STRUCTURAL_UNIT);
+    let produced: Vec<u8> = compile_and_run(
+        "dead-store-recovered",
+        &[
+            ("AccumulateProbe.java", accumulate.as_str()),
+            ("CastProbe.java", cast.as_str()),
+        ],
+    );
     assert_eq!(
         String::from_utf8_lossy(&produced).replace("\r\n", "\n"),
         String::from_utf8_lossy(&reference).replace("\r\n", "\n"),
         "every recovered method must compute what the authored method computes; the recovered \
-         unit was:\n{unit}"
+         units were:\n{accumulate}\n{cast}"
     );
 }
 
@@ -155,14 +160,14 @@ fn no_recovered_statement_reassigns_a_name_its_own_value_reads() {
 }
 
 #[test]
-fn the_structural_class_still_carries_the_shapes_it_is_there_to_cover() {
+fn the_cast_class_still_carries_the_shapes_it_is_there_to_cover() {
     let sources: DecompiledDex = recovered();
     let unit: String = recovered_unit(&sources, STRUCTURAL_UNIT);
     for method in STRUCTURAL_METHODS {
         assert!(
             unit.contains(&format!(" {method}(")),
-            "{STRUCTURAL_UNIT} must still declare {method}, or the structural grade covers \
-             nothing:\n{unit}"
+            "{STRUCTURAL_UNIT} must still declare {method}, or the cast and two-operand fold are no \
+             longer covered:\n{unit}"
         );
     }
     assert!(
