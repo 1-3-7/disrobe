@@ -71,7 +71,29 @@ pub fn tool_or_unmeasured(candidates: &[&'static str], graded: &str) -> Option<S
     None
 }
 
+pub fn crate_fixture_path(rel: &str) -> PathBuf {
+    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("tests");
+    p.push("fixtures");
+    p.push(rel);
+    p
+}
+
+pub fn crate_fixture_or_fail(rel: &str) -> Vec<u8> {
+    let p: PathBuf = crate_fixture_path(rel);
+    match std::fs::read(&p) {
+        Ok(bytes) => bytes,
+        Err(error) => panic!(
+            "committed fixture {} is the graded reference for this suite and could not be read \
+             ({error}); restore it from git rather than skipping the measurement",
+            p.display()
+        ),
+    }
+}
+
 pub const ZIG_ELF: &str = "zig/hello.zig.elf";
+pub const ZIG_RELEASEFAST_ELF: &str = "zig_modes/arith_releasefast_x86_64_linux.elf";
+pub const ZIG_MODES_SOURCE: &str = "zig_modes/arith.zig";
 pub const NIM_ELF: &str = "nim/hello.nim.elf";
 pub const CRYSTAL_PE: &str = "crystal/hello.cr.exe";
 pub const D_OBJ_ELF: &str = "d/hello.d.o.elf";

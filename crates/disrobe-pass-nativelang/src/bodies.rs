@@ -377,8 +377,11 @@ fn body_status(found: &NativeRecoveredFunction, retained: &mut u64, budget: u64)
     let rust: RustBody = match found.rust_source.as_ref() {
         None => RustBody::NotEmitted,
         Some(source) if source.trim().is_empty() => RustBody::Rejected(BodyRejection::EmptySource),
-        Some(source) => first_undeclared_rust_call(source)
-            .map_or_else(|| RustBody::Emitted(source.clone()), RustBody::Rejected),
+        Some(source) => match complete_rust_declarations(source) {
+            Err(rejection) => RustBody::Rejected(rejection),
+            Ok(completed) => first_undeclared_rust_call(&completed)
+                .map_or(RustBody::Emitted(completed), RustBody::Rejected),
+        },
     };
     let c_bytes: u64 = found.source.len() as u64;
     let rust_bytes: u64 = match &rust {
@@ -424,9 +427,6 @@ const C_KEYWORDS: &[&str] = &[
     "_Static_assert",
     "_Thread_local",
     "__attribute__",
-    "__builtin_bswap16",
-    "__builtin_bswap32",
-    "__builtin_bswap64",
     "__int128",
     "__restrict",
     "auto",
@@ -475,6 +475,21 @@ const C_KEYWORDS: &[&str] = &[
     "void",
     "volatile",
     "while",
+];
+
+const C_COMPILER_BUILTINS: &[&str] = &[
+    "__builtin_bswap16",
+    "__builtin_bswap32",
+    "__builtin_bswap64",
+    "__builtin_clz",
+    "__builtin_clzll",
+    "__builtin_fabs",
+    "__builtin_fabsf",
+    "__builtin_fabsf16",
+    "__builtin_offsetof",
+    "__builtin_sqrt",
+    "__builtin_sqrtf",
+    "__builtin_trap",
 ];
 
 const C_TYPE_TOKENS: &[&str] = &[
@@ -668,7 +683,7 @@ fn first_unbound_identifier(source: &str) -> Option<BodyRejection> {
     let mut used: Vec<&str> = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         let CToken::Ident(name) = token else { continue };
-        if C_KEYWORDS.contains(&name.as_str()) {
+        if C_KEYWORDS.contains(&name.as_str()) || C_COMPILER_BUILTINS.contains(&name.as_str()) {
             continue;
         }
         if matches!(
@@ -711,9 +726,25 @@ const RUST_CALL_KEYWORDS: &[&str] = &[
 ];
 
 fn first_undeclared_rust_call(source: &str) -> Option<BodyRejection> {
+    match undeclared_rust_calls(source) {
+        Err(rejection) => Some(rejection),
+        Ok(calls) => calls
+            .into_iter()
+            .next()
+            .map(|call: SiblingCall| BodyRejection::UnboundIdentifier(call.name)),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SiblingCall {
+    name: String,
+    arity: usize,
+}
+
+fn undeclared_rust_calls(source: &str) -> Result<Vec<SiblingCall>, BodyRejection> {
     let scan: CTokens = tokenize_c(source);
     if scan.truncated {
-        return Some(BodyRejection::GateBudgetExhausted);
+        return Err(BodyRejection::GateBudgetExhausted);
     }
     let tokens: Vec<CToken> = scan.tokens;
     let mut declared: BTreeSet<String> = BTreeSet::new();
@@ -724,6 +755,8 @@ fn first_undeclared_rust_call(source: &str) -> Option<BodyRejection> {
             declared.insert(name.clone());
         }
     }
+    let mut order: Vec<SiblingCall> = Vec::new();
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     for (index, token) in tokens.iter().enumerate() {
         let CToken::Ident(name) = token else { continue };
         if RUST_CALL_KEYWORDS.contains(&name.as_str()) || declared.contains(name.as_str()) {
@@ -744,9 +777,72 @@ fn first_undeclared_rust_call(source: &str) -> Option<BodyRejection> {
         if qualified {
             continue;
         }
-        return Some(BodyRejection::UnboundIdentifier(name.clone()));
+        let Some(arity): Option<usize> = call_arity(&tokens, index.saturating_add(1)) else {
+            return Err(BodyRejection::UnboundIdentifier(name.clone()));
+        };
+        match seen.get(name.as_str()) {
+            Some(previous) if *previous != arity => {
+                return Err(BodyRejection::UnboundIdentifier(name.clone()));
+            }
+            Some(_) => {}
+            None => {
+                seen.insert(name.clone(), arity);
+                order.push(SiblingCall {
+                    name: name.clone(),
+                    arity,
+                });
+            }
+        }
+    }
+    Ok(order)
+}
+
+fn call_arity(tokens: &[CToken], open_paren: usize) -> Option<usize> {
+    let mut depth: usize = 0;
+    let mut commas: usize = 0;
+    let mut empty: bool = true;
+    let mut index: usize = open_paren;
+    while let Some(token) = tokens.get(index) {
+        match token {
+            CToken::Punct('(' | '[' | '{') => depth = depth.saturating_add(1),
+            CToken::Punct(')' | ']' | '}') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(if empty { 0 } else { commas.saturating_add(1) });
+                }
+                empty = false;
+            }
+            CToken::Punct(',') if depth == 1 => {
+                commas = commas.saturating_add(1);
+                empty = false;
+            }
+            CToken::Ident(_) | CToken::Literal | CToken::Punct(_) => empty = false,
+        }
+        index = index.saturating_add(1);
     }
     None
+}
+
+fn complete_rust_declarations(source: &str) -> Result<String, BodyRejection> {
+    let calls: Vec<SiblingCall> = undeclared_rust_calls(source)?;
+    if calls.is_empty() {
+        return Ok(source.to_owned());
+    }
+    let mut block: String = String::from("extern \"C\" {\n");
+    for call in &calls {
+        let params: String = (0..call.arity)
+            .map(|index: usize| format!("a{index}: u64"))
+            .collect::<Vec<String>>()
+            .join(", ");
+        block.push_str("    fn ");
+        block.push_str(&call.name);
+        block.push('(');
+        block.push_str(&params);
+        block.push_str(") -> u64;\n");
+    }
+    block.push_str("}\n");
+    block.push_str(source);
+    Ok(block)
 }
 
 fn emitted_identifier(name: &str, address: u64, used: &mut BTreeSet<String>) -> String {
@@ -765,7 +861,11 @@ fn emitted_identifier(name: &str, address: u64, used: &mut BTreeSet<String>) -> 
         } else {
             candidate != name
         };
-    if repaired || C_KEYWORDS.contains(&candidate.as_str()) || used.contains(&candidate) {
+    if repaired
+        || C_KEYWORDS.contains(&candidate.as_str())
+        || C_COMPILER_BUILTINS.contains(&candidate.as_str())
+        || used.contains(&candidate)
+    {
         candidate = format!("{candidate}_{address:x}");
     }
     while used.contains(&candidate) {
@@ -1034,6 +1134,152 @@ mod tests {
                             &view->field_0, 8);\n    goto recover_L6;\n    recover_L6: ;\n    \
                             return a0;\n}\n";
         assert_eq!(first_unbound_identifier(source), None);
+    }
+
+    #[test]
+    fn compiler_builtins_need_no_declaration_in_a_recovered_body() {
+        let source: &str = "#include <stdint.h>\nuint64_t f(uint64_t a0) {\n    if (a0 == 0) { \
+                            __builtin_trap(); }\n    return (uint64_t)__builtin_clzll(a0);\n}\n";
+        assert_eq!(first_unbound_identifier(source), None);
+    }
+
+    #[test]
+    fn an_unknown_double_underscore_name_is_still_unbound() {
+        let source: &str = "#include <stdint.h>\nuint64_t f(uint64_t a0) {\n    return \
+                            __builtin_not_a_real_builtin(a0);\n}\n";
+        assert_eq!(
+            first_unbound_identifier(source),
+            Some(BodyRejection::UnboundIdentifier(
+                "__builtin_not_a_real_builtin".to_owned()
+            ))
+        );
+    }
+
+    fn rust_sources_under(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries: std::fs::ReadDir = std::fs::read_dir(root).unwrap_or_else(|error| {
+            panic!(
+                "the builtin allowlist is graded against {}, which must be readable: {error}",
+                root.display()
+            )
+        });
+        for entry in entries {
+            let path: std::path::PathBuf = entry.expect("read a directory entry").path();
+            if path.is_dir() {
+                rust_sources_under(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn the_builtin_allowlist_covers_every_builtin_the_decompiler_can_emit() {
+        let root: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("disrobe-pass-native")
+            .join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        rust_sources_under(&root, &mut files);
+        assert!(
+            files.len() > 10,
+            "the decompiler crate must expose its sources for the builtin drift grade, found {}",
+            files.len()
+        );
+        files.sort();
+        let mut found: BTreeSet<String> = BTreeSet::new();
+        for file in &files {
+            let text: String = std::fs::read_to_string(file)
+                .unwrap_or_else(|error| panic!("read {}: {error}", file.display()));
+            let bytes: &[u8] = text.as_bytes();
+            let needle: &[u8] = b"__builtin_";
+            let mut index: usize = 0;
+            while let Some(offset) = bytes
+                .get(index..)
+                .and_then(|rest: &[u8]| rest.windows(needle.len()).position(|w| w == needle))
+            {
+                let start: usize = index + offset;
+                let mut end: usize = start + needle.len();
+                while bytes
+                    .get(end)
+                    .is_some_and(|b: &u8| b.is_ascii_alphanumeric() || *b == b'_')
+                {
+                    end += 1;
+                }
+                if let Some(name) = text.get(start..end) {
+                    found.insert(name.to_owned());
+                }
+                index = end;
+            }
+        }
+        assert!(
+            found.len() >= 8,
+            "the drift grade must see the builtins the decompiler emits, saw {found:?}"
+        );
+        for name in &found {
+            assert!(
+                C_COMPILER_BUILTINS
+                    .iter()
+                    .any(|known: &&str| known.starts_with(name.as_str())),
+                "{name} is emitted by the decompiler but the gate would report it unbound; add it \
+                 to C_COMPILER_BUILTINS"
+            );
+        }
+    }
+
+    #[test]
+    fn dropped_sibling_declarations_are_restored_before_the_rust_gate() {
+        let source: &str = "#[allow(dead_code)]\npub fn caller(a0: u64) -> u64 {\n    let mut \
+                            r_rax: u64 = a0;\n    r_rax = unsafe { nimCopyMem(r_rax, a0, a0, a0, \
+                            a0) };\n    r_rax = unsafe { nimZeroMem(r_rax, a0) };\n    r_rax = \
+                            unsafe { nimCopyMem(r_rax, a0, a0, a0, a0) };\n    r_rax\n}\n";
+        let completed: String =
+            complete_rust_declarations(source).expect("the sibling arities agree");
+        assert!(
+            completed.starts_with(
+                "extern \"C\" {\n    fn nimCopyMem(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) \
+                 -> u64;\n    fn nimZeroMem(a0: u64, a1: u64) -> u64;\n}\n"
+            ),
+            "{completed}"
+        );
+        assert!(completed.ends_with(source), "{completed}");
+        assert_eq!(first_undeclared_rust_call(&completed), None);
+    }
+
+    #[test]
+    fn a_sibling_called_at_two_arities_is_refused_rather_than_guessed() {
+        let source: &str = "pub fn caller(a0: u64) -> u64 {\n    let mut r_rax: u64 = unsafe { \
+                            helper(a0) };\n    r_rax = unsafe { helper(a0, r_rax) };\n    \
+                            r_rax\n}\n";
+        assert_eq!(
+            complete_rust_declarations(source),
+            Err(BodyRejection::UnboundIdentifier("helper".to_owned()))
+        );
+    }
+
+    #[test]
+    fn nested_call_arguments_do_not_inflate_the_restored_arity() {
+        let source: &str = "pub fn caller(a0: u64) -> u64 {\n    unsafe { outer(inner(a0, a0), \
+                            a0) }\n}\n";
+        let completed: String = complete_rust_declarations(source).expect("arities are consistent");
+        assert!(
+            completed.contains("fn outer(a0: u64, a1: u64) -> u64;"),
+            "{completed}"
+        );
+        assert!(
+            completed.contains("fn inner(a0: u64, a1: u64) -> u64;"),
+            "{completed}"
+        );
+    }
+
+    #[test]
+    fn a_body_with_no_undeclared_call_is_left_byte_identical() {
+        let source: &str = "extern \"C\" {\n    fn sub_10(a0: u64) -> u64;\n}\npub fn caller(a0: \
+                            u64) -> u64 {\n    unsafe { sub_10(a0) }\n}\n";
+        assert_eq!(
+            complete_rust_declarations(source).as_deref(),
+            Ok(source),
+            "an already self-contained body must not be rewritten"
+        );
     }
 
     #[test]

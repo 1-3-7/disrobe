@@ -1,0 +1,38 @@
+schema = "disrobe.nativelang.zig-build-modes/v1"
+producer = "zig 0.16.0"
+producer_url = "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
+source = "arith.zig"
+source_sha256 = "f4213e2e1169e469990088c378ee33c299704756d2af6ae1a4163b451e5017a2"
+declared_input = "zig 0.16.0 ELF64 x86-64 System V, optimize mode ReleaseFast, safety checks off"
+
+[[artifacts]]
+path = "arith_releasefast_x86_64_linux.elf"
+sha256 = "a668dc01b7464e8119923897f711445994e491f2135e21282851890a3a2ec667"
+build_mode = "ReleaseFast"
+target = "x86_64-linux-gnu"
+build_command = "zig build-exe arith.zig -OReleaseFast -target x86_64-linux-gnu -femit-bin=arith_releasefast_x86_64_linux.elf"
+post_build_command = "llvm-objcopy --strip-debug arith_releasefast_x86_64_linux.elf"
+post_build_reason = "the zig 0.16.0 debug sections record the absolute path of the compiler installation; removing them keeps the symbol table the carver reads and drops the build host path"
+safety_checks = false
+absent_markers = ["panicOutOfBounds", "panicUnwrap"]
+present_markers = ["start.posixCallMainAndExit", "compiler_rt"]
+graded_functions = [
+  "dr_mix",
+  "dr_gcd",
+  "dr_clamp",
+  "dr_popcount",
+  "dr_sum_to",
+  "dr_select",
+  "dr_abs_diff",
+]
+abstaining_functions = ["dr_rotl"]
+
+[[companion_artifacts]]
+path = "../../../../../corpus/native/zig/hello.zig.elf"
+sha256 = "b85fa149b49bdcf1ec9011d92b55dde9d9cf308d8bc28e83d28323add8852994"
+producer = "zig 0.13.0"
+build_mode = "safety-checked"
+target = "x86_64-linux"
+safety_checks = true
+present_markers = ["panicOutOfBounds", "panicUnwrap"]
+role = "the second zig build mode the body grade measures"

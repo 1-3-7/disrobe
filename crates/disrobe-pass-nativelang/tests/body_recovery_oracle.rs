@@ -28,29 +28,29 @@ const FIXTURES: &[Fixture] = &[
         tag: "nim-elf",
         relative_path: NIM_ELF,
         language: "nim",
-        recovered_floor: 36,
-        rust_floor: 27,
+        recovered_floor: 75,
+        rust_floor: 75,
     },
     Fixture {
         tag: "zig-elf",
         relative_path: ZIG_ELF,
         language: "zig",
-        recovered_floor: 311,
-        rust_floor: 200,
+        recovered_floor: 312,
+        rust_floor: 309,
     },
     Fixture {
         tag: "crystal-pe",
         relative_path: CRYSTAL_PE,
         language: "crystal",
-        recovered_floor: 15,
-        rust_floor: 15,
+        recovered_floor: 19,
+        rust_floor: 19,
     },
     Fixture {
         tag: "d-pe",
         relative_path: D_PE,
         language: "d",
-        recovered_floor: 76,
-        rust_floor: 60,
+        recovered_floor: 86,
+        rust_floor: 84,
     },
 ];
 
@@ -164,8 +164,8 @@ fn every_recovered_pseudo_c_body_compiles_under_a_real_c_compiler() {
         drop(std::fs::remove_dir_all(&dir));
     }
     assert!(
-        graded_total >= 438,
-        "the pseudo-C grade must cover at least 438 real bodies, covered {graded_total}"
+        graded_total >= 492,
+        "the pseudo-C grade must cover at least 492 real bodies, covered {graded_total}"
     );
 }
 
@@ -236,8 +236,8 @@ fn every_recovered_pseudo_rust_body_compiles_under_rustc() {
         drop(std::fs::remove_dir_all(&dir));
     }
     assert!(
-        graded_total >= 352,
-        "the pseudo-Rust grade must cover at least 352 real bodies, covered {graded_total}"
+        graded_total >= 487,
+        "the pseudo-Rust grade must cover at least 487 real bodies, covered {graded_total}"
     );
 }
 
