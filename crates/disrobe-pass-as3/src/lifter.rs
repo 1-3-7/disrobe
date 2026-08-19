@@ -1504,6 +1504,8 @@ fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSe
 
 const STACK_SENTINEL_DEPTH: usize = 256;
 const MAX_TERNARY_FOLDS: usize = 64;
+const MAX_NEGATION_DEPTH: usize = 32;
+const MAX_OR_GUARD_TESTS: usize = 64;
 const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
 const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
 const SCOPE_HEIGHT_CONFLICT_MARKER: &str = "unreconciled scope height";
@@ -3193,29 +3195,52 @@ fn expr_has_effect(e: &Expr) -> bool {
     )
 }
 
-fn negate(cond: Expr) -> Expr {
-    if let Expr::Binary { op, lhs, rhs } = &cond {
-        let flipped: Option<&'static str> = match *op {
-            "==" => Some("!="),
-            "!=" => Some("=="),
-            "===" => Some("!=="),
-            "!==" => Some("==="),
-            "<" => Some(">="),
-            "<=" => Some(">"),
-            ">" => Some("<="),
-            ">=" => Some("<"),
-            _ => None,
-        };
-        if let Some(new_op) = flipped {
-            return Expr::Binary {
-                op: new_op,
-                lhs: lhs.clone(),
-                rhs: rhs.clone(),
-            };
-        }
+fn negate_without_introducing_not(cond: &Expr, depth: usize) -> Option<Expr> {
+    if depth == 0 {
+        return None;
     }
-    if let Expr::Unary { op: "!", operand } = cond {
-        return *operand;
+    match cond {
+        Expr::BoolLit(value) => Some(Expr::BoolLit(!value)),
+        Expr::Unary { op: "!", operand } => Some((**operand).clone()),
+        Expr::Binary { op, lhs, rhs } => {
+            let flipped: Option<&'static str> = match *op {
+                "==" => Some("!="),
+                "!=" => Some("=="),
+                "===" => Some("!=="),
+                "!==" => Some("==="),
+                "<" => Some(">="),
+                "<=" => Some(">"),
+                ">" => Some("<="),
+                ">=" => Some("<"),
+                _ => None,
+            };
+            if let Some(new_op) = flipped {
+                return Some(Expr::Binary {
+                    op: new_op,
+                    lhs: lhs.clone(),
+                    rhs: rhs.clone(),
+                });
+            }
+            let dual: &'static str = match *op {
+                "&&" => "||",
+                "||" => "&&",
+                _ => return None,
+            };
+            let left: Expr = negate_without_introducing_not(lhs, depth - 1)?;
+            let right: Expr = negate_without_introducing_not(rhs, depth - 1)?;
+            Some(Expr::Binary {
+                op: dual,
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn negate(cond: Expr) -> Expr {
+    if let Some(negated) = negate_without_introducing_not(&cond, MAX_NEGATION_DEPTH) {
+        return negated;
     }
     Expr::Unary {
         op: "!",
@@ -3234,6 +3259,120 @@ fn label_ref_count(stmts: &[Stmt], label: usize) -> usize {
             )
         })
         .count()
+}
+
+fn or_guard_shared_target(stmts: &[Stmt], index: usize) -> Option<(usize, usize)> {
+    let mut run: usize = 0;
+    let mut shared: Option<usize> = None;
+    while let Some(Stmt::If { target_label, .. }) = stmts.get(index + run) {
+        if run == MAX_OR_GUARD_TESTS {
+            return None;
+        }
+        match shared {
+            None => shared = Some(*target_label),
+            Some(existing) if existing == *target_label => {}
+            Some(_) => break,
+        }
+        run += 1;
+    }
+    let shared: usize = shared?;
+    if run == 0 {
+        return None;
+    }
+    let Some(Stmt::If {
+        target_label: miss, ..
+    }): Option<&Stmt> = stmts.get(index + run)
+    else {
+        return None;
+    };
+    if *miss == shared {
+        return None;
+    }
+    if !matches!(stmts.get(index + run + 1), Some(Stmt::Label(label)) if *label == shared) {
+        return None;
+    }
+    Some((run, shared))
+}
+
+fn merge_or_guarded_tests(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
+    if depth == 0 {
+        return stmts;
+    }
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let mut index: usize = 0;
+    while index < stmts.len() {
+        let Some((run, shared)): Option<(usize, usize)> = or_guard_shared_target(&stmts, index)
+        else {
+            out.push(recurse_or_guards(stmts[index].clone(), depth));
+            index += 1;
+            continue;
+        };
+        if label_ref_count_deep(&stmts, shared) != run {
+            out.push(recurse_or_guards(stmts[index].clone(), depth));
+            index += 1;
+            continue;
+        }
+        let mut condition: Option<Expr> = None;
+        for offset in 0..run {
+            let Some(Stmt::If { cond, .. }): Option<&Stmt> = stmts.get(index + offset) else {
+                break;
+            };
+            let skip: Expr = negate(cond.clone());
+            condition = Some(match condition {
+                None => skip,
+                Some(existing) => Expr::Binary {
+                    op: "&&",
+                    lhs: Box::new(existing),
+                    rhs: Box::new(skip),
+                },
+            });
+        }
+        let Some(Stmt::If {
+            cond: miss_cond,
+            target_label: miss,
+        }): Option<&Stmt> = stmts.get(index + run)
+        else {
+            out.push(recurse_or_guards(stmts[index].clone(), depth));
+            index += 1;
+            continue;
+        };
+        let Some(prefix): Option<Expr> = condition else {
+            out.push(recurse_or_guards(stmts[index].clone(), depth));
+            index += 1;
+            continue;
+        };
+        out.push(Stmt::If {
+            cond: Expr::Binary {
+                op: "&&",
+                lhs: Box::new(prefix),
+                rhs: Box::new(miss_cond.clone()),
+            },
+            target_label: *miss,
+        });
+        index += run + 2;
+    }
+    out
+}
+
+fn recurse_or_guards(stmt: Stmt, depth: usize) -> Stmt {
+    match stmt {
+        Stmt::With { object, body } => Stmt::With {
+            object,
+            body: merge_or_guarded_tests(body, depth - 1),
+        },
+        Stmt::Try { body, catches } => Stmt::Try {
+            body: merge_or_guarded_tests(body, depth - 1),
+            catches: catches
+                .into_iter()
+                .map(|clause: CatchClause| CatchClause {
+                    var_name: clause.var_name,
+                    type_name: clause.type_name,
+                    body: merge_or_guarded_tests(clause.body, depth - 1),
+                })
+                .collect(),
+        },
+        other => other,
+    }
 }
 
 fn label_ref_count_deep(stmts: &[Stmt], label: usize) -> usize {
@@ -6443,8 +6582,9 @@ pub fn lift_body(
     let scoped: Vec<Stmt> = structure_with(lifter.statements, &with_regions, MAX_STRUCTURE_DEPTH);
     let raw_statements: Vec<Stmt> = structure_try(scoped, &regions, MAX_STRUCTURE_DEPTH);
     let pruned: Vec<Stmt> = drop_dead_labels(drop_empty_branches(drop_dead_labels(raw_statements)));
+    let guarded: Vec<Stmt> = merge_or_guarded_tests(pruned, MAX_STRUCTURE_DEPTH);
     let dispatched: Vec<Stmt> =
-        drop_dead_labels(structure_forward_dispatch(pruned, MAX_STRUCTURE_DEPTH));
+        drop_dead_labels(structure_forward_dispatch(guarded, MAX_STRUCTURE_DEPTH));
     let switched: Vec<Stmt> = drop_dead_labels(structure_switches(dispatched, MAX_STRUCTURE_DEPTH));
     let looped: Vec<Stmt> = structure_loops(switched, MAX_STRUCTURE_DEPTH);
     let acyclic: Option<Vec<Stmt>> = structure_acyclic(&looped, None, MAX_STRUCTURE_DEPTH);
@@ -8819,6 +8959,104 @@ mod tests {
             )),
             "catch prologue is stripped: {:?}",
             catches[0].body
+        );
+    }
+
+    fn slot_is_not(value: i64) -> Expr {
+        Expr::Binary {
+            op: "!=",
+            lhs: Box::new(Expr::Local(2)),
+            rhs: Box::new(Expr::IntLit(value)),
+        }
+    }
+
+    fn slot_is(value: i64) -> Expr {
+        Expr::Binary {
+            op: "==",
+            lhs: Box::new(Expr::Local(2)),
+            rhs: Box::new(Expr::IntLit(value)),
+        }
+    }
+
+    fn shared_body_dispatch() -> Vec<Stmt> {
+        vec![
+            Stmt::If {
+                cond: slot_is(7),
+                target_label: 46,
+            },
+            Stmt::If {
+                cond: slot_is_not(9),
+                target_label: 53,
+            },
+            Stmt::Label(46),
+            Stmt::Return(Some(Expr::IntLit(4))),
+            Stmt::Label(53),
+            Stmt::Return(Some(Expr::IntLit(0))),
+        ]
+    }
+
+    #[test]
+    fn adjacent_tests_that_share_a_body_merge_into_one_guard() {
+        let merged: Vec<Stmt> = merge_or_guarded_tests(shared_body_dispatch(), MAX_STRUCTURE_DEPTH);
+        assert_eq!(
+            merged,
+            vec![
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: "&&",
+                        lhs: Box::new(slot_is_not(7)),
+                        rhs: Box::new(slot_is_not(9)),
+                    },
+                    target_label: 53,
+                },
+                Stmt::Return(Some(Expr::IntLit(4))),
+                Stmt::Label(53),
+                Stmt::Return(Some(Expr::IntLit(0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_shared_body_reached_from_elsewhere_keeps_its_goto_form() {
+        let mut stmts: Vec<Stmt> = vec![Stmt::Jump { target_label: 46 }];
+        stmts.extend(shared_body_dispatch());
+        let merged: Vec<Stmt> = merge_or_guarded_tests(stmts.clone(), MAX_STRUCTURE_DEPTH);
+        assert_eq!(
+            merged, stmts,
+            "a shared body with an extra incoming edge must keep every edge it had"
+        );
+    }
+
+    #[test]
+    fn negating_a_comparison_conjunction_does_not_add_a_logical_not() {
+        let conjunction: Expr = Expr::Binary {
+            op: "&&",
+            lhs: Box::new(slot_is_not(7)),
+            rhs: Box::new(slot_is_not(9)),
+        };
+        assert_eq!(
+            negate(conjunction),
+            Expr::Binary {
+                op: "||",
+                lhs: Box::new(slot_is(7)),
+                rhs: Box::new(slot_is(9)),
+            }
+        );
+    }
+
+    #[test]
+    fn negating_a_conjunction_of_opaque_operands_keeps_one_outer_not() {
+        let conjunction: Expr = Expr::Binary {
+            op: "&&",
+            lhs: Box::new(Expr::Local(1)),
+            rhs: Box::new(Expr::Local(2)),
+        };
+        assert_eq!(
+            negate(conjunction.clone()),
+            Expr::Unary {
+                op: "!",
+                operand: Box::new(conjunction),
+            }
         );
     }
 }

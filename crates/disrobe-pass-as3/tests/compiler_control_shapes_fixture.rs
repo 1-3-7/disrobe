@@ -18,27 +18,44 @@ const EXPECTED_TERNARIES_SOURCE: &str = "\tstatic function ternaries(a:Int, b:In
 
 const EXPECTED_SHORT_CIRCUIT_SOURCE: &str = "\tstatic function shortCircuit(left:Bool, right:Bool, value:Int):Bool {\n\t\treturn (left && value > 3) || (right && value < 9) || (!left && !right);\n\t}\n";
 
+const EXPECTED_WORDS_SOURCE: &str = "\tstatic function words(token:String):Int {\n\t\treturn switch (token) {\n\t\t\tcase \"alpha\": 1;\n\t\t\tcase \"beta\": 2;\n\t\t\tcase \"gamma\": 3;\n\t\t\tcase \"delta\" | \"epsilon\": 4;\n\t\t\tdefault: 0;\n\t\t};\n\t}\n";
+
+const EXPECTED_WORDS_RECOVERY: &str = "loc2 = String(arg1);\nif ((loc2 == \"alpha\")) {\n    return 1;\n}\nif ((loc2 == \"beta\")) {\n    return 2;\n}\nif (((loc2 == \"delta\") || (loc2 == \"epsilon\"))) {\n    return 4;\n}\nif ((loc2 == \"gamma\")) {\n    return 3;\n}\nreturn 0;\n";
+
 const EXPECTED_TERNARIES_RECOVERY: &str = "loc3 = int(((arg1 > arg2) ? arg1 : arg2));\nloc4 = int(((loc3 > 10) ? 10 : ((loc3 < 0) ? 0 : loc3)));\nreturn ((loc3 + loc4) + ((arg1 == arg2) ? 1 : ((arg1 < arg2) ? 2 : 3)));\n";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
     Int(i64),
     Bool(bool),
+    Str(String),
 }
 
 impl Value {
-    const fn as_int(self) -> i64 {
+    fn as_int(&self) -> i64 {
         match self {
-            Self::Int(value) => value,
+            Self::Int(value) => *value,
             Self::Bool(true) => 1,
             Self::Bool(false) => 0,
+            Self::Str(value) => panic!("a recovered body used string {value:?} as a number"),
         }
     }
 
-    const fn as_bool(self) -> bool {
+    const fn as_bool(&self) -> bool {
         match self {
-            Self::Int(value) => value != 0,
-            Self::Bool(value) => value,
+            Self::Int(value) => *value != 0,
+            Self::Bool(value) => *value,
+            Self::Str(value) => !value.is_empty(),
+        }
+    }
+
+    fn equals(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Str(left), Self::Str(right)) => left == right,
+            (Self::Str(_), _) | (_, Self::Str(_)) => {
+                panic!("a recovered body compared a string against a non-string")
+            }
+            _ => self.as_int() == other.as_int(),
         }
     }
 }
@@ -56,7 +73,7 @@ struct Machine {
 impl Machine {
     fn new(arguments: &[(u32, Value)]) -> Self {
         Self {
-            slots: arguments.iter().copied().collect(),
+            slots: arguments.iter().cloned().collect(),
             steps: 0,
         }
     }
@@ -71,9 +88,12 @@ impl Machine {
     }
 
     fn slot(&self, index: u32, method: &str) -> Value {
-        *self.slots.get(&index).unwrap_or_else(|| {
-            panic!("the recovered {method} body reads slot {index} before assigning it")
-        })
+        self.slots
+            .get(&index)
+            .unwrap_or_else(|| {
+                panic!("the recovered {method} body reads slot {index} before assigning it")
+            })
+            .clone()
     }
 
     fn eval(&mut self, expr: &Expr, method: &str) -> Value {
@@ -81,12 +101,14 @@ impl Machine {
         match expr {
             Expr::IntLit(value) => Value::Int(*value),
             Expr::BoolLit(value) => Value::Bool(*value),
+            Expr::StringLit(value) => Value::Str(value.clone()),
             Expr::Local(index) | Expr::Param(index) => self.slot(*index, method),
             Expr::Coerce { ty, operand } => {
                 let inner: Value = self.eval(operand, method);
                 match ty.as_str() {
                     "int" => Value::Int(inner.as_int()),
                     "Boolean" => Value::Bool(inner.as_bool()),
+                    "String" => inner,
                     other => {
                         panic!("the recovered {method} body coerces to unmodelled type {other}")
                     }
@@ -143,8 +165,8 @@ impl Machine {
             "<" => Value::Bool(left.as_int() < right.as_int()),
             ">=" => Value::Bool(left.as_int() >= right.as_int()),
             "<=" => Value::Bool(left.as_int() <= right.as_int()),
-            "==" | "===" => Value::Bool(left == right || left.as_int() == right.as_int()),
-            "!=" | "!==" => Value::Bool(left != right && left.as_int() != right.as_int()),
+            "==" | "===" => Value::Bool(left.equals(&right)),
+            "!=" | "!==" => Value::Bool(!left.equals(&right)),
             other => panic!("the recovered {method} body uses unmodelled operator {other}"),
         }
     }
@@ -219,6 +241,16 @@ const fn reference_ternaries(a: i64, b: i64) -> i64 {
         }
 }
 
+fn reference_words(token: &str) -> i64 {
+    match token {
+        "alpha" => 1,
+        "beta" => 2,
+        "gamma" => 3,
+        "delta" | "epsilon" => 4,
+        _ => 0,
+    }
+}
+
 const fn reference_short_circuit(left: bool, right: bool, value: i64) -> bool {
     (left && value > 3) || (right && value < 9) || (!left && !right)
 }
@@ -237,6 +269,10 @@ fn pinned_source() {
     assert!(
         HAXE_SOURCE.contains(EXPECTED_SHORT_CIRCUIT_SOURCE),
         "the reference source no longer declares the pinned short-circuit method"
+    );
+    assert!(
+        HAXE_SOURCE.contains(EXPECTED_WORDS_SOURCE),
+        "the reference source no longer declares the pinned string-dispatch method"
     );
 }
 
@@ -465,5 +501,63 @@ fn the_recovered_short_circuit_chain_computes_what_the_reference_source_computes
     assert_eq!(
         agreed, graded,
         "recovered short-circuit chain agreement: {agreed}/{graded}"
+    );
+}
+
+#[test]
+fn a_shared_target_string_dispatch_group_recovers_as_one_guarded_case() {
+    pinned_source();
+    let abc: AbcFile = parse_fixture();
+    let (lifted, text): (LiftedBody, String) = recovered(&abc, "words");
+    assert_eq!(
+        residual_control_flow(&lifted.statements),
+        0,
+        "a dispatch chain whose cases share a body must leave no goto behind, got: {text}"
+    );
+    assert_eq!(
+        text, EXPECTED_WORDS_RECOVERY,
+        "the recovered dispatch must keep the compiler's test order and group the shared case"
+    );
+    assert!(lifted.fully_structured);
+    assert!(lifted.structurally_recovered);
+    assert_eq!(lifted.opaque_operands, 0);
+}
+
+#[test]
+fn the_recovered_string_dispatch_computes_what_the_reference_source_computes() {
+    pinned_source();
+    let abc: AbcFile = parse_fixture();
+    let (lifted, text): (LiftedBody, String) = recovered(&abc, "words");
+    let mut agreed: usize = 0;
+    let mut graded: usize = 0;
+    for token in [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "",
+        "Alpha",
+        "alpha ",
+        "deltaepsilon",
+    ] {
+        graded += 1;
+        let observed: Value = evaluate(
+            &lifted.statements,
+            "words",
+            &[(1, Value::Str(token.to_owned()))],
+        );
+        assert_eq!(
+            observed,
+            Value::Int(reference_words(token)),
+            "recovered words({token:?}) disagrees with the reference source: {text}"
+        );
+        agreed += 1;
+    }
+    assert_eq!(graded, 10);
+    assert_eq!(
+        agreed, graded,
+        "recovered string dispatch agreement: {agreed}/{graded}"
     );
 }
