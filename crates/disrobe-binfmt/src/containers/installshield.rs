@@ -1829,6 +1829,38 @@ pub(crate) mod builder {
         write_u32(image, at + 0x0A, value);
     }
 
+    pub(crate) fn set_first_member_compressed_size(image: &mut [u8], value: u32) {
+        let at: usize = first_descriptor_at(image);
+        write_u32(image, at + 0x0E, value);
+    }
+
+    pub(crate) fn first_member_compressed_size(image: &[u8]) -> u32 {
+        let at: usize = first_descriptor_at(image);
+        u32::from_le_bytes([
+            image[at + 0x0E],
+            image[at + 0x0F],
+            image[at + 0x10],
+            image[at + 0x11],
+        ])
+    }
+
+    pub(crate) fn unterminate_first_member_name(image: &mut [u8]) {
+        let header: InstallShieldHeader = parse_installshield_header(image).expect("header");
+        let base: usize = table_base(&header).expect("base");
+        let at: usize = first_descriptor_at(image);
+        let tail: usize = image.len() - 2;
+        for byte in &mut image[tail..] {
+            if *byte == 0 {
+                *byte = b'x';
+            }
+        }
+        write_u32(
+            image,
+            at,
+            u32::try_from(tail - base).expect("tail name offset"),
+        );
+    }
+
     pub(crate) fn set_first_member_directory_index(image: &mut [u8], value: u16) {
         let at: usize = first_descriptor_at(image);
         write_u16(image, at + 0x04, value);
@@ -2363,6 +2395,88 @@ mod tests {
                 .integrity_violations
                 .iter()
                 .any(|line: &String| line.contains("descriptor-short"))
+        );
+    }
+
+    #[test]
+    fn empty_members_recover_as_zero_length_files() {
+        let image: Vec<u8> = build_legacy_archive(
+            5,
+            &[
+                BuilderMember::new("dir", "empty.dat", b"", BuilderFraming::Stored),
+                BuilderMember::new("dir", "kept.dat", b"kept", BuilderFraming::Stored),
+            ],
+        );
+        let archive: InstallShieldArchive = walk_installshield(&image, quota()).expect("walk");
+        assert_eq!(archive.recovered_count(), 2);
+        assert_eq!(archive.files[0].path, "dir/empty.dat");
+        assert_eq!(archive.files[0].expanded_size, 0);
+        assert!(archive.files[0].data.is_empty());
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-installshield-empty")
+                .expect("create scratch dir");
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::InstallShield,
+            &image,
+            dir.path(),
+        )
+        .expect("installshield extract");
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(
+            std::fs::read(dir.path().join("dir/empty.dat"))
+                .expect("empty member on disk")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_last_frame_are_refused() {
+        let body: Vec<u8> = b"trailing data probe body ".repeat(12);
+        let mut image: Vec<u8> = build_legacy_archive(
+            5,
+            &[BuilderMember::new(
+                "",
+                "a.bin",
+                &body,
+                BuilderFraming::Framed,
+            )],
+        );
+        let declared: u32 = builder::first_member_compressed_size(&image);
+        image.extend_from_slice(&[0x41, 0x42, 0x43, 0x44]);
+        builder::set_first_member_compressed_size(&mut image, declared + 4);
+        let archive: InstallShieldArchive = walk_installshield(&image, quota()).expect("walk");
+        assert_eq!(archive.recovered_count(), 0);
+        assert_eq!(
+            archive.files[0].state,
+            InstallShieldMemberState::RefusedDecode
+        );
+    }
+
+    #[test]
+    fn an_unterminated_member_name_is_refused() {
+        let mut image: Vec<u8> = build_legacy_archive(
+            5,
+            &[BuilderMember::new(
+                "",
+                "a.bin",
+                b"body",
+                BuilderFraming::Stored,
+            )],
+        );
+        builder::unterminate_first_member_name(&mut image);
+        let archive: InstallShieldArchive = walk_installshield(&image, quota()).expect("walk");
+        assert_eq!(archive.recovered_count(), 0);
+        assert_eq!(
+            archive.files[0].state,
+            InstallShieldMemberState::RefusedInvalidRecord
+        );
+        assert!(
+            archive.files[0]
+                .detail
+                .contains("unterminated or out of range"),
+            "got {}",
+            archive.files[0].detail
         );
     }
 
