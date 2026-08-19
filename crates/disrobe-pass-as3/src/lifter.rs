@@ -928,11 +928,38 @@ impl Lifter<'_> {
     }
 
     fn resolve_ternary(&mut self, label: usize) -> bool {
-        let len: usize = self.statements.len();
-        if len < 4 {
-            return false;
+        let mut resolved: bool = false;
+        for _ in 0..MAX_TERNARY_FOLDS {
+            if !self.fold_one_ternary(label) {
+                break;
+            }
+            resolved = true;
         }
-        let branch_index: usize = len - 4;
+        resolved
+    }
+
+    fn ternary_arm_run_start(&self, label: usize) -> Option<usize> {
+        let len: usize = self.statements.len();
+        if !matches!(self.statements.last(), Some(Stmt::Label(l)) if *l == label) {
+            return None;
+        }
+        let mut run_start: usize = len - 1;
+        while run_start > 0 && matches!(self.statements[run_start - 1], Stmt::Label(_)) {
+            run_start -= 1;
+        }
+        (len - run_start >= 2).then_some(run_start)
+    }
+
+    fn fold_one_ternary(&mut self, label: usize) -> bool {
+        let Some(run_start): Option<usize> = self.ternary_arm_run_start(label) else {
+            return false;
+        };
+        let Some(jump_index): Option<usize> = run_start.checked_sub(1) else {
+            return false;
+        };
+        let Some(branch_index): Option<usize> = jump_index.checked_sub(1) else {
+            return false;
+        };
         let Some(position): Option<usize> = self
             .branch_marks
             .iter()
@@ -941,19 +968,17 @@ impl Lifter<'_> {
             return false;
         };
         let jump_matches: bool = matches!(
-            self.statements[len - 3],
+            self.statements[jump_index],
             Stmt::Jump { target_label } if target_label == label
         );
         let else_label: usize = self.branch_marks[position].else_label;
         let else_matches: bool = matches!(
-            self.statements[len - 2],
+            self.statements[run_start],
             Stmt::Label(l) if l == else_label
         );
-        let end_matches: bool = matches!(self.statements[len - 1], Stmt::Label(l) if l == label);
         let mark_height: usize = self.branch_marks[position].join_height;
         if !jump_matches
             || !else_matches
-            || !end_matches
             || else_label == label
             || self.stack.len() != mark_height + 2
         {
@@ -967,7 +992,7 @@ impl Lifter<'_> {
             then_value: Box::new(then_value),
             else_value: Box::new(else_value),
         });
-        self.remove_statement(len - 3);
+        self.remove_statement(jump_index);
         self.remove_statement(branch_index);
         true
     }
@@ -1458,6 +1483,7 @@ fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSe
 }
 
 const STACK_SENTINEL_DEPTH: usize = 256;
+const MAX_TERNARY_FOLDS: usize = 64;
 const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
 const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
 const SCOPE_HEIGHT_CONFLICT_MARKER: &str = "unreconciled scope height";
