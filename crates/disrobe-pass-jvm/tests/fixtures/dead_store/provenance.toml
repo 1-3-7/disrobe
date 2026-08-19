@@ -1,0 +1,39 @@
+schema = "disrobe.jvm.dead-store-fixture/v1"
+source = "AccumulateProbe.java"
+source_sha256 = "ea72b3b5e240ed4c7a2083cfb8b7f8dea7b101db20f047e815054cd74b8cae55"
+harness = "Harness.java"
+harness_sha256 = "56ed0c43af32cbdee37c2f0478385dbbdc42853753b9a992c8bd0534fb36eef3"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes AccumulateProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+notes = "Every method folds its result back into a register that is also one of its own operands, which is what javac and D8 emit for a left-associative accumulation. AccumulateProbe takes only parameters and touches no field, so its recovered unit compiles and can be graded on computed values: accumulate covers three-address addition, scale covers multiply then add, widen covers category-two arithmetic, and negate covers unary. CastProbe carries the long-to-int cast and a two-operand fold, both of which need a scratch register that the emitter writes without declaring, so that class is graded structurally rather than by recompilation."
+behavioural_class = "AccumulateProbe"
+structural_class = "CastProbe"
+
+[[artifact]]
+path = "AccumulateProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/AccumulateProbe.class classes/CastProbe.class"
+sha256 = "bf496dcb806b98ece649eadbec6e4080c075334c8f418ac2ffee07f2f777438c"
+bytes = 1140
+
+[behavior]
+harness_main = "Harness.main"
+expected_stdout = "10\n0\n18\n36\n-8\n"

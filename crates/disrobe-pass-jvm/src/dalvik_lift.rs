@@ -874,10 +874,12 @@ fn inline_helper_body(
             }
             _ => {}
         }
+        let mut readable_pending: bool = false;
         if let Some(result) = pending.as_ref() {
             let taken_by_move: bool = matches!(insn.op, 0x0A..=0x0C);
-            let still_readable: bool = result.materialized_in.is_some();
-            if !taken_by_move && !still_readable && result.expr.discarded_side_effect().is_some() {
+            readable_pending = result.materialized_in.is_some();
+            if !taken_by_move && !readable_pending && result.expr.discarded_side_effect().is_some()
+            {
                 return None;
             }
         }
@@ -892,7 +894,11 @@ fn inline_helper_body(
                 calls = calls.checked_add(1)?;
             }
         }
-        let _: LiftOutcome = lift_insn(&nested, &mut file, insn, &mut pending);
+        match lift_insn(&nested, &mut file, insn, &mut pending) {
+            LiftOutcome::None => {}
+            LiftOutcome::Statement(_) | LiftOutcome::Statements(_) if readable_pending => {}
+            LiftOutcome::Statement(_) | LiftOutcome::Statements(_) => return None,
+        }
     }
 
     let expression: Expr = produced?;
@@ -1014,9 +1020,8 @@ fn unary(
         op,
         value: Box::new(value),
     };
-    let rendered: String = result.render();
-    file.write_materialized(dest, result);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    file.write(dest, result);
+    LiftOutcome::None
 }
 
 fn numeric_cast(
@@ -1035,9 +1040,8 @@ fn numeric_cast(
         ty: ty.to_string(),
         value: Box::new(value),
     };
-    let rendered: String = result.render();
-    file.write_materialized(dest, result);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    file.write(dest, result);
+    LiftOutcome::None
 }
 
 fn binary_three(
@@ -1058,9 +1062,8 @@ fn binary_three(
         lhs: Box::new(lhs_expr),
         rhs: Box::new(rhs_expr),
     };
-    let rendered: String = result.render();
-    file.write_materialized(dest, result);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    file.write(dest, result);
+    LiftOutcome::None
 }
 
 fn binary_2addr(
@@ -1080,9 +1083,8 @@ fn binary_2addr(
         lhs: Box::new(lhs_expr),
         rhs: Box::new(rhs_expr),
     };
-    let rendered: String = result.render();
-    file.write_materialized(dest, result);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    file.write(dest, result);
+    LiftOutcome::None
 }
 
 fn binary_lit(
@@ -1111,9 +1113,8 @@ fn binary_lit(
             rhs: Box::new(Expr::Const(literal.to_string())),
         }
     };
-    let rendered: String = result.render();
-    file.write_materialized(dest, result);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    file.write(dest, result);
+    LiftOutcome::None
 }
 
 fn cmp_three(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> LiftOutcome {
