@@ -683,7 +683,7 @@ struct TargetCall {
 }
 
 const MAX_REFERENCE_BODY_INSNS: usize = 64;
-const LAMBDA_HELPER_PREFIX: &str = "lambda$";
+const LAMBDA_HELPER_PREFIXES: [&str; 2] = ["lambda$", "$r8$lambda$"];
 const FUNCTIONAL_INTERFACES: [(&str, &str, &str); 66] = [
     (
         "Landroid/animation/ValueAnimator$AnimatorUpdateListener;",
@@ -1466,6 +1466,12 @@ const fn is_reference_descriptor(descriptor: &str) -> bool {
     matches!(descriptor.as_bytes().first(), Some(b'L' | b'['))
 }
 
+fn is_lambda_helper_name(name: &str) -> bool {
+    LAMBDA_HELPER_PREFIXES
+        .iter()
+        .any(|prefix: &&str| name.starts_with(prefix))
+}
+
 fn erasure_compatible(declared: &str, erased: &str) -> bool {
     declared == erased || (is_reference_descriptor(declared) && is_reference_descriptor(erased))
 }
@@ -1479,11 +1485,7 @@ fn classify_captured_lambda(
     interface_arity: usize,
     single_abstract_method: bool,
 ) -> Option<RecoveredCapturedLambda> {
-    if !single_abstract_method
-        || target.is_constructor
-        || !method.name.starts_with(LAMBDA_HELPER_PREFIX)
-        || !crate::name_disambig::is_java_source_identifier(&method.name)
-    {
+    if !single_abstract_method || target.is_constructor || !is_lambda_helper_name(&method.name) {
         return None;
     }
     let implementation: &crate::dex::MethodId =

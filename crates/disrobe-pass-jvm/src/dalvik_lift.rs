@@ -951,7 +951,7 @@ fn render_captured_lambda(
     passed.extend(parameters);
     Some(format!(
         "{head} -> {target}.{}({})",
-        recovered.helper_name,
+        descriptor::java_writable_identifier(&recovered.helper_name),
         passed.join(", ")
     ))
 }

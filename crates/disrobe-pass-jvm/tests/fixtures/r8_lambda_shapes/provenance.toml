@@ -1,0 +1,36 @@
+schema = "disrobe.jvm.r8-lambda-shape-fixture/v1"
+source = "../d8_lambda_shapes/DesugarShapeProbe.java"
+source_sha256 = "bf5e31121a1b69606486a5d277a467d86bd1f3c5c0d0b322bc3ced0c6519a74a"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes DesugarShapeProbe.java"
+
+[r8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+keep_rules = "-keep class DesugarShapeProbe { public static void main(java.lang.String[]); static java.lang.String run(int, int, long, java.lang.String); } -keep interface DesugarShapeProbe$TriInt { *; } -dontobfuscate -dontoptimize -dontshrink -keepattributes *"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+notes = "R8 renames every lambda body method to $r8$lambda$ followed by a base64 digest. Those names contain - and _ and are not Java source identifiers, so a recovery that forwards to the helper by name cannot emit compilable source. Only a recovery that inlines the body can return this artifact to source."
+
+[[artifact]]
+path = "DesugarShapeProbe-r8-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.R8 --release --min-api 21 --lib android.jar --pg-conf keep-shapes.pro --output r8shapes classes/DesugarShapeProbe.class classes/DesugarShapeProbe$TriInt.class"
+sha256 = "bdd602970ae2df89225260353b923bec0e572c03c4914fa460ca46bd617fd951"
+bytes = 6756
+
+[behavior]
+harness = "DesugarShapeProbe.main"
+expected_stdout = "16:160:18:169:81:16:506:a!\n22:217:-11:228:-87:10:696:b!\n"

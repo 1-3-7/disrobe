@@ -214,8 +214,58 @@ fn recovered_sites(bytes: &'static [u8]) -> BTreeMap<&'static str, String> {
     let unit: &String = program_unit(&recovered);
     SITES
         .iter()
-        .map(|site: &LambdaSite| (site.method, recovered_lambda(unit, site.method)))
+        .map(|site: &LambdaSite| {
+            let expression: String = if is_generated_helper(site.method) {
+                helper_hosted_lambda(unit)
+            } else {
+                recovered_lambda(unit, site.method)
+            };
+            (site.method, expression)
+        })
         .collect()
+}
+
+fn is_generated_helper(name: &str) -> bool {
+    name.starts_with("lambda$") || name.starts_with("$r8$lambda$")
+}
+
+fn helper_hosted_lambda(source: &str) -> String {
+    let mut collecting: bool = false;
+    let mut found: Vec<String> = Vec::new();
+    for line in source.lines() {
+        if collecting {
+            collecting = false;
+            let trimmed: &str = line.trim();
+            if let Some(expression) = trimmed
+                .strip_prefix("return ")
+                .and_then(|text: &str| text.strip_suffix(';'))
+                && expression.contains(" -> ")
+            {
+                found.push(expression.to_owned());
+            }
+            continue;
+        }
+        if !line.starts_with("    ") || line.starts_with("     ") || !line.ends_with('{') {
+            continue;
+        }
+        let trimmed: &str = line.trim();
+        let Some(open): Option<usize> = trimmed.find('(') else {
+            continue;
+        };
+        let Some(head): Option<&str> = trimmed.get(..open) else {
+            continue;
+        };
+        collecting = head
+            .rsplit([' ', '\t'])
+            .next()
+            .is_some_and(is_generated_helper);
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly one toolchain-generated helper must host a recovered lambda, saw {found:?}"
+    );
+    found.into_iter().next().unwrap_or_default()
 }
 
 fn compile_and_run(label: &str, source: &str) -> Vec<u8> {
@@ -561,6 +611,108 @@ fn a_program_interface_without_the_matching_abstract_method_keeps_the_desugaring
         "a program interface whose abstract method does not match the implementation must \
          abstain, saw {body}"
     );
+}
+
+const R8_DEX: &[u8] = include_bytes!("fixtures/r8_lambda_shapes/DesugarShapeProbe-r8-min21.dex");
+const R8_PROVENANCE: &str = include_str!("fixtures/r8_lambda_shapes/provenance.toml");
+const R8_DEX_SHA256: &str = "bdd602970ae2df89225260353b923bec0e572c03c4914fa460ca46bd617fd951";
+const R8_OUTLINE_STUBS: usize = 6;
+
+#[test]
+fn the_r8_artifact_renames_every_lambda_body_out_of_java() {
+    assert_eq!(sha256_hex(R8_DEX), R8_DEX_SHA256);
+    assert!(R8_PROVENANCE.contains(R8_DEX_SHA256));
+    assert!(R8_PROVENANCE.contains(AUTHORED_SHA256));
+    assert_eq!(R8_DEX.get(..8), Some(b"dex\n035\0".as_slice()));
+
+    let dex: DexFile = parse_dex(R8_DEX).expect("parse the real R8 artifact");
+    assert!(
+        dex.strings
+            .iter()
+            .any(|value: &String| value.contains("~~R8{")),
+        "the artifact must carry its own R8 marker"
+    );
+    let helpers: Vec<&str> = dex
+        .method_ids
+        .iter()
+        .filter(|method: &&MethodId| method.class == "LDesugarShapeProbe;")
+        .map(|method: &MethodId| method.name.as_str())
+        .filter(|name: &&str| name.starts_with("$r8$lambda$"))
+        .collect();
+    assert_eq!(
+        helpers.len(),
+        SITES.len(),
+        "R8 must have renamed one body method per authored lambda, saw {helpers:?}"
+    );
+    assert!(
+        helpers.iter().any(|name: &&str| name.contains('-')),
+        "at least one R8 body name must be outside the Java identifier grammar, which is why a \
+         recovery that forwards to it by name cannot emit compilable source: {helpers:?}"
+    );
+    assert!(
+        !dex.method_ids
+            .iter()
+            .any(|method: &MethodId| method.name.starts_with("lambda$")),
+        "R8 must have renamed every javac lambda body, or this fixture grades the D8 path again"
+    );
+}
+
+#[test]
+fn the_r8_artifact_recovers_the_same_lambdas_as_the_d8_artifact() {
+    let from_d8: BTreeMap<&str, String> = recovered_sites(RELEASE_DEX);
+    let from_r8: BTreeMap<&str, String> = recovered_sites(R8_DEX);
+    assert_eq!(
+        from_r8, from_d8,
+        "the same authored program compiled through R8 must recover the same lambda expressions \
+         it does through D8"
+    );
+    for (method, expression) in &from_r8 {
+        assert!(
+            !expression.contains("r8$lambda"),
+            "{method} must carry the authored body, not a call to the renamed R8 body: \
+             {expression}"
+        );
+    }
+}
+
+#[test]
+fn recovered_r8_lambdas_preserve_authored_behavior() {
+    let reference: Vec<u8> = compile_and_run("r8-lambda-shapes-authored", AUTHORED);
+    assert_eq!(
+        String::from_utf8_lossy(&reference).replace("\r\n", "\n"),
+        EXPECTED_STDOUT
+    );
+    let filled: String = fill_harness(&recovered_sites(R8_DEX));
+    assert_eq!(
+        compile_and_run("r8-lambda-shapes-recovered", &filled),
+        reference,
+        "the lambda expressions recovered from the R8 artifact must reproduce the authored \
+         behavior"
+    );
+}
+
+#[test]
+fn the_r8_call_outline_stubs_are_left_in_place() {
+    let dex: DexFile = parse_dex(R8_DEX).expect("parse the real R8 artifact");
+    let recovered: DecompiledDex = decompile_dex(&dex, R8_DEX);
+    let retained: BTreeSet<String> = retained_synthetics(&recovered);
+    assert_eq!(
+        retained.len(),
+        R8_OUTLINE_STUBS,
+        "every R8 lambda class must be elided and only its call outline stubs may remain: \
+         {retained:?}"
+    );
+    for unit in &retained {
+        let source: &String = recovered
+            .sources
+            .get(unit)
+            .expect("a retained unit has a source");
+        assert!(
+            source.contains("public static ") && source.matches("return ").count() == 1,
+            "an R8 call outline stub is a single static forwarder, so a lambda class must not be \
+             hiding among them:\n{source}"
+        );
+    }
 }
 
 const DUPLICATION_DEX: &[u8] =
