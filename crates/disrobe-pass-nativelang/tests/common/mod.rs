@@ -93,6 +93,8 @@ pub fn crate_fixture_or_fail(rel: &str) -> Vec<u8> {
 
 pub const ZIG_ELF: &str = "zig/hello.zig.elf";
 pub const ZIG_RELEASEFAST_ELF: &str = "zig_modes/arith_releasefast_x86_64_linux.elf";
+pub const ZIG_RELEASEFAST_PE: &str = "zig_modes/arith_releasefast_x86_64_windows.exe";
+pub const ZIG_RELEASEFAST_MACHO: &str = "zig_modes/arith_releasefast_x86_64_macos.macho";
 pub const ZIG_MODES_SOURCE: &str = "zig_modes/arith.zig";
 pub const NIM_ELF: &str = "nim/hello.nim.elf";
 pub const CRYSTAL_PE: &str = "crystal/hello.cr.exe";

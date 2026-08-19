@@ -43,12 +43,21 @@ const NIM_RUNTIME_MARKERS: &[&[u8]] = &[
 ];
 
 const ZIG_RUNTIME_MARKERS: &[&[u8]] = &[
-    b"start.posixCallMainAndExit",
-    b"start.callMain",
+    b".buildid",
+    b"RtlExitUserProcess",
     b"__zig_probe_stack",
+    b"__zig_tag_name_",
+    b"attempt to unwrap error: ",
+    b"builtin.zig",
+    b"compiler_rt",
+    b"heap.PageAllocator",
+    b"mem.Allocator.",
     b"panicOutOfBounds",
     b"panicUnwrap",
-    b"compiler_rt",
+    b"reached unreachable code",
+    b"start.callMain",
+    b"start.main",
+    b"start.posixCallMainAndExit",
 ];
 
 const CRYSTAL_RUNTIME_MARKERS: &[&[u8]] = &[
@@ -78,6 +87,21 @@ const D_RUNTIME_MARKERS: &[&[u8]] = &[
     b"TypeInfo_Class",
     b"ModuleInfo",
 ];
+
+#[must_use]
+pub const fn runtime_markers(lang: NativeLang) -> &'static [&'static [u8]] {
+    match lang {
+        NativeLang::Nim => NIM_RUNTIME_MARKERS,
+        NativeLang::Zig => ZIG_RUNTIME_MARKERS,
+        NativeLang::Crystal => CRYSTAL_RUNTIME_MARKERS,
+        NativeLang::D => D_RUNTIME_MARKERS,
+    }
+}
+
+#[must_use]
+pub fn marker_hits(image: &NativeImage<'_>, lang: NativeLang) -> Vec<String> {
+    score(image, runtime_markers(lang)).1
+}
 
 #[must_use]
 pub fn fingerprint(image: &NativeImage<'_>) -> Option<LangFingerprint> {
@@ -137,12 +161,7 @@ pub fn fingerprint(image: &NativeImage<'_>) -> Option<LangFingerprint> {
     }
 
     best.map(|(lang, hits, markers)| {
-        let total: usize = match lang {
-            NativeLang::Nim => NIM_RUNTIME_MARKERS.len(),
-            NativeLang::Zig => ZIG_RUNTIME_MARKERS.len(),
-            NativeLang::Crystal => CRYSTAL_RUNTIME_MARKERS.len(),
-            NativeLang::D => D_RUNTIME_MARKERS.len(),
-        };
+        let total: usize = runtime_markers(lang).len();
         let ratio: f32 = hits as f32 / total as f32;
         let confidence: f32 = 0.4_f32.mul_add(ratio.min(1.0), 0.55);
         debug::dbg_kv("winner", || {

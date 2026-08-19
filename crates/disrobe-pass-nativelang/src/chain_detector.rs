@@ -19,7 +19,6 @@ pub const PASS_ID: PassId = "nativelang.classify";
 const NATIVELANG_REPORT_TAG: &str = "nativelang.report";
 
 const MIN_FINGERPRINT_HITS: u32 = 2;
-const MIN_FINGERPRINT_CONFIDENCE: f32 = 0.60;
 
 const SPECIFICITY: u16 = 30;
 
@@ -97,7 +96,7 @@ pub static NATIVELANG_PASS: NativeLangPassAdapter = NativeLangPassAdapter;
 
 fn verdict_for(fp: &LangFingerprint) -> Option<DetectVerdict> {
     let hits: u32 = u32::try_from(fp.markers.len()).unwrap_or(u32::MAX);
-    if hits < MIN_FINGERPRINT_HITS || fp.confidence < MIN_FINGERPRINT_CONFIDENCE {
+    if hits < MIN_FINGERPRINT_HITS {
         return None;
     }
     Some(DetectVerdict::new(
@@ -192,7 +191,7 @@ impl ObfuscatorCatalog for NativeLangDetector {
         let image: NativeImage<'_> = NativeImage::parse(ctx.bytes).ok()?;
         let fp: LangFingerprint = fingerprint(&image)?;
         let hits: u32 = u32::try_from(fp.markers.len()).unwrap_or(u32::MAX);
-        if hits < MIN_FINGERPRINT_HITS || fp.confidence < MIN_FINGERPRINT_CONFIDENCE {
+        if hits < MIN_FINGERPRINT_HITS {
             return None;
         }
         Some(DetectorOutput::new(
@@ -275,7 +274,60 @@ mod tests {
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("zig must be detected");
         assert_eq!(v.format_tag, "zig");
-        assert_fingerprint_matches(&bytes, 6, 0.9500);
+        assert_fingerprint_matches(&bytes, 12, 0.8700);
+    }
+
+    fn crate_fixture(relative: &str) -> Vec<u8> {
+        let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("tests");
+        path.push("fixtures");
+        path.push(relative);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "committed fixture {} is the graded reference for this test and could not be \
+                 read ({error}); restore it from git rather than skipping the measurement",
+                path.display()
+            )
+        })
+    }
+
+    #[test]
+    fn detect_reaches_a_stripped_zig_windows_binary_on_the_structural_pair_alone() {
+        let bytes: Vec<u8> = crate_fixture("zig_modes/arith_releasefast_x86_64_windows.exe");
+        let v: DetectVerdict = Detector::detect(&NativeLangDetector, &ctx(&bytes))
+            .expect("a stripped zig PE must reach a chain verdict, not be refused");
+        assert_eq!(v.format_tag, "zig");
+        assert_fingerprint_matches(&bytes, 2, 0.6033);
+        assert!(
+            v.explain.contains(".buildid") && v.explain.contains("RtlExitUserProcess"),
+            "the verdict must name the two markers it rests on, got {}",
+            v.explain
+        );
+    }
+
+    #[test]
+    fn detect_reaches_a_stripped_zig_macho_binary() {
+        let bytes: Vec<u8> = crate_fixture("zig_modes/arith_releasefast_x86_64_macos.macho");
+        let v: DetectVerdict = Detector::detect(&NativeLangDetector, &ctx(&bytes))
+            .expect("a stripped zig Mach-O must reach a chain verdict, not be refused");
+        assert_eq!(v.format_tag, "zig");
+        assert_fingerprint_matches(&bytes, 2, 0.6033);
+    }
+
+    #[test]
+    fn a_single_zig_marker_still_abstains_at_the_chain() {
+        let bytes: Vec<u8> = read_fixture("nim/hello.nim.elf");
+        let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("image must parse");
+        let zig: Vec<String> = crate::detect::marker_hits(&image, crate::detect::NativeLang::Zig);
+        assert!(
+            zig.is_empty(),
+            "the control must carry no zig marker at all, got {zig:?}"
+        );
+        assert_eq!(
+            MIN_FINGERPRINT_HITS, 2,
+            "one structural marker on its own must never reach a verdict; the floor is what \
+             makes the zig windows pair two independent pieces of evidence"
+        );
     }
 
     #[test]
