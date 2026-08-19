@@ -109,6 +109,15 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
          instructions table gained a caller and started naming functions in a stripped libapp",
     ),
     (
+        "disrobe-pass-nativelang",
+        1,
+        "marker_hits is a diagnostic accessor, not a promised capability: it returns which language \
+         markers a candidate image carries so the detection tests can pin each committed build's \
+         exact hit count and its margin above the chain confidence floor. Those counts are the \
+         guard on a scoring formula that lowers confidence when a marker is added, so the accessor \
+         earns its place even though no consumer surface calls it",
+    ),
+    (
         "disrobe-pass-native",
         63,
         "the largest single group in this sweep: convenience wrappers over a sibling variant the \
