@@ -1019,6 +1019,64 @@ fn the_two_graded_zig_builds_are_different_optimisation_modes() {
     }
 }
 
+#[test]
+fn every_recorded_toolchain_version_is_backed_by_the_artifact_or_its_provenance() {
+    assert!(
+        contains(&fixture_or_fail(NIM_ELF), "nim-2.0.8"),
+        "the nim equivalence cases report nim 2.0.8, so the graded artifact must carry that \
+         version string"
+    );
+    assert!(
+        contains(&fixture_or_fail(ZIG_ELF), "zig 0.13.0"),
+        "the zig safety-checked mode is reported as zig 0.13.0, so the graded artifact must carry \
+         that version string"
+    );
+    let mm: Vec<u8> = crate_fixture_or_fail("nim_mm/mm_arc.exe");
+    assert!(
+        contains(&mm, "MinGW-W64") && contains(&mm, "13.2.0"),
+        "the nim memory-management modes are reported as mingw-w64 gcc 13.2.0 builds, so the \
+         graded artifacts must carry that backend string"
+    );
+    let crystal: Vec<u8> = fixture_or_fail(CRYSTAL_PE);
+    for spelling in ["Crystal 1.", "crystal-1.", "Crystal 0.", "crystal-0."] {
+        assert!(
+            !contains(&crystal, spelling),
+            "the crystal build mode is reported as version-unrecorded, but the artifact carries \
+             {spelling}; record the real version instead"
+        );
+    }
+
+    let provenance: PathBuf = crate_fixture_path("zig_modes/provenance.toml");
+    let text: String = std::fs::read_to_string(&provenance).unwrap_or_else(|error| {
+        panic!(
+            "{} records the pinned toolchain for the ReleaseFast fixture: {error}",
+            provenance.display()
+        )
+    });
+    for required in [
+        "producer = \"zig 0.16.0\"",
+        "build_mode = \"ReleaseFast\"",
+        "target = \"x86_64-linux-gnu\"",
+        "zig build-exe arith.zig -OReleaseFast",
+    ] {
+        assert!(
+            text.contains(required),
+            "the zig fixture provenance must record {required}"
+        );
+    }
+    for case in ZIG_CASES {
+        assert!(
+            text.contains(&format!("\"{}\",", case.name)),
+            "the zig fixture provenance must list {} among the graded functions",
+            case.name
+        );
+    }
+    assert!(
+        text.contains("\"dr_rotl\""),
+        "the zig fixture provenance must record dr_rotl as the abstaining function"
+    );
+}
+
 fn contains(haystack: &[u8], needle: &str) -> bool {
     let needle: &[u8] = needle.as_bytes();
     haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
