@@ -8,7 +8,7 @@ pub mod chain_detector;
 pub(crate) mod debug;
 pub mod defers;
 pub mod dwarf;
-pub mod embed_digest;
+mod embed_digest;
 pub mod embed_fs;
 pub mod error;
 pub mod format_wire;

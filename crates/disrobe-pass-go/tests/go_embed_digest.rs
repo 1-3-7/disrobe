@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use disrobe_pass_go::{EmbedDigestFamily, EmbedFile, EmbedMap, GoAnalysis, analyze, embed_digest};
+use disrobe_pass_go::{EmbedDigestFamily, EmbedFile, EmbedMap, GoAnalysis, analyze};
 
 fn repository_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,58 +19,6 @@ fn required_bytes(path: &Path) -> Vec<u8> {
             path.display()
         ),
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte: &u8| format!("{byte:02x}"))
-        .collect::<Vec<String>>()
-        .concat()
-}
-
-#[test]
-fn sha256_core_matches_the_published_test_vectors() {
-    let empty: [u8; 32] = embed_digest::sha256(b"");
-    assert_eq!(
-        hex(&empty),
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "SHA-256 of the empty string must match FIPS 180-4"
-    );
-    let abc: [u8; 32] = embed_digest::sha256(b"abc");
-    assert_eq!(
-        hex(&abc),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-        "SHA-256 of \"abc\" must match FIPS 180-4"
-    );
-    let two_block: [u8; 32] =
-        embed_digest::sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
-    assert_eq!(
-        hex(&two_block),
-        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
-        "SHA-256 of the two-block FIPS 180-4 message must match"
-    );
-    let million: Vec<u8> = vec![b'a'; 1_000_000];
-    assert_eq!(
-        hex(&embed_digest::sha256(&million)),
-        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
-        "SHA-256 of one million 'a' must match FIPS 180-4"
-    );
-}
-
-#[test]
-fn notsha256_differs_from_sha256_only_by_the_complemented_initial_state() {
-    let plain: [u8; 32] = embed_digest::sha256(b"abc");
-    let flipped: [u8; 32] = embed_digest::notsha256(b"abc");
-    assert_ne!(
-        plain, flipped,
-        "the toolchain digest must not equal plain SHA-256"
-    );
-    assert_eq!(
-        hex(&flipped).len(),
-        64,
-        "the toolchain digest must still be 32 bytes wide"
-    );
 }
 
 fn sole_map(analysis: &GoAnalysis, image: &str) -> EmbedMap {

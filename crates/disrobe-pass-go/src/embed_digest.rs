@@ -219,14 +219,14 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_LEN]) {
 }
 
 #[must_use]
-pub fn sha256(data: &[u8]) -> [u8; 32] {
+fn sha256(data: &[u8]) -> [u8; 32] {
     let mut core: Sha256Core = Sha256Core::with_initial(SHA256_INITIAL);
     core.update(data);
     core.finish()
 }
 
 #[must_use]
-pub fn notsha256(data: &[u8]) -> [u8; 32] {
+fn notsha256(data: &[u8]) -> [u8; 32] {
     let mut core: Sha256Core = Sha256Core::with_initial(NOTSHA256_INITIAL);
     core.update(data);
     core.finish()
@@ -255,7 +255,7 @@ impl EmbedDigestConstruction {
     }
 
     #[must_use]
-    pub fn stored(self, data: &[u8]) -> StoredDigest {
+    pub(crate) fn stored(self, data: &[u8]) -> StoredDigest {
         let full: [u8; 32] = match self {
             Self::NotSha256 => notsha256(data),
             Self::Sha256Plain => sha256(data),
@@ -279,11 +279,6 @@ impl EmbedDigestConstruction {
         let mut stored: StoredDigest = [0; STORED_DIGEST_LEN];
         stored.copy_from_slice(&full[..STORED_DIGEST_LEN]);
         stored
-    }
-
-    #[must_use]
-    pub fn verifies(self, data: &[u8], expected: StoredDigest) -> bool {
-        self.stored(data) == expected
     }
 }
 
@@ -340,12 +335,12 @@ impl EmbedDigestFamily {
     }
 
     #[must_use]
-    pub fn stored(self, data: &[u8]) -> StoredDigest {
+    pub(crate) fn stored(self, data: &[u8]) -> StoredDigest {
         self.construction_for_len(data.len()).stored(data)
     }
 
     #[must_use]
-    pub fn verifies(self, data: &[u8], expected: StoredDigest) -> bool {
+    pub(crate) fn verifies(self, data: &[u8], expected: StoredDigest) -> bool {
         self.stored(data) == expected
     }
 }
@@ -359,7 +354,7 @@ pub struct FamilyResolution {
 }
 
 #[must_use]
-pub fn resolve_family(pairs: &[(&[u8], StoredDigest)]) -> Option<FamilyResolution> {
+pub(crate) fn resolve_family(pairs: &[(&[u8], StoredDigest)]) -> Option<FamilyResolution> {
     if pairs.is_empty() {
         return None;
     }
@@ -392,7 +387,7 @@ pub fn resolve_family(pairs: &[(&[u8], StoredDigest)]) -> Option<FamilyResolutio
 
 #[cfg(test)]
 mod tests {
-    use super::{EmbedDigestConstruction, StoredDigest};
+    use super::{EmbedDigestConstruction, StoredDigest, notsha256, sha256};
 
     const ALL: [EmbedDigestConstruction; 5] = [
         EmbedDigestConstruction::NotSha256,
@@ -401,6 +396,50 @@ mod tests {
         EmbedDigestConstruction::Sha256FlipLowByte,
         EmbedDigestConstruction::Sha256Plain,
     ];
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes
+            .iter()
+            .map(|byte: &u8| format!("{byte:02x}"))
+            .collect::<Vec<String>>()
+            .concat()
+    }
+
+    #[test]
+    fn the_core_matches_the_published_test_vectors() {
+        assert_eq!(
+            hex(&sha256(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "SHA-256 of the empty string must match FIPS 180-4"
+        );
+        assert_eq!(
+            hex(&sha256(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "SHA-256 of \"abc\" must match FIPS 180-4"
+        );
+        assert_eq!(
+            hex(&sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            "SHA-256 of the two-block FIPS 180-4 message must match"
+        );
+        let million: Vec<u8> = vec![b'a'; 1_000_000];
+        assert_eq!(
+            hex(&sha256(&million)),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            "SHA-256 of one million 'a' must match FIPS 180-4"
+        );
+    }
+
+    #[test]
+    fn the_toolchain_core_differs_from_plain_sha256() {
+        assert_ne!(
+            sha256(b"abc"),
+            notsha256(b"abc"),
+            "the toolchain digest must not equal plain SHA-256"
+        );
+    }
 
     #[test]
     fn every_construction_is_distinct_on_the_same_input() {
