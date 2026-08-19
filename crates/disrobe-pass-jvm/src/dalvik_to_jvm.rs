@@ -3854,7 +3854,7 @@ const fn is_shift(op: u8) -> bool {
 
 #[cfg(any(test, feature = "lifter-diag"))]
 fn is_synthetic_class(descriptor: &str) -> bool {
-    let inner: &str = descriptor.trim_start_matches('L').trim_end_matches(';');
+    let inner: &str = crate::descriptor::descriptor_to_binary_name(descriptor);
     inner
         .rsplit('$')
         .next()

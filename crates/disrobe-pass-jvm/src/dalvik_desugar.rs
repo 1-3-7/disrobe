@@ -329,10 +329,7 @@ fn scan_references<'a>(
         .iter()
         .map(|companion: &String| {
             (
-                companion
-                    .trim_start_matches('L')
-                    .trim_end_matches(';')
-                    .replace('/', "."),
+                crate::descriptor::descriptor_to_binary_name(companion).replace('/', "."),
                 companion.clone(),
             )
         })
@@ -1615,10 +1612,7 @@ fn exclusively_constructed(
         .iter()
         .map(|class: &String| {
             (
-                class
-                    .trim_start_matches('L')
-                    .trim_end_matches(';')
-                    .replace('/', "."),
+                crate::descriptor::descriptor_to_binary_name(class).replace('/', "."),
                 class.clone(),
             )
         })

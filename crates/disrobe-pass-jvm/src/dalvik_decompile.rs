@@ -50,9 +50,7 @@ fn dex_declared_identifiers(dex: &DexFile) -> std::collections::BTreeSet<String>
         names.insert(field.name.clone());
     }
     for descriptor_name in &dex.class_descriptors {
-        let trimmed: &str = descriptor_name
-            .trim_start_matches('L')
-            .trim_end_matches(';');
+        let trimmed: &str = crate::descriptor::descriptor_to_binary_name(descriptor_name);
         for segment in trimmed.rsplit('/').take(1).flat_map(|s: &str| s.split('$')) {
             names.insert(segment.to_owned());
         }

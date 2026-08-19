@@ -62,8 +62,16 @@ pub fn binary_to_source(internal: &str) -> String {
     binary_name_to_source(internal)
 }
 
+#[must_use]
+pub fn descriptor_to_binary_name(internal: &str) -> &str {
+    internal
+        .strip_prefix('L')
+        .and_then(|rest: &str| rest.strip_suffix(';'))
+        .unwrap_or(internal)
+}
+
 fn binary_name_to_source(internal: &str) -> String {
-    let trimmed: &str = internal.trim_start_matches('L').trim_end_matches(';');
+    let trimmed: &str = descriptor_to_binary_name(internal);
     let rewritten: String = crate::name_disambig::rewrite_active(trimmed);
     let slashed: String = rewritten.replace('/', ".");
     let dotted: String = nested_separator_to_dot(&slashed);
@@ -235,5 +243,22 @@ mod tests {
     fn renders_fully_qualified_non_java_lang() {
         let t: JavaType = parse_field("Lcom/example/Foo;").unwrap();
         assert_eq!(t.render(), "com.example.Foo");
+    }
+
+    #[test]
+    fn a_class_whose_name_starts_with_l_keeps_every_letter() {
+        assert_eq!(binary_to_source("LL;"), "L");
+        assert_eq!(binary_to_source("LLL;"), "LL");
+        assert_eq!(binary_to_source("LLambdaProbe;"), "LambdaProbe");
+        assert_eq!(binary_to_source("Lcom/example/LList;"), "com.example.LList");
+        assert_eq!(binary_to_source("Ljava/lang/Long;"), "Long");
+        assert_eq!(parse_field("[LL;").expect("an array of L").render(), "L[]");
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_descriptor_is_left_alone() {
+        assert_eq!(binary_to_source("java/lang/String"), "String");
+        assert_eq!(binary_to_source("com/example/Foo"), "com.example.Foo");
+        assert_eq!(binary_to_source("I"), "I");
     }
 }
