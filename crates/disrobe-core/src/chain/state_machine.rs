@@ -650,7 +650,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     );
                                     continue;
                                 };
-                                if next_bytes.is_empty() {
+                                if next_bytes.is_empty() && !ch.is_terminal() {
                                     push_terminal_layer(
                                         &mut nodes,
                                         layer_id,
@@ -2285,6 +2285,65 @@ mod tests {
             matches!(plan.verdict, Verdict::Error { .. }),
             "a carved child that no pass can recover keeps reporting the failure; got {:?}",
             plan.verdict
+        );
+    }
+
+    #[test]
+    fn a_terminal_child_with_no_bytes_is_still_written_out() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: Vec::new(),
+                    kind: OutputKind::Mixed {
+                        children: vec![
+                            ChildHandle {
+                                artifact_index: 0,
+                                relative_path: "tree/empty.txt".to_string(),
+                                hint: Some(super::super::detection::TERMINAL_HINT.to_string()),
+                            },
+                            ChildHandle {
+                                artifact_index: 1,
+                                relative_path: "tree/filled.txt".to_string(),
+                                hint: Some(super::super::detection::TERMINAL_HINT.to_string()),
+                            },
+                        ],
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: vec![Vec::new(), b"content".to_vec()],
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+
+        let written: Vec<(&str, usize)> = plan
+            .extracted
+            .iter()
+            .map(|e: &ExtractedArtifact| (e.relative_path.as_str(), e.bytes.len()))
+            .collect();
+        assert_eq!(
+            written,
+            vec![("tree/empty.txt", 0), ("tree/filled.txt", 7)],
+            "a recovered member of zero length is a result, not an absence, so it must be \
+             written alongside the others rather than dropped"
+        );
+
+        let stalled: usize = plan
+            .nodes
+            .iter()
+            .filter(|n: &&Node| matches!(n.verdict, Verdict::Stalled))
+            .count();
+        assert_eq!(
+            stalled, 0,
+            "a terminal child carries no further recovery, so an empty one is Extracted rather \
+             than Stalled"
         );
     }
 
