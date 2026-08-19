@@ -17,13 +17,13 @@ use disrobe_core::{Artifact, Rung};
 use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{Error, PhpKind, detect_php, parse_oparray};
-use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
-use std::io::Write as _;
+use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const HELLO_DZOA: &[u8] = include_bytes!("fixtures/protector_oparray/hello.dzoa");
 const GENERATOR_DZOA: &[u8] = include_bytes!("fixtures/oparray_generator/generators.dzoa");
+const NESTED_LEVELS_DZOA: &[u8] = include_bytes!("fixtures/oparray_loops/nested_levels.dzoa");
 
 const T_UNUSED: u8 = 0;
 const T_CONST: u8 = 1;
@@ -367,12 +367,7 @@ fn compiler_dump(php: &PhpRuntime, source: &str) -> Option<String> {
     let source_path: PathBuf = scratch.path().join("switch.php");
     let dzoa_path: PathBuf = scratch.path().join("switch.dzoa");
     let dump_path: PathBuf = scratch.path().join("switch.dump");
-    let mut source_file: std::fs::File =
-        std::fs::File::create(&source_path).expect("create compiler source");
-    source_file
-        .write_all(source.as_bytes())
-        .expect("write compiler source");
-    drop(source_file);
+    write_opcache_source(&source_path, source.as_bytes()).expect("write compiler source");
     let emitter: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -819,6 +814,48 @@ fn registered_pass_recovers_generator_yield_and_delegation() {
     assert!(source.contains("yield 'first';"), "{source}");
     assert!(source.contains("yield 'label' => 'keyed';"), "{source}");
     assert!(source.contains("yield from $items;"), "{source}");
+}
+
+#[test]
+fn registered_pass_recovers_multi_level_break_and_continue() {
+    let wire: &[u8] = NESTED_LEVELS_DZOA;
+    let verdict: DetectVerdict = Detector::detect(&PhpDetectorImpl, &context(wire))
+        .expect("the registered PHP detector must recognize the nested-loop op array");
+    assert_eq!(verdict.pass_id, "php.peel");
+    assert_eq!(verdict.format_tag, "php-oparray");
+
+    let input: Artifact = Artifact::new(Rung::Raw, wire.to_vec(), [0x64; 32]);
+    let output: Artifact = PHP_PASS
+        .run(&input)
+        .expect("the registered pass must recover the nested-loop op array");
+    let source: &str =
+        std::str::from_utf8(&output.envelope).expect("recovered source must be UTF-8");
+    assert_eq!(output.rung, Rung::Surface);
+    for statement in ["continue 2;", "break 2;", "continue 3;", "break 3;"] {
+        assert!(
+            source.lines().any(|line: &str| line.trim() == statement),
+            "the registered pass must reach the loop-jump recovery and emit {statement}\n{source}"
+        );
+    }
+    assert!(source.contains("for (; $x < 3; ++$x) {"), "{source}");
+    assert!(!source.contains("disrobe: unrecovered"), "{source}");
+
+    let Some(php): Option<PhpRuntime> =
+        require_php("the registered pass multi-level loop-jump runtime equivalence")
+    else {
+        return;
+    };
+    let original: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("oparray_loops")
+        .join("nested_levels.php");
+    let tracked: Vec<u8> = std::fs::read(&original).expect("read the tracked nested-loop source");
+    assert_eq!(
+        php.stdout_of("registered nested-loop recovered", source.as_bytes()),
+        php.stdout_of("registered nested-loop original", &tracked),
+        "{source}"
+    );
 }
 
 #[test]

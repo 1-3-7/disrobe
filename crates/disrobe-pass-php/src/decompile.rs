@@ -23,6 +23,9 @@ const SANE_ROPE_WORK_CAP: usize = 1 << 16;
 const SANE_SWITCH_ARM_CAP: usize = 1 << 16;
 const SANE_SWITCH_LABEL_WORK_CAP: usize = 1 << 20;
 const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
+const SANE_LOOP_RELIFT_WORK_CAP: usize = 1 << 20;
+const SANE_FOR_STEP_CAP: usize = 16;
+const SANE_LOOP_EXIT_FREE_CAP: u32 = SANE_LIFT_DEPTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -1096,10 +1099,17 @@ enum Stmt {
         cond: String,
         body: Vec<Self>,
     },
+    For {
+        cond: String,
+        step: Vec<String>,
+        body: Vec<Self>,
+    },
     DoWhile {
         cond: String,
         body: Vec<Self>,
     },
+    Break(u32),
+    Continue(u32),
     Foreach {
         subject: String,
         key: Option<String>,
@@ -1147,6 +1157,13 @@ impl Stmt {
                 }
                 emitter.line(indent, "}");
             }
+            Self::For { cond, step, body } => {
+                emitter.line(indent, &format!("for (; {cond}; {}) {{", step.join(", ")));
+                for stmt in body {
+                    stmt.render_into(emitter, indent + 1);
+                }
+                emitter.line(indent, "}");
+            }
             Self::DoWhile { cond, body } => {
                 emitter.line(indent, "do {");
                 for stmt in body {
@@ -1154,6 +1171,22 @@ impl Stmt {
                 }
                 emitter.line(indent, &format!("}} while ({cond});"));
             }
+            Self::Break(level) => emitter.line(
+                indent,
+                &if *level > 1 {
+                    format!("break {level};")
+                } else {
+                    "break;".to_owned()
+                },
+            ),
+            Self::Continue(level) => emitter.line(
+                indent,
+                &if *level > 1 {
+                    format!("continue {level};")
+                } else {
+                    "continue;".to_owned()
+                },
+            ),
             Self::Foreach {
                 subject,
                 key,
@@ -1205,13 +1238,23 @@ struct PendingCall {
     result: Option<(OperandType, u32, u32)>,
 }
 
-struct SwitchLiftSnapshot {
+struct LiftSnapshot {
     slots: BTreeMap<(OperandType, u32), Expr>,
     call_stack: Vec<PendingCall>,
     reserved_names: BTreeSet<String>,
     writable_slots: BTreeMap<(OperandType, u32), u32>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
+}
+
+#[derive(Debug, Clone)]
+struct BreakableFrame {
+    body_start: u32,
+    body_end: u32,
+    continue_target: u32,
+    break_target: u32,
+    iterator: Option<(OperandType, u32)>,
+    unexplained_targets: BTreeSet<u32>,
 }
 
 struct SwitchArmPlan {
@@ -1248,6 +1291,8 @@ struct Lifter<'a> {
     writable_slots: BTreeMap<(OperandType, u32), u32>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
+    breakables: Vec<BreakableFrame>,
+    relift_work: usize,
 }
 
 impl<'a> Lifter<'a> {
@@ -1310,6 +1355,8 @@ impl<'a> Lifter<'a> {
             writable_slots: BTreeMap::new(),
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
+            breakables: Vec::new(),
+            relift_work: 0,
         }
     }
 
@@ -1366,7 +1413,15 @@ impl<'a> Lifter<'a> {
             }
             o if o == op::JMPZ_EX || o == op::JMPNZ_EX => self.fold_short_circuit(i, end),
             o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
-            o if o == op::JMP => self.structure_while(i, end, depth),
+            o if o == op::JMP => {
+                let structured: Option<(Vec<Stmt>, u32)> = self
+                    .structure_while(i, end, depth)
+                    .or_else(|| self.structure_loop_jump(i));
+                if structured.is_none() {
+                    self.record_unexplained_jump(i);
+                }
+                structured
+            }
             o if o == op::JMPZ => self
                 .structure_ternary(i, end)
                 .or_else(|| self.structure_if(i, end, depth)),
@@ -1794,6 +1849,9 @@ impl<'a> Lifter<'a> {
         let mut join: Option<u32> = default_is_join.then_some(default_target);
         for target_index in 1..targets.len() {
             let boundary: u32 = targets.get(target_index)?.checked_sub(1)?;
+            if self.exits_enclosing_loop(boundary) {
+                continue;
+            }
             let terminator: &Op = self.ops.get(boundary as usize)?;
             if terminator.opcode == op::JMP && terminator.op1 > max_target && terminator.op1 <= end
             {
@@ -1857,9 +1915,10 @@ impl<'a> Lifter<'a> {
                 return None;
             }
             let terminal_index: u32 = boundary.checked_sub(1)?;
+            let exits_loop: bool = self.exits_enclosing_loop(terminal_index);
             let terminal: &Op = self.ops.get(terminal_index as usize)?;
-            let breaks: bool = terminal.opcode == op::JMP && terminal.op1 == join;
-            let terminates: bool = !breaks && is_switch_terminal(terminal.opcode);
+            let breaks: bool = !exits_loop && terminal.opcode == op::JMP && terminal.op1 == join;
+            let terminates: bool = !breaks && (exits_loop || is_switch_terminal(terminal.opcode));
             let body_end: u32 = if breaks { terminal_index } else { boundary };
             arm_plans.push(SwitchArmPlan {
                 target,
@@ -1869,7 +1928,7 @@ impl<'a> Lifter<'a> {
                 terminates,
             });
         }
-        let snapshot: SwitchLiftSnapshot = self.switch_lift_snapshot();
+        let snapshot: LiftSnapshot = self.lift_snapshot();
         let mut fallthrough_slots: Option<BTreeMap<(OperandType, u32), Expr>> = None;
         let mut fallthrough_writable: Option<BTreeMap<(OperandType, u32), u32>> = None;
         let mut exit_slots: Vec<BTreeMap<(OperandType, u32), Expr>> = if default_is_join {
@@ -1896,9 +1955,19 @@ impl<'a> Lifter<'a> {
                     Self::common_writable_slots(&incoming_writable, prior)
                 },
             );
-            let body: Vec<Stmt> = self.lift_range(arm_plan.target, arm_plan.body_end, depth + 1);
+            let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+                BreakableFrame {
+                    body_start: arm_plan.target,
+                    body_end: arm_plan.body_end,
+                    continue_target: join,
+                    break_target: join,
+                    iterator: None,
+                    unexplained_targets: BTreeSet::new(),
+                },
+                depth,
+            );
             if !self.call_stack.is_empty() {
-                self.restore_switch_lift_snapshot(snapshot);
+                self.restore_lift_snapshot(snapshot);
                 return None;
             }
             if arm_plan.breaks {
@@ -1946,8 +2015,8 @@ impl<'a> Lifter<'a> {
         Some((vec![Stmt::Switch { subject, arms }], next))
     }
 
-    fn switch_lift_snapshot(&self) -> SwitchLiftSnapshot {
-        SwitchLiftSnapshot {
+    fn lift_snapshot(&self) -> LiftSnapshot {
+        LiftSnapshot {
             slots: self.slots.clone(),
             call_stack: self.call_stack.clone(),
             reserved_names: self.reserved_names.clone(),
@@ -1957,7 +2026,7 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn restore_switch_lift_snapshot(&mut self, snapshot: SwitchLiftSnapshot) {
+    fn restore_lift_snapshot(&mut self, snapshot: LiftSnapshot) {
         self.slots = snapshot.slots;
         self.call_stack = snapshot.call_stack;
         self.reserved_names = snapshot.reserved_names;
@@ -2037,7 +2106,17 @@ impl<'a> Lifter<'a> {
         let jump: Op = self.ops.get(jump_idx as usize)?.clone();
         let negate: bool = jump.opcode == op::JMPZ;
         let cond_start: u32 = self.condition_start(&jump, i, jump_idx);
-        let body: Vec<Stmt> = self.lift_range(i, cond_start, depth + 1);
+        let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start: i,
+                body_end: cond_start,
+                continue_target: cond_start,
+                break_target: jump_idx + 1,
+                iterator: None,
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
         let cond_expr: Expr = self.lift_condition(cond_start, jump_idx, &jump)?;
         let cond_text: String = if negate {
             format!("!({})", cond_expr.wrapped(PREC_CALL))
@@ -2410,7 +2489,13 @@ impl<'a> Lifter<'a> {
         let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let then_last: u32 = target - 1;
         let then_terminator: &Op = self.ops.get(then_last as usize)?;
-        if then_terminator.opcode == op::JMP {
+        let then_exits_loop: bool = then_terminator.opcode == op::JMP
+            && self
+                .loop_jump_level(then_terminator.op1, then_last)
+                .is_some_and(|(position, _): (usize, bool)| {
+                    self.exit_frees_match(then_last, position)
+                });
+        if then_terminator.opcode == op::JMP && !then_exits_loop {
             let join: u32 = then_terminator.op1;
             if join > target && join <= end {
                 self.slots = incoming_slots.clone();
@@ -2505,15 +2590,233 @@ impl<'a> Lifter<'a> {
         if cond_op.op2 != i + 1 {
             return None;
         }
-        let body: Vec<Stmt> = self.lift_range(i + 1, cond_block, depth + 1);
+        let after_loop: u32 = tail + 1;
+        let body_start: u32 = i + 1;
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let (body, unexplained): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start,
+                body_end: cond_block,
+                continue_target: cond_block,
+                break_target: after_loop,
+                iterator: None,
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
+        let refused_as_while: usize = self.unrecovered.len() - snapshot.unrecovered.len();
+        if let Some(step_start) = self.for_step_start(&unexplained, body_start, cond_block)
+            && let Some(statements) = self.relift_for(
+                snapshot,
+                body_start,
+                step_start,
+                cond_block,
+                after_loop,
+                depth,
+                refused_as_while,
+            )
+        {
+            let (for_body, step): (Vec<Stmt>, Vec<String>) = statements;
+            let cond_expr: Expr = self.lift_condition(cond_block, tail, cond_op)?;
+            return Some((
+                vec![Stmt::For {
+                    cond: cond_expr.text,
+                    step,
+                    body: for_body,
+                }],
+                after_loop,
+            ));
+        }
         let cond_expr: Expr = self.lift_condition(cond_block, tail, cond_op)?;
         Some((
             vec![Stmt::While {
                 cond: cond_expr.text,
                 body,
             }],
-            tail + 1,
+            after_loop,
         ))
+    }
+
+    fn lift_breakable_body(
+        &mut self,
+        frame: BreakableFrame,
+        depth: u32,
+    ) -> (Vec<Stmt>, BTreeSet<u32>) {
+        let start: u32 = frame.body_start;
+        let end: u32 = frame.body_end;
+        self.breakables.push(frame);
+        let body: Vec<Stmt> = self.lift_range(start, end, depth + 1);
+        let popped: Option<BreakableFrame> = self.breakables.pop();
+        let unexplained: BTreeSet<u32> = popped
+            .map_or_else(BTreeSet::new, |frame: BreakableFrame| {
+                frame.unexplained_targets
+            });
+        (body, unexplained)
+    }
+
+    fn for_step_start(
+        &self,
+        unexplained: &BTreeSet<u32>,
+        body_start: u32,
+        cond_block: u32,
+    ) -> Option<u32> {
+        let mut inner: std::collections::btree_set::Iter<'_, u32> = unexplained.iter();
+        let step_start: u32 = *inner.next()?;
+        if inner.next().is_some() {
+            return None;
+        }
+        if step_start <= body_start || step_start >= cond_block {
+            return None;
+        }
+        let width: usize = (cond_block - step_start) as usize;
+        if width > SANE_FOR_STEP_CAP {
+            return None;
+        }
+        let step_is_straight_line: bool = (step_start..cond_block).all(|index: u32| {
+            self.ops
+                .get(index as usize)
+                .is_some_and(|op: &Op| op.branch_target() == Branch::None)
+        });
+        step_is_straight_line.then_some(step_start)
+    }
+
+    fn relift_for(
+        &mut self,
+        snapshot: LiftSnapshot,
+        body_start: u32,
+        step_start: u32,
+        cond_block: u32,
+        after_loop: u32,
+        depth: u32,
+        refused_as_while: usize,
+    ) -> Option<(Vec<Stmt>, Vec<String>)> {
+        let work: usize = (cond_block - body_start) as usize;
+        self.relift_work = loop_relift_charge(self.relift_work, work)?;
+        let restored: LiftSnapshot = self.lift_snapshot();
+        let baseline: usize = snapshot.unrecovered.len();
+        self.restore_lift_snapshot(snapshot);
+        let (body, unexplained): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start,
+                body_end: step_start,
+                continue_target: step_start,
+                break_target: after_loop,
+                iterator: None,
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
+        let step_stmts: Vec<Stmt> = self.lift_range(step_start, cond_block, depth + 1);
+        let step: Option<Vec<String>> = step_stmts
+            .iter()
+            .map(|stmt: &Stmt| match stmt {
+                Stmt::Line(text) => Some(text.trim_end_matches(';').to_owned()),
+                _ => None,
+            })
+            .collect();
+        let refused_as_for: usize = self.unrecovered.len() - baseline;
+        match step {
+            Some(step)
+                if !step.is_empty()
+                    && unexplained.is_empty()
+                    && refused_as_for <= refused_as_while =>
+            {
+                Some((body, step))
+            }
+            _ => {
+                self.restore_lift_snapshot(restored);
+                None
+            }
+        }
+    }
+
+    fn record_unexplained_jump(&mut self, idx: u32) {
+        let Some(target): Option<u32> = self
+            .ops
+            .get(idx as usize)
+            .filter(|op: &&Op| op.opcode == op::JMP)
+            .map(|op: &Op| op.op1)
+        else {
+            return;
+        };
+        let holder: Option<&mut BreakableFrame> =
+            self.breakables
+                .iter_mut()
+                .rev()
+                .find(|frame: &&mut BreakableFrame| {
+                    target > frame.body_start && target < frame.body_end
+                });
+        if let Some(frame) = holder {
+            frame.unexplained_targets.insert(target);
+        }
+    }
+
+    fn loop_jump_level(&self, target: u32, index: u32) -> Option<(usize, bool)> {
+        self.breakables.iter().enumerate().rev().find_map(
+            |(position, frame): (usize, &BreakableFrame)| {
+                if index < frame.body_start || index >= frame.body_end {
+                    return None;
+                }
+                if frame.break_target == target {
+                    return Some((position, true));
+                }
+                (frame.continue_target == target).then_some((position, false))
+            },
+        )
+    }
+
+    fn exits_enclosing_loop(&self, index: u32) -> bool {
+        self.ops
+            .get(index as usize)
+            .filter(|op: &&Op| op.opcode == op::JMP)
+            .and_then(|op: &Op| self.loop_jump_level(op.op1, index))
+            .is_some_and(|(position, _): (usize, bool)| self.exit_frees_match(index, position))
+    }
+
+    fn structure_loop_jump(&self, i: u32) -> Option<(Vec<Stmt>, u32)> {
+        let jump: &Op = self.ops.get(i as usize)?;
+        if jump.opcode != op::JMP {
+            return None;
+        }
+        let target: u32 = jump.op1;
+        let (position, is_break): (usize, bool) = self.loop_jump_level(target, i)?;
+        if !self.exit_frees_match(i, position) {
+            return None;
+        }
+        let level: u32 = u32::try_from(self.breakables.len() - position).ok()?;
+        let stmt: Stmt = if is_break {
+            Stmt::Break(level)
+        } else {
+            Stmt::Continue(level)
+        };
+        Some((vec![stmt], i + 1))
+    }
+
+    fn exit_frees_match(&self, index: u32, position: usize) -> bool {
+        let expected: Vec<(OperandType, u32)> = self
+            .breakables
+            .iter()
+            .skip(position + 1)
+            .rev()
+            .filter_map(|frame: &BreakableFrame| frame.iterator)
+            .collect();
+        if u32::try_from(expected.len()).is_ok_and(|count: u32| count > SANE_LOOP_EXIT_FREE_CAP) {
+            return false;
+        }
+        let mut cursor: u32 = index;
+        for iterator in expected {
+            let Some(previous): Option<u32> = cursor.checked_sub(1) else {
+                return false;
+            };
+            let Some(free): Option<&Op> = self.ops.get(previous as usize) else {
+                return false;
+            };
+            if free.opcode != op::FE_FREE || (free.op1_type, free.op1) != iterator {
+                return false;
+            }
+            cursor = previous;
+        }
+        true
     }
 
     fn lift_condition(&mut self, start: u32, jump_idx: u32, jump_op: &Op) -> Option<Expr> {
@@ -2560,7 +2863,17 @@ impl<'a> Lifter<'a> {
         if back.opcode != op::JMP || back.op1 != fetch_idx {
             return None;
         }
-        let body: Vec<Stmt> = self.lift_range(body_start, body_end, depth + 1);
+        let (body, _): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
+            BreakableFrame {
+                body_start,
+                body_end,
+                continue_target: fetch_idx,
+                break_target: after_loop,
+                iterator: Some((reset.result_type, reset.result)),
+                unexplained_targets: BTreeSet::new(),
+            },
+            depth,
+        );
         let has_free: bool = self
             .ops
             .get(after_loop as usize)
@@ -2731,7 +3044,10 @@ impl<'a> Lifter<'a> {
                 self.fold_variable_variable(idx, op);
                 None
             }
-            o if o == op::FE_RESET_R || o == op::FE_RESET_RW || o == op::FE_FREE => None,
+            o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
+                Some(self.refuse(idx, o, REASON_ITERATION))
+            }
+            o if o == op::FE_FREE => None,
             o if o == op::VERIFY_RETURN_TYPE || o == op::NOP || o == op::HANDLE_EXCEPTION => None,
             o if o == op::RECV || o == op::RECV_INIT => None,
             o if o == op::INIT_FCALL || o == op::INIT_FCALL_BY_NAME || o == op::INIT_NS_FCALL => {
@@ -3320,6 +3636,11 @@ impl<'a> Lifter<'a> {
     }
 }
 
+fn loop_relift_charge(charged: usize, work: usize) -> Option<usize> {
+    let total: usize = charged.checked_add(work)?;
+    (total <= SANE_LOOP_RELIFT_WORK_CAP).then_some(total)
+}
+
 fn switch_state_work_within_budget(arms: usize, slots: usize, writable_slots: usize) -> bool {
     let Some(state_width): Option<usize> = slots
         .checked_add(writable_slots)
@@ -3415,6 +3736,8 @@ const REASON_EXPRESSION_OPERAND: &str =
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
+const REASON_ITERATION: &str =
+    "the foreach reset, fetch and back edge do not form a php 8 iteration";
 const REASON_ROPE: &str =
     "the rope operands, element indexes or declared length do not form a php 8 rope";
 const REASON_ROPE_BUDGET: &str = "the rope exceeds the bounded php 8 rope folding budget";
@@ -3847,5 +4170,235 @@ mod oparray_bounds_tests {
         );
         assert_eq!(switch_label_work_after(SANE_SWITCH_LABEL_WORK_CAP, 1), None);
         assert_eq!(switch_label_work_after(usize::MAX, 1), None);
+    }
+
+    #[test]
+    fn loop_relift_budget_accepts_the_boundary_and_rejects_one_more() {
+        assert_eq!(
+            loop_relift_charge(0, SANE_LOOP_RELIFT_WORK_CAP),
+            Some(SANE_LOOP_RELIFT_WORK_CAP)
+        );
+        assert_eq!(
+            loop_relift_charge(SANE_LOOP_RELIFT_WORK_CAP - 1, 1),
+            Some(SANE_LOOP_RELIFT_WORK_CAP)
+        );
+        assert_eq!(loop_relift_charge(SANE_LOOP_RELIFT_WORK_CAP, 1), None);
+        assert_eq!(loop_relift_charge(usize::MAX, 1), None);
+    }
+
+    fn jump(opcode: u8, op1: u32, op2: u32) -> Op {
+        Op {
+            opcode,
+            op1_type: if opcode == op::JMPZ {
+                OperandType::Cv
+            } else {
+                OperandType::Unused
+            },
+            op2_type: OperandType::Unused,
+            result_type: OperandType::Unused,
+            op1,
+            op2,
+            result: 0,
+            extended_value: 0,
+            lineno: 0,
+        }
+    }
+
+    fn assign_const(slot: u32) -> Op {
+        Op {
+            opcode: op::ASSIGN,
+            op1_type: OperandType::Cv,
+            op2_type: OperandType::Const,
+            result_type: OperandType::Unused,
+            op1: slot,
+            op2: 1,
+            result: 0,
+            extended_value: 0,
+            lineno: 0,
+        }
+    }
+
+    fn bottom_tested_loop(base: u32, step_width: u32, plain_continues: u32) -> Vec<Op> {
+        let head: u32 = if plain_continues == 0 {
+            base + 3
+        } else {
+            base + 5 + plain_continues * 2
+        };
+        let step_start: u32 = head;
+        let cond_block: u32 = step_start + step_width;
+        let mut ops: Vec<Op> = vec![jump(op::JMP, cond_block, 0)];
+        if plain_continues == 0 {
+            ops.push(jump(op::JMPZ, 0, head));
+            ops.push(jump(op::JMP, step_start, 0));
+        } else {
+            ops.push(jump(op::JMPZ, 0, base + 5));
+            ops.push(jump(op::JMPZ, 0, base + 4));
+            ops.push(jump(op::JMP, step_start, 0));
+            ops.push(assign_const(3));
+            for index in 0..plain_continues {
+                ops.push(jump(op::JMPZ, 0, base + 7 + index * 2));
+                ops.push(jump(op::JMP, cond_block, 0));
+            }
+        }
+        for offset in 0..step_width {
+            ops.push(assign_const(offset + 1));
+        }
+        ops.push(Op {
+            opcode: op::IS_SMALLER,
+            op1_type: OperandType::Cv,
+            op2_type: OperandType::Const,
+            result_type: OperandType::TmpVar,
+            op1: 0,
+            op2: 1,
+            result: 9,
+            extended_value: 0,
+            lineno: 0,
+        });
+        ops.push(Op {
+            opcode: op::JMPNZ,
+            op1_type: OperandType::TmpVar,
+            op2_type: OperandType::Unused,
+            result_type: OperandType::Unused,
+            op1: 9,
+            op2: base + 1,
+            result: 0,
+            extended_value: 0,
+            lineno: 0,
+        });
+        ops
+    }
+
+    fn lift_source(ops: &[Op]) -> String {
+        let literals: Vec<Literal> = vec![Literal::Long(0), Literal::Long(7)];
+        let var_names: Vec<Option<String>> = Vec::new();
+        let node: OpArray = OpArray {
+            kind: OpArrayKind::Main,
+            name: None,
+            class_name: None,
+            num_args: 0,
+            literals,
+            ops: ops.to_vec(),
+            children: Vec::new(),
+            var_names,
+        };
+        decompile(&node).php_skeleton
+    }
+
+    #[test]
+    fn for_step_budget_accepts_the_boundary_and_rejects_one_more() {
+        let accepted: String = lift_source(&bottom_tested_loop(
+            0,
+            u32::try_from(SANE_FOR_STEP_CAP).expect("the for step cap fits a u32"),
+            0,
+        ));
+        assert!(
+            accepted.contains("for (; ") && !accepted.contains("unrecovered"),
+            "a step exactly at the cap must still reconstruct a for header\n{accepted}"
+        );
+        let rejected: String = lift_source(&bottom_tested_loop(
+            0,
+            u32::try_from(SANE_FOR_STEP_CAP + 1).expect("one past the for step cap fits a u32"),
+            0,
+        ));
+        assert!(
+            !rejected.contains("for (; "),
+            "a step one wider than the cap must not reconstruct a for header\n{rejected}"
+        );
+        assert!(
+            rejected.contains("unrecovered ZEND_JMP"),
+            "the continue edge the refused for header cannot explain must be marked\n{rejected}"
+        );
+    }
+
+    #[test]
+    fn a_for_reading_that_explains_less_than_the_while_reading_is_refused() {
+        let source: String = lift_source(&bottom_tested_loop(0, 2, 2));
+        assert!(
+            !source.contains("for (; "),
+            "hoisting the tail into a for step would leave both jumps to the condition \
+             unexplained, which is worse than the while reading it replaces\n{source}"
+        );
+        assert!(
+            source.contains("while ("),
+            "the loop must keep the reading that explains the most jumps\n{source}"
+        );
+        assert_eq!(
+            source
+                .lines()
+                .filter(|line: &&str| line.trim() == "continue;")
+                .count(),
+            2,
+            "both jumps to the condition are while continues\n{source}"
+        );
+        assert_eq!(
+            source.matches("unrecovered ZEND_JMP").count(),
+            1,
+            "only the jump to the tail stays unexplained under the while reading\n{source}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_for_shapes_stay_bounded() {
+        use std::time::{Duration, Instant};
+        const DEPTH: u32 = 40;
+        let mut ops: Vec<Op> = Vec::new();
+        let mut opened: Vec<u32> = Vec::new();
+        for _ in 0..DEPTH {
+            opened.push(u32::try_from(ops.len()).expect("nested loop base fits a u32"));
+            ops.extend([
+                jump(op::JMP, 0, 0),
+                jump(op::JMPZ, 0, 0),
+                jump(op::JMP, 0, 0),
+            ]);
+        }
+        for base in opened.into_iter().rev() {
+            let step_start: u32 = u32::try_from(ops.len()).expect("step start fits a u32");
+            ops.push(assign_const(1));
+            let cond_block: u32 = u32::try_from(ops.len()).expect("condition fits a u32");
+            ops.push(Op {
+                opcode: op::IS_SMALLER,
+                op1_type: OperandType::Cv,
+                op2_type: OperandType::Const,
+                result_type: OperandType::TmpVar,
+                op1: 0,
+                op2: 1,
+                result: 9,
+                extended_value: 0,
+                lineno: 0,
+            });
+            ops.push(Op {
+                opcode: op::JMPNZ,
+                op1_type: OperandType::TmpVar,
+                op2_type: OperandType::Unused,
+                result_type: OperandType::Unused,
+                op1: 9,
+                op2: base + 1,
+                result: 0,
+                extended_value: 0,
+                lineno: 0,
+            });
+            let head: usize = base as usize;
+            ops[head] = jump(op::JMP, cond_block, 0);
+            ops[head + 1] = jump(op::JMPZ, 0, base + 3);
+            ops[head + 2] = jump(op::JMP, step_start, 0);
+        }
+        let start: Instant = Instant::now();
+        let first: String = lift_source(&ops);
+        let elapsed: Duration = start.elapsed();
+        let second: String = lift_source(&ops);
+        assert_eq!(
+            first, second,
+            "a bounded relift must still be deterministic across runs"
+        );
+        assert!(
+            first.contains("for (; "),
+            "the nested shapes must actually reach the relift path, otherwise this measures \
+             nothing about the budget that bounds it\n{first}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "forty nested for shapes took {elapsed:?}; the relift budget is not bounding the \
+             doubled lift"
+        );
     }
 }
