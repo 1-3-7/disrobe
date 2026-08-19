@@ -926,13 +926,21 @@ fn no_cipher_implementation_lives_in_this_crate() {
         .iter()
         .find(|(name, _): &&(String, String)| name == "decode_loop.rs")
         .expect("decode_loop.rs is part of this crate");
-    assert!(
-        interpreter
-            .1
-            .contains("use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt};"),
+    let core_codec_import: Option<&str> = interpreter
+        .1
+        .lines()
+        .find(|line: &&str| line.starts_with("use disrobe_core::codec::{"));
+    let core_codec_import: &str = core_codec_import.expect(
         "the openssl_decrypt evaluator must reach aes through disrobe-core, not through a block \
-         cipher assembled here"
+         cipher assembled here",
     );
+    for symbol in ["CbcPadding", "aes_cbc_decrypt"] {
+        assert!(
+            core_codec_import.contains(symbol),
+            "{symbol} must come from disrobe_core::codec so no block cipher is assembled here, but \
+             the import reads: {core_codec_import}"
+        );
+    }
 }
 
 fn collect_sources(directory: &std::path::Path, out: &mut Vec<(String, String)>) {

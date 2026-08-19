@@ -125,13 +125,36 @@ fn opcache_dll(php: &Path) -> Option<String> {
     opcache_dll_with_explicit(php, explicit)
 }
 
+const WINDOWS_VERBATIM_PREFIX: &str = r"\\?\";
+const WINDOWS_VERBATIM_UNC_PREFIX: &str = r"\\?\UNC\";
+
+fn loadable_extension_path(canonical: &Path) -> Option<String> {
+    let text: String = canonical.to_str()?.to_owned();
+    if let Some(share) = text.strip_prefix(WINDOWS_VERBATIM_UNC_PREFIX) {
+        return Some(format!(r"\\{share}"));
+    }
+    let Some(drive) = text.strip_prefix(WINDOWS_VERBATIM_PREFIX) else {
+        return Some(text);
+    };
+    let mut bytes: std::str::Bytes<'_> = drive.bytes();
+    let letter: bool = bytes
+        .next()
+        .is_some_and(|byte: u8| byte.is_ascii_alphabetic());
+    let colon: bool = bytes.next() == Some(b':');
+    let separator: bool = bytes.next() == Some(b'\\');
+    if letter && colon && separator {
+        return Some(drive.to_owned());
+    }
+    Some(text)
+}
+
 fn opcache_dll_with_explicit(php: &Path, explicit: Option<OsString>) -> Option<String> {
     if let Some(explicit) = explicit {
         let canonical: PathBuf = PathBuf::from(explicit).canonicalize().ok()?;
         if !canonical.is_file() {
             return None;
         }
-        return canonical.into_os_string().into_string().ok();
+        return loadable_extension_path(&canonical);
     }
     let resolved: PathBuf = if php == Path::new("php") {
         let which: std::io::Result<std::process::Output> = Command::new("php")
@@ -1058,7 +1081,21 @@ fn supplied_opcache_path_wins_over_php_sibling_discovery() {
         .expect("canonicalize supplied opcache");
     let actual: String = opcache_dll_with_explicit(&php, Some(supplied.into_os_string()))
         .expect("use supplied opcache");
-    assert_eq!(actual, expected.to_string_lossy());
+    assert!(
+        !actual.starts_with(WINDOWS_VERBATIM_PREFIX),
+        "php rejects a zend_extension path in the windows verbatim form, so a resolver that hands \
+         one back silently disarms every opcache-backed grader: {actual}"
+    );
+    assert!(
+        !actual.contains(r"\.\") && !actual.contains("/./"),
+        "the resolved opcache path still carries an unnormalised component: {actual}"
+    );
+    assert_eq!(
+        PathBuf::from(&actual)
+            .canonicalize()
+            .expect("resolved opcache path must still name the supplied file"),
+        expected
+    );
 }
 
 #[test]

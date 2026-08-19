@@ -209,6 +209,46 @@ pub(crate) fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
 
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
 
+const PHP_RUN_WALL_CLOCK: std::time::Duration = std::time::Duration::from_secs(45);
+const PHP_RUN_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+fn bounded_output(command: &mut Command, label: &str, binary: &Path, script: &Path) -> Output {
+    let mut child: std::process::Child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err: std::io::Error| {
+            panic!(
+                "{label}: {} answered --version a moment ago but could not run {}: {err}",
+                binary.display(),
+                script.display()
+            )
+        });
+    let deadline: std::time::Instant = std::time::Instant::now() + PHP_RUN_WALL_CLOCK;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(err) => panic!("{label}: could not wait for php: {err}"),
+        }
+        if std::time::Instant::now() >= deadline {
+            drop(child.kill());
+            drop(child.wait());
+            panic!(
+                "{label}: php did not finish within {PHP_RUN_WALL_CLOCK:?}, so the source under \
+                 test does not terminate. A recovery that loops forever must fail this comparison \
+                 rather than hang the suite."
+            );
+        }
+        std::thread::sleep(PHP_RUN_POLL);
+    }
+    child
+        .wait_with_output()
+        .unwrap_or_else(|err: std::io::Error| {
+            panic!("{label}: could not collect php output: {err}")
+        })
+}
+
 impl PhpRuntime {
     pub(crate) fn run(&self, label: &str, source: &[u8]) -> PhpRun {
         self.run_with(label, source, &["error_reporting=0", "display_errors=0"])
@@ -244,16 +284,7 @@ impl PhpRuntime {
         for setting in settings {
             command.arg("-d").arg(setting);
         }
-        let output: Output = command
-            .arg(&path)
-            .output()
-            .unwrap_or_else(|err: std::io::Error| {
-                panic!(
-                    "{label}: {} answered --version a moment ago but could not run {}: {err}",
-                    self.binary.display(),
-                    path.display()
-                )
-            });
+        let output: Output = bounded_output(command.arg(&path), label, &self.binary, &path);
         PhpRun {
             exited_clean: output.status.success(),
             stdout: output.stdout,
@@ -425,4 +456,24 @@ pub(crate) fn required_fixture(rel: &str) -> Vec<u8> {
         path.display()
     );
     bytes
+}
+
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+const OPCACHE_SETTLED_EPOCH_DAYS: u64 = 18_262;
+const OPCACHE_SETTLED_MODIFICATION: std::time::Duration =
+    std::time::Duration::from_secs(OPCACHE_SETTLED_EPOCH_DAYS * SECONDS_PER_DAY);
+
+pub(crate) fn write_opcache_source(path: &Path, source: &[u8]) -> Result<(), String> {
+    let mut file: std::fs::File = std::fs::File::create(path)
+        .map_err(|err: std::io::Error| format!("create {}: {err}", path.display()))?;
+    file.write_all(source)
+        .map_err(|err: std::io::Error| format!("write {}: {err}", path.display()))?;
+    file.sync_all()
+        .map_err(|err: std::io::Error| format!("flush {}: {err}", path.display()))?;
+    let settled: std::time::SystemTime =
+        std::time::SystemTime::UNIX_EPOCH + OPCACHE_SETTLED_MODIFICATION;
+    file.set_modified(settled)
+        .map_err(|err: std::io::Error| format!("backdate {}: {err}", path.display()))?;
+    drop(file);
+    Ok(())
 }
