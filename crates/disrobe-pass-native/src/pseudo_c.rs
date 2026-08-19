@@ -16,7 +16,10 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
-use crate::flow_facts::{DirectTrap, x86_direct_trap};
+use crate::flow_facts::{
+    DirectTrap, NoreturnLibraryFunction, NoreturnParameter, noreturn_library_function,
+    x86_direct_trap,
+};
 use crate::structuring;
 
 #[allow(clippy::redundant_pub_crate)]
@@ -1093,6 +1096,7 @@ enum VecStmt {
 enum CallTarget {
     Address(u64),
     DirectTrap(DirectTrap),
+    NoreturnLibrary(&'static NoreturnLibraryFunction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2016,6 +2020,12 @@ fn recover_leaf_function_in_object_with_tail_proofs(
             }
             _ => RipRelativeLeaPolicy::Allow,
         };
+    let transfers: ObjectTransferFacts = disassemble(Arch::X86_64, base, machine_code).map_or_else(
+        |_: Error| ObjectTransferFacts::default(),
+        |insns: Vec<DisasmInsn>| object_transfer_facts(object, base, &insns),
+    );
+    let object_facts: ObjectCallFacts<'_> =
+        ObjectCallFacts::new(proven_integer64_tail_targets, &transfers);
     let straight_err: Error = match recover_leaf_function_calls_with_tail_proofs(
         machine_code,
         base,
@@ -2023,7 +2033,7 @@ fn recover_leaf_function_in_object_with_tail_proofs(
         &[],
         &packed_consts,
         calls,
-        proven_integer64_tail_targets,
+        object_facts,
         rip_relative_lea_policy,
     ) {
         Ok(recovery) => return Ok(recovery),
@@ -2214,6 +2224,139 @@ fn unique_bound_text_section<'data, 'file>(
         }
     }
     Ok(code_section)
+}
+
+type NoreturnCallSites = BTreeMap<u64, &'static NoreturnLibraryFunction>;
+
+#[derive(Debug, Default)]
+struct ObjectTransferFacts {
+    noreturn_exit_sites: NoreturnCallSites,
+    relocated_branch_sites: BTreeSet<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ObjectCallFacts<'facts> {
+    proven_integer64_tail_targets: &'facts BTreeSet<u64>,
+    transfers: &'facts ObjectTransferFacts,
+}
+
+impl<'facts> ObjectCallFacts<'facts> {
+    const fn new(
+        proven_integer64_tail_targets: &'facts BTreeSet<u64>,
+        transfers: &'facts ObjectTransferFacts,
+    ) -> Self {
+        Self {
+            proven_integer64_tail_targets,
+            transfers,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct EmptyObjectCallFacts {
+    proven_integer64_tail_targets: BTreeSet<u64>,
+    transfers: ObjectTransferFacts,
+}
+
+impl EmptyObjectCallFacts {
+    const fn facts(&self) -> ObjectCallFacts<'_> {
+        ObjectCallFacts::new(&self.proven_integer64_tail_targets, &self.transfers)
+    }
+}
+
+const NORETURN_DISPLACEMENT_BYTES: u64 = 4;
+
+fn noreturn_argument_registers(exit: &'static NoreturnLibraryFunction, abi: Abi) -> Vec<Reg> {
+    let order: &[Reg] = abi.arg_order();
+    let taken: usize = exit.parameters.len().min(order.len());
+    order[..taken].to_vec()
+}
+
+fn direct_transfer_displacement_field(insn: &DisasmInsn) -> Option<(u64, u64)> {
+    let length: u64 = u64::try_from(insn.bytes.len()).ok()?;
+    let end: u64 = insn.address.checked_add(length)?;
+    let start: u64 = end.checked_sub(NORETURN_DISPLACEMENT_BYTES)?;
+    (start >= insn.address).then_some((start, end))
+}
+
+fn relocated_branch_error(insn: &DisasmInsn) -> Error {
+    Error::LlvmIr(format!(
+        "the branch `{} {}` at {:#x} carries a relocation, so its successor lies outside this function and the encoded displacement does not name it",
+        insn.mnemonic, insn.operands, insn.address
+    ))
+}
+
+fn is_direct_transfer(insn: &DisasmInsn) -> bool {
+    (insn.mnemonic == "call" || insn.mnemonic.starts_with('j'))
+        && parse_branch_target(&insn.operands).is_some()
+}
+
+fn leaves_unconditionally(insn: &DisasmInsn) -> bool {
+    matches!(insn.mnemonic.as_str(), "call" | "jmp")
+}
+
+fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> ObjectTransferFacts {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    let mut facts: ObjectTransferFacts = ObjectTransferFacts::default();
+    let transfers: Vec<&DisasmInsn> = insns
+        .iter()
+        .filter(|insn: &&DisasmInsn| is_direct_transfer(insn))
+        .collect();
+    if transfers.is_empty() {
+        return facts;
+    }
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(object)
+    else {
+        return facts;
+    };
+    let Ok(code_section): Result<object::Section<'_, '_>> =
+        unique_bound_text_section(&file, base, insns)
+    else {
+        return facts;
+    };
+    let section_address: u64 = code_section.address();
+    for (offset, relocation) in code_section.relocations() {
+        let Some(field_address): Option<u64> = section_address.checked_add(offset) else {
+            continue;
+        };
+        let Ok(span): Result<RelocationByteSpan> = relocation_byte_span(field_address, &relocation)
+        else {
+            continue;
+        };
+        let Some(insn): Option<&&DisasmInsn> = transfers.iter().find(|insn: &&&DisasmInsn| {
+            direct_transfer_displacement_field(insn)
+                .is_some_and(|(start, end): (u64, u64)| span.exactly(start, end))
+        }) else {
+            continue;
+        };
+        if insn.mnemonic != "call" {
+            facts.relocated_branch_sites.insert(insn.address);
+        }
+        let object::RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+            continue;
+        };
+        let Ok(symbol): core::result::Result<object::Symbol<'_, '_>, object::Error> =
+            file.symbol_by_index(symbol_index)
+        else {
+            continue;
+        };
+        if !symbol.is_undefined() {
+            continue;
+        }
+        let Ok(name): core::result::Result<&str, object::Error> = symbol.name() else {
+            continue;
+        };
+        let exit: Option<&'static NoreturnLibraryFunction> = noreturn_library_function(name);
+        if let Some(entry) = exit
+            && leaves_unconditionally(insn)
+        {
+            facts.noreturn_exit_sites.insert(insn.address, entry);
+            facts.relocated_branch_sites.remove(&insn.address);
+        }
+    }
+    facts
 }
 
 pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Option<usize> {
@@ -2441,14 +2584,14 @@ fn straight_line_integer64_return_is_proven(
     function: &ProgramFunction,
     abi: Abi,
 ) -> bool {
-    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    let empty: EmptyObjectCallFacts = EmptyObjectCallFacts::default();
     let leaf_result: Result<LeafItems> = build_leaf_items(
         &function.code,
         function.address,
         abi,
         &[],
         &[],
-        &proven_integer64_tail_targets,
+        empty.facts(),
         RipRelativeLeaPolicy::Allow,
     );
     let Ok(leaf) = leaf_result else {
@@ -2772,7 +2915,7 @@ fn build_leaf_items(
     abi: Abi,
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
-    proven_integer64_tail_targets: &BTreeSet<u64>,
+    object_facts: ObjectCallFacts<'_>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafItems> {
     require_x86_abi(abi)?;
@@ -2916,6 +3059,31 @@ fn build_leaf_items(
             });
             continue;
         }
+        if is_direct_transfer(insn)
+            && leaves_unconditionally(insn)
+            && let Some(exit) = object_facts
+                .transfers
+                .noreturn_exit_sites
+                .get(&insn.address)
+                .copied()
+        {
+            flags = None;
+            dividend_high = None;
+            saw_ret = true;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Call {
+                    target: CallTarget::NoreturnLibrary(exit),
+                    args: noreturn_argument_registers(exit, abi),
+                    name: None,
+                }),
+            });
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Ret,
+            });
+            continue;
+        }
         if insn.mnemonic == "call"
             && let Some(target) = parse_branch_target(&insn.operands)
         {
@@ -2963,13 +3131,17 @@ fn build_leaf_items(
         if let Some(target) = parse_branch_target(&insn.operands)
             && let Some(cond_suffix) = insn.mnemonic.strip_prefix('j')
         {
+            let relocated_branch: bool = object_facts
+                .transfers
+                .relocated_branch_sites
+                .contains(&insn.address);
             max_branch_target = max_branch_target.max(target);
             if cond_suffix == "mp" {
                 if let DirectJumpExit::TailCall { synthetic_return } = classify_direct_jump_exit(
                     &insns,
                     instruction_index,
                     &items,
-                    proven_integer64_tail_targets,
+                    object_facts.proven_integer64_tail_targets,
                     base,
                     function_end,
                     target,
@@ -2991,11 +3163,17 @@ fn build_leaf_items(
                     saw_ret = true;
                     continue;
                 }
+                if relocated_branch {
+                    return Err(relocated_branch_error(insn));
+                }
                 items.push(Item {
                     address: insn.address,
                     kind: ItemKind::Jmp { target },
                 });
                 continue;
+            }
+            if relocated_branch {
+                return Err(relocated_branch_error(insn));
             }
             let kind: CondKind = CondKind::parse(cond_suffix).ok_or_else(|| {
                 Error::LlvmIr(format!(
@@ -3298,7 +3476,7 @@ fn recover_leaf_function_calls_impl(
     calls: &[ResolvedCall],
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
-    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    let empty: EmptyObjectCallFacts = EmptyObjectCallFacts::default();
     recover_leaf_function_calls_with_tail_proofs(
         machine_code,
         base,
@@ -3306,7 +3484,7 @@ fn recover_leaf_function_calls_impl(
         consts,
         packed_consts,
         calls,
-        &proven_integer64_tail_targets,
+        empty.facts(),
         rip_relative_lea_policy,
     )
 }
@@ -3318,7 +3496,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
     calls: &[ResolvedCall],
-    proven_integer64_tail_targets: &BTreeSet<u64>,
+    object_facts: ObjectCallFacts<'_>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
     let LeafItems {
@@ -3331,7 +3509,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
         abi,
         consts,
         packed_consts,
-        proven_integer64_tail_targets,
+        object_facts,
         rip_relative_lea_policy,
     )?;
     let frame_shape: FrameShape = classify_frame(&insns, abi);
@@ -15379,7 +15557,13 @@ fn call_display_name(target: u64, name: Option<&str>) -> String {
     name.map_or_else(|| format!("sub_{target:x}"), str::to_owned)
 }
 
-fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, usize>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallDecl {
+    Generic { arity: usize },
+    NoreturnLibrary(&'static NoreturnLibraryFunction),
+}
+
+fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, CallDecl>) {
     for node in body {
         match node {
             Node::Stmt(Stmt::Call {
@@ -15387,12 +15571,20 @@ fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, usize>) {
                 ..
             }) => {}
             Node::Stmt(Stmt::Call {
+                target: CallTarget::NoreturnLibrary(exit),
+                ..
+            }) => {
+                acc.entry(exit.name.to_owned())
+                    .or_insert(CallDecl::NoreturnLibrary(exit));
+            }
+            Node::Stmt(Stmt::Call {
                 target: CallTarget::Address(address),
                 args,
                 name,
             }) => {
                 let display_name: String = call_display_name(*address, name.as_deref());
-                acc.entry(display_name).or_insert(args.len());
+                acc.entry(display_name)
+                    .or_insert(CallDecl::Generic { arity: args.len() });
             }
             Node::Stmt(_) => {}
             Node::If {
@@ -18624,15 +18816,31 @@ fn emit_c(
     } else if block_string_ops_present(body) || block_has_vector(body) {
         let _ = writeln!(out, "#include <string.h>");
     }
-    let mut call_decls: IndexMap<String, usize> = IndexMap::new();
+    let mut call_decls: IndexMap<String, CallDecl> = IndexMap::new();
     collect_call_decls(body, &mut call_decls);
-    for (display_name, arg_count) in &call_decls {
-        let params: String = if *arg_count == 0 {
-            "void".to_owned()
-        } else {
-            vec!["uint64_t"; *arg_count].join(", ")
-        };
-        let _ = writeln!(out, "extern uint64_t {display_name}({params});");
+    for (display_name, decl) in &call_decls {
+        match decl {
+            CallDecl::Generic { arity } => {
+                let params: String = if *arity == 0 {
+                    "void".to_owned()
+                } else {
+                    vec!["uint64_t"; *arity].join(", ")
+                };
+                let _ = writeln!(out, "extern uint64_t {display_name}({params});");
+            }
+            CallDecl::NoreturnLibrary(exit) => {
+                let params: String = if exit.parameters.is_empty() {
+                    "void".to_owned()
+                } else {
+                    exit.parameters
+                        .iter()
+                        .map(|parameter: &NoreturnParameter| parameter.c_type())
+                        .collect::<Vec<&'static str>>()
+                        .join(", ")
+                };
+                let _ = writeln!(out, "extern void {display_name}({params});");
+            }
+        }
     }
 
     let scalar_params: Vec<ScalarParam> = signature.ordered_params_from(
@@ -19968,7 +20176,7 @@ fn block_to_cstmts(
             && index
                 .checked_sub(1)
                 .and_then(|previous: usize| body.get(previous))
-                .is_some_and(node_is_direct_trap)
+                .is_some_and(node_never_returns)
         {
             continue;
         }
@@ -19977,11 +20185,11 @@ fn block_to_cstmts(
     Some(stmts)
 }
 
-fn node_is_direct_trap(node: &Node) -> bool {
+fn node_never_returns(node: &Node) -> bool {
     matches!(
         node,
         Node::Stmt(Stmt::Call {
-            target: CallTarget::DirectTrap(_),
+            target: CallTarget::DirectTrap(_) | CallTarget::NoreturnLibrary(_),
             ..
         })
     )
@@ -21267,7 +21475,31 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
     CStmt::Block(vec![fill_stmt, assign_dest, assign_count])
 }
 
+fn noreturn_argument_cexprs(
+    cx: &mut Cx<'_>,
+    exit: &'static NoreturnLibraryFunction,
+    args: &[Reg],
+) -> Vec<CExpr> {
+    exit.parameters
+        .iter()
+        .zip(args)
+        .map(|(parameter, reg): (&NoreturnParameter, &Reg)| {
+            let value: CExpr = cx.var(reg_var(*reg));
+            if parameter.is_pointer() {
+                let address: CExpr = c_cast(cx, "uintptr_t", value);
+                c_cast(cx, parameter.c_type(), address)
+            } else {
+                c_cast(cx, parameter.c_type(), value)
+            }
+        })
+        .collect()
+}
+
 fn call_cstmt(cx: &mut Cx<'_>, target: &CallTarget, args: &[Reg], name: Option<&str>) -> CStmt {
+    if let CallTarget::NoreturnLibrary(exit) = target {
+        let arg_exprs: Vec<CExpr> = noreturn_argument_cexprs(cx, exit, args);
+        return CStmt::Expr(cx.call(exit.name, arg_exprs));
+    }
     let CallTarget::Address(address) = target else {
         return CStmt::Expr(cx.call("__builtin_trap", Vec::new()));
     };
@@ -22410,16 +22642,32 @@ fn emit_rust(
     {
         let _ = writeln!(out, "{RUST_HALF_HELPERS}");
     }
-    let mut call_decls: IndexMap<String, usize> = IndexMap::new();
+    let mut call_decls: IndexMap<String, CallDecl> = IndexMap::new();
     collect_call_decls(body, &mut call_decls);
     if !call_decls.is_empty() {
         let _ = writeln!(out, "extern \"C\" {{");
-        for (display_name, arg_count) in &call_decls {
-            let params: String = (0..*arg_count)
-                .map(|i: usize| format!("a{i}: u64"))
-                .collect::<Vec<String>>()
-                .join(", ");
-            let _ = writeln!(out, "    fn {display_name}({params}) -> u64;");
+        for (display_name, decl) in &call_decls {
+            match decl {
+                CallDecl::Generic { arity } => {
+                    let params: String = (0..*arity)
+                        .map(|i: usize| format!("a{i}: u64"))
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    let _ = writeln!(out, "    fn {display_name}({params}) -> u64;");
+                }
+                CallDecl::NoreturnLibrary(exit) => {
+                    let params: String = exit
+                        .parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(i, parameter): (usize, &NoreturnParameter)| {
+                            format!("a{i}: {}", parameter.rust_type())
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    let _ = writeln!(out, "    fn {display_name}({params}) -> !;");
+                }
+            }
         }
         let _ = writeln!(out, "}}");
     }
@@ -22737,7 +22985,7 @@ fn rs_emit_block(
             && index
                 .checked_sub(1)
                 .and_then(|previous: usize| body.get(previous))
-                .is_some_and(node_is_direct_trap)
+                .is_some_and(node_never_returns)
         {
             continue;
         }
@@ -22943,6 +23191,24 @@ fn rs_call_stmt(
     name: Option<&str>,
     indent: &str,
 ) {
+    if let CallTarget::NoreturnLibrary(exit) = target {
+        let arg_list: String = exit
+            .parameters
+            .iter()
+            .zip(args)
+            .map(|(parameter, reg): (&NoreturnParameter, &Reg)| {
+                let value: &'static str = reg_var(*reg);
+                if parameter.is_pointer() {
+                    format!("{value} as usize as {}", parameter.rust_type())
+                } else {
+                    format!("{value} as {}", parameter.rust_type())
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        let _ = writeln!(out, "{indent}unsafe {{ {}({arg_list}) }};", exit.name);
+        return;
+    }
     let CallTarget::Address(address) = target else {
         let _ = writeln!(out, "{indent}std::process::abort();");
         return;
@@ -30920,12 +31186,13 @@ mod tests {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod structuring_corpus {
     use super::{
-        Abi, AggregatePlan, Arch, BlockTerm, CfgBlock, DisasmInsn, Item, LeafItems, Reg, RegRef,
-        RipRelativeLeaPolicy, SinkLabel, Stmt, SwitchDispatch, ValueTableSwitch, Width,
-        block_has_continue_at, build_blocks, build_leaf_items, disassemble,
-        object_switch_case_targets, object_value_table, outer_resume_lowering_candidates,
-        render_cfg_blocks, resolve_lea_table, resolve_packed_constants, resolved_table_offset,
-        structure_items, unique_bound_text_section, verify_shared_table_lea,
+        Abi, AggregatePlan, Arch, BlockTerm, CfgBlock, DisasmInsn, EmptyObjectCallFacts, Item,
+        LeafItems, Reg, RegRef, RipRelativeLeaPolicy, SinkLabel, Stmt, SwitchDispatch,
+        ValueTableSwitch, Width, block_has_continue_at, build_blocks, build_leaf_items,
+        disassemble, object_switch_case_targets, object_value_table,
+        outer_resume_lowering_candidates, render_cfg_blocks, resolve_lea_table,
+        resolve_packed_constants, resolved_table_offset, structure_items,
+        unique_bound_text_section, verify_shared_table_lea,
     };
     use crate::structuring;
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
@@ -31646,13 +31913,14 @@ mod structuring_corpus {
 
     pub(super) fn lift(object_bytes: &[u8], name: &str) -> Option<Vec<Item>> {
         let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
+        let empty: EmptyObjectCallFacts = EmptyObjectCallFacts::default();
         build_leaf_items(
             &code,
             base,
             HOST_ABI,
             &[],
             &[],
-            &BTreeSet::new(),
+            empty.facts(),
             RipRelativeLeaPolicy::Allow,
         )
         .ok()
@@ -31776,13 +32044,14 @@ mod structuring_corpus {
             function_code(&object, "wp_nested_loop_h").expect("nested loop function");
         let packed_consts: Vec<super::PackedConstant> =
             resolve_packed_constants(&object, &code, base);
+        let empty: EmptyObjectCallFacts = EmptyObjectCallFacts::default();
         let leaf: LeafItems = build_leaf_items(
             &code,
             base,
             HOST_ABI,
             &[],
             &packed_consts,
-            &BTreeSet::new(),
+            empty.facts(),
             RipRelativeLeaPolicy::Refuse,
         )
         .expect("lift nested loop function");

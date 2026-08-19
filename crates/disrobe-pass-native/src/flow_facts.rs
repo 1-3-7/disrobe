@@ -33,6 +33,135 @@ pub(crate) enum DirectTrap {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoreturnParameter {
+    SignedInt,
+    UnsignedInt,
+    ConstCharPointer,
+    VoidPointer,
+}
+
+impl NoreturnParameter {
+    pub(crate) const fn c_type(self) -> &'static str {
+        match self {
+            Self::SignedInt => "int",
+            Self::UnsignedInt => "unsigned int",
+            Self::ConstCharPointer => "const char *",
+            Self::VoidPointer => "void *",
+        }
+    }
+
+    pub(crate) const fn rust_type(self) -> &'static str {
+        match self {
+            Self::SignedInt => "i32",
+            Self::UnsignedInt => "u32",
+            Self::ConstCharPointer => "*const u8",
+            Self::VoidPointer => "*mut u8",
+        }
+    }
+
+    pub(crate) const fn is_pointer(self) -> bool {
+        matches!(self, Self::ConstCharPointer | Self::VoidPointer)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NoreturnLibraryFunction {
+    pub(crate) name: &'static str,
+    pub(crate) parameters: &'static [NoreturnParameter],
+}
+
+const NORETURN_LIBRARY_FUNCTIONS: &[NoreturnLibraryFunction] = &[
+    NoreturnLibraryFunction {
+        name: "abort",
+        parameters: &[],
+    },
+    NoreturnLibraryFunction {
+        name: "exit",
+        parameters: &[NoreturnParameter::SignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "_exit",
+        parameters: &[NoreturnParameter::SignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "_Exit",
+        parameters: &[NoreturnParameter::SignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "quick_exit",
+        parameters: &[NoreturnParameter::SignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "pthread_exit",
+        parameters: &[NoreturnParameter::VoidPointer],
+    },
+    NoreturnLibraryFunction {
+        name: "__stack_chk_fail",
+        parameters: &[],
+    },
+    NoreturnLibraryFunction {
+        name: "__assert_fail",
+        parameters: &[
+            NoreturnParameter::ConstCharPointer,
+            NoreturnParameter::ConstCharPointer,
+            NoreturnParameter::UnsignedInt,
+            NoreturnParameter::ConstCharPointer,
+        ],
+    },
+    NoreturnLibraryFunction {
+        name: "_Unwind_Resume",
+        parameters: &[NoreturnParameter::VoidPointer],
+    },
+    NoreturnLibraryFunction {
+        name: "__cxa_throw",
+        parameters: &[
+            NoreturnParameter::VoidPointer,
+            NoreturnParameter::VoidPointer,
+            NoreturnParameter::VoidPointer,
+        ],
+    },
+    NoreturnLibraryFunction {
+        name: "__cxa_rethrow",
+        parameters: &[],
+    },
+    NoreturnLibraryFunction {
+        name: "ExitProcess",
+        parameters: &[NoreturnParameter::UnsignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "ExitThread",
+        parameters: &[NoreturnParameter::UnsignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "RtlExitUserProcess",
+        parameters: &[NoreturnParameter::UnsignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "RtlExitUserThread",
+        parameters: &[NoreturnParameter::UnsignedInt],
+    },
+    NoreturnLibraryFunction {
+        name: "_invalid_parameter_noinfo_noreturn",
+        parameters: &[],
+    },
+];
+
+pub(crate) fn noreturn_library_function(symbol: &str) -> Option<&'static NoreturnLibraryFunction> {
+    let exact: Option<&'static NoreturnLibraryFunction> = NORETURN_LIBRARY_FUNCTIONS
+        .iter()
+        .find(|entry: &&NoreturnLibraryFunction| entry.name == symbol);
+    if exact.is_some() {
+        return exact;
+    }
+    let undecorated: &str = symbol
+        .strip_prefix("__imp_")
+        .or_else(|| symbol.strip_prefix('_'))?;
+    NORETURN_LIBRARY_FUNCTIONS
+        .iter()
+        .find(|entry: &&NoreturnLibraryFunction| entry.name == undecorated)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ControlFlow {
     pub(crate) flow: InsnFlow,
     pub(crate) branch_target: Option<u64>,
@@ -717,6 +846,83 @@ mod tests {
         }
         for raw in [&[0xcd, 0x80][..], &[0x0f][..], &[0xcc, 0x90][..]] {
             assert_eq!(x86_direct_trap(raw, 0x1000), None, "{raw:02x?}");
+        }
+    }
+
+    #[test]
+    fn noreturn_library_lookup_distinguishes_the_posix_underscore_names() {
+        let exit_entry: &NoreturnLibraryFunction =
+            noreturn_library_function("exit").expect("exit is a declared non-returning function");
+        let underscore_exit: &NoreturnLibraryFunction =
+            noreturn_library_function("_exit").expect("_exit is a declared non-returning function");
+        assert_eq!(exit_entry.name, "exit");
+        assert_eq!(underscore_exit.name, "_exit");
+        let capital_exit: &NoreturnLibraryFunction =
+            noreturn_library_function("_Exit").expect("_Exit is a declared non-returning function");
+        assert_eq!(capital_exit.name, "_Exit");
+        assert_eq!(
+            noreturn_library_function("abort").map(|entry: &NoreturnLibraryFunction| entry.name),
+            Some("abort")
+        );
+        assert_eq!(
+            noreturn_library_function("_abort").map(|entry: &NoreturnLibraryFunction| entry.name),
+            Some("abort")
+        );
+        assert_eq!(
+            noreturn_library_function("__imp_exit")
+                .map(|entry: &NoreturnLibraryFunction| entry.name),
+            Some("exit")
+        );
+        assert_eq!(
+            noreturn_library_function("__imp__exit")
+                .map(|entry: &NoreturnLibraryFunction| entry.name),
+            Some("_exit")
+        );
+    }
+
+    #[test]
+    fn noreturn_library_lookup_refuses_names_that_can_return() {
+        for name in [
+            "TerminateProcess",
+            "exit_group_helper",
+            "myexit",
+            "printf",
+            "longjmp",
+            "",
+            "_",
+        ] {
+            assert!(
+                noreturn_library_function(name).is_none(),
+                "{name} must not be treated as a non-returning library exit"
+            );
+        }
+    }
+
+    #[test]
+    fn noreturn_library_prototypes_bind_every_declared_parameter() {
+        for entry in NORETURN_LIBRARY_FUNCTIONS {
+            assert!(
+                !entry.name.is_empty(),
+                "a declared non-returning function has no name"
+            );
+            assert!(
+                entry.parameters.len() <= 4,
+                "{} declares more parameters than the narrowest integer argument register file",
+                entry.name
+            );
+            for parameter in entry.parameters {
+                assert!(
+                    !parameter.c_type().is_empty() && !parameter.rust_type().is_empty(),
+                    "{} has a parameter with no spelled type",
+                    entry.name
+                );
+                assert_eq!(
+                    parameter.is_pointer(),
+                    parameter.c_type().ends_with('*'),
+                    "{} spells a pointer parameter inconsistently",
+                    entry.name
+                );
+            }
         }
     }
 }
