@@ -878,12 +878,19 @@ fn real_edgecases_lambdas_land_in_the_methods_the_author_wrote_them_in() {
         returned.len(),
         authored.len()
     );
+    let residual_synthetics: usize = recovered
+        .sources
+        .keys()
+        .filter(|name: &&String| name.contains("$_"))
+        .count();
     eprintln!(
         "d8 lambda recovery on the real EdgeCases artifact: {}/{} authored lambda-bearing methods \
-         return a lambda expression, graded against corpus/jvm/megafile/EdgeCases.java; still \
-         unrecovered: {:?}",
+         return a lambda expression, graded against corpus/jvm/megafile/EdgeCases.java; {} lambda \
+         arrows in the recovered unit; {residual_synthetics} desugaring classes still emitted; \
+         still unrecovered: {:?}",
         returned.len(),
         authored.len(),
+        unit.matches(" -> ").count(),
         authored.difference(&returned).collect::<Vec<&String>>()
     );
 }
