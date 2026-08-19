@@ -24,6 +24,7 @@ note = "the reader is Microsoft's own ECMA-335 implementation and never loads di
 command = "powershell -File build.ps1"
 reproducible = false
 reproducibility_note = "ilasm 4.8 has no deterministic switch, so a rebuild changes the module MVID and the PE timestamp; the assembly is pinned by hash and re-derived from MethodImplShapes.il, not by byte equality"
+line_endings = "every hash-pinned file carries -text in this directory's .gitattributes, so no checkout rewrites the bytes the hashes above cover; MethodImplShapes.metadata.txt is stored with CRLF as the reader emitted it"
 
 [[fixture]]
 name = "MethodImplShapes.il"

@@ -7,8 +7,8 @@ use disrobe_pass_dotnet::metadata::{
 };
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::tables::{
-    MemberRefRow, MethodDefRow, MethodImplRow, RowRef, TableId, TableSpan, Tables, TypeRefRow,
-    parse_tables, table_spans,
+    HeapWidths, MemberRefRow, MethodDefRow, MethodImplRow, RowRef, TableId, TableSpan, Tables,
+    TypeRefRow, parse_tables, table_spans,
 };
 use disrobe_pass_dotnet::{DecompiledAssembly, StructuredMethod, decompile_assembly};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,14 @@ const SMALL_SIMPLE_INDEX_LIMIT: u32 = 1 << 16;
 const SMALL_METHOD_DEF_OR_REF_LIMIT: u32 = 1 << 15;
 const METHOD_DEF_OR_REF_TAG_BITS: u32 = 1;
 const METHOD_DEF_TAG: u32 = 0;
+const TYPE_REF_TABLE: u8 = 0x01;
+const MODULE_TABLE: u8 = 0x00;
+const MODULE_REF_TABLE: u8 = 0x1A;
+const ASSEMBLY_REF_TABLE: u8 = 0x23;
+const SMALL_RESOLUTION_SCOPE_LIMIT: u32 = 1 << 14;
+const RESOLUTION_SCOPE_TAG_BITS: u32 = 2;
+const MODULE_SCOPE_TAG: u32 = 0;
+const CROSS_MODULE_TYPE_REF_ROW: u32 = 3;
 
 fn describe(row: Option<RowRef>) -> String {
     row.map_or_else(
@@ -241,6 +249,70 @@ fn with_patched_method_impl_body(image: &[u8], row: u32, encoded: u32) -> Result
 
 const fn method_def_or_ref(rid: u32) -> u32 {
     (rid << METHOD_DEF_OR_REF_TAG_BITS) | METHOD_DEF_TAG
+}
+
+const fn resolution_scope_module(rid: u32) -> u32 {
+    (rid << RESOLUTION_SCOPE_TAG_BITS) | MODULE_SCOPE_TAG
+}
+
+fn with_patched_type_ref_scope(image: &[u8], row: u32, encoded: u32) -> Result<Vec<u8>, String> {
+    let metadata: Metadata<'_> = metadata_of(image)?;
+    let stream: TableStream = parse_table_stream(metadata.bytes, metadata.table_header)
+        .map_err(|error: disrobe_pass_dotnet::Error| error.to_string())?;
+    let spans: BTreeMap<u8, TableSpan> = table_spans(metadata.bytes, metadata.table_header)
+        .map_err(|error: disrobe_pass_dotnet::Error| error.to_string())?;
+    let span: TableSpan = spans
+        .get(&TYPE_REF_TABLE)
+        .copied()
+        .ok_or_else(|| "the image carries no TypeRef table".to_owned())?;
+    if row == 0 || row > span.rows {
+        return Err(format!("TypeRef row {row} is outside the committed table"));
+    }
+    let rows_of = |table: u8| -> u32 { stream.row_counts.get(&table).copied().unwrap_or(0) };
+    let widest: u32 = rows_of(MODULE_TABLE)
+        .max(rows_of(MODULE_REF_TABLE))
+        .max(rows_of(ASSEMBLY_REF_TABLE))
+        .max(rows_of(TYPE_REF_TABLE));
+    let scope_width: usize = if widest < SMALL_RESOLUTION_SCOPE_LIMIT {
+        2
+    } else {
+        4
+    };
+    let strings_width: usize = HeapWidths::from_flags(stream.heap_sizes).strings;
+    let derived: usize = scope_width
+        .checked_add(strings_width.saturating_mul(2))
+        .ok_or_else(|| "the derived TypeRef row width overflowed".to_owned())?;
+    if derived != span.row_width {
+        return Err(format!(
+            "the derived TypeRef row width {derived} disagrees with the parsed width {}",
+            span.row_width
+        ));
+    }
+    if scope_width != 2 {
+        return Err("this fixture is expected to use two-byte resolution scopes".to_owned());
+    }
+    let index: usize =
+        usize::try_from(row.saturating_sub(1)).map_err(|_error: std::num::TryFromIntError| {
+            "the row index does not fit usize".to_owned()
+        })?;
+    let field: usize = metadata
+        .file_offset
+        .checked_add(metadata.table_header.offset as usize)
+        .and_then(|value: usize| value.checked_add(span.offset))
+        .and_then(|value: usize| value.checked_add(index.saturating_mul(span.row_width)))
+        .ok_or_else(|| "the TypeRef scope field offset overflowed".to_owned())?;
+    let end: usize = field
+        .checked_add(scope_width)
+        .ok_or_else(|| "the TypeRef scope field end overflowed".to_owned())?;
+    let value: u16 = u16::try_from(encoded).map_err(|_error: std::num::TryFromIntError| {
+        "the coded index does not fit two bytes".to_owned()
+    })?;
+    let mut patched: Vec<u8> = image.to_vec();
+    patched
+        .get_mut(field..end)
+        .ok_or_else(|| "the TypeRef scope field is outside the image".to_owned())?
+        .copy_from_slice(&value.to_le_bytes());
+    Ok(patched)
 }
 
 fn headers(image: &[u8]) -> Result<BTreeMap<(String, String), String>, String> {
@@ -599,6 +671,66 @@ fn a_methodimpl_body_row_past_the_table_names_no_method() -> Result<(), String> 
     assert_eq!(
         header_of(&map, "MethodImplShapes.UnrelatedImplBody", "Equals")?,
         "public override bool Equals(object obj)"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_methodimpl_body_through_a_same_module_typeref_stays_an_explicit_implementation()
+-> Result<(), String> {
+    let committed: Tables = tables_of(IMAGE)?;
+    let before: &TypeRefRow = committed
+        .type_refs
+        .get(2)
+        .ok_or_else(|| "the cross-module TypeRef is absent from the committed image".to_owned())?;
+    assert_eq!(
+        describe(before.resolution_scope),
+        "ModuleRef[1]",
+        "the committed encoding must start as the cross-module one ilasm can author"
+    );
+
+    let patched: Vec<u8> =
+        with_patched_type_ref_scope(IMAGE, CROSS_MODULE_TYPE_REF_ROW, resolution_scope_module(1))?;
+    let tables: Tables = tables_of(&patched)?;
+    let after: &TypeRefRow = tables
+        .type_refs
+        .get(2)
+        .ok_or_else(|| "the patched TypeRef row is absent".to_owned())?;
+    assert_eq!(
+        after.resolution_scope,
+        Some(RowRef {
+            table: TableId::Module,
+            row: 1,
+        }),
+        "the perturbation must rescope the TypeRef to this module"
+    );
+    assert_eq!(
+        (after.name, after.namespace),
+        (before.name, before.namespace),
+        "the perturbation must touch the resolution scope only"
+    );
+    let body: Option<RowRef> = tables
+        .method_impls
+        .get(2)
+        .ok_or_else(|| "the third MethodImpl row is absent".to_owned())?
+        .method_body;
+    assert_eq!(
+        describe(body),
+        "MemberRef[2]",
+        "the rescoped TypeRef must still be the parent of this MethodImpl body"
+    );
+
+    let map: BTreeMap<(String, String), String> = headers(&patched)?;
+    assert_eq!(
+        header_of(&map, "MethodImplShapes.ModuleRefTypeRefImplBody", "Equals")?,
+        "public bool Equals(object obj)",
+        "a MethodImpl body reaching this module's own type through a TypeRef rather than a \
+         MethodDef is still an explicit implementation"
+    );
+    assert_eq!(
+        header_of(&map, "MethodImplShapes.ReuseSlotOverride", "Equals")?,
+        "public override bool Equals(object obj)",
+        "the perturbation must reach one type only"
     );
     Ok(())
 }
