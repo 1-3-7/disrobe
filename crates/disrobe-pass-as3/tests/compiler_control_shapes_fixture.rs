@@ -6,7 +6,7 @@ mod common;
 use common::{Value, evaluate};
 use disrobe_pass_as3::abc::{self, AbcFile, ClassInfo, MethodBody, MethodInfo, TraitInfo};
 use disrobe_pass_as3::lifter::{
-    Expr, LiftedBody, LocalNames, Stmt, lift_body, local_names_for, render_body,
+    CatchClause, Expr, LiftedBody, LocalNames, Stmt, lift_body, local_names_for, render_body,
 };
 use disrobe_pass_as3::swf::{self, DoAbc, Swf, SwfCompression};
 
@@ -512,5 +512,94 @@ fn the_guarded_region_recovers_without_a_residual_branch_graph() {
     assert!(
         squeezed.contains("try {") && squeezed.contains("catch"),
         "the recovered shape must still be a try with a handler: {text}"
+    );
+}
+
+fn only_try(stmts: &[Stmt]) -> &Stmt {
+    fn find<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Stmt>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Try { body, catches } => {
+                    out.push(stmt);
+                    find(body, out);
+                    for clause in catches {
+                        find(&clause.body, out);
+                    }
+                }
+                Stmt::IfBlock { body, .. } | Stmt::With { body, .. } => find(body, out),
+                Stmt::IfElse {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    find(then_body, out);
+                    find(else_body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut found: Vec<&Stmt> = Vec::new();
+    find(stmts, &mut found);
+    assert_eq!(
+        found.len(),
+        1,
+        "this grade reads the one guarded region in the authored program: {stmts:#?}"
+    );
+    found[0]
+}
+
+#[test]
+fn a_haxe_handler_keeps_the_any_type_the_compiler_actually_emitted() {
+    assert!(
+        HAXE_SOURCE.contains("} catch (fault:CustomFault) {")
+            && HAXE_SOURCE.contains("} catch (text:String) {")
+            && HAXE_SOURCE.contains("} catch (rest:Dynamic) {"),
+        "the authored program must still declare three typed catch clauses, because the point of \
+         this grade is that the compiler did not encode them as three typed handlers"
+    );
+    let abc: AbcFile = parse_fixture();
+    let (body, _): (&MethodBody, &MethodInfo) = static_method(&abc, "guarded");
+    assert_eq!(
+        body.exceptions.len(),
+        1,
+        "three authored catch clauses compiled to ONE handler; the type dispatch lives in code, \
+         not in the exception table"
+    );
+    assert_eq!(
+        body.exceptions[0].exc_type, 0,
+        "that single handler is untyped in the ABC, so `*` is the accurate rendering of what the \
+         compiler emitted and not a degraded fallback"
+    );
+
+    let (lifted, text): (LiftedBody, String) = recovered(&abc, "guarded");
+    let Stmt::Try { catches, .. } = only_try(&lifted.statements) else {
+        panic!("the guarded region must recover as a try: {text}");
+    };
+    let types: Vec<&str> = catches
+        .iter()
+        .map(|clause: &CatchClause| clause.type_name.as_str())
+        .collect();
+    assert_eq!(
+        types,
+        vec!["*"],
+        "the recovery must report the one untyped handler the machine has. Inventing \
+         `catch (fault:CustomFault)` here would be wrong: the try throws \
+         haxe.Exception.thrown(...), so the value the machine catches is the wrapper, while the \
+         authored type names describe the payload: {text}"
+    );
+
+    let squeezed: String = squeeze(&text);
+    let unwrap_at: usize = squeezed
+        .find(".unwrap()")
+        .unwrap_or_else(|| panic!("the handler must recover its payload unwrap: {text}"));
+    let first_type_test: usize = squeezed
+        .find(" is ")
+        .unwrap_or_else(|| panic!("the handler must recover its type tests: {text}"));
+    assert!(
+        unwrap_at < first_type_test,
+        "the handler unwraps the payload BEFORE it tests any type, which is why those tests \
+         cannot be lifted into typed catch clauses: an AS3 catch type tests the thrown value, \
+         not the unwrapped one: {text}"
     );
 }
