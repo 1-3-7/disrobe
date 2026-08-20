@@ -97,6 +97,7 @@ pub enum Expr {
     Closure(u32),
     ScopeObject,
     Activation,
+    CatchScope,
     CaughtException,
     Phi {
         block: usize,
@@ -226,6 +227,7 @@ impl Expr {
             Self::Closure(idx) => format!("function() {{ /* closure method #{idx} */ }}"),
             Self::ScopeObject => SCOPE_OBJECT_NAME.to_owned(),
             Self::Activation => ACTIVATION_NAME.to_owned(),
+            Self::CatchScope => CATCH_SCOPE_NAME.to_owned(),
             Self::CaughtException => "$exc".to_owned(),
             Self::Phi { block, slot } => format!("phi{block}_{slot}"),
             Self::Opaque(label) => format!("/* {label} */"),
@@ -317,6 +319,7 @@ fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
             | Expr::Closure(_)
             | Expr::ScopeObject
             | Expr::Activation
+            | Expr::CatchScope
             | Expr::CaughtException
             | Expr::Phi { .. }
             | Expr::Opaque(_) => {}
@@ -601,6 +604,8 @@ const OP_NEWACTIVATION: u8 = 0x57;
 const OP_KILL: u8 = 0x08;
 const OP_HASNEXT2: u8 = 0x32;
 const ACTIVATION_NAME: &str = "$activation";
+const CATCH_SCOPE_NAME: &str = "$catch";
+const OP_NEWCATCH: u8 = 0x5A;
 const SCOPE_OBJECT_NAME: &str = "$scope";
 
 const fn is_setlocal(op: u8) -> bool {
@@ -644,7 +649,7 @@ fn detect_idioms(lines: &[DisasmLine]) -> Idioms {
         out.short_circuit_discards.insert(triple[2].offset);
     }
     out.written_locals = written_locals(lines);
-    out.activation_local = detect_activation_local(lines, &out.written_locals);
+    out.activation_local = detect_scope_local(lines, &out.written_locals, OP_NEWACTIVATION);
     out
 }
 
@@ -690,10 +695,10 @@ fn written_locals(lines: &[DisasmLine]) -> BTreeSet<u32> {
     written
 }
 
-fn detect_activation_local(lines: &[DisasmLine], written: &BTreeSet<u32>) -> Option<u32> {
+fn detect_scope_local(lines: &[DisasmLine], written: &BTreeSet<u32>, allocator: u8) -> Option<u32> {
     let mut activation_index: Option<usize> = None;
     for (index, line) in lines.iter().enumerate() {
-        if line.opcode != OP_NEWACTIVATION {
+        if line.opcode != allocator {
             continue;
         }
         if activation_index.is_some() {
@@ -730,9 +735,9 @@ fn detect_activation_local(lines: &[DisasmLine], written: &BTreeSet<u32>) -> Opt
     (writes == 1).then_some(slot)
 }
 
-fn normalize_scope_object(object: Expr, activation_local: Option<u32>) -> Expr {
-    match (&object, activation_local) {
-        (Expr::Local(slot), Some(activation)) if *slot == activation => Expr::Activation,
+fn normalize_scope_object(object: Expr, idioms: &Idioms) -> Expr {
+    match &object {
+        Expr::Local(slot) if idioms.activation_local == Some(*slot) => Expr::Activation,
         _ => object,
     }
 }
@@ -2456,8 +2461,9 @@ fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: us
             let index: i64 = lifter.operand(ops, 0);
             emit_findproperty(lifter, index);
         }
-        0x64 | 0x65 | 0x5A => lifter.push(Expr::ScopeObject),
+        0x64 | 0x65 => lifter.push(Expr::ScopeObject),
         OP_NEWACTIVATION => lifter.push(Expr::Activation),
+        OP_NEWCATCH => lifter.push(Expr::CatchScope),
         0x66 => {
             let index: i64 = lifter.operand(ops, 0);
             emit_getproperty(lifter, index);
@@ -2648,7 +2654,7 @@ fn emit_getproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
 
 fn scope_relative_get(object: Expr, property: String) -> Expr {
     match object {
-        Expr::ScopeObject | Expr::Activation => Expr::Name(property),
+        Expr::ScopeObject | Expr::Activation | Expr::CatchScope => Expr::Name(property),
         Expr::Lex(ref s) if simple_tail(s) == property => Expr::Name(s.clone()),
         other => Expr::Get {
             object: Box::new(other),
@@ -2687,7 +2693,7 @@ fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
 
 fn scope_relative_assign(object: Expr, property: String, value: Expr) -> Stmt {
     match object {
-        Expr::ScopeObject | Expr::Activation => Stmt::Assign {
+        Expr::ScopeObject | Expr::Activation | Expr::CatchScope => Stmt::Assign {
             target: Expr::Name(property),
             value,
         },
@@ -2715,7 +2721,7 @@ fn emit_setslot(lifter: &mut Lifter<'_>, slot: i64) {
 
 fn emit_pushscope(lifter: &mut Lifter<'_>, is_with: bool, offset: usize) {
     let popped: Expr = lifter.pop();
-    let object: Expr = normalize_scope_object(popped, lifter.idioms.activation_local);
+    let object: Expr = normalize_scope_object(popped, &lifter.idioms);
     if is_with {
         lifter.with_regions.push(WithRegion {
             open_stmt: lifter.statements.len(),
@@ -3983,6 +3989,7 @@ fn forward_dispatch_operand_is_stable(expression: &Expr) -> bool {
             | Expr::NaN
             | Expr::ScopeObject
             | Expr::Activation
+            | Expr::CatchScope
             | Expr::CaughtException
     )
 }

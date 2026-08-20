@@ -2035,7 +2035,68 @@ fn a_handler_whose_layout_disagrees_with_the_table_keeps_one_clause() {
         catches.len(),
         1,
         "when the table order and the code layout disagree the pairing is not provable, so the \
-         recovery must keep one clause rather than guess which handler owns which body: \
-         {lifted:#?}"
+         recovery must keep one clause rather than guess which handler owns which body. This \
+         guard is also what keeps every clause slice non-empty: folding an out-of-order \
+         handler table would build a slice whose start is past its end, so a malformed or \
+         hostile exception table would panic here rather than mis-recover: {lifted:#?}"
     );
+}
+
+#[test]
+fn a_catch_scope_stored_into_a_local_renders_as_a_named_operand() {
+    let code: Vec<u8> = vec![0xD0, 0x30, 0x5A, 0x00, 0x2A, 0xD5, 0x30, 0x47];
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("catch-scope value lift");
+    let names: LocalNames = local_names_for(&abc, None);
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        !rendered
+            .lines()
+            .any(|line: &str| line.trim_end().ends_with("= ;")),
+        "an AVM2 catch scope reaching a value position must render as a named operand, never as \
+         nothing: {rendered}"
+    );
+    assert!(
+        rendered.contains("$catch"),
+        "a catch scope is not the same object as an activation or an enclosing scope, so it must \
+         carry its own spelling rather than borrow one: {rendered}"
+    );
+    assert!(
+        !rendered.contains("$activation"),
+        "a catch scope must not be reported as an activation object: {rendered}"
+    );
+}
+
+#[test]
+fn branch_catch_scopes_never_collapse_distinct_allocations() {
+    let mut code: Vec<u8> = vec![0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x5A, 0x00, 0x30, 0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0x5A, 0x00, 0x30, 0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw catch-scope lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("catch-scope lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "two catch scopes allocated on two paths are two different objects, so the merge must \
+         refuse rather than pick one: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
 }
