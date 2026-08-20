@@ -399,8 +399,9 @@ fn real_extractor_dotnet_emits_csharp_source_not_summary() {
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "dotnet.classify")
     else {
-        eprintln!("SKIP: dotnet.classify not dispatched (packer pass may have won)");
-        return;
+        panic!(
+            "this case exists to prove dotnet.classify claims this input, so a run where it \n             was never dispatched is the regression it grades for, not a reason to pass"
+        );
     };
     let source: String = utf8(&envelope, "dotnet.classify");
     assert!(
@@ -471,8 +472,9 @@ fn real_extractor_swift_emits_swift_source_not_report() {
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "swift-objc.classify")
     else {
-        eprintln!("SKIP: swift-objc.classify not dispatched");
-        return;
+        panic!(
+            "this case exists to prove swift-objc.classify claims this input, so a run where it \n             was never dispatched is the regression it grades for, not a reason to pass"
+        );
     };
     let source: String = utf8(&envelope, "swift-objc.classify");
     let is_source: bool = source.contains("class ")
@@ -635,8 +637,9 @@ fn real_extractor_pyfreeze_emits_manifest_not_input_unchanged() {
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, &format!("corpus://{rel}"), "pyfreeze.extract")
     else {
-        eprintln!("SKIP: pyfreeze.extract not dispatched (another pass may have won)");
-        return;
+        panic!(
+            "this case exists to prove pyfreeze.extract claims this input, so a run where it \n             was never dispatched is the regression it grades for, not a reason to pass"
+        );
     };
     assert_ne!(
         envelope, original,
@@ -673,8 +676,9 @@ fn real_extractor_go_emits_symbol_listing_not_json() {
     let Some(envelope): Option<Vec<u8>> =
         capture_pass(bytes, "corpus://go/hello_normal.exe", "go.classify")
     else {
-        eprintln!("SKIP: go.classify not dispatched");
-        return;
+        panic!(
+            "this case exists to prove go.classify claims this input, so a run where it \n             was never dispatched is the regression it grades for, not a reason to pass"
+        );
     };
     let text: String = utf8(&envelope, "go.classify");
     assert!(
