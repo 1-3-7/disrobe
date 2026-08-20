@@ -28,18 +28,18 @@ const CLASS_SCOPE_GOLDEN: &str = "transmissionic-ionic.txt";
 
 const CLASS_SCOPE_CLASSES: usize = 3_835;
 
-const CLASS_SCOPE_GRADED_FLOOR: usize = 3_223;
+const CLASS_SCOPE_GRADED_FLOOR: usize = 3_210;
 
 const CLASS_SCOPE_REPEAT_RUNS: usize = 8;
 
-const CLASS_SCOPE_CLEAN: usize = 2_988;
+const CLASS_SCOPE_CLEAN: usize = 3_045;
 
-const CLASS_SCOPE_CLEAN_METHODS: usize = 13_866;
+const CLASS_SCOPE_CLEAN_METHODS: usize = 14_938;
 
-const CLASS_SCOPE_REJECTABLE: usize = 251;
+const CLASS_SCOPE_REJECTABLE: usize = 176;
 
 const CLASS_SCOPE_JAR_SHA256: &str =
-    "7f92715eb115daa764e5087d8f88394896bbfcb1ebf89af9f1217bdbf13427e5";
+    "34d7b82e4e3dbb8fa93bb8f56a30933a465a727028032dd1fe0970e6eee96ba8";
 
 fn class_verify_golden() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -131,11 +131,13 @@ fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
          section is a work queue rather than a bound: it lists classes the real jvm has been seen \
          to reject over {CLASS_SCOPE_REPEAT_RUNS} runs, it grows as reach varies, and it is not \
          asserted against a run because a class reaching the verifier for the first time is not a \
-         regression. The family that used to dominate it, a dalvik zero constant materialized as an \
-         int on one path and a null on another so that the frame at their join described neither, \
-         is gone; what is left is led by assignability checks the harness cannot decide because it \
-         stubs the android framework, which the attribution line above sizes. Change this number \
-         only when you have added or fixed entries by hand",
+         regression. Roughly half of it is not a lifter defect at all: those entries name, in the \
+         verifier's own Reason clause, a class the apk does not define and the harness had to \
+         stub, which the attribution line above sizes. What is left is led by one family, a locals \
+         slot whose declared type disagrees with a predecessor's, in the integer against reference \
+         and integer against float directions. The family where one address served as both an \
+         exception handler entry and a normal branch target is gone. Change this number only when \
+         you have added or fixed entries by hand",
         rejectable.len()
     );
     assert!(
@@ -195,22 +197,42 @@ fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
     );
 }
 
-fn recovered_bodies(apk: &RealApk) -> (usize, usize, usize) {
+struct BodyCensus {
+    dex_count: usize,
+    bodies_recovered: usize,
+    code_item_methods: usize,
+    method_total: usize,
+}
+
+fn recovered_bodies(apk: &RealApk) -> BodyCensus {
     let bytes: Vec<u8> = std::fs::read(real_apk_path(apk.file)).expect("read apk");
     let extract: ApkExtract = extract_apk(&bytes).expect("extract apk");
-    let mut method_total: usize = 0;
-    let mut bodies_recovered: usize = 0;
-    let mut dex_count: usize = 0;
+    let mut census: BodyCensus = BodyCensus {
+        dex_count: 0,
+        bodies_recovered: 0,
+        code_item_methods: 0,
+        method_total: 0,
+    };
     for (name, dex_bytes) in &extract.dex_files {
         if !name.ends_with(".dex") {
             continue;
         }
-        dex_count += 1;
+        census.dex_count += 1;
         let result: Dex2JarResult = translate_dex_bytes(dex_bytes).expect("translate dex");
-        method_total += result.method_total;
-        bodies_recovered += result.bodies_recovered;
+        census.method_total += result.method_total;
+        census.bodies_recovered += result.bodies_recovered;
+        census.code_item_methods += result
+            .bodies_recovered
+            .saturating_add(result.stubbed_body_count);
     }
-    (dex_count, bodies_recovered, method_total)
+    census
+}
+
+const fn permille(numerator: usize, denominator: usize) -> usize {
+    if denominator == 0 {
+        return 0;
+    }
+    numerator.saturating_mul(1000) / denominator
 }
 
 #[test]
@@ -233,16 +255,41 @@ fn realworld_apk_bodies_recovered_match_their_pinned_counts() {
         absent.join(", ")
     );
     for apk in REAL_APKS {
-        let (dex_count, bodies_recovered, method_total): (usize, usize, usize) =
-            recovered_bodies(apk);
+        let census: BodyCensus = recovered_bodies(apk);
+        let (dex_count, bodies_recovered, method_total): (usize, usize, usize) = (
+            census.dex_count,
+            census.bodies_recovered,
+            census.method_total,
+        );
+        let code_item_methods: usize = census.code_item_methods;
         eprintln!(
-            "REALWORLD {}: dex_files={dex_count} self_reported_bodies={bodies_recovered}/{method_total} \
-             (pinned {}/{})",
-            apk.file, apk.self_reported_bodies_pinned, apk.method_total
+            "REALWORLD {}: dex_files={dex_count} \
+             bodies={bodies_recovered}/{code_item_methods} methods that declare a code item \
+             ({} permille, and abstract, native and interface-instance methods are excluded \
+             because they can never carry a body); the same numerator over the {method_total} \
+             declared methods is {} permille and that denominator counts \
+             {} body-less declarations",
+            apk.file,
+            permille(bodies_recovered, code_item_methods),
+            permille(bodies_recovered, method_total),
+            method_total.saturating_sub(code_item_methods)
         );
         assert!(
             dex_count >= 1,
             "{}: the apk must carry at least one classes.dex",
+            apk.file
+        );
+        assert_eq!(
+            code_item_methods, apk.code_item_methods_pinned,
+            "{}: {code_item_methods} methods declare a code item against the pinned {}. This is \
+             the denominator every published body figure is measured against, because a method \
+             the class file must give a body is the only one the lifter can fail; a run that \
+             inspects a different population must not report against the published figure",
+            apk.file, apk.code_item_methods_pinned
+        );
+        assert!(
+            code_item_methods <= method_total,
+            "{}: the code-item population cannot exceed the declared-method population",
             apk.file
         );
         assert_eq!(
