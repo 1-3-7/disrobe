@@ -473,6 +473,23 @@ fn runtime_differential_rejects_swapped_rejoining_exit_bodies() {
 }
 
 #[test]
+fn a_dispatcher_that_leaves_its_root_block_does_not_run_the_dead_suffix() {
+    let obf_bytes: Vec<u8> = assemble_fixture("cff_root_exit_suffix.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&obf_bytes).expect("recover the root-exit dispatcher");
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 0,
+        "the dispatcher must restructure rather than refuse, or the battery grades nothing: {:?}",
+        recovered.report
+    );
+    assert_fixture_reloops(
+        "cff_root_exit_suffix.clean.wat",
+        "cff_root_exit_suffix.obf.wat",
+        "scale_then_leave",
+    );
+}
+
+#[test]
 fn constant_arithmetic_state_updates_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let obf_bytes: Vec<u8> = assemble_fixture("cff_computed_state.obf.wat");

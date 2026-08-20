@@ -1422,7 +1422,11 @@ fn classify_case_shape(
         && structured_work_is_bounded(func, work)
     {
         return Some(Node {
-            work: work.to_vec(),
+            work: if disp.suffix.is_empty() {
+                work.to_vec()
+            } else {
+                body.clone()
+            },
             cond: Vec::new(),
             edge_work: EdgeWork::None,
             trans: Trans::Exit,
@@ -1848,7 +1852,7 @@ fn ends_explicitly(graph: &Graph, node: &SNode) -> bool {
         SNode::Break(_) | SNode::Continue(_) => true,
         SNode::Work(state) => graph.nodes.get(state).is_some_and(|node: &Node| {
             matches!(node.trans, Trans::Exit)
-                && matches!(node.work.last(), Some((Instr::Return(_), _)))
+                && matches!(node.work.last(), Some((Instr::Return(_) | Instr::Br(_), _)))
         }),
         SNode::Seq(items) => items
             .last()
