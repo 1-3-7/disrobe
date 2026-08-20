@@ -244,6 +244,38 @@ fn every_modelled_arm64_family_is_observed_or_named_unobserved() {
 }
 
 #[test]
+fn an_indirect_branch_keeps_its_function_on_the_flat_disassembly_path() {
+    let mut with_indirect: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        for function in &report.functions {
+            let indirect: bool = function
+                .unlifted_arm64
+                .iter()
+                .any(|entry| entry.text.starts_with("br "));
+            if !indirect {
+                continue;
+            }
+            with_indirect += 1;
+            assert!(
+                !function.is_structured(),
+                "{sample} structured {:?} even though it branches through a register; the jump-table \
+                 and register-dispatch families are not modelled and must not reach a lifted body",
+                function.name
+            );
+        }
+    }
+    eprintln!(
+        "functions carrying a register-indirect branch across the committed corpus: {with_indirect}"
+    );
+    assert!(
+        with_indirect > 0,
+        "the committed corpus must contain register-indirect branches for this boundary to mean anything"
+    );
+}
+
+#[test]
 fn the_conditional_select_family_renders_a_ternary_in_a_real_body() {
     let mut ternaries: usize = 0;
     for sample in COMMITTED_SAMPLES {
