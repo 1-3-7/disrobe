@@ -13,24 +13,27 @@ fn fixture_dir() -> PathBuf {
         .join("plugins")
 }
 
-fn load(name: &str) -> Option<Vec<u8>> {
+fn load(name: &str) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join(name);
-    let text: String = std::fs::read_to_string(&path).ok()?;
-    match wat::parse_str(&text) {
-        Ok(bytes) => Some(bytes),
-        Err(e) => {
-            eprintln!("SKIP: fixture {} failed to assemble: {e}", path.display());
-            None
-        }
-    }
+    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is tracked in git and this case is a sandbox deny-by-default proof, so its absence \
+             is a damaged checkout rather than an optional dependency: {error}",
+            path.display()
+        )
+    });
+    wat::parse_str(&text).unwrap_or_else(|error: wat::Error| {
+        panic!(
+            "{} is tracked and must assemble; a capability case that cannot build its guest proves \
+             nothing about what the host denies: {error}",
+            path.display()
+        )
+    })
 }
 
 #[test]
 fn net_socket_import_is_denied_before_guest_runs() {
-    let Some(wasm): Option<Vec<u8>> = load("deny_net_sock_open.wat") else {
-        eprintln!("SKIP: deny_net_sock_open.wat missing");
-        return;
-    };
+    let wasm: Vec<u8> = load("deny_net_sock_open.wat");
     let outcome: Result<Vec<u8>, SandboxError> = PluginHost::run(&wasm, &[], Limits::default());
     match outcome {
         Err(SandboxError::DeniedImport(name)) => {
@@ -45,10 +48,7 @@ fn net_socket_import_is_denied_before_guest_runs() {
 
 #[test]
 fn fs_import_is_denied_before_guest_runs() {
-    let Some(wasm): Option<Vec<u8>> = load("deny_fs_fd_write.wat") else {
-        eprintln!("SKIP: deny_fs_fd_write.wat missing");
-        return;
-    };
+    let wasm: Vec<u8> = load("deny_fs_fd_write.wat");
     let outcome: Result<Vec<u8>, SandboxError> = PluginHost::run(&wasm, &[], Limits::default());
     match outcome {
         Err(SandboxError::DeniedImport(name)) => {
@@ -63,10 +63,7 @@ fn fs_import_is_denied_before_guest_runs() {
 
 #[test]
 fn infinite_loop_is_stopped_within_budget() {
-    let Some(wasm): Option<Vec<u8>> = load("busyloop_timeout.wat") else {
-        eprintln!("SKIP: busyloop_timeout.wat missing");
-        return;
-    };
+    let wasm: Vec<u8> = load("busyloop_timeout.wat");
     let limits: Limits = Limits {
         fuel_budget: 20_000_000,
         wall_deadline: Duration::from_millis(300),
@@ -87,10 +84,7 @@ fn infinite_loop_is_stopped_within_budget() {
 
 #[test]
 fn memory_growth_past_cap_is_denied() {
-    let Some(wasm): Option<Vec<u8>> = load("memgrow_bomb.wat") else {
-        eprintln!("SKIP: memgrow_bomb.wat missing");
-        return;
-    };
+    let wasm: Vec<u8> = load("memgrow_bomb.wat");
     let limits: Limits = Limits {
         fuel_budget: 50_000_000,
         wall_deadline: Duration::from_secs(2),
@@ -193,10 +187,7 @@ fn nonempty_input_requires_exported_memory() {
 
 #[test]
 fn pure_compute_module_runs_and_returns_correct_bytes() {
-    let Some(wasm): Option<Vec<u8>> = load("compute_xor.wat") else {
-        eprintln!("SKIP: compute_xor.wat missing");
-        return;
-    };
+    let wasm: Vec<u8> = load("compute_xor.wat");
     let input: [u8; 5] = [0x00, 0x10, 0x7f, 0x80, 0xff];
     let outcome: Result<Vec<u8>, SandboxError> = PluginHost::run(&wasm, &input, Limits::default());
     let output: Vec<u8> = outcome.expect("import-free compute module must run cleanly");
