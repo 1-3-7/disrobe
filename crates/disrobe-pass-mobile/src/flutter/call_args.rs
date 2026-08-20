@@ -1291,7 +1291,38 @@ fn compare_and_branch_register(raw: u32) -> Option<u8> {
     (raw & COMPARE_AND_BRANCH_MASK == COMPARE_AND_BRANCH_MATCH).then_some((raw & 0x1F) as u8)
 }
 
+const NZCV_ARITHMETIC_FORMS: [(u32, u32); 5] = [
+    (0x1F80_0000, 0x1100_0000),
+    (0x1F20_0000, 0x0B00_0000),
+    (0x1F20_0000, 0x0B20_0000),
+    (0x1FE0_0000, 0x1A00_0000),
+    (0x1FE0_0000, 0x1A40_0000),
+];
+
+const NZCV_LOGICAL_FORMS: [(u32, u32); 2] =
+    [(0x1F00_0000, 0x0A00_0000), (0x1F80_0000, 0x1200_0000)];
+
+const NZCV_SET_BIT: u32 = 0x2000_0000;
+
+fn writes_nzcv(raw: u32) -> bool {
+    if is_float_compare(raw) {
+        return true;
+    }
+    let matches_form = |forms: &[(u32, u32)]| {
+        forms
+            .iter()
+            .any(|(mask, value): &(u32, u32)| raw & mask == *value)
+    };
+    if raw & NZCV_SET_BIT != 0 && matches_form(&NZCV_ARITHMETIC_FORMS) {
+        return true;
+    }
+    (raw >> 29) & 0x3 == 3 && matches_form(&NZCV_LOGICAL_FORMS)
+}
+
 fn apply_sequential(state: &mut TrackState, insn: &Arm64Instruction, raw: u32) {
+    if writes_nzcv(raw) {
+        state.flags = None;
+    }
     if let Some(register) = simd_zero_idiom(raw) {
         state.define_float(register, Some(DartValue::Double(0)));
         return;
@@ -2193,6 +2224,31 @@ mod tests {
 
         let many: TrackState = TrackState::entry(Some(u8::MAX));
         assert_eq!(many.integers.len(), DART_ARGUMENT_REGISTERS.len());
+    }
+
+    #[test]
+    fn an_unmodelled_flag_writer_between_the_compare_and_the_select_drops_the_comparison() {
+        let modelled: [u32; 4] = [0xf100_081f, 0xeb02_001f, 0xf240_001f, 0x1e60_2000];
+        for raw in modelled {
+            assert!(
+                writes_nzcv(raw),
+                "{raw:#010x} sets NZCV and must invalidate a stale comparison"
+            );
+        }
+        let unmodelled: [u32; 4] = [0xb100_0420, 0xba02_0020, 0xfa42_0800, 0x2b02_0020];
+        for raw in unmodelled {
+            assert!(
+                writes_nzcv(raw),
+                "{raw:#010x} sets NZCV and must invalidate a stale comparison"
+            );
+        }
+        let harmless: [u32; 4] = [0x9100_0420, 0x8b00_0022, 0x9a80_1041, 0xaa01_03e0];
+        for raw in harmless {
+            assert!(
+                !writes_nzcv(raw),
+                "{raw:#010x} does not set NZCV and must not discard a live comparison"
+            );
+        }
     }
 
     #[test]
