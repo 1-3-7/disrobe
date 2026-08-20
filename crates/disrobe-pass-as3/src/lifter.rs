@@ -96,6 +96,7 @@ pub enum Expr {
     },
     Closure(u32),
     ScopeObject,
+    Activation,
     CaughtException,
     Phi {
         block: usize,
@@ -224,6 +225,7 @@ impl Expr {
             }
             Self::Closure(idx) => format!("function() {{ /* closure method #{idx} */ }}"),
             Self::ScopeObject => String::new(),
+            Self::Activation => ACTIVATION_NAME.to_owned(),
             Self::CaughtException => "$exc".to_owned(),
             Self::Phi { block, slot } => format!("phi{block}_{slot}"),
             Self::Opaque(label) => format!("/* {label} */"),
@@ -314,6 +316,7 @@ fn expr_node_count_capped(e: &Expr, cap: usize) -> usize {
             | Expr::Lex(_)
             | Expr::Closure(_)
             | Expr::ScopeObject
+            | Expr::Activation
             | Expr::CaughtException
             | Expr::Phi { .. }
             | Expr::Opaque(_) => {}
@@ -594,6 +597,10 @@ const OP_POP: u8 = 0x29;
 const OP_DUP: u8 = 0x2A;
 const OP_IFTRUE: u8 = 0x11;
 const OP_IFFALSE: u8 = 0x12;
+const OP_NEWACTIVATION: u8 = 0x57;
+const OP_KILL: u8 = 0x08;
+const OP_HASNEXT2: u8 = 0x32;
+const ACTIVATION_NAME: &str = "$activation";
 
 const fn is_setlocal(op: u8) -> bool {
     matches!(op, 0x63 | 0xD4 | 0xD5 | 0xD6 | 0xD7)
@@ -601,6 +608,8 @@ const fn is_setlocal(op: u8) -> bool {
 
 #[derive(Debug, Default)]
 struct Idioms {
+    activation_local: Option<u32>,
+    written_locals: BTreeSet<u32>,
     dup_backed_setlocals: BTreeSet<usize>,
     short_circuit_branches: BTreeMap<usize, &'static str>,
     short_circuit_discards: BTreeSet<usize>,
@@ -633,7 +642,119 @@ fn detect_idioms(lines: &[DisasmLine]) -> Idioms {
         out.short_circuit_branches.insert(triple[1].offset, op);
         out.short_circuit_discards.insert(triple[2].offset);
     }
+    out.written_locals = written_locals(lines);
+    out.activation_local = detect_activation_local(lines, &out.written_locals);
     out
+}
+
+const fn setlocal_slot(op: u8, operand: Option<i64>) -> Option<i64> {
+    match op {
+        0x63 => operand,
+        0xD4 => Some(0),
+        0xD5 => Some(1),
+        0xD6 => Some(2),
+        0xD7 => Some(3),
+        _ => None,
+    }
+}
+
+fn local_writes(line: &DisasmLine) -> ([i64; 2], usize) {
+    match line.opcode {
+        0x63 | 0x92 | 0x94 | 0xC2 | 0xC3 | OP_KILL => match line.operands.first() {
+            Some(&slot) => ([slot, 0], 1),
+            None => ([0, 0], 0),
+        },
+        0xD4 => ([0, 0], 1),
+        0xD5 => ([1, 0], 1),
+        0xD6 => ([2, 0], 1),
+        0xD7 => ([3, 0], 1),
+        OP_HASNEXT2 => match (line.operands.first(), line.operands.get(1)) {
+            (Some(&object_slot), Some(&index_slot)) => ([object_slot, index_slot], 2),
+            _ => ([0, 0], 0),
+        },
+        _ => ([0, 0], 0),
+    }
+}
+
+fn written_locals(lines: &[DisasmLine]) -> BTreeSet<u32> {
+    let mut written: BTreeSet<u32> = BTreeSet::new();
+    for line in lines {
+        let (slots, count): ([i64; 2], usize) = local_writes(line);
+        for slot in slots.iter().take(count) {
+            if let Ok(slot) = u32::try_from(*slot) {
+                written.insert(slot);
+            }
+        }
+    }
+    written
+}
+
+fn detect_activation_local(lines: &[DisasmLine], written: &BTreeSet<u32>) -> Option<u32> {
+    let mut activation_index: Option<usize> = None;
+    for (index, line) in lines.iter().enumerate() {
+        if line.opcode != OP_NEWACTIVATION {
+            continue;
+        }
+        if activation_index.is_some() {
+            return None;
+        }
+        activation_index = Some(index);
+    }
+    let index: usize = activation_index?;
+    if lines.get(index + 1)?.opcode != OP_DUP {
+        return None;
+    }
+    let store: &DisasmLine = lines.get(index + 2)?;
+    let raw_slot: i64 = setlocal_slot(store.opcode, store.operands.first().copied())?;
+    let slot: u32 = u32::try_from(raw_slot).ok()?;
+    if slot == 0 {
+        return None;
+    }
+    if !written.contains(&slot) {
+        return None;
+    }
+    let mut writes: usize = 0;
+    for line in lines {
+        let (slots, count): ([i64; 2], usize) = local_writes(line);
+        for candidate in slots.iter().take(count) {
+            if u32::try_from(*candidate).ok() != Some(slot) {
+                continue;
+            }
+            if line.opcode == OP_KILL {
+                return None;
+            }
+            writes = writes.saturating_add(1);
+        }
+    }
+    (writes == 1).then_some(slot)
+}
+
+fn normalize_scope_object(object: Expr, activation_local: Option<u32>) -> Expr {
+    match (&object, activation_local) {
+        (Expr::Local(slot), Some(activation)) if *slot == activation => Expr::Activation,
+        _ => object,
+    }
+}
+
+fn scope_object_is_path_invariant(object: &Expr, idioms: &Idioms) -> bool {
+    match object {
+        Expr::Activation => idioms.activation_local.is_some(),
+        Expr::This => !idioms.written_locals.contains(&0),
+        Expr::Local(slot) => !idioms.written_locals.contains(slot),
+        _ => false,
+    }
+}
+
+fn scope_entries_agree(left: &[ScopeEntry], right: &[ScopeEntry], idioms: &Idioms) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(
+            |(left_entry, right_entry): (&ScopeEntry, &ScopeEntry)| {
+                left_entry.is_with == right_entry.is_with
+                    && left_entry.object == right_entry.object
+                    && (left_entry.identity == right_entry.identity
+                        || scope_object_is_path_invariant(&left_entry.object, idioms))
+            },
+        )
 }
 
 #[derive(Debug)]
@@ -1128,7 +1249,9 @@ impl Lifter<'_> {
         }
         let first: &Vec<ScopeEntry> = &entries[0];
         if first.iter().any(|entry: &ScopeEntry| entry.is_with)
-            || entries.iter().any(|entry: &Vec<ScopeEntry>| entry != first)
+            || entries
+                .iter()
+                .any(|entry: &Vec<ScopeEntry>| !scope_entries_agree(entry, first, &self.idioms))
         {
             self.mark_scope_conflict(SCOPE_VALUE_CONFLICT_MARKER);
             return;
@@ -2331,7 +2454,8 @@ fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: us
             let index: i64 = lifter.operand(ops, 0);
             emit_findproperty(lifter, index);
         }
-        0x64 | 0x65 | 0x57 | 0x5A => lifter.push(Expr::ScopeObject),
+        0x64 | 0x65 | 0x5A => lifter.push(Expr::ScopeObject),
+        OP_NEWACTIVATION => lifter.push(Expr::Activation),
         0x66 => {
             let index: i64 = lifter.operand(ops, 0);
             emit_getproperty(lifter, index);
@@ -2522,7 +2646,7 @@ fn emit_getproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
 
 fn scope_relative_get(object: Expr, property: String) -> Expr {
     match object {
-        Expr::ScopeObject => Expr::Name(property),
+        Expr::ScopeObject | Expr::Activation => Expr::Name(property),
         Expr::Lex(ref s) if simple_tail(s) == property => Expr::Name(s.clone()),
         other => Expr::Get {
             object: Box::new(other),
@@ -2561,7 +2685,7 @@ fn emit_setproperty(lifter: &mut Lifter<'_>, mn_idx: i64) {
 
 fn scope_relative_assign(object: Expr, property: String, value: Expr) -> Stmt {
     match object {
-        Expr::ScopeObject => Stmt::Assign {
+        Expr::ScopeObject | Expr::Activation => Stmt::Assign {
             target: Expr::Name(property),
             value,
         },
@@ -2588,7 +2712,8 @@ fn emit_setslot(lifter: &mut Lifter<'_>, slot: i64) {
 }
 
 fn emit_pushscope(lifter: &mut Lifter<'_>, is_with: bool, offset: usize) {
-    let object: Expr = lifter.pop();
+    let popped: Expr = lifter.pop();
+    let object: Expr = normalize_scope_object(popped, lifter.idioms.activation_local);
     if is_with {
         lifter.with_regions.push(WithRegion {
             open_stmt: lifter.statements.len(),
@@ -3483,7 +3608,10 @@ fn drop_leading_label(slice: &[Stmt]) -> &[Stmt] {
 fn is_catch_prologue_stmt(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Assign { value, .. } => {
-            matches!(value, Expr::ScopeObject | Expr::CaughtException)
+            matches!(
+                value,
+                Expr::ScopeObject | Expr::Activation | Expr::CaughtException
+            )
         }
         Stmt::AssignProperty { value, .. } | Stmt::AssignIndex { value, .. } => {
             matches!(value, Expr::CaughtException)
@@ -3830,6 +3958,7 @@ fn forward_dispatch_operand_is_stable(expression: &Expr) -> bool {
             | Expr::Undefined
             | Expr::NaN
             | Expr::ScopeObject
+            | Expr::Activation
             | Expr::CaughtException
     )
 }

@@ -1622,3 +1622,241 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
         m.tally.graded
     );
 }
+
+const CONTROL_SHAPES_SWF: &[u8] =
+    include_bytes!("../../../corpus/flash/avm2_disasm_oracle/control_shapes.swf");
+const CONTROL_SHAPES_SOURCE: &str =
+    include_str!("../../../corpus/flash/avm2_disasm_oracle/ControlShapes.hx");
+const CONTROL_SHAPES_SWF_BYTES: usize = 6477;
+const CONTROL_SHAPES_SOURCE_BYTES: usize = 2602;
+const CONTROL_SHAPES_METHOD_BODIES: usize = 119;
+const CONTROL_SHAPES_AUTHORED_METHODS: usize = 8;
+const CONTROL_SHAPES_RECOVERED_FLOOR: usize = 5;
+
+fn squeeze(text: &str) -> String {
+    let mut out: String = String::with_capacity(text.len());
+    let mut pending_space: bool = false;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(character);
+    }
+    out
+}
+
+fn method_text(program: &str, name: &str) -> String {
+    let needle: String = format!("function {name}(");
+    let start: usize = program
+        .find(&needle)
+        .unwrap_or_else(|| panic!("the recovered program must contain {name}: {program}"));
+    let open: usize = program[start..]
+        .find('{')
+        .map(|offset: usize| start + offset)
+        .unwrap_or_else(|| panic!("{name} must have a body"));
+    let mut depth: usize = 0;
+    for (offset, character) in program[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return program[open..=open + offset].to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{name} has an unbalanced body");
+}
+
+fn ordered_positions(text: &str, needles: &[&str]) -> bool {
+    let mut cursor: usize = 0;
+    for needle in needles {
+        let Some(found): Option<usize> = text[cursor..].find(needle) else {
+            return false;
+        };
+        cursor += found + needle.len();
+    }
+    true
+}
+
+fn control_shapes_program() -> String {
+    assert_eq!(
+        CONTROL_SHAPES_SWF.len(),
+        CONTROL_SHAPES_SWF_BYTES,
+        "control_shapes.swf must stay the artifact the corpus manifest recorded; a different \
+         build cannot be graded against this authored program"
+    );
+    assert_eq!(
+        &CONTROL_SHAPES_SWF[..3],
+        b"CWS",
+        "control_shapes.swf must stay the zlib-compressed SWF the corpus manifest recorded"
+    );
+    assert_eq!(
+        CONTROL_SHAPES_SOURCE.len(),
+        CONTROL_SHAPES_SOURCE_BYTES,
+        "ControlShapes.hx is the reference this grade is written against; a changed authored \
+         program must fail rather than silently rescore the recovery"
+    );
+    let parsed: Swf = swf::parse(CONTROL_SHAPES_SWF).expect("parse control_shapes.swf");
+    let blobs: Vec<DoAbc> = parsed.collect_do_abc();
+    let mut program: String = String::new();
+    let mut bodies: usize = 0;
+    for blob in &blobs {
+        let file: AbcFile = abc::parse(&blob.abc_bytes).expect("parse control_shapes abc");
+        bodies += file.method_bodies.len();
+        program.push_str(
+            &disrobe_pass_as3::decompile::render_program(&file).expect("render control_shapes"),
+        );
+    }
+    assert_eq!(
+        bodies, CONTROL_SHAPES_METHOD_BODIES,
+        "the corpus manifest records the method-body count of this artifact independently of \
+         disrobe, and the parse must still reach all of them"
+    );
+    program
+}
+
+#[test]
+fn control_shapes_recovery_never_emits_an_empty_operand() {
+    let program: String = control_shapes_program();
+    let offenders: Vec<&str> = program
+        .lines()
+        .filter(|line: &&str| line.trim_end().ends_with("= ;"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "an AVM2 value with no ActionScript spelling must render as a named operand, never as \
+         nothing: {offenders:?}"
+    );
+}
+
+#[test]
+fn control_shapes_activation_scope_reconciles_across_the_handler() {
+    assert!(
+        CONTROL_SHAPES_SOURCE.contains("} catch (fault:CustomFault) {"),
+        "the authored program must still be the layered try and catch this grade reads"
+    );
+    let program: String = control_shapes_program();
+    let guarded: String = squeeze(&method_text(&program, "guarded"));
+    assert!(
+        guarded.contains("$activation"),
+        "the activation object a NEED_ACTIVATION method allocates must reach the output as a \
+         named operand: {guarded}"
+    );
+    assert!(
+        !guarded.contains("unreconciled scope"),
+        "the try path allocates the activation and the handler re-pushes it from its local, so \
+         the scope stack must reconcile at the merge instead of refusing: {guarded}"
+    );
+}
+
+#[test]
+fn control_shapes_string_dispatch_keeps_loose_equality() {
+    assert!(
+        CONTROL_SHAPES_SOURCE.contains("case \"delta\" | \"epsilon\": 4;"),
+        "the authored program must still be the string switch this grade reads"
+    );
+    let program: String = control_shapes_program();
+    let words: String = squeeze(&method_text(&program, "words"));
+    assert!(
+        !words.contains("switch"),
+        "the compiler lowered this switch to loose-equality comparisons, and an AS3 switch \
+         compares strictly, so recovering it as a switch would change the semantics: {words}"
+    );
+    assert!(
+        ordered_positions(
+            &words,
+            &[
+                "\"alpha\")) { return 1;",
+                "\"beta\")) { return 2;",
+                "\"delta\")",
+                "\"epsilon\"))) { return 4;",
+                "\"gamma\")) { return 3;",
+                "return 0;",
+            ]
+        ),
+        "every authored case must map to its authored value, in the order the bytecode tests \
+         them: {words}"
+    );
+}
+
+#[test]
+fn control_shapes_recovery_holds_its_measured_floor_against_the_authored_program() {
+    let program: String = control_shapes_program();
+    let checks: [(&str, bool); CONTROL_SHAPES_AUTHORED_METHODS] = [
+        ("labelled", {
+            let body: String = squeeze(&method_text(&program, "labelled"));
+            body.contains("= Boolean(true); break;")
+        }),
+        ("words", {
+            let body: String = squeeze(&method_text(&program, "words"));
+            !body.contains("goto")
+                && ordered_positions(
+                    &body,
+                    &[
+                        "\"alpha\")) { return 1;",
+                        "\"beta\")) { return 2;",
+                        "\"epsilon\"))) { return 4;",
+                        "\"gamma\")) { return 3;",
+                    ],
+                )
+        }),
+        ("guarded", {
+            let body: String = squeeze(&method_text(&program, "guarded"));
+            body.contains("try {") && body.contains("catch") && !body.contains("goto")
+        }),
+        ("recurse", {
+            let body: String = squeeze(&method_text(&program, "recurse"));
+            body.contains("<= 0)) { return arg2;")
+                && body.contains("recurse((arg1 - 1), (arg2 + arg1))")
+        }),
+        ("ternaries", {
+            let body: String = squeeze(&method_text(&program, "ternaries"));
+            body.contains("(arg1 > arg2) ? arg1 : arg2")
+                && body.contains("> 10) ? 10 : (")
+                && body.contains("(arg1 == arg2) ? 1 : ((arg1 < arg2) ? 2 : 3)")
+        }),
+        ("shortCircuit", {
+            let body: String = squeeze(&method_text(&program, "shortCircuit"));
+            body.matches("return ").count() == 1
+        }),
+        ("tables", {
+            let body: String = squeeze(&method_text(&program, "tables"));
+            !body.contains("goto") && !body.contains("DR-AS3-PARTIAL")
+        }),
+        ("enums", {
+            let body: String = squeeze(&method_text(&program, "enums"));
+            body.contains("switch")
+                && ordered_positions(
+                    &body,
+                    &["case 0: return 0;", "case 1:", "case 2:", "* loc3);"],
+                )
+        }),
+    ];
+    let recovered: usize = checks
+        .iter()
+        .filter(|(_, held): &&(&str, bool)| *held)
+        .count();
+    let missed: Vec<&str> = checks
+        .iter()
+        .filter(|(_, held): &&(&str, bool)| !*held)
+        .map(|(name, _): &(&str, bool)| *name)
+        .collect();
+    assert!(
+        recovered >= CONTROL_SHAPES_RECOVERED_FLOOR,
+        "recovery of the authored control-flow shapes must hold its measured floor of \
+         {CONTROL_SHAPES_RECOVERED_FLOOR}/{CONTROL_SHAPES_AUTHORED_METHODS}; got \
+         {recovered}/{CONTROL_SHAPES_AUTHORED_METHODS}, missing {missed:?}"
+    );
+    assert!(
+        recovered <= CONTROL_SHAPES_AUTHORED_METHODS,
+        "the numerator cannot exceed the authored population"
+    );
+}
