@@ -375,7 +375,7 @@ const AUTHORED_METHODS: [&str; 8] = [
     "tables",
     "enums",
 ];
-const FULLY_STRUCTURED_FLOOR: usize = 7;
+const FULLY_STRUCTURED_FLOOR: usize = 8;
 
 fn squeeze(text: &str) -> String {
     let mut out: String = String::with_capacity(text.len());
@@ -484,5 +484,33 @@ fn the_inner_loop_exit_recovers_as_the_break_the_compiler_was_given() {
         squeezed.contains("== 2)) { continue;"),
         "the authored continue must stay a continue, so this grade cannot pass by turning every \
          loop exit into a break: {text}"
+    );
+}
+
+const EXPECTED_GUARDED_SOURCE: &str = "\t\ttry {\n\t\t\tif (value < 0)\n\t\t\t\tthrow new CustomFault(\"negative\");\n\t\t\tif (value == 0)\n\t\t\t\tthrow \"zero\";\n\t\t\toutcome = \"positive\";\n\t\t}";
+
+#[test]
+fn the_guarded_region_recovers_without_a_residual_branch_graph() {
+    assert!(
+        HAXE_SOURCE.contains(EXPECTED_GUARDED_SOURCE),
+        "the authored program must still guard two throws inside a try, which is what this grade \
+         reads"
+    );
+    let abc: AbcFile = parse_fixture();
+    let (lifted, text): (LiftedBody, String) = recovered(&abc, "guarded");
+    assert_eq!(
+        residual_control_flow(&lifted.statements),
+        0,
+        "the authored try and its handler chain are ordinary structured control flow, so neither \
+         region may keep a goto or a bare label: {text}"
+    );
+    assert!(
+        lifted.structurally_recovered,
+        "with both regions structured the body must report structural recovery: {text}"
+    );
+    let squeezed: String = squeeze(&text);
+    assert!(
+        squeezed.contains("try {") && squeezed.contains("catch"),
+        "the recovered shape must still be a try with a handler: {text}"
     );
 }

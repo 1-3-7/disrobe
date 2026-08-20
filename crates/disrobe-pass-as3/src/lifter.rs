@@ -6134,6 +6134,32 @@ fn structure_if_blocks(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
     out
 }
 
+fn restructure_tail_regions(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
+    let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    for index in 0..stmts.len() {
+        let follow: Option<usize> = match stmts.get(index + 1) {
+            Some(Stmt::Label(label)) => Some(*label),
+            _ => None,
+        };
+        let stmt: Stmt = stmts[index].clone();
+        let rebuilt: Stmt = match stmt {
+            Stmt::Try { body, catches } => Stmt::Try {
+                body: structure_acyclic(&body, follow, depth).unwrap_or(body),
+                catches: catches
+                    .into_iter()
+                    .map(|clause: CatchClause| CatchClause {
+                        body: structure_acyclic(&clause.body, follow, depth).unwrap_or(clause.body),
+                        ..clause
+                    })
+                    .collect(),
+            },
+            other => restructure_nested(other, depth),
+        };
+        out.push(rebuilt);
+    }
+    out
+}
+
 fn restructure_nested(stmt: Stmt, depth: usize) -> Stmt {
     let recur =
         |body: Vec<Stmt>| -> Vec<Stmt> { structure_acyclic(&body, None, depth).unwrap_or(body) };
@@ -6753,8 +6779,12 @@ pub fn lift_body(
     let switched: Vec<Stmt> = drop_dead_labels(structure_switches(dispatched, MAX_STRUCTURE_DEPTH));
     let looped: Vec<Stmt> = structure_loops(switched, MAX_STRUCTURE_DEPTH);
     let acyclic: Option<Vec<Stmt>> = structure_acyclic(&looped, None, MAX_STRUCTURE_DEPTH);
-    let structured: Vec<Stmt> =
-        acyclic.unwrap_or_else(|| structure_if_blocks(looped, MAX_STRUCTURE_DEPTH));
+    let structured: Vec<Stmt> = acyclic.unwrap_or_else(|| {
+        restructure_tail_regions(
+            structure_if_blocks(looped, MAX_STRUCTURE_DEPTH),
+            MAX_STRUCTURE_DEPTH - 1,
+        )
+    });
     let statements: Vec<Stmt> = drop_dead_labels(structured);
     let opaque_operands: usize = lift_opaque.saturating_add(stmts_phi_count(&statements));
     let reached_terminator: bool = statements.iter().any(stmt_reaches_terminator);
