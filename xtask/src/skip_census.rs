@@ -9,32 +9,34 @@ const MIN_SCANNED_FILES: usize = 400;
 const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
-    ("disrobe-cli", 25),
-    ("disrobe-core", 8),
+    ("disrobe-binfmt", 3),
+    ("disrobe-cli", 57),
+    ("disrobe-core", 7),
     ("disrobe-irsummary", 1),
     ("disrobe-lift-x86", 2),
     ("disrobe-mba", 3),
     ("disrobe-nir-lift", 9),
-    ("disrobe-pass-as3", 11),
+    ("disrobe-pass-as3", 22),
     ("disrobe-pass-dotnet", 4),
     ("disrobe-pass-go", 2),
-    ("disrobe-pass-js-deob", 17),
-    ("disrobe-pass-jvm", 68),
+    ("disrobe-pass-js-deob", 60),
+    ("disrobe-pass-jvm", 73),
     ("disrobe-pass-lua", 22),
     ("disrobe-pass-mobile", 5),
-    ("disrobe-pass-native", 224),
+    ("disrobe-pass-native", 295),
     ("disrobe-pass-nativelang", 2),
     ("disrobe-pass-nuitka", 32),
-    ("disrobe-pass-php", 2),
+    ("disrobe-pass-php", 6),
     ("disrobe-pass-py-decompile", 7),
-    ("disrobe-pass-py-deob", 13),
+    ("disrobe-pass-py-deob", 12),
     ("disrobe-pass-py-disasm", 1),
-    ("disrobe-pass-pyarmor", 37),
-    ("disrobe-pass-pyfreeze", 12),
+    ("disrobe-pass-pyarmor", 39),
+    ("disrobe-pass-pyfreeze", 19),
     ("disrobe-pass-ruby", 12),
     ("disrobe-pass-shell", 8),
-    ("disrobe-pass-wasm-deob", 10),
-    ("disrobe-plugin-host", 0),
+    ("disrobe-pass-sourcedefender", 3),
+    ("disrobe-pass-swift-objc", 1),
+    ("disrobe-pass-wasm-deob", 11),
     ("disrobe-pyarmor-cextract", 5),
     ("disrobe-semdiff", 2),
     ("disrobe-typerec", 3),
@@ -117,14 +119,87 @@ fn lines_inside_tests(lines: &[&str]) -> Vec<bool> {
     inside
 }
 
-pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<SkipSite> {
+fn declares_a_skip_helper(lines: &[&str], index: usize) -> Option<String> {
+    let trimmed: &str = lines[index].trim_start();
+    if !opens_a_function(trimmed) {
+        return None;
+    }
+    let open: usize = trimmed.find('(')?;
+    let head: &str = trimmed[..open].trim_end();
+    let name: &str = head.rsplit(' ').next()?;
+    if name.is_empty() {
+        return None;
+    }
+    let mut depth: isize = 0;
+    let mut opened: bool = false;
+    let mut prints_a_skip: bool = false;
+    let mut cursor: usize = index;
+    while cursor < lines.len() {
+        let line: &str = lines[cursor];
+        depth += isize::try_from(line.matches('{').count()).unwrap_or(0);
+        depth -= isize::try_from(line.matches('}').count()).unwrap_or(0);
+        if line.contains('{') {
+            opened = true;
+        }
+        if opens_a_print(line) && string_literal_mentions_skip(line) {
+            prints_a_skip = true;
+        }
+        if opened && depth <= 0 {
+            break;
+        }
+        cursor = cursor.saturating_add(1);
+    }
+    prints_a_skip.then(|| name.to_owned())
+}
+
+pub(crate) fn skip_helper_names(source: &str) -> std::collections::BTreeSet<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for index in 0..lines.len() {
+        if let Some(name) = declares_a_skip_helper(&lines, index) {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+fn calls_a_skip_helper(line: &str, helpers: &std::collections::BTreeSet<String>) -> bool {
+    helpers.iter().any(|name: &String| {
+        line.match_indices(name.as_str())
+            .any(|(at, _): (usize, &str)| {
+                let after: bool = line[at.saturating_add(name.len())..].starts_with('(');
+                let before: bool = at == 0
+                    || !line[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c: char| c.is_alphanumeric() || c == '_');
+                after && before
+            })
+    })
+}
+
+pub(crate) fn sites_in_source_with_helpers(
+    relative: &str,
+    source: &str,
+    helpers: &std::collections::BTreeSet<String>,
+) -> Vec<SkipSite> {
     let lines: Vec<&str> = source.lines().collect();
     let inside: Vec<bool> = lines_inside_tests(&lines);
     let mut found: Vec<SkipSite> = Vec::new();
+    let mut last_site: Option<usize> = None;
     for (index, line) in lines.iter().enumerate() {
-        if !opens_a_print(line) || !string_literal_mentions_skip(line) {
+        let printed: bool = opens_a_print(line) && string_literal_mentions_skip(line);
+        let delegated: bool = !helpers.is_empty()
+            && inside.get(index).copied().unwrap_or(false)
+            && calls_a_skip_helper(line, helpers);
+        if !printed && !delegated {
             continue;
         }
+        if last_site.is_some_and(|previous: usize| index.saturating_sub(previous) <= RETURN_WINDOW)
+        {
+            continue;
+        }
+        last_site = Some(index);
         let stop: usize = index
             .saturating_add(RETURN_WINDOW)
             .min(lines.len().saturating_sub(1));
@@ -143,6 +218,11 @@ pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<SkipSite> {
     found
 }
 
+#[cfg(test)]
+pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<SkipSite> {
+    sites_in_source_with_helpers(relative, source, &std::collections::BTreeSet::new())
+}
+
 fn crate_of(relative: &str) -> Option<&str> {
     let mut parts: std::str::Split<'_, char> = relative.split('/');
     (parts.next()? == "crates").then(|| parts.next())?
@@ -151,6 +231,7 @@ fn crate_of(relative: &str) -> Option<&str> {
 fn scan(root: &Path) -> Result<(BTreeMap<String, Vec<SkipSite>>, usize)> {
     let crates_dir: PathBuf = root.join("crates");
     let mut per_crate: BTreeMap<String, Vec<SkipSite>> = BTreeMap::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
     let mut scanned: usize = 0;
     for entry in walkdir::WalkDir::new(&crates_dir)
         .into_iter()
@@ -172,17 +253,30 @@ fn scan(root: &Path) -> Result<(BTreeMap<String, Vec<SkipSite>>, usize)> {
         if !relative.contains("/tests/") && !relative.ends_with("/tests.rs") {
             continue;
         }
-        let length: u64 = entry.metadata().map_or(0, |meta: std::fs::Metadata| meta.len());
+        let length: u64 = entry
+            .metadata()
+            .map_or(0, |meta: std::fs::Metadata| meta.len());
         if length > MAX_SOURCE_BYTES {
             continue;
         }
         let source: String =
             std::fs::read_to_string(path).wrap_err_with(|| format!("read {}", path.display()))?;
         scanned = scanned.saturating_add(1);
-        let Some(owner) = crate_of(&relative) else {
+        if crate_of(&relative).is_some() {
+            sources.push((relative, source));
+        }
+    }
+
+    let mut helpers: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (_, source) in &sources {
+        helpers.extend(skip_helper_names(source));
+    }
+
+    for (relative, source) in &sources {
+        let Some(owner) = crate_of(relative) else {
             continue;
         };
-        let sites: Vec<SkipSite> = sites_in_source(&relative, &source);
+        let sites: Vec<SkipSite> = sites_in_source_with_helpers(relative, source, &helpers);
         if !sites.is_empty() {
             per_crate.entry(owner.to_owned()).or_default().extend(sites);
         }

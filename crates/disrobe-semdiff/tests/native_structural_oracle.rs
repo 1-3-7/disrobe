@@ -308,10 +308,12 @@ fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
         for &opt in &opt_levels {
             let tag: String = format!("{compiler}-{opt}");
             let target_path: PathBuf = scratch.join(format!("target-{tag}.exe"));
-            if !compile(compiler, opt, &source_path, &target_path) {
-                eprintln!("skip {tag}: compile failed");
-                continue;
-            }
+            assert!(
+                compile(compiler, opt, &source_path, &target_path),
+                "{compiler} was found on PATH above and the reference build with it already \
+                 succeeded, so failing to build {tag} from the same source is a defect in this \
+                 probe rather than a reason to grade one pairing fewer"
+            );
             let target_bytes: Vec<u8> = std::fs::read(&target_path).expect("read target");
             let target_named: BTreeMap<String, u64> = named_addresses(&target_bytes);
             let result: CaseResult = grade_pair(
