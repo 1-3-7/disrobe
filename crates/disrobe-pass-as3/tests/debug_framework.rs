@@ -12,48 +12,25 @@ use disrobe_pass_as3::{AbcFile, DoAbc};
 
 const HARNESS_ENV: &str = "DISROBE_AS3_DEBUG_HARNESS";
 
-fn corpus_root() -> PathBuf {
-    if let Ok(over) = std::env::var("DR_AS3_CORPUS") {
-        return PathBuf::from(over);
-    }
+fn abc_bearing_swf() -> PathBuf {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
+    let path: PathBuf = manifest
         .parent()
         .expect("crates parent")
         .parent()
         .expect("workspace root")
         .join("corpus")
         .join("flash")
-        .join("swf")
-}
-
-fn first_abc_bearing_swf() -> Option<PathBuf> {
-    let dir: PathBuf = corpus_root();
-    if !common::require_corpus("as3 debug framework", &dir) {
-        return None;
-    }
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .ok()?
-        .filter_map(|e| e.ok().map(|d| d.path()))
-        .filter(|p: &PathBuf| p.extension().and_then(|e| e.to_str()) == Some("swf"))
-        .collect();
-    paths.sort();
-    for path in paths {
-        let Ok(bytes): Result<Vec<u8>, _> = std::fs::read(&path) else {
-            continue;
-        };
-        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
-            continue;
-        };
-        for blob in parsed.collect_do_abc() {
-            if let Ok(parsed_abc) = abc::parse(&blob.abc_bytes)
-                && !parsed_abc.method_bodies.is_empty()
-            {
-                return Some(path);
-            }
-        }
-    }
-    None
+        .join("avm2_disasm_oracle")
+        .join("control_shapes.swf");
+    assert!(
+        path.is_file(),
+        "the debug-framework contract runs against a tracked ABC-bearing SWF so it grades in \
+         every checkout rather than only where the untracked corpus happens to exist, and {} \
+         is missing, which means a damaged checkout rather than an absent corpus",
+        path.display()
+    );
+    path
 }
 
 fn run_harness(debug: Option<&str>, json: bool) -> Output {
@@ -94,11 +71,9 @@ fn harness_entrypoint() {
          variable means the spawn stopped propagating it and every parent was grading a child that \
          did nothing"
     );
-    let Some(path): Option<PathBuf> = first_abc_bearing_swf() else {
-        return;
-    };
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read corpus swf");
-    let parsed: Swf = swf::parse(&bytes).expect("parse corpus swf");
+    let path: PathBuf = abc_bearing_swf();
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read the tracked swf");
+    let parsed: Swf = swf::parse(&bytes).expect("parse the tracked swf");
     let blobs: Vec<DoAbc> = parsed.collect_do_abc();
     for blob in &blobs {
         let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
@@ -117,9 +92,6 @@ fn harness_skipped(stderr: &str) -> bool {
 
 #[test]
 fn unset_is_zero_overhead() {
-    if first_abc_bearing_swf().is_none() {
-        return;
-    }
     let out: Output = run_harness(None, false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -131,9 +103,6 @@ fn unset_is_zero_overhead() {
 
 #[test]
 fn set_emits_decision_points() {
-    if first_abc_bearing_swf().is_none() {
-        return;
-    }
     let out: Output = run_harness(Some("as3"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -165,9 +134,6 @@ fn set_emits_decision_points() {
 
 #[test]
 fn other_scope_does_not_enable_as3() {
-    if first_abc_bearing_swf().is_none() {
-        return;
-    }
     let out: Output = run_harness(Some("jvm,native"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -179,9 +145,6 @@ fn other_scope_does_not_enable_as3() {
 
 #[test]
 fn json_mode_is_one_object_per_line() {
-    if first_abc_bearing_swf().is_none() {
-        return;
-    }
     let out: Output = run_harness(Some("as3"), true);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
