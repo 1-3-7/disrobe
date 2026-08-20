@@ -1020,9 +1020,15 @@ fn export_reference(jar: &Path, swf_path: &Path, out_dir: &Path, size: u64) -> b
 }
 
 fn collect_as_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+    let entries: std::fs::ReadDir =
+        std::fs::read_dir(dir).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the reference decompiler reported a successful export, so a directory it wrote \
+             that cannot be listed is a damaged export rather than an absent one, and \
+             skipping it would silently shrink the graded population: {}: {error}",
+                dir.display()
+            )
+        });
     for entry in entries.flatten() {
         let path: PathBuf = entry.path();
         if path.is_dir() {
@@ -1039,9 +1045,14 @@ fn reference_classes(dir: &Path) -> ClassMap {
     files.sort();
     let mut out: ClassMap = ClassMap::new();
     for file in files {
-        let Ok(src): Result<String, _> = std::fs::read_to_string(&file) else {
-            continue;
-        };
+        let src: String = std::fs::read_to_string(&file).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "this path came from a directory listing, so failing to read it is a damaged \
+                 export rather than an absent file, and skipping it would silently shrink the \
+                 graded population: {}: {error}",
+                file.display()
+            )
+        });
         if !src.contains("package") {
             continue;
         }
