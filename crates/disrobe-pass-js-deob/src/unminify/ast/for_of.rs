@@ -38,9 +38,26 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
     helper_collector.visit_program(&parsed.program);
     let mut string_subjects: StringSubjectCollector = StringSubjectCollector::default();
     string_subjects.visit_program(&parsed.program);
+    let mut array_subjects: ArraySubjectCollector = ArraySubjectCollector::default();
+    array_subjects.visit_program(&parsed.program);
+    let mut materializer_bindings: MaterializerBindingCollector =
+        MaterializerBindingCollector::default();
+    materializer_bindings.visit_program(&parsed.program);
+    let mut materializers: MaterializerCollector<'_> = MaterializerCollector {
+        source,
+        binding_counts: &materializer_bindings.counts,
+        valid: BTreeSet::new(),
+    };
+    materializers.visit_program(&parsed.program);
+    let materializer_scope: MaterializerScope<'_> = MaterializerScope {
+        valid: &materializers.valid,
+        array_rebound: materializer_bindings.array_rebound,
+    };
     let mut collector: Collector = Collector {
         source,
         string_subjects: &string_subjects.evidence,
+        array_subjects: &array_subjects.evidence,
+        materializer_scope,
         edits: Vec::new(),
         helper_loops_converted: 0,
         loose_helpers: helper_collector.valid,
@@ -67,6 +84,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
 struct Collector<'s> {
     source: &'s str,
     string_subjects: &'s BTreeMap<String, StringEvidence>,
+    array_subjects: &'s BTreeMap<String, ArrayEvidence>,
+    materializer_scope: MaterializerScope<'s>,
     edits: Vec<Edit>,
     helper_loops_converted: usize,
     loose_helpers: BTreeSet<String>,
@@ -257,6 +276,390 @@ impl<'a> Visit<'a> for StringSubjectCollector {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ArrayEvidence {
+    #[default]
+    None,
+    PlainArray,
+    Opaque,
+}
+
+impl ArrayEvidence {
+    const fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::None, value) | (value, Self::None) => value,
+            (Self::PlainArray, Self::PlainArray) => Self::PlainArray,
+            _ => Self::Opaque,
+        }
+    }
+
+    const fn proves_plain_array(self) -> bool {
+        matches!(self, Self::PlainArray)
+    }
+}
+
+fn is_materializing_helper_name(name: &str) -> bool {
+    matches!(
+        name,
+        "_toConsumableArray"
+            | "toConsumableArray"
+            | "_arrayWithoutHoles"
+            | "arrayWithoutHoles"
+            | "_arrayLikeToArray"
+            | "arrayLikeToArray"
+            | "_spread"
+    )
+}
+
+fn is_array_producing_static(object: &str, property: &str) -> bool {
+    matches!(
+        (object, property),
+        ("Array", "from" | "of") | ("Object", "keys" | "values" | "entries")
+    )
+}
+
+fn array_evidence(
+    expr: &Expression<'_>,
+    bindings: &BTreeMap<String, ArrayEvidence>,
+) -> ArrayEvidence {
+    match expr.get_inner_expression() {
+        Expression::ArrayExpression(_) => ArrayEvidence::PlainArray,
+        Expression::Identifier(identifier) => bindings
+            .get(identifier.name.as_str())
+            .copied()
+            .unwrap_or_default(),
+        Expression::CallExpression(call) => match call.callee.get_inner_expression() {
+            Expression::StaticMemberExpression(member) => {
+                match member.object.get_inner_expression() {
+                    Expression::Identifier(object)
+                        if is_array_producing_static(
+                            object.name.as_str(),
+                            member.property.name.as_str(),
+                        ) =>
+                    {
+                        ArrayEvidence::PlainArray
+                    }
+                    _ => ArrayEvidence::None,
+                }
+            }
+            _ => ArrayEvidence::None,
+        },
+        _ => ArrayEvidence::None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct ArraySubjectCollector {
+    evidence: BTreeMap<String, ArrayEvidence>,
+}
+
+impl ArraySubjectCollector {
+    fn record(&mut self, name: &str, evidence: ArrayEvidence) {
+        let observed: ArrayEvidence = if matches!(evidence, ArrayEvidence::None) {
+            ArrayEvidence::Opaque
+        } else {
+            evidence
+        };
+        let slot: &mut ArrayEvidence = self.evidence.entry(name.to_owned()).or_default();
+        *slot = slot.join(observed);
+    }
+}
+
+impl<'a> Visit<'a> for ArraySubjectCollector {
+    fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+        if let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind {
+            let evidence: ArrayEvidence = declarator
+                .init
+                .as_ref()
+                .map_or(ArrayEvidence::Opaque, |init: &Expression<'a>| {
+                    array_evidence(init, &BTreeMap::new())
+                });
+            self.record(binding.name.as_str(), evidence);
+        }
+        oxc_ast::visit::walk::walk_variable_declarator(self, declarator);
+    }
+
+    fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) = &assignment.left
+        {
+            let evidence: ArrayEvidence = array_evidence(&assignment.right, &BTreeMap::new());
+            self.record(target.name.as_str(), evidence);
+        }
+        oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
+    }
+
+    fn visit_formal_parameter(&mut self, parameter: &oxc_ast::ast::FormalParameter<'a>) {
+        for name in bound_names(&parameter.pattern.kind) {
+            self.record(name, ArrayEvidence::Opaque);
+        }
+        oxc_ast::visit::walk::walk_formal_parameter(self, parameter);
+    }
+
+    fn visit_catch_parameter(&mut self, parameter: &oxc_ast::ast::CatchParameter<'a>) {
+        for name in bound_names(&parameter.pattern.kind) {
+            self.record(name, ArrayEvidence::Opaque);
+        }
+        oxc_ast::visit::walk::walk_catch_parameter(self, parameter);
+    }
+}
+
+fn bound_names<'a>(kind: &'a BindingPatternKind<'a>) -> Vec<&'a str> {
+    let mut names: Vec<&'a str> = Vec::new();
+    collect_bound_names(kind, &mut names);
+    names
+}
+
+fn collect_bound_names<'a>(kind: &'a BindingPatternKind<'a>, names: &mut Vec<&'a str>) {
+    match kind {
+        BindingPatternKind::BindingIdentifier(binding) => names.push(binding.name.as_str()),
+        BindingPatternKind::ObjectPattern(pattern) => {
+            for property in &pattern.properties {
+                collect_bound_names(&property.value.kind, names);
+            }
+            if let Some(rest) = &pattern.rest {
+                collect_bound_names(&rest.argument.kind, names);
+            }
+        }
+        BindingPatternKind::ArrayPattern(pattern) => {
+            for element in pattern.elements.iter().flatten() {
+                collect_bound_names(&element.kind, names);
+            }
+            if let Some(rest) = &pattern.rest {
+                collect_bound_names(&rest.argument.kind, names);
+            }
+        }
+        BindingPatternKind::AssignmentPattern(pattern) => {
+            collect_bound_names(&pattern.left.kind, names);
+        }
+    }
+}
+
+fn is_mutating_array_method(name: &str) -> bool {
+    matches!(
+        name,
+        "push"
+            | "pop"
+            | "shift"
+            | "unshift"
+            | "splice"
+            | "sort"
+            | "reverse"
+            | "fill"
+            | "copyWithin"
+    )
+}
+
+struct MutationProbe<'n> {
+    name: &'n str,
+    found: bool,
+}
+
+impl MutationProbe<'_> {
+    fn names_subject(&self, expr: &Expression<'_>) -> bool {
+        matches!(
+            expr.get_inner_expression(),
+            Expression::Identifier(identifier) if identifier.name == self.name
+        )
+    }
+
+    fn target_names_subject(&self, target: &oxc_ast::ast::AssignmentTarget<'_>) -> bool {
+        match target {
+            oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
+                identifier.name == self.name
+            }
+            oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(member) => {
+                self.names_subject(&member.object)
+            }
+            oxc_ast::ast::AssignmentTarget::StaticMemberExpression(member) => {
+                self.names_subject(&member.object)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl<'a> Visit<'a> for MutationProbe<'_> {
+    fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        if self.target_names_subject(&assignment.left) {
+            self.found = true;
+        }
+        oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
+    }
+
+    fn visit_update_expression(&mut self, update: &oxc_ast::ast::UpdateExpression<'a>) {
+        match &update.argument {
+            oxc_ast::ast::SimpleAssignmentTarget::ComputedMemberExpression(member)
+                if self.names_subject(&member.object) =>
+            {
+                self.found = true;
+            }
+            oxc_ast::ast::SimpleAssignmentTarget::StaticMemberExpression(member)
+                if self.names_subject(&member.object) =>
+            {
+                self.found = true;
+            }
+            _ => {}
+        }
+        oxc_ast::visit::walk::walk_update_expression(self, update);
+    }
+
+    fn visit_unary_expression(&mut self, unary: &oxc_ast::ast::UnaryExpression<'a>) {
+        if unary.operator == UnaryOperator::Delete {
+            match unary.argument.get_inner_expression() {
+                Expression::ComputedMemberExpression(member)
+                    if self.names_subject(&member.object) =>
+                {
+                    self.found = true;
+                }
+                Expression::StaticMemberExpression(member)
+                    if self.names_subject(&member.object) =>
+                {
+                    self.found = true;
+                }
+                _ => {}
+            }
+        }
+        oxc_ast::visit::walk::walk_unary_expression(self, unary);
+    }
+
+    fn visit_call_expression(&mut self, call: &oxc_ast::ast::CallExpression<'a>) {
+        if let Expression::StaticMemberExpression(member) = call.callee.get_inner_expression()
+            && self.names_subject(&member.object)
+            && is_mutating_array_method(member.property.name.as_str())
+        {
+            self.found = true;
+        }
+        for argument in &call.arguments {
+            if argument
+                .as_expression()
+                .is_some_and(|expr: &Expression<'a>| self.names_subject(expr))
+            {
+                self.found = true;
+            }
+        }
+        oxc_ast::visit::walk::walk_call_expression(self, call);
+    }
+}
+
+fn subject_mutated(statements: &[Statement<'_>], name: &str) -> bool {
+    let mut probe: MutationProbe<'_> = MutationProbe { name, found: false };
+    for stmt in statements {
+        probe.visit_statement(stmt);
+    }
+    probe.found
+}
+
+fn is_babel_materializer(body: &str, name: &str) -> bool {
+    let compact: String = body
+        .chars()
+        .filter(|character: &char| !character.is_whitespace())
+        .collect();
+    if !compact.starts_with(&format!("function{name}(")) {
+        return false;
+    }
+    let spread_chain: bool =
+        compact.contains("_arrayWithoutHoles(") || compact.contains("arrayWithoutHoles(");
+    let like_to_array: bool =
+        compact.contains("_arrayLikeToArray(") || compact.contains("arrayLikeToArray(");
+    let from_call: bool = compact.contains("Array.from(");
+    let index_copy: bool = compact.contains("newArray(") && compact.contains("Array.isArray(");
+    spread_chain || like_to_array || from_call || index_copy
+}
+
+#[derive(Debug, Default)]
+struct MaterializerBindingCollector {
+    counts: BTreeMap<String, usize>,
+    array_rebound: bool,
+}
+
+impl<'a> Visit<'a> for MaterializerBindingCollector {
+    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
+        let name: &str = identifier.name.as_str();
+        if name == "Array" {
+            self.array_rebound = true;
+        }
+        if is_materializing_helper_name(name) {
+            let count: &mut usize = self.counts.entry(name.to_owned()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+}
+
+struct MaterializerCollector<'s> {
+    source: &'s str,
+    binding_counts: &'s BTreeMap<String, usize>,
+    valid: BTreeSet<String>,
+}
+
+impl<'a> Visit<'a> for MaterializerCollector<'_> {
+    fn visit_function(&mut self, func: &Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
+        if let Some(id) = &func.id {
+            let name: &str = id.name.as_str();
+            if is_materializing_helper_name(name)
+                && self.binding_counts.get(name).copied() == Some(1)
+                && is_babel_materializer(func.span.source_text(self.source), name)
+            {
+                self.valid.insert(name.to_owned());
+            }
+        }
+        oxc_ast::visit::walk::walk_function(self, func, flags);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MaterializerScope<'s> {
+    valid: &'s BTreeSet<String>,
+    array_rebound: bool,
+}
+
+fn materializing_helper_argument<'a>(
+    expr: &'a Expression<'a>,
+    scope: MaterializerScope<'_>,
+) -> Option<&'a Expression<'a>> {
+    let Expression::CallExpression(call) = expr.get_inner_expression() else {
+        return None;
+    };
+    if call.arguments.len() != 1 {
+        return None;
+    }
+    let recognized: bool = match call.callee.get_inner_expression() {
+        Expression::Identifier(identifier) => scope.valid.contains(identifier.name.as_str()),
+        Expression::StaticMemberExpression(member) => {
+            !scope.array_rebound
+                && matches!(
+                    member.object.get_inner_expression(),
+                    Expression::Identifier(object) if object.name == "Array"
+                )
+                && matches!(member.property.name.as_str(), "from" | "of")
+        }
+        _ => false,
+    };
+    if !recognized {
+        return None;
+    }
+    call.arguments.first()?.as_expression()
+}
+
+fn snapshot_subject_source<'s>(
+    iterable: &Expression<'_>,
+    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    scope: MaterializerScope<'_>,
+    remaining: &[Statement<'_>],
+    source: &'s str,
+) -> Option<&'s str> {
+    let inner: &Expression<'_> = materializing_helper_argument(iterable, scope)?;
+    let Expression::Identifier(subject) = inner.get_inner_expression() else {
+        return None;
+    };
+    if !array_evidence(inner, array_subjects).proves_plain_array() {
+        return None;
+    }
+    if subject_mutated(remaining, subject.name.as_str()) {
+        return None;
+    }
+    Some(inner.span().source_text(source))
+}
+
 fn is_loose_helper_name(name: &str) -> bool {
     matches!(
         name,
@@ -277,13 +680,25 @@ fn is_babel_loose_helper(source: &str, name: &str) -> bool {
 
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_for_statement(&mut self, for_stmt: &ForStatement<'a>) {
-        if let Some(edit) = try_convert(for_stmt, self.source, self.string_subjects) {
+        if let Some(edit) = try_convert(
+            for_stmt,
+            self.source,
+            self.string_subjects,
+            self.array_subjects,
+            self.materializer_scope,
+        ) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
             }
             return;
         }
-        if let Some(edit) = try_convert_direct(for_stmt, self.source, self.string_subjects) {
+        if let Some(edit) = try_convert_direct(
+            for_stmt,
+            self.source,
+            self.string_subjects,
+            self.array_subjects,
+            self.materializer_scope,
+        ) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
             }
@@ -479,6 +894,8 @@ fn try_convert(
     for_stmt: &ForStatement<'_>,
     source: &str,
     string_subjects: &BTreeMap<String, StringEvidence>,
+    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    materializer_scope: MaterializerScope<'_>,
 ) -> Option<Edit> {
     let m: Match<'_> = match_loop(for_stmt, source)?;
     if subject_blocks_index_resugar(m.iterable, string_subjects) {
@@ -495,7 +912,14 @@ fn try_convert(
         return None;
     }
     let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
-    let iterable_src: &str = m.iterable.span().source_text(source);
+    let iterable_src: &str = snapshot_subject_source(
+        m.iterable,
+        array_subjects,
+        materializer_scope,
+        m.remaining,
+        source,
+    )
+    .unwrap_or_else(|| m.iterable.span().source_text(source));
     let body_src: String = remaining_body_source(m.remaining, source);
     Some(Edit {
         start: for_stmt.span.start as usize,
@@ -520,6 +944,8 @@ fn try_convert_direct(
     for_stmt: &ForStatement<'_>,
     source: &str,
     string_subjects: &BTreeMap<String, StringEvidence>,
+    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    materializer_scope: MaterializerScope<'_>,
 ) -> Option<Edit> {
     let m: DirectMatch<'_> = match_direct_loop(for_stmt, source)?;
     if subject_blocks_index_resugar(m.iterable, string_subjects) {
@@ -539,7 +965,14 @@ fn try_convert_direct(
         return None;
     }
     let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
-    let iterable_src: &str = m.iterable.span().source_text(source);
+    let iterable_src: &str = snapshot_subject_source(
+        m.iterable,
+        array_subjects,
+        materializer_scope,
+        m.remaining,
+        source,
+    )
+    .unwrap_or_else(|| m.iterable.span().source_text(source));
     let body_src: String = remaining_body_source(m.remaining, source);
     Some(Edit {
         start: for_stmt.span.start as usize,
