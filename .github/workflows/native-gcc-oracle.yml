@@ -20,6 +20,8 @@ jobs:
           sudo apt-get install --yes gcc-13
           gcc-13 --version
       - name: grade gcc frame-reload return classification
+        env:
+          DISROBE_REQUIRE_NATIVE_TOOLCHAIN: "1"
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/native-gcc-oracle.log"

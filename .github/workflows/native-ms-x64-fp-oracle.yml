@@ -47,6 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
+          $env:DISROBE_REQUIRE_NATIVE_TOOLCHAIN = "1"
           $clangBin = Split-Path -Parent $env:DISROBE_MS_X64_CLANG
           $env:Path = "$clangBin;$env:Path"
           $log = Join-Path $env:RUNNER_TEMP "native-ms-x64-fp-oracle.log"
