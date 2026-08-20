@@ -54,4 +54,6 @@ jobs:
           $testExitCode = $LASTEXITCODE
           $ErrorActionPreference = "Stop"
           if ($testExitCode -ne 0) { exit $testExitCode }
-          if (-not (Select-String -Path $log -SimpleMatch "running 1 test" -Quiet)) { throw "the MS x64 four-double parameter test did not run" }
+          if (-not (Select-String -Path $log -SimpleMatch "test result: ok. 1 passed" -Quiet)) { throw "the MS x64 four-double parameter test did not report one passing result" }
+          $skipped = Select-String -Path $log -Pattern '^(SKIP|skip[: ]|skipping)'
+          if ($skipped) { throw "the MS x64 four-double parameter test printed a skip line, so it did not grade: $($skipped -join '; ')" }

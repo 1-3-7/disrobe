@@ -24,4 +24,9 @@ jobs:
           set -euo pipefail
           log="$RUNNER_TEMP/native-gcc-oracle.log"
           CARGO_TERM_COLOR=never cargo test -p disrobe-pass-native --test pseudo_c_leaf_oracle --all-features -- --exact gcc_o0_frame_reload_compare_returns_integer --nocapture 2>&1 | tee "$log"
-          grep -F "running 1 test" "$log"
+          grep -F "test result: ok. 1 passed" "$log"
+          if grep -qiE '^(SKIP|skip[: ]|skipping)' "$log"; then
+            echo "the gcc frame-reload case printed a skip line, so it did not grade:" >&2
+            grep -iE '^(SKIP|skip[: ]|skipping)' "$log" >&2
+            exit 1
+          fi
