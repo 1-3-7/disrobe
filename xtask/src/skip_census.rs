@@ -172,7 +172,7 @@ fn scan(root: &Path) -> Result<(BTreeMap<String, Vec<SkipSite>>, usize)> {
         if !relative.contains("/tests/") && !relative.ends_with("/tests.rs") {
             continue;
         }
-        let length: u64 = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let length: u64 = entry.metadata().map_or(0, |meta: std::fs::Metadata| meta.len());
         if length > MAX_SOURCE_BYTES {
             continue;
         }
