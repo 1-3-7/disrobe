@@ -69,6 +69,11 @@ fn enforce_requirement(defect: &str, requirement: ToolchainRequirement) {
     announce_unmeasured(defect);
 }
 
+#[allow(dead_code)]
+pub(crate) fn unmeasured(defect: &str) {
+    enforce_requirement(defect, requirement());
+}
+
 fn tool_runs(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")

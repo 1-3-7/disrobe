@@ -161,6 +161,17 @@ fn cc() -> Option<String> {
     compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
+fn host_native_class_is_graded(case: &str) -> bool {
+    if cfg!(windows) {
+        eprintln!("GRADED {case}: the host-native recompile class ran on this windows host");
+        return true;
+    }
+    eprintln!(
+        "NOT GRADED {case}: the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
+    );
+    false
+}
+
 fn sysv_host_can_run() -> bool {
     if cfg!(target_os = "macos") {
         eprintln!(
@@ -1751,10 +1762,7 @@ fn compiler_nested_loop_recovers_incoming_stack_argument_through_public_object_p
 
 #[test]
 fn leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("leaf_functions_recompile_to_behavioral_equivalence") {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -1881,10 +1889,10 @@ fn compile_sysv_cross(tag: &str, battery_src: &str) -> Option<SysvCrossObjects> 
         .output()
         .expect("invoke clang for sysv target object");
     if !compile_sysv.status.success() {
-        eprintln!(
-            "skipping {tag} sysv: clang cannot emit a linux/SysV object on this host: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "clang cannot emit a linux/SysV object for the {tag} battery on this host: {}",
             String::from_utf8_lossy(&compile_sysv.stderr)
-        );
+        ));
         return None;
     }
 
@@ -1984,10 +1992,10 @@ fn sysv_leaf_functions_recompile_to_behavioral_equivalence() {
         .output()
         .expect("invoke clang for SysV target object");
     if !compile_sysv.status.success() {
-        eprintln!(
-            "skipping sysv: clang cannot emit linux/SysV object on this host: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "clang cannot emit a linux/SysV object on this host: {}",
             String::from_utf8_lossy(&compile_sysv.stderr)
-        );
+        ));
         return;
     }
 
@@ -2233,10 +2241,9 @@ fn build_mem_driver(recovered_decls: &str, driver_body: &str) -> String {
 
 #[test]
 fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "memory_access_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -3096,10 +3103,9 @@ const CF_BATTERY: &[Case] = &[
 
 #[test]
 fn control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "control_flow_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -3260,10 +3266,9 @@ fn recovered_is_split_return(object_bytes: &[u8], name: &str) -> bool {
 
 #[test]
 fn split_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "split_return_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -3522,10 +3527,9 @@ fn build_loop_driver(recovered_decls: &str, driver_body: &str) -> String {
 
 #[test]
 fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "natural_loop_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -3643,10 +3647,7 @@ fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn loop_oracle_has_teeth_a_wrong_bound_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("loop_oracle_has_teeth_a_wrong_bound_diverges") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -3842,10 +3843,7 @@ fn guarded_while_recovered(
 
 #[test]
 fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("top_guarded_while_loops_recompile_to_behavioral_equivalence") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -3957,10 +3955,9 @@ fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -4129,10 +4126,9 @@ fn recovered_has_width_extension(object_bytes: &[u8], name: &str) -> bool {
 
 #[test]
 fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "width_extension_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -4237,10 +4233,9 @@ fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -4532,10 +4527,9 @@ fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, Strin
 
 #[test]
 fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "same_object_call_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -4634,10 +4628,7 @@ fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("call_oracle_has_teeth_dropping_the_helper_call_diverges") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -4840,10 +4831,7 @@ fn lift_precise_call_case(
 
 #[test]
 fn precise_call_recovery_recompiles_against_real_helpers() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("precise_call_recovery_recompiles_against_real_helpers") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5014,10 +5002,8 @@ fn if_in_loop_recovered(
 
 #[test]
 fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("if_in_loop_leaf_functions_recompile_to_behavioral_equivalence")
+    {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5129,10 +5115,8 @@ fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges")
+    {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5277,10 +5261,8 @@ const PTR_LOOP_BATTERY: &[PtrLoopCase] = &[
 
 #[test]
 fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence")
+    {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5615,10 +5597,9 @@ fn nested_loop_decl(case: &NestedLoopCase) -> String {
 
 #[test]
 fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "nested_loop_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5722,10 +5703,7 @@ fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -5964,10 +5942,9 @@ fn recovered_double_shift(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bo
 
 #[test]
 fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -6061,10 +6038,9 @@ fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -6268,10 +6244,9 @@ fn recovered_has_imul_mem(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bo
 
 #[test]
 fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -6448,10 +6423,7 @@ fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges") {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -6762,10 +6734,9 @@ fn rmw_driver_snippet(case: &RmwCase, recovery: &LeafRecovery) -> Option<String>
 
 #[test]
 fn read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -6938,10 +6909,9 @@ fn sysv_read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivale
 
 #[test]
 fn read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -7667,10 +7637,7 @@ fn div_recovered(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool {
 
 #[test]
 fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("divide_leaf_functions_recompile_to_behavioral_equivalence") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -7769,10 +7736,7 @@ fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn divide_oracle_has_teeth_swapping_signedness_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("divide_oracle_has_teeth_swapping_signedness_diverges") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -8359,10 +8323,9 @@ fn resolve_fp_constants(object_bytes: &[u8], code: &[u8], base: u64) -> Vec<FpCo
 
 #[test]
 fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_float_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -8455,10 +8418,8 @@ fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("scalar_float_oracle_has_teeth_swapping_op_and_width_diverges")
+    {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -8990,10 +8951,9 @@ fn minmax_is_lifted(recovery: &LeafRecovery) -> bool {
 
 #[test]
 fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -9092,10 +9052,7 @@ fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -9504,10 +9461,9 @@ struct FcOracleOutcome {
 
 #[test]
 fn fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -9630,10 +9586,7 @@ fn sysv_fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence()
 
 #[test]
 fn fp_const_oracle_has_teeth_perturbing_the_constant_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("fp_const_oracle_has_teeth_perturbing_the_constant_diverges") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -10062,10 +10015,10 @@ fn compile_sysv_cross_extra(
         .output()
         .expect("invoke clang for sysv target object");
     if !compile_sysv.status.success() {
-        eprintln!(
-            "skipping {tag} sysv: clang cannot emit a linux/SysV object on this host: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "clang cannot emit a linux/SysV object for the {tag} battery on this host: {}",
             String::from_utf8_lossy(&compile_sysv.stderr)
-        );
+        ));
         return None;
     }
 
@@ -10266,10 +10219,9 @@ fn gcc_o0_frame_reload_compare_returns_integer() {
 
 #[test]
 fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -10363,10 +10315,7 @@ fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -10677,10 +10626,9 @@ fn round_lift_rejects_mxcsr_deferred_rounding() {
 
 #[test]
 fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_round_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -10789,10 +10737,7 @@ fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn scalar_round_oracle_has_teeth_dropping_the_round_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("scalar_round_oracle_has_teeth_dropping_the_round_diverges") {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -11028,10 +10973,9 @@ fn bitcast_is_lifted(recovery: &LeafRecovery) -> bool {
 
 #[test]
 fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -11120,10 +11064,9 @@ fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence
 
 #[test]
 fn scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges",
+    ) {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -11357,10 +11300,9 @@ fn nested_switch_body_has_target_op(recovery: &LeafRecovery) -> bool {
 
 #[test]
 fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "nested_switch_division_and_setcc_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -11466,10 +11408,9 @@ fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "nested_switch_oracle_has_teeth_swapping_division_signedness_diverges",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -11820,10 +11761,9 @@ fn compile_switch_host(builder: &str, dir: &std::path::Path) -> Vec<u8> {
 
 #[test]
 fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -11902,10 +11842,7 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() 
 
 #[test]
 fn switch_oracle_has_teeth_a_wrong_case_value_diverges() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded("switch_oracle_has_teeth_a_wrong_case_value_diverges") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -12194,10 +12131,9 @@ fn build_fp_switch_driver(recovered_decls: &str, driver_body: &str) -> String {
 
 #[test]
 fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -12548,10 +12484,9 @@ fn code_uses_rep(object_bytes: &[u8], name: &str, rep_op: &str) -> bool {
 
 #[test]
 fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "block_move_fill_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     if gcc().is_none() {
@@ -13048,10 +12983,9 @@ fn recovered_has_setcc(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool 
 
 #[test]
 fn setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -13490,10 +13424,9 @@ const STACK_BATTERY: &[Case] = &[
 
 #[test]
 fn stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "stack_spill_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -13740,10 +13673,8 @@ const FP_STACK_BATTERY: &[FpCase] = &[
 
 #[test]
 fn scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded("scalar_float_stack_spill_recompile_to_behavioral_equivalence")
+    {
         return;
     }
     let Some(builder): Option<String> = clang() else {
@@ -14460,10 +14391,10 @@ fn the_microsoft_x64_lowering_of_the_indexed_frame_battery_is_refused_by_frame_c
         .output()
         .expect("invoke clang for the microsoft x64 indexed object");
     if !compile.status.success() {
-        eprintln!(
-            "skipping the microsoft x64 indexed-frame class check: clang cannot emit a windows object here: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "clang cannot emit a windows object for the microsoft x64 indexed-frame class check here: {}",
             String::from_utf8_lossy(&compile.stderr)
-        );
+        ));
         return;
     }
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read the microsoft x64 object");
@@ -14766,10 +14697,9 @@ fn collect_sret_cases(object_bytes: &[u8], abi: PseudoAbi) -> SretLift {
 
 #[test]
 fn struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guard"
-        );
+    if !host_native_class_is_graded(
+        "struct_return_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(compiler): Option<String> = cc() else {
@@ -15017,10 +14947,9 @@ fn diamond_recovered_has_else(object_bytes: &[u8], name: &str, abi: PseudoAbi) -
 
 #[test]
 fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-        );
+    if !host_native_class_is_graded(
+        "if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence",
+    ) {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
@@ -15723,10 +15652,7 @@ fn object_switch_has_stacked_case(source: &str) -> bool {
 
 #[test]
 fn object_dense_switch_recovers_bias_and_duplicates_hostabi() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv clang cross is the cross-platform guard"
-        );
+    if !host_native_class_is_graded("object_dense_switch_recovers_bias_and_duplicates_hostabi") {
         return;
     }
     let Some(builder): Option<String> = gcc() else {
