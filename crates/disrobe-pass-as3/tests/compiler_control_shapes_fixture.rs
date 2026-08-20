@@ -364,3 +364,82 @@ fn the_recovered_string_dispatch_computes_what_the_reference_source_computes() {
         "recovered string dispatch agreement: {agreed}/{graded}"
     );
 }
+
+const AUTHORED_METHODS: [&str; 8] = [
+    "labelled",
+    "words",
+    "guarded",
+    "recurse",
+    "ternaries",
+    "shortCircuit",
+    "tables",
+    "enums",
+];
+const FULLY_STRUCTURED_FLOOR: usize = 7;
+
+fn renders_an_empty_operand(text: &str) -> bool {
+    text.lines()
+        .any(|line: &str| line.trim_end().ends_with("= ;"))
+}
+
+#[test]
+fn no_recovered_method_leaves_an_operand_without_a_spelling() {
+    let abc: AbcFile = parse_fixture();
+    let offenders: Vec<&str> = AUTHORED_METHODS
+        .into_iter()
+        .filter(|method_name: &&str| {
+            let (_, text): (LiftedBody, String) = recovered(&abc, method_name);
+            renders_an_empty_operand(&text)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "an AVM2 value with no ActionScript spelling must reach the output as a named operand, \
+         never as nothing: {offenders:?}"
+    );
+}
+
+#[test]
+fn the_activation_scope_reconciles_across_the_handler_merge() {
+    assert!(
+        HAXE_SOURCE.contains("} catch (fault:CustomFault) {"),
+        "the authored program must still be the layered try and catch this grade reads"
+    );
+    let abc: AbcFile = parse_fixture();
+    let (lifted, text): (LiftedBody, String) = recovered(&abc, "guarded");
+    assert!(
+        text.contains("$activation"),
+        "the activation object this NEED_ACTIVATION method allocates must reach the output as a \
+         named operand: {text}"
+    );
+    assert!(
+        !text.contains("unreconciled scope"),
+        "the try path allocates the activation and the handler re-pushes it from its local, so \
+         the scope stack must reconcile at the merge instead of refusing: {text}"
+    );
+    assert_eq!(
+        lifted.opaque_operands, 0,
+        "reconciling that merge must leave no seeded operand behind: {text}"
+    );
+}
+
+#[test]
+fn the_authored_control_shapes_hold_their_measured_structuring_floor() {
+    let abc: AbcFile = parse_fixture();
+    let unstructured: Vec<&str> = AUTHORED_METHODS
+        .into_iter()
+        .filter(|method_name: &&str| {
+            let (lifted, _): (LiftedBody, String) = recovered(&abc, method_name);
+            residual_control_flow(&lifted.statements) > 0 || !lifted.structurally_recovered
+        })
+        .collect();
+    let structured: usize = AUTHORED_METHODS.len() - unstructured.len();
+    assert!(
+        structured >= FULLY_STRUCTURED_FLOOR,
+        "recovery of the authored control shapes must hold its measured floor of \
+         {FULLY_STRUCTURED_FLOOR}/{}; got {structured}/{}, with residual control flow left in \
+         {unstructured:?}",
+        AUTHORED_METHODS.len(),
+        AUTHORED_METHODS.len()
+    );
+}
