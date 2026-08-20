@@ -1266,8 +1266,8 @@ impl Lifter<'_> {
             .iter()
             .any(|mark: &BranchMark| mark.else_label == offset);
         self.statements.push(Stmt::Label(offset));
-        self.reconcile_scope_entry(offset, stack_analysis, is_exc_target);
         if is_exc_target {
+            self.reconcile_scope_entry(offset, stack_analysis, is_exc_target);
             self.stack.clear();
             self.stack.push(Expr::CaughtException);
             self.incoming_stacks.remove(&offset);
@@ -1276,6 +1276,7 @@ impl Lifter<'_> {
         }
         let resolved_value: bool =
             self.resolve_short_circuits(offset) | self.resolve_ternary(offset);
+        self.reconcile_scope_entry(offset, stack_analysis, is_exc_target);
         if pending_value_arm && !stack_analysis.value_joins.contains(&offset) {
             return;
         }

@@ -1732,3 +1732,91 @@ fn an_activation_object_stored_into_a_local_renders_as_a_named_operand() {
         "the activation object must keep a spelling that identifies what it is: {rendered}"
     );
 }
+
+fn scope_conflict_body(code: Vec<u8>, local_count: u32) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 3,
+        local_count,
+        init_scope_depth: 0,
+        max_scope_depth: 3,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
+fn binary_ops(stmts: &[Stmt]) -> Vec<&'static str> {
+    fn walk_expr(expr: &Expr, out: &mut Vec<&'static str>) {
+        match expr {
+            Expr::Binary { op, lhs, rhs } => {
+                out.push(op);
+                walk_expr(lhs, out);
+                walk_expr(rhs, out);
+            }
+            Expr::Unary { operand, .. } | Expr::Coerce { operand, .. } => walk_expr(operand, out),
+            _ => {}
+        }
+    }
+    let mut out: Vec<&'static str> = Vec::new();
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return(Some(expr)) => walk_expr(expr, &mut out),
+            Stmt::Assign { value, .. } => walk_expr(value, &mut out),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn mentions_phi(stmts: &[Stmt]) -> bool {
+    fn walk_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Phi { .. } => true,
+            Expr::Binary { lhs, rhs, .. } => walk_expr(lhs) || walk_expr(rhs),
+            Expr::Unary { operand, .. } | Expr::Coerce { operand, .. } => walk_expr(operand),
+            _ => false,
+        }
+    }
+    stmts.iter().any(|stmt: &Stmt| match stmt {
+        Stmt::Return(Some(expr)) => walk_expr(expr),
+        Stmt::Assign { value, .. } => walk_expr(value),
+        _ => false,
+    })
+}
+
+#[test]
+fn a_short_circuit_still_resolves_when_its_merge_refuses_a_scope() {
+    let mut code: Vec<u8> = vec![0xD0, 0x30, 0xD1, 0x2A, 0x12];
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x29, 0xD2, 0xD0, 0x30]);
+    let merge_offset: usize = code.len();
+    code.push(0x48);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_conflict_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw short-circuit lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("short-circuit lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope height")),
+        "this body is built so the merge refuses its scope; without that refusal the check \
+         proves nothing: {lifted:#?}"
+    );
+    assert!(
+        binary_ops(&lifted.statements).contains(&"&&"),
+        "a refused scope at the merge must not cost the short-circuit operand its operator: \
+         {lifted:#?}"
+    );
+    assert!(
+        !mentions_phi(&lifted.statements),
+        "the short-circuit value must resolve to its operands, not stay a merge placeholder: \
+         {lifted:#?}"
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
