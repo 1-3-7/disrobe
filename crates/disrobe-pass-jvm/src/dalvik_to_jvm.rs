@@ -422,10 +422,13 @@ pub(crate) fn emit_branch_method_code(
     if !tries.is_empty() && !move_exceptions_are_handler_entries(&insns, &tries) {
         return None;
     }
+    let switch_payloads: BTreeMap<u32, crate::dalvik::SwitchPayload> =
+        parse_switch_payloads(&insns, &item.insns)?;
+    let switch_targets: BTreeMap<u32, Vec<u32>> = switch_target_map(&insns, &switch_payloads);
     let shared_handler_pcs: BTreeSet<u32> = if tries.is_empty() {
         BTreeSet::new()
     } else {
-        fallthrough_reachable_handler_pcs(&insns, &tries)
+        normally_reachable_handler_pcs(&insns, &tries, &switch_targets)
     };
     if shared_handler_pcs.iter().any(|hpc: &u32| {
         insns
@@ -439,9 +442,6 @@ pub(crate) fn emit_branch_method_code(
     {
         return None;
     }
-    let switch_payloads: BTreeMap<u32, crate::dalvik::SwitchPayload> =
-        parse_switch_payloads(&insns, &item.insns)?;
-    let switch_targets: BTreeMap<u32, Vec<u32>> = switch_target_map(&insns, &switch_payloads);
     let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
         collect_fill_payloads(&insns, &item.insns);
     let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
@@ -786,14 +786,31 @@ fn build_try_regions(item: &CodeItem, insns: &[DalvikInsn]) -> Option<Vec<TryReg
     Some(out)
 }
 
-fn fallthrough_reachable_handler_pcs(insns: &[DalvikInsn], tries: &[TryRegion]) -> BTreeSet<u32> {
+fn normally_reachable_handler_pcs(
+    insns: &[DalvikInsn],
+    tries: &[TryRegion],
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+) -> BTreeSet<u32> {
     let handler_pcs: BTreeSet<u32> = tries
         .iter()
         .flat_map(|t: &TryRegion| t.handlers.iter().map(|(_ty, hpc)| *hpc))
         .collect();
+    let mut branched_to: BTreeSet<u32> = BTreeSet::new();
+    for insn in insns {
+        if let Some(target) = insn.branch_target_pc() {
+            branched_to.insert(target);
+        }
+    }
+    for targets in switch_targets.values() {
+        branched_to.extend(targets.iter().copied());
+    }
     let mut out: BTreeSet<u32> = BTreeSet::new();
     for (i, insn) in insns.iter().enumerate() {
         if i == 0 || !handler_pcs.contains(&insn.pc) {
+            continue;
+        }
+        if branched_to.contains(&insn.pc) {
+            out.insert(insn.pc);
             continue;
         }
         let prev: &DalvikInsn = &insns[i - 1];
