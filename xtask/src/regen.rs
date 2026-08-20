@@ -126,6 +126,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one(
+        "skip-census",
+        check,
+        || crate::skip_census::run(root),
+        &mut stale,
+    )?;
+    run_one(
         "artifact-classification",
         check,
         || crate::artifact_map::run(root),

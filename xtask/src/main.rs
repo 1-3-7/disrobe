@@ -41,6 +41,7 @@ mod prepush;
 mod readme_stats;
 mod regen;
 mod roster_breadth;
+mod skip_census;
 mod sync;
 mod typography;
 
@@ -93,6 +94,7 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
     },
+    SkipCensus,
     FuzzSeeds {
         #[arg(long)]
         target: Option<String>,
@@ -160,6 +162,7 @@ fn main() -> ExitCode {
         Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
         Cmd::Regen { check } => run_regen(check),
         Cmd::FuzzSurface { check } => run_fuzz_surface(check),
+        Cmd::SkipCensus => run_skip_census(),
         Cmd::FuzzSeeds { target } => run_fuzz_seeds(target.as_deref()),
         Cmd::Metrics { write, check } => run_metrics(write, check),
         Cmd::Graphs { check } => run_graphs(check),
@@ -372,6 +375,11 @@ pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
         );
         Ok(())
     }
+}
+
+fn run_skip_census() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    skip_census::run(&root)
 }
 
 fn run_fuzz_surface(check: bool) -> Result<()> {
