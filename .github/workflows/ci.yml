@@ -105,6 +105,7 @@ jobs:
     timeout-minutes: 180
     env:
       CARGO_PROFILE_TEST_DEBUG: "0"
+      DR_AS3_CORPUS_OPTIONAL: "1"
     strategy:
       fail-fast: false
       matrix:
