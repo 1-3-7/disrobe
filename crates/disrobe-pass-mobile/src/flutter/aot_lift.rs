@@ -4,6 +4,8 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use super::DartFunctionSymbol;
+use super::arm64_data::{IntegerOperands, integer_operands};
+use super::call_args::DART_ARGUMENT_REGISTERS;
 use super::cid_table::matches_version;
 use super::dart_graph::DartGraphLimits;
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
@@ -143,6 +145,8 @@ pub struct DartLiftedFunction {
     pub source_conditional_estimate: usize,
     pub has_loop_back_edge: bool,
     pub ends_in_return: bool,
+    pub declared_parameter_count: Option<u8>,
+    pub inferred_parameter_count: u8,
     pub lifted_statement_count: usize,
     pub unlifted_statement_count: usize,
     pub structured_body: Option<String>,
@@ -701,7 +705,8 @@ fn lift_one(
     let source_conditional_estimate: usize =
         conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
-    let mut arg_registers: u8 = infer_arg_registers(func);
+    let inferred_parameter_count: u8 = infer_arg_registers(func);
+    let mut arg_registers: u8 = inferred_parameter_count;
     let structured: Option<DartStructuredBody> = if abi_resolved {
         let label: String = func
             .name
@@ -720,10 +725,10 @@ fn lift_one(
     } else {
         None
     };
-    if let Some(parameter_count) = structured
+    let declared_parameter_count: Option<u8> = structured
         .as_ref()
-        .and_then(|body: &DartStructuredBody| body.parameter_count)
-    {
+        .and_then(|body: &DartStructuredBody| body.parameter_count);
+    if let Some(parameter_count) = declared_parameter_count {
         arg_registers = parameter_count;
     }
     let lifted_statement_count: usize = structured
@@ -749,6 +754,8 @@ fn lift_one(
         source_conditional_estimate,
         has_loop_back_edge,
         ends_in_return: func.ends_in_return,
+        declared_parameter_count,
+        inferred_parameter_count,
         lifted_statement_count,
         unlifted_statement_count,
         structured_body,
@@ -757,22 +764,38 @@ fn lift_one(
 
 #[must_use]
 fn infer_arg_registers(func: &Arm64Function) -> u8 {
-    const WINDOW_INSNS: usize = 32;
-    let mut seen: u8 = 0;
+    const WINDOW_INSNS: usize = 64;
+    let mut written: u32 = 0;
+    let mut highest: Option<usize> = None;
     for insn in func.instructions.iter().take(WINDOW_INSNS) {
         if insn.flow == Arm64FlowKind::Return {
             break;
         }
-        let raw: u32 = insn.bytes;
-        let rn: u8 = ((raw >> 5) & 0x1f) as u8;
-        let rm: u8 = ((raw >> 16) & 0x1f) as u8;
-        for reg in [rn, rm] {
-            if reg < 8 {
-                seen |= 1u8 << reg;
+        let operands: IntegerOperands = integer_operands(insn.bytes);
+        for source in operands.reads() {
+            if written & (1_u32 << source) != 0 {
+                continue;
+            }
+            if let Some(position) = DART_ARGUMENT_REGISTERS
+                .iter()
+                .position(|register: &u8| *register == source)
+            {
+                highest = Some(highest.map_or(position, |seen: usize| seen.max(position)));
             }
         }
+        if let Some(destination) = operands.destination {
+            written |= 1_u32 << destination;
+        }
+        if matches!(
+            insn.flow,
+            Arm64FlowKind::DirectCall | Arm64FlowKind::IndirectCall
+        ) {
+            break;
+        }
     }
-    seen.count_ones() as u8
+    highest.map_or(0, |position: usize| {
+        u8::try_from(position.saturating_add(1)).unwrap_or(u8::MAX)
+    })
 }
 
 #[must_use]

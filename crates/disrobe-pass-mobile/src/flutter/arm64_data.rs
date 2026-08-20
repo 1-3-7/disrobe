@@ -547,6 +547,131 @@ pub(super) fn integer_to_float(raw: u32) -> Option<IntegerToFloat> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct IntegerOperands {
+    pub(super) sources: [Option<u8>; 3],
+    pub(super) destination: Option<u8>,
+}
+
+impl IntegerOperands {
+    fn of(destination: Option<u8>, sources: [Option<u8>; 3]) -> Self {
+        Self {
+            sources,
+            destination,
+        }
+    }
+
+    pub(super) fn reads(self) -> impl Iterator<Item = u8> {
+        self.sources.into_iter().flatten()
+    }
+}
+
+const LOAD_STORE_GROUP_MASK: u32 = 0x0A00_0000;
+
+const LOAD_STORE_GROUP_MATCH: u32 = 0x0800_0000;
+
+#[must_use]
+pub(super) fn integer_operands(raw: u32) -> IntegerOperands {
+    let rd: u8 = (raw & 0x1F) as u8;
+    let rn: u8 = ((raw >> 5) & 0x1F) as u8;
+    let rm: u8 = ((raw >> 16) & 0x1F) as u8;
+    let ra: u8 = ((raw >> 10) & 0x1F) as u8;
+
+    if let Some(decoded) = add_sub_shifted_reg(raw) {
+        let destination: Option<u8> =
+            (!decoded.sets_flags || !is_zero_register(decoded.rd)).then_some(decoded.rd);
+        return IntegerOperands::of(destination, [Some(decoded.rn), Some(decoded.rm), None]);
+    }
+    if let Some(decoded) = logical_shifted_reg(raw) {
+        let destination: Option<u8> =
+            (!decoded.sets_flags || !is_zero_register(decoded.rd)).then_some(decoded.rd);
+        return IntegerOperands::of(destination, [Some(decoded.rn), Some(decoded.rm), None]);
+    }
+    if let Some(decoded) = multiply_accumulate(raw) {
+        return IntegerOperands::of(
+            Some(decoded.rd),
+            [Some(decoded.rn), Some(decoded.rm), Some(decoded.ra)],
+        );
+    }
+    if let Some(decoded) = divide_reg(raw) {
+        return IntegerOperands::of(Some(decoded.rd), [Some(decoded.rn), Some(decoded.rm), None]);
+    }
+    if let Some(decoded) = variable_shift(raw) {
+        return IntegerOperands::of(Some(decoded.rd), [Some(decoded.rn), Some(decoded.rm), None]);
+    }
+    if let Some(decoded) = bitfield(raw) {
+        return IntegerOperands::of(Some(decoded.rd), [Some(decoded.rn), None, None]);
+    }
+    if let Some(decoded) = logical_immediate(raw) {
+        let destination: Option<u8> =
+            (!decoded.sets_flags || !is_zero_register(decoded.rd)).then_some(decoded.rd);
+        return IntegerOperands::of(destination, [Some(decoded.rn), None, None]);
+    }
+    if movn(raw).is_some() || is_move_wide_zero(raw) {
+        return IntegerOperands::of(Some(rd), [None, None, None]);
+    }
+    if is_move_wide_keep(raw) {
+        return IntegerOperands::of(Some(rd), [Some(rd), None, None]);
+    }
+    if is_pc_relative(raw) {
+        return IntegerOperands::of(Some(rd), [None, None, None]);
+    }
+    if is_add_sub_immediate(raw) {
+        let destination: Option<u8> = (!sets_flag_bit(raw) || !is_zero_register(rd)).then_some(rd);
+        return IntegerOperands::of(destination, [Some(rn), None, None]);
+    }
+    if conditional_select_operands(raw) {
+        return IntegerOperands::of(Some(rd), [Some(rn), Some(rm), None]);
+    }
+    if raw & LOAD_STORE_GROUP_MASK == LOAD_STORE_GROUP_MATCH {
+        return load_store_operands(raw, rd, rn, rm, ra);
+    }
+    IntegerOperands::default()
+}
+
+fn load_store_operands(raw: u32, rt: u8, rn: u8, rm: u8, rt2: u8) -> IntegerOperands {
+    let simd: bool = raw & 0x0400_0000 != 0;
+    let pair: bool = raw & 0x3A00_0000 == 0x2800_0000;
+    let load: bool = raw & 0x0040_0000 != 0;
+    let register_offset: bool = !pair && raw & 0x3B20_0C00 == 0x3820_0800;
+    let indexed: Option<u8> = register_offset.then_some(rm);
+    if simd {
+        return IntegerOperands::of(None, [Some(rn), indexed, None]);
+    }
+    if load {
+        let destination: Option<u8> = (!is_zero_register(rt)).then_some(rt);
+        return IntegerOperands::of(destination, [Some(rn), indexed, None]);
+    }
+    if pair {
+        return IntegerOperands::of(None, [Some(rn), Some(rt), Some(rt2)]);
+    }
+    IntegerOperands::of(None, [Some(rn), Some(rt), indexed])
+}
+
+const fn sets_flag_bit(raw: u32) -> bool {
+    raw & 0x2000_0000 != 0
+}
+
+const fn is_add_sub_immediate(raw: u32) -> bool {
+    raw & 0x1F00_0000 == 0x1100_0000
+}
+
+const fn is_move_wide_zero(raw: u32) -> bool {
+    raw & 0x7F80_0000 == 0x5280_0000
+}
+
+const fn is_move_wide_keep(raw: u32) -> bool {
+    raw & 0x7F80_0000 == 0x7280_0000
+}
+
+const fn is_pc_relative(raw: u32) -> bool {
+    raw & 0x1F00_0000 == 0x1000_0000
+}
+
+const fn conditional_select_operands(raw: u32) -> bool {
+    raw & 0x1FE0_0800 == 0x1A80_0000
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
