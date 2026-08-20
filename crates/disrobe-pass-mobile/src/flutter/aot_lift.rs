@@ -674,7 +674,7 @@ fn lift_one(
         .collect();
 
     if abi_resolved {
-        pool_refs = resolve_pool_refs(&func.instructions);
+        pool_refs = resolve_pool_refs(&func.instructions, pool);
         inline_double_literals = recover_inline_double_literals(&func.instructions);
         for (i, insn) in func.instructions.iter().enumerate() {
             match insn.flow {
@@ -1000,7 +1000,15 @@ fn following_direct_call(instructions: &[Arm64Instruction], at: usize) -> bool {
 }
 
 #[must_use]
-fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
+fn pool_slot_content(pool: Option<&DartPoolTable>, slot: u64) -> Option<String> {
+    let index: usize = usize::try_from(slot).ok()?;
+    pool?.render_slot(index, false)
+}
+
+fn resolve_pool_refs(
+    instructions: &[Arm64Instruction],
+    pool: Option<&DartPoolTable>,
+) -> Vec<DartPoolRef> {
     let mut refs: Vec<DartPoolRef> = Vec::new();
     let mut scratch: BTreeMap<u8, u64> = BTreeMap::new();
     for insn in instructions {
@@ -1013,7 +1021,7 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
                         dest_reg: rt,
                         slot_index: slot,
                         form: DartPoolLoadForm::Direct,
-                        resolved_content: None,
+                        resolved_content: pool_slot_content(pool, slot),
                     });
                 }
             } else if let Some(base) = scratch.get(&rn).copied()
@@ -1024,7 +1032,7 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
                     dest_reg: rt,
                     slot_index: slot,
                     form: DartPoolLoadForm::ShiftedAdd,
-                    resolved_content: None,
+                    resolved_content: pool_slot_content(pool, slot),
                 });
             }
             scratch.remove(&rt);
@@ -1040,7 +1048,7 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
                 dest_reg: rt,
                 slot_index: slot,
                 form: DartPoolLoadForm::RegisterOffset,
-                resolved_content: None,
+                resolved_content: pool_slot_content(pool, slot),
             });
             scratch.remove(&rt);
             continue;

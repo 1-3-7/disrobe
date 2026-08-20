@@ -1,0 +1,280 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::uninlined_format_args
+)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+use disrobe_pass_mobile::{AotLiftReport, DartLiftedFunction, DartPoolRef, lift_libapp_aot};
+
+const COMMITTED_SAMPLES: [&str; 4] = [
+    "disrobe_sample/libapp_arm64.so",
+    "pinned_graph_fixture/receipt_validator_arm64.so",
+    "pinned_graph_fixture/receipt_validator_obfuscated_arm64.so",
+    "pinned_graph_fixture/voucher_validator_arm64.so",
+];
+
+const TRUNCATED_STRING: &str = "truncatedString(";
+
+fn corpus() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("corpus")
+        .join("mobile")
+        .join("flutter")
+}
+
+fn read_sample(relative: &str) -> Vec<u8> {
+    let mut path: PathBuf = corpus();
+    for part in relative.split('/') {
+        path = path.join(part);
+    }
+    std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("sample {} must be committed: {e}", path.display()))
+}
+
+fn dart_source() -> String {
+    String::from_utf8(read_sample("disrobe_sample/disrobe_aot_sample.dart"))
+        .expect("the committed Dart source is UTF-8")
+}
+
+fn sample_report() -> AotLiftReport {
+    lift_libapp_aot(&read_sample("disrobe_sample/libapp_arm64.so")).expect("lift the sample")
+}
+
+fn resolved_contents(report: &AotLiftReport) -> BTreeSet<String> {
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for function in &report.functions {
+        for pool_ref in &function.pool_refs {
+            if let Some(text) = pool_ref.resolved_content.as_deref() {
+                found.insert(text.to_owned());
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn source_declared_string_literals_resolve_from_the_object_pool() {
+    let source: String = dart_source();
+    let declared: [&str; 5] = [
+        "widget-alpha",
+        "gadget-bravo",
+        "sprocket-charlie",
+        "mid-market-tier",
+        "starter-tier",
+    ];
+    for literal in &declared {
+        assert!(
+            source.contains(&format!("'{literal}'")),
+            "the committed Dart source must declare '{literal}'; it is the reference this grade reads"
+        );
+    }
+    for excluded in ["dart:io", "dart:math"] {
+        assert!(
+            source.contains(&format!("'{excluded}'")),
+            "the excluded import URI '{excluded}' must still be declared by the source"
+        );
+    }
+
+    let report: AotLiftReport = sample_report();
+    let contents: BTreeSet<String> = resolved_contents(&report);
+    let mut recovered: usize = 0;
+    for literal in &declared {
+        let quoted: String = format!("\"{literal}\"");
+        if contents.contains(&quoted) {
+            recovered += 1;
+        } else {
+            eprintln!("unrecovered source literal: {literal}");
+        }
+    }
+    eprintln!(
+        "source-declared runtime string literals recovered from the object pool: {recovered}/{}",
+        declared.len()
+    );
+    assert_eq!(
+        recovered,
+        declared.len(),
+        "every runtime string literal the Dart source declares must resolve from a pool reference"
+    );
+}
+
+#[test]
+fn an_import_uri_is_named_as_unrecoverable_rather_than_guessed() {
+    let report: AotLiftReport = sample_report();
+    let contents: BTreeSet<String> = resolved_contents(&report);
+    for excluded in ["dart:io", "dart:math"] {
+        assert!(
+            !contents.contains(&format!("\"{excluded}\"")),
+            "'{excluded}' is an import URI that the precompiler drops rather than materializing as a \
+             runtime constant; if it now resolves, move it into the graded list instead of leaving it \
+             recorded as unrecoverable"
+        );
+    }
+}
+
+#[test]
+fn source_declared_double_literals_resolve_from_the_lift() {
+    let source: String = dart_source();
+    let declared: [(&str, &str); 4] = [
+        ("19.95", "19.95"),
+        ("149.50", "149.5"),
+        ("2400.00", "2400.0"),
+        ("4.25", "4.25"),
+    ];
+    for (written, _) in &declared {
+        assert!(
+            source.contains(written),
+            "the committed Dart source must declare the double {written}"
+        );
+    }
+    let report: AotLiftReport = sample_report();
+    let bodies: String = report
+        .functions
+        .iter()
+        .filter_map(|f: &DartLiftedFunction| f.structured_body.clone())
+        .collect::<Vec<String>>()
+        .join("\n");
+    let mut recovered: usize = 0;
+    for (written, rendered) in &declared {
+        if bodies.contains(rendered) {
+            recovered += 1;
+        } else {
+            eprintln!("unrecovered source double: {written}");
+        }
+    }
+    eprintln!(
+        "source-declared double literals recovered: {recovered}/{}",
+        declared.len()
+    );
+    assert_eq!(
+        recovered,
+        declared.len(),
+        "every double the Dart source declares must reach a recovered body"
+    );
+}
+
+#[test]
+fn a_pool_slot_resolves_to_one_value_or_to_none_but_never_to_two() {
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        let mut by_slot: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+        for function in &report.functions {
+            for pool_ref in &function.pool_refs {
+                if let Some(text) = pool_ref.resolved_content.as_deref() {
+                    by_slot
+                        .entry(pool_ref.slot_index)
+                        .or_default()
+                        .insert(text.to_owned());
+                }
+            }
+        }
+        for (slot, values) in &by_slot {
+            assert_eq!(
+                values.len(),
+                1,
+                "{sample} resolved pool slot {slot} to more than one value, so at least one is \
+                 reconstructed rather than read: {values:?}"
+            );
+        }
+        eprintln!("{sample}: {} pool slots resolve to content", by_slot.len());
+    }
+}
+
+#[test]
+fn a_slot_rendered_as_a_placeholder_is_never_resolved_elsewhere() {
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        let mut resolved_slots: BTreeSet<u64> = BTreeSet::new();
+        for function in &report.functions {
+            for pool_ref in &function.pool_refs {
+                if pool_ref.resolved_content.is_some() {
+                    resolved_slots.insert(pool_ref.slot_index);
+                }
+            }
+        }
+        let mut placeholder_slots: BTreeSet<u64> = BTreeSet::new();
+        for function in &report.functions {
+            let Some(body): Option<&str> = function.structured_body.as_deref() else {
+                continue;
+            };
+            for at in body.match_indices("pool[").map(|(at, _)| at) {
+                let digits: String = body[at + 5..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                if let Ok(slot) = digits.parse::<u64>() {
+                    placeholder_slots.insert(slot);
+                }
+            }
+        }
+        let both: Vec<u64> = placeholder_slots
+            .intersection(&resolved_slots)
+            .copied()
+            .collect::<Vec<u64>>();
+        assert!(
+            both.is_empty(),
+            "{sample} rendered slots {both:?} as an unresolved pool placeholder in one place while \
+             claiming resolved content for the same slot elsewhere; a slot must be readable or \
+             refused, never both"
+        );
+        eprintln!(
+            "{sample}: {} slots refused as placeholders, {} resolved, 0 overlapping",
+            placeholder_slots.len(),
+            resolved_slots.len()
+        );
+    }
+}
+
+#[test]
+fn a_truncated_pool_string_is_never_rendered_as_a_complete_literal() {
+    let mut truncated: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        for text in resolved_contents(&report) {
+            if !text.starts_with(TRUNCATED_STRING) {
+                continue;
+            }
+            truncated += 1;
+            let count: &str = text
+                .rsplit(',')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(')')
+                .trim();
+            let declared: u64 = count.parse::<u64>().unwrap_or_else(|_| {
+                panic!("a truncated pool string must carry its character count, got {text}")
+            });
+            assert!(
+                declared > 0,
+                "a truncated pool string must declare the length it was cut from, got {text}"
+            );
+        }
+        let refs: usize = report
+            .functions
+            .iter()
+            .map(|f: &DartLiftedFunction| f.pool_refs.len())
+            .sum::<usize>();
+        let resolved: usize = report
+            .functions
+            .iter()
+            .flat_map(|f: &DartLiftedFunction| f.pool_refs.iter())
+            .filter(|r: &&DartPoolRef| r.resolved_content.is_some())
+            .count();
+        eprintln!("{sample}: pool references resolved {resolved}/{refs}");
+        assert!(
+            resolved > 0,
+            "{sample} must expose resolved pool content on the artifact envelope, not only inside \
+             the rendered pseudocode"
+        );
+    }
+    eprintln!("truncated pool strings across the committed corpus: {truncated}");
+}

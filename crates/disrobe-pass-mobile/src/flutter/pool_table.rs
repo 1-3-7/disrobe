@@ -45,6 +45,8 @@ const SMALL_INTEGER_BOUND: i64 = 1 << 20;
 
 const ELISION: &str = "...";
 
+const TRUNCATED_STRING: &str = "truncatedString";
+
 const NULL_OBJECT_REFERENCE: u32 = 1;
 
 const SYMBOL_CLASS_NAME: &str = "Symbol";
@@ -647,17 +649,42 @@ pub fn render_double(value: f64) -> String {
     text
 }
 
-fn render_string(text: &str, already_escaped: bool) -> String {
-    let bounded: String = if text.chars().count() > MAX_LITERAL_CHARS {
-        let head: String = text.chars().take(MAX_LITERAL_CHARS).collect::<String>();
-        format!("{head}{ELISION}")
-    } else {
-        text.to_owned()
-    };
+fn quote_string(text: &str, already_escaped: bool) -> String {
     if already_escaped {
-        return format!("\"{bounded}\"");
+        format!("\"{text}\"")
+    } else {
+        format!("\"{}\"", escape_dart_string(text))
     }
-    format!("\"{}\"", escape_dart_string(&bounded))
+}
+
+fn trim_partial_escape(head: &str) -> &str {
+    if let Some(open) = head.rfind("\\u{")
+        && !head[open..].contains('}')
+    {
+        return &head[..open];
+    }
+    let trailing: usize = head.chars().rev().take_while(|c: &char| *c == '\\').count();
+    if trailing % 2 == 1 {
+        return &head[..head.len().saturating_sub(1)];
+    }
+    head
+}
+
+fn render_string(text: &str, already_escaped: bool) -> String {
+    let total: usize = text.chars().count();
+    if total <= MAX_LITERAL_CHARS {
+        return quote_string(text, already_escaped);
+    }
+    let head: String = text.chars().take(MAX_LITERAL_CHARS).collect::<String>();
+    let head: &str = if already_escaped {
+        trim_partial_escape(&head)
+    } else {
+        head.as_str()
+    };
+    format!(
+        "{TRUNCATED_STRING}({}, {total})",
+        quote_string(head, already_escaped)
+    )
 }
 
 #[cfg(test)]
@@ -956,8 +983,48 @@ mod tests {
             vec![text_object("unused"), text_object(&long)],
         );
         let rendered: String = pool.render_slot(0, false).expect("string renders");
-        assert!(rendered.ends_with(&format!("{ELISION}\"")));
         assert!(rendered.len() < long.len());
+        assert!(
+            rendered.starts_with(&format!("{TRUNCATED_STRING}(\"")),
+            "a truncated string must not be renderable as a complete literal, got {rendered}"
+        );
+        assert!(
+            rendered.ends_with(&format!(", {})", long.chars().count())),
+            "a truncated string must carry the character count it was cut from, got {rendered}"
+        );
+        let complete: DartPoolTable = table(
+            vec![DartPoolSlot::Object(1)],
+            vec![text_object("unused"), text_object("a")],
+        );
+        let intact: String = complete.render_slot(0, false).expect("string renders");
+        assert_eq!(
+            intact, "\"a\"",
+            "a complete string must stay a plain literal so the two cases cannot be confused"
+        );
+    }
+
+    #[test]
+    fn a_truncated_escaped_string_never_ends_inside_an_escape_sequence() {
+        let escaped: String = "\\u{0041}X".repeat(MAX_LITERAL_CHARS);
+        const {
+            assert!(
+                MAX_LITERAL_CHARS % 9 != 0,
+                "the unit length must not divide the cut, or the trim is never exercised"
+            );
+        }
+        let mut object: DartPoolObject = text_object(&escaped);
+        object.text_is_escaped = true;
+        let pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(1)],
+            vec![text_object("unused"), object],
+        );
+        let rendered: String = pool.render_slot(0, false).expect("string renders");
+        let opens: usize = rendered.matches("\\u{").count();
+        let closes: usize = rendered.matches('}').count();
+        assert_eq!(
+            opens, closes,
+            "every escape the renderer emits must be closed, got {rendered}"
+        );
     }
 
     #[test]
