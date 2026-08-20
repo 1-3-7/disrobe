@@ -33,7 +33,7 @@ const RUN_TIMEOUT_SECS: u64 = 20;
 const GRADED_OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
 const REPORTED_OPT_LEVELS: [&str; 1] = ["-O3"];
 const ABI_TARGETS: [AbiTarget; 2] = [AbiTarget::MsX64, AbiTarget::SysV];
-const EQUIVALENT_ROW_FLOOR: usize = 350;
+const EQUIVALENT_ROW_FLOOR: usize = 470;
 const ENTRY_ARITY: usize = 3;
 const OVER_INFERRED_ARGUMENT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 const REJECTION_MARKER: &str = "multiple/early returns not in forward-skip class";
@@ -64,25 +64,54 @@ impl AbiTarget {
 enum ResultChannel {
     Integer64,
     VoidPointerOut,
+    StructInRegister,
+    StructViaSret,
+    Double,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SretForm {
+    HiddenPointerParameter,
+    ReturnedByValue,
 }
 
 impl ResultChannel {
     const fn compares_return_register(self) -> bool {
-        matches!(self, Self::Integer64)
+        matches!(
+            self,
+            Self::Integer64 | Self::StructInRegister | Self::Double
+        )
     }
 
     const fn host_result_type(self) -> &'static str {
         match self {
             Self::Integer64 => "long long",
             Self::VoidPointerOut => "void",
+            Self::StructInRegister => "struct er_pair8",
+            Self::StructViaSret => "struct er_wide24",
+            Self::Double => "double",
         }
     }
 
     const fn host_last_parameter(self) -> &'static str {
         match self {
-            Self::Integer64 => "long long",
+            Self::Integer64 | Self::StructInRegister | Self::StructViaSret | Self::Double => {
+                "long long"
+            }
             Self::VoidPointerOut => "long long *",
         }
+    }
+
+    const fn driver_prelude(self) -> &'static str {
+        match self {
+            Self::Integer64 | Self::VoidPointerOut | Self::Double => "",
+            Self::StructInRegister => "struct er_pair8 { int lo; int hi; };\n",
+            Self::StructViaSret => "struct er_wide24 { long long x; long long y; long long z; };\n",
+        }
+    }
+
+    const fn corrupts_pointer_stores(self) -> bool {
+        matches!(self, Self::VoidPointerOut | Self::StructViaSret)
     }
 }
 
@@ -93,6 +122,7 @@ struct ExitShape {
     c_source: &'static str,
     extra_boundaries: &'static [i64],
     permit_sibling_calls: bool,
+    gcc_only_flags: &'static [&'static str],
     channel: ResultChannel,
 }
 
@@ -104,6 +134,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_guard_single(long long a, long long b, long long c){ if (a < 0) return -1; return a + b + c; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -113,6 +144,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_guard_chain(long long a, long long b, long long c){ if (a < 0) return -1; if (b < 0) return -2; if (c < 0) return -3; return a + b + c; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -122,6 +154,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_nested_if(long long a, long long b, long long c){ if (a > 0) { if (b > 0) { if (c > 0) return a + b + c; } return a - b; } return 0; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -131,6 +164,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_loop_find(long long a, long long b, long long c){ for (long long i = 0; i < 64; i++) { if (a + i == b) return i; } return c - 1; }",
         extra_boundaries: &[3, 7, 63, 64],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -140,6 +174,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_loop_accum(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 64; i++) { s += a; if (s > b) return i + c; } return -1; }",
         extra_boundaries: &[2, 5],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -149,6 +184,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_nested_loop(long long a, long long b, long long c){ for (long long i = 1; i < 32; i++) { for (long long j = 1; j < 32; j++) { if (i * j == a) return i + j + b; } } return c - 1; }",
         extra_boundaries: &[1, 4, 9, 25, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -158,6 +194,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_switch_case(long long a, long long b, long long c){ switch (a & 7) { case 0: return b; case 1: return c; case 2: return b + c; case 3: return b - c; case 4: return b * 2; default: break; } return a + b + c; }",
         extra_boundaries: &[0, 1, 2, 3, 4, 5, 6, 7, 8],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -168,6 +205,7 @@ const SHAPES: &[ExitShape] = &[
                     long long er_shared_entry(long long a, long long b, long long c){ if (a < 0) return er_shared_h(a, b); if (b < 0) return er_shared_h(b, c); return er_shared_h(c, a); }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -177,6 +215,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_four_sites(long long a, long long b, long long c){ if (a > 0) return a; if (b > 0) return b; if (c > 0) return c; return 0; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -186,6 +225,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_after_loop(long long a, long long b, long long c){ long long s = 0; long long i = 0; while (i < a) { s += b; i++; } if (s > c) return s; return c; }",
         extra_boundaries: &[0, 1, 2, 16],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -195,6 +235,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_noreturn_entry(long long a, long long b, long long c){ if (a == 4242) { __builtin_trap(); } if (b < 0) return -1; return a + b + c; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -204,6 +245,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_multi_in_loop(long long a, long long b, long long c){ for (long long i = 0; i < 64; i++) { if (a + i == b) return i; if (a - i == c) return -i; } return 0; }",
         extra_boundaries: &[1, 5, 63],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -213,6 +255,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_loop_in_guard(long long a, long long b, long long c){ if (a > 0) { for (long long i = 0; i < 64; i++) { if (i * i > a) return i + b; } } return c - 1; }",
         extra_boundaries: &[4, 9, 100],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -222,6 +265,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_break_and_return(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 64; i++) { if (i > b) break; if (i == c) return 999; s += i + a; } return s; }",
         extra_boundaries: &[0, 3, 8, 63],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -231,6 +275,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_do_while(long long a, long long b, long long c){ long long i = 0; do { if (a + i == b) return i; i++; } while (i < 32); return c - 1; }",
         extra_boundaries: &[0, 6, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -240,6 +285,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_nested_two_returns(long long a, long long b, long long c){ for (long long i = 1; i < 16; i++) { for (long long j = 1; j < 16; j++) { if (i * j == a) return i; } if (i == b) return -i; } return c; }",
         extra_boundaries: &[1, 6, 15, 30],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -249,6 +295,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_guard_loop_tail(long long a, long long b, long long c){ if (a < 0) return -1; long long s = 0; for (long long i = 0; i < 32; i++) { if (s > b) return s; s += a; } return s + c; }",
         extra_boundaries: &[0, 2, 17],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -258,6 +305,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_switch_in_loop(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 16; i++) { switch ((a + i) & 3) { case 0: s += 1; break; case 1: return i + b; case 2: s += 2; break; default: s += 3; } } return s + c; }",
         extra_boundaries: &[0, 1, 2, 3],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -268,6 +316,7 @@ const SHAPES: &[ExitShape] = &[
                     long long er_call_loop_entry(long long a, long long b, long long c){ for (long long i = 0; i < 16; i++) { long long v = er_call_loop_h(a + i, b); if (v > c) return i; } return -1; }",
         extra_boundaries: &[0, 4, 15],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -277,6 +326,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_join_tail(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 16; i++) { long long t; if (((a + i) & 3) == 0) { t = i * 2; } else if (((a + i) & 3) == 1) { s += 5; continue; } else { t = i * 3; } if (t == b) return t + c; s += t; } return s; }",
         extra_boundaries: &[0, 2, 6, 9],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -286,6 +336,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_shared_tail(long long a, long long b, long long c){ long long r; if (a > b) { r = a - b; } else if (b > c) { r = b - c; } else if (c > a) { return 0; } else { r = a + b; } return r * 2 + c; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -295,6 +346,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_two_breaks(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 32; i++) { if (i == a) { s += 1; break; } if (i == b) { s += 2; break; } s += i; } return s + c; }",
         extra_boundaries: &[0, 1, 7, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -304,6 +356,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_two_latch(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 32; i++) { if ((i & 1) == 0) { s += a; continue; } if (i == b) return s; s += c; } return s + 1; }",
         extra_boundaries: &[0, 1, 3, 30, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -313,6 +366,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_three_latch(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 32; i++) { if ((i & 3) == 0) { s += a; continue; } if ((i & 3) == 1) { s += b; continue; } if (i == c) return s; s += 1; } return s; }",
         extra_boundaries: &[0, 1, 2, 5, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -322,6 +376,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "long long er_nested_multi_latch(long long a, long long b, long long c){ long long s = 0; for (long long i = 1; i < 16; i++) { for (long long j = 1; j < 16; j++) { if (((i + j) & 1) == 0) { s += a; continue; } if (i * j == b) return s + i; s += j; } } return s + c; }",
         extra_boundaries: &[1, 4, 9, 15, 225],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -331,6 +386,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "void er_void_loop(long long a, long long b, long long *out){ for (long long i = 0; i < 32; i++) { if (a + i == b) { *out = i; return; } } *out = -1; }",
         extra_boundaries: &[0, 1, 7, 31, 32],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::VoidPointerOut,
     },
     ExitShape {
@@ -340,6 +396,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "void er_void_guards(long long a, long long b, long long *out){ if (a < 0) { *out = -1; return; } if (b < 0) { *out = -2; return; } *out = a + b; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::VoidPointerOut,
     },
     ExitShape {
@@ -349,6 +406,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "extern void exit(int);\nlong long er_noreturn_library(long long a, long long b, long long c){ if (a == 4242) { exit(7); } if (b < 0) return -1; return a + b + c; }",
         extra_boundaries: &[],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -358,6 +416,7 @@ const SHAPES: &[ExitShape] = &[
         c_source: "extern void exit(int);\nlong long er_noreturn_in_loop(long long a, long long b, long long c){ long long s = 0; for (long long i = 0; i < 32; i++) { if (a + i == 4242) exit(9); if (i == b) return s; s += i + a; } return s + c; }",
         extra_boundaries: &[0, 1, 7, 31],
         permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
     ExitShape {
@@ -368,6 +427,72 @@ const SHAPES: &[ExitShape] = &[
                     long long er_tail_entry(long long a, long long b, long long c){ return er_tail_h(a, b + c); }",
         extra_boundaries: &[],
         permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
+        tag: "noreturn_abort_exit",
+        entry: "er_abort_guard",
+        functions: &["er_abort_guard"],
+        c_source: "extern void abort(void);\n\
+                    long long er_abort_guard(long long a, long long b, long long c){ if (a == 4242) abort(); if (b < 0) return -1; return a + b + c; }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: false,
+        gcc_only_flags: &["-fno-reorder-blocks-and-partition"],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
+        tag: "noreturn_library_exit",
+        entry: "er_exit_guard",
+        functions: &["er_exit_guard"],
+        c_source: "extern void exit(int);\n\
+                    long long er_exit_guard(long long a, long long b, long long c){ if (a == 4242) exit(3); if (b < 0) return -2; if (c < 0) return -3; return a * 2 + b + c; }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: false,
+        gcc_only_flags: &["-fno-reorder-blocks-and-partition"],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
+        tag: "struct_return_in_registers",
+        entry: "er_ret_pair8",
+        functions: &["er_ret_pair8"],
+        c_source: "struct er_pair8 { int lo; int hi; };\n\
+                    struct er_pair8 er_ret_pair8(long long a, long long b, long long c){ struct er_pair8 p; if (a < 0) { p.lo = -1; p.hi = -1; return p; } if (b < 0) { p.lo = (int)c; p.hi = -2; return p; } p.lo = (int)(a + b); p.hi = (int)(b + c); return p; }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: false,
+        gcc_only_flags: &[],
+        channel: ResultChannel::StructInRegister,
+    },
+    ExitShape {
+        tag: "struct_return_via_sret",
+        entry: "er_ret_wide24",
+        functions: &["er_ret_wide24"],
+        c_source: "struct er_wide24 { long long x; long long y; long long z; };\n\
+                    struct er_wide24 er_ret_wide24(long long a, long long b, long long c){ struct er_wide24 w; if (a < 0) { w.x = -1; w.y = -2; w.z = -3; return w; } if (b < 0) { w.x = c; w.y = c + 1; w.z = c + 2; return w; } w.x = a + b; w.y = b + c; w.z = a + c; return w; }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: false,
+        gcc_only_flags: &[],
+        channel: ResultChannel::StructViaSret,
+    },
+    ExitShape {
+        tag: "float_return_from_loop",
+        entry: "er_ret_double",
+        functions: &["er_ret_double"],
+        c_source: "double er_ret_double(long long a, long long b, long long c){ if (a < 0) return (double)(b - c); double s = 0; for (long long i = 0; i < 8; i++) { if ((double)(a + i) > (double)b) return s; s += (double)(i + c); } return s; }",
+        extra_boundaries: &[0, 1, 4, 8],
+        permit_sibling_calls: false,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Double,
+    },
+    ExitShape {
+        tag: "shrink_wrapped_exit_sequences",
+        entry: "er_ep_entry",
+        functions: &["er_ep_entry", "er_ep_h"],
+        c_source: "__attribute__((noinline,noclone)) long long er_ep_h(long long x, long long y){ return x * 3 + y; }\n\
+                    long long er_ep_entry(long long a, long long b, long long c){ if (a < 0) return -1; if (b < 0) return -2; long long s = c; for (long long i = 0; i < 12; i++) { s = er_ep_h(a + i, b + s); } return s; }",
+        extra_boundaries: &[0, 1, 11],
+        permit_sibling_calls: false,
+        gcc_only_flags: &[],
         channel: ResultChannel::Integer64,
     },
 ];
@@ -449,13 +574,21 @@ fn build_driver(
     shape: &ExitShape,
     inputs: &[(i64, i64, i64)],
     entry_params: usize,
+    sret_form: Option<SretForm>,
     tu: &str,
 ) -> String {
     let entry: &str = shape.entry;
     let name: &str = shape.tag;
+    let sret_hidden_pointer: bool = sret_form == Some(SretForm::HiddenPointerParameter);
     let rec_args: String = (0..entry_params)
         .map(|i: usize| match (shape.channel, i) {
             (ResultChannel::VoidPointerOut, 2) => "(uint64_t)(uintptr_t)&got".to_owned(),
+            (ResultChannel::StructViaSret, 0) if sret_hidden_pointer => {
+                "(uint64_t)(uintptr_t)&got".to_owned()
+            }
+            (ResultChannel::StructViaSret, i) if sret_hidden_pointer && i <= ENTRY_ARITY => {
+                format!("(uint64_t)in[{}]", i - 1)
+            }
             (_, i) if i < ENTRY_ARITY => format!("(uint64_t)in[{i}]"),
             _ => format!("{OVER_INFERRED_ARGUMENT}ULL"),
         })
@@ -488,11 +621,54 @@ fn build_driver(
              \x20       if (want != got) {{ printf(\"MISMATCH {name} in=%lld,%lld,%lld want=%lld got=%lld\\n\", in[0], in[1], in[2], want, got); return 1; }}\n\
              \x20   }}\n",
         ),
+        ResultChannel::StructInRegister => write!(
+            body,
+            "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+             \x20       long long in[3] = {{ inputs[k][0], inputs[k][1], inputs[k][2] }};\n\
+             \x20       struct er_pair8 native = {entry}(in[0], in[1], in[2]);\n\
+             \x20       unsigned long long want = 0; memcpy(&want, &native, sizeof native);\n\
+             \x20       unsigned long long got = (unsigned long long)rec_{entry}({rec_args});\n\
+             \x20       if (want != got) {{ printf(\"MISMATCH {name} in=%lld,%lld,%lld want=%llu got=%llu\\n\", in[0], in[1], in[2], want, got); return 1; }}\n\
+             \x20   }}\n",
+        ),
+        ResultChannel::Double => write!(
+            body,
+            "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+             \x20       long long in[3] = {{ inputs[k][0], inputs[k][1], inputs[k][2] }};\n\
+             \x20       double native = {entry}(in[0], in[1], in[2]);\n\
+             \x20       double mine = rec_{entry}({rec_args});\n\
+             \x20       unsigned long long want = 0; memcpy(&want, &native, sizeof native);\n\
+             \x20       unsigned long long got = 0; memcpy(&got, &mine, sizeof mine);\n\
+             \x20       if (want != got) {{ printf(\"MISMATCH {name} in=%lld,%lld,%lld want=%llu got=%llu\\n\", in[0], in[1], in[2], want, got); return 1; }}\n\
+             \x20   }}\n",
+        ),
+        ResultChannel::StructViaSret if sret_hidden_pointer => write!(
+            body,
+            "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+             \x20       long long in[3] = {{ inputs[k][0], inputs[k][1], inputs[k][2] }};\n\
+             \x20       struct er_wide24 native = {entry}(in[0], in[1], in[2]);\n\
+             \x20       struct er_wide24 got; memset(&got, 0x5E, sizeof got);\n\
+             \x20       (void)rec_{entry}({rec_args});\n\
+             \x20       if (memcmp(&native, &got, sizeof got) != 0) {{ printf(\"MISMATCH {name} in=%lld,%lld,%lld want=%lld,%lld,%lld got=%lld,%lld,%lld\\n\", in[0], in[1], in[2], native.x, native.y, native.z, got.x, got.y, got.z); return 1; }}\n\
+             \x20   }}\n",
+        ),
+        ResultChannel::StructViaSret => write!(
+            body,
+            "    for (size_t k = 0; k < n_inputs; k++) {{\n\
+             \x20       long long in[3] = {{ inputs[k][0], inputs[k][1], inputs[k][2] }};\n\
+             \x20       struct er_wide24 native = {entry}(in[0], in[1], in[2]);\n\
+             \x20       recovered_sret_t mine = rec_{entry}({rec_args});\n\
+             \x20       struct er_wide24 got; got.x = (long long)mine.f0; got.y = (long long)mine.f1; got.z = (long long)mine.f2;\n\
+             \x20       if (memcmp(&native, &got, sizeof got) != 0) {{ printf(\"MISMATCH {name} in=%lld,%lld,%lld want=%lld,%lld,%lld got=%lld,%lld,%lld\\n\", in[0], in[1], in[2], native.x, native.y, native.z, got.x, got.y, got.z); return 1; }}\n\
+             \x20   }}\n",
+        ),
     };
     let result: &str = shape.channel.host_result_type();
     let last: &str = shape.channel.host_last_parameter();
+    let prelude: &str = shape.channel.driver_prelude();
     format!(
-        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{tu}\n\
+        "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n#include <string.h>\n\
+         {prelude}{tu}\n\
          extern {result} {entry}(long long, long long, {last});\n\
          int main(void) {{\n\
          \x20   long long inputs[][3] = {{ {inputs_literal} }};\n\
@@ -591,6 +767,8 @@ fn compile_flags(family: CompilerFamily, permit_sibling_calls: bool) -> Vec<&'st
     let mut flags: Vec<&'static str> = codegen_flags(family).to_vec();
     if permit_sibling_calls {
         flags.retain(|f: &&str| *f != "-fno-optimize-sibling-calls");
+    } else if !flags.contains(&"-fno-optimize-sibling-calls") {
+        flags.push("-fno-optimize-sibling-calls");
     }
     flags
 }
@@ -599,6 +777,8 @@ struct RecoveredShape {
     tu: String,
     entry_params: usize,
     entry_return_width: u32,
+    entry_returns_fp: bool,
+    sret_form: Option<SretForm>,
 }
 
 enum RecoverOutcome {
@@ -631,6 +811,7 @@ fn recover_shape(object: &[u8], shape: &ExitShape, abi: PseudoAbi) -> RecoverOut
     let mut tu: String = String::new();
     let mut entry_params: usize = 0;
     let mut entry_return_width: u32 = 0;
+    let mut entry_returns_fp: bool = false;
     for (idx, &fname) in shape.functions.iter().enumerate() {
         let rec: &RecoveredFunction = &result.recovered[idx];
         tu.push_str(&strip_includes(&rec.source));
@@ -638,12 +819,30 @@ fn recover_shape(object: &[u8], shape: &ExitShape, abi: PseudoAbi) -> RecoverOut
         if fname == shape.entry {
             entry_params = rec.signature.callable_arity();
             entry_return_width = rec.return_width_bits;
+            entry_returns_fp = rec.returns_fp.is_some();
         }
     }
+    let sret_form: Option<SretForm> = match shape.channel {
+        ResultChannel::StructViaSret => {
+            if tu.contains(&format!("recovered_sret_t rec_{}(", shape.entry)) {
+                Some(SretForm::ReturnedByValue)
+            } else if entry_params > ENTRY_ARITY {
+                Some(SretForm::HiddenPointerParameter)
+            } else {
+                None
+            }
+        }
+        ResultChannel::Integer64
+        | ResultChannel::VoidPointerOut
+        | ResultChannel::StructInRegister
+        | ResultChannel::Double => None,
+    };
     RecoverOutcome::Ok(Box::new(RecoveredShape {
         tu,
         entry_params,
         entry_return_width,
+        entry_returns_fp,
+        sret_form,
     }))
 }
 
@@ -673,6 +872,9 @@ fn grade_row(
     let source: &str = shape.c_source;
 
     let mut host_flags: Vec<&str> = compile_flags(compiler.family, shape.permit_sibling_calls);
+    if matches!(compiler.family, CompilerFamily::Gcc) {
+        host_flags.extend_from_slice(shape.gcc_only_flags);
+    }
     host_flags.push("-c");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-early-return-host");
     let host_out: PathBuf = scratch.path().join(format!("{tag}_host.o"));
@@ -732,12 +934,26 @@ fn grade_row(
         ));
         return row;
     }
+    if matches!(shape.channel, ResultChannel::Double) && !recovered.entry_returns_fp {
+        row.verdict = Verdict::NotGraded(
+            "the recovered prototype does not carry a floating-point result, so a double source result has no defined comparison".to_owned(),
+        );
+        return row;
+    }
+    if matches!(shape.channel, ResultChannel::StructViaSret) && recovered.sret_form.is_none() {
+        row.verdict = Verdict::NotGraded(format!(
+            "the recovered prototype takes {} parameters and does not return the recovered sret record, so neither hidden-pointer nor by-value binding applies",
+            recovered.entry_params
+        ));
+        return row;
+    }
 
     let inputs: Vec<(i64, i64, i64)> = shape_inputs(shape, row_seed(shape, compiler.bin, opt, abi));
     let driver: String = build_driver(
         shape,
         &inputs,
         recovered.entry_params,
+        recovered.sret_form,
         &strip_includes(&recovered.tu),
     );
     match link_and_run_reasoned(compiler.bin, &driver, &host_object, &tag, RUN_TIMEOUT_SECS) {
@@ -755,9 +971,10 @@ fn grade_row(
 
     if matches!(row.verdict, Verdict::Equivalent) {
         let marker: String = format!("rec_{}(", shape.entry);
-        let corrupted: Option<String> = match shape.channel {
-            ResultChannel::Integer64 => corrupt_every_return(&recovered.tu, &marker),
-            ResultChannel::VoidPointerOut => corrupt_every_pointer_store(&recovered.tu, &marker),
+        let corrupted: Option<String> = if shape.channel.corrupts_pointer_stores() {
+            corrupt_every_pointer_store(&recovered.tu, &marker)
+        } else {
+            corrupt_every_return(&recovered.tu, &marker)
         };
         let mutated: String = corrupted.unwrap_or_else(|| {
             panic!(
@@ -769,6 +986,7 @@ fn grade_row(
             shape,
             &inputs,
             recovered.entry_params,
+            recovered.sret_form,
             &strip_includes(&mutated),
         );
         match link_and_run_reasoned(
@@ -945,5 +1163,171 @@ fn early_exit_shapes_recompile_to_equivalence_or_name_their_abstention() {
     assert!(
         unexercised.is_empty(),
         "every declared exit shape must recompile to equivalence on at least one graded row, otherwise its coverage is claimed but never exercised: {unexercised:#?}"
+    );
+}
+
+const SIBLING_TAIL_IN_MULTI_RETURN: &str = "__attribute__((noinline,noclone)) long long er_sib_h(long long x, long long y){ return x * 3 + y; }\nlong long er_sib_entry(long long a, long long b, long long c){ if (a < 0) return -1; if (b < 0) return -2; long long s = c; for (long long i = 0; i < 12; i++) { s = er_sib_h(a + i, b + s); } return s; }";
+
+const LEAVES_FUNCTION_PRECONDITION: &str =
+    "a direct jump leaves this function, so its target is not an edge inside the block graph";
+
+const fn sibling_tail_shape(permit_sibling_calls: bool) -> ExitShape {
+    ExitShape {
+        tag: "sibling_tail_in_multi_return",
+        entry: "er_sib_entry",
+        functions: &["er_sib_entry", "er_sib_h"],
+        c_source: SIBLING_TAIL_IN_MULTI_RETURN,
+        extra_boundaries: &[],
+        permit_sibling_calls,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    }
+}
+
+fn recover_sibling_tail(shape: &ExitShape, extra: &[&str]) -> RecoverOutcome {
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-sibling-tail");
+    let out: PathBuf = scratch.path().join("sibling_tail.o");
+    let mut flags: Vec<&str> = vec!["-fno-stack-protector"];
+    flags.extend_from_slice(extra);
+    flags.push("-c");
+    let object: Vec<u8> = match compile_object_reasoned("gcc", "-O3", &flags, shape.c_source, &out)
+    {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("the sibling-tail fixture must compile: {reason}")
+        }
+    };
+    recover_shape(&object, shape, PseudoAbi::MsX64)
+}
+
+#[test]
+fn a_sibling_tail_call_among_several_returns_abstains_instead_of_becoming_a_back_edge() {
+    let shape: ExitShape = sibling_tail_shape(true);
+    let outcome: RecoverOutcome = recover_sibling_tail(&shape, &[]);
+    let RecoverOutcome::Abstained(reason) = outcome else {
+        panic!(
+            "a tail jump to a callee that sits below this function's entry must not be resolved as an intra-function edge"
+        );
+    };
+    assert!(
+        reason.contains(LEAVES_FUNCTION_PRECONDITION),
+        "the abstention must name the precondition that failed, got: {reason}"
+    );
+}
+
+#[test]
+fn the_same_source_recovers_a_straight_line_body_once_the_tail_jump_is_suppressed() {
+    let shape: ExitShape = sibling_tail_shape(false);
+    let outcome: RecoverOutcome = recover_sibling_tail(&shape, &["-fno-optimize-sibling-calls"]);
+    let RecoverOutcome::Ok(recovered) = outcome else {
+        panic!("without a tail jump the same source must recover");
+    };
+    assert!(
+        recovered.tu.contains("rec_er_sib_h("),
+        "the callee must be reached as a call rather than folded into this function's control flow: {}",
+        recovered.tu
+    );
+    assert!(
+        !recovered.tu.contains("continue;"),
+        "a fully unrolled straight-line body must not carry a loop continue: {}",
+        recovered.tu
+    );
+}
+
+struct AbstentionCase {
+    tag: &'static str,
+    entry: &'static str,
+    functions: &'static [&'static str],
+    c_source: &'static str,
+    opt: &'static str,
+    drops_stack_protector_suppression: bool,
+    preconditions: &'static [&'static str],
+}
+
+const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
+    AbstentionCase {
+        tag: "setjmp_longjmp_exit",
+        entry: "er_setjmp",
+        functions: &["er_setjmp"],
+        c_source: "#include <setjmp.h>\nstatic jmp_buf er_jb;\nlong long er_setjmp(long long a, long long b, long long c){ if (setjmp(er_jb) != 0) return -1; if (a < 0) longjmp(er_jb, 1); return a + b + c; }",
+        opt: "-O2",
+        drops_stack_protector_suppression: false,
+        preconditions: &["unsupported leaf instruction", "[rel"],
+    },
+    AbstentionCase {
+        tag: "stack_check_failure_exit",
+        entry: "er_stack_chk",
+        functions: &["er_stack_chk"],
+        c_source: "long long er_stack_chk(long long a, long long b, long long c){ char buf[64]; for (int i = 0; i < 64; i++) buf[i] = (char)(a + i); if (b < 0) return -1; return buf[(unsigned)(c & 63)] + a; }",
+        opt: "-O2",
+        drops_stack_protector_suppression: true,
+        preconditions: &["unsupported leaf instruction", "[rel"],
+    },
+    AbstentionCase {
+        tag: "floating_point_literal_guards",
+        entry: "er_double_guards",
+        functions: &["er_double_guards"],
+        c_source: "double er_double_guards(long long a, long long b, long long c){ if (a < 0) return (double)-1; if (b < 0) return (double)-2; return (double)(a + b + c); }",
+        opt: "-O2",
+        drops_stack_protector_suppression: false,
+        preconditions: &["rip-relative float operand", "no resolved .rodata constant"],
+    },
+    AbstentionCase {
+        tag: "hot_cold_partitioned_noreturn",
+        entry: "er_abort_guard",
+        functions: &["er_abort_guard"],
+        c_source: "extern void abort(void);\nlong long er_abort_guard(long long a, long long b, long long c){ if (a == 4242) abort(); if (b < 0) return -1; return a + b + c; }",
+        opt: "-O2",
+        drops_stack_protector_suppression: false,
+        preconditions: &["carries a relocation", "lies outside this function"],
+    },
+];
+
+#[test]
+fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition() {
+    let mut unnamed: Vec<String> = Vec::new();
+    for case in DECLARED_ABSTENTIONS {
+        let shape: ExitShape = ExitShape {
+            tag: case.tag,
+            entry: case.entry,
+            functions: case.functions,
+            c_source: case.c_source,
+            extra_boundaries: &[],
+            permit_sibling_calls: false,
+            gcc_only_flags: &[],
+            channel: ResultChannel::Integer64,
+        };
+        let mut flags: Vec<&str> = vec!["-fno-optimize-sibling-calls"];
+        if case.drops_stack_protector_suppression {
+            flags.push("-fstack-protector-strong");
+        } else {
+            flags.push("-fno-stack-protector");
+        }
+        flags.push("-c");
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-declared-abstention");
+        let out: PathBuf = scratch.path().join(format!("{}.o", case.tag));
+        let object: Vec<u8> =
+            match compile_object_reasoned("gcc", case.opt, &flags, case.c_source, &out) {
+                CompileOutcome::Object(bytes) => bytes,
+                CompileOutcome::Rejected(reason) => {
+                    panic!("the {} fixture must compile: {reason}", case.tag)
+                }
+            };
+        match recover_shape(&object, &shape, PseudoAbi::MsX64) {
+            RecoverOutcome::Abstained(reason) => {
+                for precondition in case.preconditions {
+                    assert!(
+                        reason.contains(precondition),
+                        "the {} abstention must name `{precondition}`, got: {reason}",
+                        case.tag
+                    );
+                }
+            }
+            RecoverOutcome::Ok(_) => unnamed.push(case.tag.to_owned()),
+        }
+    }
+    assert!(
+        unnamed.is_empty(),
+        "these shapes now recover, so they belong in the graded matrix rather than in the named-abstention record: {unnamed:#?}"
     );
 }

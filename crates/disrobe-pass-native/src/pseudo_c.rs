@@ -10614,12 +10614,35 @@ impl CfgBlock {
     }
 }
 
+fn item_target_below_entry(items: &[Item]) -> bool {
+    let Some(lowest_address): Option<u64> = items.iter().map(|item: &Item| item.address).min()
+    else {
+        return false;
+    };
+    items.iter().any(|item: &Item| match item.kind {
+        ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => target < lowest_address,
+        ItemKind::Ret | ItemKind::Stmt(_) | ItemKind::Switch { .. } => false,
+    })
+}
+
+fn block_graph_refusal(items: &[Item]) -> &'static str {
+    if item_target_below_entry(items) {
+        "a direct jump leaves this function, so its target is not an edge inside the block graph"
+    } else {
+        "the instruction stream does not form a bounded block graph"
+    }
+}
+
 fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
     let mut addr_to_idx: BTreeMap<u64, usize> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         addr_to_idx.entry(item.address).or_insert(index);
     }
+    let lowest_address: u64 = *addr_to_idx.keys().next()?;
     let resolve = |target: u64| -> Option<usize> {
+        if target < lowest_address {
+            return None;
+        }
         addr_to_idx
             .range(target..)
             .next()
@@ -11032,7 +11055,7 @@ fn structure_reducible_cfg(
     refusal: &mut Option<&'static str>,
 ) -> Result<Option<Block>> {
     let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
-        *refusal = Some("the instruction stream does not form a bounded block graph");
+        *refusal = Some(block_graph_refusal(items));
         return Ok(None);
     };
     if blocks.len() < 2 {
