@@ -320,6 +320,31 @@ fn normalize_javap(raw: &str) -> Vec<String> {
     out
 }
 
+fn javap_member_code(raw: &str, signature_fragment: &str) -> Option<Vec<String>> {
+    let mut members: Vec<(String, Vec<String>)> = Vec::new();
+    for line in raw.lines() {
+        let trimmed: &str = line.trim_end();
+        let declares_member: bool =
+            trimmed.starts_with("  ") && !trimmed.starts_with("   ") && trimmed.ends_with(';');
+        if declares_member {
+            members.push((trimmed.to_owned(), Vec::new()));
+        } else if let Some((_, body)) = members.last_mut() {
+            body.push(trimmed.to_owned());
+        }
+    }
+    members
+        .into_iter()
+        .find(|(header, _): &(String, Vec<String>)| header.contains(signature_fragment))
+        .map(|(header, body): (String, Vec<String>)| {
+            let mut text: String = header;
+            for line in body {
+                text.push('\n');
+                text.push_str(&line);
+            }
+            normalize_javap(&text)
+        })
+}
+
 fn method_body(source: &str, signature_fragment: &str) -> Option<String> {
     let start: usize = source.find(signature_fragment)?;
     let open: usize = source[start..].find('{')? + start;
@@ -442,6 +467,75 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
         "recompiled try/finally bytecode is not instruction/exception-table equivalent to the \
          original.\n--- recovered source ---\n{}",
         decompiled.source
+    );
+}
+
+const FINALLY_RETURN_KINDS: &[(&str, &str, &str)] = &[
+    ("ireturn", " finallyReturns(", "int"),
+    ("lreturn", " longFinallyReturns(", "long"),
+    ("freturn", " floatFinallyReturns(", "float"),
+    ("dreturn", " doubleFinallyReturns(", "double"),
+    ("areturn", " objFinallyReturns(", "reference"),
+    ("return", " voidFinallyReturns(", "void"),
+];
+
+#[test]
+fn a_finally_returning_each_jvm_return_kind_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("TryFinallyReturn", TRY_FINALLY_RETURN_SRC);
+    let mut equivalent: Vec<&str> = Vec::new();
+    let mut divergent: Vec<String> = Vec::new();
+    for (opcode, fragment, kind) in FINALLY_RETURN_KINDS {
+        let body: String = assert_finally_recovered(&recompiled.source, fragment);
+        let finally_at: usize = body
+            .find("finally {")
+            .unwrap_or_else(|| panic!("the recovered {kind} method has no finally block:\n{body}"));
+        let finally_tail: &str = body
+            .get(finally_at..)
+            .unwrap_or_else(|| panic!("the recovered {kind} finally block is truncated:\n{body}"));
+        assert!(
+            finally_tail.contains("return"),
+            "the recovered {kind} finally block does not return, so the {opcode} shape was not \
+             recovered:\n{body}"
+        );
+        let original: Vec<String> = javap_member_code(&recompiled.original_javap, fragment)
+            .unwrap_or_else(|| {
+                panic!("the {kind} return-kind method is missing from the original javap")
+            });
+        let recovered: Vec<String> = javap_member_code(&recompiled.recovered_javap, fragment)
+            .unwrap_or_else(|| {
+                panic!("the {kind} return-kind method is missing from the recompiled javap")
+            });
+        let marker: String = format!(": {opcode}");
+        assert!(
+            original.iter().any(|line: &String| line.ends_with(&marker)),
+            "the {kind} fixture never reaches {opcode}, so this row certifies nothing:\n{}",
+            original.join("\n")
+        );
+        if original == recovered {
+            equivalent.push(kind);
+        } else {
+            divergent.push(format!("{kind} ({opcode})"));
+        }
+    }
+    eprintln!(
+        "FINALLY RETURN KIND RECOMPILE: {}/{} return kinds byte-equivalent under javac",
+        equivalent.len(),
+        FINALLY_RETURN_KINDS.len()
+    );
+    assert!(
+        divergent.is_empty(),
+        "a finally returning these kinds did not recompile to equivalent bytecode: {}\n\
+         --- recovered source ---\n{}",
+        divergent.join(", "),
+        recompiled.source
+    );
+    assert_eq!(
+        equivalent.len(),
+        FINALLY_RETURN_KINDS.len(),
+        "only {} of {} JVM return kinds were certified byte-equivalent",
+        equivalent.len(),
+        FINALLY_RETURN_KINDS.len()
     );
 }
 
@@ -817,6 +911,8 @@ struct RecompiledClass {
     source: String,
     original: Vec<String>,
     recovered: Vec<String>,
+    original_javap: String,
+    recovered_javap: String,
 }
 
 fn recompile_recovered_class(class: &str, source: &str) -> RecompiledClass {
@@ -861,9 +957,13 @@ fn recompile_recovered_class(class: &str, source: &str) -> RecompiledClass {
         String::from_utf8_lossy(&recompile.stderr),
         decompiled.source
     );
+    let original_javap: String = javap_code(&javap, &orig_dir, class);
+    let recovered_javap: String = javap_code(&javap, &rec_dir, class);
     RecompiledClass {
-        original: normalize_javap(&javap_code(&javap, &orig_dir, class)),
-        recovered: normalize_javap(&javap_code(&javap, &rec_dir, class)),
+        original: normalize_javap(&original_javap),
+        recovered: normalize_javap(&recovered_javap),
+        original_javap,
+        recovered_javap,
         source: decompiled.source,
     }
 }
