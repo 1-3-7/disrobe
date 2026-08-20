@@ -1,7 +1,7 @@
 <?php
 
 const DZOA_MAGIC = "DZOA";
-const DZOA_VERSION = 3;
+const DZOA_VERSION = 4;
 
 const OT_UNUSED = 0;
 const OT_CONST = 1;
@@ -91,6 +91,9 @@ const OPMAP = [
     'FETCH_RW' => 86,
     'FETCH_CONSTANT' => 99,
     'CATCH' => 107,
+    'DISCARD_EXCEPTION' => 159,
+    'FAST_CALL' => 162,
+    'FAST_RET' => 163,
     'THROW' => 108,
     'FETCH_CLASS' => 109,
     'CLONE' => 110,
@@ -222,6 +225,7 @@ final class ParsedOpArray
     public array $ops = [];
     public array $children = [];
     public array $vars = [];
+    public array $tryCatch = [];
 
     public function __construct()
     {
@@ -389,6 +393,15 @@ function serialize_body(ParsedOpArray $oa, int $schemaVersion): string
         $out .= le32($op->result);
         $out .= le32($op->ext);
         $out .= le32($op->line);
+    }
+    if ($schemaVersion >= 4) {
+        $out .= le32(count($oa->tryCatch));
+        foreach ($oa->tryCatch as [$tryOp, $catchOp, $finallyOp, $finallyEnd]) {
+            $out .= le32($tryOp);
+            $out .= le32($catchOp);
+            $out .= le32($finallyOp);
+            $out .= le32($finallyEnd);
+        }
     }
     $out .= le32(count($oa->children));
     foreach ($oa->children as $child) {
@@ -602,6 +615,7 @@ function parse_dump(string $text): array
     $current = null;
     $nameToArray = [];
     $blockDone = false;
+    $section = null;
 
     $flush = function () use (&$current, &$arrays, &$nameToArray): void {
         if ($current !== null) {
@@ -616,8 +630,21 @@ function parse_dump(string $text): array
         if ($line === '') {
             continue;
         }
-        if (preg_match('/^(LIVE RANGES|EXCEPTION TABLE)/', $line)) {
+        if (preg_match('/^(LIVE RANGES|EXCEPTION TABLE)/', $line, $sm)) {
             $blockDone = true;
+            $section = $sm[1] === 'EXCEPTION TABLE' ? 'exception' : 'live';
+            continue;
+        }
+        if ($section === 'exception' && $current !== null
+            && preg_match_all(
+                '/(?<![\d-])(\d+|-),\s*(\d+|-),\s*(\d+|-),\s*(\d+|-)(?![\d-])/',
+                $line,
+                $tms,
+                PREG_SET_ORDER
+            ) > 0) {
+            foreach ($tms as $tm) {
+                $current['try'][] = [$tm[1], $tm[2], $tm[3], $tm[4]];
+            }
             continue;
         }
         if (preg_match('/^(\S+):\s*$/', $line, $m)
@@ -640,7 +667,8 @@ function parse_dump(string $text): array
                 $oa->kind = K_FUNCTION;
                 $oa->name = $rawName;
             }
-            $current = ['oa' => $oa, 'index' => [], 'jmp' => []];
+            $current = ['oa' => $oa, 'index' => [], 'jmp' => [], 'try' => []];
+            $section = null;
             continue;
         }
         if ($current === null || $blockDone) {
@@ -780,6 +808,50 @@ function parse_dump(string $text): array
             continue;
         }
 
+        if ($mnemonic === 'CATCH') {
+            $op = build_op($mnemonic, $resultTok, [$tokens[0] ?? ''], $current['oa'], $addr + 1);
+            $op->op2Type = OT_UNUSED;
+            $op->op2 = 0;
+            if (isset($tokens[1]) && is_numeric($tokens[1])) {
+                $current['jmp'][] = [count($current['oa']->ops), 'op2', (int) $tokens[1]];
+            } else {
+                $op->ext = 1;
+            }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'FAST_CALL') {
+            $op = build_op($mnemonic, $resultTok, [], $current['oa'], $addr + 1);
+            $op->op1Type = OT_UNUSED;
+            $op->op1 = 0;
+            if (!isset($tokens[0]) || !is_numeric($tokens[0])) {
+                fail("FAST_CALL at $addr has no finally target");
+            }
+            $current['jmp'][] = [count($current['oa']->ops), 'op1', (int) $tokens[0]];
+            if (isset($tokens[1])) {
+                [$vt, $vv] = parse_operand($tokens[1], $current['oa']);
+                if ($vt !== null && $vt !== OT_UNUSED) {
+                    $op->op2Type = $vt;
+                    $op->op2 = $vv;
+                }
+            }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'FAST_RET') {
+            $op = build_op($mnemonic, $resultTok, [$tokens[0] ?? ''], $current['oa'], $addr + 1);
+            if (isset($tokens[1]) && preg_match('/^try-catch\((\d+)\)$/', $tokens[1], $fm)) {
+                $op->ext = 1 + (int) $fm[1];
+            }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
         $isJmp = in_array($mnemonic, ['JMP', 'JMPZ', 'JMPNZ', 'JMPZ_EX', 'JMPNZ_EX', 'COALESCE', 'JMP_SET', 'JMP_NULL'], true);
         $isLoopCtl = in_array($mnemonic, ['FE_RESET_R', 'FE_RESET_RW', 'FE_FETCH_R', 'FE_FETCH_RW', 'FE_FREE'], true);
 
@@ -866,6 +938,14 @@ function parse_dump(string $text): array
                 $oa->ops[$opPos]->op2 = $resolved;
             }
         }
+        foreach ($entry['try'] as $row) {
+            $oa->tryCatch[] = [
+                resolve_try_address($entry['index'], $row[0]),
+                resolve_try_address($entry['index'], $row[1]),
+                resolve_try_address($entry['index'], $row[2]),
+                resolve_try_address($entry['index'], $row[3]),
+            ];
+        }
         foreach ($oa->ops as $op) {
             if ($op->switchKind === null) {
                 continue;
@@ -910,6 +990,33 @@ function nest_arrays(array $arrays): ParsedOpArray
     }
 
     return $main;
+}
+
+function resolve_try_address(array $index, string $token): int
+{
+    if ($token === '-') {
+        return 0;
+    }
+    $address = (int) $token;
+    if (!isset($index[$address])) {
+        fail("exception table entry $address is outside its op_array");
+    }
+
+    return $index[$address];
+}
+
+function requires_dzoa_v4(ParsedOpArray $oa): bool
+{
+    if ($oa->tryCatch !== []) {
+        return true;
+    }
+    foreach ($oa->children as $child) {
+        if (requires_dzoa_v4($child)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function requires_dzoa_v3(ParsedOpArray $oa): bool
@@ -957,16 +1064,25 @@ function run_opcache_dump(string $dll, array $iniOverrides, string $srcPath): ar
     $cmd[] = '--';
     $cmd[] = $srcPath;
 
-    $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $outFile = tempnam(sys_get_temp_dir(), 'dzoa_out');
+    $errFile = tempnam(sys_get_temp_dir(), 'dzoa_err');
+    if ($outFile === false || $errFile === false) {
+        fail('could not stage the opcache dump capture files');
+    }
+
+    $descriptors = [1 => ['file', $outFile, 'w'], 2 => ['file', $errFile, 'w']];
     $proc = proc_open($cmd, $descriptors, $pipes);
     if (!is_resource($proc)) {
+        unlink($outFile);
+        unlink($errFile);
         fail('could not spawn opcache dump process');
     }
-    $stdout = stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    $stderr = stream_get_contents($pipes[2]);
-    fclose($pipes[2]);
     proc_close($proc);
+
+    $stdout = (string) file_get_contents($outFile);
+    $stderr = (string) file_get_contents($errFile);
+    unlink($outFile);
+    unlink($errFile);
 
     return [$stdout, $stderr];
 }
@@ -1095,9 +1211,15 @@ $arrays = parse_dump($dump);
 $main = nest_arrays($arrays);
 
 $forced = getenv('DZOA_FORCE_VERSION');
-$schemaVersion = ($forced !== false && $forced !== '')
-    ? (int) $forced
-    : (requires_dzoa_v3($main) ? DZOA_VERSION : 2);
+if ($forced !== false && $forced !== '') {
+    $schemaVersion = (int) $forced;
+} elseif (requires_dzoa_v4($main)) {
+    $schemaVersion = 4;
+} elseif (requires_dzoa_v3($main)) {
+    $schemaVersion = 3;
+} else {
+    $schemaVersion = 2;
+}
 
 $container = DZOA_MAGIC . chr($schemaVersion) . serialize_body($main, $schemaVersion);
 require_distinct_outputs($outPath, $dumpPath);
