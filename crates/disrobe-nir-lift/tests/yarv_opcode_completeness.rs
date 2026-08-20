@@ -360,10 +360,12 @@ fn yarv_lift_agrees_with_ruby_disasm_and_surfaces_unmodeled() {
         checked_sources += 1;
     }
 
-    if checked_sources == 0 {
-        eprintln!("skipping RubyVM#disasm agreement: ruby present but produced no usable output");
-        return;
-    }
+    assert!(
+        checked_sources > 0,
+        "ruby was found on PATH above and every graded source is a fixed program in this file, so \
+         producing no usable disassembly for any of them is a defect in this probe rather than a \
+         reason to grade nothing"
+    );
 
     assert!(
         total_unmodeled >= 1,

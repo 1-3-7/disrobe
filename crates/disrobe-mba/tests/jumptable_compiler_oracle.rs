@@ -249,10 +249,10 @@ fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
     let dir: PathBuf = scratch.path().to_path_buf();
     let source: PathBuf = dir.join("sw.c");
     let exe: PathBuf = dir.join("sw.exe");
-    if std::fs::write(&source, SWITCH_SOURCE).is_err() {
-        eprintln!("skip: cannot write source");
-        return;
-    }
+    std::fs::write(&source, SWITCH_SOURCE).expect(
+        "writing a fixed source into a scratch directory this case just created is not an optional \
+         prerequisite; failing it is a broken environment rather than a reason to grade nothing",
+    );
     let compiled: bool = Command::new("gcc")
         .args(["-O2", "-no-pie"])
         .arg(&source)
@@ -260,25 +260,35 @@ fn gcc_o2_switch_resolves_against_objdump_ground_truth() {
         .arg(&exe)
         .output()
         .is_ok_and(|out: std::process::Output| out.status.success());
-    if !compiled {
-        eprintln!("skip: gcc did not produce an executable");
-        return;
-    }
+    assert!(
+        compiled,
+        "gcc was found on PATH above and confirmed x86_64, and SWITCH_SOURCE is a fixed source in \
+         this file, so a failed build is a defect in this probe rather than a reason to grade \
+         nothing"
+    );
     let (Some(disasm_text), Some(rdata_text)): (Option<String>, Option<String>) = (
         objdump(&exe, &["-d"]),
         objdump(&exe, &["-s", "-j", ".rdata"]),
     ) else {
-        eprintln!("skip: objdump failed");
-        return;
+        panic!(
+            "objdump was found on PATH above and gcc has just produced the executable, so a failed \
+             disassembly is a defect in this probe rather than a reason to grade nothing"
+        );
     };
     let disasm: Disasm = parse_disasm(&disasm_text);
     let Some(rdata): Option<SectionBytes> = parse_section_bytes(&rdata_text) else {
-        eprintln!("skip: could not read .rdata");
-        return;
+        panic!(
+            "objdump reported .rdata for this image, so failing to parse it is a defect in this \
+             probe rather than a reason to grade nothing"
+        );
     };
     let Some(site): Option<SwitchSite> = recover_site(&disasm) else {
-        eprintln!("skip: jump-table dispatch pattern not recognized in this codegen");
-        return;
+        panic!(
+            "recovering the jump-table dispatch site is the behaviour this case grades, so a run \
+             where it was not recognised is the regression it exists to catch, not a reason to \
+             pass. gcc -O2 -no-pie on x86_64 over SWITCH_SOURCE emits the table this recogniser \
+             claims; if a newer gcc changed that lowering, the recogniser needs the new shape"
+        );
     };
 
     let sections: SectionMap = build_sections(&disasm, &rdata);
