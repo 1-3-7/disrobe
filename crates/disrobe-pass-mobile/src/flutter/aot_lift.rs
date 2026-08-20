@@ -143,6 +143,8 @@ pub struct DartLiftedFunction {
     pub source_conditional_estimate: usize,
     pub has_loop_back_edge: bool,
     pub ends_in_return: bool,
+    pub lifted_statement_count: usize,
+    pub unlifted_statement_count: usize,
     pub structured_body: Option<String>,
 }
 
@@ -300,6 +302,11 @@ pub struct AotLiftReport {
     pub pool_slots: Option<DartPoolTableStats>,
     pub call_sites_with_arguments: usize,
     pub call_sites_opaque: usize,
+    pub lifted_statements: usize,
+    pub unlifted_statements: usize,
+    pub recovered_return_expressions: usize,
+    pub recovered_field_stores: usize,
+    pub recovered_conditions: usize,
     pub inline_double_literals: Vec<DartPoolLiteral>,
     pub inline_double_count: usize,
     pub notes: Vec<String>,
@@ -318,6 +325,10 @@ const CLUSTER_NAME_NOTE: &str = "this image carries no dart function symbol tabl
 const CLUSTER_NAME_UNAVAILABLE_NOTE: &str = "this image carries no dart function symbol table and the isolate snapshot cluster walk could not supply offset-to-name coverage";
 
 const POOL_UNAVAILABLE_NOTE: &str = "this image does not present a readable pair of VM and isolate snapshot blobs, so object-pool slot attribution is unavailable and call arguments that read the pool render as slot references";
+
+const BODY_LIFT_NOTE: &str = "body statements are lifted to pseudo-Dart expressions from the ARM64 arithmetic, logical, bitfield, conditional-select and double-precision families; an instruction whose value the tracker cannot resolve keeps its unliftedArm64 marker with the original bytes and disassembly, so a body never omits an instruction it did not lift";
+
+const BLOCK_MERGE_NOTE: &str = "a block with more than one predecessor starts from an empty tracker state, so a value produced before a control-flow merge is not carried into it; loop bodies therefore keep more unliftedArm64 markers than straight-line code, which is a merge-conservatism boundary rather than a decode limit";
 
 const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are honestly absent rather than reconstructed";
 
@@ -580,6 +591,8 @@ pub fn lift_functions(
         notes.push(INLINE_DOUBLE_NOTE.to_owned());
         notes.push(FIELD_NAME_WALL_NOTE.to_owned());
         notes.push(INLINE_WALL_NOTE.to_owned());
+        notes.push(BODY_LIFT_NOTE.to_owned());
+        notes.push(BLOCK_MERGE_NOTE.to_owned());
     } else {
         notes.push(ABI_UNRESOLVED_NOTE.to_owned());
     }
@@ -610,6 +623,11 @@ pub fn lift_functions(
         pool_slots: pool.map(DartPoolTable::stats),
         call_sites_with_arguments: call_argument_counts.recovered_sites,
         call_sites_opaque: call_argument_counts.opaque_sites,
+        lifted_statements: call_argument_counts.lifted_statements,
+        unlifted_statements: call_argument_counts.unlifted_statements,
+        recovered_return_expressions: call_argument_counts.recovered_returns,
+        recovered_field_stores: call_argument_counts.recovered_field_stores,
+        recovered_conditions: call_argument_counts.recovered_conditions,
         inline_double_literals,
         inline_double_count,
         notes,
@@ -708,6 +726,12 @@ fn lift_one(
     {
         arg_registers = parameter_count;
     }
+    let lifted_statement_count: usize = structured
+        .as_ref()
+        .map_or(0, |body: &DartStructuredBody| body.lifted_statements);
+    let unlifted_statement_count: usize = structured
+        .as_ref()
+        .map_or(0, |body: &DartStructuredBody| body.unlifted_statements);
     let structured_body: Option<String> = structured.map(|body: DartStructuredBody| body.text);
 
     DartLiftedFunction {
@@ -725,6 +749,8 @@ fn lift_one(
         source_conditional_estimate,
         has_loop_back_edge,
         ends_in_return: func.ends_in_return,
+        lifted_statement_count,
+        unlifted_statement_count,
         structured_body,
     }
 }

@@ -6,7 +6,7 @@
     clippy::uninlined_format_args
 )]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::flutter::disasm::disassemble_range;
@@ -107,10 +107,45 @@ fn fibonacci_step_recovers_nested_pseudocode() {
         dart.matches("fibonacciStep(").count() >= 3,
         "the signature plus the two recursive self-calls must render as fibonacciStep(...), got:\n{dart}"
     );
-    assert!(
-        dart.contains("return;"),
-        "both arms return; the structured body must render return statements, got:\n{dart}"
+    let returns: Vec<&str> = dart
+        .lines()
+        .map(str::trim)
+        .filter(|line: &&str| line.starts_with("return"))
+        .collect::<Vec<&str>>();
+    assert_eq!(
+        returns.len(),
+        2,
+        "both arms return; the structured body must render one return statement each, got:\n{dart}"
     );
+    let source: String = String::from_utf8(read_sample("disrobe_aot_sample.dart"))
+        .expect("committed Dart source is UTF-8");
+    assert!(
+        source.contains("return depth;")
+            && source.contains("return fibonacciStep(depth - 1) + fibonacciStep(depth - 2);"),
+        "the committed Dart source must declare the two returns this body reconstructs"
+    );
+    assert!(
+        returns.contains(&"return arg0;"),
+        "the source `return depth;` must recover as a return of the parameter, got:\n{dart}"
+    );
+    let sum: &str = returns
+        .iter()
+        .find(|line: &&&str| line.contains(" + "))
+        .expect("the source `return f(depth - 1) + f(depth - 2);` must recover as a sum");
+    for binding in ["fibonacciStep(arg0 - 1)", "fibonacciStep(arg0 - 2)"] {
+        let name: &str = dart
+            .lines()
+            .map(str::trim)
+            .find_map(|line: &str| {
+                line.strip_prefix("var ")?
+                    .strip_suffix(&format!(" = {binding};"))
+            })
+            .unwrap_or_else(|| panic!("{binding} must bind a result, got:\n{dart}"));
+        assert!(
+            sum.contains(name),
+            "the returned sum must add the result of {binding}, got:\n{dart}"
+        );
+    }
 }
 
 #[test]
@@ -220,12 +255,55 @@ fn real_aot_bodies_retain_exact_unlifted_arm64_residue() {
     let report: AotLiftReport = lift_libapp_aot(&bytes).expect("lift real ARM64 AOT");
     let fib: &DartLiftedFunction =
         find_lifted(&report, "fibonacciStep").expect("fibonacciStep must lift");
-    let structured: String = fib.best_pseudo_dart();
+    let mut checked: usize = 0;
+    for function in &report.functions {
+        if !function.is_structured() {
+            continue;
+        }
+        let body: String = function.best_pseudo_dart();
+        let residue: BTreeMap<u64, u32> = function
+            .unlifted_arm64
+            .iter()
+            .map(|entry| (entry.address, entry.bytes))
+            .collect::<BTreeMap<u64, u32>>();
+        for marker in body
+            .match_indices("unliftedArm64(address: ")
+            .map(|(at, _)| at)
+        {
+            let rendered: &str = &body[marker..];
+            let address: u64 = u64::from_str_radix(
+                rendered
+                    .split("address: 0x")
+                    .nth(1)
+                    .and_then(|rest| rest.split(',').next())
+                    .expect("a marker renders its address"),
+                16,
+            )
+            .expect("a marker address is hexadecimal");
+            let bytes: u32 = u32::from_str_radix(
+                rendered
+                    .split("bytes: 0x")
+                    .nth(1)
+                    .and_then(|rest| rest.split(',').next())
+                    .expect("a marker renders its bytes"),
+                16,
+            )
+            .expect("marker bytes are hexadecimal");
+            assert_eq!(
+                residue.get(&address).copied(),
+                Some(bytes),
+                "a rendered marker must carry the artifact's own bytes at {address:#x} in {:?}",
+                function.name
+            );
+            checked += 1;
+        }
+        if checked > 4096 {
+            break;
+        }
+    }
     assert!(
-        structured.contains(
-            "unliftedArm64(address: 0x000a8500, bytes: 0xa9bf79fd, text: \"stp x29, x30, [x15, #-0x10]!\")"
-        ),
-        "the structured body must retain the artifact's exact first unlifted instruction, got:\n{structured}"
+        checked > 0,
+        "structured bodies must still mark the instructions the lifter could not resolve"
     );
     assert!(
         fib.unlifted_arm64
@@ -272,10 +350,22 @@ fn real_aot_bodies_retain_exact_unlifted_arm64_residue() {
         assert_eq!(residue.address, instruction.address);
         assert_eq!(residue.bytes, instruction.bytes);
         assert_eq!(residue.text, instruction.text);
+    }
+    assert_eq!(
+        fib.lifted_statement_count + fib.unlifted_statement_count,
+        fib.unlifted_arm64.len(),
+        "every residue instruction of fibonacciStep must be either lifted or rendered as a marker; \
+         the counts must not lose one"
+    );
+    for function in &report.functions {
+        if !function.is_structured() {
+            continue;
+        }
         assert!(
-            structured.contains(&residue.to_pseudo_dart()),
-            "structured output omitted residue at {:#x}",
-            residue.address
+            function.lifted_statement_count + function.unlifted_statement_count
+                <= function.unlifted_arm64.len(),
+            "a structured body must never account for more statements than the artifact carries in {:?}",
+            function.name
         );
     }
 

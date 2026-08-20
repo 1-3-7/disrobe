@@ -3,7 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use disrobe_nir::NirBlock;
 
 use super::aot_lift::{
-    add_imm, blr_target_reg, fmov_double_immediate, ldr_imm_unsigned, movk, movz, subs_imm,
+    add_imm, bcond, blr_target_reg, fmov_double_immediate, ldr_imm_unsigned, movk, movz, subs_imm,
+};
+use super::arm64_data::{
+    AddSubShiftedReg, BitfieldKind, DivideOp, DivideReg, FloatBinary, FloatBinaryOp, FloatUnary,
+    FloatUnaryOp, LogicalImmediate, LogicalOp, LogicalShiftedReg, MultiplyAccumulate, ShiftKind,
+    VariableShift, VariableShiftOp, add_sub_shifted_reg, bitfield, divide_reg, float_binary,
+    float_unary, integer_to_float, is_zero_register, logical_immediate, logical_shifted_reg, movn,
+    multiply_accumulate, variable_shift,
 };
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::pool_table::{DartPoolTable, UNRESOLVED_TOKEN, render_double};
@@ -42,13 +49,14 @@ const MAX_BOOLEAN_RETURN_INSTRUCTIONS: usize = 64;
 
 const ARM64_IMMEDIATE_SHIFT_BIT: u32 = 1 << 22;
 
-struct DartComparison {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DartComparison {
     left: DartValue,
     right: DartValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConditionalSelectKind {
+pub(super) enum ConditionalSelectKind {
     Select,
     Increment,
     Invert,
@@ -56,7 +64,7 @@ enum ConditionalSelectKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DartCondition {
+pub(super) enum DartCondition {
     Equal,
     NotEqual,
     GreaterOrEqual,
@@ -101,27 +109,391 @@ impl DartCondition {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DartBinaryOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    TruncatingDivide,
+    Remainder,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
+    UnsignedShiftRight,
+    Maximum,
+    Minimum,
+}
+
+impl DartBinaryOp {
+    const fn operator(self) -> Option<&'static str> {
+        match self {
+            Self::Add => Some("+"),
+            Self::Subtract => Some("-"),
+            Self::Multiply => Some("*"),
+            Self::Divide => Some("/"),
+            Self::TruncatingDivide => Some("~/"),
+            Self::Remainder => Some("%"),
+            Self::BitAnd => Some("&"),
+            Self::BitOr => Some("|"),
+            Self::BitXor => Some("^"),
+            Self::ShiftLeft => Some("<<"),
+            Self::ShiftRight => Some(">>"),
+            Self::UnsignedShiftRight => Some(">>>"),
+            Self::Maximum | Self::Minimum => None,
+        }
+    }
+
+    const fn method(self) -> &'static str {
+        match self {
+            Self::Minimum => "min",
+            _ => "max",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DartUnaryOp {
+    Negate,
+    BitNot,
+    Absolute,
+    SquareRoot,
+    ToDouble,
+    Truncate { width: u8, signed: bool },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DartValue {
     Null,
     Bool(bool),
     Int(i64),
     Double(u64),
-    Pool { byte_offset: u64, float: bool },
+    Pool {
+        byte_offset: u64,
+        float: bool,
+    },
     Param(usize),
     CallResult(u64),
-    Field { base: Box<Self>, offset: i64 },
-    Offset { base: Box<Self>, delta: i64 },
+    Field {
+        base: Box<Self>,
+        offset: i64,
+    },
+    Offset {
+        base: Box<Self>,
+        delta: i64,
+    },
     PcRelative(u64),
+    Binary {
+        op: DartBinaryOp,
+        left: Box<Self>,
+        right: Box<Self>,
+    },
+    Unary {
+        op: DartUnaryOp,
+        operand: Box<Self>,
+    },
+    SmiTag(Box<Self>),
+    SmiUntag(Box<Self>),
+    Select {
+        condition: DartCondition,
+        comparison: Box<DartComparison>,
+        when_true: Box<Self>,
+        when_false: Box<Self>,
+    },
 }
+
+const MAX_VALUE_NODES: usize = 48;
+
+fn node_budget(value: &DartValue, remaining: usize) -> Option<usize> {
+    let left: usize = remaining.checked_sub(1)?;
+    match value {
+        DartValue::Field { base, .. } | DartValue::Offset { base, .. } => node_budget(base, left),
+        DartValue::Unary { operand, .. }
+        | DartValue::SmiTag(operand)
+        | DartValue::SmiUntag(operand) => node_budget(operand, left),
+        DartValue::Binary {
+            left: lhs,
+            right: rhs,
+            ..
+        } => {
+            let after: usize = node_budget(lhs, left)?;
+            node_budget(rhs, after)
+        }
+        DartValue::Select {
+            comparison,
+            when_true,
+            when_false,
+            ..
+        } => {
+            let after_left: usize = node_budget(&comparison.left, left)?;
+            let after_right: usize = node_budget(&comparison.right, after_left)?;
+            let after_true: usize = node_budget(when_true, after_right)?;
+            node_budget(when_false, after_true)
+        }
+        _ => Some(left),
+    }
+}
+
+fn bounded(value: DartValue) -> Option<DartValue> {
+    node_budget(&value, MAX_VALUE_NODES).map(|_: usize| value)
+}
+
+fn truncate_int(number: i64, width: u8, signed: bool) -> Option<i64> {
+    if width == 0 || width > 64 {
+        return None;
+    }
+    if width == 64 {
+        return Some(number);
+    }
+    let mask: u64 = (1_u64 << width) - 1;
+    let raw: u64 = (number as u64) & mask;
+    if signed && raw & (1_u64 << (width - 1)) != 0 {
+        Some((raw as i64) - (1_i64 << width))
+    } else {
+        Some(raw as i64)
+    }
+}
+
+fn fold_constants(op: DartBinaryOp, left: i64, right: i64) -> Option<i64> {
+    match op {
+        DartBinaryOp::Add => left.checked_add(right),
+        DartBinaryOp::Subtract => left.checked_sub(right),
+        DartBinaryOp::Multiply => left.checked_mul(right),
+        DartBinaryOp::TruncatingDivide => left.checked_div(right),
+        DartBinaryOp::Remainder => left.checked_rem(right),
+        DartBinaryOp::BitAnd => Some(left & right),
+        DartBinaryOp::BitOr => Some(left | right),
+        DartBinaryOp::BitXor => Some(left ^ right),
+        DartBinaryOp::ShiftLeft => {
+            let shifted: i64 = left.checked_shl(u32::try_from(right).ok()?)?;
+            (shifted >> right == left).then_some(shifted)
+        }
+        DartBinaryOp::ShiftRight => left.checked_shr(u32::try_from(right).ok()?),
+        DartBinaryOp::UnsignedShiftRight => {
+            let amount: u32 = u32::try_from(right).ok()?;
+            (amount < 64).then(|| ((left as u64) >> amount) as i64)
+        }
+        DartBinaryOp::Maximum => Some(left.max(right)),
+        DartBinaryOp::Minimum => Some(left.min(right)),
+        DartBinaryOp::Divide => None,
+    }
+}
+
+fn identity(op: DartBinaryOp, left: &DartValue, right: &DartValue) -> Option<DartValue> {
+    if op == DartBinaryOp::Subtract && left == right {
+        return Some(DartValue::Int(0));
+    }
+    if left == &DartValue::Int(0)
+        && matches!(
+            op,
+            DartBinaryOp::Add | DartBinaryOp::BitOr | DartBinaryOp::BitXor
+        )
+    {
+        return Some(right.clone());
+    }
+    let DartValue::Int(number) = right else {
+        return None;
+    };
+    let neutral: bool = match op {
+        DartBinaryOp::Add
+        | DartBinaryOp::Subtract
+        | DartBinaryOp::BitOr
+        | DartBinaryOp::BitXor
+        | DartBinaryOp::ShiftLeft
+        | DartBinaryOp::ShiftRight
+        | DartBinaryOp::UnsignedShiftRight => *number == 0,
+        DartBinaryOp::Multiply | DartBinaryOp::TruncatingDivide => *number == 1,
+        DartBinaryOp::BitAnd => *number == -1,
+        _ => false,
+    };
+    neutral.then(|| left.clone())
+}
+
+fn remainder_idiom(op: DartBinaryOp, left: &DartValue, right: &DartValue) -> Option<DartValue> {
+    if op != DartBinaryOp::Subtract {
+        return None;
+    }
+    let DartValue::Binary {
+        op: DartBinaryOp::Multiply,
+        left: product_left,
+        right: product_right,
+    } = right
+    else {
+        return None;
+    };
+    let divisor: &DartValue = quotient_divisor(product_left, product_right, left)
+        .or_else(|| quotient_divisor(product_right, product_left, left))?;
+    bounded(DartValue::Binary {
+        op: DartBinaryOp::Remainder,
+        left: Box::new(left.clone()),
+        right: Box::new(divisor.clone()),
+    })
+}
+
+fn quotient_divisor<'a>(
+    quotient: &'a DartValue,
+    factor: &'a DartValue,
+    dividend: &DartValue,
+) -> Option<&'a DartValue> {
+    let DartValue::Binary {
+        op: DartBinaryOp::TruncatingDivide,
+        left: numerator,
+        right: denominator,
+    } = quotient
+    else {
+        return None;
+    };
+    (numerator.as_ref() == dividend && denominator.as_ref() == factor).then_some(factor)
+}
+
+fn binary(op: DartBinaryOp, left: DartValue, right: DartValue) -> Option<DartValue> {
+    if let (DartValue::Int(a), DartValue::Int(b)) = (&left, &right)
+        && let Some(folded) = fold_constants(op, *a, *b)
+    {
+        return Some(DartValue::Int(folded));
+    }
+    if op == DartBinaryOp::Subtract && left == DartValue::Int(0) {
+        return unary(DartUnaryOp::Negate, right);
+    }
+    if let Some(simplified) = identity(op, &left, &right) {
+        return bounded(simplified);
+    }
+    if let Some(remainder) = remainder_idiom(op, &left, &right) {
+        return Some(remainder);
+    }
+    bounded(DartValue::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn unary(op: DartUnaryOp, operand: DartValue) -> Option<DartValue> {
+    if let DartValue::Int(number) = operand {
+        let folded: Option<i64> = match op {
+            DartUnaryOp::Negate => number.checked_neg(),
+            DartUnaryOp::BitNot => Some(!number),
+            DartUnaryOp::Absolute => number.checked_abs(),
+            DartUnaryOp::Truncate { width, signed } => truncate_int(number, width, signed),
+            DartUnaryOp::SquareRoot | DartUnaryOp::ToDouble => None,
+        };
+        if let Some(number) = folded {
+            return Some(DartValue::Int(number));
+        }
+    }
+    if let DartValue::Unary {
+        op: inner_op,
+        operand: inner,
+    } = &operand
+        && *inner_op == op
+        && matches!(op, DartUnaryOp::Truncate { .. })
+    {
+        return bounded(DartValue::Unary {
+            op,
+            operand: inner.clone(),
+        });
+    }
+    bounded(DartValue::Unary {
+        op,
+        operand: Box::new(operand),
+    })
+}
+
+fn smi_tag(value: DartValue) -> Option<DartValue> {
+    match value {
+        DartValue::SmiUntag(inner) => Some(*inner),
+        DartValue::Int(number) => number.checked_mul(2).map(DartValue::Int),
+        other => bounded(DartValue::SmiTag(Box::new(other))),
+    }
+}
+
+fn smi_untag(value: DartValue) -> Option<DartValue> {
+    match value {
+        DartValue::SmiTag(inner) => Some(*inner),
+        DartValue::Int(number) => Some(DartValue::Int(number >> 1)),
+        other => bounded(DartValue::SmiUntag(Box::new(other))),
+    }
+}
+
+fn shifted_operand(value: DartValue, shift: ShiftKind, amount: u8) -> Option<DartValue> {
+    if amount == 0 {
+        return Some(value);
+    }
+    let op: DartBinaryOp = match shift {
+        ShiftKind::Lsl => DartBinaryOp::ShiftLeft,
+        ShiftKind::Asr => DartBinaryOp::ShiftRight,
+        ShiftKind::Lsr => DartBinaryOp::UnsignedShiftRight,
+        ShiftKind::Ror => return None,
+    };
+    binary(op, value, DartValue::Int(i64::from(amount)))
+}
+
+fn bitfield_value(kind: BitfieldKind, operand: DartValue) -> Option<DartValue> {
+    match kind {
+        BitfieldKind::ShiftRight { amount, signed } => binary(
+            if signed {
+                DartBinaryOp::ShiftRight
+            } else {
+                DartBinaryOp::UnsignedShiftRight
+            },
+            operand,
+            DartValue::Int(i64::from(amount)),
+        ),
+        BitfieldKind::ShiftLeft { amount } => binary(
+            DartBinaryOp::ShiftLeft,
+            operand,
+            DartValue::Int(i64::from(amount)),
+        ),
+        BitfieldKind::Extract {
+            lsb: SMI_TAG_BITS,
+            width: SMI_COMPRESSED_WIDTH,
+            signed: true,
+        } => smi_untag(operand),
+        BitfieldKind::Extract { lsb, width, signed } => {
+            let shifted: DartValue = binary(
+                DartBinaryOp::ShiftRight,
+                operand,
+                DartValue::Int(i64::from(lsb)),
+            )?;
+            unary(DartUnaryOp::Truncate { width, signed }, shifted)
+        }
+        BitfieldKind::ExtractInsert {
+            lsb: SMI_TAG_BITS,
+            width: SMI_COMPRESSED_WIDTH,
+            signed: true,
+        } => smi_tag(operand),
+        BitfieldKind::ExtractInsert { lsb, width, signed } => {
+            let truncated: DartValue = unary(DartUnaryOp::Truncate { width, signed }, operand)?;
+            binary(
+                DartBinaryOp::ShiftLeft,
+                truncated,
+                DartValue::Int(i64::from(lsb)),
+            )
+        }
+    }
+}
+
+const SMI_TAG_BITS: u8 = 1;
+
+const SMI_COMPRESSED_WIDTH: u8 = 31;
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct DartCallArguments {
     rendered: BTreeMap<u64, Vec<String>>,
     results: BTreeMap<u64, usize>,
+    definitions: BTreeMap<u64, String>,
+    stores: BTreeMap<u64, String>,
+    returns: BTreeMap<u64, String>,
+    comparisons: BTreeMap<u64, (String, String)>,
+    copies: BTreeSet<u64>,
     pub(super) recovered_sites: usize,
     pub(super) opaque_sites: usize,
     pub(super) max_parameter: Option<usize>,
+    pub(super) lifted_statements: usize,
+    pub(super) recovered_returns: usize,
+    pub(super) recovered_field_stores: usize,
 }
 
 impl DartCallArguments {
@@ -134,7 +506,70 @@ impl DartCallArguments {
     pub(super) fn result_binding(&self, address: u64) -> Option<usize> {
         self.results.get(&address).copied()
     }
+
+    pub(super) fn definition(&self, address: u64) -> Option<&str> {
+        self.definitions
+            .get(&address)
+            .map(|text: &String| text.as_str())
+    }
+
+    pub(super) fn field_store(&self, address: u64) -> Option<&str> {
+        self.stores.get(&address).map(|text: &String| text.as_str())
+    }
+
+    pub(super) fn return_expression(&self, address: u64) -> Option<&str> {
+        self.returns
+            .get(&address)
+            .map(|text: &String| text.as_str())
+    }
+
+    pub(super) fn is_bookkeeping(&self, address: u64) -> bool {
+        self.copies.contains(&address)
+    }
+
+    pub(super) fn comparison(&self, address: u64) -> Option<(&str, &str)> {
+        self.comparisons
+            .get(&address)
+            .map(|(left, right): &(String, String)| (left.as_str(), right.as_str()))
+    }
+
+    pub(super) fn recovered_conditions(&self) -> usize {
+        self.comparisons.len()
+    }
 }
+
+#[derive(Debug, Default, Clone)]
+struct TrackedEffects {
+    definitions: BTreeMap<u64, DartValue>,
+    stores: BTreeMap<u64, (DartValue, i64, DartValue)>,
+    returns: BTreeMap<u64, DartValue>,
+    comparisons: BTreeMap<u64, DartComparison>,
+    copies: BTreeSet<u64>,
+}
+
+impl TrackedEffects {
+    fn define(&mut self, address: u64, value: Option<DartValue>) {
+        if self.definitions.len() >= MAX_TRACKED_EFFECTS {
+            return;
+        }
+        match value {
+            Some(value) => {
+                self.definitions.insert(address, value);
+            }
+            None => {
+                self.definitions.remove(&address);
+            }
+        }
+    }
+
+    fn bookkeeping(&mut self, address: u64) {
+        if self.copies.len() < MAX_TRACKED_EFFECTS {
+            self.copies.insert(address);
+        }
+    }
+}
+
+const MAX_TRACKED_EFFECTS: usize = 1 << 16;
 
 #[derive(Debug, Default, Clone)]
 struct TrackState {
@@ -144,6 +579,8 @@ struct TrackState {
     stack: BTreeMap<u64, Option<DartValue>>,
     frame: BTreeMap<i64, DartValue>,
     selector_registers: BTreeSet<u8>,
+    flags: Option<DartComparison>,
+    last_result: Option<DartValue>,
 }
 
 impl TrackState {
@@ -175,6 +612,9 @@ impl TrackState {
         }
         self.written.insert(register);
         self.selector_registers.remove(&register);
+        if register == DART_RESULT_REGISTER {
+            self.last_result.clone_from(&value);
+        }
         match value {
             Some(value) => {
                 self.integers.insert(register, value);
@@ -195,6 +635,9 @@ impl TrackState {
     }
 
     fn define_float(&mut self, register: u8, value: Option<DartValue>) {
+        if register == DART_RESULT_REGISTER {
+            self.last_result.clone_from(&value);
+        }
         match value {
             Some(value) => {
                 self.floats.insert(register, value);
@@ -211,6 +654,8 @@ impl TrackState {
         self.written.clear();
         self.stack.clear();
         self.selector_registers.clear();
+        self.flags = None;
+        self.last_result = Some(DartValue::CallResult(address));
         self.integers
             .insert(DART_RESULT_REGISTER, DartValue::CallResult(address));
         self.floats
@@ -361,7 +806,7 @@ pub(super) fn recover_call_arguments(
         .iter()
         .filter(|block: &&NirBlock| reachable.contains(&block.start))
         .collect::<Vec<&NirBlock>>();
-    let sites: BTreeMap<u64, Vec<Option<DartValue>>> =
+    let (sites, effects): (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) =
         track_call_sites(func, &live, tail_calls, parameter_count);
     let mut consumed: BTreeSet<u64> = BTreeSet::new();
     let mut max_parameter: Option<usize> = None;
@@ -369,6 +814,19 @@ pub(super) fn recover_call_arguments(
         for value in values.iter().flatten() {
             collect_dependencies(value, &mut consumed, &mut max_parameter);
         }
+    }
+    for value in effects
+        .definitions
+        .values()
+        .chain(effects.returns.values())
+        .chain(
+            effects
+                .stores
+                .values()
+                .flat_map(|(base, _, value): &(DartValue, i64, DartValue)| [base, value]),
+        )
+    {
+        collect_dependencies(value, &mut consumed, &mut max_parameter);
     }
     let results: BTreeMap<u64, usize> = consumed
         .iter()
@@ -394,13 +852,118 @@ pub(super) fn recover_call_arguments(
     }
     let opaque_sites: usize = sites.len().saturating_sub(recovered_sites);
 
+    let comparisons: BTreeMap<u64, (String, String)> = effects
+        .comparisons
+        .iter()
+        .map(|(address, comparison): (&u64, &DartComparison)| {
+            (
+                *address,
+                (
+                    render_value(&comparison.left, pool, &results, 0),
+                    render_value(&comparison.right, pool, &results, 0),
+                ),
+            )
+        })
+        .filter(|(_, (left, right)): &(u64, (String, String))| {
+            left != UNRESOLVED_TOKEN && right != UNRESOLVED_TOKEN
+        })
+        .collect::<BTreeMap<u64, (String, String)>>();
+    let stores: BTreeMap<u64, String> = effects
+        .stores
+        .iter()
+        .map(
+            |(address, (base, offset, value)): (&u64, &(DartValue, i64, DartValue))| {
+                (
+                    *address,
+                    format!(
+                        "{}.field@{offset:#x} = {};",
+                        render_value(base, pool, &results, 0),
+                        render_value(value, pool, &results, 0)
+                    ),
+                )
+            },
+        )
+        .collect::<BTreeMap<u64, String>>();
+    let returns: BTreeMap<u64, String> = effects
+        .returns
+        .iter()
+        .map(|(address, value): (&u64, &DartValue)| {
+            (*address, render_value(value, pool, &results, 0))
+        })
+        .filter(|(_, text): &(u64, String)| text != UNRESOLVED_TOKEN)
+        .collect::<BTreeMap<u64, String>>();
+
+    let haystack: String = consumed_text(&rendered, &returns, &stores, &comparisons);
+    let mut definitions: BTreeMap<u64, String> = BTreeMap::new();
+    let mut copies: BTreeSet<u64> = effects.copies;
+    for (address, value) in &effects.definitions {
+        let text: String = render_value(value, pool, &results, 0);
+        if text == UNRESOLVED_TOKEN {
+            continue;
+        }
+        if haystack.contains(text.as_str()) {
+            copies.insert(*address);
+            continue;
+        }
+        definitions.insert(*address, text);
+    }
+    let lifted_statements: usize = copies
+        .len()
+        .saturating_add(stores.len())
+        .saturating_add(definitions.len());
+    let definitions: BTreeMap<u64, String> = definitions
+        .into_iter()
+        .enumerate()
+        .map(|(index, (address, text)): (usize, (u64, String))| {
+            (address, format!("var t{index} = {text};"))
+        })
+        .collect::<BTreeMap<u64, String>>();
+
     DartCallArguments {
         rendered,
         results,
+        recovered_returns: returns.len(),
+        recovered_field_stores: stores.len(),
+        definitions,
+        stores,
+        returns,
+        comparisons,
+        copies,
         recovered_sites,
         opaque_sites,
         max_parameter,
+        lifted_statements,
     }
+}
+
+const MAX_CONSUMED_TEXT_BYTES: usize = 1 << 16;
+
+fn consumed_text(
+    rendered: &BTreeMap<u64, Vec<String>>,
+    returns: &BTreeMap<u64, String>,
+    stores: &BTreeMap<u64, String>,
+    comparisons: &BTreeMap<u64, (String, String)>,
+) -> String {
+    let mut haystack: String = String::new();
+    let mut push = |text: &str| {
+        if haystack.len() < MAX_CONSUMED_TEXT_BYTES {
+            haystack.push_str(text);
+            haystack.push('\n');
+        }
+    };
+    for values in rendered.values() {
+        for value in values {
+            push(value);
+        }
+    }
+    for text in returns.values().chain(stores.values()) {
+        push(text);
+    }
+    for (left, right) in comparisons.values() {
+        push(left);
+        push(right);
+    }
+    haystack
 }
 
 fn collect_dependencies(
@@ -419,6 +982,26 @@ fn collect_dependencies(
         DartValue::Field { base, .. } | DartValue::Offset { base, .. } => {
             collect_dependencies(base, consumed, max_parameter);
         }
+        DartValue::Unary { operand, .. }
+        | DartValue::SmiTag(operand)
+        | DartValue::SmiUntag(operand) => {
+            collect_dependencies(operand, consumed, max_parameter);
+        }
+        DartValue::Binary { left, right, .. } => {
+            collect_dependencies(left, consumed, max_parameter);
+            collect_dependencies(right, consumed, max_parameter);
+        }
+        DartValue::Select {
+            comparison,
+            when_true,
+            when_false,
+            ..
+        } => {
+            collect_dependencies(&comparison.left, consumed, max_parameter);
+            collect_dependencies(&comparison.right, consumed, max_parameter);
+            collect_dependencies(when_true, consumed, max_parameter);
+            collect_dependencies(when_false, consumed, max_parameter);
+        }
         DartValue::Null
         | DartValue::Bool(_)
         | DartValue::Int(_)
@@ -433,12 +1016,13 @@ fn track_call_sites(
     blocks: &[&NirBlock],
     tail_calls: &BTreeSet<u64>,
     parameter_count: Option<u8>,
-) -> BTreeMap<u64, Vec<Option<DartValue>>> {
+) -> (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) {
     let insns: &[Arm64Instruction] = &func.instructions;
     let predecessors: BTreeMap<u64, usize> = predecessor_counts(blocks);
     let single: BTreeMap<u64, u64> = single_predecessor(blocks);
     let mut exits: BTreeMap<u64, TrackState> = BTreeMap::new();
     let mut sites: BTreeMap<u64, Vec<Option<DartValue>>> = BTreeMap::new();
+    let mut effects: TrackedEffects = TrackedEffects::default();
     let entry: Option<u64> = blocks.first().map(|block: &&NirBlock| block.start);
 
     for block in blocks {
@@ -458,11 +1042,11 @@ fn track_call_sites(
         for insn in insns.iter().filter(|insn: &&Arm64Instruction| {
             insn.address >= block.start && insn.address < block.end
         }) {
-            step(&mut state, insn, tail_calls, &mut sites);
+            step(&mut state, insn, tail_calls, &mut sites, &mut effects);
         }
         exits.insert(block.start, state);
     }
-    sites
+    (sites, effects)
 }
 
 fn predecessor_counts(blocks: &[&NirBlock]) -> BTreeMap<u64, usize> {
@@ -491,11 +1075,25 @@ fn single_predecessor(blocks: &[&NirBlock]) -> BTreeMap<u64, u64> {
     sources
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SequentialEffect {
+    Integer(u8),
+    Float(u8),
+    Bookkeeping,
+    Store {
+        base: DartValue,
+        offset: i64,
+        value: DartValue,
+    },
+    Opaque,
+}
+
 fn step(
     state: &mut TrackState,
     insn: &Arm64Instruction,
     tail_calls: &BTreeSet<u64>,
     sites: &mut BTreeMap<u64, Vec<Option<DartValue>>>,
+    effects: &mut TrackedEffects,
 ) {
     let raw: u32 = insn.bytes;
     match insn.flow {
@@ -513,16 +1111,191 @@ fn step(
             }
             return;
         }
-        Arm64FlowKind::Return
-        | Arm64FlowKind::ConditionalBranch
-        | Arm64FlowKind::IndirectBranch
-        | Arm64FlowKind::DecodeError => return,
+        Arm64FlowKind::Return => {
+            if let Some(value) = state.last_result.clone()
+                && effects.returns.len() < MAX_TRACKED_EFFECTS
+            {
+                effects.returns.insert(insn.address, value);
+            }
+            return;
+        }
+        Arm64FlowKind::ConditionalBranch => {
+            let comparison: Option<DartComparison> = if bcond(raw).is_some() {
+                state.flags.clone()
+            } else {
+                compare_and_branch_register(raw).and_then(|register: u8| {
+                    read_register(state, register).map(|left: DartValue| DartComparison {
+                        left,
+                        right: DartValue::Int(0),
+                    })
+                })
+            };
+            if let Some(comparison) = comparison
+                && effects.comparisons.len() < MAX_TRACKED_EFFECTS
+            {
+                effects.comparisons.insert(insn.address, comparison);
+            }
+            return;
+        }
+        Arm64FlowKind::IndirectBranch | Arm64FlowKind::DecodeError => return,
         Arm64FlowKind::Sequential => {}
     }
+    let effect: SequentialEffect = classify_sequential(state, raw);
     apply_sequential(state, insn, raw);
+    match effect {
+        SequentialEffect::Integer(register) => {
+            effects.define(insn.address, state.integers.get(&register).cloned());
+        }
+        SequentialEffect::Float(register) => {
+            effects.define(insn.address, state.floats.get(&register).cloned());
+        }
+        SequentialEffect::Bookkeeping => effects.bookkeeping(insn.address),
+        SequentialEffect::Store {
+            base,
+            offset,
+            value,
+        } => {
+            if effects.stores.len() < MAX_TRACKED_EFFECTS {
+                effects.stores.insert(insn.address, (base, offset, value));
+            }
+        }
+        SequentialEffect::Opaque => {}
+    }
+}
+
+fn classify_sequential(state: &TrackState, raw: u32) -> SequentialEffect {
+    if simd_zero_idiom(raw).is_some() {
+        return SequentialEffect::Float((raw & 0x1F) as u8);
+    }
+    if mov_register(raw).is_some() || compressed_pointer_decompression(raw).is_some() {
+        return SequentialEffect::Bookkeeping;
+    }
+    let group: u32 = (raw >> 25) & 0xF;
+    if group & 0b0101 == 0b0100 {
+        return classify_memory(state, raw);
+    }
+    if group & 0b0111 == 0b0111 {
+        if is_float_compare(raw) {
+            return SequentialEffect::Bookkeeping;
+        }
+        return SequentialEffect::Float((raw & 0x1F) as u8);
+    }
+    let destination: u8 = (raw & 0x1F) as u8;
+    if is_zero_register(destination) {
+        return SequentialEffect::Bookkeeping;
+    }
+    if destination == DART_STACK_REGISTER || destination == DART_FRAME_REGISTER {
+        return SequentialEffect::Bookkeeping;
+    }
+    if group & 0b1110 == 0b1000 || group & 0b0111 == 0b0101 {
+        return SequentialEffect::Integer(destination);
+    }
+    SequentialEffect::Opaque
+}
+
+fn classify_memory(state: &TrackState, raw: u32) -> SequentialEffect {
+    let pair: bool = raw & 0x3E00_0000 == 0x2800_0000;
+    let load: bool = raw & 0x0040_0000 != 0;
+    let simd: bool = raw & 0x0400_0000 != 0;
+    let rt: u8 = (raw & 0x1F) as u8;
+    let rn: u8 = ((raw >> 5) & 0x1F) as u8;
+    if rn == DART_STACK_REGISTER || rn == DART_FRAME_REGISTER || rn == DART_THREAD_REGISTER {
+        return SequentialEffect::Bookkeeping;
+    }
+    if load {
+        if pair {
+            return SequentialEffect::Opaque;
+        }
+        return if simd {
+            SequentialEffect::Float(rt)
+        } else {
+            SequentialEffect::Integer(rt)
+        };
+    }
+    if pair {
+        return SequentialEffect::Opaque;
+    }
+    let Some(store): Option<FieldStore> = field_store(raw) else {
+        return SequentialEffect::Opaque;
+    };
+    let Some(base): Option<DartValue> = state.integers.get(&store.base).cloned() else {
+        return SequentialEffect::Opaque;
+    };
+    let source: &BTreeMap<u8, DartValue> = if store.float {
+        &state.floats
+    } else {
+        &state.integers
+    };
+    let value: DartValue = if !store.float && is_zero_register(store.source) {
+        DartValue::Int(0)
+    } else {
+        match source.get(&store.source) {
+            Some(value) => value.clone(),
+            None => return SequentialEffect::Opaque,
+        }
+    };
+    SequentialEffect::Store {
+        base,
+        offset: store.offset,
+        value,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FieldStore {
+    source: u8,
+    base: u8,
+    offset: i64,
+    float: bool,
+}
+
+fn field_store(raw: u32) -> Option<FieldStore> {
+    let source: u8 = (raw & 0x1F) as u8;
+    let base: u8 = ((raw >> 5) & 0x1F) as u8;
+    let unscaled: u32 = raw & 0xFFE0_0C00;
+    let scaled: u32 = raw & 0xFFC0_0000;
+    let (float, scale): (bool, i64) = match (unscaled, scaled) {
+        (0xB800_0000, _) => (false, 0),
+        (0xF800_0000, _) => (false, 0),
+        (0xFC00_0000, _) => (true, 0),
+        (_, 0xB900_0000) => (false, 4),
+        (_, 0xF900_0000) => (false, 8),
+        (_, 0xFD00_0000) => (true, 8),
+        _ => return None,
+    };
+    let offset: i64 = if scale == 0 {
+        let imm9: u32 = (raw >> 12) & 0x1FF;
+        if imm9 & 0x100 == 0 {
+            i64::from(imm9)
+        } else {
+            i64::from(imm9) - 512
+        }
+    } else {
+        i64::from((raw >> 10) & 0xFFF).saturating_mul(scale)
+    };
+    Some(FieldStore {
+        source,
+        base,
+        offset,
+        float,
+    })
+}
+
+const DART_THREAD_REGISTER: u8 = 26;
+
+const COMPARE_AND_BRANCH_MASK: u32 = 0x7E00_0000;
+
+const COMPARE_AND_BRANCH_MATCH: u32 = 0x3400_0000;
+
+fn compare_and_branch_register(raw: u32) -> Option<u8> {
+    (raw & COMPARE_AND_BRANCH_MASK == COMPARE_AND_BRANCH_MATCH).then_some((raw & 0x1F) as u8)
 }
 
 fn apply_sequential(state: &mut TrackState, insn: &Arm64Instruction, raw: u32) {
+    if let Some(register) = simd_zero_idiom(raw) {
+        state.define_float(register, Some(DartValue::Double(0)));
+        return;
+    }
     let group: u32 = (raw >> 25) & 0xF;
     if group & 0b0101 == 0b0100 {
         apply_memory(state, raw);
@@ -691,10 +1464,78 @@ fn frame_store_offset(raw: u32, pair: bool) -> i64 {
 fn apply_floating_point(state: &mut TrackState, raw: u32) {
     let rd: u8 = (raw & 0x1F) as u8;
     state.forget(rd);
-    match fmov_double(raw) {
-        Some((register, bits)) => state.define_float(register, Some(DartValue::Double(bits))),
-        None => state.define_float(rd, None),
+    if let Some((register, bits)) = fmov_double(raw) {
+        state.define_float(register, Some(DartValue::Double(bits)));
+        return;
     }
+    if is_float_compare(raw) {
+        state.flags = None;
+        return;
+    }
+    if let Some(decoded) = float_binary(raw) {
+        let value: Option<DartValue> = combine_float_binary(state, decoded);
+        state.define_float(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = float_unary(raw) {
+        let value: Option<DartValue> = combine_float_unary(state, decoded);
+        state.define_float(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = integer_to_float(raw) {
+        let value: Option<DartValue> = read_register(state, decoded.rn)
+            .filter(|_: &DartValue| decoded.signed)
+            .and_then(|operand: DartValue| unary(DartUnaryOp::ToDouble, operand));
+        state.define_float(decoded.rd, value);
+        return;
+    }
+    state.define_float(rd, None);
+}
+
+fn combine_float_binary(state: &TrackState, decoded: FloatBinary) -> Option<DartValue> {
+    let op: DartBinaryOp = match decoded.op {
+        FloatBinaryOp::Mul => DartBinaryOp::Multiply,
+        FloatBinaryOp::Div => DartBinaryOp::Divide,
+        FloatBinaryOp::Add => DartBinaryOp::Add,
+        FloatBinaryOp::Sub => DartBinaryOp::Subtract,
+        FloatBinaryOp::Max => DartBinaryOp::Maximum,
+        FloatBinaryOp::Min => DartBinaryOp::Minimum,
+    };
+    let left: DartValue = state.floats.get(&decoded.rn).cloned()?;
+    let right: DartValue = state.floats.get(&decoded.rm).cloned()?;
+    binary(op, left, right)
+}
+
+fn combine_float_unary(state: &TrackState, decoded: FloatUnary) -> Option<DartValue> {
+    let operand: DartValue = state.floats.get(&decoded.rn).cloned()?;
+    match decoded.op {
+        FloatUnaryOp::Move => Some(operand),
+        FloatUnaryOp::Abs => unary(DartUnaryOp::Absolute, operand),
+        FloatUnaryOp::Negate => unary(DartUnaryOp::Negate, operand),
+        FloatUnaryOp::SquareRoot => unary(DartUnaryOp::SquareRoot, operand),
+    }
+}
+
+const SIMD_ZERO_MASK: u32 = 0xFFE0_FC00;
+
+const SIMD_ZERO_MATCH: u32 = 0x6E20_1C00;
+
+const FLOAT_COMPARE_MASK: u32 = 0xFF20_FC17;
+
+const FLOAT_COMPARE_MATCH: u32 = 0x1E20_2000;
+
+fn is_float_compare(raw: u32) -> bool {
+    raw & FLOAT_COMPARE_MASK == FLOAT_COMPARE_MATCH
+}
+
+fn simd_zero_idiom(raw: u32) -> Option<u8> {
+    if raw & SIMD_ZERO_MASK != SIMD_ZERO_MATCH {
+        return None;
+    }
+    let rd: u8 = (raw & 0x1F) as u8;
+    let rn: u8 = ((raw >> 5) & 0x1F) as u8;
+    let rm: u8 = ((raw >> 16) & 0x1F) as u8;
+    (rd == rn && rn == rm).then_some(rd)
 }
 
 fn apply_immediate(state: &mut TrackState, insn: &Arm64Instruction, raw: u32) {
@@ -735,11 +1576,57 @@ fn apply_immediate(state: &mut TrackState, insn: &Arm64Instruction, raw: u32) {
         );
         return;
     }
-    if let Some((rd, _, _)) = subs_imm(raw) {
+    if let Some((rd, rn, imm)) = subs_imm(raw) {
+        record_immediate_flags(state, rn, imm);
         state.define(rd, None);
         return;
     }
+    if let Some((rd, number)) = movn(raw) {
+        state.define(rd, Some(DartValue::Int(number)));
+        return;
+    }
+    if let Some(decoded) = logical_immediate(raw) {
+        if decoded.sets_flags {
+            state.flags = None;
+        }
+        let value: Option<DartValue> = combine_logical_immediate(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = bitfield(raw) {
+        let value: Option<DartValue> = read_register(state, decoded.rn)
+            .and_then(|operand: DartValue| bitfield_value(decoded.kind, operand))
+            .and_then(|value: DartValue| truncate_to_width(value, decoded.sixty_four));
+        state.define(decoded.rd, value);
+        return;
+    }
     state.define((raw & 0x1F) as u8, None);
+}
+
+fn record_immediate_flags(state: &mut TrackState, rn: u8, immediate: u64) {
+    state.flags = None;
+    let Some(left): Option<DartValue> = read_register(state, rn) else {
+        return;
+    };
+    let Ok(right): Result<i64, _> = i64::try_from(immediate) else {
+        return;
+    };
+    state.flags = Some(DartComparison {
+        left,
+        right: DartValue::Int(right),
+    });
+}
+
+fn combine_logical_immediate(state: &TrackState, decoded: LogicalImmediate) -> Option<DartValue> {
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let op: DartBinaryOp = match decoded.op {
+        LogicalOp::And => DartBinaryOp::BitAnd,
+        LogicalOp::Or => DartBinaryOp::BitOr,
+        LogicalOp::Xor => DartBinaryOp::BitXor,
+        LogicalOp::AndNot | LogicalOp::OrNot | LogicalOp::XorNot => return None,
+    };
+    let right: DartValue = DartValue::Int(decoded.mask as i64);
+    truncate_to_width(binary(op, left, right)?, decoded.sixty_four)
 }
 
 fn apply_register(state: &mut TrackState, raw: u32) {
@@ -761,7 +1648,175 @@ fn apply_register(state: &mut TrackState, raw: u32) {
         }
         return;
     }
+    if let Some(decoded) = add_sub_shifted_reg(raw) {
+        if decoded.sets_flags {
+            record_register_flags(state, decoded);
+        }
+        let value: Option<DartValue> = combine_add_sub(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = logical_shifted_reg(raw) {
+        if decoded.sets_flags {
+            state.flags = None;
+        }
+        let value: Option<DartValue> = combine_logical(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = multiply_accumulate(raw) {
+        let value: Option<DartValue> = combine_multiply(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = divide_reg(raw) {
+        let value: Option<DartValue> = combine_divide(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some(decoded) = variable_shift(raw) {
+        let value: Option<DartValue> = combine_variable_shift(state, decoded);
+        state.define(decoded.rd, value);
+        return;
+    }
+    if let Some((kind, rd, rn, rm, code)) = conditional_select(raw) {
+        let value: Option<DartValue> = combine_select(state, kind, rn, rm, code);
+        state.define(rd, value);
+        return;
+    }
     state.define((raw & 0x1F) as u8, None);
+}
+
+fn read_register(state: &TrackState, register: u8) -> Option<DartValue> {
+    if is_zero_register(register) {
+        return Some(DartValue::Int(0));
+    }
+    state.integers.get(&register).cloned()
+}
+
+fn truncate_to_width(value: DartValue, sixty_four: bool) -> Option<DartValue> {
+    if sixty_four {
+        return Some(value);
+    }
+    unary(
+        DartUnaryOp::Truncate {
+            width: 32,
+            signed: false,
+        },
+        value,
+    )
+}
+
+fn record_register_flags(state: &mut TrackState, decoded: AddSubShiftedReg) {
+    state.flags = None;
+    if !decoded.subtract {
+        return;
+    }
+    let Some(left): Option<DartValue> = read_register(state, decoded.rn) else {
+        return;
+    };
+    let Some(right): Option<DartValue> = read_register(state, decoded.rm) else {
+        return;
+    };
+    let Some(right): Option<DartValue> = shifted_operand(right, decoded.shift, decoded.amount)
+    else {
+        return;
+    };
+    state.flags = Some(DartComparison { left, right });
+}
+
+fn combine_add_sub(state: &TrackState, decoded: AddSubShiftedReg) -> Option<DartValue> {
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let right: DartValue = read_register(state, decoded.rm)?;
+    let right: DartValue = shifted_operand(right, decoded.shift, decoded.amount)?;
+    let op: DartBinaryOp = if decoded.subtract {
+        DartBinaryOp::Subtract
+    } else {
+        DartBinaryOp::Add
+    };
+    truncate_to_width(binary(op, left, right)?, decoded.sixty_four)
+}
+
+fn combine_logical(state: &TrackState, decoded: LogicalShiftedReg) -> Option<DartValue> {
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let right: DartValue = read_register(state, decoded.rm)?;
+    let right: DartValue = shifted_operand(right, decoded.shift, decoded.amount)?;
+    let (op, negated): (DartBinaryOp, bool) = match decoded.op {
+        LogicalOp::And => (DartBinaryOp::BitAnd, false),
+        LogicalOp::Or => (DartBinaryOp::BitOr, false),
+        LogicalOp::Xor => (DartBinaryOp::BitXor, false),
+        LogicalOp::AndNot => (DartBinaryOp::BitAnd, true),
+        LogicalOp::OrNot => (DartBinaryOp::BitOr, true),
+        LogicalOp::XorNot => (DartBinaryOp::BitXor, true),
+    };
+    let right: DartValue = if negated {
+        unary(DartUnaryOp::BitNot, right)?
+    } else {
+        right
+    };
+    truncate_to_width(binary(op, left, right)?, decoded.sixty_four)
+}
+
+fn combine_multiply(state: &TrackState, decoded: MultiplyAccumulate) -> Option<DartValue> {
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let right: DartValue = read_register(state, decoded.rm)?;
+    let accumulator: DartValue = read_register(state, decoded.ra)?;
+    let product: DartValue = binary(DartBinaryOp::Multiply, left, right)?;
+    let op: DartBinaryOp = if decoded.subtract {
+        DartBinaryOp::Subtract
+    } else {
+        DartBinaryOp::Add
+    };
+    truncate_to_width(binary(op, accumulator, product)?, decoded.sixty_four)
+}
+
+fn combine_divide(state: &TrackState, decoded: DivideReg) -> Option<DartValue> {
+    if decoded.op == DivideOp::Unsigned {
+        return None;
+    }
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let right: DartValue = read_register(state, decoded.rm)?;
+    truncate_to_width(
+        binary(DartBinaryOp::TruncatingDivide, left, right)?,
+        decoded.sixty_four,
+    )
+}
+
+fn combine_variable_shift(state: &TrackState, decoded: VariableShift) -> Option<DartValue> {
+    let op: DartBinaryOp = match decoded.op {
+        VariableShiftOp::Lsl => DartBinaryOp::ShiftLeft,
+        VariableShiftOp::Lsr => DartBinaryOp::UnsignedShiftRight,
+        VariableShiftOp::Asr => DartBinaryOp::ShiftRight,
+        VariableShiftOp::Ror => return None,
+    };
+    let left: DartValue = read_register(state, decoded.rn)?;
+    let right: DartValue = read_register(state, decoded.rm)?;
+    truncate_to_width(binary(op, left, right)?, decoded.sixty_four)
+}
+
+fn combine_select(
+    state: &TrackState,
+    kind: ConditionalSelectKind,
+    rn: u8,
+    rm: u8,
+    code: u8,
+) -> Option<DartValue> {
+    let condition: DartCondition = DartCondition::from_arm64(code)?;
+    let comparison: DartComparison = state.flags.clone()?;
+    let when_true: DartValue = read_register(state, rn)?;
+    let other: DartValue = read_register(state, rm)?;
+    let when_false: DartValue = match kind {
+        ConditionalSelectKind::Select => other,
+        ConditionalSelectKind::Increment => binary(DartBinaryOp::Add, other, DartValue::Int(1))?,
+        ConditionalSelectKind::Invert => unary(DartUnaryOp::BitNot, other)?,
+        ConditionalSelectKind::Negate => unary(DartUnaryOp::Negate, other)?,
+    };
+    bounded(DartValue::Select {
+        condition,
+        comparison: Box::new(comparison),
+        when_true: Box::new(when_true),
+        when_false: Box::new(when_false),
+    })
 }
 
 fn compressed_pointer_decompression(raw: u32) -> Option<u8> {
@@ -879,6 +1934,50 @@ fn render_value(
             }
         }
         DartValue::PcRelative(address) => format!("pc@{address:#x}"),
+        DartValue::Binary { op, left, right } => {
+            let rendered_left: String = render_value(left, pool, results, depth + 1);
+            let rendered_right: String = render_value(right, pool, results, depth + 1);
+            match op.operator() {
+                Some(symbol) => format!("({rendered_left} {symbol} {rendered_right})"),
+                None => format!("{}({rendered_left}, {rendered_right})", op.method()),
+            }
+        }
+        DartValue::Unary { op, operand } => {
+            let rendered: String = render_value(operand, pool, results, depth + 1);
+            match op {
+                DartUnaryOp::Negate => format!("-{rendered}"),
+                DartUnaryOp::BitNot => format!("~{rendered}"),
+                DartUnaryOp::Absolute => format!("{rendered}.abs()"),
+                DartUnaryOp::SquareRoot => format!("sqrt({rendered})"),
+                DartUnaryOp::ToDouble => format!("{rendered}.toDouble()"),
+                DartUnaryOp::Truncate { width, signed } => {
+                    let method: &str = if *signed { "toSigned" } else { "toUnsigned" };
+                    format!("{rendered}.{method}({width})")
+                }
+            }
+        }
+        DartValue::SmiTag(inner) => {
+            format!("smiTag({})", render_value(inner, pool, results, depth + 1))
+        }
+        DartValue::SmiUntag(inner) => {
+            format!(
+                "smiUntag({})",
+                render_value(inner, pool, results, depth + 1)
+            )
+        }
+        DartValue::Select {
+            condition,
+            comparison,
+            when_true,
+            when_false,
+        } => format!(
+            "({} {} {} ? {} : {})",
+            render_value(&comparison.left, pool, results, depth + 1),
+            condition.operator(),
+            render_value(&comparison.right, pool, results, depth + 1),
+            render_value(when_true, pool, results, depth + 1),
+            render_value(when_false, pool, results, depth + 1),
+        ),
     }
 }
 

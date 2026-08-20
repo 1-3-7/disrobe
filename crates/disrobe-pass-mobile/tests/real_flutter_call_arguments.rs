@@ -377,16 +377,24 @@ fn main_recovers_integer_call_and_result_arguments() {
         .expect("the application main must lift");
     eprintln!("--- main ---\n{dart}");
 
-    for expected in [
-        "_Random.nextInt(v0, 3)",
-        "fibonacciStep(v2 + 12)",
-        "double.toStringAsFixed(?, 2)",
-    ] {
+    for expected in ["_Random.nextInt(v0, 3)", "double.toStringAsFixed(?, 2)"] {
         assert!(
             dart.contains(expected),
             "main must render {expected}, got:\n{dart}"
         );
     }
+    let seed: &str = dart
+        .lines()
+        .map(str::trim)
+        .find_map(|line: &str| {
+            line.strip_prefix("var ")?
+                .strip_suffix(" = _Random.nextInt(v0, 3);")
+        })
+        .unwrap_or_else(|| panic!("the nextInt result must bind, got:\n{dart}"));
+    assert!(
+        dart.contains(&format!("fibonacciStep({seed} + 12)")),
+        "main must add 12 to the bound nextInt result at the fibonacciStep call, got:\n{dart}"
+    );
     let source: String = dill_source();
     assert!(
         source.contains("nextInt(3)") && source.contains("12 +"),

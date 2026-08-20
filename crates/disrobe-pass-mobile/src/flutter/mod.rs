@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 pub mod aot_lift;
+pub(crate) mod arm64_data;
 pub mod arm64_traversal;
 pub(crate) mod call_args;
 pub mod cid_table;

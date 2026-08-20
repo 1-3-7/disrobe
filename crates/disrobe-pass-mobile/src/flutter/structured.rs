@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 
 use disrobe_cfg::{Flow, FlowError, FlowGraph};
 use disrobe_nir::{
-    HirCond, HirCondExpr, HirCondTest, HirFunction, HirStmt, NirBlock, NirFunction, NirInstr,
-    NirOp, SourceLang, SourceRef, basic_blocks, structurize_function,
+    HirCond, HirCondExpr, HirCondTest, HirExpr, HirFunction, HirStmt, NirBlock, NirFunction,
+    NirInstr, NirOp, SourceLang, SourceRef, basic_blocks, structurize_function,
 };
 
 use super::aot_lift::{
@@ -39,11 +39,20 @@ pub(crate) struct DartAbi<'a> {
 pub(crate) struct DartCallArgumentCounts {
     pub(crate) recovered_sites: usize,
     pub(crate) opaque_sites: usize,
+    pub(crate) lifted_statements: usize,
+    pub(crate) unlifted_statements: usize,
+    pub(crate) recovered_conditions: usize,
+    pub(crate) recovered_returns: usize,
+    pub(crate) recovered_field_stores: usize,
 }
+
+const UNLIFTED_MARKER: &str = "unliftedArm64(";
 
 pub(crate) struct DartStructuredBody {
     pub(crate) text: String,
     pub(crate) parameter_count: Option<u8>,
+    pub(crate) lifted_statements: usize,
+    pub(crate) unlifted_statements: usize,
 }
 
 #[must_use]
@@ -56,9 +65,11 @@ pub(crate) fn structure_dart_function(
         return Some(DartStructuredBody {
             text: emit_boolean_return(abi, &expression, parameter_count),
             parameter_count: Some(parameter_count),
+            lifted_statements: 0,
+            unlifted_statements: 0,
         });
     }
-    let nir: NirFunction = build_nir(func, abi)?;
+    let nir: NirFunction = build_nir(func, abi, None)?;
     let blocks: Vec<NirBlock> = basic_blocks(&nir);
     if blocks.len() < 2 {
         return None;
@@ -83,13 +94,44 @@ pub(crate) fn structure_dart_function(
         abi.pool,
         parameter_count,
     );
+    let baseline: String = emit_dart(&hir, abi, &reachable, &arguments, parameter_count);
+    let text: String = match returned_expression_pass(func, abi, &arguments, &blocks) {
+        Some(relabelled) => {
+            let candidate: String =
+                emit_dart(&relabelled, abi, &reachable, &arguments, parameter_count);
+            if relabelled_only(&baseline, &candidate) {
+                candidate
+            } else {
+                baseline
+            }
+        }
+        None => baseline,
+    };
     counts.recovered_sites = counts
         .recovered_sites
         .saturating_add(arguments.recovered_sites);
     counts.opaque_sites = counts.opaque_sites.saturating_add(arguments.opaque_sites);
+    counts.lifted_statements = counts
+        .lifted_statements
+        .saturating_add(arguments.lifted_statements);
+    counts.recovered_returns = counts
+        .recovered_returns
+        .saturating_add(rendered_return_expressions(&text));
+    counts.recovered_conditions = counts
+        .recovered_conditions
+        .saturating_add(arguments.recovered_conditions());
+    counts.recovered_field_stores = counts
+        .recovered_field_stores
+        .saturating_add(arguments.recovered_field_stores);
+    let unlifted_statements: usize = text.matches(UNLIFTED_MARKER).count();
+    counts.unlifted_statements = counts
+        .unlifted_statements
+        .saturating_add(unlifted_statements);
     Some(DartStructuredBody {
-        text: emit_dart(&hir, abi, &reachable, &arguments, parameter_count),
+        text,
         parameter_count,
+        lifted_statements: arguments.lifted_statements,
+        unlifted_statements,
     })
 }
 
@@ -101,7 +143,67 @@ fn emit_boolean_return(abi: &DartAbi<'_>, expression: &str, parameter_count: u8)
     format!("{}({params}) {{\n  return {expression};\n}}", abi.label)
 }
 
-fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
+fn returned_expression_pass(
+    func: &Arm64Function,
+    abi: &DartAbi<'_>,
+    arguments: &DartCallArguments,
+    blocks: &[NirBlock],
+) -> Option<HirFunction> {
+    if arguments.recovered_returns == 0 && arguments.recovered_conditions() == 0 {
+        return None;
+    }
+    let nir: NirFunction = build_nir(func, abi, Some(arguments))?;
+    let rebuilt: Vec<NirBlock> = basic_blocks(&nir);
+    if !same_block_layout(&rebuilt, blocks) {
+        return None;
+    }
+    let hir: HirFunction = structurize_function(&nir);
+    (hir.structured && round_trip_ok(&rebuilt, &hir)).then_some(hir)
+}
+
+const OPAQUE_INVOCATION: &str = "(...)";
+
+fn relabelled_only(before: &str, after: &str) -> bool {
+    if before.matches(OPAQUE_INVOCATION).count() != after.matches(OPAQUE_INVOCATION).count() {
+        return false;
+    }
+    if before.matches(UNLIFTED_MARKER).count() != after.matches(UNLIFTED_MARKER).count() {
+        return false;
+    }
+    let structural = |line: &&str| {
+        let trimmed: &str = line.trim_start();
+        !(trimmed.starts_with("return") || trimmed.contains("if ("))
+    };
+    before
+        .lines()
+        .filter(structural)
+        .eq(after.lines().filter(structural))
+}
+
+fn rendered_return_expressions(text: &str) -> usize {
+    text.lines()
+        .filter(|line: &&str| {
+            let trimmed: &str = line.trim();
+            trimmed.starts_with("return ") && trimmed != "return;"
+        })
+        .count()
+}
+
+fn same_block_layout(left: &[NirBlock], right: &[NirBlock]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b): (&NirBlock, &NirBlock)| {
+                a.start == b.start && a.end == b.end && a.successors == b.successors
+            })
+}
+
+fn build_nir(
+    func: &Arm64Function,
+    abi: &DartAbi<'_>,
+    returns: Option<&DartCallArguments>,
+) -> Option<NirFunction> {
     let insns: &[Arm64Instruction] = &func.instructions;
     if insns.is_empty() {
         return None;
@@ -116,6 +218,11 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
             Arm64FlowKind::Return => {
                 op = NirOp::Return;
                 mnemonic = "ret".to_owned();
+                if let Some(expression) = returns
+                    .and_then(|found: &DartCallArguments| found.return_expression(insn.address))
+                {
+                    operands.push(expression.to_owned());
+                }
             }
             Arm64FlowKind::DirectCall => {
                 op = NirOp::Call { target: None };
@@ -150,7 +257,8 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
                         return None;
                     }
                     op = NirOp::CondBranch { target };
-                    mnemonic = condition_text(insns, i);
+                    mnemonic = recovered_condition_text(insn, returns)
+                        .unwrap_or_else(|| condition_text(insns, i));
                 }
             }
             Arm64FlowKind::IndirectBranch | Arm64FlowKind::DecodeError => {
@@ -323,6 +431,25 @@ fn call_display(target: Option<u64>, abi: &DartAbi<'_>) -> String {
         Some(t) => (abi.resolve)(t).unwrap_or_else(|| format!("sub_{t:#x}")),
         None => "invoke".to_owned(),
     }
+}
+
+fn recovered_condition_text(
+    insn: &Arm64Instruction,
+    recovered: Option<&DartCallArguments>,
+) -> Option<String> {
+    let (left, right): (&str, &str) = recovered?.comparison(insn.address)?;
+    let operator: &str = match bcond(insn.bytes) {
+        Some(condition) => cond_operator(condition),
+        None if insn.bytes & CBZ_CBNZ_MASK == CBZ_CBNZ_MATCH => {
+            if insn.bytes & CBNZ_BIT == 0 {
+                "=="
+            } else {
+                "!="
+            }
+        }
+        None => return None,
+    };
+    Some(format!("{left} {operator} {right}"))
 }
 
 fn condition_text(insns: &[Arm64Instruction], at: usize) -> String {
@@ -741,9 +868,25 @@ fn emit_stmt(
         }
         HirStmt::Break { .. } => push_indented(out, indent, "break;"),
         HirStmt::Continue { .. } => push_indented(out, indent, "continue;"),
-        HirStmt::Return { .. } => push_indented(out, indent, "return;"),
+        HirStmt::Return { value } => {
+            let line: String = match value.as_ref().and_then(return_expression_text) {
+                Some(text) => format!("return {text};"),
+                None => "return;".to_owned(),
+            };
+            push_indented(out, indent, &line);
+        }
         HirStmt::Empty | HirStmt::Dispatch { .. } | HirStmt::GotoGraph { .. } => {}
     }
+}
+
+fn return_expression_text(value: &HirExpr) -> Option<String> {
+    let text: &str = match value {
+        HirExpr::Const { text } | HirExpr::Unknown { text } => text,
+        HirExpr::Var { name } => name,
+        HirExpr::Mem { cell } => cell,
+        HirExpr::Unary { .. } | HirExpr::Binary { .. } | HirExpr::Call { .. } => return None,
+    };
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 fn first_condition_test(expression: &HirCondExpr) -> Option<&HirCondTest> {
@@ -899,7 +1042,18 @@ fn render_leaf(instr: &NirInstr, arguments: &DartCallArguments) -> Option<String
             Some(format!("return {callee}({list});"))
         }
         NirOp::NoReturnCall { .. } if instr.mnemonic == "trap" => Some("trap();".to_owned()),
-        NirOp::Nop if !instr.mnemonic.is_empty() => Some(instr.mnemonic.clone()),
+        NirOp::Nop if !instr.mnemonic.is_empty() => {
+            if let Some(store) = arguments.field_store(instr.address) {
+                return Some(store.to_owned());
+            }
+            if let Some(definition) = arguments.definition(instr.address) {
+                return Some(definition.to_owned());
+            }
+            if arguments.is_bookkeeping(instr.address) {
+                return None;
+            }
+            Some(instr.mnemonic.clone())
+        }
         _ => None,
     }
 }
@@ -1067,8 +1221,12 @@ mod tests {
             rendered.contains("(11, 22, 33, 55, 66, 77);"),
             "the Dart argument sequence is R1 R2 R3 R5 R6 R7; R4 carries the arguments descriptor and never an argument, got:\n{rendered}"
         );
+        let invocation: &str = rendered
+            .lines()
+            .find(|line: &&str| line.contains("sub_0x"))
+            .expect("the call must render");
         assert!(
-            !rendered.contains("99"),
+            !invocation.contains("99"),
             "a value parked in R4 must never enter the argument list, got:\n{rendered}"
         );
     }
@@ -1122,8 +1280,12 @@ mod tests {
             rendered.contains("(11);"),
             "a store that does not start the outgoing area at slot zero must not become an argument, got:\n{rendered}"
         );
+        let invocation: &str = rendered
+            .lines()
+            .find(|line: &&str| line.contains("sub_0x"))
+            .expect("the call must render");
         assert!(
-            !rendered.contains("88"),
+            !invocation.contains("88"),
             "a non-contiguous stack store must not inflate the argument count, got:\n{rendered}"
         );
     }
@@ -1235,13 +1397,13 @@ mod tests {
         assert!(rendered.contains("!("), "got:\n{rendered}");
         assert!(rendered.contains("(() {"), "got:\n{rendered}");
         assert_eq!(
-            rendered.matches("address: 0x00009010").count(),
+            rendered.matches("arg2.field@0x0").count(),
             1,
             "the guarded load must occur exactly once inside its lazy closure:\n{rendered}",
         );
         let condition: usize = rendered.find("if (").expect("compound condition");
         let closure: usize = rendered.find("(() {").expect("lazy closure");
-        let load: usize = rendered.find("address: 0x00009010").expect("guarded load");
+        let load: usize = rendered.find("arg2.field@0x0").expect("guarded load");
         assert!(condition < closure && closure < load, "got:\n{rendered}");
     }
 
@@ -1301,7 +1463,7 @@ mod tests {
         let func: Arm64Function =
             disassemble_range(&bytes, base, 0, bytes.len(), Some("probe".to_owned()));
         let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
-        let nir: NirFunction = build_nir(&func, &abi(&func, resolve)).expect("nir");
+        let nir: NirFunction = build_nir(&func, &abi(&func, resolve), None).expect("nir");
         let blocks: Vec<NirBlock> = basic_blocks(&nir);
         let hir: HirFunction = structurize_function(&nir);
         assert!(hir.structured);
@@ -1372,7 +1534,7 @@ mod tests {
         let func: Arm64Function =
             disassemble_range(&bytes, base, 0, bytes.len(), Some("loop".to_owned()));
         let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
-        let nir: NirFunction = build_nir(&func, &abi(&func, resolve)).expect("nir");
+        let nir: NirFunction = build_nir(&func, &abi(&func, resolve), None).expect("nir");
         let blocks: Vec<NirBlock> = basic_blocks(&nir);
         let hir: HirFunction = structurize_function(&nir);
         if hir.structured {
