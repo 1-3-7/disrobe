@@ -8,7 +8,7 @@ pub const OPARRAY_VERSION: u8 = 3;
 
 pub const OPARRAY_MIN_VERSION: u8 = 1;
 
-pub const OPARRAY_MAX_VERSION: u8 = 3;
+pub const OPARRAY_MAX_VERSION: u8 = 4;
 
 const SANE_OP_CAP: u32 = 4_000_000;
 const SANE_LITERAL_CAP: u32 = 4_000_000;
@@ -25,6 +25,10 @@ const SANE_SWITCH_LABEL_WORK_CAP: usize = 1 << 20;
 const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
 const SANE_LOOP_RELIFT_WORK_CAP: usize = 1 << 20;
 const SANE_FOR_STEP_CAP: usize = 16;
+const SANE_TRY_CATCH_CAP: u32 = 1 << 16;
+const SANE_CATCH_TYPE_CAP: usize = 256;
+const SANE_CATCH_CLAUSE_CAP: usize = 256;
+const CATCH_LAST: u32 = 1;
 const SANE_LOOP_EXIT_FREE_CAP: u32 = SANE_LIFT_DEPTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -211,6 +215,14 @@ pub enum OpArrayKind {
     Closure,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TryCatch {
+    pub try_op: u32,
+    pub catch_op: Option<u32>,
+    pub finally_op: Option<u32>,
+    pub finally_end: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpArray {
     pub kind: OpArrayKind,
@@ -221,6 +233,8 @@ pub struct OpArray {
     pub ops: Vec<Op>,
     pub children: Vec<Self>,
     pub var_names: Vec<Option<String>>,
+    #[serde(default)]
+    pub try_catch: Vec<TryCatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +355,9 @@ pub mod op {
     pub const DECLARE_CLASS_DELAYED: u8 = 145;
     pub const DECLARE_ANON_CLASS: u8 = 146;
     pub const HANDLE_EXCEPTION: u8 = 149;
+    pub const DISCARD_EXCEPTION: u8 = 159;
+    pub const FAST_CALL: u8 = 162;
+    pub const FAST_RET: u8 = 163;
     pub const JMP_SET: u8 = 152;
     pub const YIELD: u8 = 160;
     pub const GENERATOR_RETURN: u8 = 161;
@@ -466,6 +483,9 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         146 => "ZEND_DECLARE_ANON_CLASS",
         148 => "ZEND_ISSET_ISEMPTY_PROP_OBJ",
         149 => "ZEND_HANDLE_EXCEPTION",
+        159 => "ZEND_DISCARD_EXCEPTION",
+        162 => "ZEND_FAST_CALL",
+        163 => "ZEND_FAST_RET",
         152 => "ZEND_JMP_SET",
         154 => "ZEND_ISSET_ISEMPTY_CV",
         160 => "ZEND_YIELD",
@@ -620,6 +640,11 @@ fn parse_one(cur: &mut Cursor<'_>, version: u8, depth: u32) -> Result<OpArray> {
     };
     let literals: Vec<Literal> = parse_literals(cur, version)?;
     let ops: Vec<Op> = parse_ops(cur)?;
+    let try_catch: Vec<TryCatch> = if version >= 4 {
+        parse_try_catch(cur, ops.len())?
+    } else {
+        Vec::new()
+    };
     let child_count: u32 = cur.u32()?;
     if child_count > SANE_CHILD_CAP {
         return Err(Error::OpArrayFieldOversize {
@@ -642,7 +667,56 @@ fn parse_one(cur: &mut Cursor<'_>, version: u8, depth: u32) -> Result<OpArray> {
         ops,
         children,
         var_names,
+        try_catch,
     })
+}
+
+fn parse_try_catch(cur: &mut Cursor<'_>, op_count: usize) -> Result<Vec<TryCatch>> {
+    let count: u32 = cur.u32()?;
+    if count > SANE_TRY_CATCH_CAP {
+        return Err(Error::OpArrayFieldOversize {
+            field: "try_catch",
+            value: count,
+            cap: SANE_TRY_CATCH_CAP,
+        });
+    }
+    ensure_count_fits(cur, count)?;
+    let bound: u32 = u32::try_from(op_count).unwrap_or(u32::MAX);
+    let mut out: Vec<TryCatch> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
+    for _ in 0..count {
+        let try_op: u32 = cur.u32()?;
+        let catch_op: u32 = cur.u32()?;
+        let finally_op: u32 = cur.u32()?;
+        let finally_end: u32 = cur.u32()?;
+        if try_op >= bound {
+            return Err(Error::OpArrayTryCatchRange {
+                field: "try_op",
+                value: try_op,
+                ops: bound,
+            });
+        }
+        out.push(TryCatch {
+            try_op,
+            catch_op: try_catch_boundary("catch_op", catch_op, bound)?,
+            finally_op: try_catch_boundary("finally_op", finally_op, bound)?,
+            finally_end: try_catch_boundary("finally_end", finally_end, bound)?,
+        });
+    }
+    Ok(out)
+}
+
+fn try_catch_boundary(field: &'static str, value: u32, bound: u32) -> Result<Option<u32>> {
+    if value == 0 {
+        return Ok(None);
+    }
+    if value >= bound {
+        return Err(Error::OpArrayTryCatchRange {
+            field,
+            value,
+            ops: bound,
+        });
+    }
+    Ok(Some(value))
 }
 
 fn parse_var_names(cur: &mut Cursor<'_>) -> Result<Vec<Option<String>>> {
@@ -989,7 +1063,8 @@ impl SkeletonEmitter {
     }
 
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
-        let mut lifter: Lifter<'_> = Lifter::new(&node.ops, &node.literals, &node.var_names);
+        let mut lifter: Lifter<'_> =
+            Lifter::new(&node.ops, &node.literals, &node.var_names, &node.try_catch);
         let stmts: Vec<Stmt> = lifter.lift();
         let container: String = Self::container_label(node);
         self.unrecovered_total = self.unrecovered_total.saturating_add(lifter.refused.len());
@@ -1120,6 +1195,11 @@ enum Stmt {
         subject: String,
         arms: Vec<SwitchArm>,
     },
+    Try {
+        body: Vec<Self>,
+        catches: Vec<CatchArm>,
+        finally_body: Option<Vec<Self>>,
+    },
 }
 
 #[derive(Debug)]
@@ -1127,6 +1207,13 @@ struct SwitchArm {
     labels: Vec<Option<String>>,
     body: Vec<Stmt>,
     breaks: bool,
+}
+
+#[derive(Debug)]
+struct CatchArm {
+    types: Vec<String>,
+    variable: Option<String>,
+    body: Vec<Stmt>,
 }
 
 impl Stmt {
@@ -1145,6 +1232,34 @@ impl Stmt {
                 if !else_body.is_empty() {
                     emitter.line(indent, "} else {");
                     for stmt in else_body {
+                        stmt.render_into(emitter, indent + 1);
+                    }
+                }
+                emitter.line(indent, "}");
+            }
+            Self::Try {
+                body,
+                catches,
+                finally_body,
+            } => {
+                emitter.line(indent, "try {");
+                for stmt in body {
+                    stmt.render_into(emitter, indent + 1);
+                }
+                for arm in catches {
+                    let types: String = arm.types.join(" | ");
+                    let header: String = arm.variable.as_ref().map_or_else(
+                        || format!("}} catch ({types}) {{"),
+                        |name: &String| format!("}} catch ({types} ${name}) {{"),
+                    );
+                    emitter.line(indent, &header);
+                    for stmt in &arm.body {
+                        stmt.render_into(emitter, indent + 1);
+                    }
+                }
+                if let Some(finally_stmts) = finally_body {
+                    emitter.line(indent, "} finally {");
+                    for stmt in finally_stmts {
                         stmt.render_into(emitter, indent + 1);
                     }
                 }
@@ -1239,6 +1354,7 @@ struct PendingCall {
 }
 
 struct LiftSnapshot {
+    entered_try: BTreeSet<usize>,
     slots: BTreeMap<(OperandType, u32), Expr>,
     call_stack: Vec<PendingCall>,
     reserved_names: BTreeSet<String>,
@@ -1279,10 +1395,30 @@ struct DispatchLabels {
     work: usize,
 }
 
+struct CatchPlan {
+    clause_start: u32,
+    types: Vec<String>,
+    variable: Option<String>,
+    body_start: u32,
+}
+
+struct TryRegion {
+    row: usize,
+    try_start: u32,
+    try_end: u32,
+    catch_op: Option<u32>,
+    catch_end: u32,
+    finally_op: Option<u32>,
+    finally_end: Option<u32>,
+    construct_end: u32,
+}
+
 struct Lifter<'a> {
     ops: &'a [Op],
     literals: &'a [Literal],
     var_names: &'a [Option<String>],
+    try_catch: &'a [TryCatch],
+    entered_try: BTreeSet<usize>,
     slots: BTreeMap<(OperandType, u32), Expr>,
     call_stack: Vec<PendingCall>,
     back_jump_targets: BTreeSet<u32>,
@@ -1296,7 +1432,12 @@ struct Lifter<'a> {
 }
 
 impl<'a> Lifter<'a> {
-    fn new(ops: &'a [Op], literals: &'a [Literal], var_names: &'a [Option<String>]) -> Self {
+    fn new(
+        ops: &'a [Op],
+        literals: &'a [Literal],
+        var_names: &'a [Option<String>],
+        try_catch: &'a [TryCatch],
+    ) -> Self {
         let back_jump_targets: BTreeSet<u32> = ops
             .iter()
             .filter_map(|op: &Op| {
@@ -1347,6 +1488,8 @@ impl<'a> Lifter<'a> {
             ops,
             literals,
             var_names,
+            try_catch,
+            entered_try: BTreeSet::new(),
             slots: BTreeMap::new(),
             call_stack: Vec::new(),
             back_jump_targets,
@@ -1399,6 +1542,16 @@ impl<'a> Lifter<'a> {
     }
 
     fn try_structure(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
+        if let Some(region) = self.try_region_at(i, end) {
+            let row: usize = region.row;
+            self.entered_try.insert(row);
+            let structured: Option<(Vec<Stmt>, u32)> = self.structure_try(region, depth);
+            if structured.is_none() {
+                self.entered_try.remove(&row);
+            } else {
+                return structured;
+            }
+        }
         let op: &Op = self.ops.get(i as usize)?;
         match op.opcode {
             op::CASE | op::IS_EQUAL | op::SWITCH_LONG | op::SWITCH_STRING => {
@@ -1427,6 +1580,276 @@ impl<'a> Lifter<'a> {
                 .or_else(|| self.structure_if(i, end, depth)),
             _ => self.structure_do_while(i, end, depth),
         }
+    }
+
+    fn try_region_at(&self, i: u32, end: u32) -> Option<TryRegion> {
+        let mut best: Option<TryRegion> = None;
+        for (row, entry) in self.try_catch.iter().enumerate() {
+            if entry.try_op != i || self.entered_try.contains(&row) {
+                continue;
+            }
+            let Some(region) = self.try_region(row, entry, end) else {
+                continue;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|held: &TryRegion| region.construct_end > held.construct_end)
+            {
+                best = Some(region);
+            }
+        }
+        best
+    }
+
+    fn try_region(&self, row: usize, entry: &TryCatch, end: u32) -> Option<TryRegion> {
+        let construct_end: u32 = if let Some(finally_end) = entry.finally_end {
+            finally_end.checked_add(1)?
+        } else {
+            let catch_op: u32 = entry.catch_op?;
+            let skip: &Op = self.ops.get(catch_op.checked_sub(1)? as usize)?;
+            if skip.opcode != op::JMP {
+                return None;
+            }
+            skip.op1
+        };
+        if construct_end > end || construct_end <= entry.try_op {
+            return None;
+        }
+        let finally_gate: u32 = match entry.finally_op {
+            Some(finally_op) => self.finally_trampoline(finally_op, construct_end)?,
+            None => construct_end,
+        };
+        if let (Some(finally_op), Some(finally_end)) = (entry.finally_op, entry.finally_end)
+            && (finally_end < finally_op
+                || self.ops.get(finally_end as usize)?.opcode != op::FAST_RET)
+        {
+            return None;
+        }
+        let (try_end, catch_end): (u32, u32) = match entry.catch_op {
+            Some(catch_op) => {
+                if catch_op <= entry.try_op || catch_op > finally_gate {
+                    return None;
+                }
+                let boundary: u32 = catch_op.checked_sub(1)?;
+                let ends_with_skip: bool = self
+                    .ops
+                    .get(boundary as usize)
+                    .is_some_and(|op: &Op| op.opcode == op::JMP);
+                (
+                    if ends_with_skip { boundary } else { catch_op },
+                    finally_gate,
+                )
+            }
+            None => (finally_gate, finally_gate),
+        };
+        Some(TryRegion {
+            row,
+            try_start: entry.try_op,
+            try_end,
+            catch_op: entry.catch_op,
+            catch_end,
+            finally_op: entry.finally_op,
+            finally_end: entry.finally_end,
+            construct_end,
+        })
+    }
+
+    fn finally_trampoline(&self, finally_op: u32, construct_end: u32) -> Option<u32> {
+        let jump_idx: u32 = finally_op.checked_sub(1)?;
+        let jump: &Op = self.ops.get(jump_idx as usize)?;
+        if jump.opcode != op::JMP || jump.op1 != construct_end {
+            return None;
+        }
+        let call_idx: u32 = jump_idx.checked_sub(1)?;
+        let call: &Op = self.ops.get(call_idx as usize)?;
+        if call.opcode != op::FAST_CALL || call.op1 != finally_op {
+            return None;
+        }
+        Some(call_idx)
+    }
+
+    fn structure_try(&mut self, region: TryRegion, depth: u32) -> Option<(Vec<Stmt>, u32)> {
+        if !self.call_stack.is_empty() {
+            return None;
+        }
+        let snapshot: LiftSnapshot = self.lift_snapshot();
+        let body: Vec<Stmt> = self.lift_range(region.try_start, region.try_end, depth + 1);
+        let catches: Vec<CatchArm> = if let Some(catch_op) = region.catch_op {
+            if let Some(arms) = self.lift_catch_arms(catch_op, region.catch_end, depth) {
+                arms
+            } else {
+                self.restore_lift_snapshot(snapshot);
+                return None;
+            }
+        } else {
+            Vec::new()
+        };
+        let finally_body: Option<Vec<Stmt>> = match (region.finally_op, region.finally_end) {
+            (Some(finally_op), Some(finally_end)) => {
+                Some(self.lift_range(finally_op, finally_end, depth + 1))
+            }
+            _ => None,
+        };
+        if catches.is_empty() && finally_body.is_none() {
+            self.restore_lift_snapshot(snapshot);
+            return None;
+        }
+        Some((
+            vec![Stmt::Try {
+                body,
+                catches,
+                finally_body,
+            }],
+            region.construct_end,
+        ))
+    }
+
+    fn lift_catch_arms(
+        &mut self,
+        catch_op: u32,
+        catch_end: u32,
+        depth: u32,
+    ) -> Option<Vec<CatchArm>> {
+        let mut plans: Vec<CatchPlan> = Vec::new();
+        let mut cursor: u32 = catch_op;
+        while cursor < catch_end {
+            if plans.len() >= SANE_CATCH_CLAUSE_CAP {
+                return None;
+            }
+            let (plan, next): (CatchPlan, Option<u32>) = self.catch_clause(cursor, catch_end)?;
+            plans.push(plan);
+            match next {
+                Some(target) if target > cursor && target < catch_end => cursor = target,
+                Some(_) => return None,
+                None => break,
+            }
+        }
+        if plans.is_empty() {
+            return None;
+        }
+        let mut arms: Vec<CatchArm> = Vec::with_capacity(plans.len());
+        for index in 0..plans.len() {
+            let limit: u32 = plans
+                .get(index + 1)
+                .map_or(catch_end, |next: &CatchPlan| next.clause_start);
+            let plan: &CatchPlan = plans.get(index)?;
+            let body_start: u32 = plan.body_start;
+            let types: Vec<String> = plan.types.clone();
+            let variable: Option<String> = plan.variable.clone();
+            let clause_end: u32 = self.catch_body_end(body_start, limit)?;
+            let body: Vec<Stmt> = self.lift_range(body_start, clause_end, depth + 1);
+            arms.push(CatchArm {
+                types,
+                variable,
+                body,
+            });
+        }
+        Some(arms)
+    }
+
+    fn catch_clause(&self, start: u32, catch_end: u32) -> Option<(CatchPlan, Option<u32>)> {
+        let mut types: Vec<String> = Vec::new();
+        let mut variable: Option<String> = None;
+        let mut cursor: u32 = start;
+        loop {
+            let entry: &Op = self.ops.get(cursor as usize)?;
+            if entry.opcode != op::CATCH || types.len() >= SANE_CATCH_TYPE_CAP {
+                return None;
+            }
+            let name: String = strip_quotes(&self.literal_string(entry.op1_type, entry.op1)?);
+            if name.is_empty() {
+                return None;
+            }
+            types.push(constant_reference(&name));
+            if entry.result_type == OperandType::Cv {
+                let bound: String = self.cv(entry.result);
+                if variable
+                    .as_ref()
+                    .is_some_and(|held: &String| *held != bound)
+                {
+                    return None;
+                }
+                variable = Some(bound);
+            }
+            let follows: u32 = cursor.checked_add(1)?;
+            if entry.extended_value == CATCH_LAST {
+                if follows > catch_end {
+                    return None;
+                }
+                return Some((
+                    CatchPlan {
+                        clause_start: start,
+                        types,
+                        variable,
+                        body_start: follows,
+                    },
+                    None,
+                ));
+            }
+            let alternate: u32 = entry.op2;
+            if alternate <= cursor || alternate >= catch_end {
+                return None;
+            }
+            let bridge: &Op = self.ops.get(follows as usize)?;
+            if bridge.opcode == op::JMP {
+                let body_start: u32 = bridge.op1;
+                if body_start <= follows || body_start > catch_end {
+                    return None;
+                }
+                if self.clause_shares_body(alternate, body_start) {
+                    cursor = alternate;
+                    continue;
+                }
+                return Some((
+                    CatchPlan {
+                        clause_start: start,
+                        types,
+                        variable,
+                        body_start,
+                    },
+                    Some(alternate),
+                ));
+            }
+            return Some((
+                CatchPlan {
+                    clause_start: start,
+                    types,
+                    variable,
+                    body_start: follows,
+                },
+                Some(alternate),
+            ));
+        }
+    }
+
+    fn clause_shares_body(&self, alternate: u32, body_start: u32) -> bool {
+        let Some(entry): Option<&Op> = self.ops.get(alternate as usize) else {
+            return false;
+        };
+        if entry.opcode != op::CATCH {
+            return false;
+        }
+        if alternate.saturating_add(1) == body_start {
+            return true;
+        }
+        self.ops
+            .get(alternate.saturating_add(1) as usize)
+            .is_some_and(|bridge: &Op| bridge.opcode == op::JMP && bridge.op1 == body_start)
+    }
+
+    fn catch_body_end(&self, body_start: u32, limit: u32) -> Option<u32> {
+        if body_start > limit {
+            return None;
+        }
+        let last: u32 = limit.checked_sub(1)?;
+        if last < body_start {
+            return Some(body_start);
+        }
+        let tail: &Op = self.ops.get(last as usize)?;
+        if tail.opcode == op::JMP {
+            return Some(last);
+        }
+        Some(limit)
     }
 
     fn structure_switch(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -2017,6 +2440,7 @@ impl<'a> Lifter<'a> {
 
     fn lift_snapshot(&self) -> LiftSnapshot {
         LiftSnapshot {
+            entered_try: self.entered_try.clone(),
             slots: self.slots.clone(),
             call_stack: self.call_stack.clone(),
             reserved_names: self.reserved_names.clone(),
@@ -2027,6 +2451,7 @@ impl<'a> Lifter<'a> {
     }
 
     fn restore_lift_snapshot(&mut self, snapshot: LiftSnapshot) {
+        self.entered_try = snapshot.entered_try;
         self.slots = snapshot.slots;
         self.call_stack = snapshot.call_stack;
         self.reserved_names = snapshot.reserved_names;
@@ -3049,6 +3474,7 @@ impl<'a> Lifter<'a> {
             }
             o if o == op::FE_FREE => None,
             o if o == op::VERIFY_RETURN_TYPE || o == op::NOP || o == op::HANDLE_EXCEPTION => None,
+            o if o == op::FAST_CALL || o == op::FAST_RET || o == op::DISCARD_EXCEPTION => None,
             o if o == op::RECV || o == op::RECV_INIT => None,
             o if o == op::INIT_FCALL || o == op::INIT_FCALL_BY_NAME || o == op::INIT_NS_FCALL => {
                 let callee: String = self
@@ -3763,7 +4189,7 @@ const fn refusal_reason(opcode: u8) -> &'static str {
         | op::COALESCE => REASON_JUMP,
         op::SWITCH_LONG | op::SWITCH_STRING | op::MATCH | op::CASE => REASON_DISPATCH,
         op::ROPE_INIT | op::ROPE_ADD | op::ROPE_END => REASON_ROPE,
-        op::CATCH => REASON_EXCEPTION,
+        op::CATCH | op::FAST_CALL | op::FAST_RET | op::DISCARD_EXCEPTION => REASON_EXCEPTION,
         op::DECLARE_FUNCTION
         | op::DECLARE_LAMBDA_FUNCTION
         | op::DECLARE_CLASS
@@ -4001,6 +4427,115 @@ mod render_tests {
 mod oparray_bounds_tests {
     use super::*;
 
+    fn try_catch_wire(ops: u32, rows: &[[u32; 4]], declared_rows: Option<u32>) -> Vec<u8> {
+        let mut wire: Vec<u8> = Vec::new();
+        wire.extend_from_slice(&OPARRAY_MAGIC[..]);
+        wire.push(4);
+        wire.push(0);
+        wire.push(0);
+        wire.push(0);
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&ops.to_le_bytes());
+        for _ in 0..ops {
+            wire.push(op::NOP);
+            wire.push(0);
+            wire.push(0);
+            wire.push(0);
+            for _ in 0..5 {
+                wire.extend_from_slice(&0u32.to_le_bytes());
+            }
+        }
+        let count: u32 = declared_rows.unwrap_or_else(|| u32::try_from(rows.len()).unwrap_or(0));
+        wire.extend_from_slice(&count.to_le_bytes());
+        for row in rows {
+            for field in row {
+                wire.extend_from_slice(&field.to_le_bytes());
+            }
+        }
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire
+    }
+
+    #[test]
+    fn a_try_catch_boundary_outside_the_op_array_is_a_typed_error() {
+        for row in [[9, 0, 0, 0], [0, 9, 0, 0], [0, 0, 9, 0], [0, 0, 0, 9]] {
+            let wire: Vec<u8> = try_catch_wire(4, &[row], None);
+            let err: Error = parse_oparray(&wire)
+                .expect_err("a try_catch boundary past the last opcode must be rejected");
+            assert!(
+                matches!(
+                    err,
+                    Error::OpArrayTryCatchRange {
+                        value: 9,
+                        ops: 4,
+                        ..
+                    }
+                ),
+                "row {row:?} must be rejected against the op count, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_try_op_of_zero_is_accepted_because_php_compiles_a_leading_try_there() {
+        let wire: Vec<u8> = try_catch_wire(4, &[[0, 2, 0, 0]], None);
+        let parsed: OpArray = parse_oparray(&wire).expect("try_op 0 is a real php shape");
+        assert_eq!(
+            parsed.try_catch,
+            vec![TryCatch {
+                try_op: 0,
+                catch_op: Some(2),
+                finally_op: None,
+                finally_end: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_oversized_try_catch_count_is_rejected_before_reserving() {
+        let wire: Vec<u8> = try_catch_wire(4, &[], Some(SANE_TRY_CATCH_CAP + 1));
+        let err: Error =
+            parse_oparray(&wire).expect_err("a try_catch count past the sane cap must be rejected");
+        assert!(
+            matches!(
+                err,
+                Error::OpArrayFieldOversize {
+                    field: "try_catch",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_declared_try_catch_count_exceeding_remaining_input_is_rejected_before_reserving() {
+        let wire: Vec<u8> = try_catch_wire(4, &[], Some(SANE_TRY_CATCH_CAP));
+        let err: Error = parse_oparray(&wire)
+            .expect_err("a try_catch count past the remaining input must be rejected");
+        assert!(matches!(err, Error::OpArrayTruncated { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn a_version_three_container_carries_no_try_catch_table() {
+        let mut wire: Vec<u8> = Vec::new();
+        wire.extend_from_slice(&OPARRAY_MAGIC[..]);
+        wire.push(3);
+        wire.push(0);
+        wire.push(0);
+        wire.push(0);
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        wire.extend_from_slice(&0u32.to_le_bytes());
+        let parsed: OpArray =
+            parse_oparray(&wire).expect("a version 3 container still parses without a table");
+        assert!(parsed.try_catch.is_empty());
+    }
+
     #[test]
     fn declared_ops_count_exceeding_remaining_input_is_rejected_before_reserving() {
         const DECLARED: u32 = 3_000_000;
@@ -4043,7 +4578,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(
                 stmts.len(),
@@ -4107,7 +4642,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(stmts.len(), rope_count.saturating_mul(4));
             elapsed.as_secs_f64()
@@ -4140,7 +4675,7 @@ mod oparray_bounds_tests {
         ];
         let literals: Vec<Literal> = vec![Literal::Bool(true)];
         let var_names: Vec<Option<String>> = Vec::new();
-        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
         assert!(
             matches!(stmts.first(), Some(Stmt::DoWhile { .. })),
             "back-jump target present in cache should still structure a do-while, got {stmts:?}"
@@ -4280,6 +4815,7 @@ mod oparray_bounds_tests {
             ops: ops.to_vec(),
             children: Vec::new(),
             var_names,
+            try_catch: Vec::new(),
         };
         decompile(&node).php_skeleton
     }

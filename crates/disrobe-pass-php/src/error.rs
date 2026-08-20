@@ -168,6 +168,15 @@ pub enum Error {
     #[error("DR-PHP-0097: op_array nesting too deep ({0})")]
     OpArrayNestTooDeep(u32),
 
+    #[error(
+        "DR-PHP-0098: op_array try_catch field '{field}' names opcode {value}, which is outside the {ops} opcodes this op_array carries"
+    )]
+    OpArrayTryCatchRange {
+        field: &'static str,
+        value: u32,
+        ops: u32,
+    },
+
     #[error("DR-PHP-0100: {family} container framing malformed: {reason}")]
     ContainerBadFraming {
         family: &'static str,

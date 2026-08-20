@@ -32,8 +32,8 @@ pub mod token;
 pub use bcompiler::{BCG_MIN_HEADER, BcgHeader, BcgKind, read_header as read_bcg_header};
 pub use decompile::{
     Branch, Cfg, Decompilation, Fidelity, Literal, OPARRAY_MAGIC, OPARRAY_MAX_VERSION,
-    OPARRAY_MIN_VERSION, OPARRAY_VERSION, Op, OpArray, OpArrayKind, OperandType, UnrecoveredOp,
-    build_cfg, decompile as decompile_oparray, opcode_name, parse_oparray,
+    OPARRAY_MIN_VERSION, OPARRAY_VERSION, Op, OpArray, OpArrayKind, OperandType, TryCatch,
+    UnrecoveredOp, build_cfg, decompile as decompile_oparray, opcode_name, parse_oparray,
 };
 pub use deflatten::{DeflattenReport, deflatten};
 pub use detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
