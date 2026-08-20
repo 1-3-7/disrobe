@@ -10,7 +10,7 @@ const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-cli", 29),
-    ("disrobe-core", 10),
+    ("disrobe-core", 8),
     ("disrobe-irsummary", 1),
     ("disrobe-lift-x86", 2),
     ("disrobe-mba", 8),
@@ -37,7 +37,7 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-plugin-host", 5),
     ("disrobe-pyarmor-cextract", 5),
     ("disrobe-semdiff", 2),
-    ("disrobe-typerec", 6),
+    ("disrobe-typerec", 3),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

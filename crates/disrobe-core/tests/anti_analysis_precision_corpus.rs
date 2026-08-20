@@ -2450,8 +2450,10 @@ fn benign_c_binaries_yield_zero_verdicts() {
         for opt in ["-O0", "-O2"] {
             let unique: String = format!("{stem}{}", opt.replace('-', "_"));
             let Some(bytes): Option<Vec<u8>> = compile_c(cc, &dir, &unique, src, opt) else {
-                eprintln!("SKIP: {cc} {opt} failed to build {stem}");
-                continue;
+                panic!(
+                    "{cc} is on PATH and {stem} is a fixed source in this file, so a failed \
+                     {opt} build is a defect in the probe rather than a reason to grade nothing"
+                );
             };
             compiled_any = true;
             assert_zero_anti_analysis_verdicts(&format!("{cc}{opt}/{stem}"), &bytes);
@@ -2761,8 +2763,10 @@ fn upx_packed_benign_reports_only_packing() {
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let Some(_): Option<Vec<u8>> = compile_c(cc, &dir, "aa_upx", MEDIUM_C, "-O2") else {
-        eprintln!("SKIP: could not build upx input");
-        return;
+        panic!(
+            "{cc} is on PATH and MEDIUM_C is a fixed source in this file, so failing to build the \
+             upx input is a defect in the probe rather than a reason to grade nothing"
+        );
     };
     let input: PathBuf = dir.join(exe_name("aa_upx"));
     let packed: PathBuf = dir.join(exe_name("aa_upx_packed"));
@@ -2774,10 +2778,11 @@ fn upx_packed_benign_reports_only_packing() {
         .arg(&input)
         .status()
         .is_ok_and(|s: std::process::ExitStatus| s.success());
-    if !ok {
-        eprintln!("SKIP: upx packing failed");
-        return;
-    }
+    assert!(
+        ok,
+        "upx is on PATH and its input built, so a failed pack is a defect in the probe rather \
+         than a reason to grade nothing"
+    );
     let bytes: Vec<u8> = std::fs::read(&packed).expect("read packed");
     let report: AntiAnalysisReport = scan(&bytes, Some("upx-packed"));
     let verdicts: Vec<Technique> = report

@@ -344,12 +344,10 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         eprintln!("skipping: clang and objcopy are required for the indexed ELF fixture");
         return;
     }
-    let scratch: ScratchDir = if let Ok(scratch) = ScratchDir::create("disrobe_typerec_indexed") {
-        scratch
-    } else {
-        eprintln!("skipping: could not create a working directory");
-        return;
-    };
+    let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_indexed").expect(
+        "a scratch directory is not an optional prerequisite; failing to create one is a broken \
+         environment rather than a reason to grade nothing",
+    );
     let work: PathBuf = scratch.path().to_path_buf();
     let unstripped: PathBuf = work.join("indexed.unstripped.elf");
     let stripped: PathBuf = work.join("indexed.stripped.elf");
@@ -368,18 +366,19 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         ])
         .arg(&unstripped)
         .arg(indexed_source_path()));
-    if !built {
-        eprintln!("skipping: clang could not build the indexed ELF fixture on this host");
-        return;
-    }
-    if !run(Command::new("objcopy")
-        .arg("--strip-debug")
-        .arg(&unstripped)
-        .arg(&stripped))
-    {
-        eprintln!("skipping: objcopy could not strip the indexed ELF fixture on this host");
-        return;
-    }
+    assert!(
+        built,
+        "clang was found on PATH above and the indexed fixture is a committed source, so a failed \
+         build is a defect in this probe rather than a reason to grade nothing"
+    );
+    assert!(
+        run(Command::new("objcopy")
+            .arg("--strip-debug")
+            .arg(&unstripped)
+            .arg(&stripped)),
+        "objcopy was found on PATH above and clang has just produced the unstripped image, so a \
+         failed strip is a defect in this probe rather than a reason to grade nothing"
+    );
     let Some(ground_truth): Option<DebugImage> = std::fs::read(&unstripped)
         .ok()
         .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
