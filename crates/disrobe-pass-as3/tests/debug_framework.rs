@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -27,6 +29,9 @@ fn corpus_root() -> PathBuf {
 
 fn first_abc_bearing_swf() -> Option<PathBuf> {
     let dir: PathBuf = corpus_root();
+    if !common::require_corpus("as3 debug framework", &dir) {
+        return None;
+    }
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
         .ok()?
         .filter_map(|e| e.ok().map(|d| d.path()))
@@ -113,7 +118,6 @@ fn harness_skipped(stderr: &str) -> bool {
 #[test]
 fn unset_is_zero_overhead() {
     if first_abc_bearing_swf().is_none() {
-        eprintln!("skip: as3 corpus absent");
         return;
     }
     let out: Output = run_harness(None, false);
@@ -128,7 +132,6 @@ fn unset_is_zero_overhead() {
 #[test]
 fn set_emits_decision_points() {
     if first_abc_bearing_swf().is_none() {
-        eprintln!("skip: as3 corpus absent");
         return;
     }
     let out: Output = run_harness(Some("as3"), false);
@@ -163,7 +166,6 @@ fn set_emits_decision_points() {
 #[test]
 fn other_scope_does_not_enable_as3() {
     if first_abc_bearing_swf().is_none() {
-        eprintln!("skip: as3 corpus absent");
         return;
     }
     let out: Output = run_harness(Some("jvm,native"), false);
@@ -178,7 +180,6 @@ fn other_scope_does_not_enable_as3() {
 #[test]
 fn json_mode_is_one_object_per_line() {
     if first_abc_bearing_swf().is_none() {
-        eprintln!("skip: as3 corpus absent");
         return;
     }
     let out: Output = run_harness(Some("as3"), true);

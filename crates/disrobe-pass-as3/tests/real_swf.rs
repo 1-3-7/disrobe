@@ -9,6 +9,8 @@
     clippy::missing_const_for_fn
 )]
 
+mod common;
+
 use std::path::PathBuf;
 
 use disrobe_pass_as3::abc::{DisasmLine, MethodInfo, disasm};
@@ -109,6 +111,9 @@ fn has_residual_goto(stmts: &[Stmt]) -> bool {
 }
 
 fn structure_corpus() -> Option<StructureTotals> {
+    if !common::require_corpus("corpus control-flow restructuring", &corpus_root()) {
+        return None;
+    }
     let dir: PathBuf = corpus_root();
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
     let mut totals: StructureTotals = StructureTotals::default();
@@ -146,16 +151,17 @@ fn structure_corpus() -> Option<StructureTotals> {
             }
         }
     }
-    if seen == 0 {
-        return None;
-    }
+    assert!(
+        seen > 0,
+        "the corpus directory is present but no SWF in it parsed, so this case would grade a \
+         smaller population than it claims"
+    );
     Some(totals)
 }
 
 #[test]
 fn corpus_control_flow_restructuring_is_sound_and_productive() {
     let Some(totals): Option<StructureTotals> = structure_corpus() else {
-        eprintln!("skip: corpus absent");
         return;
     };
     eprintln!("AS3 corpus restructuring totals: {totals:?}");
@@ -185,6 +191,9 @@ fn corpus_control_flow_restructuring_is_sound_and_productive() {
 use disrobe_pass_as3::lifter::{LocalNames, local_names_for, render_body};
 
 fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
+    if !common::require_corpus("corpus rendered bodies", &corpus_root()) {
+        return None;
+    }
     let dir: PathBuf = corpus_root();
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
     let mut bodies: usize = 0;
@@ -225,9 +234,11 @@ fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
             }
         }
     }
-    if seen == 0 {
-        return None;
-    }
+    assert!(
+        seen > 0,
+        "the corpus directory is present but no SWF in it parsed, so this case would grade a \
+         smaller population than it claims"
+    );
     Some((bodies, structurally_recovered, sample_leak))
 }
 
@@ -235,7 +246,6 @@ fn rendered_corpus_bodies() -> Option<(usize, usize, String)> {
 fn property_access_never_leaks_a_namespace_uri() {
     let Some((bodies, _full, leak)): Option<(usize, usize, String)> = rendered_corpus_bodies()
     else {
-        eprintln!("skip: corpus absent");
         return;
     };
     assert!(bodies > 1000, "corpus must lift many bodies");
@@ -286,6 +296,9 @@ fn count_raw_switches(stmts: &[Stmt]) -> usize {
 }
 
 fn dispatch_totals() -> Option<DispatchTotals> {
+    if !common::require_corpus("corpus lookupswitch dispatch", &corpus_root()) {
+        return None;
+    }
     let dir: PathBuf = corpus_root();
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
     let mut totals: DispatchTotals = DispatchTotals::default();
@@ -333,7 +346,6 @@ fn dispatch_totals() -> Option<DispatchTotals> {
 #[test]
 fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
     let Some(totals): Option<DispatchTotals> = dispatch_totals() else {
-        eprintln!("skip: corpus absent");
         return;
     };
     let pct: f64 = 100.0 * totals.folded as f64 / totals.lifted as f64;
@@ -368,7 +380,6 @@ fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
 fn corpus_recovery_rate_holds_an_honest_floor() {
     let Some((bodies, full, _leak)): Option<(usize, usize, String)> = rendered_corpus_bodies()
     else {
-        eprintln!("skip: corpus absent");
         return;
     };
     let pct: f64 = 100.0 * full as f64 / bodies as f64;
@@ -397,8 +408,10 @@ fn body_render_has_phi(text: &str) -> bool {
 #[test]
 fn no_structurally_recovered_body_renders_a_phi_placeholder() {
     let dir: PathBuf = corpus_root();
+    if !common::require_corpus("corpus phi placeholders", &dir) {
+        return;
+    }
     let Ok(entries): Result<std::fs::ReadDir, _> = std::fs::read_dir(&dir) else {
-        eprintln!("skip: corpus absent");
         return;
     };
     let mut bodies: usize = 0;
@@ -441,10 +454,11 @@ fn no_structurally_recovered_body_renders_a_phi_placeholder() {
             }
         }
     }
-    if seen == 0 {
-        eprintln!("skip: corpus absent");
-        return;
-    }
+    assert!(
+        seen > 0,
+        "the corpus directory is present but no SWF in it parsed, so this case would grade a \
+         smaller population than it claims"
+    );
     assert!(bodies > 1000, "corpus must lift many bodies");
     assert!(
         recovered > 1000,
@@ -472,13 +486,17 @@ fn corpus_root() -> PathBuf {
 }
 
 fn load_fixture(name: &str) -> Option<Vec<u8>> {
+    if !common::require_corpus_fixture("corpus fixture", &corpus_root(), name) {
+        return None;
+    }
     let path: PathBuf = corpus_root().join(name);
     match std::fs::read(&path) {
         Ok(bytes) => Some(bytes),
-        Err(_) => {
-            eprintln!("skip: {name} fixture absent ({})", path.display());
-            None
-        }
+        Err(error) => panic!(
+            "the corpus gate reported {} present, so failing to read it is a damaged corpus \
+             rather than an absent one: {error}",
+            path.display()
+        ),
     }
 }
 
@@ -493,13 +511,17 @@ struct CorpusTotals {
 }
 
 fn parse_corpus() -> Option<CorpusTotals> {
+    if !common::require_corpus("corpus parse", &corpus_root()) {
+        return None;
+    }
     let dir: PathBuf = corpus_root();
     let entries: std::fs::ReadDir = match std::fs::read_dir(&dir) {
         Ok(rd) => rd,
-        Err(_) => {
-            eprintln!("skip: corpus directory absent ({})", dir.display());
-            return None;
-        }
+        Err(error) => panic!(
+            "the corpus gate reported {} readable, so failing to list it is a damaged corpus \
+             rather than an absent one: {error}",
+            dir.display()
+        ),
     };
     let mut totals: CorpusTotals = CorpusTotals::default();
     let mut swf_seen: usize = 0;
@@ -553,13 +575,12 @@ fn parse_corpus() -> Option<CorpusTotals> {
             }
         }
     }
-    if swf_seen == 0 {
-        eprintln!(
-            "skip: corpus directory holds no .swf fixtures ({})",
-            dir.display()
-        );
-        return None;
-    }
+    assert!(
+        swf_seen > 0,
+        "the corpus directory {} is present but holds no parsable .swf, so this case would \
+         grade a smaller population than it claims",
+        dir.display()
+    );
     Some(totals)
 }
 

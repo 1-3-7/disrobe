@@ -8,6 +8,8 @@
     clippy::missing_const_for_fn
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
@@ -458,6 +460,9 @@ struct OracleTotals {
 
 fn run_oracle() -> Option<OracleTotals> {
     let dir: PathBuf = corpus_root();
+    if !common::require_corpus("as3 cfg equivalence", &dir) {
+        return None;
+    }
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
     let mut totals: OracleTotals = OracleTotals::default();
     let mut seen: usize = 0;
@@ -549,7 +554,6 @@ fn corpus_root() -> PathBuf {
 #[test]
 fn structured_form_is_cfg_equivalent_to_goto_form_on_real_corpus() {
     let Some(totals): Option<OracleTotals> = run_oracle() else {
-        eprintln!("skip: corpus absent");
         return;
     };
     eprintln!("AS3 CFG-equivalence oracle: {totals:?}");

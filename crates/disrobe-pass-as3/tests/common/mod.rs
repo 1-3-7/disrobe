@@ -339,3 +339,52 @@ pub(crate) fn evaluate(stmts: &[Stmt], method: &str, arguments: &[(u32, Value)])
         }
     }
 }
+
+pub(crate) fn corpus_is_declared_optional() -> bool {
+    std::env::var("DR_AS3_CORPUS_OPTIONAL").is_ok_and(|value: String| value == "1")
+}
+
+pub(crate) fn corpus_swf_count(root: &std::path::Path) -> usize {
+    std::fs::read_dir(root).map_or(0, |entries: std::fs::ReadDir| {
+        entries
+            .flatten()
+            .filter(|entry: &std::fs::DirEntry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension: &std::ffi::OsStr| extension.to_str())
+                    == Some("swf")
+            })
+            .count()
+    })
+}
+
+pub(crate) fn require_corpus(gate: &str, root: &std::path::Path) -> bool {
+    let available: usize = corpus_swf_count(root);
+    if available > 0 {
+        return true;
+    }
+    assert!(
+        corpus_is_declared_optional(),
+        "{gate} grades against the real SWF corpus at {}, and that corpus is absent. It is          gitignored, so it is missing in every fresh worktree and in CI, which is why this must          fail rather than pass quietly. Point DR_AS3_CORPUS at a directory of .swf files to grade          it here, or set DR_AS3_CORPUS_OPTIONAL=1 to declare that this environment is not          required to grade it.",
+        root.display()
+    );
+    eprintln!(
+        "{gate}: corpus declared not required at {}; graded 0 of 0 files",
+        root.display()
+    );
+    false
+}
+
+pub(crate) fn require_corpus_fixture(gate: &str, root: &std::path::Path, name: &str) -> bool {
+    if !require_corpus(gate, root) {
+        return false;
+    }
+    let path: std::path::PathBuf = root.join(name);
+    assert!(
+        path.is_file(),
+        "{gate} grades against {}, and the corpus directory is present but does not contain it.          A partial corpus must fail rather than grade a smaller population than the case claims.",
+        path.display()
+    );
+    true
+}
