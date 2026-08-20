@@ -33,7 +33,7 @@ const RUN_TIMEOUT_SECS: u64 = 20;
 const GRADED_OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
 const REPORTED_OPT_LEVELS: [&str; 1] = ["-O3"];
 const ABI_TARGETS: [AbiTarget; 2] = [AbiTarget::MsX64, AbiTarget::SysV];
-const EQUIVALENT_ROW_FLOOR: usize = 470;
+const EQUIVALENT_ROW_FLOOR: usize = 485;
 const ENTRY_ARITY: usize = 3;
 const OVER_INFERRED_ARGUMENT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 const REJECTION_MARKER: &str = "multiple/early returns not in forward-skip class";
@@ -483,6 +483,29 @@ const SHAPES: &[ExitShape] = &[
         permit_sibling_calls: false,
         gcc_only_flags: &[],
         channel: ResultChannel::Double,
+    },
+    ExitShape {
+        tag: "sibling_tail_shared_epilogue",
+        entry: "er_sib_shared",
+        functions: &["er_sib_shared", "er_sib_shared_h"],
+        c_source: "__attribute__((noinline,noclone)) long long er_sib_shared_h(long long x, long long y){ return x * 2 + y; }\n\
+                    long long er_sib_shared(long long a, long long b, long long c){ if (a < 0) return er_sib_shared_h(a, b); if (b < 0) return er_sib_shared_h(b, c); return er_sib_shared_h(c, a); }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
+        tag: "sibling_tail_dispatch",
+        entry: "er_sib_disp",
+        functions: &["er_sib_disp", "er_sib_disp_a", "er_sib_disp_b"],
+        c_source: "__attribute__((noinline,noclone)) long long er_sib_disp_a(long long x, long long y){ return x + y * 5; }\n\
+                    __attribute__((noinline,noclone)) long long er_sib_disp_b(long long x, long long y){ return x - y * 3; }\n\
+                    long long er_sib_disp(long long a, long long b, long long c){ if (a < 0) return -1; if (b > c) return er_sib_disp_a(a, b); return er_sib_disp_b(b, c); }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
     },
     ExitShape {
         tag: "shrink_wrapped_exit_sequences",
@@ -1184,14 +1207,13 @@ const fn sibling_tail_shape(permit_sibling_calls: bool) -> ExitShape {
     }
 }
 
-fn recover_sibling_tail(shape: &ExitShape, extra: &[&str]) -> RecoverOutcome {
+fn recover_sibling_tail(shape: &ExitShape, opt: &str, extra: &[&str]) -> RecoverOutcome {
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-sibling-tail");
     let out: PathBuf = scratch.path().join("sibling_tail.o");
     let mut flags: Vec<&str> = vec!["-fno-stack-protector"];
     flags.extend_from_slice(extra);
     flags.push("-c");
-    let object: Vec<u8> = match compile_object_reasoned("gcc", "-O3", &flags, shape.c_source, &out)
-    {
+    let object: Vec<u8> = match compile_object_reasoned("gcc", opt, &flags, shape.c_source, &out) {
         CompileOutcome::Object(bytes) => bytes,
         CompileOutcome::Rejected(reason) => {
             panic!("the sibling-tail fixture must compile: {reason}")
@@ -1203,7 +1225,7 @@ fn recover_sibling_tail(shape: &ExitShape, extra: &[&str]) -> RecoverOutcome {
 #[test]
 fn a_sibling_tail_call_among_several_returns_abstains_instead_of_becoming_a_back_edge() {
     let shape: ExitShape = sibling_tail_shape(true);
-    let outcome: RecoverOutcome = recover_sibling_tail(&shape, &[]);
+    let outcome: RecoverOutcome = recover_sibling_tail(&shape, "-O3", &[]);
     let RecoverOutcome::Abstained(reason) = outcome else {
         panic!(
             "a tail jump to a callee that sits below this function's entry must not be resolved as an intra-function edge"
@@ -1216,9 +1238,38 @@ fn a_sibling_tail_call_among_several_returns_abstains_instead_of_becoming_a_back
 }
 
 #[test]
+fn a_block_reached_only_by_a_guard_survives_the_tail_jump_that_precedes_it() {
+    let shape: ExitShape = ExitShape {
+        tag: "sibling_tail_adjacency",
+        entry: "er_sib_disp",
+        functions: &["er_sib_disp", "er_sib_disp_a", "er_sib_disp_b"],
+        c_source: "__attribute__((noinline,noclone)) long long er_sib_disp_a(long long x, long long y){ return x + y * 5; }\n\
+                    __attribute__((noinline,noclone)) long long er_sib_disp_b(long long x, long long y){ return x - y * 3; }\n\
+                    long long er_sib_disp(long long a, long long b, long long c){ if (a < 0) return -1; if (b > c) return er_sib_disp_a(a, b); return er_sib_disp_b(b, c); }",
+        extra_boundaries: &[],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    };
+    let RecoverOutcome::Ok(recovered) = recover_sibling_tail(&shape, "-O2", &[]) else {
+        panic!("two guarded tail calls and a constant return with no frame must recover");
+    };
+    let entry_body: &str = recovered
+        .tu
+        .split_once("rec_er_sib_disp(")
+        .map_or("", |(_, rest): (&str, &str)| rest);
+    assert!(
+        entry_body.contains("(uint64_t)(int64_t)-1LL"),
+        "the guard that returns a constant must survive the tail jump emitted before it: {}",
+        recovered.tu
+    );
+}
+
+#[test]
 fn the_same_source_recovers_a_straight_line_body_once_the_tail_jump_is_suppressed() {
     let shape: ExitShape = sibling_tail_shape(false);
-    let outcome: RecoverOutcome = recover_sibling_tail(&shape, &["-fno-optimize-sibling-calls"]);
+    let outcome: RecoverOutcome =
+        recover_sibling_tail(&shape, "-O3", &["-fno-optimize-sibling-calls"]);
     let RecoverOutcome::Ok(recovered) = outcome else {
         panic!("without a tail jump the same source must recover");
     };

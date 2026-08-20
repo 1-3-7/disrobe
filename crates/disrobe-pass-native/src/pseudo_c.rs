@@ -2849,6 +2849,12 @@ enum DirectJumpExit {
     TailCall { synthetic_return: u64 },
 }
 
+fn instruction_keeps_the_entry_stack(insn: &DisasmInsn) -> bool {
+    !is_frame_management(&insn.mnemonic, &insn.operands)
+        && !tail_prefix_writes_stack_pointer(insn)
+        && (!stack_depth_changing_mnemonic(&insn.mnemonic) || insn.mnemonic == "call")
+}
+
 fn classify_direct_jump_exit(
     insns: &[DisasmInsn],
     instruction_index: usize,
@@ -2857,6 +2863,7 @@ fn classify_direct_jump_exit(
     base: u64,
     function_end: u64,
     target: u64,
+    relocated_branch: bool,
 ) -> Result<DirectJumpExit> {
     let insn: &DisasmInsn = insns.get(instruction_index).ok_or_else(|| {
         Error::LlvmIr("direct jump index is outside the decoded instruction stream".to_owned())
@@ -2878,35 +2885,36 @@ fn classify_direct_jump_exit(
                         || is_xchg_self(&candidate.mnemonic, &candidate.operands)
                 })
             });
-    let entry_stack_state_is_preserved: bool =
-        insns
-            .get(..instruction_index)
-            .is_some_and(|prefix: &[DisasmInsn]| {
-                prefix.iter().all(|candidate: &DisasmInsn| {
-                    !is_frame_management(&candidate.mnemonic, &candidate.operands)
-                        && !tail_prefix_writes_stack_pointer(candidate)
-                        && (!stack_depth_changing_mnemonic(&candidate.mnemonic)
-                            || candidate.mnemonic == "call")
-                })
-            });
-    if !suffix_is_padding
-        || !entry_stack_state_is_preserved
-        || !proven_integer64_tail_targets.contains(&target)
+    if !proven_integer64_tail_targets.contains(&target)
         || instruction_end > function_end
+        || (base..function_end).contains(&target)
     {
         return Ok(DirectJumpExit::Internal);
     }
-    let padding_has_entry: bool = item_branch_targets(items)
-        .range(instruction_end..function_end)
-        .next()
-        .is_some();
-    if padding_has_entry || (base..function_end).contains(&target) {
-        Ok(DirectJumpExit::Internal)
-    } else {
-        Ok(DirectJumpExit::TailCall {
+    if suffix_is_padding {
+        let entry_stack_state_is_preserved: bool =
+            insns
+                .get(..instruction_index)
+                .is_some_and(|prefix: &[DisasmInsn]| {
+                    prefix.iter().all(instruction_keeps_the_entry_stack)
+                });
+        let padding_has_entry: bool = item_branch_targets(items)
+            .range(instruction_end..function_end)
+            .next()
+            .is_some();
+        if padding_has_entry || !entry_stack_state_is_preserved {
+            return Ok(DirectJumpExit::Internal);
+        }
+        return Ok(DirectJumpExit::TailCall {
             synthetic_return: instruction_end,
-        })
+        });
     }
+    if relocated_branch || !insns.iter().all(instruction_keeps_the_entry_stack) {
+        return Ok(DirectJumpExit::Internal);
+    }
+    Ok(DirectJumpExit::TailCall {
+        synthetic_return: insn.address,
+    })
 }
 
 fn build_leaf_items(
@@ -3145,6 +3153,7 @@ fn build_leaf_items(
                     base,
                     function_end,
                     target,
+                    relocated_branch,
                 )? {
                     return_width = Width::W64;
                     flags = None;
@@ -26245,7 +26254,7 @@ mod tests {
         ];
         let proven: BTreeSet<u64> = BTreeSet::from([0x2000]);
         let classification: DirectJumpExit =
-            classify_direct_jump_exit(&insns, 1, &[], &proven, 0x1000, 0x1008, 0x2000)
+            classify_direct_jump_exit(&insns, 1, &[], &proven, 0x1000, 0x1008, 0x2000, false)
                 .expect("classify the direct jump after the symmetric stack write");
         assert_eq!(classification, DirectJumpExit::Internal);
     }
