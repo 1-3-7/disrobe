@@ -140,8 +140,8 @@ const CASES: &[WithCase] = &[
     WithCase {
         label: "body_try",
         source: "def f(a):\n    with a():\n        try:\n            g()\n        except OSError:\n            h()\n",
-        equivalent_on: &["3.9", "3.10", "3.11"],
-        open_reason: "a try nested in a with body belongs to the exception region lane",
+        equivalent_on: ALL,
+        open_reason: "",
     },
     WithCase {
         label: "body_loop",

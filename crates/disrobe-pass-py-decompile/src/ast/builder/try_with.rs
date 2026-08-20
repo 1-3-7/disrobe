@@ -7006,7 +7006,7 @@ fn structure_async_with(
         _ => {}
     }
     let search_end: usize = region.region_end.max(region.try_end);
-    let body_end: usize = with_body_end(code, stream, body_start, search_end);
+    let body_end: usize = with_body_end(code, stream, body_start, search_end, region.handler_start);
     if let Some(ret) = async_with_stashed_return(code, stream, body_start, body_end)? {
         return Ok(Some((
             Stmt::With {
@@ -7409,7 +7409,9 @@ fn structure_with(
         ));
     }
     let search_end: usize = region.region_end.max(region.try_end);
-    let scanned_end: usize = with_body_end(code, stream, body_start, search_end);
+    let bounds: WithBodyBounds =
+        with_body_bounds(code, stream, body_start, search_end, region.handler_start);
+    let scanned_end: usize = bounds.end;
     let body_end: usize =
         clamp_with_body_to_protected(stream, region, body_start, scanned_end, search_end);
     if body_end < scanned_end
@@ -7422,6 +7424,19 @@ fn structure_with(
         let continuation: Vec<Stmt> =
             structure_stmts(code, stream, cont_start, region.handler_start)?;
         return Ok((assemble_with_chain(chain, body), continuation));
+    }
+    if let Some(extension) = bounds.extension {
+        let (elide_start, elide_end): (usize, usize) = extension.elide;
+        let mut patched: DecodedStream = stream.clone();
+        for op in &mut patched.ops[elide_start..elide_end] {
+            *op = CanonicalOp::Nop;
+        }
+        let (body, _tail): (Vec<Stmt>, Vec<Stmt>) =
+            structure_with_body(code, &patched, body_start, extension.end, search_end)?;
+        let tail_start: usize =
+            skip_with_cleanup_block(stream, elide_start, elide_end).unwrap_or(elide_start);
+        let tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, elide_end)?;
+        return Ok((assemble_with_chain(chain, body), tail));
     }
     let (body, mut tail): (Vec<Stmt>, Vec<Stmt>) =
         structure_with_body(code, stream, body_start, body_end, search_end)?;
@@ -7975,7 +7990,23 @@ fn with_body_exit_count(
     exits.len()
 }
 
-fn with_body_end(code: &CodeObject, stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+struct WithBodyExtension {
+    end: usize,
+    elide: (usize, usize),
+}
+
+struct WithBodyBounds {
+    end: usize,
+    extension: Option<WithBodyExtension>,
+}
+
+fn with_body_bounds(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    own_handler: usize,
+) -> WithBodyBounds {
     let handler_bound: usize = (lo..hi)
         .find(|&k: &usize| {
             matches!(
@@ -7985,22 +8016,70 @@ fn with_body_end(code: &CodeObject, stream: &DecodedStream, lo: usize, hi: usize
         })
         .unwrap_or(hi);
     if with_body_exit_count(code, stream, lo, handler_bound) >= 2 {
-        return handler_bound;
+        return WithBodyBounds {
+            end: handler_bound,
+            extension: None,
+        };
     }
-    for i in lo..hi {
-        if is_none_const_push(&stream.ops[i])
+    let pure_exit: Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_none_const_push(&stream.ops[i])
             && is_exit_none_triple(stream, i, hi)
             && with_cleanup_tail_is_pure(stream, i, hi)
-        {
-            return i;
-        }
+    });
+    let first_exit: Option<usize> = pure_exit.or_else(|| {
+        (lo..hi).find(|&i: &usize| {
+            is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, hi)
+        })
+    });
+    let end: usize = first_exit.unwrap_or(hi);
+    let extension: Option<WithBodyExtension> =
+        with_body_end_over_nested_handler(stream, lo, end, own_handler.min(hi)).map(
+            |nested: TryRegion| WithBodyExtension {
+                end: nested.region_end,
+                elide: (end, nested.handler_start),
+            },
+        );
+    WithBodyBounds { end, extension }
+}
+
+fn with_body_end(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    own_handler: usize,
+) -> usize {
+    with_body_bounds(code, stream, lo, hi, own_handler).end
+}
+
+fn with_body_end_over_nested_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    first_exit: usize,
+    own_handler: usize,
+) -> Option<TryRegion> {
+    if first_exit >= own_handler || lo >= first_exit {
+        return None;
     }
-    for i in lo..hi {
-        if is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, hi) {
-            return i;
-        }
+    let nested: TryRegion = find_try_region(stream, lo, own_handler)?;
+    if nested.is_with
+        || nested.try_start < lo
+        || nested.handler_start < first_exit
+        || nested.region_end > own_handler
+        || nested.region_end <= first_exit
+    {
+        return None;
     }
-    hi
+    let rejoins_cleanup: bool = (nested.handler_start..nested.region_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpForward(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t <= first_exit)
+    });
+    (rejoins_cleanup || nested.is_finally).then_some(nested)
 }
 
 fn with_cleanup_tail_is_pure(stream: &DecodedStream, triple_start: usize, hi: usize) -> bool {
