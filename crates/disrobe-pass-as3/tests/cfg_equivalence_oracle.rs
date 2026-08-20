@@ -1820,3 +1820,64 @@ fn a_short_circuit_still_resolves_when_its_merge_refuses_a_scope() {
     );
     assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
 }
+
+const CONTROL_SHAPES_SWF: &[u8] =
+    include_bytes!("../../../corpus/flash/avm2_disasm_oracle/control_shapes.swf");
+
+fn control_shapes_bodies() -> Vec<(String, Vec<Stmt>, LiftedBody)> {
+    let parsed: Swf =
+        swf::parse(CONTROL_SHAPES_SWF).expect("the tracked control shapes SWF parses");
+    let mut out: Vec<(String, Vec<Stmt>, LiftedBody)> = Vec::new();
+    for blob in parsed.collect_do_abc() {
+        let file: AbcFile =
+            abc::parse(&blob.abc_bytes).expect("the tracked control shapes ABC parses");
+        for body in &file.method_bodies {
+            let info: Option<&MethodInfo> = file.methods.get(body.method as usize);
+            let Ok(raw): Result<Vec<Stmt>, _> = lift_body_raw(&file, body, info) else {
+                continue;
+            };
+            let Ok(lifted): Result<LiftedBody, _> = lift_body(&file, body, info) else {
+                continue;
+            };
+            out.push((format!("method {}", body.method), raw, lifted));
+        }
+    }
+    out
+}
+
+#[test]
+fn the_control_shapes_fixture_structures_without_changing_its_cfg() {
+    let bodies: Vec<(String, Vec<Stmt>, LiftedBody)> = control_shapes_bodies();
+    assert!(
+        bodies.len() >= 100,
+        "the control shapes fixture must contribute its whole body population to this check, \
+         got {}",
+        bodies.len()
+    );
+    let mut graded: usize = 0;
+    let mut mismatched: Vec<(String, Equivalence)> = Vec::new();
+    for (name, raw, lifted) in &bodies {
+        if !lifted.fully_structured
+            || !lifted.dropped_opcodes.is_empty()
+            || lifted.opaque_operands > 0
+        {
+            continue;
+        }
+        graded += 1;
+        let verdict: Equivalence = classify(raw, &lifted.statements);
+        if verdict != Equivalence::Equivalent {
+            mismatched.push((name.clone(), verdict));
+        }
+    }
+    assert!(
+        graded >= 40,
+        "the graded population must stay large enough to be meaningful, got {graded} of {}",
+        bodies.len()
+    );
+    assert!(
+        mismatched.is_empty(),
+        "structuring must preserve the CFG of every gradable body in the authored control shapes \
+         program; {} of {graded} disagree: {mismatched:?}",
+        mismatched.len()
+    );
+}

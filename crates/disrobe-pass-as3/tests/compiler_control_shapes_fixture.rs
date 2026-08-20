@@ -377,6 +377,23 @@ const AUTHORED_METHODS: [&str; 8] = [
 ];
 const FULLY_STRUCTURED_FLOOR: usize = 7;
 
+fn squeeze(text: &str) -> String {
+    let mut out: String = String::with_capacity(text.len());
+    let mut pending_space: bool = false;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(character);
+    }
+    out
+}
+
 fn renders_an_empty_operand(text: &str) -> bool {
     text.lines()
         .any(|line: &str| line.trim_end().ends_with("= ;"))
@@ -441,5 +458,31 @@ fn the_authored_control_shapes_hold_their_measured_structuring_floor() {
          {unstructured:?}",
         AUTHORED_METHODS.len(),
         AUTHORED_METHODS.len()
+    );
+}
+
+const EXPECTED_LABELLED_SOURCE: &str =
+    "\t\t\t\tif (row * column > 12) {\n\t\t\t\t\tstopped = true;\n\t\t\t\t\tbreak;\n\t\t\t\t}\n";
+
+#[test]
+fn the_inner_loop_exit_recovers_as_the_break_the_compiler_was_given() {
+    assert!(
+        HAXE_SOURCE.contains(EXPECTED_LABELLED_SOURCE),
+        "the authored program must still end its inner loop with a break, which is what this \
+         grade reads"
+    );
+    let abc: AbcFile = parse_fixture();
+    let (_, text): (LiftedBody, String) = recovered(&abc, "labelled");
+    let squeezed: String = squeeze(&text);
+    assert!(
+        squeezed.contains("= Boolean(true); break;"),
+        "the authored source sets its flag and then BREAKS the inner loop; recovering that jump \
+         as a continue would rebind it to the inner loop head and change what the program does: \
+         {text}"
+    );
+    assert!(
+        squeezed.contains("== 2)) { continue;"),
+        "the authored continue must stay a continue, so this grade cannot pass by turning every \
+         loop exit into a break: {text}"
     );
 }

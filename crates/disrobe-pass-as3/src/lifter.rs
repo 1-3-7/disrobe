@@ -5423,6 +5423,10 @@ fn structure_with(stmts: Vec<Stmt>, regions: &[WithRegion], depth: usize) -> Vec
 }
 
 fn structure_loops(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
+    structure_loops_within(stmts, depth, NO_BREAK_LABEL)
+}
+
+fn structure_loops_within(stmts: Vec<Stmt>, depth: usize, tail_break: usize) -> Vec<Stmt> {
     if depth == 0 {
         return stmts;
     }
@@ -5437,7 +5441,7 @@ fn structure_loops(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
             i += 1;
             continue;
         }
-        if let Some((consumed, stmt)) = try_match_iterator_loop(&stmts, i, depth) {
+        if let Some((consumed, stmt)) = try_match_iterator_loop(&stmts, i, depth, tail_break) {
             out.push(stmt);
             i += consumed;
             continue;
@@ -5447,7 +5451,9 @@ fn structure_loops(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
             i += consumed;
             continue;
         }
-        if let Some((consumed, while_stmt)) = try_match_while_with_exits(&stmts, i, depth) {
+        if let Some((consumed, while_stmt)) =
+            try_match_while_with_exits(&stmts, i, depth, tail_break)
+        {
             out.push(while_stmt);
             i += consumed;
             continue;
@@ -5462,7 +5468,8 @@ fn structure_loops(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
             i += consumed;
             continue;
         }
-        if let Some((consumed, while_stmt)) = try_match_top_test_while(&stmts, i, depth) {
+        if let Some((consumed, while_stmt)) = try_match_top_test_while(&stmts, i, depth, tail_break)
+        {
             out.push(while_stmt);
             i += consumed;
             continue;
@@ -5571,7 +5578,12 @@ fn stmts_target_label(stmts: &[Stmt], label: usize) -> bool {
     })
 }
 
-fn try_match_while_with_exits(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn try_match_while_with_exits(
+    stmts: &[Stmt],
+    i: usize,
+    depth: usize,
+    tail_break: usize,
+) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
     }
@@ -5599,7 +5611,8 @@ fn try_match_while_with_exits(stmts: &[Stmt], i: usize, depth: usize) -> Option<
     }
     let merge_label: usize = match stmts.get(test_idx + 2) {
         Some(Stmt::Label(l)) => *l,
-        _ => NO_BREAK_LABEL,
+        None => tail_break,
+        Some(_) => NO_BREAK_LABEL,
     };
     let body_slice: &[Stmt] = &stmts[i + 2..test_idx];
     if !region_is_structurable(body_slice) {
@@ -5629,9 +5642,10 @@ fn try_match_while_with_exits(stmts: &[Stmt], i: usize, depth: usize) -> Option<
         continue_label: test_label,
         break_label: merge_label,
     };
-    let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
-    let body: Vec<Stmt> =
-        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?;
+    let nested: Vec<Stmt> =
+        structure_loops_within(body_slice.to_vec(), depth - 1, exits.continue_label);
+    let rewritten: Vec<Stmt> = rewrite_loop_exits(nested, &exits)?;
+    let body: Vec<Stmt> = structure_acyclic(&rewritten, None, depth - 1)?;
     if !body.iter().any(loop_has_real_exit) {
         return None;
     }
@@ -5746,7 +5760,12 @@ fn iterator_call(var: &Expr, value: &Expr) -> Option<(Expr, Expr, IteratorKind)>
     Some(((*var).clone(), (**callee).clone(), kind))
 }
 
-fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn try_match_iterator_loop(
+    stmts: &[Stmt],
+    i: usize,
+    depth: usize,
+    tail_break: usize,
+) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
     }
@@ -5795,7 +5814,8 @@ fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(us
     } else {
         let merge_label: usize = match stmts.get(test_idx + 2) {
             Some(Stmt::Label(l)) => *l,
-            _ => NO_BREAK_LABEL,
+            None => tail_break,
+            Some(_) => NO_BREAK_LABEL,
         };
         let inner_continue_only: usize = body_slice
             .iter()
@@ -5814,8 +5834,10 @@ fn try_match_iterator_loop(stmts: &[Stmt], i: usize, depth: usize) -> Option<(us
             continue_label: test_label,
             break_label: merge_label,
         };
-        let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
-        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?
+        let nested: Vec<Stmt> =
+            structure_loops_within(body_slice.to_vec(), depth - 1, exits.continue_label);
+        let rewritten: Vec<Stmt> = rewrite_loop_exits(nested, &exits)?;
+        structure_acyclic(&rewritten, None, depth - 1)?
     };
     let stmt: Stmt = match kind {
         IteratorKind::Each => Stmt::ForEach {
@@ -5937,7 +5959,12 @@ fn latch_index(stmts: &[Stmt], from: usize, top_label: usize) -> Option<usize> {
         .map(|(index, _): (usize, &Stmt)| index)
 }
 
-fn try_match_top_test_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn try_match_top_test_while(
+    stmts: &[Stmt],
+    i: usize,
+    depth: usize,
+    tail_break: usize,
+) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
     }
@@ -5956,7 +5983,8 @@ fn try_match_top_test_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(u
     let exit_label: usize = if exit_label == NO_BREAK_LABEL {
         match stmts.get(latch + 1) {
             Some(Stmt::Label(l)) => *l,
-            _ => NO_BREAK_LABEL,
+            None => tail_break,
+            Some(_) => NO_BREAK_LABEL,
         }
     } else {
         if !matches!(stmts.get(latch + 1), Some(Stmt::Label(l)) if *l == exit_label) {
@@ -5979,9 +6007,10 @@ fn try_match_top_test_while(stmts: &[Stmt], i: usize, depth: usize) -> Option<(u
         continue_label: top_label,
         break_label: exit_label,
     };
-    let rewritten: Vec<Stmt> = rewrite_loop_exits(body_slice.to_vec(), &exits)?;
-    let body: Vec<Stmt> =
-        structure_acyclic(&structure_loops(rewritten, depth - 1), None, depth - 1)?;
+    let nested: Vec<Stmt> =
+        structure_loops_within(body_slice.to_vec(), depth - 1, exits.continue_label);
+    let rewritten: Vec<Stmt> = rewrite_loop_exits(nested, &exits)?;
+    let body: Vec<Stmt> = structure_acyclic(&rewritten, None, depth - 1)?;
     Some((latch + 1 - i, Stmt::While { cond, body }))
 }
 
