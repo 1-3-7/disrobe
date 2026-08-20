@@ -1881,3 +1881,161 @@ fn the_control_shapes_fixture_structures_without_changing_its_cfg() {
         mismatched.len()
     );
 }
+
+fn typed_handler_abc() -> AbcFile {
+    let mut abc: AbcFile = bare_abc();
+    abc.cpool = ConstantPool {
+        integers: vec![0],
+        uintegers: vec![0],
+        doubles: vec![0.0],
+        strings: vec![
+            String::new(),
+            String::new(),
+            String::from("SecurityError"),
+            String::from("Error"),
+            String::from("fault"),
+        ],
+        namespaces: vec![
+            disrobe_pass_as3::abc::Namespace {
+                kind: 0,
+                name_index: 0,
+            },
+            disrobe_pass_as3::abc::Namespace {
+                kind: 0x16,
+                name_index: 1,
+            },
+        ],
+        ns_sets: vec![disrobe_pass_as3::abc::NamespaceSet {
+            namespaces: Vec::new(),
+        }],
+        multinames: vec![
+            disrobe_pass_as3::abc::Multiname::QName {
+                ns_index: 0,
+                name_index: 0,
+            },
+            disrobe_pass_as3::abc::Multiname::QName {
+                ns_index: 1,
+                name_index: 2,
+            },
+            disrobe_pass_as3::abc::Multiname::QName {
+                ns_index: 1,
+                name_index: 3,
+            },
+            disrobe_pass_as3::abc::Multiname::QName {
+                ns_index: 1,
+                name_index: 4,
+            },
+        ],
+    };
+    abc
+}
+
+fn two_typed_handlers_body() -> MethodBody {
+    let mut code: Vec<u8> = vec![0x24, 0x07, 0x29];
+    let merge_operand: usize = code.len();
+    code.push(0x10);
+    push_s24(&mut code, 0);
+    let first_handler: usize = code.len();
+    code.extend_from_slice(&[0xD5, 0x24, 0x01, 0xD6]);
+    let first_jump: usize = code.len();
+    code.push(0x10);
+    push_s24(&mut code, 0);
+    let second_handler: usize = code.len();
+    code.extend_from_slice(&[0xD5, 0x24, 0x02, 0xD6]);
+    let second_jump: usize = code.len();
+    code.push(0x10);
+    push_s24(&mut code, 0);
+    let merge: usize = code.len();
+    code.push(0x47);
+
+    patch_branch_target(&mut code, merge_operand + 1, merge);
+    patch_branch_target(&mut code, first_jump + 1, merge);
+    patch_branch_target(&mut code, second_jump + 1, merge);
+
+    let mut body: MethodBody = switch_body(code, 4);
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 3,
+        target: first_handler as u32,
+        exc_type: 1,
+        var_name: 3,
+    });
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 3,
+        target: second_handler as u32,
+        exc_type: 2,
+        var_name: 3,
+    });
+    body
+}
+
+#[test]
+fn two_typed_handlers_over_one_range_recover_as_two_catch_clauses() {
+    let abc: AbcFile = typed_handler_abc();
+    let body: MethodBody = two_typed_handlers_body();
+    assert_eq!(
+        body.exceptions.len(),
+        2,
+        "this case exists to cover a range carrying two handlers; with one it proves nothing"
+    );
+    assert_eq!(
+        body.exceptions[0].from, body.exceptions[1].from,
+        "both handlers must guard the same range"
+    );
+    assert_eq!(
+        body.exceptions[0].to, body.exceptions[1].to,
+        "both handlers must guard the same range"
+    );
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw typed handler lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("typed handler lift");
+
+    let tries: Vec<&Stmt> = lifted
+        .statements
+        .iter()
+        .filter(|statement: &&Stmt| matches!(statement, Stmt::Try { .. }))
+        .collect();
+    assert_eq!(
+        tries.len(),
+        1,
+        "one guarded range is one try, never one try per handler: {lifted:#?}"
+    );
+    let Stmt::Try { catches, .. } = tries[0] else {
+        panic!("the guarded range must recover as a try: {lifted:#?}");
+    };
+    let recovered: Vec<(&str, &str)> = catches
+        .iter()
+        .map(|clause: &CatchClause| (clause.var_name.as_str(), clause.type_name.as_str()))
+        .collect();
+    assert_eq!(
+        recovered,
+        vec![("fault", "SecurityError"), ("fault", "Error")],
+        "every handler on the range must reach the output, in the order the exception table \
+         lists them, because that is the order the machine tries them: {lifted:#?}"
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn a_handler_whose_layout_disagrees_with_the_table_keeps_one_clause() {
+    let abc: AbcFile = typed_handler_abc();
+    let mut body: MethodBody = two_typed_handlers_body();
+    body.exceptions.swap(0, 1);
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("reordered handler lift");
+    let tries: Vec<&Stmt> = lifted
+        .statements
+        .iter()
+        .filter(|statement: &&Stmt| matches!(statement, Stmt::Try { .. }))
+        .collect();
+    assert_eq!(tries.len(), 1, "{lifted:#?}");
+    let Stmt::Try { catches, .. } = tries[0] else {
+        panic!("{lifted:#?}");
+    };
+    assert_eq!(
+        catches.len(),
+        1,
+        "when the table order and the code layout disagree the pairing is not provable, so the \
+         recovery must keep one clause rather than guess which handler owns which body: \
+         {lifted:#?}"
+    );
+}

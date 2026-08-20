@@ -3668,24 +3668,46 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
         .and_then(|m: usize| label_at(&stmts, m))
         .filter(|m: &usize| *m > target_idx)
         .unwrap_or(stmts.len());
-    let catch_inner: &[Stmt] = strip_catch_prologue(&stmts[target_idx..catch_end]);
+    let group: Vec<&RegionInfo> = regions
+        .iter()
+        .filter(|r: &&RegionInfo| r.from == region.from && r.to == region.to)
+        .collect();
+    let laid_out: Option<Vec<usize>> = group
+        .iter()
+        .map(|r: &&RegionInfo| label_at(&stmts, r.target))
+        .collect();
+    let handler_starts: Vec<usize> = match laid_out {
+        Some(starts)
+            if starts.first() == Some(&target_idx)
+                && starts.last().is_some_and(|last: &usize| *last < catch_end)
+                && starts.windows(2).all(|pair: &[usize]| pair[0] < pair[1]) =>
+        {
+            starts
+        }
+        _ => vec![target_idx],
+    };
     let remaining_regions: Vec<RegionInfo> = regions
         .iter()
         .filter(|r: &&RegionInfo| r.from != region.from || r.to != region.to)
         .cloned()
         .collect();
     let try_body: Vec<Stmt> = structure_try(try_body_slice.to_vec(), &remaining_regions, depth - 1);
-    let catch_body: Vec<Stmt> = structure_try(catch_inner.to_vec(), &remaining_regions, depth - 1);
-    let catch: CatchClause = CatchClause {
-        var_name: region.var_name.clone(),
-        type_name: region.type_name.clone(),
-        body: catch_body,
-    };
+    let mut catches: Vec<CatchClause> = Vec::with_capacity(handler_starts.len());
+    for (index, start) in handler_starts.iter().enumerate() {
+        let end: usize = handler_starts.get(index + 1).copied().unwrap_or(catch_end);
+        let inner: &[Stmt] = strip_catch_prologue(&stmts[*start..end]);
+        let owner: &RegionInfo = group.get(index).copied().unwrap_or(region);
+        catches.push(CatchClause {
+            var_name: owner.var_name.clone(),
+            type_name: owner.type_name.clone(),
+            body: structure_try(inner.to_vec(), &remaining_regions, depth - 1),
+        });
+    }
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
     out.extend_from_slice(&stmts[..from_idx]);
     out.push(Stmt::Try {
         body: try_body,
-        catches: vec![catch],
+        catches,
     });
     out.extend_from_slice(&stmts[catch_end..]);
     out
