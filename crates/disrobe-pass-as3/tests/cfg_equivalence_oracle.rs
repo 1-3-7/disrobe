@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ConstantPool, ExceptionInfo, MethodBody, MethodInfo};
 use disrobe_pass_as3::lifter::{
-    CaseLabel, CatchClause, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
+    CaseLabel, CatchClause, Expr, LiftedBody, LocalNames, Stmt, SwitchCase, lift_body,
+    lift_body_raw, local_names_for, render_body,
 };
 use disrobe_pass_as3::swf::{self, Swf};
 
@@ -1688,4 +1689,46 @@ fn adjacent_case_fallthrough_preserves_successor_edges() {
     let mut structured_flat: Flat = Flat::default();
     lower_structured(&lifted.statements, &mut structured_flat, None);
     assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
+fn a_scope_object_stored_into_a_local_renders_as_a_named_operand() {
+    let code: Vec<u8> = vec![0xD0, 0x30, 0x65, 0x00, 0xD5, 0x47];
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 2);
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("scope-object value lift");
+    let names: LocalNames = local_names_for(&abc, None);
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        !rendered
+            .lines()
+            .any(|line: &str| line.trim_end().ends_with("= ;")),
+        "an AVM2 scope object reaching a value position must render as a named operand, never as \
+         nothing: {rendered}"
+    );
+    assert!(
+        rendered.contains("$scope"),
+        "the scope object must keep a spelling that identifies what it is: {rendered}"
+    );
+}
+
+#[test]
+fn an_activation_object_stored_into_a_local_renders_as_a_named_operand() {
+    let code: Vec<u8> = vec![0xD0, 0x30, 0x57, 0x2A, 0xD6, 0x30, 0x47];
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("activation value lift");
+    let names: LocalNames = local_names_for(&abc, None);
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        !rendered
+            .lines()
+            .any(|line: &str| line.trim_end().ends_with("= ;")),
+        "an AVM2 activation object reaching a value position must render as a named operand, \
+         never as nothing: {rendered}"
+    );
+    assert!(
+        rendered.contains("$activation"),
+        "the activation object must keep a spelling that identifies what it is: {rendered}"
+    );
 }

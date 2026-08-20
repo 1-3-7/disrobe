@@ -224,7 +224,7 @@ impl Expr {
                 format!("({} as {})", operand.render(names), ty.render(names))
             }
             Self::Closure(idx) => format!("function() {{ /* closure method #{idx} */ }}"),
-            Self::ScopeObject => String::new(),
+            Self::ScopeObject => SCOPE_OBJECT_NAME.to_owned(),
             Self::Activation => ACTIVATION_NAME.to_owned(),
             Self::CaughtException => "$exc".to_owned(),
             Self::Phi { block, slot } => format!("phi{block}_{slot}"),
@@ -601,6 +601,7 @@ const OP_NEWACTIVATION: u8 = 0x57;
 const OP_KILL: u8 = 0x08;
 const OP_HASNEXT2: u8 = 0x32;
 const ACTIVATION_NAME: &str = "$activation";
+const SCOPE_OBJECT_NAME: &str = "$scope";
 
 const fn is_setlocal(op: u8) -> bool {
     matches!(op, 0x63 | 0xD4 | 0xD5 | 0xD6 | 0xD7)
