@@ -312,3 +312,88 @@ fn synthetic_swf_disassembles_to_a_real_opcode_stream() {
         "the sumTo body must carry the iflt back-edge that drives the loop"
     );
 }
+
+const ZWS_FIXTURE: &[u8] = include_bytes!("fixtures/synthetic_counter_zws.swf");
+
+fn recovered_program(bytes: &[u8], expected: SwfCompression) -> String {
+    let parsed: Swf = swf::parse(bytes).unwrap_or_else(|error: disrobe_pass_as3::Error| {
+        panic!("the committed container fixture must parse: {error}")
+    });
+    assert_eq!(
+        parsed.header.compression, expected,
+        "the fixture must still be the container form this case grades"
+    );
+    let blobs: Vec<DoAbc> = parsed.collect_do_abc();
+    assert_eq!(
+        blobs.len(),
+        1,
+        "each container fixture carries exactly one DoABC tag"
+    );
+    let file: AbcFile = abc::parse(&blobs[0].abc_bytes).expect("committed ABC must parse");
+    disrobe_pass_as3::decompile::render_program(&file).expect("committed ABC must render")
+}
+
+#[test]
+fn the_lzma_container_is_transparent_to_recovery() {
+    assert_eq!(
+        &ZWS_FIXTURE[..3],
+        b"ZWS",
+        "the committed LZMA fixture must keep the signature this case grades"
+    );
+    assert_eq!(
+        ZWS_FIXTURE[3], 13,
+        "the committed LZMA fixture must keep its SWF version"
+    );
+
+    let uncompressed: String =
+        recovered_program(&load("synthetic_counter_fws.swf"), SwfCompression::None);
+    let zlib: String = recovered_program(&load("synthetic_counter_cws.swf"), SwfCompression::Zlib);
+    let lzma: String = recovered_program(ZWS_FIXTURE, SwfCompression::Lzma);
+
+    assert!(
+        uncompressed.contains("class Counter"),
+        "the shared body must still be the Counter program these three containers carry: \
+         {uncompressed}"
+    );
+    assert_eq!(
+        lzma, uncompressed,
+        "an LZMA container must recover the same program as the uncompressed one; the container \
+         is transport, not content"
+    );
+    assert_eq!(
+        lzma, zlib,
+        "an LZMA container must recover the same program as the zlib one; the container is \
+         transport, not content"
+    );
+}
+
+#[test]
+fn the_lzma_fixture_declares_the_length_its_stream_actually_holds() {
+    let declared_file_length: u32 = u32::from_le_bytes([
+        ZWS_FIXTURE[4],
+        ZWS_FIXTURE[5],
+        ZWS_FIXTURE[6],
+        ZWS_FIXTURE[7],
+    ]);
+    let compressed_length: u32 = u32::from_le_bytes([
+        ZWS_FIXTURE[8],
+        ZWS_FIXTURE[9],
+        ZWS_FIXTURE[10],
+        ZWS_FIXTURE[11],
+    ]);
+    let stream_length: u32 =
+        u32::try_from(ZWS_FIXTURE.len() - 17).expect("the fixture is far smaller than u32");
+    assert_eq!(
+        compressed_length, stream_length,
+        "the SWF LZMA header declares the byte count of the stream that follows its five property \
+         bytes, and a fixture whose declaration disagrees would grade the parser against a \
+         malformed file rather than a valid one"
+    );
+    let uncompressed: Vec<u8> = load("synthetic_counter_fws.swf");
+    assert_eq!(
+        declared_file_length as usize,
+        uncompressed.len(),
+        "the uncompressed length an LZMA SWF declares is the size of the whole file once expanded, \
+         which is exactly the uncompressed fixture carrying the same body"
+    );
+}

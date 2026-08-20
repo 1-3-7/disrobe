@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lzma
 import struct
 import sys
 import zlib
@@ -231,6 +232,20 @@ def build_swf(compression: str) -> bytes:
         out.append(13)
         out += struct.pack("<I", file_length)
         out += zlib.compress(payload_for_length, 9)
+    elif compression == "lzma":
+        alone: bytes = lzma.compress(
+            payload_for_length,
+            format=lzma.FORMAT_ALONE,
+            filters=[{"id": lzma.FILTER_LZMA1, "preset": 9}],
+        )
+        props: bytes = alone[:5]
+        stream: bytes = alone[13:]
+        out += b"ZWS"
+        out.append(13)
+        out += struct.pack("<I", file_length)
+        out += struct.pack("<I", len(stream))
+        out += props
+        out += stream
     else:
         raise ValueError(compression)
     return bytes(out)
@@ -242,6 +257,11 @@ def main() -> None:
     (out_dir / "synthetic_counter_fws.swf").write_bytes(build_swf("uncompressed"))
     (out_dir / "synthetic_counter_cws.swf").write_bytes(build_swf("zlib"))
     print("wrote synthetic_counter_fws.swf and synthetic_counter_cws.swf")
+    if len(sys.argv) > 2:
+        zws_path: Path = Path(sys.argv[2])
+        zws_path.parent.mkdir(parents=True, exist_ok=True)
+        zws_path.write_bytes(build_swf("lzma"))
+        print(f"wrote {zws_path.name}")
 
 
 if __name__ == "__main__":
