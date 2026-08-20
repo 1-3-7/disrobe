@@ -1161,26 +1161,27 @@ struct Measurement {
     extra_methods: usize,
 }
 
-fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
+fn measure(dimensions: GradedDimensions) -> Result<Measurement, String> {
     if !java_available() {
-        eprintln!(
-            "SKIP reference differential: `java` is not on PATH. Install a JRE, or run with the reference decompiler available."
-        );
-        return None;
+        return Err(String::from(
+            "the reference differential grades disrobe against an external decompiler, and \
+             `java` is not on PATH. Install a JRE.",
+        ));
     }
     let Some(jar): Option<PathBuf> = reference_jar() else {
-        eprintln!(
-            "SKIP reference differential: no reference decompiler jar found. Set DR_AS3_REF_JAR to an ffdec-cli.jar / ffdec.jar path, or install it under <home>/tools/ffdec/."
-        );
-        return None;
+        return Err(String::from(
+            "the reference differential needs an external decompiler jar and none was found. \
+             Set DR_AS3_REF_JAR to an ffdec-cli.jar or ffdec.jar path, or install one under \
+             <home>/tools/ffdec/.",
+        ));
     };
     let corpus: PathBuf = corpus_root();
     let Ok(entries): Result<std::fs::ReadDir, _> = std::fs::read_dir(&corpus) else {
-        eprintln!(
-            "SKIP reference differential: corpus directory absent ({})",
+        return Err(format!(
+            "the reference differential grades against the real SWF corpus and its directory \
+             is absent ({}). Point DR_AS3_CORPUS at a directory of .swf files.",
             corpus.display()
-        );
-        return None;
+        ));
     };
     let mut swfs: Vec<PathBuf> = entries
         .flatten()
@@ -1193,11 +1194,11 @@ fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
         .collect();
     swfs.sort();
     if swfs.is_empty() {
-        eprintln!(
-            "SKIP reference differential: corpus holds no .swf fixtures ({})",
+        return Err(format!(
+            "the reference differential grades against the real SWF corpus and the directory \
+             holds no .swf fixtures ({}). Point DR_AS3_CORPUS at a populated corpus.",
             corpus.display()
-        );
-        return None;
+        ));
     }
     let scratch: PathBuf = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("as3-reference-export");
     let _ = std::fs::create_dir_all(&scratch);
@@ -1350,7 +1351,7 @@ fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
             }
         }
     }
-    Some(Measurement {
+    Ok(Measurement {
         tally,
         disagreements,
         accounting,
@@ -1459,9 +1460,8 @@ fn indent_block(text: &str) -> String {
 #[test]
 #[ignore = "needs java and an external reference decompiler; run with --ignored"]
 fn as3_lift_agrees_with_an_independent_reference_decompiler() {
-    let Some(m): Option<Measurement> = measure(GradedDimensions::ALL) else {
-        return;
-    };
+    let m: Measurement =
+        measure(GradedDimensions::ALL).unwrap_or_else(|missing: String| panic!("{missing}"));
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
@@ -1610,9 +1610,7 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
         calls: true,
         control: false,
     };
-    let Some(m): Option<Measurement> = measure(dimensions) else {
-        return;
-    };
+    let m: Measurement = measure(dimensions).unwrap_or_else(|missing: String| panic!("{missing}"));
     let rate: f64 = report(&m);
     assert_population(&m);
     assert!(
