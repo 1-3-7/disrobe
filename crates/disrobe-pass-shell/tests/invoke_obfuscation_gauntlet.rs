@@ -281,10 +281,14 @@ fn string_format_fold_matches_live_powershell_string_format() {
         "(\"{2}{0}{1}\" -f 'bje','ct','Get-WmiO')",
         "(\"{0}{1}{2}{3}\" -f 'Win','32_','Opera','tingSystem')",
     ];
+    let mut graded: usize = 0;
     for expr in expressions {
         let Some(expected): Option<String> = real_powershell_eval(exe, expr) else {
-            eprintln!("skip {expr}: live powershell did not evaluate");
-            continue;
+            panic!(
+                "{exe} was located above and `{expr}` is a fixed expression in this file, so a \
+                 failure to evaluate it is a defect in this probe rather than a reason to grade \
+                 one expression fewer"
+            );
         };
         let r: ReverseReport = reverse_string(expr);
         let folded: &str = r.output.trim_matches('"');
@@ -292,5 +296,12 @@ fn string_format_fold_matches_live_powershell_string_format() {
             folded, expected,
             "disrobe String.Format fold of `{expr}` must equal live PowerShell output"
         );
+        graded = graded.saturating_add(1);
     }
+    assert_eq!(
+        graded,
+        expressions.len(),
+        "every expression must be graded against live PowerShell, or this case reports success \
+         over a population it never measured"
+    );
 }
