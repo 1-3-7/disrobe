@@ -504,6 +504,9 @@ fn object_backed_value_switches_keep_the_proven_switch_route() {
 #[test]
 fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
     if !cfg!(windows) {
+        eprintln!(
+            "skipping object_backed_size_optimized_value_switches_never_use_generic_rip_lea: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let host_cc: String = gcc().expect("host gcc");
@@ -554,6 +557,9 @@ fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
 #[test]
 fn object_backed_size_optimized_host_value_switches_recover_relocated_tables() {
     if !cfg!(windows) {
+        eprintln!(
+            "skipping object_backed_size_optimized_host_value_switches_recover_relocated_tables: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let host_cc: String = gcc().expect("host gcc");
@@ -587,6 +593,9 @@ fn object_backed_size_optimized_host_value_switches_recover_relocated_tables() {
 #[test]
 fn object_backed_value_switch_normalizes_nonzero_section_addresses() {
     if !cfg!(windows) {
+        eprintln!(
+            "skipping object_backed_value_switch_normalizes_nonzero_section_addresses: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let host_cc: String = gcc().expect("host gcc");
@@ -698,6 +707,9 @@ fn object_backed_value_switch_normalizes_nonzero_section_addresses() {
 #[test]
 fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
     if !cfg!(windows) {
+        eprintln!(
+            "skipping object_backed_relocated_leaf_lea_never_uses_the_raw_displacement: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let host_cc: String = gcc().expect("host gcc");
@@ -814,6 +826,9 @@ fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
 #[test]
 fn direct_instruction_trap_arm_recovers_as_a_guard() {
     if !cfg!(target_arch = "x86_64") {
+        eprintln!(
+            "skipping direct_instruction_trap_arm_recovers_as_a_guard: this case reads a host-native object and only applies on an x86-64 target architecture, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let compiler: String = clang().expect("clang");
@@ -963,6 +978,9 @@ fn punpcklqdq_assigned_high_qword_is_observable_after_a_lane_shuffle() {
 #[test]
 fn host_o3_nested_loop_recovers_after_vector_lane_reduction() {
     if !cfg!(windows) {
+        eprintln!(
+            "skipping host_o3_nested_loop_recovers_after_vector_lane_reduction: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
+        );
         return;
     }
     let host_cc: String = gcc().expect("host gcc");

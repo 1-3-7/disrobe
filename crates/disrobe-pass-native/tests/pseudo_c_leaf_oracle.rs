@@ -1798,13 +1798,11 @@ fn leaf_functions_recompile_to_behavioral_equivalence() {
         }
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping leaf behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
-            BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the leaf behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
+        BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("driver.c");
@@ -2327,13 +2325,11 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping memory-access behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
-            MEM_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the memory-access behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
+        MEM_BATTERY.len()
+    );
 
     let driver: String = build_mem_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("mem_driver.c");
@@ -3173,13 +3169,11 @@ fn control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping control-flow behavioral differential: this compiler build lowered none of the {} battery cases into the control-flow leaf class ({branchy_count} branchy)",
-            CF_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the control-flow behavioral differential: this compiler build lowered none of the {} battery cases into the control-flow leaf class ({branchy_count} branchy)",
+        CF_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("cf_driver.c");
@@ -3332,13 +3326,11 @@ fn split_return_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping split-return behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({split_idiom_count} out-of-line tail-return idiom)",
-            SPLIT_RETURN_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the split-return behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({split_idiom_count} out-of-line tail-return idiom)",
+        SPLIT_RETURN_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("split_driver.c");
@@ -3604,13 +3596,11 @@ fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping loop behavioral differential: this compiler build reconstructed no structured do-while loop from the {} battery cases ({loop_count} loops)",
-            LOOP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the loop behavioral differential: this compiler build reconstructed no structured do-while loop from the {} battery cases ({loop_count} loops)",
+        LOOP_BATTERY.len()
+    );
 
     let driver: String = build_loop_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("loop_driver.c");
@@ -3920,13 +3910,11 @@ fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping guarded-while behavioral differential: this compiler build reconstructed no top-guarded while loop from the {} battery cases ({guarded_count} guarded)",
-            GUARDED_WHILE_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the guarded-while behavioral differential: this compiler build reconstructed no top-guarded while loop from the {} battery cases ({guarded_count} guarded)",
+        GUARDED_WHILE_BATTERY.len()
+    );
 
     let driver: String = build_zero_trip_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("wg_driver.c");
@@ -4207,13 +4195,11 @@ fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping width-extension behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({ext_count} extension casts)",
-            WIDTH_EXT_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the width-extension behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({ext_count} extension casts)",
+        WIDTH_EXT_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("wx_driver.c");
@@ -4604,13 +4590,11 @@ fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping call behavioral differential: this compiler build reconstructed none of the {} caller/helper pairs into the call leaf class",
-            CALL_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the call behavioral differential: this compiler build reconstructed none of the {} caller/helper pairs into the call leaf class",
+        CALL_BATTERY.len()
+    );
 
     let driver: String = build_call_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("call_driver.c");
@@ -4914,13 +4898,11 @@ fn precise_call_recovery_recompiles_against_real_helpers() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping precise call differential: this compiler build reconstructed none of the {} caller/helper pairs",
-            CALL_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the precise call differential: this compiler build reconstructed none of the {} caller/helper pairs",
+        CALL_BATTERY.len()
+    );
     assert!(
         recovered_decls.contains("extern uint64_t h_sq(uint64_t);")
             && recovered_decls.contains("r_rax = h_sq("),
@@ -5100,13 +5082,11 @@ fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping if-in-loop behavioral differential: this compiler build reconstructed no rotated if-in-loop from the {} battery cases ({if_in_loop_count} if-in-loop)",
-            IF_IN_LOOP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the if-in-loop behavioral differential: this compiler build reconstructed no rotated if-in-loop from the {} battery cases ({if_in_loop_count} if-in-loop)",
+        IF_IN_LOOP_BATTERY.len()
+    );
 
     let driver: String = build_zero_trip_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("il_driver.c");
@@ -5417,13 +5397,11 @@ fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping pointer-walk if-in-loop behavioral differential: this compiler build reconstructed none of the {} pointer-walk cases into a structured loop",
-            PTR_LOOP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the pointer-walk if-in-loop behavioral differential: this compiler build reconstructed none of the {} pointer-walk cases into a structured loop",
+        PTR_LOOP_BATTERY.len()
+    );
 
     let driver: String = format!(
         "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n{recovered_decls}\n\
@@ -5697,13 +5675,11 @@ fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping nested-loop behavioral differential: this compiler build reconstructed no nested inner+outer loop from the {} battery cases ({nested_count} nested)",
-            NESTED_LOOP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the nested-loop behavioral differential: this compiler build reconstructed no nested inner+outer loop from the {} battery cases ({nested_count} nested)",
+        NESTED_LOOP_BATTERY.len()
+    );
 
     let driver: String = build_nested_loop_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("nl_driver.c");
@@ -6041,13 +6017,11 @@ fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping closed-form behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({wide_count} wide, {dshift_count} dshift)",
-            CLOSED_FORM_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the closed-form behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({wide_count} wide, {dshift_count} dshift)",
+        CLOSED_FORM_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("cform_driver.c");
@@ -7751,13 +7725,11 @@ fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping divide behavioral differential: this compiler build lowered none of the {} battery cases into the divide leaf class ({div_count} carried a division)",
-            DIV_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the divide behavioral differential: this compiler build lowered none of the {} battery cases into the divide leaf class ({div_count} carried a division)",
+        DIV_BATTERY.len()
+    );
 
     let driver: String = build_div_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("div_driver.c");
@@ -8441,13 +8413,11 @@ fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping scalar float behavioral differential: this compiler build lowered none of the {} battery cases into the scalar float leaf class ({fp_count} carried scalar SSE)",
-            FP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the scalar float behavioral differential: this compiler build lowered none of the {} battery cases into the scalar float leaf class ({fp_count} carried scalar SSE)",
+        FP_BATTERY.len()
+    );
 
     let driver: String = build_fp_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("fp_driver.c");
@@ -9074,13 +9044,11 @@ fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping scalar min/max behavioral differential: this compiler build lowered none of the {} battery cases into the scalar min/max leaf class",
-            MINMAX_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the scalar min/max behavioral differential: this compiler build lowered none of the {} battery cases into the scalar min/max leaf class",
+        MINMAX_BATTERY.len()
+    );
 
     let driver: String = build_minmax_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("minmax_driver.c");
@@ -9566,13 +9534,11 @@ fn fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read fc_battery.o");
 
     let outcome: FcOracleOutcome = run_fc_oracle(&object_bytes, HOST_ABI);
-    if outcome.lifted_count == 0 {
-        eprintln!(
-            "skipping fp const/mem behavioral differential: this build lowered none of the {} cases into the scalar float leaf class",
-            FP_CONST_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        outcome.lifted_count != 0,
+        "nothing was graded by the fp const/mem behavioral differential: this build lowered none of the {} cases into the scalar float leaf class",
+        FP_CONST_BATTERY.len()
+    );
     assert!(
         outcome.const_count >= 1,
         "fp const/mem oracle must exercise at least one rip-relative constant; got {}",
@@ -11454,13 +11420,11 @@ fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping nested-switch behavioral differential: this gcc build lowered none of the {} cases into a dense jump-table switch carrying nested division/setcc",
-            NESTED_SWITCH_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the nested-switch behavioral differential: this gcc build lowered none of the {} cases into a dense jump-table switch carrying nested division/setcc",
+        NESTED_SWITCH_BATTERY.len()
+    );
     assert!(
         op_bearing >= 1,
         "nested-switch oracle must reconstruct at least one case body that carries a threaded idiv/setcc (its whole point), reconstructed {op_bearing} such bodies across {lifted_count} lifted functions"
@@ -11642,12 +11606,10 @@ fn sysv_nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping SysV nested-switch differential: clang lowered none of the cases into a dense jump-table switch carrying nested idiv/setcc"
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the SysV nested-switch differential: clang lowered none of the cases into a dense jump-table switch carrying nested idiv/setcc"
+    );
     assert!(
         op_bearing >= 1,
         "SysV nested-switch oracle must reconstruct at least one case body carrying a threaded idiv/setcc, saw {op_bearing}"
@@ -11896,13 +11858,11 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() 
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping dense-switch behavioral differential: this compiler build reconstructed none of the {} battery cases into a dense jump-table switch",
-            SWITCH_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the dense-switch behavioral differential: this compiler build reconstructed none of the {} battery cases into a dense jump-table switch",
+        SWITCH_BATTERY.len()
+    );
 
     let driver: String = build_call_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("switch_driver.c");
@@ -12290,13 +12250,11 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping fp-switch behavioral differential: this compiler build reconstructed none of the {} battery cases into a dense fp-returning jump-table switch",
-            FP_SWITCH_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the fp-switch behavioral differential: this compiler build reconstructed none of the {} battery cases into a dense fp-returning jump-table switch",
+        FP_SWITCH_BATTERY.len()
+    );
 
     let driver: String = build_fp_switch_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("fp_switch_driver.c");
@@ -13154,13 +13112,11 @@ fn setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping setcc behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({setcc_count} setcc)",
-            SETCC_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the setcc behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class ({setcc_count} setcc)",
+        SETCC_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("setcc_driver.c");
@@ -13575,13 +13531,11 @@ fn stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
         }
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping stack-spill behavioral differential: this compiler build lowered none of the {} -O0 frame cases into the leaf class",
-            STACK_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the stack-spill behavioral differential: this compiler build lowered none of the {} -O0 frame cases into the leaf class",
+        STACK_BATTERY.len()
+    );
 
     let driver: String = build_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("stack_driver.c");
@@ -13833,13 +13787,11 @@ fn scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping scalar float stack-spill differential: this compiler build lowered none of the {} -O0 fp frame cases into the scalar float leaf class",
-            FP_STACK_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the scalar float stack-spill differential: this compiler build lowered none of the {} -O0 fp frame cases into the scalar float leaf class",
+        FP_STACK_BATTERY.len()
+    );
 
     let driver: String = build_fp_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("fp_stack_driver.c");
@@ -14846,13 +14798,11 @@ fn struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
     let lift: SretLift = collect_sret_cases(&object_bytes, HOST_ABI);
     let lifted_count: usize = lift.lifted;
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping struct-return behavioral differential: this compiler build lowered none of the {} sret cases into the leaf class",
-            SRET_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the struct-return behavioral differential: this compiler build lowered none of the {} sret cases into the leaf class",
+        SRET_BATTERY.len()
+    );
 
     let driver: String = build_sret_driver(
         &lift.typedefs,
@@ -15124,13 +15074,11 @@ fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count == 0 {
-        eprintln!(
-            "skipping if-else diamond behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
-            DIAMOND_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count != 0,
+        "nothing was graded by the if-else diamond behavioral differential: this compiler build lowered none of the {} battery cases into the leaf class",
+        DIAMOND_BATTERY.len()
+    );
     assert!(
         diamond_count >= 1,
         "the if-else diamond oracle has no teeth: none of the {lifted_count} recovered cases emitted a two-armed `else` region, so the diamond structuring path was never exercised"
