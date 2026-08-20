@@ -15,6 +15,7 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) param_regs: BTreeMap<u16, String>,
     pub(crate) this_reg: Option<u16>,
     pub(crate) inline_depth: u16,
+    pub(crate) inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
 }
 
 impl<'a> MethodContext<'a> {
@@ -26,6 +27,7 @@ impl<'a> MethodContext<'a> {
         is_static: bool,
         inline_temporaries: bool,
         desugar: crate::dalvik_desugar::DesugarView<'a>,
+        inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
     ) -> Self {
         let parsed: Option<MethodDescriptor> = descriptor::parse_method(descriptor);
         let first_param_reg: u16 = registers_size.saturating_sub(ins_size);
@@ -53,6 +55,7 @@ impl<'a> MethodContext<'a> {
             param_regs,
             this_reg,
             inline_depth: 0,
+            inlined_helpers,
         }
     }
 
@@ -791,6 +794,7 @@ fn inline_helper_body(
     receiver: Option<&Expr>,
     captures: &[Expr],
     parameters: &[String],
+    reached: &crate::dalvik_desugar::InlinedHelpers,
 ) -> Option<String> {
     if ctx.inline_depth >= MAX_INLINE_DEPTH {
         return None;
@@ -803,6 +807,7 @@ fn inline_helper_body(
         body.is_static,
         true,
         ctx.desugar,
+        reached,
     );
     nested.inline_depth = ctx.inline_depth.checked_add(1)?;
 
@@ -916,11 +921,21 @@ fn render_captured_lambda(
     } else {
         (None, args)
     };
-    if let Some(body) = recovered.helper_body.as_ref()
-        && let Some(inlined) =
-            inline_helper_body(ctx, body, receiver_arg, forwarded_args, &parameters)
-    {
-        return Some(format!("{head} -> {inlined}"));
+    if let Some(body) = recovered.helper_body.as_ref() {
+        let reached: crate::dalvik_desugar::InlinedHelpers =
+            crate::dalvik_desugar::InlinedHelpers::default();
+        if let Some(inlined) = inline_helper_body(
+            ctx,
+            body,
+            receiver_arg,
+            forwarded_args,
+            &parameters,
+            &reached,
+        ) {
+            ctx.inlined_helpers.absorb(&reached);
+            ctx.inlined_helpers.record(recovered.helper_index);
+            return Some(format!("{head} -> {inlined}"));
+        }
     }
     let (target, forwarded): (String, &[String]) = if recovered.receiver_capture {
         let receiver_text: &String = rendered.first()?;

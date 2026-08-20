@@ -663,6 +663,26 @@ pub(crate) struct DesugarView<'a> {
     pub(crate) core_library: &'a crate::dalvik_core_library::CoreLibraryRecovery,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct InlinedHelpers {
+    indices: std::cell::RefCell<BTreeSet<u32>>,
+}
+
+impl InlinedHelpers {
+    pub(crate) fn record(&self, method_index: u32) {
+        let _: bool = self.indices.borrow_mut().insert(method_index);
+    }
+
+    pub(crate) fn contains(&self, method_index: u32) -> bool {
+        self.indices.borrow().contains(&method_index)
+    }
+
+    pub(crate) fn absorb(&self, nested: &Self) {
+        let recorded: BTreeSet<u32> = nested.indices.borrow().clone();
+        self.indices.borrow_mut().extend(recorded);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefValue {
     Receiver,

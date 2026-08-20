@@ -37,6 +37,7 @@ struct LambdaSite {
     captures: usize,
     receiver_capture: bool,
     expected: &'static str,
+    declared_site: bool,
 }
 
 const SITES: [LambdaSite; 9] = [
@@ -47,6 +48,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 0,
         receiver_capture: false,
         expected: "p0 -> ((p0 * 3) + 1)",
+        declared_site: true,
     },
     LambdaSite {
         method: "oneCapture",
@@ -55,6 +57,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: false,
         expected: "p0 -> (DesugarShapeProbe.mix(arg0, p0) + 2)",
+        declared_site: true,
     },
     LambdaSite {
         method: "receiverCapture",
@@ -63,6 +66,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: true,
         expected: "p0 -> (this.scale(p0) + 3)",
+        declared_site: true,
     },
     LambdaSite {
         method: "twoCaptures",
@@ -71,6 +75,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 2,
         receiver_capture: true,
         expected: "(p0, p1) -> (this.scale(p0) + DesugarShapeProbe.mix(arg0, p1))",
+        declared_site: true,
     },
     LambdaSite {
         method: "wideCapture",
@@ -79,6 +84,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: false,
         expected: "() -> ((arg0 * 7L) + 4L)",
+        declared_site: true,
     },
     LambdaSite {
         method: "custom",
@@ -87,6 +93,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: false,
         expected: "(p0, p1, p2) -> (((p0 + p1) + p2) + arg0)",
+        declared_site: true,
     },
     LambdaSite {
         method: "nested",
@@ -95,6 +102,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: false,
         expected: "p0 -> q0 -> (((p0 * 100) + q0) + arg0)",
+        declared_site: true,
     },
     LambdaSite {
         method: "lambda$nested$0",
@@ -103,6 +111,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 2,
         receiver_capture: false,
         expected: "p0 -> (((arg1 * 100) + p0) + arg0)",
+        declared_site: false,
     },
     LambdaSite {
         method: "textCapture",
@@ -111,6 +120,7 @@ const SITES: [LambdaSite; 9] = [
         captures: 1,
         receiver_capture: false,
         expected: "() -> new StringBuilder().append(arg0).append(\"!\").toString()",
+        declared_site: true,
     },
 ];
 
@@ -214,14 +224,8 @@ fn recovered_sites(bytes: &'static [u8]) -> BTreeMap<&'static str, String> {
     let unit: &String = program_unit(&recovered);
     SITES
         .iter()
-        .map(|site: &LambdaSite| {
-            let expression: String = if is_generated_helper(site.method) {
-                helper_hosted_lambda(unit)
-            } else {
-                recovered_lambda(unit, site.method)
-            };
-            (site.method, expression)
-        })
+        .filter(|site: &&LambdaSite| site.declared_site)
+        .map(|site: &LambdaSite| (site.method, recovered_lambda(unit, site.method)))
         .collect()
 }
 
@@ -229,43 +233,12 @@ fn is_generated_helper(name: &str) -> bool {
     name.starts_with("lambda$") || name.starts_with("$r8$lambda$")
 }
 
-fn helper_hosted_lambda(source: &str) -> String {
-    let mut collecting: bool = false;
-    let mut found: Vec<String> = Vec::new();
-    for line in source.lines() {
-        if collecting {
-            collecting = false;
-            let trimmed: &str = line.trim();
-            if let Some(expression) = trimmed
-                .strip_prefix("return ")
-                .and_then(|text: &str| text.strip_suffix(';'))
-                && expression.contains(" -> ")
-            {
-                found.push(expression.to_owned());
-            }
-            continue;
-        }
-        if !line.starts_with("    ") || line.starts_with("     ") || !line.ends_with('{') {
-            continue;
-        }
-        let trimmed: &str = line.trim();
-        let Some(open): Option<usize> = trimmed.find('(') else {
-            continue;
-        };
-        let Some(head): Option<&str> = trimmed.get(..open) else {
-            continue;
-        };
-        collecting = head
-            .rsplit([' ', '\t'])
-            .next()
-            .is_some_and(is_generated_helper);
-    }
-    assert_eq!(
-        found.len(),
-        1,
-        "exactly one toolchain-generated helper must host a recovered lambda, saw {found:?}"
-    );
-    found.into_iter().next().unwrap_or_default()
+fn declared_helpers(source: &str) -> BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(declares_any_method)
+        .filter(|name: &String| is_generated_helper(name))
+        .collect()
 }
 
 fn compile_and_run(label: &str, source: &str) -> Vec<u8> {
@@ -304,6 +277,9 @@ fn compile_and_run(label: &str, source: &str) -> Vec<u8> {
 fn fill_harness(sites: &BTreeMap<&'static str, String>) -> String {
     let mut text: String = HARNESS.to_owned();
     for site in SITES {
+        if !site.declared_site {
+            continue;
+        }
         let token: String = format!("@@{}@@", site.method);
         assert!(
             text.contains(token.as_str()),
@@ -383,6 +359,9 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
 
     let mut matched: usize = 0;
     for site in SITES {
+        if !site.declared_site {
+            continue;
+        }
         let expression: String = recovered_lambda(unit, site.method);
         let head: String = expected_head(site.arity);
         assert!(
@@ -404,13 +383,29 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
         );
         matched = matched.saturating_add(1);
     }
-    assert_eq!(matched, SITES.len());
+    let declared_sites: usize = SITES
+        .iter()
+        .filter(|site: &&LambdaSite| site.declared_site)
+        .count();
+    assert_eq!(matched, declared_sites);
     assert_eq!(
         unit.matches(" -> ").count(),
-        SITES.len().saturating_add(1),
-        "the recovered unit must carry one arrow per authored lambda plus the second arrow of the \
-         nested lambda that recovers inside its own outer lambda"
+        SITES.len(),
+        "the recovered unit must carry one arrow per authored lambda, counting the nested lambda \
+         that recovers inside its own outer lambda"
     );
+    let residual_helpers: BTreeSet<String> = declared_helpers(unit);
+    assert!(
+        residual_helpers.is_empty(),
+        "every toolchain lambda helper whose one reference the recovery inlined must be elided \
+         from the recovered unit, still declared: {residual_helpers:?}"
+    );
+    for helper in LAMBDA_HELPERS {
+        assert!(
+            !unit.contains(helper),
+            "no recovered source may still name the D8 lambda helper {helper}"
+        );
+    }
 
     let retained: BTreeSet<String> = retained_synthetics(&recovered);
     assert!(
@@ -423,11 +418,13 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
     );
 
     eprintln!(
-        "d8 lambda-shape recovery: {matched}/{} authored lambda sites recovered as lambda \
-         expressions and {}/{synthetics} D8 desugaring classes elided, graded against \
+        "d8 lambda-shape recovery: {matched}/{declared_sites} authored lambda sites recovered as \
+         lambda expressions, {}/{synthetics} D8 desugaring classes elided and {}/{} D8 lambda \
+         helper methods elided, graded against \
          tests/fixtures/d8_lambda_shapes/DesugarShapeProbe.java built by D8 9.1.31 at min-api 21",
-        SITES.len(),
-        synthetics.saturating_sub(retained.len())
+        synthetics.saturating_sub(retained.len()),
+        LAMBDA_HELPERS.len().saturating_sub(residual_helpers.len()),
+        LAMBDA_HELPERS.len()
     );
 }
 
@@ -503,12 +500,7 @@ fn an_unrecognised_functional_interface_keeps_the_desugaring_class() {
         !retained_synthetics(&recovered).is_empty(),
         "a marker interface has no single abstract method, so its class must stay visible"
     );
-    for method in [
-        "stateless",
-        "oneCapture",
-        "receiverCapture",
-        "lambda$nested$0",
-    ] {
+    for method in ["stateless", "oneCapture", "receiverCapture", "nested"] {
         let body: String = method_body(unit, method);
         assert!(
             body.contains("new DesugarShapeProbe$"),
@@ -533,7 +525,7 @@ fn a_backported_core_library_functional_interface_still_recovers() {
     for site in SITES {
         if !matches!(
             site.method,
-            "stateless" | "oneCapture" | "receiverCapture" | "lambda$nested$0"
+            "stateless" | "oneCapture" | "receiverCapture" | "nested"
         ) {
             continue;
         }

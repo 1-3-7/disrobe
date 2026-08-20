@@ -318,6 +318,9 @@ fn render_class(
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
+    let inlined_helpers: crate::dalvik_desugar::InlinedHelpers =
+        crate::dalvik_desugar::InlinedHelpers::default();
+    let mut declared: Vec<(u32, RenderedMethod)> = Vec::with_capacity(members.methods.len());
     for method in members.methods {
         if desugar.interfaces.suppresses_method(
             &method.class,
@@ -354,7 +357,16 @@ fn render_class(
                     )
                 },
                 |bridge: &CodeItem| {
-                    render_method(dex, simple, bridge, None, None, desugar, Some(recovered))
+                    render_method(
+                        dex,
+                        simple,
+                        bridge,
+                        None,
+                        None,
+                        desugar,
+                        Some(recovered),
+                        &inlined_helpers,
+                    )
                 },
             ),
             (DexCodeState::Decoded(_), Some(_), None)
@@ -367,9 +379,16 @@ fn render_class(
                     desugar,
                 )
             }
-            (DexCodeState::Decoded(_), Some(item), None) => {
-                render_method(dex, simple, item, cff, generic_sites, desugar, None)
-            }
+            (DexCodeState::Decoded(_), Some(item), None) => render_method(
+                dex,
+                simple,
+                item,
+                cff,
+                generic_sites,
+                desugar,
+                None,
+                &inlined_helpers,
+            ),
             (DexCodeState::Decoded(_), None, None) => {
                 render_unavailable_method(simple, method, Some("decoded body is absent"), desugar)
             }
@@ -386,6 +405,13 @@ fn render_class(
                 render_unavailable_method(simple, method, Some(&reason), desugar)
             }
         };
+        declared.push((method.method_index, rendered));
+    }
+
+    for (method_index, rendered) in declared {
+        if inlined_helpers.contains(method_index) {
+            continue;
+        }
         let _ = writeln!(text, "{}", rendered.text);
         method_count += 1;
         if rendered.fully_lifted {
@@ -421,7 +447,16 @@ fn render_class(
                 )
             },
             |item: &CodeItem| {
-                render_method(dex, simple, item, None, None, desugar, Some(recovered))
+                render_method(
+                    dex,
+                    simple,
+                    item,
+                    None,
+                    None,
+                    desugar,
+                    Some(recovered),
+                    &inlined_helpers,
+                )
             },
         );
         let _ = writeln!(text, "{}", rendered.text);
@@ -605,6 +640,7 @@ fn render_method(
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
     recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod>,
+    inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
 ) -> RenderedMethod {
     let method_descriptor: &str = recovered_default.map_or(
         item.method_descriptor.as_str(),
@@ -697,6 +733,7 @@ fn render_method(
             },
         ),
         desugar,
+        inlined_helpers,
     );
     let cff_note: String = cff.map_or_else(String::new, cff_annotation);
     let generic_note: String = generic_sites
@@ -778,6 +815,7 @@ fn lift_method(
     method_descriptor: &str,
     inline_temporaries: bool,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
+    inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
 ) -> MethodBody {
     if item.insns.is_empty() {
         return MethodBody {
@@ -807,6 +845,7 @@ fn lift_method(
         is_static,
         inline_temporaries,
         desugar,
+        inlined_helpers,
     );
     let register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>> =
         register_mention_blocks(&built.cfg, &built.insns);

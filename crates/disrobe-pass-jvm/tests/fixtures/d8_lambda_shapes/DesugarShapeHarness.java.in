@@ -47,10 +47,6 @@ public final class DesugarShapeProbe {
         return a + b + c + k;
     }
 
-    static IntUnaryOperator lambda$nested$0(int arg0, int arg1) {
-        return @@lambda$nested$0@@;
-    }
-
     static int lambda$nested$1(int outer, int k, int inner) {
         return outer * 100 + inner + k;
     }
