@@ -12,6 +12,7 @@ type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
 
 const NODE_LIMIT: usize = 512;
 const RENDER_GUARD: usize = 4096;
+const MULTI_EXIT_LIMIT: usize = 16;
 const TRANSITION_INSTRUCTION_LIMIT: usize = 512;
 const STATE_EXPRESSION_LIMIT: usize = 64;
 
@@ -102,7 +103,9 @@ fn try_reloop_root(
     let Some(tree): Option<SNode> = structure(&graph) else {
         return wall(WallReason::UnstructurableStateGraph);
     };
-    emit(func, root.sequence, &disp, &graph, &tree);
+    if !emit(func, root.sequence, &disp, &graph, &tree) {
+        return wall(WallReason::UnstructurableStateGraph);
+    }
     ReloopOutcome::Restructured {
         count: 1,
         walled: 0,
@@ -1804,6 +1807,20 @@ enum NodeRef {
     Exit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    At(NodeRef),
+    Open,
+}
+
+impl Stop {
+    const EXIT: Self = Self::At(NodeRef::Exit);
+
+    const fn state(state: i32) -> Self {
+        Self::At(NodeRef::State(state))
+    }
+}
+
 #[derive(Debug, Clone)]
 enum SNode {
     Seq(Vec<Self>),
@@ -1817,7 +1834,35 @@ enum SNode {
         header: i32,
         body: Box<Self>,
     },
+    MultiExitLoop {
+        header: i32,
+        body: Box<Self>,
+        tails: Vec<(i32, Self)>,
+    },
     Continue(i32),
+    Break(i32),
+}
+
+fn ends_explicitly(graph: &Graph, node: &SNode) -> bool {
+    match node {
+        SNode::Break(_) | SNode::Continue(_) => true,
+        SNode::Work(state) => graph.nodes.get(state).is_some_and(|node: &Node| {
+            matches!(node.trans, Trans::Exit)
+                && matches!(node.work.last(), Some((Instr::Return(_), _)))
+        }),
+        SNode::Seq(items) => items
+            .last()
+            .is_some_and(|last: &SNode| ends_explicitly(graph, last)),
+        SNode::If {
+            then_branch,
+            else_branch,
+            ..
+        } => ends_explicitly(graph, then_branch) && ends_explicitly(graph, else_branch),
+        SNode::Loop { body, .. } => ends_explicitly(graph, body),
+        SNode::MultiExitLoop { tails, .. } => tails
+            .iter()
+            .all(|(_state, tail): &(i32, SNode)| ends_explicitly(graph, tail)),
+    }
 }
 
 struct Analysis<'g> {
@@ -1828,11 +1873,13 @@ struct Analysis<'g> {
 fn structure(graph: &Graph) -> Option<SNode> {
     let analysis: Analysis<'_> = Analysis::build(graph)?;
     let mut loops: Vec<i32> = Vec::new();
+    let mut breaks: Vec<i32> = Vec::new();
     let mut guard: usize = 0;
     analysis.render(
         NodeRef::State(graph.entry),
-        NodeRef::Exit,
+        Stop::EXIT,
         &mut loops,
+        &mut breaks,
         &mut guard,
     )
 }
@@ -1859,7 +1906,7 @@ impl<'g> Analysis<'g> {
         })
     }
 
-    fn loop_exit(&self, header: i32) -> Option<i32> {
+    fn loop_exits(&self, header: i32) -> BTreeSet<i32> {
         let body: BTreeSet<i32> = self.loop_body(header);
         let mut exits: BTreeSet<i32> = BTreeSet::new();
         for &n in &body {
@@ -1871,11 +1918,7 @@ impl<'g> Analysis<'g> {
                 }
             }
         }
-        if exits.len() == 1 {
-            exits.into_iter().next()
-        } else {
-            None
-        }
+        exits
     }
 
     fn loop_body(&self, header: i32) -> BTreeSet<i32> {
@@ -1910,12 +1953,13 @@ impl<'g> Analysis<'g> {
     fn render(
         &self,
         start: NodeRef,
-        stop: NodeRef,
+        stop: Stop,
         loops: &mut Vec<i32>,
+        breaks: &mut Vec<i32>,
         guard: &mut usize,
     ) -> Option<SNode> {
         let mut items: Vec<SNode> = Vec::new();
-        let mut cur: NodeRef = start;
+        let mut cur: Stop = Stop::At(start);
         loop {
             *guard += 1;
             if *guard > RENDER_GUARD {
@@ -1924,23 +1968,39 @@ impl<'g> Analysis<'g> {
             if cur == stop {
                 break;
             }
-            let NodeRef::State(state) = cur else {
+            let Stop::At(NodeRef::State(state)) = cur else {
                 break;
             };
             if loops.contains(&state) {
                 items.push(SNode::Continue(state));
                 break;
             }
+            if breaks.contains(&state) {
+                items.push(SNode::Break(state));
+                break;
+            }
             if self.is_header(state) {
-                let exit: i32 = self.loop_exit(state)?;
-                loops.push(state);
-                let body: SNode = self.render_loop(state, exit, loops, guard)?;
-                loops.pop();
-                items.push(SNode::Loop {
-                    header: state,
-                    body: Box::new(body),
-                });
-                cur = NodeRef::State(exit);
+                let exits: BTreeSet<i32> = self.loop_exits(state);
+                match exits.len() {
+                    1 => {
+                        let exit: i32 = exits.into_iter().next()?;
+                        loops.push(state);
+                        let body: SNode = self.render_loop(state, exit, loops, breaks, guard)?;
+                        loops.pop();
+                        items.push(SNode::Loop {
+                            header: state,
+                            body: Box::new(body),
+                        });
+                        cur = Stop::state(exit);
+                    }
+                    2..=MULTI_EXIT_LIMIT => {
+                        let (node, next): (SNode, Stop) =
+                            self.render_multi_exit_loop(state, &exits, stop, loops, breaks, guard)?;
+                        items.push(node);
+                        cur = next;
+                    }
+                    _ => return None,
+                }
                 continue;
             }
             let node: &Node = self.graph.nodes.get(&state)?;
@@ -1951,17 +2011,17 @@ impl<'g> Analysis<'g> {
                 }
                 Trans::Goto(next) => {
                     items.push(SNode::Work(state));
-                    cur = self.node_ref(*next);
+                    cur = Stop::At(self.node_ref(*next));
                 }
                 Trans::Cond {
                     then_state,
                     else_state,
                 } => {
-                    let merge: NodeRef = self.merge_of(state, stop);
+                    let merge: Stop = self.merge_of(state, stop);
                     let then_branch: SNode =
-                        self.render(self.node_ref(*then_state), merge, loops, guard)?;
+                        self.render(self.node_ref(*then_state), merge, loops, breaks, guard)?;
                     let else_branch: SNode =
-                        self.render(self.node_ref(*else_state), merge, loops, guard)?;
+                        self.render(self.node_ref(*else_state), merge, loops, breaks, guard)?;
                     items.push(SNode::If {
                         state,
                         then_branch: Box::new(then_branch),
@@ -1979,6 +2039,7 @@ impl<'g> Analysis<'g> {
         header: i32,
         exit: i32,
         loops: &mut Vec<i32>,
+        breaks: &mut Vec<i32>,
         guard: &mut usize,
     ) -> Option<SNode> {
         let node: &Node = self.graph.nodes.get(&header)?;
@@ -1987,11 +2048,11 @@ impl<'g> Analysis<'g> {
                 then_state,
                 else_state,
             } => {
-                let stop: NodeRef = NodeRef::State(exit);
+                let stop: Stop = Stop::state(exit);
                 let then_branch: SNode =
-                    self.render(self.node_ref(*then_state), stop, loops, guard)?;
+                    self.render(self.node_ref(*then_state), stop, loops, breaks, guard)?;
                 let else_branch: SNode =
-                    self.render(self.node_ref(*else_state), stop, loops, guard)?;
+                    self.render(self.node_ref(*else_state), stop, loops, breaks, guard)?;
                 Some(SNode::If {
                     state: header,
                     then_branch: Box::new(then_branch),
@@ -1999,8 +2060,74 @@ impl<'g> Analysis<'g> {
                 })
             }
             Trans::Goto(next) => {
-                let stop: NodeRef = NodeRef::State(exit);
-                let body: SNode = self.render(self.node_ref(*next), stop, loops, guard)?;
+                let stop: Stop = Stop::state(exit);
+                let body: SNode = self.render(self.node_ref(*next), stop, loops, breaks, guard)?;
+                Some(collapse(vec![SNode::Work(header), body]))
+            }
+            Trans::Exit => None,
+        }
+    }
+
+    fn render_multi_exit_loop(
+        &self,
+        header: i32,
+        exits: &BTreeSet<i32>,
+        stop: Stop,
+        loops: &mut Vec<i32>,
+        breaks: &mut Vec<i32>,
+        guard: &mut usize,
+    ) -> Option<(SNode, Stop)> {
+        let join: Stop = self.merge_of(header, stop);
+        let depth: usize = breaks.len();
+        breaks.extend(exits.iter().copied());
+        loops.push(header);
+        let body: SNode = self.render_multi_exit_body(header, loops, breaks, guard)?;
+        breaks.truncate(depth);
+        if !ends_explicitly(self.graph, &body) {
+            return None;
+        }
+        let mut tails: Vec<(i32, SNode)> = Vec::with_capacity(exits.len());
+        for &exit in exits {
+            let tail: SNode = self.render(self.node_ref(exit), join, loops, breaks, guard)?;
+            tails.push((exit, tail));
+        }
+        loops.pop();
+        Some((
+            SNode::MultiExitLoop {
+                header,
+                body: Box::new(body),
+                tails,
+            },
+            join,
+        ))
+    }
+
+    fn render_multi_exit_body(
+        &self,
+        header: i32,
+        loops: &mut Vec<i32>,
+        breaks: &mut Vec<i32>,
+        guard: &mut usize,
+    ) -> Option<SNode> {
+        let node: &Node = self.graph.nodes.get(&header)?;
+        match &node.trans {
+            Trans::Cond {
+                then_state,
+                else_state,
+            } => {
+                let then_branch: SNode =
+                    self.render(self.node_ref(*then_state), Stop::Open, loops, breaks, guard)?;
+                let else_branch: SNode =
+                    self.render(self.node_ref(*else_state), Stop::Open, loops, breaks, guard)?;
+                Some(SNode::If {
+                    state: header,
+                    then_branch: Box::new(then_branch),
+                    else_branch: Box::new(else_branch),
+                })
+            }
+            Trans::Goto(next) => {
+                let body: SNode =
+                    self.render(self.node_ref(*next), Stop::Open, loops, breaks, guard)?;
                 Some(collapse(vec![SNode::Work(header), body]))
             }
             Trans::Exit => None,
@@ -2015,10 +2142,10 @@ impl<'g> Analysis<'g> {
         }
     }
 
-    fn merge_of(&self, state: i32, stop: NodeRef) -> NodeRef {
+    fn merge_of(&self, state: i32, stop: Stop) -> Stop {
         match self.flow.immediate_post_dominator(state) {
-            PostDominator::Node(merge) => NodeRef::State(merge),
-            PostDominator::FunctionExit => NodeRef::Exit,
+            PostDominator::Node(merge) => Stop::state(merge),
+            PostDominator::FunctionExit => Stop::EXIT,
             PostDominator::Undefined => stop,
         }
     }
@@ -2109,9 +2236,14 @@ fn emit(
     disp: &Dispatcher,
     graph: &Graph,
     tree: &SNode,
-) {
+) -> bool {
     let mut loop_labels: BTreeMap<i32, InstrSeqId> = BTreeMap::new();
-    let body: Body = emit_snode(func, tree, graph, &mut loop_labels);
+    let mut exit_labels: Vec<(i32, InstrSeqId)> = Vec::new();
+    let Some(body): Option<Body> =
+        emit_snode(func, tree, graph, &mut loop_labels, &mut exit_labels)
+    else {
+        return false;
+    };
 
     let mut rebuilt: Body = disp.preamble.clone();
     rebuilt.extend(body);
@@ -2119,6 +2251,17 @@ fn emit(
 
     let seq: &mut walrus::ir::InstrSeq = func.block_mut(root);
     seq.instrs = rebuilt;
+    true
+}
+
+fn located(instr: Instr) -> (Instr, walrus::ir::InstrLocId) {
+    (instr, walrus::ir::InstrLocId::default())
+}
+
+fn dangling_seq(func: &mut LocalFunction) -> InstrSeqId {
+    func.builder_mut()
+        .dangling_instr_seq(InstrSeqType::Simple(None))
+        .id()
 }
 
 fn emit_snode(
@@ -2126,30 +2269,33 @@ fn emit_snode(
     node: &SNode,
     graph: &Graph,
     loop_labels: &mut BTreeMap<i32, InstrSeqId>,
-) -> Body {
+    exit_labels: &mut Vec<(i32, InstrSeqId)>,
+) -> Option<Body> {
     match node {
         SNode::Seq(items) => {
             let mut out: Body = Vec::new();
             for item in items {
-                out.extend(emit_snode(func, item, graph, loop_labels));
+                out.extend(emit_snode(func, item, graph, loop_labels, exit_labels)?);
             }
-            out
+            Some(out)
         }
-        SNode::Work(state) => graph.nodes.get(state).map_or_else(Vec::new, |node: &Node| {
+        SNode::Work(state) => Some(graph.nodes.get(state).map_or_else(Vec::new, |node: &Node| {
             let mut out: Body = node.work.clone();
             if let EdgeWork::Goto(edge_work) = &node.edge_work {
                 out.extend(edge_work.clone());
             }
             out
-        }),
+        })),
         SNode::If {
             state,
             then_branch,
             else_branch,
         } => {
             let mut out: Body = Vec::new();
-            let mut then_body: Body = emit_snode(func, then_branch, graph, loop_labels);
-            let mut else_body: Body = emit_snode(func, else_branch, graph, loop_labels);
+            let mut then_body: Body =
+                emit_snode(func, then_branch, graph, loop_labels, exit_labels)?;
+            let mut else_body: Body =
+                emit_snode(func, else_branch, graph, loop_labels, exit_labels)?;
             if let Some(current) = graph.nodes.get(state) {
                 out.extend(current.work.clone());
                 out.extend(current.cond.clone());
@@ -2164,37 +2310,102 @@ fn emit_snode(
             }
             let consequent: InstrSeqId = new_seq(func, then_body);
             let alternative: InstrSeqId = new_seq(func, else_body);
-            out.push((
-                Instr::IfElse(walrus::ir::IfElse {
-                    consequent,
-                    alternative,
-                }),
-                walrus::ir::InstrLocId::default(),
-            ));
-            out
+            out.push(located(Instr::IfElse(walrus::ir::IfElse {
+                consequent,
+                alternative,
+            })));
+            Some(out)
         }
         SNode::Loop { header, body } => {
-            let loop_id: InstrSeqId = func
-                .builder_mut()
-                .dangling_instr_seq(InstrSeqType::Simple(None))
-                .id();
+            let loop_id: InstrSeqId = dangling_seq(func);
             loop_labels.insert(*header, loop_id);
-            let loop_body: Body = emit_snode(func, body, graph, loop_labels);
+            let loop_body: Body = emit_snode(func, body, graph, loop_labels, exit_labels)?;
             loop_labels.remove(header);
             func.block_mut(loop_id).instrs = loop_body;
-            vec![(
-                Instr::Loop(walrus::ir::Loop { seq: loop_id }),
-                walrus::ir::InstrLocId::default(),
-            )]
+            Some(vec![located(Instr::Loop(walrus::ir::Loop {
+                seq: loop_id,
+            }))])
         }
-        SNode::Continue(header) => match loop_labels.get(header) {
-            Some(&loop_id) => vec![(
-                Instr::Br(walrus::ir::Br { block: loop_id }),
-                walrus::ir::InstrLocId::default(),
-            )],
-            None => Vec::new(),
-        },
+        SNode::MultiExitLoop {
+            header,
+            body,
+            tails,
+        } => emit_multi_exit_loop(func, *header, body, tails, graph, loop_labels, exit_labels),
+        SNode::Continue(header) => {
+            let &loop_id: &InstrSeqId = loop_labels.get(header)?;
+            Some(vec![located(Instr::Br(walrus::ir::Br { block: loop_id }))])
+        }
+        SNode::Break(exit) => {
+            let &(_state, block): &(i32, InstrSeqId) = exit_labels
+                .iter()
+                .rev()
+                .find(|(state, _block): &&(i32, InstrSeqId)| state == exit)?;
+            Some(vec![located(Instr::Br(walrus::ir::Br { block }))])
+        }
     }
+}
+
+fn emit_multi_exit_loop(
+    func: &mut LocalFunction,
+    header: i32,
+    body: &SNode,
+    tails: &[(i32, SNode)],
+    graph: &Graph,
+    loop_labels: &mut BTreeMap<i32, InstrSeqId>,
+    exit_labels: &mut Vec<(i32, InstrSeqId)>,
+) -> Option<Body> {
+    let done: InstrSeqId = dangling_seq(func);
+    let depth: usize = exit_labels.len();
+    let mut blocks: Vec<InstrSeqId> = Vec::with_capacity(tails.len());
+    for &(state, ref _tail) in tails {
+        let block: InstrSeqId = dangling_seq(func);
+        blocks.push(block);
+        exit_labels.push((state, block));
+    }
+
+    let loop_id: InstrSeqId = dangling_seq(func);
+    loop_labels.insert(header, loop_id);
+    let loop_body: Body = emit_snode(func, body, graph, loop_labels, exit_labels)?;
+    loop_labels.remove(&header);
+    func.block_mut(loop_id).instrs = loop_body;
+    exit_labels.truncate(depth);
+
+    let &innermost: &InstrSeqId = blocks.first()?;
+    func.block_mut(innermost).instrs =
+        vec![located(Instr::Loop(walrus::ir::Loop { seq: loop_id }))];
+
+    for index in 1..blocks.len() {
+        let &inner: &InstrSeqId = blocks.get(index.checked_sub(1)?)?;
+        let &outer: &InstrSeqId = blocks.get(index)?;
+        let (_state, tail): &(i32, SNode) = tails.get(index.checked_sub(1)?)?;
+        let mut wrapper: Body = vec![located(Instr::Block(walrus::ir::Block { seq: inner }))];
+        wrapper.extend(emit_snode(func, tail, graph, loop_labels, exit_labels)?);
+        if !ends_explicitly(graph, tail) {
+            wrapper.push(located(Instr::Br(walrus::ir::Br { block: done })));
+        }
+        func.block_mut(outer).instrs = wrapper;
+    }
+
+    let &outermost: &InstrSeqId = blocks.last()?;
+    let (_state, last_tail): &(i32, SNode) = tails.last()?;
+    let mut done_body: Body = vec![located(Instr::Block(walrus::ir::Block { seq: outermost }))];
+    done_body.extend(emit_snode(
+        func,
+        last_tail,
+        graph,
+        loop_labels,
+        exit_labels,
+    )?);
+    func.block_mut(done).instrs = done_body;
+
+    let mut out: Body = vec![located(Instr::Block(walrus::ir::Block { seq: done }))];
+    if tails
+        .iter()
+        .all(|(_state, tail): &(i32, SNode)| ends_explicitly(graph, tail))
+    {
+        out.push(located(Instr::Unreachable(walrus::ir::Unreachable {})));
+    }
+    Some(out)
 }
 
 fn new_seq(func: &mut LocalFunction, body: Body) -> InstrSeqId {
@@ -2501,9 +2712,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn multi_exit_loop_is_walled_not_faked() {
-        let g: Graph = graph(
+    fn two_exit_loop() -> Graph {
+        graph(
             0,
             vec![
                 (
@@ -2523,10 +2733,111 @@ mod tests {
                 (8, Trans::Exit),
                 (9, Trans::Exit),
             ],
+        )
+    }
+
+    #[test]
+    fn a_two_exit_loop_structures_into_nested_exit_blocks() {
+        let g: Graph = two_exit_loop();
+        let tree: SNode = structure(&g).expect("a loop with two distinct exits structures");
+        let SNode::MultiExitLoop {
+            header,
+            body,
+            tails,
+        } = tree
+        else {
+            panic!("expected a multi-exit loop, got {tree:?}");
+        };
+        assert_eq!(header, 0, "state 0 dominates its latch and heads the loop");
+        assert_eq!(
+            tails
+                .iter()
+                .map(|(state, _tail)| *state)
+                .collect::<Vec<i32>>(),
+            vec![8, 9],
+            "exit blocks nest in ascending state order so output is deterministic"
         );
         assert!(
+            ends_explicitly(&g, &body),
+            "every path out of the loop body must be an explicit branch: {body:?}"
+        );
+        let SNode::If {
+            state: outer_state,
+            then_branch,
+            else_branch,
+        } = *body
+        else {
+            panic!("expected the header conditional, got {body:?}");
+        };
+        assert_eq!(outer_state, 0);
+        assert!(
+            matches!(*else_branch, SNode::Break(9)),
+            "the header's else edge leaves through exit 9: {else_branch:?}"
+        );
+        let SNode::If {
+            state: inner_state,
+            then_branch: latch,
+            else_branch: second_exit,
+        } = *then_branch
+        else {
+            panic!("expected the latch conditional, got {then_branch:?}");
+        };
+        assert_eq!(inner_state, 1);
+        assert!(matches!(*latch, SNode::Continue(0)), "{latch:?}");
+        assert!(matches!(*second_exit, SNode::Break(8)), "{second_exit:?}");
+    }
+
+    #[test]
+    fn a_multi_exit_body_that_can_fall_out_of_the_loop_is_refused() {
+        let g: Graph = two_exit_loop();
+        let fallthrough: SNode = SNode::Seq(vec![SNode::Work(8), SNode::Work(1)]);
+        assert!(
+            !ends_explicitly(&g, &fallthrough),
+            "a body ending on a transitional state falls off the loop and must be refused"
+        );
+        assert!(
+            ends_explicitly(&g, &SNode::Seq(vec![SNode::Work(1), SNode::Break(8)])),
+            "a body ending on an explicit exit branch is structurable"
+        );
+        assert!(
+            !ends_explicitly(
+                &g,
+                &SNode::If {
+                    state: 0,
+                    then_branch: Box::new(SNode::Break(8)),
+                    else_branch: Box::new(SNode::Work(1)),
+                }
+            ),
+            "one unterminated conditional arm is enough to refuse the body"
+        );
+    }
+
+    #[test]
+    fn a_loop_with_more_exits_than_the_nesting_ceiling_is_refused() {
+        let mut transitions: Vec<(i32, Trans)> = vec![(
+            0,
+            Trans::Cond {
+                then_state: 1,
+                else_state: 1000,
+            },
+        )];
+        let ceiling: i32 = i32::try_from(MULTI_EXIT_LIMIT).expect("ceiling fits an i32");
+        for step in 1..=ceiling {
+            transitions.push((
+                step,
+                Trans::Cond {
+                    then_state: if step == ceiling { 0 } else { step + 1 },
+                    else_state: 1000 + step,
+                },
+            ));
+        }
+        for exit in 0..=ceiling {
+            transitions.push((1000 + exit, Trans::Exit));
+        }
+        let g: Graph = graph(0, transitions);
+        assert!(
             structure(&g).is_none(),
-            "a loop with two distinct exits is irreducible-for-this-structurer and must wall"
+            "a loop leaving through more than {MULTI_EXIT_LIMIT} states exceeds the nesting ceiling"
         );
     }
 }

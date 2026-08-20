@@ -393,6 +393,46 @@ fn state_held_in_a_local_reloops_under_wasmtime() {
 }
 
 #[test]
+fn a_dispatch_loop_with_two_exit_states_reloops_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.clean.wat");
+    let obf_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&obf_bytes).expect("recover the multi-exit dispatch loop");
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 0,
+        "a state loop leaving through two distinct states must structure, not refuse: {:?}",
+        recovered.report
+    );
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "reduce_bounded",
+        "cff_multi_exit_loop.obf.wat",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_multi_exit_successors() {
+    let eng: Engine = engine();
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.clean.wat");
+    let mutant_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.mutant.wat");
+    let recovered: RecoveredModule =
+        recover_module(&mutant_bytes).expect("recover the mutated multi-exit dispatch loop");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 1,
+        "the mutant must reach the runtime battery instead of being refused: {:?}",
+        recovered.report
+    );
+    assert!(
+        wasmparser::validate(&recovered.bytes).is_ok(),
+        "the recovered mutant must validate"
+    );
+    let mut clean_inst: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant_inst: Inst = instantiate(&eng, &recovered.bytes);
+    assert_distinguished(&mut clean_inst, &mut mutant_inst, "reduce_bounded");
+}
+
+#[test]
 fn constant_arithmetic_state_updates_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let obf_bytes: Vec<u8> = assemble_fixture("cff_computed_state.obf.wat");
