@@ -20,8 +20,8 @@ mod php_toolchain;
 
 use disrobe_pass_php::{Decompilation, OpArray, decompile_oparray, parse_oparray};
 use php_toolchain::{
-    PHP_OPCACHE, PhpRun, PhpRuntime, fixture_path, require_php, required_fixture, unmeasured,
-    write_opcache_source,
+    PHP, PHP_OPCACHE, PhpRun, PhpRuntime, ToolchainRequirement, fixture_path,
+    require_with_requirement, required_fixture, write_opcache_source,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -61,6 +61,15 @@ fn recover(sample: &str, wire: &[u8]) -> Recovery {
 
 fn count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
+}
+
+fn graded_php(graded: &str) -> PhpRuntime {
+    require_with_requirement(&PHP, graded, ToolchainRequirement::Mandatory).unwrap_or_else(|| {
+        panic!(
+            "{graded} is graded only by running php, so this case cannot report success without \
+             it. Missing prerequisite: a php 8.4 interpreter on PATH or at DISROBE_PHP_BIN."
+        )
+    })
 }
 
 fn assert_recovered(sample: &str) -> String {
@@ -262,9 +271,7 @@ fn emitter() -> PathBuf {
 #[test]
 fn every_try_region_sample_runs_the_same_as_its_original_under_php() {
     let graded: &str = "the php 8.4 try, catch and finally recovery differential";
-    let Some(php): Option<PhpRuntime> = require_php(graded) else {
-        return;
-    };
+    let php: PhpRuntime = graded_php(graded);
     assert!(php.banner.starts_with("PHP 8."), "{}", php.banner);
     for sample in SAMPLES {
         let source: String = assert_recovered(sample);
@@ -276,17 +283,15 @@ fn every_try_region_sample_runs_the_same_as_its_original_under_php() {
 fn the_tracked_op_arrays_reproduce_from_their_tracked_sources() {
     let graded: &str =
         "the tracked try-region op arrays against the php 8.4 compiler that made them";
-    let Some(php): Option<PhpRuntime> = require_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<PathBuf> = opcache_dll(&php) else {
-        unmeasured(
-            &PHP_OPCACHE,
-            graded,
-            "the opcache extension was not found beside the php binary",
-        );
-        return;
-    };
+    let php: PhpRuntime = graded_php(graded);
+    let dll: PathBuf = opcache_dll(&php).unwrap_or_else(|| {
+        panic!(
+            "{graded} is graded only by recompiling them, so this case cannot report success \
+             without the compiler that made them. Missing prerequisite: the php 8.4 opcache \
+             extension beside the php binary or at DZOA_OPCACHE_DLL. Toolchain: {}.",
+            PHP_OPCACHE.program
+        )
+    });
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_php_try_reemit")
             .expect("create the re-emission scratch directory");
@@ -303,17 +308,13 @@ fn the_tracked_op_arrays_reproduce_from_their_tracked_sources() {
             .arg(&produced)
             .output()
             .expect("run the php 8.4 op array emitter");
-        if !output.status.success() {
-            unmeasured(
-                &PHP_OPCACHE,
-                graded,
-                &format!(
-                    "the php 8.4 opcache extension emitted no op array dump for {sample}: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            );
-            return;
-        }
+        assert!(
+            output.status.success(),
+            "{graded} could not be measured because the php 8.4 opcache extension emitted no op \
+             array dump for {sample}, and a comparison that runs nothing must not report \
+             success: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         let fresh: Vec<u8> = std::fs::read(&produced).expect("read the re-emitted op array");
         assert_eq!(
             fresh,

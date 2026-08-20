@@ -69,15 +69,23 @@ pub(crate) fn enforce_requirement(
     defect: &str,
     requirement: ToolchainRequirement,
 ) {
-    assert!(
-        requirement == ToolchainRequirement::Optional,
-        "{var} makes the {program} toolchain mandatory for this run, so {graded} cannot be measured \
-         and this case must not report success: {defect}. To fix it, {hint}; to permit a run that \
-         measures nothing here, clear {var}.",
-        var = toolchain.require_var,
-        program = toolchain.program,
-        hint = toolchain.install_hint,
-    );
+    if requirement != ToolchainRequirement::Optional {
+        assert!(
+            std::env::var_os(toolchain.require_var).is_some(),
+            "{graded} is graded only by running {program}, so this case must not report success \
+             without it: {defect}. Missing prerequisite: {hint}.",
+            program = toolchain.program,
+            hint = toolchain.install_hint,
+        );
+        panic!(
+            "{var} makes the {program} toolchain mandatory for this run, so {graded} cannot be \
+             measured and this case must not report success: {defect}. To fix it, {hint}; to \
+             permit a run that measures nothing here, clear {var}.",
+            var = toolchain.require_var,
+            program = toolchain.program,
+            hint = toolchain.install_hint,
+        );
+    }
     announce_unmeasured(toolchain, graded, defect);
 }
 
