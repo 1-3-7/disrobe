@@ -145,24 +145,30 @@ fn catch_clauses_recover_with_their_declared_types_and_binding() {
 fn finally_blocks_recover_once_for_every_exit_that_calls_them() {
     let source: String = assert_recovered("try_finally");
     assert_no_generated_names("try_finally", &source);
-    assert_eq!(count(&source, "try {"), 5, "{source}");
-    assert_eq!(count(&source, "} finally {"), 5, "{source}");
+    assert_eq!(count(&source, "try {"), 7, "{source}");
+    assert_eq!(count(&source, "} finally {"), 7, "{source}");
     assert_eq!(
         count(&source, "} catch (\\RuntimeException $error) {"),
         1,
         "{source}"
     );
-    for statement in ["continue;", "break;"] {
+    for (statement, wanted) in [("continue;", 2), ("break;", 1)] {
         assert_eq!(
             source
                 .lines()
                 .filter(|line: &&str| line.trim() == statement)
                 .count(),
-            1,
+            wanted,
             "try_finally must keep the `{statement}` that leaves a try region through its \
              finally\n--- recovered ---\n{source}"
         );
     }
+    assert_eq!(
+        count(&source, "for (; $i < $limit; $i = $i + 1) {"),
+        1,
+        "a for loop whose body holds a try region is lifted twice, so its step must still \
+         rebuild\n--- recovered ---\n{source}"
+    );
 }
 
 #[test]
