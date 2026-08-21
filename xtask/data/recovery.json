@@ -272,18 +272,18 @@
         },
         {
           "label": "body-lowering (real apks, local)",
-          "value": 92.6,
+          "value": 98.8,
           "verified_by": {
             "path": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs",
             "function": "realworld_dalvik_body_lowering_is_verifier_attested",
             "conditional": "the three apks are gitignored, so this gate re-measures only when DISROBE_RUN_REAL_APK_TESTS=1 and all three are present under corpus/mobile/apk/inbox; CI cannot re-derive either figure, and the numbers it pins are cross-checked against this file by dalvik_body_attest_bar_matches_the_pins_this_gate_enforces, which does run in CI"
           },
-          "detail": "Two separate populations, stated separately. Self-reported body lowering: 82923 of 89516 defined methods across the three apks get a lowered body rather than a throw-stub, which is the lifter counting its own output (transmissionic 26224 of 27805 = 94.3, rustdesk 29423 of 32410 = 90.8, enrecipes 27276 of 29301 = 93.1). Verifier-attested: 2976 of 2990 recovered bodies presented to the real JVM pass -Xverify:all = 99.5 (transmissionic 987 of 990, rustdesk 1211 of 1218, enrecipes 778 of 782). The attested denominator is not the method count: 82891 non-stub candidate bodies, a deterministic 100-permille sample takes 8357, and 2990 of those can be re-hosted into an isolated Object carrier, so 5367 are excluded by harness limits and are ungraded rather than passing (1402 constructors, 1678 invokespecial receivers, 2138 unresolvable framework dependencies, 149 other). The apks are gitignored, so both figures are local; the committed-dex bar above is the CI-enforced attestation and its denominator is classes, not bodies.",
+          "detail": "Two separate populations, stated separately. Self-reported body lowering: 82923 of 83943 methods that declare a code item across the three apks get a lowered body rather than a throw-stub, which is the lifter counting its own output (transmissionic 26224 of 26416 = 99.2, rustdesk 29423 of 29983 = 98.1, enrecipes 27276 of 27544 = 99.0). That denominator excludes abstract, native and interface-instance declarations, which carry no body by construction: the same numerator over the 89516 declared methods is 92.6, and the difference is 5573 body-less declarations. Verifier-attested: 2983 of 2997 recovered bodies presented to the real JVM pass -Xverify:all = 99.5 (transmissionic 988 of 991, rustdesk 1212 of 1219, enrecipes 783 of 787). The attested denominator is not the method count: 82891 non-stub candidate bodies, a deterministic 100-permille sample takes 8357, and 2997 of those can be re-hosted into an isolated Object carrier, so 5360 are excluded by harness limits and are ungraded rather than passing (1402 constructors, 1678 invokespecial receivers, 2139 unresolvable framework dependencies, 141 other). The apks are gitignored, so both figures are local; the committed-dex bar above is the CI-enforced attestation and its denominator is classes, not bodies.",
           "source": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs (REAL_APK_METHOD_TOTAL 89516, SELF_REPORTED_BODIES 82923, CANDIDATE_BODIES 82891, SAMPLED_BODIES 8357, ATTESTED_PRESENTED 2990, ATTESTED_CLEAN 2976, ATTESTED_REJECTED 14, every one an equality rather than a floor, with the same counts pinned per apk in common::REAL_APKS and all 2990 verdicts pinned by name in tests/golden/dalvik_body_attest) and crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs (the same per-apk self-reported counts, also by equality); reference for the attested figure = java -Xverify:all rejecting malformed bytecode, not the lifter self-report",
           "num": 82923,
-          "den": 89516,
-          "attested_num": 2976,
-          "attested_den": 2990
+          "den": 83943,
+          "attested_num": 2983,
+          "attested_den": 2997
         }
       ]
     },

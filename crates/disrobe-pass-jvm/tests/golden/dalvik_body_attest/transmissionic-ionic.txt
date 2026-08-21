@@ -62,6 +62,7 @@ ATTEST androidx.coordinatorlayout.widget.CoordinatorLayout$ViewElevationComparat
 ATTEST androidx.core.animation.AnimatorKt$addListener$3#invoke(Ljava/lang/Object;)Ljava/lang/Object;
 ATTEST androidx.core.animation.AnimatorKt$addPauseListener$2#invoke(Ljava/lang/Object;)Ljava/lang/Object;
 ATTEST androidx.core.app.ActivityCompat$1#run()V
+ATTEST androidx.core.app.ActivityRecreator#getRequestRelaunchActivityMethod(Ljava/lang/Class;)Ljava/lang/reflect/Method;
 ATTEST androidx.core.app.MultiWindowModeChangedInfo#isInMultiWindowMode()Z
 ATTEST androidx.core.app.NotificationChannelCompat#canBypassDnd()Z
 ATTEST androidx.core.app.NotificationChannelCompat#getVibrationPattern()[J

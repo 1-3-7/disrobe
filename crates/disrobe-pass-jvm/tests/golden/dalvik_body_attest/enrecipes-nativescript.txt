@@ -80,6 +80,7 @@ ATTEST androidx.collection.MapCollections$ValuesCollection#size()I
 ATTEST androidx.collection.SparseArrayCompat#clone()Ljava/lang/Object;
 ATTEST androidx.coordinatorlayout.widget.CoordinatorLayout$ViewElevationComparator#compare(Ljava/lang/Object;Ljava/lang/Object;)I
 ATTEST androidx.core.app.ActivityCompat$1#run()V
+ATTEST androidx.core.app.ActivityRecreator#getRequestRelaunchActivityMethod(Ljava/lang/Class;)Ljava/lang/reflect/Method;
 ATTEST androidx.core.app.NotificationCompat$Action$WearableExtender#clone()Ljava/lang/Object;
 ATTEST androidx.core.app.NotificationCompat$Builder#getPriority()I
 ATTEST androidx.core.app.NotificationCompat$Builder#setVibrate([J)Landroidx/core/app/NotificationCompat$Builder;
@@ -154,6 +155,7 @@ ATTEST androidx.customview.widget.ViewDragHelper#checkTouchSlop(I)Z
 ATTEST androidx.customview.widget.ViewDragHelper#getMinVelocity()F
 ATTEST androidx.customview.widget.ViewDragHelper#isEdgeTouched(I)Z
 ATTEST androidx.documentfile.provider.SingleDocumentFile#isFile()Z
+ATTEST androidx.documentfile.provider.TreeDocumentFile#renameTo(Ljava/lang/String;)Z
 ATTEST androidx.drawerlayout.widget.DrawerLayout$AccessibilityDelegate#copyNodeInfoNoChildren(Landroidx/core/view/accessibility/AccessibilityNodeInfoCompat;Landroidx/core/view/accessibility/AccessibilityNodeInfoCompat;)V
 ATTEST androidx.exifinterface.media.ExifInterface#isJpegFormat([B)Z
 ATTEST androidx.exifinterface.media.ExifInterface$ByteOrderedDataInputStream#readChar()C
@@ -560,6 +562,7 @@ ATTEST okhttp3.HttpUrl#encodedUsername()Ljava/lang/String;
 ATTEST okhttp3.HttpUrl#port()I
 ATTEST okhttp3.HttpUrl#querySize()I
 ATTEST okhttp3.HttpUrl$Builder#isDot(Ljava/lang/String;)Z
+ATTEST okhttp3.HttpUrl$Builder#parsePort(Ljava/lang/String;II)I
 ATTEST okhttp3.HttpUrl$Builder#portColonOffset(Ljava/lang/String;II)I
 ATTEST okhttp3.MediaType#charset()Ljava/nio/charset/Charset;
 ATTEST okhttp3.MultipartBody$Builder#addPart(Lokhttp3/Headers;Lokhttp3/RequestBody;)Lokhttp3/MultipartBody$Builder;
@@ -582,6 +585,7 @@ ATTEST okhttp3.Response$Builder#sentRequestAtMillis(J)Lokhttp3/Response$Builder;
 ATTEST okhttp3.Route#address()Lokhttp3/Address;
 ATTEST okhttp3.Route#requiresTunnel()Z
 ATTEST okhttp3.Route#socketAddress()Ljava/net/InetSocketAddress;
+ATTEST okhttp3.internal.Util#closeQuietly(Ljava/io/Closeable;)V
 ATTEST okhttp3.internal.Util#decodeHexDigit(C)I
 ATTEST okhttp3.internal.Util#format(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;
 ATTEST okhttp3.internal.Util#trimSubstring(Ljava/lang/String;II)Ljava/lang/String;
@@ -599,6 +603,7 @@ ATTEST okhttp3.internal.http2.Hpack$Writer#writeInt(III)V
 ATTEST okhttp3.internal.http2.Http2Reader#readHeaderBlock(ISBI)Ljava/util/List;
 ATTEST okhttp3.internal.http2.Http2Stream$StreamTimeout#timedOut()V
 ATTEST okhttp3.internal.platform.AndroidPlatform#getStackTraceForCloseable(Ljava/lang/String;)Ljava/lang/Object;
+ATTEST okhttp3.internal.platform.AndroidPlatform$CloseGuard#createAndOpen(Ljava/lang/String;)Ljava/lang/Object;
 ATTEST okhttp3.internal.platform.Platform#configureSslSocketFactory(Ljavax/net/ssl/SSLSocketFactory;)V
 ATTEST okhttp3.internal.platform.Platform#connectSocket(Ljava/net/Socket;Ljava/net/InetSocketAddress;I)V
 ATTEST okhttp3.internal.platform.Platform#getPrefix()Ljava/lang/String;

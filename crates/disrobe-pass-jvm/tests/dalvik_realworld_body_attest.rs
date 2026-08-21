@@ -27,21 +27,24 @@ const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
 const REAL_APK_METHOD_TOTAL: usize = 89_516;
 
+const REAL_APK_CODE_ITEM_METHODS: usize = 83_943;
+
 const SELF_REPORTED_BODIES: usize = 82_923;
 
 const CANDIDATE_BODIES: usize = 82_891;
 
 const SAMPLED_BODIES: usize = 8_357;
 
-const ATTESTED_PRESENTED: usize = 2_990;
+const ATTESTED_PRESENTED: usize = 2_997;
 
-const ATTESTED_CLEAN: usize = 2_976;
+const ATTESTED_CLEAN: usize = 2_983;
 
 const ATTESTED_REJECTED: usize = 14;
 
 struct BodyAttest {
     self_reported_bodies: usize,
     method_total: usize,
+    code_item_methods: usize,
     candidate_bodies: usize,
     sampled_bodies: usize,
     presented: usize,
@@ -70,6 +73,7 @@ fn attest_apk(verifier: &JvmVerifier, apk: &RealApk, path: &Path) -> BodyAttest 
     let mut out: BodyAttest = BodyAttest {
         self_reported_bodies: 0,
         method_total: 0,
+        code_item_methods: 0,
         candidate_bodies: 0,
         sampled_bodies: 0,
         presented: 0,
@@ -89,6 +93,9 @@ fn attest_apk(verifier: &JvmVerifier, apk: &RealApk, path: &Path) -> BodyAttest 
         let result: Dex2JarResult = translate_dex_bytes(dex_bytes).expect("translate dex");
         out.method_total += result.method_total;
         out.self_reported_bodies += result.bodies_recovered;
+        out.code_item_methods += result
+            .bodies_recovered
+            .saturating_add(result.stubbed_body_count);
         let jar: Vec<u8> = assemble_jar(&result).expect("assemble jar");
         let label: String = format!("{}-{name}", apk.file);
         let jar_path: PathBuf = verifier.write_jar(&label, &jar);
@@ -155,6 +162,7 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
     let mut total_fail: usize = 0;
     let mut total_self: usize = 0;
     let mut total_methods: usize = 0;
+    let mut total_code_item: usize = 0;
     let mut total_candidates: usize = 0;
     let mut total_sampled: usize = 0;
     let mut total_presented: usize = 0;
@@ -185,9 +193,21 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
         }
         assert_eq!(
             attest.method_total, apk.method_total,
-            "{}: the apk defines {} methods but the published self-reported denominator is pinned \
+            "{}: the apk defines {} methods but the declared-method population is pinned \
              at {}; a different input is being measured under the published figure",
             apk.file, attest.method_total, apk.method_total
+        );
+        assert_eq!(
+            attest.code_item_methods, apk.code_item_methods_pinned,
+            "{}: {} methods declare a code item against the pinned {}. This is the denominator \
+             the published body figure is measured against, because only a method the class file \
+             must give a body can be one the lifter fails",
+            apk.file, attest.code_item_methods, apk.code_item_methods_pinned
+        );
+        assert!(
+            attest.code_item_methods <= attest.method_total,
+            "{}: the code-item population cannot exceed the declared-method population",
+            apk.file
         );
         assert_eq!(
             attest.self_reported_bodies,
@@ -253,6 +273,7 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
         total_fail += attest.fail;
         total_self += attest.self_reported_bodies;
         total_methods += attest.method_total;
+        total_code_item += attest.code_item_methods;
         total_candidates += attest.candidate_bodies;
         total_sampled += attest.sampled_bodies;
         total_presented += attest.presented;
@@ -260,18 +281,30 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
     }
 
     let attested_pct: f64 = total_clean as f64 * 100.0 / total_presented.max(1) as f64;
-    let self_pct: f64 = total_self as f64 * 100.0 / total_methods.max(1) as f64;
+    let self_pct: f64 = total_self as f64 * 100.0 / total_code_item.max(1) as f64;
+    let declared_pct: f64 = total_self as f64 * 100.0 / total_methods.max(1) as f64;
     eprintln!(
         "BODY ATTEST TOTAL [{PUBLISHED_BAR_LABEL}]: verifier_attested={total_clean}/{total_presented} \
          ({attested_pct:.1}%) from a {SAMPLE_PERMILLE}-permille deterministic sample that selected \
-         {total_sampled} of {total_candidates} non-stub bodies; self_reported_bodies={total_self}/{total_methods} \
-         ({self_pct:.1}%). The two denominators are different populations and neither figure implies the other."
+         {total_sampled} of {total_candidates} non-stub bodies; \
+         self_reported_bodies={total_self}/{total_code_item} ({self_pct:.1}%) over the methods \
+         that declare a code item, which excludes abstract, native and interface-instance \
+         declarations that can never carry a body; the same numerator over the \
+         {total_methods} declared methods is {declared_pct:.1}%, and that denominator counts \
+         those {} body-less declarations. The three denominators are different populations and no \
+         figure implies another.",
+        total_methods.saturating_sub(total_code_item)
     );
     check_membership(&membership);
     assert_eq!(
         total_methods, REAL_APK_METHOD_TOTAL,
-        "the real apks define {total_methods} methods but the published self-reported denominator \
-         is pinned at {REAL_APK_METHOD_TOTAL}"
+        "the real apks define {total_methods} methods but the declared-method population is \
+         pinned at {REAL_APK_METHOD_TOTAL}"
+    );
+    assert_eq!(
+        total_code_item, REAL_APK_CODE_ITEM_METHODS,
+        "{total_code_item} methods declare a code item but the published denominator is pinned at \
+         {REAL_APK_CODE_ITEM_METHODS}"
     );
     assert_eq!(
         total_presented, ATTESTED_PRESENTED,
@@ -301,8 +334,8 @@ fn realworld_dalvik_body_lowering_is_verifier_attested() {
     );
     assert_eq!(
         total_self, SELF_REPORTED_BODIES,
-        "self-reported recovered bodies {total_self}/{total_methods} against the pinned \
-         {SELF_REPORTED_BODIES}/{REAL_APK_METHOD_TOTAL}"
+        "self-reported recovered bodies {total_self}/{total_code_item} against the pinned \
+         {SELF_REPORTED_BODIES}/{REAL_APK_CODE_ITEM_METHODS}"
     );
 }
 
@@ -353,6 +386,10 @@ fn required_count(bar: &serde_json::Value, key: &str) -> u64 {
 #[test]
 fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     let methods: usize = REAL_APKS.iter().map(|apk: &RealApk| apk.method_total).sum();
+    let code_item_methods: usize = REAL_APKS
+        .iter()
+        .map(|apk: &RealApk| apk.code_item_methods_pinned)
+        .sum();
     let bodies: usize = REAL_APKS
         .iter()
         .map(|apk: &RealApk| apk.self_reported_bodies_pinned)
@@ -378,9 +415,10 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
         .map(|apk: &RealApk| apk.attested_rejected_pinned)
         .sum();
     assert_eq!(
-        (methods, bodies, candidates, sampled),
+        (methods, code_item_methods, bodies, candidates, sampled),
         (
             REAL_APK_METHOD_TOTAL,
+            REAL_APK_CODE_ITEM_METHODS,
             SELF_REPORTED_BODIES,
             CANDIDATE_BODIES,
             SAMPLED_BODIES
@@ -408,9 +446,15 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     let attested_den: u64 = required_count(bar, "attested_den");
     assert_eq!(
         (num, den),
-        (SELF_REPORTED_BODIES as u64, REAL_APK_METHOD_TOTAL as u64),
+        (
+            SELF_REPORTED_BODIES as u64,
+            REAL_APK_CODE_ITEM_METHODS as u64
+        ),
         "recovery.json publishes {num}/{den} self-reported lowered bodies but this gate pins \
-         {SELF_REPORTED_BODIES}/{REAL_APK_METHOD_TOTAL}"
+         {SELF_REPORTED_BODIES}/{REAL_APK_CODE_ITEM_METHODS}, the methods that declare a code \
+         item. Publishing the numerator over the {REAL_APK_METHOD_TOTAL} declared methods states \
+         a rate against a denominator that can never reach 100, because abstract, native and \
+         interface-instance declarations carry no body by construction"
     );
     assert_eq!(
         (attested_num, attested_den),
@@ -443,7 +487,7 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
             [
                 format!(
                     "{} {} of {}",
-                    apk.short, apk.self_reported_bodies_pinned, apk.method_total
+                    apk.short, apk.self_reported_bodies_pinned, apk.code_item_methods_pinned
                 ),
                 format!(
                     "{} {} of {}",
@@ -456,7 +500,8 @@ fn dalvik_body_attest_bar_matches_the_pins_this_gate_enforces() {
     }
     unstated.extend(
         [
-            format!("{SELF_REPORTED_BODIES} of {REAL_APK_METHOD_TOTAL}"),
+            format!("{SELF_REPORTED_BODIES} of {REAL_APK_CODE_ITEM_METHODS}"),
+            format!("{REAL_APK_METHOD_TOTAL} declared methods"),
             format!("{ATTESTED_CLEAN} of {ATTESTED_PRESENTED}"),
             format!("{CANDIDATE_BODIES} non-stub candidate bodies"),
             SAMPLED_BODIES.to_string(),

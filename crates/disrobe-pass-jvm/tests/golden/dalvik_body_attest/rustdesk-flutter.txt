@@ -926,6 +926,7 @@ ATTEST q1.w$d#d(Ljava/lang/Throwable;)Ljava/lang/String;
 ATTEST q4.a$b#b(Lq4/a$b;)I
 ATTEST r.d$b#a()Ljava/lang/String;
 ATTEST r0.a#E(Ljava/io/FileDescriptor;)Z
+ATTEST r0.a$a#readAt(J[BII)I
 ATTEST r0.a$b#available()I
 ATTEST r0.a$b#read([BII)I
 ATTEST r0.a$b#readFloat()F

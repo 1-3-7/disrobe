@@ -78,8 +78,8 @@ pub const REAL_APKS: &[RealApk] = &[
         self_reported_bodies_pinned: 26_224,
         candidate_bodies_pinned: 26_224,
         sampled_bodies_pinned: 2_677,
-        presented_bodies: 990,
-        attested_clean_pinned: 987,
+        presented_bodies: 991,
+        attested_clean_pinned: 988,
         attested_rejected_pinned: 3,
     },
     RealApk {
@@ -91,8 +91,8 @@ pub const REAL_APKS: &[RealApk] = &[
         self_reported_bodies_pinned: 29_423,
         candidate_bodies_pinned: 29_392,
         sampled_bodies_pinned: 2_856,
-        presented_bodies: 1218,
-        attested_clean_pinned: 1211,
+        presented_bodies: 1219,
+        attested_clean_pinned: 1212,
         attested_rejected_pinned: 7,
     },
     RealApk {
@@ -104,8 +104,8 @@ pub const REAL_APKS: &[RealApk] = &[
         self_reported_bodies_pinned: 27_276,
         candidate_bodies_pinned: 27_275,
         sampled_bodies_pinned: 2_824,
-        presented_bodies: 782,
-        attested_clean_pinned: 778,
+        presented_bodies: 787,
+        attested_clean_pinned: 783,
         attested_rejected_pinned: 4,
     },
 ];
