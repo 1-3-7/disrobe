@@ -24,7 +24,7 @@
         },
         {
           "label": "200-module pinned corpus",
-          "value": 96.6,
+          "value": 96.59,
           "num": 6072,
           "den": 6286,
           "modules": 200,
@@ -97,7 +97,7 @@
         },
         {
           "label": "CPython 3.14 (all 200 pinned modules)",
-          "value": 96.6,
+          "value": 96.59,
           "num": 6072,
           "den": 6286,
           "detail": "6072 / 6286 code objects over 200 modules on CPython 3.14.5. 0 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",

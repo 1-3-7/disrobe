@@ -23,7 +23,7 @@ use common::stdlib_measure::{
 
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
-const OBJECT_PCT_FLOOR: f64 = 96.60;
+const OBJECT_PCT_FLOOR: f64 = 96.59;
 const MODULES_EXACT_FLOOR: u64 = 122;
 const MODULES_EXACT_PCT_FLOOR: f64 = 61.0;
 const PINNED_MODULE_COUNT: u64 = 200;

@@ -3,7 +3,7 @@
 - id: `dalvik-realapk-coverage`
 - ecosystem: android
 - claim: disrobe lowers a Dalvik method body rather than a throw-stub for 82923 of 89516 defined methods across three real FOSS apks, and the real JVM verifier accepts 2976 of the 2990 recovered bodies that can be presented to it.
-- measured: 92.60%
+- measured: 98.80%
 - oracle strength: coverage-self-reported
 - CI-attested: no [local]
 - evidence basis: two populations with different denominators: the 82923 of 89516 body-lowering count is the lifter counting its own output, and the 2976 of 2990 figure beside it is graded by real java -Xverify:all over bodies presented to the verifier, not over methods

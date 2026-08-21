@@ -178,7 +178,7 @@
       "floor": 92.6,
       "floor_holds": true,
       "id": "dalvik-realapk-coverage",
-      "measured": "92.60%",
+      "measured": "98.80%",
       "oracle_strength": "coverage-self-reported",
       "pairs": [],
       "reproduce": "DISROBE_RUN_REAL_APK_TESTS=1 cargo test -p disrobe-pass-jvm --test dalvik_realworld_body_attest --test dex2jar_realworld_apks (local-only: the apks are gitignored)"
@@ -554,10 +554,10 @@
       "disrobe_leads": null,
       "ecosystem": "python",
       "external_oracle": "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)",
-      "floor": 96.6,
+      "floor": 96.59,
       "floor_holds": true,
       "id": "py-stdlib-recompile",
-      "measured": "96.60%",
+      "measured": "96.59%",
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"

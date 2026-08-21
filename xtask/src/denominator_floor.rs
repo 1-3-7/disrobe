@@ -16,7 +16,7 @@ const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-jvm", 3),
     ("disrobe-pass-lua", 1),
     ("disrobe-pass-mobile", 4),
-    ("disrobe-pass-native", 4),
+    ("disrobe-pass-native", 3),
     ("disrobe-pass-py-decompile", 2),
     ("disrobe-pass-shell", 2),
     ("disrobe-pass-wasm-deob", 1),

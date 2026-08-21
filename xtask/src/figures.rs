@@ -117,7 +117,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     FigureBudget {
         path: "README.md",
         figures: 36,
-        digest: "8b9b392d4d7f51e9",
+        digest: "0cc688cf084c19b3",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -197,7 +197,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     FigureBudget {
         path: "docs/src/architecture/whitepaper.md",
         figures: 47,
-        digest: "9953485434459c4f",
+        digest: "9775f4ce1d9781e7",
     },
     FigureBudget {
         path: "docs/src/catalog.md",
@@ -277,7 +277,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     FigureBudget {
         path: "docs/src/languages/python.md",
         figures: 4,
-        digest: "8977a52171b65be1",
+        digest: "4acecc02cf2648f2",
     },
     FigureBudget {
         path: "docs/src/languages/ruby.md",
@@ -297,7 +297,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     FigureBudget {
         path: "docs/src/python-bindings.md",
         figures: 7,
-        digest: "439bec0db21991f4",
+        digest: "509214a2f8c1bc2b",
     },
     FigureBudget {
         path: "evidence/README.md",

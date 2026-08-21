@@ -6,11 +6,11 @@
   "detail": "6072 / 6286 code objects; CI floor 96.60%, pinned at the figure this corpus measures rather than a round number beneath it, so the gate has no slack to absorb a regression; a curated subset that runs higher than the full stdlib",
   "disrobe_leads": null,
   "ecosystem": "python",
-  "floor": 96.6,
+  "floor": 96.59,
   "floor_holds": true,
   "gate_source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs:17 (OBJECT_PCT_FLOOR 96.60); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.6 (6072 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)",
   "id": "py-stdlib-recompile",
-  "measured": "96.60%",
+  "measured": "96.59%",
   "oracle": {
     "external": "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)",
     "kind": "recovery-import",

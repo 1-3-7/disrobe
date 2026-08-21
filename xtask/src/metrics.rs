@@ -308,7 +308,11 @@ fn derive_percent(num: u64, den: u64) -> Result<String> {
     if den == 0 {
         bail!("a rate derived from {num} over a zero denominator has no value");
     }
-    Ok(format!("{:.2}%", (num as f64) * 100.0 / (den as f64)))
+    let exact: f64 = (num as f64) * 100.0 / (den as f64);
+    Ok(format!(
+        "{:.2}%",
+        exact.mul_add(100.0, 1e-9).floor() / 100.0
+    ))
 }
 
 #[derive(Debug)]
@@ -1744,7 +1748,7 @@ mod tests {
         let source: &str = "3.14 <!-- m:py_band_314_rate -->0%<!-- /m -->\n";
         let rendered: String = rewrite_text(source, &sources)?;
         assert!(
-            rendered.contains("-->96.60%<!-- /m -->"),
+            rendered.contains("-->96.59%<!-- /m -->"),
             "the 3.14 band stores 96.6 and measures 6072 of 6286, so the marker must render the \
              rate cut from the fraction: {rendered}"
         );
@@ -1793,9 +1797,9 @@ mod tests {
     }
 
     #[test]
-    fn a_derived_rate_rounds_to_two_places() -> Result<()> {
+    fn a_derived_rate_truncates_to_two_places() -> Result<()> {
         assert_eq!(derive_percent(5_170, 5_458)?, "94.72%");
-        assert_eq!(derive_percent(6_072, 6_286)?, "96.60%");
+        assert_eq!(derive_percent(6_072, 6_286)?, "96.59%");
         assert_eq!(derive_percent(6_219, 6_480)?, "95.97%");
         Ok(())
     }

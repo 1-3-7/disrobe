@@ -99,6 +99,6 @@
   <rect x="540.5" y="132.5" width="667" height="299" rx="9" fill="none" stroke="#262626"/>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
-  <text x="72" y="582" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>15 ecosystems<tspan fill="#828282"> &#183; </tspan>Python 96.60% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>Android DEX 118/118 verifier-presented classes clean</text>
+  <text x="72" y="582" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>15 ecosystems<tspan fill="#828282"> &#183; </tspan>Python 96.59% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>Android DEX 118/118 verifier-presented classes clean</text>
   <text x="72" y="608" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>containers: 101 declared in-tree extractors<tspan fill="#828282"> &#183; </tspan>41 exercised by committed inputs</text>
 </svg>
