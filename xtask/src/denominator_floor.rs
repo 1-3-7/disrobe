@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail};
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
-const MIN_SCANNED_FILES: usize = 400;
+const MIN_SCANNED_FILES: usize = 3_400;
 const FLOOR_GAP: usize = 4;
 
 const DENOMINATOR_CEILING: &[(&str, usize)] = &[

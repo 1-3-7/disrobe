@@ -5,7 +5,7 @@ use eyre::{Result, WrapErr, bail};
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const RETURN_WINDOW: usize = 5;
-const MIN_SCANNED_FILES: usize = 400;
+const MIN_SCANNED_FILES: usize = 3_400;
 const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
@@ -302,7 +302,9 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         bail!(
             "xtask skip-census scanned only {} test source file(s), below the floor of \
              {MIN_SCANNED_FILES}. The scan itself is broken or the tree moved; a census that reads \
-             nothing would report a clean sheet it did not earn",
+             a fraction of the tree reports a clean sheet for everything it never opened, so this \
+             floor sits just under the count the workspace carries rather than at a token value a \
+             badly narrowed scan would still clear",
             census.scanned
         );
     }
