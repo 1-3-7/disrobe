@@ -57,15 +57,34 @@ impl DartCodeTable {
     }
 }
 
+fn align_to_image(value: usize) -> Option<usize> {
+    value
+        .checked_add(RODATA_IMAGE_ALIGNMENT - 1)
+        .map(|raised: usize| raised & !(RODATA_IMAGE_ALIGNMENT - 1))
+}
+
+fn image_spans_to_section_end(isolate_data: &[u8], offset: usize) -> bool {
+    let Some(image): Option<&[u8]> = isolate_data.get(offset..) else {
+        return false;
+    };
+    let Some(header): Option<ImageHeader> = parse_image_header(image) else {
+        return false;
+    };
+    header.image_size != 0 && header.image_size == u64::try_from(image.len()).unwrap_or(u64::MAX)
+}
+
 #[must_use]
 pub fn rodata_image_offset(isolate_data: &[u8]) -> Option<usize> {
-    let declared: usize = usize::try_from(super::parse_dart_snapshot(isolate_data).ok()?.length)
-        .ok()?
-        .checked_add(SNAPSHOT_STREAM_PREFIX_BYTES)?;
-    let aligned: usize = declared
-        .checked_add(RODATA_IMAGE_ALIGNMENT - 1)
-        .map(|raised: usize| raised & !(RODATA_IMAGE_ALIGNMENT - 1))?;
-    (aligned < isolate_data.len()).then_some(aligned)
+    let declared: usize =
+        usize::try_from(super::parse_dart_snapshot(isolate_data).ok()?.length).ok()?;
+    let after_prefix: Option<usize> = declared.checked_add(SNAPSHOT_STREAM_PREFIX_BYTES);
+    [Some(declared), after_prefix]
+        .into_iter()
+        .flatten()
+        .filter_map(align_to_image)
+        .find(|aligned: &usize| {
+            *aligned < isolate_data.len() && image_spans_to_section_end(isolate_data, *aligned)
+        })
 }
 
 pub fn parse_code_table(
@@ -92,7 +111,7 @@ pub fn parse_code_table(
     }
     let image_offset: usize = rodata_image_offset(isolate_data).ok_or(
         Error::DartCodeTableUnavailable {
-            reason: "the isolate snapshot declared length does not place a read-only image inside the section",
+            reason: "no read-only image begins at the aligned end of the isolate snapshot stream, measured both with and without the fixed header prefix",
         },
     )?;
     let image: &[u8] = isolate_data

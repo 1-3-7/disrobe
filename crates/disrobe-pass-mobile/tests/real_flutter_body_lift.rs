@@ -166,7 +166,7 @@ fn the_backordered_source_predicate_and_the_empty_list_guard_recover() {
 
 #[test]
 fn every_modelled_arm64_family_is_observed_or_named_unobserved() {
-    let families: [(&str, &str); 18] = [
+    let families: [(&str, &str); 19] = [
         ("add", " + "),
         ("subtract", " - "),
         ("multiply", " * "),
@@ -185,26 +185,20 @@ fn every_modelled_arm64_family_is_observed_or_named_unobserved() {
         ("smi tag", "smiTag("),
         ("signed truncation", ".toSigned("),
         ("unsigned truncation", ".toUnsigned("),
+        ("square root", "sqrt("),
     ];
-    let unobserved: [(&str, &str); 3] = [
+    let unobserved: [(&str, &str); 2] = [
         (
             "absolute",
             "gen_snapshot emits fabs only inside loop bodies in this corpus, where the merge-conservative tracker holds no operand",
-        ),
-        (
-            "square root",
-            "fsqrt appears in the corpus only inside loop bodies, where the merge-conservative tracker holds no operand",
         ),
         (
             "maximum and minimum",
             "fmax and fmin appear in the corpus only inside loop bodies, where the merge-conservative tracker holds no operand",
         ),
     ];
-    let unobserved_needles: [(&str, &str); 3] = [
-        ("absolute", ".abs()"),
-        ("square root", "sqrt("),
-        ("maximum and minimum", "max("),
-    ];
+    let unobserved_needles: [(&str, &str); 2] =
+        [("absolute", ".abs()"), ("maximum and minimum", "max(")];
 
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for sample in COMMITTED_SAMPLES {
