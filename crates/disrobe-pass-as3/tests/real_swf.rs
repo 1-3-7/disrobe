@@ -389,6 +389,12 @@ fn corpus_recovery_rate_holds_an_honest_floor() {
     let pct: f64 = 100.0 * full as f64 / bodies as f64;
     eprintln!("AS3 corpus full-recovery: {full}/{bodies} = {pct:.2}%");
     assert!(
+        bodies > 1000,
+        "this case asserts a rate, so its denominator has to be floored too; a body that \
+         fails to lift is skipped rather than counted, and without this a shrinking \
+         population would keep reporting a healthy percentage over almost nothing: {bodies}"
+    );
+    assert!(
         full * 1000 >= bodies * 805,
         "fully-recovered share must hold the post-restructuring floor (>=80.5%); got {full}/{bodies} = {pct:.2}%"
     );
