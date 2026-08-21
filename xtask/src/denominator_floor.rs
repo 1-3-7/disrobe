@@ -15,7 +15,7 @@ const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-js-deob", 1),
     ("disrobe-pass-jvm", 3),
     ("disrobe-pass-lua", 1),
-    ("disrobe-pass-mobile", 6),
+    ("disrobe-pass-mobile", 4),
     ("disrobe-pass-native", 4),
     ("disrobe-pass-py-decompile", 2),
     ("disrobe-pass-shell", 2),
@@ -157,6 +157,46 @@ fn denominators(tokens: &[Tok<'_>]) -> Vec<String> {
     found
 }
 
+fn is_constant_name(name: &str) -> bool {
+    name.len() > 1
+        && name
+            .chars()
+            .all(|character: char| character.is_ascii_uppercase() || character == '_')
+}
+
+fn bounds_the_population(tokens: &[Tok<'_>], at: usize) -> bool {
+    match tokens.get(at) {
+        Some(Tok::Number) => true,
+        Some(Tok::Ident(name)) if is_constant_name(name) => true,
+        Some(Tok::Ident(_)) => matches!(
+            tokens.get(at.saturating_add(2)),
+            Some(Tok::Ident("len" | "count"))
+        ),
+        _ => false,
+    }
+}
+
+fn pins_the_population(tokens: &[Tok<'_>], name: &str) -> bool {
+    let Some(head) = tokens
+        .iter()
+        .position(|tok: &Tok<'_>| matches!(tok, Tok::Ident("assert_eq")))
+    else {
+        return false;
+    };
+    let mut cursor: usize = head.saturating_add(1);
+    while matches!(tokens.get(cursor), Some(Tok::Other)) {
+        cursor = cursor.saturating_add(1);
+    }
+    if !matches!(tokens.get(cursor), Some(Tok::Ident(found)) if *found == name) {
+        return false;
+    }
+    let mut after: usize = cursor.saturating_add(1);
+    while matches!(tokens.get(after), Some(Tok::Other)) {
+        after = after.saturating_add(1);
+    }
+    bounds_the_population(tokens, after)
+}
+
 fn line_floors(line: &str, name: &str) -> bool {
     if !line.contains("assert") {
         return false;
@@ -187,13 +227,13 @@ fn line_floors(line: &str, name: &str) -> bool {
         let window: usize = index.saturating_add(1);
         for offset in window..window.saturating_add(FLOOR_GAP).min(tokens.len()) {
             if matches!(tokens.get(offset), Some(Tok::Compare))
-                && matches!(tokens.get(offset.saturating_add(1)), Some(Tok::Number))
+                && bounds_the_population(&tokens, offset.saturating_add(1))
             {
                 return true;
             }
         }
     }
-    false
+    pins_the_population(&tokens, name)
 }
 
 fn test_bodies<'a>(lines: &'a [&'a str]) -> Vec<(String, usize, usize)> {
@@ -527,6 +567,57 @@ mod tests {
             "scanning src must not reach production code, where an early return against malformed \
              input is correct refusal rather than a skipped measurement"
         );
+    }
+
+    #[test]
+    fn a_denominator_pinned_to_a_collection_length_is_floored() {
+        let source: &str = concat!(
+            "#[test]\n",
+            "fn probe() {\n",
+            "    let recall: f64 = hit as f64 / present as f64;\n",
+            "    assert_eq!(present, cases.len());\n",
+            "    assert!(recall >= 1.0);\n",
+            "}\n"
+        );
+        let found: Vec<RateSite> = sites_in_source("crates/c/tests/t.rs", source);
+        assert!(
+            found.is_empty(),
+            "pinning the population to the case list is the strongest form available, and reading \
+             only NAME compared with a numeric literal made it invisible"
+        );
+    }
+
+    #[test]
+    fn a_denominator_floored_against_a_named_constant_is_floored() {
+        let source: &str = concat!(
+            "#[test]\n",
+            "fn probe() {\n",
+            "    assert!(possible >= CLEAN_TOKEN_COUNT);\n",
+            "    assert!(hits * 100 / possible >= 92);\n",
+            "}\n"
+        );
+        let found: Vec<RateSite> = sites_in_source("crates/c/tests/t.rs", source);
+        assert!(found.is_empty(), "a constant is a bound like any other");
+    }
+
+    #[test]
+    fn an_equality_between_two_counted_populations_is_not_a_floor() {
+        let source: &str = concat!(
+            "#[test]\n",
+            "fn probe() {\n",
+            "    let rate: f64 = hits as f64 / total as f64;\n",
+            "    assert_eq!(hits, total);\n",
+            "    assert!(rate >= 0.9);\n",
+            "}\n"
+        );
+        let found: Vec<RateSite> = sites_in_source("crates/c/tests/t.rs", source);
+        assert_eq!(
+            found.len(),
+            1,
+            "demanding equality between two counts bounds neither of them, and both are zero when \
+             the population is empty"
+        );
+        assert_eq!(found[0].denominator, "total");
     }
 
     #[test]
