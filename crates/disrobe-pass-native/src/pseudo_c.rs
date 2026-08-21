@@ -2232,6 +2232,7 @@ type NoreturnCallSites = BTreeMap<u64, &'static NoreturnLibraryFunction>;
 struct ObjectTransferFacts {
     noreturn_exit_sites: NoreturnCallSites,
     relocated_branch_sites: BTreeSet<u64>,
+    relocated_branch_targets: BTreeMap<u64, u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2343,6 +2344,14 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
             continue;
         };
         if !symbol.is_undefined() {
+            if insn.mnemonic != "call"
+                && matches!(symbol.kind(), object::SymbolKind::Text)
+                && symbol.section_index() == Some(code_section.index())
+            {
+                facts
+                    .relocated_branch_targets
+                    .insert(insn.address, symbol.address());
+            }
             continue;
         }
         let Ok(name): core::result::Result<&str, object::Error> = symbol.name() else {
@@ -2640,25 +2649,30 @@ fn proven_program_integer64_tail_targets(
     let Ok(insns) = disassembly else {
         return proven;
     };
+    let transfers: ObjectTransferFacts = object_transfer_facts(object, function.address, &insns);
     for insn in &insns {
-        if insn.mnemonic != "jmp" {
+        let relocated_target: Option<u64> = transfers
+            .relocated_branch_targets
+            .get(&insn.address)
+            .copied();
+        if insn.mnemonic != "jmp" && relocated_target.is_none() {
             continue;
         }
         let Some(target): Option<u64> = parse_branch_target(&insn.operands) else {
             continue;
         };
-        let sibling_address: u64 = if by_addr.contains_key(&target) {
-            target
-        } else if let Some(relocated) = resolve_relocated_call_target(object, function, target) {
-            relocated
-        } else {
-            target
-        };
+        let sibling_address: u64 = relocated_target.unwrap_or_else(|| {
+            if by_addr.contains_key(&target) {
+                target
+            } else {
+                resolve_relocated_call_target(object, function, target).unwrap_or(target)
+            }
+        });
         let Some(callee): Option<&&ProgramFunction> = by_addr.get(&sibling_address) else {
             continue;
         };
         if straight_line_integer64_return_is_proven(object, callee, abi) {
-            proven.insert(target);
+            proven.insert(sibling_address);
         }
     }
     proven
@@ -3143,7 +3157,17 @@ fn build_leaf_items(
                 .transfers
                 .relocated_branch_sites
                 .contains(&insn.address);
-            max_branch_target = max_branch_target.max(target);
+            let resolved_relocated_target: Option<u64> = object_facts
+                .transfers
+                .relocated_branch_targets
+                .get(&insn.address)
+                .copied()
+                .filter(|resolved: &u64| !(base..function_end).contains(resolved));
+            if resolved_relocated_target.is_none() {
+                max_branch_target = max_branch_target.max(target);
+            }
+            let target: u64 = resolved_relocated_target.unwrap_or(target);
+            let relocated_branch: bool = relocated_branch && resolved_relocated_target.is_none();
             if cond_suffix == "mp" {
                 if let DirectJumpExit::TailCall { synthetic_return } = classify_direct_jump_exit(
                     &insns,
@@ -3204,6 +3228,44 @@ fn build_leaf_items(
                 &mut next_sel,
                 insn.address,
             )?;
+            if resolved_relocated_target.is_some()
+                && object_facts.proven_integer64_tail_targets.contains(&target)
+                && !(base..function_end).contains(&target)
+                && insns.iter().all(instruction_keeps_the_entry_stack)
+            {
+                let instruction_len: u64 =
+                    u64::try_from(insn.bytes.len()).map_err(|_: std::num::TryFromIntError| {
+                        Error::LlvmIr("instruction length exceeds the address space".to_owned())
+                    })?;
+                let skip_target: u64 =
+                    insn.address.checked_add(instruction_len).ok_or_else(|| {
+                        Error::LlvmIr("instruction range overflows the address space".to_owned())
+                    })?;
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Branch {
+                        kind: branch_kind.negate(),
+                        flags: used_flags,
+                        target: skip_target,
+                    },
+                });
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Stmt(Stmt::Call {
+                        target: CallTarget::Address(target),
+                        args: abi.arg_order().to_vec(),
+                        name: None,
+                    }),
+                });
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Ret,
+                });
+                saw_ret = true;
+                return_width = Width::W64;
+                flags = None;
+                continue;
+            }
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Branch {

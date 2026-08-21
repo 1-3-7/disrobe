@@ -1265,6 +1265,44 @@ fn a_block_reached_only_by_a_guard_survives_the_tail_jump_that_precedes_it() {
     );
 }
 
+const SIBLING_TAIL_ACROSS_SECTIONS: &str = "__attribute__((noinline,noclone)) long long er_fs_h(long long x, long long y){ return x * 2 + y; }\nlong long er_fs_entry(long long a, long long b, long long c){ if (a < 0) return er_fs_h(a, b); if (b < 0) return er_fs_h(b, c); return er_fs_h(c, a); }";
+
+#[test]
+fn a_relocation_naming_a_symbol_in_another_section_is_not_resolved_against_this_one() {
+    let shape: ExitShape = ExitShape {
+        tag: "sibling_tail_across_sections",
+        entry: "er_fs_entry",
+        functions: &["er_fs_entry", "er_fs_h"],
+        c_source: SIBLING_TAIL_ACROSS_SECTIONS,
+        extra_boundaries: &[],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    };
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-cross-section-tail");
+    let out: PathBuf = scratch.path().join("cross_section.o");
+    let flags: [&str; 3] = ["-fno-stack-protector", "-ffunction-sections", "-c"];
+    let object: Vec<u8> =
+        match compile_object_reasoned("clang", "-O1", &flags, SIBLING_TAIL_ACROSS_SECTIONS, &out) {
+            CompileOutcome::Object(bytes) => bytes,
+            CompileOutcome::Rejected(reason) => {
+                panic!("the cross-section fixture must compile: {reason}")
+            }
+        };
+    match recover_shape(&object, &shape, PseudoAbi::MsX64) {
+        RecoverOutcome::Abstained(reason) => assert!(
+            reason.contains("carries a relocation")
+                || reason.contains("a direct jump leaves this function"),
+            "the abstention must name the precondition that failed, got: {reason}"
+        ),
+        RecoverOutcome::Ok(recovered) => assert!(
+            recovered.tu.contains("rec_er_fs_h(") && !recovered.tu.contains("continue;"),
+            "every section of an unlinked object is based at zero, so a relocation naming a symbol in another section must never be resolved against this function's own address space: {}",
+            recovered.tu
+        ),
+    }
+}
+
 #[test]
 fn the_same_source_recovers_a_straight_line_body_once_the_tail_jump_is_suppressed() {
     let shape: ExitShape = sibling_tail_shape(false);
