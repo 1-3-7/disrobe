@@ -401,7 +401,7 @@ fn decoder_inline_rate_is_high_on_presets() {
 }
 
 #[test]
-fn high_preset_recovers_clean_tokens_above_threshold() {
+fn high_preset_route_decodes_the_tokens_it_encodes() {
     let clean: String = clean_source().expect(
         "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
     );
@@ -414,16 +414,21 @@ fn high_preset_recovers_clean_tokens_above_threshold() {
     let tokens: CleanTokens = derive_clean_tokens(&clean);
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
-    let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
+    let (_, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
     assert!(
         possible >= 19,
         "clean-token population must not shrink below 19; got {possible}"
     );
-    let pct: f64 = (hits as f64 / possible as f64) * 100.0;
+    let restored: Vec<String> = tokens_restored_from_encoding(&src, &out.source, &tokens);
+    let lost: Vec<String> = unrecovered_tokens(&out.source, &tokens);
     assert!(
-        pct >= 92.0,
-        "high preset clean-token recovery must be >=92%, got {pct:.1}% ({hits}/{possible})\nhead=\n{}",
-        &out.source[..out.source.len().min(2000)]
+        restored.len() >= 10,
+        "the high preset route must decode back at least 10 tokens the artifact encodes; restored {} as {restored:?}",
+        restored.len()
+    );
+    assert!(
+        lost.is_empty(),
+        "the high preset route must leave no clean token unrecovered; lost {lost:?}"
     );
 }
 
