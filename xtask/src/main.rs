@@ -15,6 +15,7 @@ mod comments;
 mod crossdata;
 mod datamodel;
 mod demo;
+mod denominator_floor;
 mod doc_region;
 mod dotnet_string_evidence;
 mod errdocs;

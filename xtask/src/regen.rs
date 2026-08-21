@@ -132,6 +132,12 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         &mut stale,
     )?;
     run_one(
+        "denominator-floor",
+        check,
+        || crate::denominator_floor::run(root),
+        &mut stale,
+    )?;
+    run_one(
         "artifact-classification",
         check,
         || crate::artifact_map::run(root),
