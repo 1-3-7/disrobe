@@ -18,6 +18,26 @@ fn presets_dir() -> PathBuf {
         .join("corpus/src/javascript/obfuscator-io-samples/presets")
 }
 
+const CONTROL_INLINE_FLOORS: [(&str, usize); 17] = [
+    ("booleans", 15),
+    ("compact", 16),
+    ("controlFlowFlattening", 32),
+    ("deadCodeInjection", 21),
+    ("debugProtection", 20),
+    ("identifiersHexadecimal", 17),
+    ("identifiersMangled", 14),
+    ("numbersToExpressions", 10),
+    ("objectTransform", 14),
+    ("renameProperties", 14),
+    ("selfDefending", 15),
+    ("splitStrings", 19),
+    ("stringArrayBase64", 18),
+    ("stringArrayRc4", 18),
+    ("stringArrayRotate", 18),
+    ("stringArrayShuffle", 18),
+    ("unicodeEscape", 13),
+];
+
 fn read_if_present(path: &Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -25,46 +45,73 @@ fn read_if_present(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
+fn control_fixture_stems_on_disk() -> Vec<String> {
+    let dir: PathBuf = controls_dir();
+    let entries: fs::ReadDir = fs::read_dir(&dir).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "control fixtures are required under {}: {error}",
+            dir.display()
+        )
+    });
+    let mut stems: Vec<String> = entries
+        .flatten()
+        .map(|entry: fs::DirEntry| entry.path())
+        .filter(|path: &PathBuf| {
+            path.extension()
+                .is_some_and(|ext: &std::ffi::OsStr| ext == "js")
+        })
+        .filter_map(|path: PathBuf| {
+            path.file_stem()
+                .and_then(|stem: &std::ffi::OsStr| stem.to_str())
+                .map(str::to_owned)
+        })
+        .collect();
+    stems.sort();
+    stems
+}
+
 #[test]
 fn recovers_string_array_across_control_fixtures() {
-    let dir: PathBuf = controls_dir();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
-    };
-    let mut total: usize = 0;
-    let mut recovered: usize = 0;
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.extension().is_none_or(|e| e != "js") {
-            continue;
-        }
-        let stem: String = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_owned();
-        if stem == "identifiersMangled" {
-            continue;
-        }
-        let src: String = fs::read_to_string(&path).expect("read fixture");
-        total += 1;
-        if let Some(rec) = recover_string_array(&src).expect("recover ok")
-            && rec.call_sites_inlined > 0
-        {
-            recovered += 1;
-            assert!(
-                rec.rewritten_source.len() < src.len(),
-                "{stem}: recovery must shrink source"
-            );
-        }
-    }
-    if total == 0 {
-        return;
+    let on_disk: Vec<String> = control_fixture_stems_on_disk();
+    let mut declared: Vec<String> = CONTROL_INLINE_FLOORS
+        .iter()
+        .map(|(stem, _): &(&str, usize)| (*stem).to_owned())
+        .collect();
+    declared.sort();
+    assert_eq!(
+        on_disk, declared,
+        "every control fixture on disk must be graded here; a new fixture needs a row in CONTROL_INLINE_FLOORS"
+    );
+
+    let mut graded: usize = 0;
+    for (stem, inline_floor) in CONTROL_INLINE_FLOORS {
+        let path: PathBuf = controls_dir().join(format!("{stem}.js"));
+        let src: String = read_if_present(&path)
+            .unwrap_or_else(|| panic!("control fixture {} is required", path.display()));
+        let rec: StringArrayRecovery = recover_string_array(&src)
+            .expect("recover ok")
+            .unwrap_or_else(|| panic!("{stem}: a string-array recovery is required"));
+        assert!(
+            rec.call_sites_inlined >= inline_floor,
+            "{stem}: inlined string-array call sites must not fall below {inline_floor}; got {}",
+            rec.call_sites_inlined
+        );
+        assert!(
+            rec.decoder_name.is_some(),
+            "{stem}: the string-array decoder must be identified"
+        );
+        assert!(
+            rec.rewritten_source.len() < src.len(),
+            "{stem}: recovery must shrink source; got {} from {}",
+            rec.rewritten_source.len(),
+            src.len()
+        );
+        graded += 1;
     }
     assert_eq!(
-        recovered, total,
-        "every control fixture with a string array must inline >=1 call site ({recovered}/{total})"
+        graded,
+        CONTROL_INLINE_FLOORS.len(),
+        "every declared control must be graded; graded {graded}"
     );
 }
 
