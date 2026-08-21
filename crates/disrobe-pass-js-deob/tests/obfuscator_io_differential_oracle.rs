@@ -87,6 +87,8 @@ fn recovery_rate(deob: &str, tokens: &BTreeSet<String>) -> (usize, usize) {
     (hits, tokens.len())
 }
 
+const PRESET_DECODER_CALL_FLOORS: [(&str, usize); 3] = [("low", 43), ("medium", 88), ("high", 408)];
+
 fn run_full(src: &str) -> ObfuscatorIoOutput {
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
     obfuscator_io_deobfuscate(src, &opts).expect("deob ok")
@@ -94,21 +96,29 @@ fn run_full(src: &str) -> ObfuscatorIoOutput {
 
 #[test]
 fn differential_oracle_reports_recovery_rate() {
-    let Some(clean): Option<String> = clean_source() else {
-        return;
-    };
+    let clean: String = clean_source().expect(
+        "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
+    );
     let tokens: BTreeSet<String> = clean_tokens(&clean);
 
+    let mut missing: Vec<String> = Vec::new();
+    let mut graded: usize = 0;
     let mut total_hits: usize = 0;
     let mut total_possible: usize = 0;
     let mut inline_total: usize = 0;
 
     for preset_name in ["low", "medium", "high"] {
         let Some(src): Option<String> = read_preset(preset_name) else {
+            missing.push(format!("presets/{preset_name}.js"));
             continue;
         };
+        graded += 1;
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
+        assert!(
+            possible >= 20,
+            "preset {preset_name}: clean-token population must not shrink below 20; got {possible}"
+        );
         inline_total += out.string_array_call_sites_inlined;
         total_hits += hits;
         total_possible += possible;
@@ -129,10 +139,16 @@ fn differential_oracle_reports_recovery_rate() {
         "stringArrayRotate",
     ] {
         let Some(src): Option<String> = read_control(control_name) else {
+            missing.push(format!("controls/{control_name}.js"));
             continue;
         };
+        graded += 1;
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
+        assert!(
+            possible >= 20,
+            "control {control_name}: clean-token population must not shrink below 20; got {possible}"
+        );
         total_hits += hits;
         total_possible += possible;
         let pct: f64 = (hits as f64 / possible as f64) * 100.0;
@@ -142,12 +158,26 @@ fn differential_oracle_reports_recovery_rate() {
         );
     }
 
-    if total_possible == 0 {
-        return;
-    }
+    assert!(
+        missing.is_empty(),
+        "every tracked obfuscator sample must be readable under {}; missing {missing:?}",
+        corpus_root().display()
+    );
+    assert_eq!(
+        graded, 6,
+        "the recovery rate must be measured over all 6 tracked samples; graded {graded}"
+    );
+    assert!(
+        total_possible >= 120,
+        "token population must cover 6 samples of 20 clean tokens; got {total_possible}"
+    );
     let overall: f64 = (total_hits as f64 / total_possible as f64) * 100.0;
     println!(
         "[OVERALL] {total_hits}/{total_possible} = {overall:.1}% | total_inlined={inline_total}"
+    );
+    assert_eq!(
+        total_hits, total_possible,
+        "clean-token recovery must stay whole across the tracked samples; got {total_hits}/{total_possible}"
     );
 }
 
@@ -201,36 +231,56 @@ fn cfo_recovers_operator_semantics_on_medium() {
 
 #[test]
 fn decoder_inline_rate_is_high_on_presets() {
-    for name in ["low", "medium", "high"] {
-        let Some(src): Option<String> = read_preset(name) else {
-            continue;
-        };
+    let mut graded: usize = 0;
+    for (name, call_floor) in PRESET_DECODER_CALL_FLOORS {
+        let src: String = read_preset(name).unwrap_or_else(|| {
+            panic!(
+                "preset fixture presets/{name}.js is required under {}",
+                corpus_root().display()
+            )
+        });
         let before: usize = count_residual_decoder_calls(&src);
-        if before == 0 {
-            continue;
-        }
+        assert!(
+            before >= call_floor,
+            "{name}: decoder-call population must not shrink below {call_floor}; got before={before}"
+        );
         let out: ObfuscatorIoOutput = run_full(&src);
         let after: usize = count_residual_decoder_calls(&out.source);
         let inline_rate: f64 = 1.0 - (after as f64 / before as f64);
+        println!("[decoder:{name}] before={before} after={after} rate={inline_rate:.3}");
         assert!(
             inline_rate >= 0.92,
             "{name}: decoder-call inline rate must be >=92%; before={before} after={after} rate={inline_rate:.3}"
         );
+        graded += 1;
     }
+    assert_eq!(
+        graded,
+        PRESET_DECODER_CALL_FLOORS.len(),
+        "every tracked preset must be graded; graded {graded} of {}",
+        PRESET_DECODER_CALL_FLOORS.len()
+    );
 }
 
 #[test]
 fn high_preset_recovers_clean_tokens_above_threshold() {
-    let Some(clean): Option<String> = clean_source() else {
-        return;
-    };
-    let Some(src): Option<String> = read_preset("high") else {
-        return;
-    };
+    let clean: String = clean_source().expect(
+        "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
+    );
+    let src: String = read_preset("high").unwrap_or_else(|| {
+        panic!(
+            "preset fixture presets/high.js is required under {}",
+            corpus_root().display()
+        )
+    });
     let tokens: BTreeSet<String> = clean_tokens(&clean);
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
     let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
+    assert!(
+        possible >= 20,
+        "clean-token population must not shrink below 20; got {possible}"
+    );
     let pct: f64 = (hits as f64 / possible as f64) * 100.0;
     assert!(
         pct >= 92.0,
