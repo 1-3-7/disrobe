@@ -88,6 +88,36 @@ fn recovery_rate(deob: &str, tokens: &BTreeSet<String>) -> (usize, usize) {
 }
 
 const PRESET_DECODER_CALL_FLOORS: [(&str, usize); 3] = [("low", 43), ("medium", 88), ("high", 408)];
+const PRESET_TOKEN_FLOORS: [(&str, usize); 3] = [("low", 20), ("medium", 20), ("high", 20)];
+const CONTROL_TOKEN_FLOORS: [(&str, usize); 17] = [
+    ("booleans", 20),
+    ("compact", 20),
+    ("controlFlowFlattening", 20),
+    ("deadCodeInjection", 20),
+    ("debugProtection", 20),
+    ("identifiersHexadecimal", 15),
+    ("identifiersMangled", 15),
+    ("numbersToExpressions", 20),
+    ("objectTransform", 20),
+    ("renameProperties", 20),
+    ("selfDefending", 20),
+    ("splitStrings", 20),
+    ("stringArrayBase64", 20),
+    ("stringArrayRc4", 20),
+    ("stringArrayRotate", 20),
+    ("stringArrayShuffle", 20),
+    ("unicodeEscape", 20),
+];
+const IRRECOVERABLE_IDENTIFIER_TOKENS: [&str; 5] =
+    ["calculate", "greet", "multiply", "runSamples", "subtract"];
+
+fn unrecovered_tokens(deob: &str, tokens: &BTreeSet<String>) -> Vec<String> {
+    tokens
+        .iter()
+        .filter(|tok: &&String| !deob.contains(tok.as_str()))
+        .cloned()
+        .collect()
+}
 
 fn run_full(src: &str) -> ObfuscatorIoOutput {
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
@@ -107,7 +137,7 @@ fn differential_oracle_reports_recovery_rate() {
     let mut total_possible: usize = 0;
     let mut inline_total: usize = 0;
 
-    for preset_name in ["low", "medium", "high"] {
+    for (preset_name, token_floor) in PRESET_TOKEN_FLOORS {
         let Some(src): Option<String> = read_preset(preset_name) else {
             missing.push(format!("presets/{preset_name}.js"));
             continue;
@@ -118,6 +148,11 @@ fn differential_oracle_reports_recovery_rate() {
         assert!(
             possible >= 20,
             "preset {preset_name}: clean-token population must not shrink below 20; got {possible}"
+        );
+        assert!(
+            hits >= token_floor,
+            "preset {preset_name}: clean-token recovery must not fall below {token_floor}; got {hits}/{possible}, unrecovered {:?}",
+            unrecovered_tokens(&out.source, &tokens)
         );
         inline_total += out.string_array_call_sites_inlined;
         total_hits += hits;
@@ -133,11 +168,7 @@ fn differential_oracle_reports_recovery_rate() {
         );
     }
 
-    for control_name in [
-        "controlFlowFlattening",
-        "objectTransform",
-        "stringArrayRotate",
-    ] {
+    for (control_name, token_floor) in CONTROL_TOKEN_FLOORS {
         let Some(src): Option<String> = read_control(control_name) else {
             missing.push(format!("controls/{control_name}.js"));
             continue;
@@ -148,6 +179,11 @@ fn differential_oracle_reports_recovery_rate() {
         assert!(
             possible >= 20,
             "control {control_name}: clean-token population must not shrink below 20; got {possible}"
+        );
+        assert!(
+            hits >= token_floor,
+            "control {control_name}: clean-token recovery must not fall below {token_floor}; got {hits}/{possible}, unrecovered {:?}",
+            unrecovered_tokens(&out.source, &tokens)
         );
         total_hits += hits;
         total_possible += possible;
@@ -164,21 +200,38 @@ fn differential_oracle_reports_recovery_rate() {
         corpus_root().display()
     );
     assert_eq!(
-        graded, 6,
-        "the recovery rate must be measured over all 6 tracked samples; graded {graded}"
+        graded, 20,
+        "the recovery rate must be measured over all 20 tracked samples; graded {graded}"
     );
     assert!(
-        total_possible >= 120,
-        "token population must cover 6 samples of 20 clean tokens; got {total_possible}"
+        total_possible >= 400,
+        "token population must cover 20 samples of 20 clean tokens; got {total_possible}"
     );
     let overall: f64 = (total_hits as f64 / total_possible as f64) * 100.0;
     println!(
         "[OVERALL] {total_hits}/{total_possible} = {overall:.1}% | total_inlined={inline_total}"
     );
-    assert_eq!(
-        total_hits, total_possible,
-        "clean-token recovery must stay whole across the tracked samples; got {total_hits}/{total_possible}"
+    assert!(
+        total_hits >= 390,
+        "clean-token recovery must not fall below 390 of 400 across the 20 tracked samples; got {total_hits}/{total_possible}"
     );
+    for (control_name, token_floor) in CONTROL_TOKEN_FLOORS {
+        if token_floor == 20 {
+            continue;
+        }
+        let src: String = read_control(control_name).unwrap_or_else(|| {
+            panic!(
+                "control fixture controls/{control_name}.js is required under {}",
+                corpus_root().display()
+            )
+        });
+        let out: ObfuscatorIoOutput = run_full(&src);
+        let unrecovered: Vec<String> = unrecovered_tokens(&out.source, &tokens);
+        assert_eq!(
+            unrecovered, IRRECOVERABLE_IDENTIFIER_TOKENS,
+            "control {control_name} may only lose the renamed function identifiers, which the artifact carries no map to restore; lost {unrecovered:?}"
+        );
+    }
 }
 
 fn count_residual_decoder_calls(source: &str) -> usize {
