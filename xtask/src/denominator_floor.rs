@@ -14,13 +14,13 @@ const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-dotnet", 2),
     ("disrobe-pass-go", 1),
     ("disrobe-pass-js-deob", 4),
-    ("disrobe-pass-jvm", 4),
+    ("disrobe-pass-jvm", 3),
     ("disrobe-pass-lua", 1),
     ("disrobe-pass-mobile", 6),
-    ("disrobe-pass-native", 4),
+    ("disrobe-pass-native", 3),
     ("disrobe-pass-py-decompile", 2),
     ("disrobe-pass-shell", 2),
-    ("disrobe-pass-wasm-deob", 2),
+    ("disrobe-pass-wasm-deob", 1),
     ("disrobe-semdiff", 2),
 ];
 
@@ -250,6 +250,33 @@ fn test_bodies<'a>(lines: &'a [&'a str]) -> Vec<(String, usize, usize)> {
     out
 }
 
+fn logical_lines(body: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut pending: String = String::new();
+    let mut depth: isize = 0;
+    for line in body {
+        if !pending.is_empty() {
+            pending.push(' ');
+        }
+        pending.push_str(line.trim());
+        for character in line.chars() {
+            match character {
+                '(' | '[' => depth = depth.saturating_add(1),
+                ')' | ']' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if depth <= 0 {
+            out.push(std::mem::take(&mut pending));
+            depth = 0;
+        }
+    }
+    if !pending.is_empty() {
+        out.push(pending);
+    }
+    out
+}
+
 pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<RateSite> {
     let stripped: Vec<String> = source
         .lines()
@@ -259,14 +286,18 @@ pub(crate) fn sites_in_source(relative: &str, source: &str) -> Vec<RateSite> {
     let mut found: Vec<RateSite> = Vec::new();
     for (test, start, end) in test_bodies(&lines) {
         let body: &[&str] = lines.get(start..=end).unwrap_or(&[]);
+        let statements: Vec<String> = logical_lines(body);
         let mut names: Vec<String> = Vec::new();
-        for line in body {
-            names.extend(denominators(&tokenize(line)));
+        for statement in &statements {
+            names.extend(denominators(&tokenize(statement)));
         }
         names.sort();
         names.dedup();
         for name in names {
-            if body.iter().any(|line: &&str| line_floors(line, &name)) {
+            if statements
+                .iter()
+                .any(|statement: &String| line_floors(statement, &name))
+            {
                 continue;
             }
             found.push(RateSite {
@@ -445,6 +476,19 @@ mod tests {
         assert!(
             found.is_empty(),
             "a literal path once produced 2404 findings where the real count was 13"
+        );
+    }
+
+    #[test]
+    fn a_floor_the_formatter_split_across_lines_still_counts() {
+        let source: &str = "#[test]\nfn probe() {\n    assert!(\n        compared > 0,\n        \
+                            \"the section must be present\",\n    );\n    let pct: f64 = matched \
+                            as f64 / compared as f64;\n    assert!(pct >= 0.85);\n}\n";
+        let found: Vec<RateSite> = sites_in_source("crates/c/tests/t.rs", source);
+        assert!(
+            found.is_empty(),
+            "rustfmt puts `assert!(` and `compared > 0,` on separate lines, and reading them \
+             apart reported an explicitly floored population as unfloored"
         );
     }
 
