@@ -10,7 +10,6 @@ const FLOOR_GAP: usize = 4;
 const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-binfmt", 1),
     ("disrobe-cli", 1),
-    ("disrobe-pass-as3", 1),
     ("disrobe-pass-dotnet", 2),
     ("disrobe-pass-go", 1),
     ("disrobe-pass-js-deob", 4),
