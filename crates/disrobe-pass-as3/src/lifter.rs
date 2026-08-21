@@ -1228,7 +1228,12 @@ impl Lifter<'_> {
         else {
             return;
         };
-        if stack_analysis.backward_entries.contains(&offset) && entry_height > 0 {
+        if stack_analysis.backward_entries.contains(&offset)
+            && entry_height > 0
+            && !stack_analysis
+                .scope_balanced_backward_entries
+                .contains(&offset)
+        {
             self.mark_scope_conflict(SCOPE_VALUE_CONFLICT_MARKER);
             return;
         }
@@ -1785,6 +1790,7 @@ struct StackAnalysis {
     switch_entries: BTreeSet<usize>,
     forward_entries: BTreeSet<usize>,
     backward_entries: BTreeSet<usize>,
+    scope_balanced_backward_entries: BTreeSet<usize>,
     disconnected_entries: BTreeSet<usize>,
     unreconciled: BTreeSet<usize>,
     height_conflicts: BTreeSet<usize>,
@@ -1908,6 +1914,7 @@ fn block_entry_heights(
             switch_entries: BTreeSet::new(),
             forward_entries: BTreeSet::new(),
             backward_entries: BTreeSet::new(),
+            scope_balanced_backward_entries: BTreeSet::new(),
             disconnected_entries: BTreeSet::new(),
             unreconciled: BTreeSet::new(),
             height_conflicts: BTreeSet::new(),
@@ -2141,6 +2148,24 @@ fn block_entry_heights(
         })
         .map(|(target, _): (&usize, &BTreeSet<usize>)| *target)
         .collect();
+    let scope_balanced_backward_entries: BTreeSet<usize> = backward_entries
+        .iter()
+        .filter(|target: &&usize| {
+            let Some(sources): Option<&BTreeSet<usize>> = predecessors.get(*target) else {
+                return false;
+            };
+            let Some(&furthest): Option<&usize> =
+                sources.iter().rfind(|source: &&usize| *source >= *target)
+            else {
+                return false;
+            };
+            lines
+                .iter()
+                .filter(|line: &&DisasmLine| line.offset >= **target && line.offset <= furthest)
+                .all(|line: &DisasmLine| line_scope_delta(line) == 0)
+        })
+        .copied()
+        .collect();
     let disconnected_entries: BTreeSet<usize> = lines
         .windows(2)
         .filter_map(|pair: &[DisasmLine]| {
@@ -2354,6 +2379,7 @@ fn block_entry_heights(
         switch_entries,
         forward_entries,
         backward_entries,
+        scope_balanced_backward_entries,
         disconnected_entries,
         unreconciled,
         height_conflicts,

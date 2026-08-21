@@ -2104,3 +2104,97 @@ fn branch_catch_scopes_never_collapse_distinct_allocations() {
     assert!(!lifted.structurally_recovered, "{lifted:#?}");
     assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
 }
+
+fn loop_body(code: Vec<u8>, local_count: u32, max_scope_depth: u32) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 3,
+        local_count,
+        init_scope_depth: 0,
+        max_scope_depth,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
+fn counted_loop(open_scope: &[u8], inside_loop: &[u8]) -> MethodBody {
+    let mut code: Vec<u8> = Vec::new();
+    code.extend_from_slice(open_scope);
+    code.extend_from_slice(&[0x24, 0x00, 0xD6]);
+    let head: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x24, 0x05]);
+    let exit_operand: usize = code.len();
+    code.push(0x0C);
+    push_s24(&mut code, 0);
+    code.extend_from_slice(inside_loop);
+    code.extend_from_slice(&[0xD2, 0x91, 0xD6]);
+    let back_operand: usize = code.len();
+    code.push(0x10);
+    push_s24(&mut code, 0);
+    let exit: usize = code.len();
+    code.push(0x47);
+    patch_branch_target(&mut code, exit_operand + 1, exit);
+    patch_branch_target(&mut code, back_operand + 1, head);
+    loop_body(code, 3, 3)
+}
+
+#[test]
+fn a_loop_that_never_touches_the_scope_stack_reconciles_at_its_head() {
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = counted_loop(&[0xD0, 0x30], &[]);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw scope-free loop lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("scope-free loop lift");
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "a loop whose body never pushes or pops a scope cannot change the scope stack, so its \
+         head reconciles rather than refusing: {lifted:#?}"
+    );
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn a_loop_that_opens_a_scope_in_its_body_still_refuses() {
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = counted_loop(&[0xD0, 0x30], &[0xD0, 0x30, 0x1D]);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw mutating loop lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("mutating loop lift");
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "the balance proof reads the whole span between the loop head and its back edge, so a \
+         body that pushes and pops inside the loop is not provable even though its net delta is \
+         zero, and the head must keep refusing: {lifted:#?}"
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn a_with_scope_held_across_a_loop_is_never_reconciled_away() {
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = counted_loop(&[0xD0, 0x1C], &[]);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw with-scope loop lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("with-scope loop lift");
+    let names: LocalNames = local_names_for(&abc, None);
+    let rendered: String = render_body(&lifted, &names, "");
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "a with scope open across a back edge governs name resolution inside the loop, so even \
+         though the loop body never touches the scope stack the merge must refuse rather than \
+         reconcile a with away: {rendered}"
+    );
+    assert_eq!(
+        classify(&raw, &lifted.statements),
+        Equivalence::Equivalent,
+        "refusing the merge must leave the graph unchanged as well: {rendered}"
+    );
+}

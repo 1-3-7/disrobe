@@ -368,13 +368,13 @@ fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
         totals.disassembled
     );
     assert!(
-        totals.folded * 1000 >= totals.lifted * 192,
+        totals.folded * 1000 >= totals.lifted * 198,
         "real compiler-emitted lookupswitch dispatch must keep folding into structured \
-         switches at its measured floor (>=19.2%); got {}/{} = {pct:.2}%. This floor was \
-         19.8 percent when it was written and one dispatch stopped folding when scope-height \
-         and stack-height reconciliation began refusing the region it sits in. The refusal is \
-         the conservative direction and the structured output it guards is graded equivalent \
-         edge by edge, so the fold is not to be recovered by relaxing those checks. \
+         switches at its measured floor (>=19.8%); got {}/{} = {pct:.2}%. This floor sat at \
+         19.2 percent for a while because one dispatch lay in a region a scope refusal had \
+         poisoned. Proving that a loop whose body never touches the scope stack reconciles \
+         at its head removed that refusal and the fold returned, so the number came back by \
+         fixing the cause rather than by relaxing a check. \
          This is a ratchet over a fixed corpus of real Flash titles that is not \
          redistributable and is absent from every fresh checkout, so the number is \
          reproducible only against that exact population and is not a published figure",
@@ -398,8 +398,8 @@ fn corpus_recovery_rate_holds_an_honest_floor() {
          population would keep reporting a healthy percentage over almost nothing: {bodies}"
     );
     assert!(
-        full * 1000 >= bodies * 805,
-        "fully-recovered share must hold the post-restructuring floor (>=80.5%); got \
+        full * 1000 >= bodies * 932,
+        "fully-recovered share must hold the post-restructuring floor (>=93.2%); got \
          {full}/{bodies} = {pct:.2}%. This is a ratchet over a fixed corpus of real Flash titles that is not \
          redistributable and is absent from every fresh checkout, so the number is \
          reproducible only against that exact population and is not a published figure"
