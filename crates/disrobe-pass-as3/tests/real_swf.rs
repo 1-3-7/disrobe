@@ -368,9 +368,13 @@ fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
         totals.disassembled
     );
     assert!(
-        totals.folded * 1000 >= totals.lifted * 198,
-        "real compiler-emitted lookupswitch dispatch must keep folding into structured switches \
-         at its measured floor (>=19.8%); got {}/{} = {pct:.2}%",
+        totals.folded * 1000 >= totals.lifted * 192,
+        "real compiler-emitted lookupswitch dispatch must keep folding into structured \
+         switches at its measured floor (>=19.2%); got {}/{} = {pct:.2}%. This floor was \
+         19.8 percent when it was written and one dispatch stopped folding when scope-height \
+         and stack-height reconciliation began refusing the region it sits in. The refusal is \
+         the conservative direction and the structured output it guards is graded equivalent \
+         edge by edge, so the fold is not to be recovered by relaxing those checks",
         totals.folded,
         totals.lifted
     );
