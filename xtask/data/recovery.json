@@ -132,7 +132,7 @@
             "conditional": "The published figure itself is gated unconditionally: the run asserts both corpora exist, then asserts proven-correct at or above this bar's own numerator regardless of environment. Only the stronger leg is conditional. The recompile-equivalence ratchet is skipped when no legacy CPython interpreter is present, printing `skip: no legacy interpreter present`, and CI provisions no CPython 1.0 through 3.7, so on a clean machine the figure is held by structural token-match alone. That is what this bar's heading already claims, recompile-equivalence or structural token-match, so the claim and its enforcement agree."
           },
           "detail": "CI floor 150 / 191 (asserted, token-match alone holds when the 1.0-3.7 interpreter zoo is absent); 166 / 191 measured locally with the full period interpreter zoo (67 recompile-equiv + 99 token-match)",
-          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
+          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
           "num": 150,
           "den": 191
         },
@@ -480,7 +480,7 @@
             "path": "crates/disrobe-pass-lua/src/chain_detector.rs",
             "function": "published_lua_catalog_count_matches_this_catalog"
           },
-          "source": "crates/disrobe-pass-lua/src/chain_detector.rs:169 (CATALOG_COUNT = 16; 14 obfuscator entries plus Luau and GLua dialect detectors)"
+          "source": "crates/disrobe-pass-lua/src/chain_detector.rs (CATALOG_COUNT = 16; 14 obfuscator entries plus Luau and GLua dialect detectors)"
         },
         {
           "label": "Lua VM-devirt on real tool output (IronBrew2 2.7.0)",
@@ -527,7 +527,7 @@
             "function": "published_yarv_bars_match_the_counts_this_crate_pins",
             "measured_by": "yarv_recompile_equivalence_is_reproducible"
           },
-          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs:105 (greeter >= 100)"
+          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (greeter >= 100)"
         },
         {
           "label": "megafile",
@@ -571,7 +571,7 @@
         {
           "label": "functions parsed",
           "value": 122633,
-          "source": "crates/disrobe-pass-mobile/tests/real_hermes_discord.rs:112 (assert_eq function count = 122_633); local-only, fixture is gitignored"
+          "source": "crates/disrobe-pass-mobile/tests/support/hermes_production_bundle.rs (PUBLISHED_FUNCTION_COUNT 122_633, asserted by tests/real_hermes_discord.rs); local-only, fixture is gitignored"
         }
       ]
     },

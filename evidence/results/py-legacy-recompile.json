@@ -8,7 +8,7 @@
   "ecosystem": "python",
   "floor": 78.5,
   "floor_holds": true,
-  "gate_source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs:31 (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
+  "gate_source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs (PROVEN_CORRECT_FLOOR 150, CI-enforced via the test job); 166/191 measured locally 2026-06-12 with python 1.0-3.12 present",
   "id": "py-legacy-recompile",
   "measured": "78.50%",
   "oracle": {
