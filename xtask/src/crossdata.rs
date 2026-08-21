@@ -31,6 +31,10 @@ struct RecoveryBar {
     den: Option<u64>,
     #[serde(default)]
     detected: Option<u64>,
+    #[serde(default)]
+    detail: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,6 +194,50 @@ fn check_mirrors(recovery: &Recovery, issues: &mut Vec<String>) {
     }
 }
 
+fn cites_a_line_number(text: &str) -> Option<String> {
+    let bytes: &[u8] = text.as_bytes();
+    let mut at: usize = 0;
+    while let Some(found) = text.get(at..).and_then(|rest: &str| rest.find(".rs:")) {
+        let colon: usize = at.saturating_add(found).saturating_add(3);
+        let digits: usize = bytes
+            .get(colon.saturating_add(1)..)
+            .map_or(0, |rest: &[u8]| {
+                rest.iter().take_while(|b: &&u8| b.is_ascii_digit()).count()
+            });
+        if digits != 0 {
+            let start: usize = text[..colon]
+                .rfind(|c: char| c.is_whitespace() || c == '(')
+                .map_or(0, |at: usize| at.saturating_add(1));
+            let end: usize = colon.saturating_add(1).saturating_add(digits);
+            return text.get(start..end).map(str::to_owned);
+        }
+        at = colon;
+    }
+    None
+}
+
+fn check_line_citations(recovery: &Recovery, issues: &mut Vec<String>) {
+    for group in &recovery.groups {
+        for bar in &group.bars {
+            for (field, text) in [("detail", &bar.detail), ("source", &bar.source)] {
+                let Some(text) = text.as_deref() else {
+                    continue;
+                };
+                let Some(citation) = cites_a_line_number(text) else {
+                    continue;
+                };
+                issues.push(format!(
+                    "{} / {}: the {field} cites `{citation}`, and a line number is a position that \
+                     moves on any edit above it. Three such citations had already drifted, one of \
+                     them naming a file the constant had left entirely, so a reader following it \
+                     found nothing. Cite the constant by name instead",
+                    group.heading, bar.label
+                ));
+            }
+        }
+    }
+}
+
 pub(crate) fn run(root: &Path) -> Result<()> {
     let data: PathBuf = root.join("xtask").join("data");
     let recovery: Recovery = serde_json::from_str(&read_text_bounded(
@@ -206,6 +254,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
     )?)?;
 
     let mut issues: Vec<String> = Vec::new();
+    check_line_citations(&recovery, &mut issues);
 
     for claim in &CLAIMS {
         let text: Option<&str> = match claim.file {
