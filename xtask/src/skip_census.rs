@@ -295,19 +295,23 @@ fn scan(root: &Path) -> Result<Census> {
     })
 }
 
+fn enforce_scan_floor(scanned: usize) -> Result<()> {
+    if scanned >= MIN_SCANNED_FILES {
+        return Ok(());
+    }
+    bail!(
+        "xtask skip-census scanned only {scanned} test source file(s), below the floor of \
+         {MIN_SCANNED_FILES}. The scan itself is broken or the tree moved; a census that reads a \
+         fraction of the tree reports a clean sheet for everything it never opened, so this floor \
+         sits just under the count the workspace carries rather than at a token value a badly \
+         narrowed scan would still clear"
+    )
+}
+
 pub(crate) fn run(root: &Path) -> Result<()> {
     let census: Census = scan(root)?;
 
-    if census.scanned < MIN_SCANNED_FILES {
-        bail!(
-            "xtask skip-census scanned only {} test source file(s), below the floor of \
-             {MIN_SCANNED_FILES}. The scan itself is broken or the tree moved; a census that reads \
-             a fraction of the tree reports a clean sheet for everything it never opened, so this \
-             floor sits just under the count the workspace carries rather than at a token value a \
-             badly narrowed scan would still clear",
-            census.scanned
-        );
-    }
+    enforce_scan_floor(census.scanned)?;
 
     let declared: BTreeMap<&str, usize> = SKIP_CEILING.iter().copied().collect();
     let mut issues: Vec<String> = Vec::new();
@@ -463,6 +467,27 @@ mod tests {
              74 of these unmeasured"
         );
         assert!(found[0].in_test);
+    }
+
+    #[test]
+    fn the_scan_floor_refuses_a_walk_that_read_a_fraction_of_the_tree() {
+        assert!(
+            enforce_scan_floor(MIN_SCANNED_FILES).is_ok(),
+            "the floor must accept the count the workspace actually carries"
+        );
+        let narrowed: usize = MIN_SCANNED_FILES.saturating_sub(1);
+        let text: String = match enforce_scan_floor(narrowed) {
+            Ok(()) => unreachable!("a walk one file short of the floor must refuse"),
+            Err(refusal) => refusal.to_string(),
+        };
+        assert!(
+            text.contains(&narrowed.to_string()),
+            "the refusal must name what it actually read: {text}"
+        );
+        assert!(
+            enforce_scan_floor(0).is_err(),
+            "a walk that read nothing is the case this floor exists for"
+        );
     }
 
     #[test]
