@@ -10,31 +10,33 @@ const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-binfmt", 3),
-    ("disrobe-cli", 57),
-    ("disrobe-core", 7),
+    ("disrobe-cli", 59),
+    ("disrobe-core", 9),
     ("disrobe-irsummary", 1),
     ("disrobe-lift-x86", 2),
     ("disrobe-mba", 3),
     ("disrobe-nir-lift", 9),
-    ("disrobe-pass-dotnet", 4),
-    ("disrobe-pass-go", 2),
-    ("disrobe-pass-js-deob", 60),
+    ("disrobe-pass-dotnet", 9),
+    ("disrobe-pass-go", 7),
+    ("disrobe-pass-js-deob", 67),
     ("disrobe-pass-jvm", 69),
-    ("disrobe-pass-lua", 22),
+    ("disrobe-pass-lua", 31),
     ("disrobe-pass-mobile", 5),
-    ("disrobe-pass-native", 285),
+    ("disrobe-pass-native", 294),
     ("disrobe-pass-nativelang", 2),
-    ("disrobe-pass-nuitka", 32),
-    ("disrobe-pass-php", 6),
+    ("disrobe-pass-nuitka", 45),
+    ("disrobe-pass-php", 7),
     ("disrobe-pass-py-decompile", 7),
-    ("disrobe-pass-py-deob", 12),
+    ("disrobe-pass-py-deob", 14),
     ("disrobe-pass-py-disasm", 1),
-    ("disrobe-pass-pyarmor", 37),
-    ("disrobe-pass-pyfreeze", 16),
+    ("disrobe-pass-pyarmor", 38),
+    ("disrobe-pass-pyfreeze", 18),
+    ("disrobe-pass-pyinstaller", 2),
     ("disrobe-pass-ruby", 12),
-    ("disrobe-pass-shell", 8),
+    ("disrobe-pass-scriptlang", 2),
+    ("disrobe-pass-shell", 14),
     ("disrobe-pass-swift-objc", 1),
-    ("disrobe-pass-wasm-deob", 11),
+    ("disrobe-pass-wasm-deob", 17),
     ("disrobe-pyarmor-cextract", 5),
     ("disrobe-semdiff", 2),
     ("disrobe-typerec", 3),
@@ -253,7 +255,10 @@ fn scan(root: &Path) -> Result<Census> {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        if !relative.contains("/tests/") && !relative.ends_with("/tests.rs") {
+        if !relative.contains("/src/")
+            && !relative.contains("/tests/")
+            && !relative.ends_with("/tests.rs")
+        {
             continue;
         }
         let length: u64 = entry
@@ -430,6 +435,32 @@ mod tests {
             sites_in_source("crates/x/tests/a.rs", &source).is_empty(),
             "a return far below an unrelated print must not be paired with it"
         );
+    }
+
+    #[test]
+    fn a_skip_and_return_inside_a_cfg_test_module_in_src_is_a_site() {
+        let source: &str = concat!(
+            "pub fn identify() {}\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    #[test]\n",
+            "    fn probe() {\n",
+            "        if !git_available() {\n",
+            "            eprintln!(\"skipping: git not available\");\n",
+            "            return;\n",
+            "        }\n",
+            "        assert!(finds_the_secret());\n",
+            "    }\n",
+            "}\n"
+        );
+        let found: Vec<SkipSite> = sites_in_source("crates/c/src/recon/git_history.rs", source);
+        assert_eq!(
+            found.len(),
+            1,
+            "a test that skips is a test wherever it lives, and reading only crates/*/tests left \
+             74 of these unmeasured"
+        );
+        assert!(found[0].in_test);
     }
 
     #[test]
