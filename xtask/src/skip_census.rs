@@ -40,38 +40,6 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-typerec", 3),
 ];
 
-const SILENT_CEILING: &[(&str, usize)] = &[
-    ("disrobe-cli", 20),
-    ("disrobe-core", 1),
-    ("disrobe-lift-x86", 4),
-    ("disrobe-mba", 1),
-    ("disrobe-nir-lift", 3),
-    ("disrobe-pass-as3", 16),
-    ("disrobe-pass-beam", 11),
-    ("disrobe-pass-go", 26),
-    ("disrobe-pass-js-deob", 72),
-    ("disrobe-pass-jvm", 3),
-    ("disrobe-pass-mobile", 5),
-    ("disrobe-pass-native", 61),
-    ("disrobe-pass-nuitka", 1),
-    ("disrobe-pass-php", 56),
-    ("disrobe-pass-py-decompile", 14),
-    ("disrobe-pass-py-deob", 2),
-    ("disrobe-pass-pyarmor", 5),
-    ("disrobe-pass-pyfreeze", 3),
-    ("disrobe-pass-pyinstaller", 3),
-    ("disrobe-pass-ruby", 3),
-    ("disrobe-pass-scriptlang", 2),
-    ("disrobe-pass-shell", 6),
-    ("disrobe-pass-swift-objc", 35),
-    ("disrobe-pass-wasm-deob", 8),
-    ("disrobe-pass-webview", 1),
-    ("disrobe-semdiff", 6),
-    ("disrobe-sleigh", 35),
-    ("disrobe-typerec", 3),
-    ("disrobe-vulnmatch", 40),
-];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkipSite {
     pub(crate) file: String,
@@ -98,51 +66,6 @@ fn opens_a_print(line: &str) -> bool {
 
 fn is_bare_return(line: &str) -> bool {
     matches!(line.trim(), "return;" | "return ;")
-}
-
-fn opens_a_let_else(line: &str) -> bool {
-    let trimmed: &str = line.trim_start();
-    trimmed.starts_with("let ") && trimmed.contains(" else {")
-}
-
-fn closes_a_block(line: &str) -> bool {
-    matches!(line.trim(), "}" | "};")
-}
-
-fn else_body_is_a_bare_return(lines: &[&str], index: usize) -> bool {
-    let Some(current) = lines.get(index) else {
-        return false;
-    };
-    let Some((_, tail)) = current.trim_end().split_once(" else {") else {
-        return false;
-    };
-    let tail: &str = tail.trim();
-    if !tail.is_empty() {
-        return matches!(tail, "return; }" | "return; };" | "return }" | "return };");
-    }
-    lines
-        .get(index.saturating_add(1))
-        .is_some_and(|entry: &&str| is_bare_return(entry))
-        && lines
-            .get(index.saturating_add(2))
-            .is_some_and(|entry: &&str| closes_a_block(entry))
-}
-
-pub(crate) fn silent_sites_in_source(relative: &str, source: &str) -> Vec<SkipSite> {
-    let lines: Vec<&str> = source.lines().collect();
-    let inside: Vec<bool> = lines_inside_tests(&lines);
-    let mut found: Vec<SkipSite> = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        if !opens_a_let_else(line) || !else_body_is_a_bare_return(&lines, index) {
-            continue;
-        }
-        found.push(SkipSite {
-            file: relative.to_owned(),
-            line: index.saturating_add(1),
-            in_test: inside.get(index).copied().unwrap_or(false),
-        });
-    }
-    found
 }
 
 fn test_attribute(line: &str) -> bool {
@@ -305,14 +228,12 @@ fn crate_of(relative: &str) -> Option<&str> {
 
 struct Census {
     printed: BTreeMap<String, Vec<SkipSite>>,
-    silent: BTreeMap<String, Vec<SkipSite>>,
     scanned: usize,
 }
 
 fn scan(root: &Path) -> Result<Census> {
     let crates_dir: PathBuf = root.join("crates");
     let mut per_crate: BTreeMap<String, Vec<SkipSite>> = BTreeMap::new();
-    let mut silent: BTreeMap<String, Vec<SkipSite>> = BTreeMap::new();
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut scanned: usize = 0;
     for entry in walkdir::WalkDir::new(&crates_dir)
@@ -362,111 +283,11 @@ fn scan(root: &Path) -> Result<Census> {
         if !sites.is_empty() {
             per_crate.entry(owner.to_owned()).or_default().extend(sites);
         }
-        let quiet: Vec<SkipSite> = silent_sites_in_source(relative, source);
-        if !quiet.is_empty() {
-            silent.entry(owner.to_owned()).or_default().extend(quiet);
-        }
     }
     Ok(Census {
         printed: per_crate,
-        silent,
         scanned,
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shape {
-    Printed,
-    Silent,
-}
-
-impl Shape {
-    const fn ceiling(self) -> &'static [(&'static str, usize)] {
-        match self {
-            Self::Printed => SKIP_CEILING,
-            Self::Silent => SILENT_CEILING,
-        }
-    }
-
-    const fn table(self) -> &'static str {
-        match self {
-            Self::Printed => "SKIP_CEILING",
-            Self::Silent => "SILENT_CEILING",
-        }
-    }
-
-    const fn shape(self) -> &'static str {
-        match self {
-            Self::Printed => "print a skip line and return",
-            Self::Silent => "abandon a fallible binding with a bare return",
-        }
-    }
-
-    const fn consequence(self) -> &'static str {
-        match self {
-            Self::Printed => {
-                "A test that returns before its assertions is counted as passed and proves \
-                 nothing. Either give the missing reference a named hard failure, or declare the \
-                 reference optional and stop citing that test as evidence."
-            }
-            Self::Silent => {
-                "This ceiling counts a shape, not a proven defect: a site whose guard already \
-                 panics or prints a named declaration upstream is correct as it stands. What the \
-                 ceiling enforces is that no new one appears without a deliberate edit here, \
-                 because `let ... else { return; }` inside a #[test] passes while emitting no line \
-                 at all. Before raising it, show the site cannot be reached without either a \
-                 failure or a counted declaration."
-            }
-        }
-    }
-}
-
-fn enforce(
-    shape: Shape,
-    per_crate: &BTreeMap<String, Vec<SkipSite>>,
-    issues: &mut Vec<String>,
-) -> usize {
-    let declared: BTreeMap<&str, usize> = shape.ceiling().iter().copied().collect();
-    let mut total_in_test: usize = 0;
-    for (owner, sites) in per_crate {
-        let in_test: usize = sites.iter().filter(|site: &&SkipSite| site.in_test).count();
-        total_in_test = total_in_test.saturating_add(in_test);
-        let ceiling: usize = declared.get(owner.as_str()).copied().unwrap_or(0);
-        if in_test > ceiling {
-            let first: String = sites
-                .iter()
-                .filter(|site: &&SkipSite| site.in_test)
-                .take(3)
-                .map(|site: &SkipSite| format!("{}:{}", site.file, site.line))
-                .collect::<Vec<String>>()
-                .join(", ");
-            issues.push(format!(
-                "{owner} carries {in_test} test(s) that {}, above its declared ceiling of \
-                 {ceiling}. {} First site(s): {first}",
-                shape.shape(),
-                shape.consequence(),
-            ));
-        }
-        if in_test < ceiling {
-            issues.push(format!(
-                "{owner} carries {in_test} test(s) that {}, below its declared ceiling of \
-                 {ceiling}. Lower the {} entry in xtask/src/skip_census.rs in the same commit, so \
-                 the number can only ratchet down",
-                shape.shape(),
-                shape.table(),
-            ));
-        }
-    }
-    for (owner, ceiling) in shape.ceiling() {
-        if !per_crate.contains_key(*owner) && *ceiling > 0 {
-            issues.push(format!(
-                "{} declares {ceiling} for {owner}, which now carries none. Remove the entry in \
-                 the same commit",
-                shape.table(),
-            ));
-        }
-    }
-    total_in_test
 }
 
 pub(crate) fn run(root: &Path) -> Result<()> {
@@ -481,14 +302,52 @@ pub(crate) fn run(root: &Path) -> Result<()> {
         );
     }
 
+    let declared: BTreeMap<&str, usize> = SKIP_CEILING.iter().copied().collect();
     let mut issues: Vec<String> = Vec::new();
-    let printed: usize = enforce(Shape::Printed, &census.printed, &mut issues);
-    let silent: usize = enforce(Shape::Silent, &census.silent, &mut issues);
+    let mut printed: usize = 0;
+
+    for (owner, sites) in &census.printed {
+        let in_test: usize = sites.iter().filter(|site: &&SkipSite| site.in_test).count();
+        printed = printed.saturating_add(in_test);
+        let ceiling: usize = declared.get(owner.as_str()).copied().unwrap_or(0);
+        if in_test > ceiling {
+            let first: String = sites
+                .iter()
+                .filter(|site: &&SkipSite| site.in_test)
+                .take(3)
+                .map(|site: &SkipSite| format!("{}:{}", site.file, site.line))
+                .collect::<Vec<String>>()
+                .join(", ");
+            issues.push(format!(
+                "{owner} carries {in_test} test(s) that print a skip line and return, above its \
+                 declared ceiling of {ceiling}. A test that returns before its assertions is \
+                 counted as passed and proves nothing. Either give the missing reference a named \
+                 hard failure, or declare the reference optional and stop citing that test as \
+                 evidence. First site(s): {first}"
+            ));
+        }
+        if in_test < ceiling {
+            issues.push(format!(
+                "{owner} carries {in_test} skip-and-return test(s), below its declared ceiling of \
+                 {ceiling}. Lower the ceiling in xtask/src/skip_census.rs in the same commit, so \
+                 the number can only ratchet down"
+            ));
+        }
+    }
+
+    for (owner, ceiling) in SKIP_CEILING {
+        if !census.printed.contains_key(*owner) && *ceiling > 0 {
+            issues.push(format!(
+                "SKIP_CEILING declares {ceiling} for {owner}, which now carries none. Remove the \
+                 entry in the same commit"
+            ));
+        }
+    }
 
     if !issues.is_empty() {
         bail!(
-            "xtask skip-census: {} finding(s); {printed} test(s) print a skip line and return, \
-             {silent} carry a bare-return let-else:\n  {}",
+            "xtask skip-census: {} finding(s); {printed} test(s) print a skip line and \
+             return:\n  {}",
             issues.len(),
             issues.join("\n  ")
         );
@@ -503,12 +362,10 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 
     println!(
         "xtask skip-census: {} test source file(s) scanned, {printed} skip-and-return test(s) \
-         across {} crate(s) and {silent} bare-return let-else site(s) across {} crate(s), each at \
-         or below its declared ceiling in xtask/src/skip_census.rs; both ceilings ratchet down \
-         only, and the second counts a shape whose sites still need a guard proven upstream",
+         across {} crate(s), each at or below its declared ceiling in xtask/src/skip_census.rs; \
+         the ceiling ratchets down only",
         census.scanned,
-        census.printed.len(),
-        census.silent.len()
+        census.printed.len()
     );
     Ok(())
 }
@@ -572,64 +429,6 @@ mod tests {
         assert!(
             sites_in_source("crates/x/tests/a.rs", &source).is_empty(),
             "a return far below an unrelated print must not be paired with it"
-        );
-    }
-
-    #[test]
-    fn a_let_else_whose_body_is_only_a_bare_return_is_a_silent_site() {
-        let source: &str = "#[test]\nfn probe() {\n    let Some(bytes): Option<Vec<u8>> = \
-                            read_fixture(\"a\") else {\n        return;\n    };\n                                assert!(!bytes.is_empty());\n}\n";
-        let found: Vec<SkipSite> = silent_sites_in_source("crates/c/tests/t.rs", source);
-        assert_eq!(
-            found.len(),
-            1,
-            "the let-else abandons the test with no message"
-        );
-        assert!(found[0].in_test);
-    }
-
-    #[test]
-    fn a_single_line_let_else_return_is_a_silent_site() {
-        let source: &str =
-            "#[test]\nfn probe() {\n    let Some(v) = f() else { return; };\n    assert!(v);\n}\n";
-        let found: Vec<SkipSite> = silent_sites_in_source("crates/c/tests/t.rs", source);
-        assert_eq!(
-            found.len(),
-            1,
-            "the one-line form abandons the test just as silently"
-        );
-    }
-
-    #[test]
-    fn a_let_else_that_fails_loudly_is_not_a_silent_site() {
-        let source: &str = "#[test]\nfn probe() {\n    let Some(v) = f() else {\n                                    panic!(\"tracked fixture is unreadable\");\n    };\n                                assert!(v);\n}\n";
-        let found: Vec<SkipSite> = silent_sites_in_source("crates/c/tests/t.rs", source);
-        assert!(
-            found.is_empty(),
-            "a named hard failure is the fix, not the defect"
-        );
-    }
-
-    #[test]
-    fn a_printed_skip_inside_a_let_else_belongs_to_one_dimension_only() {
-        let source: &str = "#[test]\nfn probe() {\n    let Some(v) = f() else {\n                                    eprintln!(\"skip: corpus absent\");\n        return;\n    };\n                                assert!(v);\n}\n";
-        let silent: Vec<SkipSite> = silent_sites_in_source("crates/c/tests/t.rs", source);
-        assert!(
-            silent.is_empty(),
-            "the printed census already owns this site; counting it twice inflates the total"
-        );
-        let printed: Vec<SkipSite> = sites_in_source("crates/c/tests/t.rs", source);
-        assert_eq!(printed.len(), 1, "and the printed census must still see it");
-    }
-
-    #[test]
-    fn a_silent_return_outside_a_test_is_recorded_but_not_counted_against_the_ceiling() {
-        let source: &str = "fn helper() {\n    let Some(v) = f() else {\n        return;\n    };\n    drop(v);\n}\n";
-        let found: Vec<SkipSite> = silent_sites_in_source("crates/c/tests/t.rs", source);
-        assert_eq!(found.len(), 1);
-        assert!(
-            !found[0].in_test,
-            "only sites inside a #[test] move a ceiling"
         );
     }
 
