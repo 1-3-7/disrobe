@@ -1265,13 +1265,18 @@ mod tests {
         assert_eq!(canonical_display("vmprotect"), "VMProtect");
     }
 
-    fn corpus_bytes(rel: &str) -> Option<Vec<u8>> {
+    fn corpus_bytes(rel: &str) -> Vec<u8> {
         let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("corpus")
             .join(rel);
-        std::fs::read(path).ok()
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the labeled packer corpus is tracked, so every checkout carries {}; it could not be read ({error}), and skipping it would let this case report success while grading nothing",
+                path.display()
+            )
+        })
     }
 
     fn has_packer_or_protector_family(report: &FileIdReport, family: &str) -> bool {
@@ -1321,9 +1326,7 @@ mod tests {
         let mut present: usize = 0;
         let mut hit: usize = 0;
         for (rel, family) in cases {
-            let Some(bytes): Option<Vec<u8>> = corpus_bytes(rel) else {
-                continue;
-            };
+            let bytes: Vec<u8> = corpus_bytes(rel);
             present += 1;
             let report: FileIdReport = identify(&bytes);
             if has_packer_or_protector_family(&report, family) {
@@ -1340,9 +1343,12 @@ mod tests {
             }
         }
 
-        if present == 0 {
-            return;
-        }
+        assert_eq!(
+            present,
+            cases.len(),
+            "every labeled case must be graded, otherwise recall is computed over survivors and identifying one file of {} would still read as 1.0",
+            cases.len()
+        );
         let recall: f64 = hit as f64 / present as f64;
         assert!(
             (recall - 1.0).abs() < f64::EPSILON,
@@ -1371,9 +1377,7 @@ mod tests {
         ];
         let mut checked: usize = 0;
         for (rel, family) in originals {
-            let Some(bytes): Option<Vec<u8>> = corpus_bytes(rel) else {
-                continue;
-            };
+            let bytes: Vec<u8> = corpus_bytes(rel);
             checked += 1;
             let report: FileIdReport = identify(&bytes);
             assert!(
@@ -1386,24 +1390,17 @@ mod tests {
                     .collect::<Vec<(String, IdentityKind, u8)>>()
             );
         }
-        if checked == 0 {
-            return;
-        }
-        assert!(
-            checked >= 3,
-            "expected several clean originals, saw {checked}"
+        assert_eq!(
+            checked,
+            originals.len(),
+            "every clean original must be checked, otherwise a shrinking population hides a false positive"
         );
     }
 
     #[test]
     fn entropy_evidence_fires_on_packed_but_not_clean() {
-        let Some(packed): Option<Vec<u8>> =
-            corpus_bytes("native/packers/upx/hello.packed.nrv2b.exe")
-        else {
-            return;
-        };
-        let clean: Vec<u8> = corpus_bytes("native/packers/upx/hello.original.exe")
-            .expect("clean upx original present");
+        let packed: Vec<u8> = corpus_bytes("native/packers/upx/hello.packed.nrv2b.exe");
+        let clean: Vec<u8> = corpus_bytes("native/packers/upx/hello.original.exe");
 
         let packed_report: FileIdReport = identify(&packed);
         let clean_report: FileIdReport = identify(&clean);
