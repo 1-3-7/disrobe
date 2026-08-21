@@ -270,6 +270,95 @@ fn a_type_parameter_argument_renders_its_position_and_never_a_source_name() {
     );
 }
 
+const RECORDED_REFUSED_VECTOR_CEILING: usize = 500;
+
+#[test]
+fn no_recovered_type_carries_a_nullability_suffix_the_flag_word_cannot_justify() {
+    let mut suffixed: Vec<String> = Vec::new();
+    let mut carrying: usize = 0;
+    let mut rendered: usize = 0;
+    let mut refused: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool_table_for(sample);
+        for index in 0..table.slot_count() {
+            let offset: u64 = pool_offset_of_slot(index as u64);
+            let kind: DartPoolLiteralKind = table.kind_at_offset(offset, false);
+            if !matches!(
+                kind,
+                DartPoolLiteralKind::Type | DartPoolLiteralKind::TypeArguments
+            ) {
+                continue;
+            }
+            let Some(text): Option<String> = table.render_slot(index, false) else {
+                refused += 1;
+                continue;
+            };
+            rendered += 1;
+            let carries: bool = text.ends_with('?')
+                || text.ends_with('*')
+                || text.contains("?>")
+                || text.contains("*>")
+                || text.contains("?,")
+                || text.contains("*,");
+            if carries {
+                carrying += 1;
+                if suffixed.len() < 8 {
+                    suffixed.push(format!("{sample}: {text}"));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "recovered type renderings: {rendered}, refused: {refused}, carrying a nullability suffix: {carrying}"
+    );
+    assert!(
+        carrying == 0,
+        "a recovered type carries a nullability suffix, but the low bits of the Dart type flag word \
+         are not a three-valued nullability field: across the committed corpus bits 1 and 2 are \
+         never both set and never both clear, so they are a two-valued field and bit 0 varies \
+         independently. Emitting a suffix from them states a nullability the artifact has not been \
+         shown to carry. {carrying} of them, for example {suffixed:?}"
+    );
+    assert!(
+        rendered > 0,
+        "the corpus must recover types for this check to mean anything"
+    );
+}
+
+#[test]
+fn an_unreadable_type_flag_word_no_longer_discards_a_resolved_class_name() {
+    let mut refused: usize = 0;
+    let mut vectors: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool_table_for(sample);
+        let mut sample_refused: usize = 0;
+        for index in 0..table.slot_count() {
+            let offset: u64 = pool_offset_of_slot(index as u64);
+            if table.kind_at_offset(offset, false) != DartPoolLiteralKind::TypeArguments {
+                continue;
+            }
+            vectors += 1;
+            if table.render_slot(index, false).is_none() {
+                sample_refused += 1;
+            }
+        }
+        eprintln!("{sample}: {sample_refused} type-argument vectors still refuse");
+        refused += sample_refused;
+    }
+    eprintln!("type-argument vectors across the committed corpus: {vectors}, refusing: {refused}");
+    assert!(
+        refused <= RECORDED_REFUSED_VECTOR_CEILING,
+        "{refused} type-argument vectors refuse, above the recorded ceiling of \
+         {RECORDED_REFUSED_VECTOR_CEILING}; an unreadable flag word must not discard a class name \
+         the walk already resolved"
+    );
+    assert!(
+        refused > 0,
+        "some vectors must still refuse, or the soundness refusals have been removed rather than \
+         the flag refusal"
+    );
+}
+
 #[test]
 fn a_pool_slot_resolves_to_one_value_or_to_none_but_never_to_two() {
     for sample in COMMITTED_SAMPLES {

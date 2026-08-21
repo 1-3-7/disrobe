@@ -235,8 +235,8 @@ fn type_pool_entries_follow_the_pinned_dart_object_layout() {
     let first: DartPoolTable = pool("pinned_graph_fixture/receipt_validator_arm64.so");
     let second: DartPoolTable = pool("pinned_graph_fixture/receipt_validator_arm64.so");
     let cases: [(u64, DartPoolLiteralKind, &str); 2] = [
-        (0x1630, DartPoolLiteralKind::Type, "InstructionsTable*"),
-        (0x13a8, DartPoolLiteralKind::TypeArguments, "<Error*>"),
+        (0x1630, DartPoolLiteralKind::Type, "InstructionsTable"),
+        (0x13a8, DartPoolLiteralKind::TypeArguments, "<Error>"),
     ];
     for (offset, kind, expected) in cases {
         assert_eq!(first.kind_at_offset(offset, false), kind);
@@ -258,7 +258,7 @@ fn type_pool_entries_follow_the_pinned_dart_object_layout() {
         .functions
         .iter()
         .map(DartLiftedFunction::best_pseudo_dart)
-        .filter(|body: &String| body.contains("sub_0x1737c0(<Error*>, ?);"))
+        .filter(|body: &String| body.contains("sub_0x1737c0(<Error>, ?);"))
         .collect();
     assert!(
         !rendered.is_empty(),

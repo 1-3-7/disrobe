@@ -369,12 +369,7 @@ impl DartPoolTable {
             }
             rendered.push_str(&self.render_object(arguments, depth + 1, path, budget)?);
         }
-        match object.type_flags? & 0x3 {
-            0 => rendered.push('?'),
-            1 => {}
-            2 => rendered.push('*'),
-            _ => return None,
-        }
+        object.type_flags?;
         Some(rendered)
     }
 
