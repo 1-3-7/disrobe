@@ -41,83 +41,167 @@ fn read_control(name: &str) -> Option<String> {
     fs::read_to_string(p).ok()
 }
 
-fn clean_tokens(clean: &str) -> BTreeSet<String> {
-    let idents: BTreeSet<String> = [
-        "add",
-        "subtract",
-        "multiply",
-        "divide",
-        "calculate",
-        "greet",
-        "runSamples",
-        "Error",
-        "console",
-        "switch",
-        "throw",
-        "return",
-        "function",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let strings: BTreeSet<String> = [
-        "divide by zero",
-        "unknown op",
-        "calculator ready",
-        "hello,",
-        "add",
-        "sub",
-        "mul",
-        "div",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let _ = clean;
-    idents.union(&strings).cloned().collect()
+struct CleanTokens {
+    declared_function_names: BTreeSet<String>,
+    quoted_string_literals: BTreeSet<String>,
 }
 
-fn recovery_rate(deob: &str, tokens: &BTreeSet<String>) -> (usize, usize) {
-    let mut hits: usize = 0;
-    for tok in tokens {
-        if deob.contains(tok.as_str()) {
-            hits += 1;
+impl CleanTokens {
+    fn len(&self) -> usize {
+        self.declared_function_names
+            .len()
+            .saturating_add(self.quoted_string_literals.len())
+    }
+}
+
+fn derive_clean_tokens(clean: &str) -> CleanTokens {
+    let declaration: regex::Regex =
+        regex::Regex::new(r"function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("declaration re");
+    let literal: regex::Regex = regex::Regex::new(r#""([^"\\\n]*)""#).expect("literal re");
+    CleanTokens {
+        declared_function_names: declaration
+            .captures_iter(clean)
+            .filter_map(|caps: regex::Captures<'_>| {
+                caps.get(1)
+                    .map(|found: regex::Match<'_>| found.as_str().to_owned())
+            })
+            .collect(),
+        quoted_string_literals: literal
+            .captures_iter(clean)
+            .filter_map(|caps: regex::Captures<'_>| {
+                caps.get(1)
+                    .map(|found: regex::Match<'_>| found.as_str().to_owned())
+            })
+            .collect(),
+    }
+}
+
+const fn is_identifier_char(value: char) -> bool {
+    value.is_ascii_alphanumeric() || value == '_' || value == '$'
+}
+
+fn code_outside_string_literals(source: &str) -> String {
+    let mut out: String = String::with_capacity(source.len());
+    let mut quote: Option<char> = None;
+    let mut escaped: bool = false;
+    for current in source.chars() {
+        match quote {
+            Some(open) => {
+                if escaped {
+                    escaped = false;
+                } else if current == '\\' {
+                    escaped = true;
+                } else if current == open {
+                    quote = None;
+                    out.push(' ');
+                }
+            }
+            None => {
+                if current == '\'' || current == '"' || current == '`' {
+                    quote = Some(current);
+                    out.push(' ');
+                } else {
+                    out.push(current);
+                }
+            }
         }
     }
-    (hits, tokens.len())
+    out
+}
+
+fn function_name_survives_outside_literals(code: &str, name: &str) -> bool {
+    code.match_indices(name).any(|(at, _): (usize, &str)| {
+        let opens: bool = code[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|value: char| !is_identifier_char(value));
+        let closes: bool = code[at.saturating_add(name.len())..]
+            .chars()
+            .next()
+            .is_none_or(|value: char| !is_identifier_char(value));
+        opens && closes
+    })
+}
+
+fn string_literal_survives_quoted(source: &str, literal: &str) -> bool {
+    ['\'', '"', '`']
+        .into_iter()
+        .any(|quote: char| source.contains(&format!("{quote}{literal}{quote}")))
+}
+
+fn unrecovered_tokens(deob: &str, tokens: &CleanTokens) -> Vec<String> {
+    let code: String = code_outside_string_literals(deob);
+    let mut lost: Vec<String> = tokens
+        .declared_function_names
+        .iter()
+        .filter(|name: &&String| !function_name_survives_outside_literals(&code, name))
+        .map(|name: &String| format!("fn:{name}"))
+        .collect();
+    lost.extend(
+        tokens
+            .quoted_string_literals
+            .iter()
+            .filter(|text: &&String| !string_literal_survives_quoted(deob, text))
+            .map(|text: &String| format!("str:{text}")),
+    );
+    lost.sort();
+    lost
+}
+
+fn tokens_restored_from_encoding(
+    obfuscated: &str,
+    recovered: &str,
+    tokens: &CleanTokens,
+) -> Vec<String> {
+    let lost_before: Vec<String> = unrecovered_tokens(obfuscated, tokens);
+    let lost_after: Vec<String> = unrecovered_tokens(recovered, tokens);
+    lost_before
+        .into_iter()
+        .filter(|tagged: &String| !lost_after.contains(tagged))
+        .collect()
+}
+
+fn recovery_rate(deob: &str, tokens: &CleanTokens) -> (usize, usize) {
+    let possible: usize = tokens.len();
+    let lost: usize = unrecovered_tokens(deob, tokens).len();
+    (possible.saturating_sub(lost), possible)
 }
 
 const PRESET_DECODER_CALL_FLOORS: [(&str, usize); 3] = [("low", 43), ("medium", 88), ("high", 408)];
-const PRESET_TOKEN_FLOORS: [(&str, usize); 3] = [("low", 20), ("medium", 20), ("high", 20)];
-const CONTROL_TOKEN_FLOORS: [(&str, usize); 17] = [
-    ("booleans", 20),
-    ("compact", 20),
-    ("controlFlowFlattening", 20),
-    ("deadCodeInjection", 20),
-    ("debugProtection", 20),
-    ("identifiersHexadecimal", 15),
-    ("identifiersMangled", 15),
-    ("numbersToExpressions", 20),
-    ("objectTransform", 20),
-    ("renameProperties", 20),
-    ("selfDefending", 20),
-    ("splitStrings", 20),
-    ("stringArrayBase64", 20),
-    ("stringArrayRc4", 20),
-    ("stringArrayRotate", 20),
-    ("stringArrayShuffle", 20),
-    ("unicodeEscape", 20),
+const NOTHING_LOST: &[&str] = &[];
+const RENAMED_FUNCTION_NAMES: &[&str] = &[
+    "fn:add",
+    "fn:calculate",
+    "fn:divide",
+    "fn:greet",
+    "fn:multiply",
+    "fn:runSamples",
+    "fn:subtract",
 ];
-const IRRECOVERABLE_IDENTIFIER_TOKENS: [&str; 5] =
-    ["calculate", "greet", "multiply", "runSamples", "subtract"];
-
-fn unrecovered_tokens(deob: &str, tokens: &BTreeSet<String>) -> Vec<String> {
-    tokens
-        .iter()
-        .filter(|tok: &&String| !deob.contains(tok.as_str()))
-        .cloned()
-        .collect()
-}
+const PRESET_RECOVERY: [(&str, usize, &[&str]); 3] = [
+    ("low", 5, NOTHING_LOST),
+    ("medium", 8, NOTHING_LOST),
+    ("high", 10, NOTHING_LOST),
+];
+const CONTROL_RECOVERY: [(&str, usize, &[&str]); 17] = [
+    ("booleans", 5, NOTHING_LOST),
+    ("compact", 5, NOTHING_LOST),
+    ("controlFlowFlattening", 5, NOTHING_LOST),
+    ("deadCodeInjection", 5, NOTHING_LOST),
+    ("debugProtection", 5, NOTHING_LOST),
+    ("identifiersHexadecimal", 5, RENAMED_FUNCTION_NAMES),
+    ("identifiersMangled", 5, RENAMED_FUNCTION_NAMES),
+    ("numbersToExpressions", 5, NOTHING_LOST),
+    ("objectTransform", 5, NOTHING_LOST),
+    ("renameProperties", 5, NOTHING_LOST),
+    ("selfDefending", 5, NOTHING_LOST),
+    ("splitStrings", 6, NOTHING_LOST),
+    ("stringArrayBase64", 10, NOTHING_LOST),
+    ("stringArrayRc4", 10, NOTHING_LOST),
+    ("stringArrayRotate", 5, NOTHING_LOST),
+    ("stringArrayShuffle", 5, NOTHING_LOST),
+    ("unicodeEscape", 11, NOTHING_LOST),
+];
 
 fn run_full(src: &str) -> ObfuscatorIoOutput {
     let opts: ObfuscatorIoOptions = ObfuscatorIoOptions::all();
@@ -129,15 +213,16 @@ fn differential_oracle_reports_recovery_rate() {
     let clean: String = clean_source().expect(
         "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
     );
-    let tokens: BTreeSet<String> = clean_tokens(&clean);
+    let tokens: CleanTokens = derive_clean_tokens(&clean);
 
     let mut missing: Vec<String> = Vec::new();
     let mut graded: usize = 0;
     let mut total_hits: usize = 0;
+    let mut total_restored: usize = 0;
     let mut total_possible: usize = 0;
     let mut inline_total: usize = 0;
 
-    for (preset_name, token_floor) in PRESET_TOKEN_FLOORS {
+    for (preset_name, restored_floor, wall) in PRESET_RECOVERY {
         let Some(src): Option<String> = read_preset(preset_name) else {
             missing.push(format!("presets/{preset_name}.js"));
             continue;
@@ -146,20 +231,28 @@ fn differential_oracle_reports_recovery_rate() {
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
         assert!(
-            possible >= 20,
-            "preset {preset_name}: clean-token population must not shrink below 20; got {possible}"
+            possible >= 19,
+            "preset {preset_name}: clean-token population must not shrink below 19; got {possible}"
         );
+        let restored: Vec<String> = tokens_restored_from_encoding(&src, &out.source, &tokens);
+        let lost: Vec<String> = unrecovered_tokens(&out.source, &tokens);
         assert!(
-            hits >= token_floor,
-            "preset {preset_name}: clean-token recovery must not fall below {token_floor}; got {hits}/{possible}, unrecovered {:?}",
-            unrecovered_tokens(&out.source, &tokens)
+            restored.len() >= restored_floor,
+            "preset {preset_name}: tokens the artifact encodes must be decoded back; restored {} of a floor of {restored_floor}, restored {restored:?}",
+            restored.len()
         );
+        assert_eq!(
+            lost, wall,
+            "preset {preset_name} may lose only its declared wall; lost {lost:?}"
+        );
+        total_restored += restored.len();
         inline_total += out.string_array_call_sites_inlined;
         total_hits += hits;
         total_possible += possible;
         let pct: f64 = (hits as f64 / possible as f64) * 100.0;
         println!(
-            "[preset:{preset_name}] tokens {hits}/{possible} = {pct:.1}% | inlined={} cfo_merged={} cff_collapsed={} dispatcher={} opaque={}",
+            "[preset:{preset_name}] tokens {hits}/{possible} = {pct:.1}% | restored={} | inlined={} cfo_merged={} cff_collapsed={} dispatcher={} opaque={}",
+            restored.len(),
             out.string_array_call_sites_inlined,
             out.control_flow_objects_merged,
             out.flatten_dispatches_collapsed,
@@ -168,7 +261,7 @@ fn differential_oracle_reports_recovery_rate() {
         );
     }
 
-    for (control_name, token_floor) in CONTROL_TOKEN_FLOORS {
+    for (control_name, restored_floor, wall) in CONTROL_RECOVERY {
         let Some(src): Option<String> = read_control(control_name) else {
             missing.push(format!("controls/{control_name}.js"));
             continue;
@@ -177,20 +270,29 @@ fn differential_oracle_reports_recovery_rate() {
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
         assert!(
-            possible >= 20,
-            "control {control_name}: clean-token population must not shrink below 20; got {possible}"
+            possible >= 19,
+            "control {control_name}: clean-token population must not shrink below 19; got {possible}"
         );
+        let restored: Vec<String> = tokens_restored_from_encoding(&src, &out.source, &tokens);
+        let lost: Vec<String> = unrecovered_tokens(&out.source, &tokens);
         assert!(
-            hits >= token_floor,
-            "control {control_name}: clean-token recovery must not fall below {token_floor}; got {hits}/{possible}, unrecovered {:?}",
-            unrecovered_tokens(&out.source, &tokens)
+            restored.len() >= restored_floor,
+            "control {control_name}: tokens the artifact encodes must be decoded back; restored {} of a floor of {restored_floor}, restored {restored:?}",
+            restored.len()
         );
+        assert_eq!(
+            lost, wall,
+            "control {control_name} may lose only its declared wall; lost {lost:?}"
+        );
+        total_restored += restored.len();
         total_hits += hits;
         total_possible += possible;
         let pct: f64 = (hits as f64 / possible as f64) * 100.0;
         println!(
-            "[control:{control_name}] tokens {hits}/{possible} = {pct:.1}% | cfo_merged={} cff_collapsed={}",
-            out.control_flow_objects_merged, out.flatten_dispatches_collapsed,
+            "[control:{control_name}] tokens {hits}/{possible} = {pct:.1}% | restored={} | cfo_merged={} cff_collapsed={}",
+            restored.len(),
+            out.control_flow_objects_merged,
+            out.flatten_dispatches_collapsed,
         );
     }
 
@@ -204,34 +306,17 @@ fn differential_oracle_reports_recovery_rate() {
         "the recovery rate must be measured over all 20 tracked samples; graded {graded}"
     );
     assert!(
-        total_possible >= 400,
-        "token population must cover 20 samples of 20 clean tokens; got {total_possible}"
+        total_possible >= 380,
+        "token population must cover 20 samples of 19 derived clean tokens; got {total_possible}"
     );
     let overall: f64 = (total_hits as f64 / total_possible as f64) * 100.0;
     println!(
-        "[OVERALL] {total_hits}/{total_possible} = {overall:.1}% | total_inlined={inline_total}"
+        "[OVERALL] present {total_hits}/{total_possible} = {overall:.1}% | restored {total_restored} | total_inlined={inline_total}"
     );
     assert!(
-        total_hits >= 390,
-        "clean-token recovery must not fall below 390 of 400 across the 20 tracked samples; got {total_hits}/{total_possible}"
+        total_restored >= 125,
+        "the differential must decode at least 125 encoded tokens back, which no unrecovered artifact can satisfy; restored {total_restored} across {total_possible} slots"
     );
-    for (control_name, token_floor) in CONTROL_TOKEN_FLOORS {
-        if token_floor == 20 {
-            continue;
-        }
-        let src: String = read_control(control_name).unwrap_or_else(|| {
-            panic!(
-                "control fixture controls/{control_name}.js is required under {}",
-                corpus_root().display()
-            )
-        });
-        let out: ObfuscatorIoOutput = run_full(&src);
-        let unrecovered: Vec<String> = unrecovered_tokens(&out.source, &tokens);
-        assert_eq!(
-            unrecovered, IRRECOVERABLE_IDENTIFIER_TOKENS,
-            "control {control_name} may only lose the renamed function identifiers, which the artifact carries no map to restore; lost {unrecovered:?}"
-        );
-    }
 }
 
 fn count_residual_decoder_calls(source: &str) -> usize {
@@ -326,13 +411,13 @@ fn high_preset_recovers_clean_tokens_above_threshold() {
             corpus_root().display()
         )
     });
-    let tokens: BTreeSet<String> = clean_tokens(&clean);
+    let tokens: CleanTokens = derive_clean_tokens(&clean);
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
     let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
     assert!(
-        possible >= 20,
-        "clean-token population must not shrink below 20; got {possible}"
+        possible >= 19,
+        "clean-token population must not shrink below 19; got {possible}"
     );
     let pct: f64 = (hits as f64 / possible as f64) * 100.0;
     assert!(
