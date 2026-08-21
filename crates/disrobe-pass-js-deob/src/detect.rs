@@ -271,7 +271,8 @@ fn is_modern_obfuscator_io(head: &str) -> bool {
         && head.contains("push")
         && head.contains("shift")
         && head.contains("parseInt");
-    has_hex_idents && (has_self_reassigning_provider || has_rotation_iife)
+    let both_structures: bool = has_self_reassigning_provider && has_rotation_iife;
+    has_hex_idents && (has_self_reassigning_provider || has_rotation_iife) || both_structures
 }
 
 #[cfg(test)]

@@ -147,7 +147,7 @@ fn has_hex_string_array(text: &str) -> bool {
 fn has_rotator_iife(text: &str) -> bool {
     matches_regex(
         text,
-        r"(?ms)\(\s*function\s*\([^)]*\)\s*\{[^{}]{0,400}push\s*\([^)]*shift[^{}]{0,400}\}\s*\(\s*_0x[0-9a-fA-F]+",
+        r"(?s)\(\s*function\s*\([^)]*\)\s*\{.{0,600}?\bpush\b.{0,200}?\bshift\b.{0,600}?\}\s*\(\s*[A-Za-z_$][\w$]*\s*,",
     )
 }
 

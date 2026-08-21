@@ -25,7 +25,7 @@ const CONTROL_DETECTION: [(&str, bool, usize); 17] = [
     ("deadCodeInjection", true, 4),
     ("debugProtection", true, 5),
     ("identifiersHexadecimal", true, 4),
-    ("identifiersMangled", false, 2),
+    ("identifiersMangled", true, 3),
     ("numbersToExpressions", true, 3),
     ("objectTransform", true, 4),
     ("renameProperties", true, 4),
