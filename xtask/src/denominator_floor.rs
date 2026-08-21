@@ -16,7 +16,7 @@ const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-jvm", 3),
     ("disrobe-pass-lua", 1),
     ("disrobe-pass-mobile", 6),
-    ("disrobe-pass-native", 3),
+    ("disrobe-pass-native", 4),
     ("disrobe-pass-py-decompile", 2),
     ("disrobe-pass-shell", 2),
     ("disrobe-pass-wasm-deob", 1),
@@ -334,7 +334,10 @@ fn scan(root: &Path) -> Result<(BTreeMap<String, Vec<RateSite>>, usize)> {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        if !relative.contains("/tests/") && !relative.ends_with("/tests.rs") {
+        if !relative.contains("/src/")
+            && !relative.contains("/tests/")
+            && !relative.ends_with("/tests.rs")
+        {
             continue;
         }
         if entry
@@ -488,6 +491,41 @@ mod tests {
             found.is_empty(),
             "rustfmt puts `assert!(` and `compared > 0,` on separate lines, and reading them \
              apart reported an explicitly floored population as unfloored"
+        );
+    }
+
+    #[test]
+    fn a_rate_published_from_a_cfg_test_module_inside_src_is_a_site() {
+        let source: &str = concat!(
+            "pub fn identify() {}\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    #[test]\n",
+            "    fn probe() {\n",
+            "        let recall: f64 = hit as f64 / present as f64;\n",
+            "        assert!(recall >= 1.0);\n",
+            "    }\n",
+            "}\n"
+        );
+        let found: Vec<RateSite> = sites_in_source("crates/c/src/fileid.rs", source);
+        assert_eq!(
+            found.len(),
+            1,
+            "a test that publishes a rate is a test wherever it lives, and scanning only \
+             crates/*/tests left this one unmeasured"
+        );
+        assert_eq!(found[0].denominator, "present");
+    }
+
+    #[test]
+    fn production_code_beside_a_cfg_test_module_is_not_a_site() {
+        let source: &str = "pub fn ratio(hit: usize, total: usize) -> f64 {\n    \
+                            hit as f64 / total as f64\n}\n";
+        let found: Vec<RateSite> = sites_in_source("crates/c/src/fileid.rs", source);
+        assert!(
+            found.is_empty(),
+            "scanning src must not reach production code, where an early return against malformed \
+             input is correct refusal rather than a skipped measurement"
         );
     }
 
