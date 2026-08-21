@@ -270,7 +270,7 @@ fn a_type_parameter_argument_renders_its_position_and_never_a_source_name() {
     );
 }
 
-const RECORDED_REFUSED_VECTOR_CEILING: usize = 500;
+const RECORDED_REFUSED_VECTOR_CEILING: usize = 200;
 
 #[test]
 fn no_recovered_type_carries_a_nullability_suffix_the_flag_word_cannot_justify() {
@@ -356,6 +356,82 @@ fn an_unreadable_type_flag_word_no_longer_discards_a_resolved_class_name() {
         refused > 0,
         "some vectors must still refuse, or the soundness refusals have been removed rather than \
          the flag refusal"
+    );
+}
+
+const UNNAMED_CLASS_PREFIX: &str = "cid@";
+
+#[test]
+fn a_class_whose_metadata_the_precompiler_dropped_surfaces_by_class_id() {
+    let mut unnamed: usize = 0;
+    let mut examples: Vec<String> = Vec::new();
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool_table_for(sample);
+        for index in 0..table.slot_count() {
+            let offset: u64 = pool_offset_of_slot(index as u64);
+            if !matches!(
+                table.kind_at_offset(offset, false),
+                DartPoolLiteralKind::Type | DartPoolLiteralKind::TypeArguments
+            ) {
+                continue;
+            }
+            let Some(text): Option<String> = table.render_slot(index, false) else {
+                continue;
+            };
+            for at in text.match_indices(UNNAMED_CLASS_PREFIX).map(|(at, _)| at) {
+                let digits: String = text[at + UNNAMED_CLASS_PREFIX.len()..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                assert!(
+                    !digits.is_empty(),
+                    "{sample} rendered an unnamed class without its class id in {text}"
+                );
+                unnamed += 1;
+                if examples.len() < 4 {
+                    examples.push(format!("{sample}: {text}"));
+                }
+            }
+        }
+    }
+    eprintln!("classes surfacing by class id because their metadata was dropped: {unnamed}");
+    eprintln!("examples: {examples:?}");
+    assert!(
+        unnamed > 0,
+        "the committed corpus carries types whose class metadata the precompiler dropped; if none \
+         surfaces by class id the recovery has either started inventing names or gone back to \
+         refusing the type"
+    );
+}
+
+#[test]
+fn the_soundness_refusals_still_fire_on_the_committed_corpus() {
+    let mut refused: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool_table_for(sample);
+        let mut sample_refused: usize = 0;
+        for index in 0..table.slot_count() {
+            let offset: u64 = pool_offset_of_slot(index as u64);
+            if table.kind_at_offset(offset, false) != DartPoolLiteralKind::TypeArguments {
+                continue;
+            }
+            if table.render_slot(index, false).is_none() {
+                sample_refused += 1;
+            }
+        }
+        eprintln!("{sample}: {sample_refused} type-argument vectors still refuse");
+        assert!(
+            sample_refused > 0,
+            "{sample} refuses no type-argument vector at all; a vector whose element is not a type, \
+             and a cycle or budget exhaustion, must still refuse rather than render"
+        );
+        refused += sample_refused;
+    }
+    eprintln!("type-argument vectors still refusing across the committed corpus: {refused}");
+    assert!(
+        refused <= RECORDED_REFUSED_VECTOR_CEILING,
+        "{refused} type-argument vectors refuse, above the recorded ceiling of \
+         {RECORDED_REFUSED_VECTOR_CEILING}"
     );
 }
 

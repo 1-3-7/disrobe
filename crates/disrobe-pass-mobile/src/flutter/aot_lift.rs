@@ -334,6 +334,8 @@ const BODY_LIFT_NOTE: &str = "body statements are lifted to pseudo-Dart expressi
 
 const BLOCK_MERGE_NOTE: &str = "a block with more than one predecessor starts from an empty tracker state, so a value produced before a control-flow merge is not carried into it; loop bodies therefore keep more unliftedArm64 markers than straight-line code, which is a merge-conservatism boundary rather than a decode limit";
 
+const DROPPED_CLASS_NAME_NOTE: &str = "the product AOT precompiler drops the class metadata object for classes it does not otherwise need, while types continue to reference the class id; such a class surfaces as cid@N, read from the artifact, and its declared name is absent rather than guessed";
+
 const TYPE_PARAMETER_NAME_NOTE: &str = "the product AOT precompiler drops type-parameter names, so an uninstantiated type argument surfaces by its position in the vector as typeParam@N rather than by the name the source declared; the position is read from the artifact and the name is never invented";
 
 const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are honestly absent rather than reconstructed";
@@ -597,6 +599,7 @@ pub fn lift_functions(
         notes.push(INLINE_DOUBLE_NOTE.to_owned());
         notes.push(FIELD_NAME_WALL_NOTE.to_owned());
         notes.push(TYPE_PARAMETER_NAME_NOTE.to_owned());
+        notes.push(DROPPED_CLASS_NAME_NOTE.to_owned());
         notes.push(INLINE_WALL_NOTE.to_owned());
         notes.push(BODY_LIFT_NOTE.to_owned());
         notes.push(BLOCK_MERGE_NOTE.to_owned());

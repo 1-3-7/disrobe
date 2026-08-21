@@ -49,6 +49,8 @@ const TRUNCATED_STRING: &str = "truncatedString";
 
 const TYPE_PARAMETER_PREFIX: &str = "typeParam@";
 
+const UNNAMED_CLASS_PREFIX: &str = "cid@";
+
 const RECORD_TYPE_TOKEN: &str = "recordType";
 
 const NULL_OBJECT_REFERENCE: u32 = 1;
@@ -353,14 +355,16 @@ impl DartPoolTable {
                 );
             }
         }
-        let mut rendered: String = if matched {
-            declared?
+        let named: Option<String> = if matched {
+            declared
         } else {
             u16::try_from(class_id)
                 .ok()
                 .and_then(predefined_name)
-                .map(str::to_owned)?
+                .map(str::to_owned)
         };
+        let mut rendered: String =
+            named.unwrap_or_else(|| format!("{UNNAMED_CLASS_PREFIX}{class_id}"));
         let arguments: u32 = *object.references.get(2)?;
         if !self.is_null_object(arguments) {
             let arguments_object: &DartPoolObject = self.object(arguments)?;
