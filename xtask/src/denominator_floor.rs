@@ -12,7 +12,7 @@ const DENOMINATOR_CEILING: &[(&str, usize)] = &[
     ("disrobe-cli", 1),
     ("disrobe-pass-dotnet", 2),
     ("disrobe-pass-go", 1),
-    ("disrobe-pass-js-deob", 4),
+    ("disrobe-pass-js-deob", 1),
     ("disrobe-pass-jvm", 3),
     ("disrobe-pass-lua", 1),
     ("disrobe-pass-mobile", 6),
