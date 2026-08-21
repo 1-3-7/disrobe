@@ -25,54 +25,63 @@ pub(crate) const PINNED_MODULE_COUNT: u64 = 200;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BandToolchain {
     pub alias: &'static str,
+    pub release: &'static str,
     pub require_var: &'static str,
     pub install_hint: &'static str,
 }
 
 pub(crate) const CPYTHON_38: BandToolchain = BandToolchain {
     alias: "3.8",
+    release: "3.8.20",
     require_var: "DISROBE_REQUIRE_PY_38",
     install_hint: "install it with `uv python install 3.8`",
 };
 
 pub(crate) const CPYTHON_39: BandToolchain = BandToolchain {
     alias: "3.9",
+    release: "3.9.25",
     require_var: "DISROBE_REQUIRE_PY_39",
     install_hint: "install it with `uv python install 3.9`",
 };
 
 pub(crate) const CPYTHON_310: BandToolchain = BandToolchain {
     alias: "3.10",
+    release: "3.10.20",
     require_var: "DISROBE_REQUIRE_PY_310",
     install_hint: "install it with `uv python install 3.10`",
 };
 
 pub(crate) const CPYTHON_311: BandToolchain = BandToolchain {
     alias: "3.11",
+    release: "3.11.15",
     require_var: "DISROBE_REQUIRE_PY_311",
     install_hint: "install it with `uv python install 3.11`",
 };
 
 pub(crate) const CPYTHON_312: BandToolchain = BandToolchain {
     alias: "3.12",
+    release: "3.12.13",
     require_var: "DISROBE_REQUIRE_PY_312",
     install_hint: "install it with `uv python install 3.12`",
 };
 
 pub(crate) const CPYTHON_313: BandToolchain = BandToolchain {
     alias: "3.13",
+    release: "3.13.14",
     require_var: "DISROBE_REQUIRE_PY_313",
     install_hint: "install it with `uv python install 3.13`",
 };
 
 pub(crate) const CPYTHON_314: BandToolchain = BandToolchain {
     alias: "3.14",
+    release: "3.14.5",
     require_var: "DISROBE_REQUIRE_PY_314",
     install_hint: "install it with `uv python install 3.14`",
 };
 
 pub(crate) const CPYTHON_315: BandToolchain = BandToolchain {
     alias: "3.15",
+    release: "3.15.0b4",
     require_var: "DISROBE_REQUIRE_PY_315",
     install_hint: "install it with `uv python install 3.15`",
 };
@@ -229,6 +238,11 @@ fn announce_unmeasured(toolchain: &BandToolchain, graded: &str, defect: &str) {
 
 #[must_use]
 pub(crate) fn resolve_band_interpreter(toolchain: &BandToolchain, graded: &str) -> Option<PathBuf> {
+    if !interpreter_hidden(toolchain.alias)
+        && let Some(pinned) = find_interpreter(toolchain.release)
+    {
+        return Some(pinned);
+    }
     let resolved: Option<PathBuf> = find_interpreter(toolchain.alias);
     if let Some(path) = resolved {
         return Some(path);
@@ -247,6 +261,35 @@ pub(crate) fn resolve_band_interpreter(toolchain: &BandToolchain, graded: &str) 
     };
     enforce_requirement(toolchain, graded, &defect, requirement(toolchain));
     None
+}
+
+pub(crate) fn release_mismatch(measured: &str, toolchain: &BandToolchain) -> Option<String> {
+    if measured == toolchain.release {
+        return None;
+    }
+    Some(format!(
+        "this run measured CPython {measured}, but the band is pinned to CPython {pinned}. A \
+         different patch release ships a different Lib and a different compiler, so the counts \
+         this run produced describe a different population and cannot be compared to the \
+         published ones. This is NOT a recovery regression and the numerator below is not \
+         evidence of one. Install the pinned release with `uv python install {pinned}`; the \
+         resolver prefers it over any newer {alias} once it is present.",
+        pinned = toolchain.release,
+        alias = toolchain.alias
+    ))
+}
+
+pub(crate) fn assert_measurement_is_comparable(
+    measured: &str,
+    toolchain: &BandToolchain,
+    graded: &str,
+) {
+    let mismatch: Option<String> = release_mismatch(measured, toolchain);
+    assert!(
+        mismatch.is_none(),
+        "{graded} was measured against an interpreter it is not pinned to: {}",
+        mismatch.unwrap_or_default()
+    );
 }
 
 fn parenthesized(label: &str) -> &str {

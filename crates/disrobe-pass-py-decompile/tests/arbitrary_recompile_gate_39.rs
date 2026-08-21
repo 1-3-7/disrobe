@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 use common::band_gate::{
     BandPopulation, BandPublication, CPYTHON_39, OPCODES_INTRODUCED_IN_3_9,
     OPCODES_RETIRED_AFTER_3_8, PINNED_MODULE_COUNT, PINNED_MODULE_LIST,
-    assert_band_reaches_its_own_bytecode, assert_population_pin_rejects_shrinkage,
-    assert_publication_matches_the_gate, population_disagreements, resolve_band_interpreter,
+    assert_band_reaches_its_own_bytecode, assert_measurement_is_comparable,
+    assert_population_pin_rejects_shrinkage, assert_publication_matches_the_gate,
+    population_disagreements, resolve_band_interpreter,
 };
 use common::stdlib_measure::{
     BandReach, HarnessRun, MEASURE_HARNESS, Measurement, PublishedBar, REACH_HARNESS,
@@ -37,7 +38,7 @@ const BAND_MODULES: u64 = 157;
 const BAND_MODULES_EXACT_FLOOR: u64 = 84;
 const BAND_MISSING_FROM_LIB: u64 = 43;
 const BAND_POSONLY_OBJECTS: u64 = 22;
-const BAND_CPYTHON: &str = "3.9.25";
+const BAND_CPYTHON: &str = CPYTHON_39.release;
 const BAND_PLATFORM: &str = "windows x86_64";
 const BAND_MEASURE_CEILING: Duration = Duration::from_mins(40);
 
@@ -334,6 +335,7 @@ fn arbitrary_recompile_equivalence_gate_39() {
     );
 
     let m: Measurement = parse_measurement(&run.stdout).expect("parse harness measurement");
+    assert_measurement_is_comparable(&m.cpython_version, &CPYTHON_39, &graded());
     println!(
         "{}",
         population_line(BAND_POPULATION, m.objects_ok, m.code_objects, m.modules)

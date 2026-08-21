@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use common::band_gate::{
     BandPopulation, CPYTHON_315, PINNED_MODULE_COUNT, PINNED_MODULE_LIST,
     assert_bands_are_distinct_populations, assert_detail_states_its_own_counts,
-    assert_population_pin_rejects_shrinkage, population_disagreements, published_band_bar,
-    resolve_band_interpreter,
+    assert_measurement_is_comparable, assert_population_pin_rejects_shrinkage,
+    population_disagreements, published_band_bar, resolve_band_interpreter,
 };
 use common::stdlib_measure::{
     HarnessRun, MEASURE_HARNESS, Measurement, PublishedBar, bar_disagreements, find_disrobe,
@@ -33,7 +33,7 @@ const BAND_CODE_OBJECTS: u64 = 6_480;
 const BAND_MODULES: u64 = 199;
 const BAND_MODULES_EXACT_FLOOR: u64 = 119;
 const BAND_MISSING_FROM_LIB: u64 = 1;
-const BAND_CPYTHON: &str = "3.15.0b4";
+const BAND_CPYTHON: &str = CPYTHON_315.release;
 
 fn published() -> PublishedBar {
     let doc: serde_json::Value = recovery_document();
@@ -173,6 +173,7 @@ fn arbitrary_recompile_equivalence_gate_315() {
     );
 
     let m: Measurement = parse_measurement(&run.stdout).expect("parse harness measurement");
+    assert_measurement_is_comparable(&m.cpython_version, &CPYTHON_315, &graded());
     println!(
         "{}",
         population_line(BAND_POPULATION, m.objects_ok, m.code_objects, m.modules)

@@ -10,18 +10,22 @@
 
 mod common;
 
+use common::band_gate::{CPYTHON_314, assert_measurement_is_comparable, resolve_band_interpreter};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use common::stdlib_measure::{
     HarnessRun, MEASURE_HARNESS, Measurement, PINNED_POPULATION, PublishedBar, bar_disagreements,
-    find_disrobe, find_python_314, interpreter_stdlib, interpreter_version, manifest_dir,
-    parse_measurement, population_line, published_bar, recovery_document, run_measure_with_ledger,
-    workspace_target,
+    find_disrobe, interpreter_stdlib, interpreter_version, manifest_dir, parse_measurement,
+    population_line, published_bar, recovery_document, run_measure_with_ledger, workspace_target,
 };
 
 const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
+
+const BAND_CPYTHON: &str = CPYTHON_314.release;
+const GRADED: &str = "the published pinned-corpus per-code-object figure";
 
 const OBJECT_PCT_FLOOR: f64 = 96.59;
 const MODULES_EXACT_FLOOR: u64 = 122;
@@ -87,13 +91,13 @@ fn arbitrary_recompile_equivalence_gate() {
         );
     };
 
-    let Some(python): Option<PathBuf> = find_python_314() else {
+    let Some(python): Option<PathBuf> = resolve_band_interpreter(&CPYTHON_314, GRADED) else {
         panic!(
-            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). This \
-             gate is the reference behind the published per-code-object figure, so its absence \
-             fails the run rather than passing it: a skip here would leave floor \
-             {OBJECT_PCT_FLOOR} unenforced while the suite still reported green. Install one with \
-             `uv python install 3.14`."
+            "no CPython {BAND_CPYTHON} interpreter found (uv python find {BAND_CPYTHON}, then \
+             3.14, then known install paths). This gate is the reference behind the published \
+             per-code-object figure, so its absence fails the run rather than passing it: a skip \
+             here would leave floor {OBJECT_PCT_FLOOR} unenforced while the suite still reported \
+             green. Install it with `uv python install {BAND_CPYTHON}`."
         );
     };
 
@@ -146,6 +150,7 @@ fn arbitrary_recompile_equivalence_gate() {
     );
 
     let m: Measurement = parse_measurement(&run.stdout).expect("parse harness measurement");
+    assert_measurement_is_comparable(&m.cpython_version, &CPYTHON_314, GRADED);
     println!(
         "{}",
         population_line(PINNED_POPULATION, m.objects_ok, m.code_objects, m.modules)
@@ -289,11 +294,11 @@ print(json.dumps(out))
 
 #[test]
 fn sibling_group_charges_counts_a_recovered_side_collision() {
-    let Some(python): Option<PathBuf> = find_python_314() else {
+    let Some(python): Option<PathBuf> = resolve_band_interpreter(&CPYTHON_314, GRADED) else {
         panic!(
-            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths); the \
-             sibling-group counter is defined against 3.14 code objects. Install one with `uv \
-             python install 3.14`."
+            "no CPython {BAND_CPYTHON} interpreter found; the sibling-group counter is defined \
+             against {BAND_CPYTHON} code objects. Install it with `uv python install \
+             {BAND_CPYTHON}`."
         );
     };
     let harness_dir: PathBuf = manifest_dir().join("tests/harness");
