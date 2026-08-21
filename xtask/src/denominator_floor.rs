@@ -402,16 +402,22 @@ fn scan(root: &Path) -> Result<(BTreeMap<String, Vec<RateSite>>, usize)> {
     Ok((per_crate, scanned))
 }
 
+fn enforce_scan_floor(scanned: usize) -> Result<()> {
+    if scanned >= MIN_SCANNED_FILES {
+        return Ok(());
+    }
+    bail!(
+        "xtask denominator-floor scanned only {scanned} test source file(s), below the floor of \
+         {MIN_SCANNED_FILES}. A check that reads a fraction of the tree reports a clean sheet for \
+         every rate it never opened, so this floor sits just under the count the workspace carries \
+         rather than at a token value a badly narrowed scan would still clear"
+    )
+}
+
 pub(crate) fn run(root: &Path) -> Result<()> {
     let (per_crate, scanned): (BTreeMap<String, Vec<RateSite>>, usize) = scan(root)?;
 
-    if scanned < MIN_SCANNED_FILES {
-        bail!(
-            "xtask denominator-floor scanned only {scanned} test source file(s), below the floor \
-             of {MIN_SCANNED_FILES}. A census that reads nothing would report a clean sheet it did \
-             not earn"
-        );
-    }
+    enforce_scan_floor(scanned)?;
 
     let declared: BTreeMap<&str, usize> = DENOMINATOR_CEILING.iter().copied().collect();
     let mut issues: Vec<String> = Vec::new();
@@ -618,6 +624,24 @@ mod tests {
              the population is empty"
         );
         assert_eq!(found[0].denominator, "total");
+    }
+
+    #[test]
+    fn the_scan_floor_refuses_a_walk_that_read_a_fraction_of_the_tree() {
+        assert!(enforce_scan_floor(MIN_SCANNED_FILES).is_ok());
+        let narrowed: usize = MIN_SCANNED_FILES.saturating_sub(1);
+        let text: String = match enforce_scan_floor(narrowed) {
+            Ok(()) => unreachable!("a walk one file short of the floor must refuse"),
+            Err(refusal) => refusal.to_string(),
+        };
+        assert!(
+            text.contains(&narrowed.to_string()),
+            "the refusal must name what it actually read: {text}"
+        );
+        assert!(
+            enforce_scan_floor(0).is_err(),
+            "a walk that read nothing is the case this floor exists for"
+        );
     }
 
     #[test]
