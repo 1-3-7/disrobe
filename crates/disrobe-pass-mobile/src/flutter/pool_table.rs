@@ -47,6 +47,10 @@ const ELISION: &str = "...";
 
 const TRUNCATED_STRING: &str = "truncatedString";
 
+const TYPE_PARAMETER_PREFIX: &str = "typeParam@";
+
+const RECORD_TYPE_TOKEN: &str = "recordType";
+
 const NULL_OBJECT_REFERENCE: u32 = 1;
 
 const SYMBOL_CLASS_NAME: &str = "Symbol";
@@ -81,6 +85,8 @@ enum DartPoolObjectKind {
     Library,
     Type,
     TypeArguments,
+    TypeParameter,
+    RecordType,
     Symbol,
     Opaque,
 }
@@ -237,7 +243,9 @@ impl DartPoolTable {
             | DartPoolObjectKind::Function
             | DartPoolObjectKind::Field
             | DartPoolObjectKind::Library => DartPoolLiteralKind::Named,
-            DartPoolObjectKind::Type => DartPoolLiteralKind::Type,
+            DartPoolObjectKind::Type
+            | DartPoolObjectKind::TypeParameter
+            | DartPoolObjectKind::RecordType => DartPoolLiteralKind::Type,
             DartPoolObjectKind::TypeArguments => DartPoolLiteralKind::TypeArguments,
             DartPoolObjectKind::Symbol => DartPoolLiteralKind::Symbol,
             DartPoolObjectKind::Opaque => DartPoolLiteralKind::Unresolved,
@@ -298,6 +306,7 @@ impl DartPoolTable {
                 self.declared_name(object, self.declarations.declarations.library.url_reference)
             }
             DartPoolObjectKind::Type => self.render_type(object, depth, path, budget),
+            DartPoolObjectKind::TypeParameter | DartPoolObjectKind::RecordType => None,
             DartPoolObjectKind::TypeArguments => {
                 self.render_type_arguments(object, depth, path, budget)
             }
@@ -377,14 +386,28 @@ impl DartPoolTable {
         budget: &mut usize,
     ) -> Option<String> {
         let elements: &[u32] = object.references.get(1..)?;
-        let capacity: usize = elements.len().min(*budget);
-        let mut rendered: Vec<String> = Vec::with_capacity(capacity);
-        for element in elements {
+        if elements.is_empty() {
+            return None;
+        }
+        let shown: usize = elements.len().min(MAX_LIST_ELEMENTS);
+        let mut rendered: Vec<String> = Vec::with_capacity(shown);
+        for (position, element) in elements.iter().enumerate().take(shown) {
             let value: &DartPoolObject = self.object(*element)?;
-            if value.kind != DartPoolObjectKind::Type {
-                return None;
+            match value.kind {
+                DartPoolObjectKind::Type => {
+                    rendered.push(self.render_object(*element, depth + 1, path, budget)?);
+                }
+                DartPoolObjectKind::TypeParameter => {
+                    rendered.push(format!("{TYPE_PARAMETER_PREFIX}{position}"));
+                }
+                DartPoolObjectKind::RecordType => {
+                    rendered.push(String::from(RECORD_TYPE_TOKEN));
+                }
+                _ => return None,
             }
-            rendered.push(self.render_object(*element, depth + 1, path, budget)?);
+        }
+        if elements.len() > shown {
+            rendered.push(ELISION.to_owned());
         }
         Some(format!("<{}>", rendered.join(", ")))
     }
@@ -609,6 +632,8 @@ fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject
         return DartPoolObjectKind::Opaque;
     };
     match layout.cluster_body_kind(cid) {
+        Some(DartClusterBodyKind::TypeParameter) => DartPoolObjectKind::TypeParameter,
+        Some(DartClusterBodyKind::RecordType) => DartPoolObjectKind::RecordType,
         Some(DartClusterBodyKind::Double) => DartPoolObjectKind::Double,
         Some(DartClusterBodyKind::Array) => DartPoolObjectKind::List {
             immutable: u16::try_from(cid)

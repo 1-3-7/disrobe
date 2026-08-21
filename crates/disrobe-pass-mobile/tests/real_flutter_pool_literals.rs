@@ -9,7 +9,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use disrobe_pass_mobile::{AotLiftReport, DartLiftedFunction, DartPoolRef, lift_libapp_aot};
+use disrobe_pass_mobile::flutter::pool_table::pool_offset_of_slot;
+use disrobe_pass_mobile::{
+    AotLiftReport, DartGraphLimits, DartLiftedFunction, DartPoolLiteralKind, DartPoolRef,
+    DartPoolTable, dart_isolate_data_bytes, dart_vm_data_bytes, lift_libapp_aot,
+};
 
 const COMMITTED_SAMPLES: [&str; 4] = [
     "disrobe_sample/libapp_arm64.so",
@@ -156,6 +160,113 @@ fn source_declared_double_literals_resolve_from_the_lift() {
         recovered,
         declared.len(),
         "every double the Dart source declares must reach a recovered body"
+    );
+}
+
+const TYPE_PARAMETER_PREFIX: &str = "typeParam@";
+
+const RECORDED_RENDERED_VECTOR_FLOOR: usize = 180;
+
+const RECORDED_NAMED_VECTOR_FLOOR: usize = 100;
+
+fn pool_table_for(sample: &str) -> DartPoolTable {
+    let bytes: Vec<u8> = read_sample(sample);
+    let vm: Vec<u8> = dart_vm_data_bytes(&bytes).expect("vm snapshot data");
+    let isolate: Vec<u8> = dart_isolate_data_bytes(&bytes).expect("isolate snapshot data");
+    DartPoolTable::build(&vm, &isolate, DartGraphLimits::default())
+        .expect("the pinned layout parses")
+        .expect("the committed sample carries a pinned pool table")
+}
+
+fn top_level_elements(rendered: &str) -> Vec<String> {
+    let inner: &str = rendered
+        .strip_prefix('<')
+        .and_then(|rest: &str| rest.strip_suffix('>'))
+        .unwrap_or(rendered);
+    let mut elements: Vec<String> = Vec::new();
+    let mut depth: usize = 0;
+    let mut current: String = String::new();
+    for character in inner.chars() {
+        match character {
+            '<' => {
+                depth += 1;
+                current.push(character);
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                current.push(character);
+            }
+            ',' if depth == 0 => {
+                elements.push(current.trim().to_owned());
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    if !current.trim().is_empty() {
+        elements.push(current.trim().to_owned());
+    }
+    elements
+}
+
+#[test]
+fn a_type_parameter_argument_renders_its_position_and_never_a_source_name() {
+    let mut rendered_vectors: usize = 0;
+    let mut naming_a_real_element: usize = 0;
+    let mut positional: usize = 0;
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool_table_for(sample);
+        for index in 0..table.slot_count() {
+            let offset: u64 = pool_offset_of_slot(index as u64);
+            if table.kind_at_offset(offset, false) != DartPoolLiteralKind::TypeArguments {
+                continue;
+            }
+            let Some(text): Option<String> = table.render_slot(index, false) else {
+                continue;
+            };
+            rendered_vectors += 1;
+            let elements: Vec<String> = top_level_elements(&text);
+            if elements
+                .iter()
+                .any(|element: &String| !element.starts_with(TYPE_PARAMETER_PREFIX))
+            {
+                naming_a_real_element += 1;
+            }
+            for (position, element) in elements.iter().enumerate() {
+                let Some(declared): Option<&str> = element.strip_prefix(TYPE_PARAMETER_PREFIX)
+                else {
+                    continue;
+                };
+                positional += 1;
+                assert_eq!(
+                    declared.parse::<usize>().ok(),
+                    Some(position),
+                    "{sample} rendered {element} at vector position {position}; a type parameter \
+                     surfaces by position because the product precompiler drops its name, so the \
+                     two must agree in {text}"
+                );
+            }
+        }
+    }
+    eprintln!(
+        "type-argument vectors rendered across the committed corpus: {rendered_vectors}, of which \
+         {naming_a_real_element} name a real element; {positional} type parameters rendered by position"
+    );
+    assert!(
+        rendered_vectors >= RECORDED_RENDERED_VECTOR_FLOOR,
+        "only {rendered_vectors} type-argument vectors render, below the recorded floor of \
+         {RECORDED_RENDERED_VECTOR_FLOOR}"
+    );
+    assert!(
+        naming_a_real_element >= RECORDED_NAMED_VECTOR_FLOOR,
+        "only {naming_a_real_element} vectors name a real element, below the recorded floor of \
+         {RECORDED_NAMED_VECTOR_FLOOR}; rendering every element as a positional placeholder would \
+         satisfy the arity check while recovering no type"
+    );
+    assert!(
+        positional > 0,
+        "the corpus must contain uninstantiated type parameters for the positional rendering to be \
+         exercised"
     );
 }
 
