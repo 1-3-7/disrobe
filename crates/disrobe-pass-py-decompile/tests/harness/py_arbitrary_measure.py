@@ -434,6 +434,12 @@ def decompile(disrobe, pyc, outdir):
     return max(cands, key=os.path.getsize) if cands else None
 
 
+def publish_pct(num: int, den: int, /) -> float:
+    if den <= 0:
+        return 0.0
+    return (num * 10000 // den) / 100.0
+
+
 def read_pinned(modules_file, lib):
     paths = []
     with open(modules_file, encoding="utf-8") as fh:
@@ -628,6 +634,7 @@ def main():
         "code_objects": tot_obj,
         "objects_ok": ok_obj,
         "object_pct": round(100.0 * ok_obj / tot_obj, 2) if tot_obj else 0,
+        "object_pct_publish": publish_pct(ok_obj, tot_obj),
         "sibling_collisions": sibling_collisions,
         "optimize_level": sys.flags.optimize,
         "cpython_version": platform.python_version(),

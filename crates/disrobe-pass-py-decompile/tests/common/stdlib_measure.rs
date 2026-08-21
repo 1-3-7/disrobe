@@ -32,10 +32,19 @@ pub(crate) fn population_line(population: &str, num: u64, den: u64, modules: u64
     } else {
         (num as f64) * 100.0 / (den as f64)
     };
+    let publish: f64 = publish_pct(num, den);
     format!(
         "population {population}: {num} / {den} code objects over {modules} modules ({pct:.2}% \
-         per-code-object)"
+         per-code-object, publish {publish:.2})"
     )
+}
+
+#[must_use]
+pub(crate) fn publish_pct(num: u64, den: u64) -> f64 {
+    if den == 0 {
+        return 0.0;
+    }
+    ((num * 10_000) / den) as f64 / 100.0
 }
 
 #[derive(Debug)]
@@ -48,6 +57,7 @@ pub(crate) struct Measurement {
     pub code_objects: u64,
     pub objects_ok: u64,
     pub object_pct: f64,
+    pub object_pct_publish: f64,
     pub sibling_collisions: u64,
     pub cpython_version: String,
 }
@@ -515,6 +525,7 @@ pub(crate) fn parse_measurement(stdout: &str) -> Result<Measurement, String> {
         code_objects: get_u64("code_objects")?,
         objects_ok: get_u64("objects_ok")?,
         object_pct: get_f64("object_pct")?,
+        object_pct_publish: get_f64("object_pct_publish")?,
         sibling_collisions: get_u64("sibling_collisions")?,
         cpython_version: json_scalar(line, "cpython_version")?.to_owned(),
     })
