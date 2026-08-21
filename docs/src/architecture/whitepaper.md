@@ -984,7 +984,7 @@ Each figure below is stated with its exact corpus, because the corpora differ an
 conflated. The representative headline is per-code-object recompile-equivalence on the full <!-- m:py_stdlib_full_modules -->574<!-- /m -->-module
 CPython 3.14 standard library: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> (<!-- m:py_stdlib_full_count_grouped -->17,378 of 18,276<!-- /m --> code objects), locked at HEAD `7adfad10`. A
 separate 200-module pinned corpus, a curated subset used as the CI regression sample, runs higher at
-<!-- m:py_stdlib_pinned_pct -->96.59%<!-- /m --> (<!-- m:py_stdlib_pinned_count_grouped -->6,072 of 6,286<!-- /m --> code objects), precisely because it over-represents recoverable modules; the
+<!-- m:py_stdlib_pinned_pct -->96.65%<!-- /m --> (<!-- m:py_stdlib_pinned_count_grouped -->6,076 of 6,286<!-- /m --> code objects), precisely because it over-represents recoverable modules; the
 crate's own provenance record labels the full-stdlib number as "the honest representative number (the
 200-module pinned corpus over-represents recoverable modules)".
 
@@ -1008,12 +1008,12 @@ improvement because it is granular and monotonic; the per-module figure is the e
 deliberately reported as the harder, lower number. These figures are not re-measured here.
 
 The per-object measurement is enforced as a regression gate, not asserted. The CI gate runs the same harness
-over the 200-module pinned corpus (the corpus behind both the <!-- m:py_stdlib_pinned_pct -->96.59%<!-- /m --> and the 61.0% figures), parses its JSON, and
-holds the per-object rate above a floor of 96.59%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
+over the 200-module pinned corpus (the corpus behind both the <!-- m:py_stdlib_pinned_pct -->96.65%<!-- /m --> and the 61.0% figures), parses its JSON, and
+holds the per-object rate above a floor of 96.65%; the full-stdlib <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> comes from running that
 harness over the entire Lib rather than the pinned list:
 
 ```rust
-const OBJECT_PCT_FLOOR: f64 = 96.59;
+const OBJECT_PCT_FLOOR: f64 = 96.65;
 ```
 (`tests/arbitrary_recompile_gate.rs`, `OBJECT_PCT_FLOOR`)
 
@@ -2360,7 +2360,7 @@ A skip that names its reason is honest; a silently relaxed assertion is not. dis
 
 Where a measurement varies with compiler version or optimization but has a provable lower bound, disrobe asserts the floor, not a point estimate that only one machine produces. The floors are named constants, each traceable to the corpus and date on which it was measured, and each set below the locally observed value so that a legitimate codegen difference does not turn into a false failure while a real regression still trips the assertion. These citations name the file and the constant, not a line number, because a line number rots every time the file above it changes while the constant it points at stays put. Each entry below reads floor over denominator, then where the denominator comes from, because a floor with an unstated denominator is not a claim.
 
-- **Python, per code object: 96.59% on the pinned 200-module CPython 3.14 corpus, 6,286 code objects at the measurement the floor was pinned against.** `OBJECT_PCT_FLOOR = 96.59` in `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs`, pinned at the figure the corpus actually measures rather than a round number beneath it. The denominator is counted at run time rather than pinned, and the gate guards it in two ways instead: it requires at least 180 of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules to resolve in the host interpreter's `Lib` and at least 5,000 code objects to be measured, so a corpus that has drifted or an interpreter missing most of it fails rather than producing a high percentage over a thin population. The 3.12 gate sits at 91.0 over its own smaller population (`arbitrary_recompile_gate_312.rs`).
+- **Python, per code object: 96.65% on the pinned 200-module CPython 3.14 corpus, 6,286 code objects at the measurement the floor was pinned against.** `OBJECT_PCT_FLOOR = 96.65` in `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs`, pinned at the figure the corpus actually measures rather than a round number beneath it. The denominator is counted at run time rather than pinned, and the gate guards it in two ways instead: it requires at least 180 of the <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules to resolve in the host interpreter's `Lib` and at least 5,000 code objects to be measured, so a corpus that has drifted or an interpreter missing most of it fails rather than producing a high percentage over a thin population. The 3.12 gate sits at 91.0 over its own smaller population (`arbitrary_recompile_gate_312.rs`).
 - **JVM, per method recompiled: 131 of 131 methods.** `crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs` sets `PER_METHOD_JAVAC_OK_FLOOR = 131` against the `PER_METHOD_JAVAC_TOTAL = 131` the same file pins, so the floor is every top-level method in the corpus, not a fraction of them. This grades whether real javac accepts the recovered source.
 - **JVM, per method executed: 117 of the same 131 methods.** `crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs` sets `EXECUTION_EQUIVALENT_FLOOR = 117` against the `PER_METHOD_TOTAL = 131` in the same file. This is the figure to read for behavior, and it is strictly stronger than the 131 above it: original and recovered source are each compiled by real javac, both run under a real JVM, and every observable per-method result is compared. The two numbers share one denominator and must never be merged, because a method can compile cleanly and still compute the wrong answer, which is exactly what this crate once shipped. Read the residual 14 as the two populations it is: 8 methods are javac-clean and measurably divergent (`BEHAVIOUR_DIVERGENT`), and 6 are javac-clean but not executable in isolation, 5 that only measure a nested-type stub (`STUB_BLOCKED`) and 1 whose own original output is not self-reproducible across JVM runs (`NOT_DRIVEN`). Those 6 are ungraded rather than passing. Each residual set is a pinned membership list of method names rather than a count, the test fails if a pinned method starts matching (the lists only ever shrink), it fails on any divergent method in no pinned bucket, and it asserts the four-way partition sums to 131, so neither the numerator nor the denominator can move quietly.
 - **JVM, head-to-head recompile: 131 of a pinned `METHOD_TOTAL = 131`.** `RECOMPILE_FLOOR = 131` in `crates/disrobe-pass-jvm/tests/jadx_head_to_head.rs`, and the test fails if that denominator drifts.
@@ -2391,7 +2391,7 @@ Also reproducible from a Git checkout with a Rust toolchain, but self-reported r
 
 Needing one more thing, with explicit handling when it is absent:
 
-- Python per code object, 96.59% floor: a resolvable CPython 3.14, because the gate recompiles through the real interpreter. Also the release CLI binary, which the gate drives rather than calling in process, and which it refuses to run without.
+- Python per code object, 96.65% floor: a resolvable CPython 3.14, because the gate recompiles through the real interpreter. Also the release CLI binary, which the gate drives rather than calling in process, and which it refuses to run without.
 - Python legacy: the 150-of-191 floor holds on structural token-match alone, so it runs anywhere. The higher 166-of-191 local figure needs the 1.0 through 3.7 interpreter set installed, which is why it is published as a local measurement and no gate asserts it.
 - Native leaf C and Rust differentials: a real C compiler, plus a host whose ABI matches for the host-native class and `clang` for the cross-compiled System V class (Section 4.4.2).
 - .NET IL-equivalence: the .NET SDK plus the pinned ILSpyCmd local tool, both provisioned in CI on all three legs. The cited floor fails if either prerequisite is unavailable.

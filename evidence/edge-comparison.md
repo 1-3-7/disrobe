@@ -10,7 +10,7 @@ read as a measured comparison.
 
 | Surface | Current proof | Leading tool(s) | Next proof |
 |---|---|---|---|
-| Python `.pyc` | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> full CPython 3.14 stdlib; <!-- m:py_stdlib_pinned_pct -->96.59%<!-- /m --> pinned corpus, both recompile-equivalence | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus, same recompile oracle |
+| Python `.pyc` | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> full CPython 3.14 stdlib; <!-- m:py_stdlib_pinned_pct -->96.65%<!-- /m --> pinned corpus, both recompile-equivalence | pycdc, pylingual, uncompyle6, decompyle3 | same `.pyc` corpus, same recompile oracle |
 | Python freezers | PyInstaller and freezer chains extract `.pyc` payloads before the Python gate | pyinstxtractor-ng, pydecipher | shared onefile corpus, byte-exact `.pyc` carve, then source gate |
 | PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers statically decrypt and decode one complete header-anchored root `CodeObject` `[CI]` | Pyarmor-Static-Unpack-1shot | same named wrappers plus an external source, emitted-`.pyc`, or execution comparison |
 | Pickle safety | 102 / 102 fixtures disassemble, trace, and classify by pickletools semantics | fickling | same malicious and benign corpus, safety-label agreement |

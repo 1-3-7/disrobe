@@ -31,8 +31,8 @@ const BAND_LABEL: &str = "CPython 3.9 (157 of the pinned modules)";
 const BAND_LABEL_PREFIX: &str = "CPython 3.9 (";
 const BAND_POPULATION: &str = "cpython-39-band";
 
-const OBJECT_PCT_FLOOR: f64 = 93.27;
-const BAND_OBJECTS_OK: u64 = 4_881;
+const OBJECT_PCT_FLOOR: f64 = 94.28;
+const BAND_OBJECTS_OK: u64 = 4_934;
 const BAND_CODE_OBJECTS: u64 = 5_233;
 const BAND_MODULES: u64 = 157;
 const BAND_MODULES_EXACT_FLOOR: u64 = 84;

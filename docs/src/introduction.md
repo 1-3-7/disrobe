@@ -18,7 +18,7 @@ The live catalog spans <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Py
 - Output ordering and serialization are deterministic. A committed gate hashes three real fixture recoveries across Linux, macOS, Windows, and the batch runner at one and four workers. This evidence does not claim that three fixtures prove every possible input.
 - The main CLI ships as one Rust binary. In-house paths launch no external program. Commands with optional backends can invoke installed tools when you select a backend or use that command's `--backend auto` policy.
 - The shared artifact layer can store recovered state in a content-addressed `.dr` envelope with an rkyv payload, postcard sidecar, and BLAKE3 root. Chain runs record topology and per-stage provenance separately.
-- Python recovery is measured at <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.59%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). These figures describe their stated populations, not every Python program.
+- Python recovery is measured at <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.65%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6076 of 6286<!-- /m -->). These figures describe their stated populations, not every Python program.
 
 ## Who this is for
 
@@ -45,7 +45,7 @@ a hollow mark means the input stays outside the tree.
 
 | Ecosystem | Measured | Oracle |
 |---|---|---|
-| Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.59%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Whole-module exact, where a module counts only if all of its code objects pass: 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules on the pinned corpus | recompile on CPython 3.14.5, opcode diff |
+| Python bytecode | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); <!-- m:py_stdlib_pinned_pct -->96.65%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6076 of 6286<!-- /m -->). Whole-module exact, where a module counts only if all of its code objects pass: 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules on the pinned corpus | recompile on CPython 3.14.5, opcode diff |
 | CPython legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> proven-correct (CI floor); <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> measured locally | recompile-equivalence or structural token-match |
 | WebAssembly | 1034 of 1034 opcodes lowered across the 38 parseable modules (133 of 133 functions), counted against an inventory `wasm-tools` produced rather than one disrobe produced; 57 of 57 execution-eligible functions equivalent | external opcode inventory for coverage, wasmtime differential for execution |
 | JVM classfile | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile error-free | real `javac` |

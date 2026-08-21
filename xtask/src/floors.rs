@@ -110,7 +110,7 @@ const CLAIMS: [FloorClaim; 18] = [
                 "is 122 of the 200 modules in the pinned corpus, {}%",
             ),
             (WHITEPAPER_DOC, "rate and the {}% per-module rate"),
-            (WHITEPAPER_DOC, "96.59% and the {}% figures"),
+            (WHITEPAPER_DOC, "96.65% and the {}% figures"),
         ],
     },
     FloorClaim {
