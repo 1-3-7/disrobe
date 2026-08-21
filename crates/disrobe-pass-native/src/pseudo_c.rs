@@ -2344,9 +2344,12 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
             continue;
         };
         if !symbol.is_undefined() {
+            let section_limit: Option<u64> = section_address.checked_add(code_section.size());
             if insn.mnemonic != "call"
                 && matches!(symbol.kind(), object::SymbolKind::Text)
                 && symbol.section_index() == Some(code_section.index())
+                && section_limit
+                    .is_some_and(|limit: u64| (section_address..limit).contains(&symbol.address()))
             {
                 facts
                     .relocated_branch_targets

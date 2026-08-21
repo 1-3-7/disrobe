@@ -508,6 +508,28 @@ const SHAPES: &[ExitShape] = &[
         channel: ResultChannel::Integer64,
     },
     ExitShape {
+        tag: "sibling_tail_equality_guard",
+        entry: "er_sib_eq",
+        functions: &["er_sib_eq", "er_sib_eq_h"],
+        c_source: "__attribute__((noinline,noclone)) long long er_sib_eq_h(long long x, long long y){ return x * 4 + y; }\n\
+                    long long er_sib_eq(long long a, long long b, long long c){ if (a == b) return er_sib_eq_h(a, c); if (b == c) return er_sib_eq_h(c, a); return er_sib_eq_h(b, c); }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
+        tag: "sibling_tail_after_frame_teardown",
+        entry: "er_frm_entry",
+        functions: &["er_frm_entry", "er_frm_h"],
+        c_source: "__attribute__((noinline,noclone)) long long er_frm_h(long long x, long long y){ return x * 3 + y; }\n\
+                    long long er_frm_entry(long long a, long long b, long long c){ if (a < 0) return -1; long long s = c; long long t = b; long long u = a; for (long long i = 0; i < 12; i++) { s = er_frm_h(u + i, t + s); t = t ^ (s + i); u = u + (t >> 1); } return er_frm_h(s, t + u); }",
+        extra_boundaries: &[2, 17],
+        permit_sibling_calls: true,
+        gcc_only_flags: &[],
+        channel: ResultChannel::Integer64,
+    },
+    ExitShape {
         tag: "shrink_wrapped_exit_sequences",
         entry: "er_ep_entry",
         functions: &["er_ep_entry", "er_ep_h"],
