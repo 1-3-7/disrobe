@@ -1487,13 +1487,21 @@ fn as3_lift_agrees_with_an_independent_reference_decompiler() {
     );
     assert!(
         m.tally.agreed * 1000 >= m.tally.graded * 920,
-        "per-method agreement with the independent reference decompiler must hold its measured floor (>=92.0%); got {}/{} = {rate:.2}%",
+        "per-method agreement with the independent reference decompiler must hold its \
+         measured floor (>=92.0%); got {}/{} = {rate:.2}%. This is a ratchet over a fixed corpus of real Flash titles that is not \
+         redistributable and is absent from every fresh checkout, so the number is \
+         reproducible only against that exact population and is not a published figure, and it \
+         also needs an external decompiler this repository does not ship",
         m.tally.agreed,
         m.tally.graded
     );
     assert!(
         m.tally.structurally_recovered_agreed * 1000 >= m.tally.structurally_recovered * 952,
-        "bodies reported structurally recovered must hold their measured agreement floor (>=95.2%); got {}/{}",
+        "bodies reported structurally recovered must hold their measured agreement floor \
+         (>=95.2%); got {}/{}. This is a ratchet over a fixed corpus of real Flash titles that is not \
+         redistributable and is absent from every fresh checkout, so the number is \
+         reproducible only against that exact population and is not a published figure, and it also needs an external \
+         decompiler this repository does not ship",
         m.tally.structurally_recovered_agreed,
         m.tally.structurally_recovered
     );
@@ -1626,7 +1634,11 @@ fn string_literals_and_call_targets_match_the_reference_almost_everywhere() {
     assert_population(&m);
     assert!(
         m.tally.agreed * 1000 >= m.tally.graded * 966,
-        "constant-pool and call-target agreement must hold its measured floor (>=96.6%); got {}/{} = {rate:.2}%",
+        "constant-pool and call-target agreement must hold its measured floor (>=96.6%); \
+         got {}/{} = {rate:.2}%. This is a ratchet over a fixed corpus of real Flash titles that is not \
+         redistributable and is absent from every fresh checkout, so the number is \
+         reproducible only against that exact population and is not a published figure, and it also needs an external \
+         decompiler this repository does not ship",
         m.tally.agreed,
         m.tally.graded
     );

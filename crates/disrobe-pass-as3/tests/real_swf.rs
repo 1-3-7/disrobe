@@ -374,7 +374,10 @@ fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
          19.8 percent when it was written and one dispatch stopped folding when scope-height \
          and stack-height reconciliation began refusing the region it sits in. The refusal is \
          the conservative direction and the structured output it guards is graded equivalent \
-         edge by edge, so the fold is not to be recovered by relaxing those checks",
+         edge by edge, so the fold is not to be recovered by relaxing those checks. \
+         This is a ratchet over a fixed corpus of real Flash titles that is not \
+         redistributable and is absent from every fresh checkout, so the number is \
+         reproducible only against that exact population and is not a published figure",
         totals.folded,
         totals.lifted
     );
@@ -396,7 +399,10 @@ fn corpus_recovery_rate_holds_an_honest_floor() {
     );
     assert!(
         full * 1000 >= bodies * 805,
-        "fully-recovered share must hold the post-restructuring floor (>=80.5%); got {full}/{bodies} = {pct:.2}%"
+        "fully-recovered share must hold the post-restructuring floor (>=80.5%); got \
+         {full}/{bodies} = {pct:.2}%. This is a ratchet over a fixed corpus of real Flash titles that is not \
+         redistributable and is absent from every fresh checkout, so the number is \
+         reproducible only against that exact population and is not a published figure"
     );
 }
 
