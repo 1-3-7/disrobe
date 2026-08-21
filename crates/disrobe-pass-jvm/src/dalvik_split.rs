@@ -555,7 +555,7 @@ fn def_use(dex: &DexFile, insn: &DalvikInsn) -> DefUse {
         0x22 => (Some(SplitSlot::Ref), Vec::new()),
         0x23 => (Some(SplitSlot::Ref), vec![1]),
         0x24 | 0x25 => (None, (0..n).collect()),
-        0x26 => (None, vec![0]),
+        0x26 | 0x2B | 0x2C => (None, vec![0]),
         0x2D..=0x31 => (Some(SplitSlot::Int), (1..n).collect()),
         0x32..=0x37 => (None, vec![0, 1]),
         0x38..=0x3D => (None, vec![0]),
