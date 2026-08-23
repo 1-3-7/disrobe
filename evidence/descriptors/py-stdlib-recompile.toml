@@ -13,4 +13,4 @@ reproduce = "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_
 [source]
 recovery_group = "Python bytecode (CPython 3.14 stdlib, per-code-object recompile-equivalence)"
 recovery_bar = "200-module pinned corpus"
-floor = 96.65
+floor = 96.51

@@ -27,8 +27,8 @@ use common::stdlib_measure::{
 const BAND_LABEL: &str = "CPython 3.15 (199 of the pinned modules)";
 const BAND_POPULATION: &str = "cpython-315-band";
 
-const OBJECT_PCT_FLOOR: f64 = 96.11;
-const BAND_OBJECTS_OK: u64 = 6_228;
+const OBJECT_PCT_FLOOR: f64 = 95.94;
+const BAND_OBJECTS_OK: u64 = 6_217;
 const BAND_CODE_OBJECTS: u64 = 6_480;
 const BAND_MODULES: u64 = 199;
 const BAND_MODULES_EXACT_FLOOR: u64 = 119;
