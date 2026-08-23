@@ -402,6 +402,7 @@ pub mod op {
     pub const GENERATOR_CREATE: u8 = 214;
     pub const OP_DATA: u8 = 137;
     pub const ASSIGN_STATIC_PROP: u8 = 25;
+    pub const SPACESHIP: u8 = 170;
     pub const ASSIGN_REF: u8 = 30;
     pub const ASSIGN_OBJ_REF: u8 = 32;
     pub const ASSIGN_STATIC_PROP_REF: u8 = 33;
@@ -558,6 +559,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         161 => "ZEND_GENERATOR_RETURN",
         166 => "ZEND_YIELD_FROM",
         169 => "ZEND_COALESCE",
+        170 => "ZEND_SPACESHIP",
         187 => "ZEND_SWITCH_LONG",
         188 => "ZEND_SWITCH_STRING",
         195 => "ZEND_MATCH",
@@ -4833,6 +4835,7 @@ const fn is_binary(opcode: u8) -> bool {
             | op::IS_NOT_EQUAL
             | op::IS_SMALLER
             | op::IS_SMALLER_OR_EQUAL
+            | op::SPACESHIP
     )
 }
 
@@ -4904,6 +4907,7 @@ const fn binary_symbol(opcode: u8) -> (&'static str, u8) {
         op::IS_NOT_EQUAL => ("!=", PREC_CMP),
         op::IS_SMALLER => ("<", PREC_REL),
         op::IS_SMALLER_OR_EQUAL => ("<=", PREC_REL),
+        op::SPACESHIP => ("<=>", PREC_CMP),
         _ => ("/* op */", PREC_ATOM),
     }
 }

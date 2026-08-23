@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 18] = [
+const PINNED_SAMPLES: [&str; 19] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -50,13 +50,14 @@ const PINNED_SAMPLES: [&str; 18] = [
     "nullsafe_calls",
     "objects",
     "references",
+    "spaceship",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 15] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 16] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -69,12 +70,13 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 15] = [
     "nullsafe_calls",
     "objects",
     "references",
+    "spaceship",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 18] = [
+const OPCODE_NAMING_SAMPLES: [&str; 19] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -89,6 +91,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 18] = [
     "nullsafe_calls",
     "objects",
     "references",
+    "spaceship",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
@@ -533,6 +536,11 @@ fn nullsafe_oparray_roundtrips_behaviorally() {
 #[test]
 fn nullsafe_calls_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("nullsafe_calls");
+}
+
+#[test]
+fn spaceship_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("spaceship");
 }
 
 const NULLSAFE_CHAINS: [(&str, &str); 4] = [

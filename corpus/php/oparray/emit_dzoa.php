@@ -137,6 +137,7 @@ const OPMAP = [
     'GENERATOR_CREATE' => 214,
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
+    'SPACESHIP' => 170,
     'ASSIGN_REF' => 30,
     'ASSIGN_OBJ_REF' => 32,
     'ASSIGN_STATIC_PROP_REF' => 33,
