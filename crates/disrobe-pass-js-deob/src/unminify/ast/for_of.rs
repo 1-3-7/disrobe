@@ -10,6 +10,7 @@ use oxc_ast::ast::{
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
+use super::babel_materializer::{MaterializerFacts, MaterializerScope};
 use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
@@ -40,19 +41,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
     string_subjects.visit_program(&parsed.program);
     let mut array_subjects: ArraySubjectCollector = ArraySubjectCollector::default();
     array_subjects.visit_program(&parsed.program);
-    let mut materializer_bindings: MaterializerBindingCollector =
-        MaterializerBindingCollector::default();
-    materializer_bindings.visit_program(&parsed.program);
-    let mut materializers: MaterializerCollector<'_> = MaterializerCollector {
-        source,
-        binding_counts: &materializer_bindings.counts,
-        valid: BTreeSet::new(),
-    };
-    materializers.visit_program(&parsed.program);
-    let materializer_scope: MaterializerScope<'_> = MaterializerScope {
-        valid: &materializers.valid,
-        array_rebound: materializer_bindings.array_rebound,
-    };
+    let materializer_facts: MaterializerFacts = MaterializerFacts::collect(source, &parsed.program);
+    let materializer_scope: MaterializerScope<'_> = materializer_facts.scope();
     let mut collector: Collector = Collector {
         source,
         string_subjects: &string_subjects.evidence,
@@ -298,19 +288,6 @@ impl ArrayEvidence {
     }
 }
 
-fn is_materializing_helper_name(name: &str) -> bool {
-    matches!(
-        name,
-        "_toConsumableArray"
-            | "toConsumableArray"
-            | "_arrayWithoutHoles"
-            | "arrayWithoutHoles"
-            | "_arrayLikeToArray"
-            | "arrayLikeToArray"
-            | "_spread"
-    )
-}
-
 fn is_array_producing_static(object: &str, property: &str) -> bool {
     matches!(
         (object, property),
@@ -547,69 +524,6 @@ fn subject_mutated(statements: &[Statement<'_>], name: &str) -> bool {
         probe.visit_statement(stmt);
     }
     probe.found
-}
-
-fn is_babel_materializer(body: &str, name: &str) -> bool {
-    let compact: String = body
-        .chars()
-        .filter(|character: &char| !character.is_whitespace())
-        .collect();
-    if !compact.starts_with(&format!("function{name}(")) {
-        return false;
-    }
-    let spread_chain: bool =
-        compact.contains("_arrayWithoutHoles(") || compact.contains("arrayWithoutHoles(");
-    let like_to_array: bool =
-        compact.contains("_arrayLikeToArray(") || compact.contains("arrayLikeToArray(");
-    let from_call: bool = compact.contains("Array.from(");
-    let index_copy: bool = compact.contains("newArray(") && compact.contains("Array.isArray(");
-    spread_chain || like_to_array || from_call || index_copy
-}
-
-#[derive(Debug, Default)]
-struct MaterializerBindingCollector {
-    counts: BTreeMap<String, usize>,
-    array_rebound: bool,
-}
-
-impl<'a> Visit<'a> for MaterializerBindingCollector {
-    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
-        let name: &str = identifier.name.as_str();
-        if name == "Array" {
-            self.array_rebound = true;
-        }
-        if is_materializing_helper_name(name) {
-            let count: &mut usize = self.counts.entry(name.to_owned()).or_default();
-            *count = count.saturating_add(1);
-        }
-    }
-}
-
-struct MaterializerCollector<'s> {
-    source: &'s str,
-    binding_counts: &'s BTreeMap<String, usize>,
-    valid: BTreeSet<String>,
-}
-
-impl<'a> Visit<'a> for MaterializerCollector<'_> {
-    fn visit_function(&mut self, func: &Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
-        if let Some(id) = &func.id {
-            let name: &str = id.name.as_str();
-            if is_materializing_helper_name(name)
-                && self.binding_counts.get(name).copied() == Some(1)
-                && is_babel_materializer(func.span.source_text(self.source), name)
-            {
-                self.valid.insert(name.to_owned());
-            }
-        }
-        oxc_ast::visit::walk::walk_function(self, func, flags);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MaterializerScope<'s> {
-    valid: &'s BTreeSet<String>,
-    array_rebound: bool,
 }
 
 fn materializing_helper_argument<'a>(

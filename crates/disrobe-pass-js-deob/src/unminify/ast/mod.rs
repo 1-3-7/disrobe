@@ -3,6 +3,7 @@ mod amd_param;
 mod arg_rest;
 mod argument_spread;
 mod async_protection;
+mod babel_materializer;
 mod block_statement;
 mod bracket_to_dot;
 mod builtin_prototype;

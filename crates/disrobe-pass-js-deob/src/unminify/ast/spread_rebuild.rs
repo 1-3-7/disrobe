@@ -5,6 +5,7 @@ use oxc_ast::ast::{
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
+use super::babel_materializer::MaterializerFacts;
 use super::{Edit, RuleOutcome};
 
 #[derive(Debug, Clone, Default)]
@@ -52,11 +53,12 @@ fn single_pass(source: &str) -> Option<(String, SpreadRebuildStats)> {
     }
     let program: &Program<'_> = &parsed.program;
 
+    let facts: MaterializerFacts = MaterializerFacts::collect(source, program);
     let mut edits: Vec<Edit> = Vec::new();
     let mut stats: SpreadRebuildStats = SpreadRebuildStats::default();
 
     for stmt in &program.body {
-        walk_statement(stmt, source, &mut edits, &mut stats);
+        walk_statement(stmt, source, &facts, &mut edits, &mut stats);
     }
 
     if edits.is_empty() {
@@ -69,6 +71,7 @@ fn single_pass(source: &str) -> Option<(String, SpreadRebuildStats)> {
 fn walk_statement(
     stmt: &Statement<'_>,
     source: &str,
+    facts: &MaterializerFacts,
     edits: &mut Vec<Edit>,
     stats: &mut SpreadRebuildStats,
 ) {
@@ -79,53 +82,55 @@ fn walk_statement(
         }
         for declarator in &decl.declarations {
             if let Some(init) = declarator.init.as_ref() {
-                walk_expression(init, source, edits, stats);
+                walk_expression(init, source, facts, edits, stats);
             }
         }
         return;
     }
     match stmt {
-        Statement::ExpressionStatement(s) => walk_expression(&s.expression, source, edits, stats),
+        Statement::ExpressionStatement(s) => {
+            walk_expression(&s.expression, source, facts, edits, stats);
+        }
         Statement::ReturnStatement(s) => {
             if let Some(arg) = s.argument.as_ref() {
-                walk_expression(arg, source, edits, stats);
+                walk_expression(arg, source, facts, edits, stats);
             }
         }
         Statement::IfStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
-            walk_statement(&s.consequent, source, edits, stats);
+            walk_expression(&s.test, source, facts, edits, stats);
+            walk_statement(&s.consequent, source, facts, edits, stats);
             if let Some(alt) = s.alternate.as_ref() {
-                walk_statement(alt, source, edits, stats);
+                walk_statement(alt, source, facts, edits, stats);
             }
         }
         Statement::BlockStatement(s) => {
             for inner in &s.body {
-                walk_statement(inner, source, edits, stats);
+                walk_statement(inner, source, facts, edits, stats);
             }
         }
         Statement::ForStatement(s) => {
             if let Some(test) = s.test.as_ref() {
-                walk_expression(test, source, edits, stats);
+                walk_expression(test, source, facts, edits, stats);
             }
-            walk_statement(&s.body, source, edits, stats);
+            walk_statement(&s.body, source, facts, edits, stats);
         }
         Statement::WhileStatement(s) => {
-            walk_expression(&s.test, source, edits, stats);
-            walk_statement(&s.body, source, edits, stats);
+            walk_expression(&s.test, source, facts, edits, stats);
+            walk_statement(&s.body, source, facts, edits, stats);
         }
         Statement::FunctionDeclaration(f) => {
             if let Some(body) = f.body.as_ref() {
                 for inner in &body.statements {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, source, facts, edits, stats);
                 }
             }
         }
-        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, edits, stats),
+        Statement::ThrowStatement(s) => walk_expression(&s.argument, source, facts, edits, stats),
         Statement::SwitchStatement(s) => {
-            walk_expression(&s.discriminant, source, edits, stats);
+            walk_expression(&s.discriminant, source, facts, edits, stats);
             for case in &s.cases {
                 for inner in &case.consequent {
-                    walk_statement(inner, source, edits, stats);
+                    walk_statement(inner, source, facts, edits, stats);
                 }
             }
         }
@@ -136,10 +141,11 @@ fn walk_statement(
 fn walk_expression(
     expr: &Expression<'_>,
     source: &str,
+    facts: &MaterializerFacts,
     edits: &mut Vec<Edit>,
     stats: &mut SpreadRebuildStats,
 ) {
-    if let Some(edit) = try_array_spread(expr, source, stats) {
+    if let Some(edit) = try_array_spread(expr, source, facts, stats) {
         edits.push(edit);
         return;
     }
@@ -149,47 +155,49 @@ fn walk_expression(
     }
     match expr {
         Expression::CallExpression(c) => {
-            walk_expression(&c.callee, source, edits, stats);
+            walk_expression(&c.callee, source, facts, edits, stats);
             for arg in &c.arguments {
                 if let Some(inner) = arg.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, source, facts, edits, stats);
                 }
             }
         }
         Expression::BinaryExpression(b) => {
-            walk_expression(&b.left, source, edits, stats);
-            walk_expression(&b.right, source, edits, stats);
+            walk_expression(&b.left, source, facts, edits, stats);
+            walk_expression(&b.right, source, facts, edits, stats);
         }
         Expression::LogicalExpression(b) => {
-            walk_expression(&b.left, source, edits, stats);
-            walk_expression(&b.right, source, edits, stats);
+            walk_expression(&b.left, source, facts, edits, stats);
+            walk_expression(&b.right, source, facts, edits, stats);
         }
         Expression::ParenthesizedExpression(p) => {
-            walk_expression(&p.expression, source, edits, stats);
+            walk_expression(&p.expression, source, facts, edits, stats);
         }
-        Expression::UnaryExpression(u) => walk_expression(&u.argument, source, edits, stats),
+        Expression::UnaryExpression(u) => walk_expression(&u.argument, source, facts, edits, stats),
         Expression::ConditionalExpression(c) => {
-            walk_expression(&c.test, source, edits, stats);
-            walk_expression(&c.consequent, source, edits, stats);
-            walk_expression(&c.alternate, source, edits, stats);
+            walk_expression(&c.test, source, facts, edits, stats);
+            walk_expression(&c.consequent, source, facts, edits, stats);
+            walk_expression(&c.alternate, source, facts, edits, stats);
         }
-        Expression::AssignmentExpression(a) => walk_expression(&a.right, source, edits, stats),
+        Expression::AssignmentExpression(a) => {
+            walk_expression(&a.right, source, facts, edits, stats);
+        }
         Expression::SequenceExpression(s) => {
             for inner in &s.expressions {
-                walk_expression(inner, source, edits, stats);
+                walk_expression(inner, source, facts, edits, stats);
             }
         }
         Expression::ArrayExpression(a) => {
             for el in &a.elements {
                 if let Some(inner) = el.as_expression() {
-                    walk_expression(inner, source, edits, stats);
+                    walk_expression(inner, source, facts, edits, stats);
                 }
             }
         }
         Expression::ObjectExpression(o) => {
             for prop in &o.properties {
                 if let ObjectPropertyKind::ObjectProperty(p) = prop {
-                    walk_expression(&p.value, source, edits, stats);
+                    walk_expression(&p.value, source, facts, edits, stats);
                 }
             }
         }
@@ -200,18 +208,16 @@ fn walk_expression(
 fn try_array_spread(
     expr: &Expression<'_>,
     source: &str,
+    facts: &MaterializerFacts,
     stats: &mut SpreadRebuildStats,
 ) -> Option<Edit> {
     let Expression::CallExpression(call): &Expression<'_> = expr else {
         return None;
     };
     let helper_name: bool = call_callee_name(&call.callee).is_some_and(|name: &str| {
-        matches!(
-            name,
-            "_toConsumableArray" | "_spread" | "_arrayWithoutHoles"
-        )
+        matches!(name, "_toConsumableArray" | "_spread") && facts.is_verified(name)
     });
-    if helper_name && call.arguments.len() == 1 {
+    if helper_name && call.arguments.len() == 1 && !facts.encloses(call.span.start) {
         let arg: &Expression<'_> = call.arguments[0].as_expression()?;
         let arg_src: &str = arg.span().source_text(source);
         stats.array_spreads += 1;

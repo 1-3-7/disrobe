@@ -293,3 +293,39 @@ fn negative_concat_with_nonempty_base_unchanged() {
         "the real concat must be preserved:\n{recovered}"
     );
 }
+
+const NEG_IMPOSTOR_HELPER: &str = r"
+function _toConsumableArray(arr) { return arr.slice().reverse(); }
+var head = ['a', 'b', 'c'];
+var copy = _toConsumableArray(head);
+print(copy.join(','));
+";
+
+#[test]
+fn a_helper_that_only_borrows_the_babel_name_is_not_rewritten_to_a_spread() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(NEG_IMPOSTOR_HELPER);
+    assert_eq!(
+        stats.array_spreads_rebuilt, 0,
+        "this helper reverses rather than copies, so its name must not buy a spread rewrite"
+    );
+    assert!(
+        recovered.contains("_toConsumableArray(head)"),
+        "the unverified helper call must survive:\n{recovered}"
+    );
+    assert_recovered_equivalent("impostor_helper", NEG_IMPOSTOR_HELPER, &recovered);
+}
+
+const NEG_UNDEFINED_HELPER: &str = r"
+var head = ['a', 'b'];
+var copy = _toConsumableArray(head);
+print(copy.join(','));
+";
+
+#[test]
+fn a_helper_call_with_no_visible_definition_is_not_rewritten_to_a_spread() {
+    let (_recovered, stats): (String, AstUnminifyStats) = unminify_ast(NEG_UNDEFINED_HELPER);
+    assert_eq!(
+        stats.array_spreads_rebuilt, 0,
+        "an absent helper body cannot be fingerprinted, so the call must be left alone"
+    );
+}
