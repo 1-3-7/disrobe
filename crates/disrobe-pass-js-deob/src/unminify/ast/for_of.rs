@@ -3,20 +3,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use oxc_allocator::Allocator;
 use oxc_ast::Visit;
 use oxc_ast::ast::{
-    ArrayExpressionElement, AssignmentOperator, BinaryOperator, BindingIdentifier,
-    BindingPatternKind, Expression, ForStatement, ForStatementInit, Function, Statement,
+    ArrayExpressionElement, ArrowFunctionExpression, AssignmentOperator, BinaryOperator,
+    BindingIdentifier, BindingPatternKind, Expression, ForInStatement, ForOfStatement,
+    ForStatement, ForStatementInit, Function, LogicalExpression, SimpleAssignmentTarget, Statement,
     TryStatement, UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
+use oxc_semantic::{Semantic, SemanticBuilder, SymbolId, SymbolTable};
+use oxc_span::{GetSpan, SourceType, Span};
 
 use super::babel_materializer::{MaterializerFacts, MaterializerScope};
 use super::{Edit, RuleOutcome, edit_overlaps_comments};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EvidenceKey {
+    Symbol(SymbolId),
+    Reference(u32),
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ForOfStats {
     pub(super) loops_converted: usize,
     pub(super) helper_loops_converted: usize,
+    #[cfg(test)]
+    pub(super) index_loop_subjects: Vec<String>,
 }
 
 pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
@@ -26,6 +36,13 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
     if !parsed.errors.is_empty() || parsed.panicked {
         return (RuleOutcome::empty(), ForOfStats::default());
     }
+    let semantic_return: oxc_semantic::SemanticBuilderReturn<'_> =
+        SemanticBuilder::new().build(&parsed.program);
+    if !semantic_return.errors.is_empty() {
+        return (RuleOutcome::empty(), ForOfStats::default());
+    }
+    let semantic: Semantic<'_> = semantic_return.semantic;
+    let symbols: &SymbolTable = semantic.symbols();
 
     let mut binding_collector: LooseHelperBindingCollector = LooseHelperBindingCollector {
         counts: BTreeMap::new(),
@@ -37,14 +54,25 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         valid: BTreeSet::new(),
     };
     helper_collector.visit_program(&parsed.program);
-    let mut string_subjects: StringSubjectCollector = StringSubjectCollector::default();
+    let mut string_subjects: StringSubjectCollector<'_> = StringSubjectCollector {
+        symbols,
+        evidence: BTreeMap::new(),
+        conditional_depth: 0,
+        function_spans: Vec::new(),
+    };
     string_subjects.visit_program(&parsed.program);
-    let mut array_subjects: ArraySubjectCollector = ArraySubjectCollector::default();
+    let mut array_subjects: ArraySubjectCollector<'_> = ArraySubjectCollector {
+        symbols,
+        evidence: BTreeMap::new(),
+        conditional_depth: 0,
+        function_spans: Vec::new(),
+    };
     array_subjects.visit_program(&parsed.program);
     let materializer_facts: MaterializerFacts = MaterializerFacts::collect(source, &parsed.program);
     let materializer_scope: MaterializerScope<'_> = materializer_facts.scope();
     let mut collector: Collector = Collector {
         source,
+        symbols,
         string_subjects: &string_subjects.evidence,
         array_subjects: &array_subjects.evidence,
         materializer_scope,
@@ -52,6 +80,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         helper_loops_converted: 0,
         loose_helpers: helper_collector.valid,
         comments: &parsed.program.comments,
+        index_loop_subjects: Vec::new(),
     };
     collector.visit_program(&parsed.program);
 
@@ -59,7 +88,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         return (RuleOutcome::empty(), ForOfStats::default());
     }
     let helper_loops_converted: usize = collector.helper_loops_converted;
-    let loops_converted: usize = collector.edits.len() - helper_loops_converted;
+    let index_loop_subjects: Vec<String> = collector.index_loop_subjects;
+    let loops_converted: usize = index_loop_subjects.len();
     (
         RuleOutcome {
             edits: collector.edits,
@@ -67,19 +97,23 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         ForOfStats {
             loops_converted,
             helper_loops_converted,
+            #[cfg(test)]
+            index_loop_subjects,
         },
     )
 }
 
 struct Collector<'s> {
     source: &'s str,
-    string_subjects: &'s BTreeMap<String, StringEvidence>,
-    array_subjects: &'s BTreeMap<String, ArrayEvidence>,
+    symbols: &'s SymbolTable,
+    string_subjects: &'s BTreeMap<EvidenceKey, StringEvidence>,
+    array_subjects: &'s BTreeMap<EvidenceKey, ArrayEvidence>,
     materializer_scope: MaterializerScope<'s>,
     edits: Vec<Edit>,
     helper_loops_converted: usize,
     loose_helpers: BTreeSet<String>,
     comments: &'s [oxc_ast::ast::Comment],
+    index_loop_subjects: Vec<String>,
 }
 
 struct LooseHelperCollector<'s> {
@@ -126,14 +160,6 @@ enum StringEvidence {
 }
 
 impl StringEvidence {
-    const fn join(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::None, value) | (value, Self::None) => value,
-            (Self::BasicPlane, Self::BasicPlane) => Self::BasicPlane,
-            _ => Self::Opaque,
-        }
-    }
-
     const fn blocks_index_resugar(self) -> bool {
         matches!(self, Self::Opaque)
     }
@@ -173,7 +199,8 @@ fn is_string_only_method(name: &str) -> bool {
 
 fn string_evidence(
     expr: &Expression<'_>,
-    bindings: &BTreeMap<String, StringEvidence>,
+    bindings: &BTreeMap<EvidenceKey, StringEvidence>,
+    symbols: &SymbolTable,
 ) -> StringEvidence {
     match expr.get_inner_expression() {
         Expression::StringLiteral(literal) => literal_string_evidence(literal.value.as_str()),
@@ -195,12 +222,17 @@ fn string_evidence(
             )
         }
         Expression::Identifier(identifier) => bindings
-            .get(identifier.name.as_str())
+            .get(&EvidenceKey::Reference(identifier.span.start))
             .copied()
+            .or_else(|| {
+                reference_symbol(identifier, symbols).and_then(|symbol_id: SymbolId| {
+                    bindings.get(&EvidenceKey::Symbol(symbol_id)).copied()
+                })
+            })
             .unwrap_or_default(),
         Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
-            let left: StringEvidence = string_evidence(&binary.left, bindings);
-            let right: StringEvidence = string_evidence(&binary.right, bindings);
+            let left: StringEvidence = string_evidence(&binary.left, bindings, symbols);
+            let right: StringEvidence = string_evidence(&binary.right, bindings, symbols);
             if left == StringEvidence::None && right == StringEvidence::None {
                 StringEvidence::None
             } else {
@@ -224,45 +256,233 @@ fn string_evidence(
 
 fn subject_blocks_index_resugar(
     iterable: &Expression<'_>,
-    bindings: &BTreeMap<String, StringEvidence>,
+    string_bindings: &BTreeMap<EvidenceKey, StringEvidence>,
+    array_bindings: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
 ) -> bool {
-    string_evidence(iterable, bindings).blocks_index_resugar()
+    let strings: StringEvidence = string_evidence(iterable, string_bindings, symbols);
+    if strings.blocks_index_resugar() {
+        return true;
+    }
+    strings != StringEvidence::BasicPlane
+        && !array_evidence(iterable, array_bindings, symbols).proves_plain_array()
 }
 
-#[derive(Debug, Default)]
-struct StringSubjectCollector {
-    evidence: BTreeMap<String, StringEvidence>,
+fn reference_symbol(
+    identifier: &oxc_ast::ast::IdentifierReference<'_>,
+    symbols: &SymbolTable,
+) -> Option<SymbolId> {
+    let reference_id: oxc_semantic::ReferenceId = identifier.reference_id.get()?;
+    symbols.get_reference(reference_id).symbol_id()
 }
 
-impl StringSubjectCollector {
-    fn record(&mut self, name: &str, evidence: StringEvidence) {
-        let slot: &mut StringEvidence = self.evidence.entry(name.to_owned()).or_default();
-        *slot = slot.join(evidence);
+struct WrittenSymbolCollector<'s> {
+    symbols: &'s SymbolTable,
+    written: BTreeSet<SymbolId>,
+}
+
+impl<'a> Visit<'a> for WrittenSymbolCollector<'_> {
+    fn visit_simple_assignment_target(&mut self, target: &SimpleAssignmentTarget<'a>) {
+        if let SimpleAssignmentTarget::AssignmentTargetIdentifier(identifier) = target
+            && let Some(symbol_id) = reference_symbol(identifier, self.symbols)
+        {
+            self.written.insert(symbol_id);
+        }
+        oxc_ast::visit::walk::walk_simple_assignment_target(self, target);
     }
 }
 
-impl<'a> Visit<'a> for StringSubjectCollector {
+fn written_symbols(
+    target: &oxc_ast::ast::AssignmentTarget<'_>,
+    symbols: &SymbolTable,
+) -> BTreeSet<SymbolId> {
+    let mut collector: WrittenSymbolCollector<'_> = WrittenSymbolCollector {
+        symbols,
+        written: BTreeSet::new(),
+    };
+    collector.visit_assignment_target(target);
+    collector.written
+}
+
+fn updated_symbols(
+    target: &SimpleAssignmentTarget<'_>,
+    symbols: &SymbolTable,
+) -> BTreeSet<SymbolId> {
+    let mut collector: WrittenSymbolCollector<'_> = WrittenSymbolCollector {
+        symbols,
+        written: BTreeSet::new(),
+    };
+    collector.visit_simple_assignment_target(target);
+    collector.written
+}
+
+#[derive(Debug)]
+struct StringSubjectCollector<'s> {
+    symbols: &'s SymbolTable,
+    evidence: BTreeMap<EvidenceKey, StringEvidence>,
+    conditional_depth: usize,
+    function_spans: Vec<Span>,
+}
+
+impl StringSubjectCollector<'_> {
+    fn assign(&mut self, symbol_id: SymbolId, evidence: StringEvidence) {
+        self.evidence
+            .insert(EvidenceKey::Symbol(symbol_id), evidence);
+    }
+
+    fn visit_conditional(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.conditional_depth = self.conditional_depth.saturating_add(1);
+        visit(self);
+        self.conditional_depth = self.conditional_depth.saturating_sub(1);
+    }
+
+    fn is_captured(&self, symbol_id: SymbolId) -> bool {
+        self.function_spans
+            .last()
+            .is_some_and(|function_span: &Span| {
+                let declaration: Span = self.symbols.get_span(symbol_id);
+                declaration.start < function_span.start || declaration.end > function_span.end
+            })
+    }
+}
+
+impl<'a> Visit<'a> for StringSubjectCollector<'_> {
     fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
         if let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind
             && let Some(init) = &declarator.init
+            && let Some(symbol_id) = binding.symbol_id.get()
         {
-            let evidence: StringEvidence = string_evidence(init, &BTreeMap::new());
-            if evidence != StringEvidence::None {
-                self.record(binding.name.as_str(), evidence);
-            }
+            let evidence: StringEvidence = if self.conditional_depth == 0 {
+                string_evidence(init, &self.evidence, self.symbols)
+            } else {
+                StringEvidence::Opaque
+            };
+            self.assign(symbol_id, evidence);
         }
         oxc_ast::visit::walk::walk_variable_declarator(self, declarator);
     }
 
     fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
-        if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) = &assignment.left
-        {
-            let evidence: StringEvidence = string_evidence(&assignment.right, &BTreeMap::new());
-            if evidence != StringEvidence::None {
-                self.record(target.name.as_str(), evidence);
-            }
+        let direct: Option<SymbolId> =
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) =
+                &assignment.left
+            {
+                reference_symbol(target, self.symbols)
+            } else {
+                None
+            };
+        for symbol_id in written_symbols(&assignment.left, self.symbols) {
+            let evidence: StringEvidence = if self.conditional_depth == 0
+                && assignment.operator == AssignmentOperator::Assign
+                && direct == Some(symbol_id)
+            {
+                string_evidence(&assignment.right, &self.evidence, self.symbols)
+            } else {
+                StringEvidence::Opaque
+            };
+            self.assign(symbol_id, evidence);
         }
         oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
+    }
+
+    fn visit_update_expression(&mut self, update: &oxc_ast::ast::UpdateExpression<'a>) {
+        for symbol_id in updated_symbols(&update.argument, self.symbols) {
+            self.assign(symbol_id, StringEvidence::Opaque);
+        }
+        oxc_ast::visit::walk::walk_update_expression(self, update);
+    }
+
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        let evidence: StringEvidence = reference_symbol(identifier, self.symbols).map_or(
+            StringEvidence::None,
+            |symbol_id: SymbolId| {
+                if self.is_captured(symbol_id) {
+                    StringEvidence::Opaque
+                } else {
+                    self.evidence
+                        .get(&EvidenceKey::Symbol(symbol_id))
+                        .copied()
+                        .unwrap_or_default()
+                }
+            },
+        );
+        self.evidence
+            .insert(EvidenceKey::Reference(identifier.span.start), evidence);
+    }
+
+    fn visit_function(&mut self, function: &Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
+        self.function_spans.push(function.span);
+        oxc_ast::visit::walk::walk_function(self, function, flags);
+        self.function_spans.pop();
+    }
+
+    fn visit_arrow_function_expression(&mut self, function: &ArrowFunctionExpression<'a>) {
+        self.function_spans.push(function.span);
+        oxc_ast::visit::walk::walk_arrow_function_expression(self, function);
+        self.function_spans.pop();
+    }
+
+    fn visit_if_statement(&mut self, statement: &oxc_ast::ast::IfStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_if_statement(collector, statement);
+        });
+    }
+
+    fn visit_conditional_expression(
+        &mut self,
+        expression: &oxc_ast::ast::ConditionalExpression<'a>,
+    ) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_conditional_expression(collector, expression);
+        });
+    }
+
+    fn visit_logical_expression(&mut self, expression: &LogicalExpression<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_logical_expression(collector, expression);
+        });
+    }
+
+    fn visit_switch_statement(&mut self, statement: &oxc_ast::ast::SwitchStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_switch_statement(collector, statement);
+        });
+    }
+
+    fn visit_for_statement(&mut self, statement: &ForStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_statement(collector, statement);
+        });
+    }
+
+    fn visit_while_statement(&mut self, statement: &oxc_ast::ast::WhileStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_while_statement(collector, statement);
+        });
+    }
+
+    fn visit_do_while_statement(&mut self, statement: &oxc_ast::ast::DoWhileStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_do_while_statement(collector, statement);
+        });
+    }
+
+    fn visit_try_statement(&mut self, statement: &TryStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_try_statement(collector, statement);
+        });
+    }
+
+    fn visit_for_in_statement(&mut self, statement: &ForInStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_in_statement(collector, statement);
+        });
+    }
+
+    fn visit_for_of_statement(&mut self, statement: &ForOfStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_of_statement(collector, statement);
+        });
     }
 }
 
@@ -297,13 +517,19 @@ fn is_array_producing_static(object: &str, property: &str) -> bool {
 
 fn array_evidence(
     expr: &Expression<'_>,
-    bindings: &BTreeMap<String, ArrayEvidence>,
+    bindings: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
 ) -> ArrayEvidence {
     match expr.get_inner_expression() {
         Expression::ArrayExpression(_) => ArrayEvidence::PlainArray,
         Expression::Identifier(identifier) => bindings
-            .get(identifier.name.as_str())
+            .get(&EvidenceKey::Reference(identifier.span.start))
             .copied()
+            .or_else(|| {
+                reference_symbol(identifier, symbols).and_then(|symbol_id: SymbolId| {
+                    bindings.get(&EvidenceKey::Symbol(symbol_id)).copied()
+                })
+            })
             .unwrap_or_default(),
         Expression::CallExpression(call) => match call.callee.get_inner_expression() {
             Expression::StaticMemberExpression(member) => {
@@ -312,7 +538,16 @@ fn array_evidence(
                         if is_array_producing_static(
                             object.name.as_str(),
                             member.property.name.as_str(),
-                        ) =>
+                        ) && reference_symbol(object, symbols).is_none() =>
+                    {
+                        ArrayEvidence::PlainArray
+                    }
+                    Expression::StringLiteral(_) if member.property.name.as_str() == "split" => {
+                        ArrayEvidence::PlainArray
+                    }
+                    Expression::TemplateLiteral(template)
+                        if member.property.name.as_str() == "split"
+                            && template.expressions.is_empty() =>
                     {
                         ArrayEvidence::PlainArray
                     }
@@ -321,92 +556,255 @@ fn array_evidence(
             }
             _ => ArrayEvidence::None,
         },
+        Expression::NewExpression(new_expression)
+            if matches!(
+                new_expression.callee.get_inner_expression(),
+                Expression::Identifier(identifier)
+                    if identifier.name.as_str() == "Array"
+                        && reference_symbol(identifier, symbols).is_none()
+            ) =>
+        {
+            ArrayEvidence::PlainArray
+        }
         _ => ArrayEvidence::None,
     }
 }
 
-#[derive(Debug, Default)]
-struct ArraySubjectCollector {
-    evidence: BTreeMap<String, ArrayEvidence>,
+#[derive(Debug)]
+struct ArraySubjectCollector<'s> {
+    symbols: &'s SymbolTable,
+    evidence: BTreeMap<EvidenceKey, ArrayEvidence>,
+    conditional_depth: usize,
+    function_spans: Vec<Span>,
 }
 
-impl ArraySubjectCollector {
-    fn record(&mut self, name: &str, evidence: ArrayEvidence) {
+impl ArraySubjectCollector<'_> {
+    fn record(&mut self, symbol_id: SymbolId, evidence: ArrayEvidence) {
         let observed: ArrayEvidence = if matches!(evidence, ArrayEvidence::None) {
             ArrayEvidence::Opaque
         } else {
             evidence
         };
-        let slot: &mut ArrayEvidence = self.evidence.entry(name.to_owned()).or_default();
+        let slot: &mut ArrayEvidence = self
+            .evidence
+            .entry(EvidenceKey::Symbol(symbol_id))
+            .or_default();
         *slot = slot.join(observed);
+    }
+
+    fn assign(&mut self, symbol_id: SymbolId, evidence: ArrayEvidence) {
+        let observed: ArrayEvidence = if matches!(evidence, ArrayEvidence::None) {
+            ArrayEvidence::Opaque
+        } else {
+            evidence
+        };
+        self.evidence
+            .insert(EvidenceKey::Symbol(symbol_id), observed);
+    }
+
+    fn is_captured(&self, symbol_id: SymbolId) -> bool {
+        self.function_spans
+            .last()
+            .is_some_and(|function_span: &Span| {
+                let declaration: Span = self.symbols.get_span(symbol_id);
+                declaration.start < function_span.start || declaration.end > function_span.end
+            })
     }
 }
 
-impl<'a> Visit<'a> for ArraySubjectCollector {
+impl<'a> Visit<'a> for ArraySubjectCollector<'_> {
     fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
-        if let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind {
-            let evidence: ArrayEvidence = declarator
-                .init
-                .as_ref()
-                .map_or(ArrayEvidence::Opaque, |init: &Expression<'a>| {
-                    array_evidence(init, &BTreeMap::new())
-                });
-            self.record(binding.name.as_str(), evidence);
+        if let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind
+            && let Some(symbol_id) = binding.symbol_id.get()
+            && let Some(init) = declarator.init.as_ref()
+        {
+            let evidence: ArrayEvidence = if self.conditional_depth == 0 {
+                array_evidence(init, &self.evidence, self.symbols)
+            } else {
+                ArrayEvidence::Opaque
+            };
+            self.assign(symbol_id, evidence);
         }
         oxc_ast::visit::walk::walk_variable_declarator(self, declarator);
     }
 
     fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
-        if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) = &assignment.left
-        {
-            let evidence: ArrayEvidence = array_evidence(&assignment.right, &BTreeMap::new());
-            self.record(target.name.as_str(), evidence);
+        let direct: Option<SymbolId> =
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) =
+                &assignment.left
+            {
+                reference_symbol(target, self.symbols)
+            } else {
+                None
+            };
+        for symbol_id in written_symbols(&assignment.left, self.symbols) {
+            let evidence: ArrayEvidence = if self.conditional_depth == 0
+                && assignment.operator == AssignmentOperator::Assign
+                && direct == Some(symbol_id)
+            {
+                array_evidence(&assignment.right, &self.evidence, self.symbols)
+            } else {
+                ArrayEvidence::Opaque
+            };
+            self.assign(symbol_id, evidence);
         }
         oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
     }
 
+    fn visit_update_expression(&mut self, update: &oxc_ast::ast::UpdateExpression<'a>) {
+        for symbol_id in updated_symbols(&update.argument, self.symbols) {
+            self.assign(symbol_id, ArrayEvidence::Opaque);
+        }
+        oxc_ast::visit::walk::walk_update_expression(self, update);
+    }
+
     fn visit_formal_parameter(&mut self, parameter: &oxc_ast::ast::FormalParameter<'a>) {
-        for name in bound_names(&parameter.pattern.kind) {
-            self.record(name, ArrayEvidence::Opaque);
+        for symbol_id in bound_symbols(&parameter.pattern.kind) {
+            self.record(symbol_id, ArrayEvidence::Opaque);
         }
         oxc_ast::visit::walk::walk_formal_parameter(self, parameter);
     }
 
     fn visit_catch_parameter(&mut self, parameter: &oxc_ast::ast::CatchParameter<'a>) {
-        for name in bound_names(&parameter.pattern.kind) {
-            self.record(name, ArrayEvidence::Opaque);
+        for symbol_id in bound_symbols(&parameter.pattern.kind) {
+            self.record(symbol_id, ArrayEvidence::Opaque);
         }
         oxc_ast::visit::walk::walk_catch_parameter(self, parameter);
     }
+
+    fn visit_if_statement(&mut self, statement: &oxc_ast::ast::IfStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_if_statement(collector, statement);
+        });
+    }
+
+    fn visit_conditional_expression(
+        &mut self,
+        expression: &oxc_ast::ast::ConditionalExpression<'a>,
+    ) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_conditional_expression(collector, expression);
+        });
+    }
+
+    fn visit_switch_statement(&mut self, statement: &oxc_ast::ast::SwitchStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_switch_statement(collector, statement);
+        });
+    }
+
+    fn visit_for_statement(&mut self, statement: &ForStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_statement(collector, statement);
+        });
+    }
+
+    fn visit_while_statement(&mut self, statement: &oxc_ast::ast::WhileStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_while_statement(collector, statement);
+        });
+    }
+
+    fn visit_do_while_statement(&mut self, statement: &oxc_ast::ast::DoWhileStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_do_while_statement(collector, statement);
+        });
+    }
+
+    fn visit_try_statement(&mut self, statement: &TryStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_try_statement(collector, statement);
+        });
+    }
+
+    fn visit_logical_expression(&mut self, expression: &LogicalExpression<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_logical_expression(collector, expression);
+        });
+    }
+
+    fn visit_for_in_statement(&mut self, statement: &ForInStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_in_statement(collector, statement);
+        });
+    }
+
+    fn visit_for_of_statement(&mut self, statement: &ForOfStatement<'a>) {
+        self.visit_conditional(|collector: &mut Self| {
+            oxc_ast::visit::walk::walk_for_of_statement(collector, statement);
+        });
+    }
+
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        let evidence: ArrayEvidence = reference_symbol(identifier, self.symbols).map_or(
+            ArrayEvidence::None,
+            |symbol_id: SymbolId| {
+                if self.is_captured(symbol_id) {
+                    ArrayEvidence::Opaque
+                } else {
+                    self.evidence
+                        .get(&EvidenceKey::Symbol(symbol_id))
+                        .copied()
+                        .unwrap_or_default()
+                }
+            },
+        );
+        self.evidence
+            .insert(EvidenceKey::Reference(identifier.span.start), evidence);
+    }
+
+    fn visit_function(&mut self, function: &Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
+        self.function_spans.push(function.span);
+        oxc_ast::visit::walk::walk_function(self, function, flags);
+        self.function_spans.pop();
+    }
+
+    fn visit_arrow_function_expression(&mut self, function: &ArrowFunctionExpression<'a>) {
+        self.function_spans.push(function.span);
+        oxc_ast::visit::walk::walk_arrow_function_expression(self, function);
+        self.function_spans.pop();
+    }
 }
 
-fn bound_names<'a>(kind: &'a BindingPatternKind<'a>) -> Vec<&'a str> {
-    let mut names: Vec<&'a str> = Vec::new();
-    collect_bound_names(kind, &mut names);
-    names
+impl ArraySubjectCollector<'_> {
+    fn visit_conditional(&mut self, visit: impl FnOnce(&mut Self)) {
+        self.conditional_depth = self.conditional_depth.saturating_add(1);
+        visit(self);
+        self.conditional_depth = self.conditional_depth.saturating_sub(1);
+    }
 }
 
-fn collect_bound_names<'a>(kind: &'a BindingPatternKind<'a>, names: &mut Vec<&'a str>) {
+fn bound_symbols(kind: &BindingPatternKind<'_>) -> Vec<SymbolId> {
+    let mut symbols: Vec<SymbolId> = Vec::new();
+    collect_bound_symbols(kind, &mut symbols);
+    symbols
+}
+
+fn collect_bound_symbols(kind: &BindingPatternKind<'_>, symbols: &mut Vec<SymbolId>) {
     match kind {
-        BindingPatternKind::BindingIdentifier(binding) => names.push(binding.name.as_str()),
+        BindingPatternKind::BindingIdentifier(binding) => {
+            if let Some(symbol_id) = binding.symbol_id.get() {
+                symbols.push(symbol_id);
+            }
+        }
         BindingPatternKind::ObjectPattern(pattern) => {
             for property in &pattern.properties {
-                collect_bound_names(&property.value.kind, names);
+                collect_bound_symbols(&property.value.kind, symbols);
             }
             if let Some(rest) = &pattern.rest {
-                collect_bound_names(&rest.argument.kind, names);
+                collect_bound_symbols(&rest.argument.kind, symbols);
             }
         }
         BindingPatternKind::ArrayPattern(pattern) => {
             for element in pattern.elements.iter().flatten() {
-                collect_bound_names(&element.kind, names);
+                collect_bound_symbols(&element.kind, symbols);
             }
             if let Some(rest) = &pattern.rest {
-                collect_bound_names(&rest.argument.kind, names);
+                collect_bound_symbols(&rest.argument.kind, symbols);
             }
         }
         BindingPatternKind::AssignmentPattern(pattern) => {
-            collect_bound_names(&pattern.left.kind, names);
+            collect_bound_symbols(&pattern.left.kind, symbols);
         }
     }
 }
@@ -426,23 +824,41 @@ fn is_mutating_array_method(name: &str) -> bool {
     )
 }
 
-struct MutationProbe<'n> {
-    name: &'n str,
+enum SubjectIdentity<'s> {
+    Name(&'s str),
+    Symbol {
+        symbol_id: SymbolId,
+        symbols: &'s SymbolTable,
+    },
+}
+
+struct MutationProbe<'s> {
+    subject: SubjectIdentity<'s>,
     found: bool,
 }
 
 impl MutationProbe<'_> {
     fn names_subject(&self, expr: &Expression<'_>) -> bool {
-        matches!(
-            expr.get_inner_expression(),
-            Expression::Identifier(identifier) if identifier.name == self.name
-        )
+        let Expression::Identifier(identifier) = expr.get_inner_expression() else {
+            return false;
+        };
+        match self.subject {
+            SubjectIdentity::Name(name) => identifier.name == name,
+            SubjectIdentity::Symbol { symbol_id, symbols } => {
+                reference_symbol(identifier, symbols) == Some(symbol_id)
+            }
+        }
     }
 
     fn target_names_subject(&self, target: &oxc_ast::ast::AssignmentTarget<'_>) -> bool {
         match target {
             oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
-                identifier.name == self.name
+                match self.subject {
+                    SubjectIdentity::Name(name) => identifier.name == name,
+                    SubjectIdentity::Symbol { symbol_id, symbols } => {
+                        reference_symbol(identifier, symbols) == Some(symbol_id)
+                    }
+                }
             }
             oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(member) => {
                 self.names_subject(&member.object)
@@ -519,9 +935,33 @@ impl<'a> Visit<'a> for MutationProbe<'_> {
 }
 
 fn subject_mutated(statements: &[Statement<'_>], name: &str) -> bool {
-    let mut probe: MutationProbe<'_> = MutationProbe { name, found: false };
+    let mut probe: MutationProbe<'_> = MutationProbe {
+        subject: SubjectIdentity::Name(name),
+        found: false,
+    };
     for stmt in statements {
         probe.visit_statement(stmt);
+    }
+    probe.found
+}
+
+fn iterable_mutated(
+    statements: &[Statement<'_>],
+    iterable: &Expression<'_>,
+    symbols: &SymbolTable,
+) -> bool {
+    let Expression::Identifier(identifier) = iterable.get_inner_expression() else {
+        return false;
+    };
+    let Some(symbol_id): Option<SymbolId> = reference_symbol(identifier, symbols) else {
+        return true;
+    };
+    let mut probe: MutationProbe<'_> = MutationProbe {
+        subject: SubjectIdentity::Symbol { symbol_id, symbols },
+        found: false,
+    };
+    for statement in statements {
+        probe.visit_statement(statement);
     }
     probe.found
 }
@@ -556,7 +996,8 @@ fn materializing_helper_argument<'a>(
 
 fn snapshot_subject_source<'s>(
     iterable: &Expression<'_>,
-    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    array_subjects: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
     scope: MaterializerScope<'_>,
     remaining: &[Statement<'_>],
     source: &'s str,
@@ -565,7 +1006,7 @@ fn snapshot_subject_source<'s>(
     let Expression::Identifier(subject) = inner.get_inner_expression() else {
         return None;
     };
-    if !array_evidence(inner, array_subjects).proves_plain_array() {
+    if !array_evidence(inner, array_subjects, symbols).proves_plain_array() {
         return None;
     }
     if subject_mutated(remaining, subject.name.as_str()) {
@@ -594,27 +1035,31 @@ fn is_babel_loose_helper(source: &str, name: &str) -> bool {
 
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_for_statement(&mut self, for_stmt: &ForStatement<'a>) {
-        if let Some(edit) = try_convert(
+        if let Some((edit, subject)) = try_convert(
             for_stmt,
             self.source,
             self.string_subjects,
             self.array_subjects,
+            self.symbols,
             self.materializer_scope,
         ) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
+                self.index_loop_subjects.push(subject);
             }
             return;
         }
-        if let Some(edit) = try_convert_direct(
+        if let Some((edit, subject)) = try_convert_direct(
             for_stmt,
             self.source,
             self.string_subjects,
             self.array_subjects,
+            self.symbols,
             self.materializer_scope,
         ) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
+                self.index_loop_subjects.push(subject);
             }
             return;
         }
@@ -652,11 +1097,12 @@ impl<'a> Visit<'a> for Collector<'_> {
                 continue;
             }
             if index + 1 < slice.len()
-                && let Some(hoisted_edits) = try_convert_hoisted_snapshot(
+                && let Some((hoisted_edits, subject)) = try_convert_hoisted_snapshot(
                     &slice[index..],
                     self.source,
                     self.string_subjects,
                     self.array_subjects,
+                    self.symbols,
                     self.materializer_scope,
                 )
             {
@@ -665,7 +1111,7 @@ impl<'a> Visit<'a> for Collector<'_> {
                     .all(|edit: &Edit| !edit_overlaps_comments(edit, self.comments))
                 {
                     self.edits.extend(hoisted_edits);
-                    self.helper_loops_converted += 1;
+                    self.index_loop_subjects.push(subject);
                 }
                 index += 2;
                 continue;
@@ -826,12 +1272,13 @@ struct Match<'a> {
 fn try_convert(
     for_stmt: &ForStatement<'_>,
     source: &str,
-    string_subjects: &BTreeMap<String, StringEvidence>,
-    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    string_subjects: &BTreeMap<EvidenceKey, StringEvidence>,
+    array_subjects: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
     materializer_scope: MaterializerScope<'_>,
-) -> Option<Edit> {
+) -> Option<(Edit, String)> {
     let m: Match<'_> = match_loop(for_stmt, source)?;
-    if subject_blocks_index_resugar(m.iterable, string_subjects) {
+    if subject_blocks_index_resugar(m.iterable, string_subjects, array_subjects, symbols) {
         return None;
     }
     if body_uses(m.remaining, m.index_name)
@@ -841,6 +1288,7 @@ fn try_convert(
         || binding_shadows_expression(&m.element, m.iterable)
         || m.element.references_name(m.index_name)
         || m.element.references_name(m.array_name)
+        || iterable_mutated(m.remaining, m.iterable, symbols)
     {
         return None;
     }
@@ -848,20 +1296,23 @@ fn try_convert(
     let iterable_src: &str = snapshot_subject_source(
         m.iterable,
         array_subjects,
+        symbols,
         materializer_scope,
         m.remaining,
         source,
     )
     .unwrap_or_else(|| m.iterable.span().source_text(source));
     let body_src: String = remaining_body_source(m.remaining, source);
-    Some(Edit {
+    let subject: String = iterable_src.to_owned();
+    let edit: Edit = Edit {
         start: for_stmt.span.start as usize,
         end: for_stmt.span.end as usize,
         replacement: format!(
             "for ({kind} {element} of {iterable_src}) {{{body_src}}}",
             element = m.element.text
         ),
-    })
+    };
+    Some((edit, subject))
 }
 
 fn snapshot_initializer_subject<'a>(
@@ -885,7 +1336,8 @@ fn snapshot_initializer_subject<'a>(
 
 fn hoisted_snapshot_binding<'a>(
     stmt: &'a Statement<'a>,
-    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    array_subjects: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
     scope: MaterializerScope<'_>,
 ) -> Option<(&'a str, &'a Expression<'a>)> {
     let Statement::VariableDeclaration(decl) = stmt else {
@@ -899,7 +1351,7 @@ fn hoisted_snapshot_binding<'a>(
         return None;
     };
     let subject: &Expression<'a> = snapshot_initializer_subject(declarator.init.as_ref()?, scope)?;
-    if !array_evidence(subject, array_subjects).proves_plain_array() {
+    if !array_evidence(subject, array_subjects, symbols).proves_plain_array() {
         return None;
     }
     if !matches!(subject.get_inner_expression(), Expression::Identifier(_)) {
@@ -911,13 +1363,14 @@ fn hoisted_snapshot_binding<'a>(
 fn try_convert_hoisted_snapshot<'a>(
     slice: &'a [Statement<'a>],
     source: &str,
-    string_subjects: &BTreeMap<String, StringEvidence>,
-    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    string_subjects: &BTreeMap<EvidenceKey, StringEvidence>,
+    array_subjects: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
     scope: MaterializerScope<'_>,
-) -> Option<Vec<Edit>> {
+) -> Option<(Vec<Edit>, String)> {
     let binding_stmt: &Statement<'a> = slice.first()?;
     let (temp_name, subject): (&str, &Expression<'a>) =
-        hoisted_snapshot_binding(binding_stmt, array_subjects, scope)?;
+        hoisted_snapshot_binding(binding_stmt, array_subjects, symbols, scope)?;
     let Statement::ForStatement(for_stmt) = slice.get(1)? else {
         return None;
     };
@@ -938,13 +1391,14 @@ fn try_convert_hoisted_snapshot<'a>(
     if body_uses(m.remaining, m.index_name)
         || m.element.binds_name(m.index_name)
         || m.element.references_name(m.index_name)
+        || iterable_mutated(m.remaining, m.iterable, symbols)
     {
         return None;
     }
     if body_uses(m.remaining, temp_name) || body_reassigns(m.remaining, temp_name) {
         return None;
     }
-    if subject_blocks_index_resugar(subject, string_subjects) {
+    if subject_blocks_index_resugar(subject, string_subjects, array_subjects, symbols) {
         return None;
     }
     let Expression::Identifier(subject_name) = subject.get_inner_expression() else {
@@ -959,7 +1413,8 @@ fn try_convert_hoisted_snapshot<'a>(
     let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
     let subject_src: &str = subject.span().source_text(source);
     let body_src: String = remaining_body_source(m.remaining, source);
-    Some(vec![
+    let subject: String = subject_src.to_owned();
+    let edits: Vec<Edit> = vec![
         Edit {
             start: binding_stmt.span().start as usize,
             end: binding_stmt.span().end as usize,
@@ -973,7 +1428,8 @@ fn try_convert_hoisted_snapshot<'a>(
                 element = m.element.text
             ),
         },
-    ])
+    ];
+    Some((edits, subject))
 }
 
 struct DirectMatch<'a> {
@@ -988,17 +1444,19 @@ struct DirectMatch<'a> {
 fn try_convert_direct(
     for_stmt: &ForStatement<'_>,
     source: &str,
-    string_subjects: &BTreeMap<String, StringEvidence>,
-    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    string_subjects: &BTreeMap<EvidenceKey, StringEvidence>,
+    array_subjects: &BTreeMap<EvidenceKey, ArrayEvidence>,
+    symbols: &SymbolTable,
     materializer_scope: MaterializerScope<'_>,
-) -> Option<Edit> {
+) -> Option<(Edit, String)> {
     let m: DirectMatch<'_> = match_direct_loop(for_stmt, source)?;
-    if subject_blocks_index_resugar(m.iterable, string_subjects) {
+    if subject_blocks_index_resugar(m.iterable, string_subjects, array_subjects, symbols) {
         return None;
     }
     if body_uses(m.remaining, m.index_name)
         || m.element.binds_name(m.index_name)
         || m.element.references_name(m.index_name)
+        || iterable_mutated(m.remaining, m.iterable, symbols)
     {
         return None;
     }
@@ -1013,20 +1471,23 @@ fn try_convert_direct(
     let iterable_src: &str = snapshot_subject_source(
         m.iterable,
         array_subjects,
+        symbols,
         materializer_scope,
         m.remaining,
         source,
     )
     .unwrap_or_else(|| m.iterable.span().source_text(source));
     let body_src: String = remaining_body_source(m.remaining, source);
-    Some(Edit {
+    let subject: String = iterable_src.to_owned();
+    let edit: Edit = Edit {
         start: for_stmt.span.start as usize,
         end: for_stmt.span.end as usize,
         replacement: format!(
             "for ({kind} {element} of {iterable_src}) {{{body_src}}}",
             element = m.element.text
         ),
-    })
+    };
+    Some((edit, subject))
 }
 
 fn match_direct_loop<'a>(for_stmt: &'a ForStatement<'a>, source: &str) -> Option<DirectMatch<'a>> {
@@ -2078,6 +2539,10 @@ fn assignment_target_maybe_default_rebinds(
 }
 
 #[cfg(test)]
+#[path = "for_of/census.rs"]
+mod census;
+
+#[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
     use super::recover;
@@ -2096,7 +2561,7 @@ mod tests {
 
     #[test]
     fn ts_index_loop_becomes_for_of_const() {
-        let source: &str = "for (var _i = 0, _arr = items; _i < _arr.length; _i++) { let x = _arr[_i]; print(x); }";
+        let source: &str = "var items = [1, 2]; for (var _i = 0, _arr = items; _i < _arr.length; _i++) { let x = _arr[_i]; print(x); }";
         let out: String = apply(source);
         assert!(out.contains("for (const x of items)"), "got: {out}");
         assert!(out.contains("print(x);"), "got: {out}");
@@ -2105,22 +2570,21 @@ mod tests {
 
     #[test]
     fn reassigned_element_uses_let() {
-        let source: &str = "for (var _i = 0, _a = list; _i < _a.length; _i++) { let e = _a[_i]; e = e + 1; print(e); }";
+        let source: &str = "var list = [1, 2]; for (var _i = 0, _a = list; _i < _a.length; _i++) { let e = _a[_i]; e = e + 1; print(e); }";
         let out: String = apply(source);
         assert!(out.contains("for (let e of list)"), "got: {out}");
     }
 
     #[test]
     fn var_element_stays_var() {
-        let source: &str =
-            "for (var _i = 0, _a = xs; _i < _a.length; _i++) { var v = _a[_i]; sink(v); }";
+        let source: &str = "var xs = [1, 2]; for (var _i = 0, _a = xs; _i < _a.length; _i++) { var v = _a[_i]; sink(v); }";
         let out: String = apply(source);
         assert!(out.contains("for (var v of xs)"), "got: {out}");
     }
 
     #[test]
     fn direct_index_loop_becomes_for_of() {
-        let source: &str = "for (var _i2 = 0; _i2 < items.length; _i2++) { var item = items[_i2]; out.push(item.toUpperCase()); }";
+        let source: &str = "var items = ['a']; for (var _i2 = 0; _i2 < items.length; _i2++) { var item = items[_i2]; out.push(item.toUpperCase()); }";
         let out: String = apply(source);
         assert!(out.contains("for (var item of items)"), "got: {out}");
         assert!(!out.contains("items[_i2]"), "got: {out}");
@@ -2128,24 +2592,24 @@ mod tests {
 
     #[test]
     fn direct_block_scoped_index_loop_becomes_for_of() {
-        let source: &str = "for (let _i = 0; _i < items.length; _i++) { const item = items[_i]; out.push(item.toUpperCase()); }";
+        let source: &str = "const items = ['a']; for (let _i = 0; _i < items.length; _i++) { const item = items[_i]; out.push(item.toUpperCase()); }";
         let out: String = apply(source);
         assert!(out.contains("for (const item of items)"), "got: {out}");
     }
 
     #[test]
     fn length_cache_loop_becomes_for_of() {
-        let source: &str = "for (var _i = 0, _len = arr.length; _i < _len; _i++) { var item = arr[_i]; sink(item); }";
+        let source: &str = "var arr = [1, 2]; for (var _i = 0, _len = arr.length; _i < _len; _i++) { var item = arr[_i]; sink(item); }";
         let out: String = apply(source);
         assert!(out.contains("for (var item of arr)"), "got: {out}");
         assert!(!out.contains("arr[_i]"), "got: {out}");
     }
 
     #[test]
-    fn direct_member_iterable_recovers() {
+    fn direct_member_iterable_is_refused() {
         let source: &str = "for (var _i = 0; _i < obj.items.length; _i++) { var item = obj.items[_i]; sink(item); }";
-        let out: String = apply(source);
-        assert!(out.contains("for (var item of obj.items)"), "got: {out}");
+        let (outcome, _stats): (RuleOutcome, super::ForOfStats) = recover(source);
+        assert!(outcome.edits.is_empty());
     }
 
     #[test]
