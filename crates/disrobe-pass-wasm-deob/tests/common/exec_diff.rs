@@ -63,6 +63,54 @@ pub struct Export {
     pub arity: usize,
 }
 
+pub const GRADED_WASMTIME_VERSION: &str = "36.0.13";
+
+pub fn workspace_lock_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("Cargo.lock")
+}
+
+pub fn wasmtime_version_from_lock(text: &str) -> Option<String> {
+    let mut inside_wasmtime: bool = false;
+    for raw in text.lines() {
+        let line: &str = raw.trim();
+        if line == "[[package]]" {
+            inside_wasmtime = false;
+        } else if line.starts_with("name = ") {
+            inside_wasmtime = line == "name = \"wasmtime\"";
+        } else if inside_wasmtime
+            && let Some(rest) = line.strip_prefix("version = \"")
+            && let Some(version) = rest.strip_suffix('"')
+        {
+            return Some(version.to_owned());
+        }
+    }
+    None
+}
+
+pub fn resolved_wasmtime_version() -> String {
+    let path: PathBuf = workspace_lock_path();
+    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "DR-WASMDEOB-WASMTIMEPIN: cannot read {} ({error}). This gate records which wasmtime \
+             produced the execution verdict, so it must fail rather than grade against an \
+             unrecorded reference",
+            path.display()
+        )
+    });
+    if let Some(version) = wasmtime_version_from_lock(&text) {
+        return version;
+    }
+    panic!(
+        "DR-WASMDEOB-WASMTIMEPIN: {} holds no [[package]] entry whose name is exactly `wasmtime`. \
+         Sixteen packages in this tree begin with that prefix, so a prefix match would pin the \
+         wrong crate; this gate fails rather than record a version it did not find",
+        path.display()
+    );
+}
+
 pub const BATTERY: [i32; 8] = [0, 1, 2, 7, -1, -3, 255, i32::MIN / 2];
 
 pub const NON_TRAPPING_BATTERY: [i32; 8] = [1, 2, 3, 7, -3, 255, i32::MIN, 1_518_500_249];

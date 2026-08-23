@@ -429,6 +429,64 @@ fn lifted_targets_execute_divide_remainder_and_truncation_on_non_trapping_inputs
     });
 }
 
+#[cfg(feature = "sandbox")]
+const PREFIX_SIBLING_LOCK: &str = r#"
+[[package]]
+name = "wasmtime-environ"
+version = "99.9.9"
+
+[[package]]
+name = "wasmtime-internal-cranelift"
+version = "98.8.8"
+
+[[package]]
+name = "wasmtime"
+version = "36.0.13"
+
+[[package]]
+name = "wat"
+version = "1.250.0"
+"#;
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_version_reader_picks_wasmtime_and_not_a_prefix_sibling() {
+    assert_eq!(
+        exec_diff::wasmtime_version_from_lock(PREFIX_SIBLING_LOCK).as_deref(),
+        Some("36.0.13"),
+        "the reader must match the package named exactly `wasmtime`. Sixteen packages in the real \
+         lock share that prefix, and today they happen to resolve to the same version, so a \
+         prefix match would look correct until the day one of them diverges"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_version_reader_reports_absence_rather_than_guessing() {
+    assert_eq!(
+        exec_diff::wasmtime_version_from_lock("[[package]]\nname = \"wat\"\nversion = \"1.0.0\"\n"),
+        None,
+        "a lock with no wasmtime entry must report absence so the caller can fail naming it, \
+         never fall back to a default version"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_wasmtime_that_graded_this_battery_is_the_recorded_one() {
+    let resolved: String = exec_diff::resolved_wasmtime_version();
+    println!("execution differentials graded against wasmtime {resolved}");
+    assert_eq!(
+        resolved,
+        exec_diff::GRADED_WASMTIME_VERSION,
+        "the battery graded against wasmtime {resolved}, but the version recorded beside it is {}. \
+         The workspace manifest pins a caret range, so a minor bump resolves silently and \
+         re-grades every execution verdict against an engine nobody reviewed. Confirm the new \
+         version preserves the graded behaviour, then record it here",
+        exec_diff::GRADED_WASMTIME_VERSION
+    );
+}
+
 #[cfg(not(feature = "sandbox"))]
 #[test]
 fn the_execution_differential_refuses_to_report_success_without_the_sandbox_feature() {
