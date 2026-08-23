@@ -45,6 +45,7 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 | `disrobe dotnet decompile <dll\|exe>` | Run the in-house CIL decompiler and optionally invoke `--backend auto\|ilspy\|dnspy\|dnspy-ex\|de4dot`. If a requested tool is unavailable, the current selector falls back to the first installed backend in the auto order. `--language csharp\|fsharp\|vbnet` selects the in-house surface language. |
 | `disrobe dotnet deobfuscate\|peel <dll\|exe>` | Detect the .NET protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks. `--protector <name>` forces one. |
 | `disrobe dotnet analyze <dll>` | PE/CLR metadata, protector detection, R2R + NativeAOT probe. |
+| `disrobe dotnet native-aot <image>` | Recover NativeAOT names, types, method boundaries and managed signatures. Takes a PE, ELF or Mach-O image, not a managed assembly. |
 | `disrobe dotnet backends` | Report .NET backends on PATH. |
 
 ## Native

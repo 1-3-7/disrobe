@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
 
+use disrobe_pass_dotnet::aot::{AotMethod, AotMethodBody, AotReport, detect as detect_native_aot};
 use disrobe_pass_dotnet::{
     Backend, BackendInvocation, DecompiledAssembly, PassSummary, analyze as analyze_dotnet,
     backends::{invoke_decompile, probe},
@@ -21,6 +22,7 @@ use super::emit::EmitSpec;
 use super::globals;
 
 const MAX_BUNDLE_ASSEMBLIES: usize = 512;
+const NATIVE_AOT_INPUT_MAX_BYTES: u64 = 1 << 29;
 
 struct DecompileMode {
     require_native_success: bool,
@@ -182,6 +184,25 @@ pub(crate) enum DotnetCmd {
         )]
         out: Option<PathBuf>,
     },
+    #[command(
+        name = "native-aot",
+        about = "recover NativeAOT names, types, method boundaries and managed signatures from an ahead-of-time compiled .NET image (PE, ELF or Mach-O)"
+    )]
+    NativeAot {
+        #[arg(help = "input NativeAOT image (PE, ELF, or Mach-O)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the recovery JSON (default: ./out/<stem>-dotnet-native-aot.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "emit the recovery JSON to stdout as machine-clean output (no summary, no file written)"
+        )]
+        json: bool,
+    },
     #[command(about = "report available .NET backends discovered on PATH")]
     Backends,
 }
@@ -266,6 +287,7 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
             protector,
         } => deobfuscate(input, out, protector),
         DotnetCmd::Analyze { input, out } => analyze(input, out),
+        DotnetCmd::NativeAot { input, out, json } => native_aot(input, out, json),
         DotnetCmd::Backends => backends(),
     }
 }
@@ -978,6 +1000,113 @@ fn analyze(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!(
         "  cil opcodes:  {} ({}% spec coverage)",
         summary.opcode_table_size, summary.opcode_spec_coverage_pct
+    );
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+struct SignatureSplit {
+    managed: usize,
+    registers: usize,
+    refused: usize,
+}
+
+impl SignatureSplit {
+    fn of(methods: &[AotMethod]) -> Self {
+        let mut managed: usize = 0;
+        let mut registers: usize = 0;
+        let mut refused: usize = 0;
+        for method in methods {
+            match &method.body {
+                Some(AotMethodBody::Recovered { signature, .. }) => {
+                    if signature.is_managed() {
+                        managed = managed.saturating_add(1);
+                    } else {
+                        registers = registers.saturating_add(1);
+                    }
+                }
+                Some(AotMethodBody::Refused { .. }) => refused = refused.saturating_add(1),
+                None => {}
+            }
+        }
+        Self {
+            managed,
+            registers,
+            refused,
+        }
+    }
+}
+
+fn native_aot(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Result<()> {
+    let meta: std::fs::Metadata = std::fs::metadata(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0484: cannot stat input: {e}"))?;
+    if meta.len() > NATIVE_AOT_INPUT_MAX_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0484: input is {} bytes, above the {NATIVE_AOT_INPUT_MAX_BYTES} byte cap for a NativeAOT image",
+            meta.len()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0484: cannot read input: {e}"))?;
+    let report: AotReport = detect_native_aot(&bytes);
+    if json {
+        let rendered: String = serde_json::to_string_pretty(&report)
+            .map_err(|e| miette::miette!("DR-CLI-0486: serialize: {e}"))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dotnet-native-aot")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dotnet-native-aot.json")));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0485: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(&report)
+        .map_err(|e| miette::miette!("DR-CLI-0486: serialize: {e}"))?;
+    std::fs::write(&out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0487: cannot write output: {e}"))?;
+
+    println!("dotnet native-aot: OK");
+    println!("  input:        {}", input.display());
+    if !report.is_native_aot {
+        println!("  native aot:   no (nothing recovered; the image is not NativeAOT)");
+        println!(
+            "  next:         this command does not probe ReadyToRun or managed metadata; run \
+             `disrobe dotnet analyze` for those"
+        );
+        println!("  wrote:        {}", out_path.display());
+        return Ok(());
+    }
+    let methods: &[AotMethod] = &report.metadata_attribution.methods;
+    let split: SignatureSplit = SignatureSplit::of(methods);
+    let with_range: usize = methods
+        .iter()
+        .filter(|method: &&AotMethod| method.code_range.is_some())
+        .count();
+    let with_entrypoint: usize = methods
+        .iter()
+        .filter(|method: &&AotMethod| method.entrypoint_rva.is_some())
+        .count();
+    println!("  native aot:   yes ({:?})", report.runtime_label);
+    println!(
+        "  names:        {} recovered, {} symbol(s)",
+        report.recovered_names.len(),
+        report.recovered_symbols.len()
+    );
+    println!(
+        "  metadata:     {} type(s), {} method(s)",
+        report.metadata_attribution.types.len(),
+        methods.len()
+    );
+    println!("  boundaries:   {with_entrypoint} entrypoint(s), {with_range} code range(s)");
+    println!(
+        "  signatures:   {} managed, {} register-typed, {} refused",
+        split.managed, split.registers, split.refused
     );
     println!("  wrote:        {}", out_path.display());
     Ok(())
