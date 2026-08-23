@@ -973,7 +973,7 @@ jobs:
         run: |
           set -euo pipefail
           tree="$(cargo tree -p disrobe-cli --no-default-features -e normal --prefix none | sort -u)"
-          for crate in walrus wasm-tools wasmtime; do
+          for crate in walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring; do
             if printf '%s\n' "$tree" | grep -qE "(^| )${crate} v[0-9]"; then
               echo "structural gate failed: ${crate} is in the slim disrobe-cli dependency tree" >&2
               exit 1

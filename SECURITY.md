@@ -129,7 +129,7 @@ The three tables below enumerate the surface by subsystem rather than one row pe
 | Outbound (client) | `disrobe-cli` | `crates/disrobe-cli/src/cli/install_deps.rs`: `reqwest` calls to fetch release metadata and download optional backend tools (e.g. Ghidra) during `disrobe install` / `disrobe doctor --auto-install`. Opt-in subcommands, not run implicitly. |
 | Outbound (client) | `disrobe-prowl` | OSINT / IOC harvester; queries public web archives and threat-intel feeds via `reqwest`. A dedicated, explicitly-invoked tool, not part of the default parsing path. |
 
-None of the parser crates in the first table above link `reqwest`, `axum`, `hyper`, or `tonic`. Network capability is confined to the CLI's `serve` / `install` / `doctor` paths and the separate `disrobe-prowl` tool.
+None of the parser crates in the first table above link `reqwest`, `axum`, `hyper`, or `tonic`, and neither does the slim CLI binary itself: a `--no-default-features` build links none of `tokio`, `axum`, `tonic`, `tower-http`, `tokio-util`, `tokio-stream`, `reqwest`, `hyper`, `rustls`, `rmcp` or `keyring`, which a committed CI gate enforces by dependency tree. In the full build, network capability is confined to the CLI's `serve` and `install-deps` paths and the separate `disrobe-prowl` tool. `doctor` performs no network request.
 
 ## Cryptography
 
