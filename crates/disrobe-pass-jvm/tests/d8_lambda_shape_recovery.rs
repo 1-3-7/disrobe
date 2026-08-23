@@ -388,22 +388,25 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
         .filter(|site: &&LambdaSite| site.declared_site)
         .count();
     assert_eq!(matched, declared_sites);
+    let residual_helpers: BTreeSet<String> = declared_helpers(unit);
+    assert_eq!(
+        residual_helpers,
+        LAMBDA_HELPERS
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<String>>(),
+        "the real D8 helpers are non-private, so their declarations must remain visible"
+    );
     assert_eq!(
         unit.matches(" -> ").count(),
-        SITES.len(),
-        "the recovered unit must carry one arrow per authored lambda, counting the nested lambda \
-         that recovers inside its own outer lambda"
-    );
-    let residual_helpers: BTreeSet<String> = declared_helpers(unit);
-    assert!(
-        residual_helpers.is_empty(),
-        "every toolchain lambda helper whose one reference the recovery inlined must be elided \
-         from the recovered unit, still declared: {residual_helpers:?}"
+        SITES.len().saturating_add(1),
+        "the recovered unit must carry one arrow per authored lambda plus the nested arrow in the \
+         retained non-private helper"
     );
     for helper in LAMBDA_HELPERS {
         assert!(
-            !unit.contains(helper),
-            "no recovered source may still name the D8 lambda helper {helper}"
+            unit.contains(helper),
+            "the recovered source must retain the non-private D8 lambda helper {helper}"
         );
     }
 
@@ -419,8 +422,8 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
 
     eprintln!(
         "d8 lambda-shape recovery: {matched}/{declared_sites} authored lambda sites recovered as \
-         lambda expressions, {}/{synthetics} D8 desugaring classes elided and {}/{} D8 lambda \
-         helper methods elided, graded against \
+         lambda expressions, {}/{synthetics} D8 desugaring classes elided and {}/{} private D8 \
+         lambda helper methods elided, graded against \
          tests/fixtures/d8_lambda_shapes/DesugarShapeProbe.java built by D8 9.1.31 at min-api 21",
         synthetics.saturating_sub(retained.len()),
         LAMBDA_HELPERS.len().saturating_sub(residual_helpers.len()),

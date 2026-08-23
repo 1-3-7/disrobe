@@ -8,6 +8,7 @@ use crate::dex::{
 
 const ACC_INTERFACE: u32 = 0x0200;
 const ACC_PUBLIC: u32 = 0x0001;
+const ACC_PRIVATE: u32 = 0x0002;
 const ACC_FINAL: u32 = 0x0010;
 const ACC_SYNTHETIC: u32 = 0x1000;
 const OBJECT_DESCRIPTOR: &str = "Ljava/lang/Object;";
@@ -632,6 +633,7 @@ pub(crate) struct HelperBody {
     pub(crate) ins_size: u16,
     pub(crate) descriptor: String,
     pub(crate) is_static: bool,
+    pub(crate) elide_declaration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1019,7 +1021,8 @@ impl FunctionalRecovery {
         for method in report.methods() {
             owned.entry(method.class.as_str()).or_default().push(method);
         }
-        let invoke_counts: BTreeMap<u32, usize> = invoke_target_counts(report).unwrap_or_default();
+        let helper_references: HelperReferences =
+            helper_references(dex, report).unwrap_or_default();
         let mut candidates: BTreeMap<String, RecoveredFunctional> = BTreeMap::new();
         for (class, declaration) in &classes {
             if !is_lambda_shaped(declaration) {
@@ -1041,7 +1044,7 @@ impl FunctionalRecovery {
             let recovered: RecoveredFunctional = match recovered {
                 RecoveredFunctional::CapturedLambda(mut lambda) => {
                     lambda.helper_body =
-                        inlinable_helper_body(report, &invoke_counts, lambda.helper_index);
+                        inlinable_helper_body(report, &helper_references, lambda.helper_index);
                     RecoveredFunctional::CapturedLambda(lambda)
                 }
                 other @ RecoveredFunctional::MethodReference(_) => other,
@@ -1593,8 +1596,14 @@ const fn inlinable_opcode(op: u8) -> bool {
     )
 }
 
-fn invoke_target_counts(report: &CodeItemsReport) -> Option<BTreeMap<u32, usize>> {
-    let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
+#[derive(Debug, Default)]
+struct HelperReferences {
+    invoke_counts: BTreeMap<u32, usize>,
+    string_names: BTreeSet<String>,
+}
+
+fn helper_references(dex: &DexFile, report: &CodeItemsReport) -> Option<HelperReferences> {
+    let mut references: HelperReferences = HelperReferences::default();
     let mut work: usize = 0;
     for item in report.decoded() {
         let instructions: Vec<DalvikInsn> = decode_method(&item.insns);
@@ -1606,26 +1615,37 @@ fn invoke_target_counts(report: &CodeItemsReport) -> Option<BTreeMap<u32, usize>
             if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78)
                 && let Some(index) = insn.index
             {
-                let seen: &mut usize = counts.entry(index).or_insert(0);
+                let seen: &mut usize = references.invoke_counts.entry(index).or_insert(0);
                 *seen = seen.checked_add(1)?;
+            }
+            if matches!(insn.op, 0x1A | 0x1B)
+                && let Some(name) = insn
+                    .index
+                    .and_then(|index: u32| usize::try_from(index).ok())
+                    .and_then(|index: usize| dex.strings.get(index))
+            {
+                references.string_names.insert(name.clone());
             }
         }
     }
-    Some(counts)
+    Some(references)
 }
 
 fn inlinable_helper_body(
     report: &CodeItemsReport,
-    invoke_counts: &BTreeMap<u32, usize>,
+    references: &HelperReferences,
     helper_index: u32,
 ) -> Option<HelperBody> {
-    if invoke_counts.get(&helper_index).copied() != Some(1) {
+    if references.invoke_counts.get(&helper_index).copied() != Some(1) {
         return None;
     }
     let method: &DexMethodCode = report
         .methods()
         .iter()
         .find(|candidate: &&DexMethodCode| candidate.method_index == helper_index)?;
+    if references.string_names.contains(&method.method_name) {
+        return None;
+    }
     let DexCodeState::Decoded(index) = method.state else {
         return None;
     };
@@ -1649,6 +1669,7 @@ fn inlinable_helper_body(
         ins_size: item.ins_size,
         descriptor: item.method_descriptor.clone(),
         is_static: method.access_flags & ACC_STATIC != 0,
+        elide_declaration: method.access_flags & ACC_PRIVATE != 0,
     })
 }
 

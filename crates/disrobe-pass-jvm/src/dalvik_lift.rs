@@ -933,7 +933,9 @@ fn render_captured_lambda(
             &reached,
         ) {
             ctx.inlined_helpers.absorb(&reached);
-            ctx.inlined_helpers.record(recovered.helper_index);
+            if body.elide_declaration {
+                ctx.inlined_helpers.record(recovered.helper_index);
+            }
             return Some(format!("{head} -> {inlined}"));
         }
     }
