@@ -753,7 +753,9 @@ impl Lifter {
         }
         let child_depth: usize = depth.saturating_add(1);
         match expr {
-            HirExpr::Const { text } => SurfaceExpr::Literal { text: text.clone() },
+            HirExpr::Const { value } => SurfaceExpr::Literal {
+                text: value.render(),
+            },
             HirExpr::Var { name } => SurfaceExpr::Local { name: name.clone() },
             HirExpr::Mem { cell } => SurfaceExpr::Field { cell: cell.clone() },
             HirExpr::Unary { op, operand } => SurfaceExpr::Unary {
@@ -1087,7 +1089,7 @@ fn collect_condition_instructions(expression: &SurfaceConditionExpr, out: &mut V
 mod tests {
     use super::*;
     use crate::emit::emit_pseudo_source;
-    use crate::hir::structurize_function;
+    use crate::hir::{HirConst, structurize_function};
     use crate::types::{NirFunction, NirOp};
 
     fn instr(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
@@ -1303,7 +1305,7 @@ mod tests {
 
     fn nested_hir_expression(depth: usize) -> HirExpr {
         let mut expression: HirExpr = HirExpr::Const {
-            text: "1".to_owned(),
+            value: HirConst::counted(1),
         };
         for _index in 0..depth {
             expression = HirExpr::Unary {

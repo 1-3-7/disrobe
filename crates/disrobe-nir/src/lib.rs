@@ -24,8 +24,8 @@ pub use effects::{
 };
 pub use emit::{EmitError, emit_pseudo_source};
 pub use hir::{
-    HirCond, HirCondExpr, HirCondRoute, HirCondTest, HirDispatchCase, HirExpr, HirFunction,
-    HirInstrStmt, HirLeafStmt, HirModule, HirStmt, structurize_function,
+    HirCond, HirCondExpr, HirCondRoute, HirCondTest, HirConst, HirDispatchCase, HirExpr,
+    HirFunction, HirInstrStmt, HirLeafStmt, HirModule, HirStmt, structurize_function,
     structurize_function_with_budget, structurize_module,
 };
 pub use reducible::{CnsBudget, HirDecline, SplitBudget, SplitRefusal, StructureFailure};

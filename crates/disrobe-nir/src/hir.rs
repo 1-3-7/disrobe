@@ -28,10 +28,49 @@ const CONDITION_FOLDABLE_EFFECTS: HardEffects = HardEffects::empty()
     .with(HardEffect::FlagWrite);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "constant", rename_all = "kebab-case")]
+pub enum HirConst {
+    Integer { value: i128 },
+    Literal { text: String },
+}
+
+impl HirConst {
+    #[must_use]
+    pub fn counted(value: u32) -> Self {
+        Self::Integer {
+            value: i128::from(value),
+        }
+    }
+
+    #[must_use]
+    pub fn recognized(text: &str) -> Self {
+        Self::Literal {
+            text: text.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::Integer { value } => value.to_string(),
+            Self::Literal { text } => text.clone(),
+        }
+    }
+
+    #[must_use]
+    pub const fn integer(&self) -> Option<i128> {
+        match self {
+            Self::Integer { value } => Some(*value),
+            Self::Literal { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HirExpr {
     Const {
-        text: String,
+        value: HirConst,
     },
     Var {
         name: String,
@@ -1617,10 +1656,10 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
             vec![
                 operand_expr(src, lang),
                 HirExpr::Const {
-                    text: offset.to_string(),
+                    value: HirConst::counted(*offset),
                 },
                 HirExpr::Const {
-                    text: size.to_string(),
+                    value: HirConst::counted(*size),
                 },
             ],
             lang,
@@ -1642,13 +1681,13 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
             let mut args: Vec<HirExpr> = vec![
                 operand_expr(value, lang),
                 HirExpr::Const {
-                    text: offset.to_string(),
+                    value: HirConst::counted(*offset),
                 },
                 HirExpr::Const {
-                    text: size.to_string(),
+                    value: HirConst::counted(*size),
                 },
                 HirExpr::Const {
-                    text: cell_size.to_string(),
+                    value: HirConst::counted(*cell_size),
                 },
             ];
             if !*zero_upper {
@@ -1690,13 +1729,13 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
                 operand_expr(high, lang),
                 operand_expr(low, lang),
                 HirExpr::Const {
-                    text: high_size.to_string(),
+                    value: HirConst::counted(*high_size),
                 },
                 HirExpr::Const {
-                    text: low_size.to_string(),
+                    value: HirConst::counted(*low_size),
                 },
                 HirExpr::Const {
-                    text: size.to_string(),
+                    value: HirConst::counted(*size),
                 },
             ],
             lang,
@@ -1889,7 +1928,7 @@ fn operand_expr(operand: &str, _lang: SourceLang) -> HirExpr {
     }
     if is_constant_literal(trimmed) {
         return HirExpr::Const {
-            text: trimmed.to_owned(),
+            value: HirConst::recognized(trimmed),
         };
     }
     HirExpr::Var {
@@ -2767,7 +2806,7 @@ mod tests {
             .stack_size(1_048_576)
             .spawn(|| {
                 let mut expression: HirExpr = HirExpr::Const {
-                    text: "1".to_owned(),
+                    value: HirConst::counted(1),
                 };
                 for _index in 0..100_000 {
                     expression = HirExpr::Unary {
@@ -2797,5 +2836,101 @@ mod tests {
             })
             .expect("spawn hir region drop thread");
         handle.join().expect("hir region drop thread");
+    }
+
+    fn intrinsic_constants(stmt: &HirInstrStmt) -> Vec<Option<i128>> {
+        let HirInstrStmt::Assign {
+            value: HirExpr::Call { args, .. },
+            ..
+        } = stmt
+        else {
+            panic!("expected an intrinsic call assignment, got {stmt:?}");
+        };
+        args.iter()
+            .filter_map(|argument: &HirExpr| match argument {
+                HirExpr::Const { value } => Some(value.integer()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn subpiece_widths_reach_the_hir_as_integers_rather_than_as_rendered_text() {
+        let lowered: HirInstrStmt = lower_instr(
+            &instr(
+                0x1000,
+                NirOp::Subpiece {
+                    src: "rax".to_owned(),
+                    offset: 8,
+                    size: 16,
+                },
+                "subpiece",
+                &["rbx"],
+            ),
+            SourceLang::NativeX86,
+        );
+        assert_eq!(
+            intrinsic_constants(&lowered),
+            vec![Some(8), Some(16)],
+            "the producer holds offset and size as u32, so the hir must carry them as integers"
+        );
+    }
+
+    #[test]
+    fn deposit_widths_reach_the_hir_as_integers_rather_than_as_rendered_text() {
+        let lowered: HirInstrStmt = lower_instr(
+            &instr(
+                0x1000,
+                NirOp::Deposit {
+                    cell: "rax".to_owned(),
+                    value: "rbx".to_owned(),
+                    offset: 4,
+                    size: 12,
+                    cell_size: 64,
+                    zero_upper: true,
+                },
+                "deposit",
+                &["rax"],
+            ),
+            SourceLang::NativeX86,
+        );
+        assert_eq!(
+            intrinsic_constants(&lowered),
+            vec![Some(4), Some(12), Some(64)],
+            "deposit offset, size and cell size are u32 on the producing side"
+        );
+    }
+
+    #[test]
+    fn a_constant_recognized_from_operand_text_is_not_reported_as_a_known_integer() {
+        let classified: HirExpr = operand_expr("0x1f", SourceLang::NativeX86);
+        let HirExpr::Const { value } = &classified else {
+            panic!("a numeric operand must classify as a constant, got {classified:?}");
+        };
+        assert_eq!(
+            value.integer(),
+            None,
+            "operand_expr only inspected text, so it must not claim to know the integer"
+        );
+        assert_eq!(
+            value.render(),
+            "0x1f",
+            "a recognized literal renders exactly the bytes the producer supplied"
+        );
+    }
+
+    #[test]
+    fn a_counted_width_and_a_recognized_literal_are_distinguishable_at_the_same_rendering() {
+        let counted: HirConst = HirConst::counted(31);
+        let recognized: HirConst = HirConst::recognized("31");
+        assert_eq!(
+            counted.render(),
+            recognized.render(),
+            "both render as 31, which is why text alone cannot tell them apart"
+        );
+        assert_ne!(
+            counted, recognized,
+            "a width the producer knew and a literal read out of text must not be the same value"
+        );
     }
 }
