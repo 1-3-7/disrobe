@@ -664,9 +664,11 @@ jobs:
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
         run: cargo build --release -p disrobe-cli --bin disrobe
-      - name: per-code-object recompile-equivalence floor (>= 96.60% on the pinned 3.14 corpus)
+      - name: per-code-object recompile-equivalence floor (>= 96.65% on the pinned 3.14 corpus)
+        env:
+          DISROBE_REQUIRE_PY_314: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
-      - name: per-code-object recompile-equivalence floor (>= 95.97% on the 3.15 band)
+      - name: per-code-object recompile-equivalence floor (>= 96.11% on the 3.15 band)
         env:
           DISROBE_REQUIRE_PY_315: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
@@ -698,7 +700,7 @@ jobs:
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
         run: cargo build --release -p disrobe-cli --bin disrobe
-      - name: per-code-object recompile-equivalence floor (>= 94.72% on the 3.10 band)
+      - name: per-code-object recompile-equivalence floor (>= 95.71% on the 3.10 band)
         env:
           DISROBE_REQUIRE_PY_310: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
