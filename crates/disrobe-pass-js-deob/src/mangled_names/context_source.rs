@@ -10,19 +10,21 @@ impl ContextNameSource {
     }
 }
 
+const STRING_EVIDENCE_CONFIDENCE: Confidence = Confidence(85);
+
 impl NameSource for ContextNameSource {
     fn suggest(&self, _scope: ScopeKey, context: &Context) -> Option<Suggestion> {
         if let Some(s) = context.nearby_strings.iter().find(|s| is_ident_like(s)) {
             return Some(Suggestion {
                 name: to_camel_case(s, context.role),
-                confidence: Confidence::HIGH,
+                confidence: STRING_EVIDENCE_CONFIDENCE,
                 source_label: self.label(),
             });
         }
         if let Some(assigned) = context.assigned_from.iter().next() {
             return Some(Suggestion {
                 name: to_camel_case(assigned, context.role),
-                confidence: Confidence::MEDIUM,
+                confidence: Confidence::LOW,
                 source_label: self.label(),
             });
         }
@@ -80,6 +82,8 @@ fn to_camel_case(input: &str, role: SymbolRole) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::mangled_names::ConfidenceTier;
+
     use super::*;
 
     #[test]
@@ -89,7 +93,16 @@ mod tests {
         ctx.nearby_strings.insert("user-login-handler".to_owned());
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("got suggestion");
         assert_eq!(s.name, "userLoginHandler");
-        assert_eq!(s.confidence, Confidence::HIGH);
+        assert_eq!(
+            s.confidence.tier(),
+            ConfidenceTier::High,
+            "a string the author wrote is top-band evidence"
+        );
+        assert!(
+            s.confidence > Confidence::HIGH,
+            "a string carries the author's own word, so it must outrank a member-keyword type \
+             guess rather than tie with it and be decided by source registration order"
+        );
     }
 
     #[test]

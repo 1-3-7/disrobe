@@ -11,7 +11,7 @@ impl Default for HeuristicNameSource {
     fn default() -> Self {
         let mut member_keywords: BTreeMap<&'static str, (&'static str, Confidence)> =
             BTreeMap::new();
-        member_keywords.insert("push", ("list", Confidence::HIGH));
+        member_keywords.insert("push", ("list", Confidence::MEDIUM));
         member_keywords.insert("then", ("promise", Confidence::HIGH));
         member_keywords.insert("catch", ("promise", Confidence::HIGH));
         member_keywords.insert("finally", ("promise", Confidence::HIGH));
@@ -64,13 +64,19 @@ impl HeuristicNameSource {
             |(_, (conf, hits)): &(&&'static str, &(Confidence, usize))| (conf.0, *hits),
         )?;
         let effective: Confidence = if *hits >= 2 && *conf < Confidence::HIGH {
-            Confidence::HIGH
+            Confidence(
+                conf.0
+                    .saturating_add(AGREEMENT_BONUS)
+                    .min(Confidence::HIGH.0.saturating_sub(1)),
+            )
         } else {
             *conf
         };
         Some((name, effective))
     }
 }
+
+const AGREEMENT_BONUS: u8 = 15;
 
 impl NameSource for HeuristicNameSource {
     fn suggest(&self, _scope: ScopeKey, context: &Context) -> Option<Suggestion> {
@@ -102,6 +108,64 @@ mod tests {
         assert!(
             src.suggest(ScopeKey(0), &ctx).is_none(),
             "nothing about this binding is known, so naming it would be invention"
+        );
+    }
+
+    #[test]
+    fn a_verb_any_object_can_define_does_not_claim_the_top_band() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        ctx.member_accesses.insert("push".to_owned());
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("push resolves");
+        assert!(
+            s.confidence < Confidence::HIGH,
+            "any object can define `push`, so it infers a type at best and must not outrank \
+             evidence that read the program; got {:?}",
+            s.confidence
+        );
+    }
+
+    #[test]
+    fn two_agreeing_generic_verbs_still_do_not_reach_the_top_band() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        ctx.member_accesses.insert("push".to_owned());
+        ctx.member_accesses.insert("length".to_owned());
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("both resolve");
+        assert!(
+            s.confidence < Confidence::HIGH,
+            "`push` and `length` are the same signal said twice, not two independent \
+             observations, so their agreement must not manufacture top-band confidence; got {:?}",
+            s.confidence
+        );
+    }
+
+    #[test]
+    fn agreement_still_counts_for_something() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut one: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        one.member_accesses.insert("push".to_owned());
+        let mut two: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        two.member_accesses.insert("push".to_owned());
+        two.member_accesses.insert("length".to_owned());
+        let single: Suggestion = src.suggest(ScopeKey(0), &one).expect("one resolves");
+        let agreeing: Suggestion = src.suggest(ScopeKey(0), &two).expect("two resolve");
+        assert!(
+            agreeing.confidence > single.confidence,
+            "corroboration should raise confidence even when it cannot reach the top band"
+        );
+    }
+
+    #[test]
+    fn a_narrow_api_receiver_keeps_the_top_band() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        ctx.member_accesses.insert("querySelector".to_owned());
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("resolves");
+        assert_eq!(
+            s.confidence,
+            Confidence::HIGH,
+            "`querySelector` names a specific API, so the receiver really is a DOM root"
         );
     }
 
