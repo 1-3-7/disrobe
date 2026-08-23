@@ -84,6 +84,9 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         if let Some(name) = assigned_from_name(symbol_id, symbols, nodes) {
             ctx.assigned_from.insert(name);
         }
+        for text in declaration_string_literals(symbol_id, symbols, nodes) {
+            ctx.nearby_strings.insert(text);
+        }
         contexts.insert(symbol_id, ctx);
     }
 
@@ -284,6 +287,50 @@ fn assigned_from_name(
             _ => None,
         },
         _ => None,
+    }
+}
+
+const MAX_NEARBY_STRINGS: usize = 4;
+const MAX_STRING_SEARCH_DEPTH: usize = 8;
+
+fn declaration_string_literals(
+    symbol_id: SymbolId,
+    symbols: &SymbolTable,
+    nodes: &AstNodes<'_>,
+) -> Vec<String> {
+    let decl_node: NodeId = symbols.get_declaration(symbol_id);
+    let AstKind::VariableDeclarator(declarator) = nodes.kind(decl_node) else {
+        return Vec::new();
+    };
+    let Some(init): Option<&Expression<'_>> = declarator.init.as_ref() else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = Vec::new();
+    collect_string_literals(init, 0, &mut found);
+    found
+}
+
+fn collect_string_literals(expr: &Expression<'_>, depth: usize, found: &mut Vec<String>) {
+    if depth >= MAX_STRING_SEARCH_DEPTH || found.len() >= MAX_NEARBY_STRINGS {
+        return;
+    }
+    match expr.get_inner_expression() {
+        Expression::StringLiteral(literal) => found.push(literal.value.as_str().to_owned()),
+        Expression::CallExpression(call) => {
+            for argument in &call.arguments {
+                if let Some(inner) = argument.as_expression() {
+                    collect_string_literals(inner, depth.saturating_add(1), found);
+                }
+            }
+        }
+        Expression::NewExpression(construction) => {
+            for argument in &construction.arguments {
+                if let Some(inner) = argument.as_expression() {
+                    collect_string_literals(inner, depth.saturating_add(1), found);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

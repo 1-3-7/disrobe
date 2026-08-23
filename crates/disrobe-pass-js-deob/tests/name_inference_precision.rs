@@ -374,7 +374,7 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/widget|n|node|counter|medium",
     "esbuild/widget|o|options|render|medium",
     "esbuild/widget|r|result|index|medium",
-    "esbuild/widget|s|target|button|high",
+    "esbuild/widget|s|button|button|high",
     "esbuild/widget|t|list|listeners|high",
     "esbuild/widget|u|root|root|high",
     "esbuild/widget|v|value|mountWidget|medium",
@@ -427,5 +427,5 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "terser/widget|t|root|root|high",
     "terser/widget|t|target|callback|medium",
     "terser/widget|t|target|event|medium",
-    "terser/widget|u|target_2|button|high",
+    "terser/widget|u|button|button|high",
 ];
