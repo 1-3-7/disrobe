@@ -33,6 +33,13 @@ const STRUCT_RETURN_MEMBER_ACCESS: &str = "__sret.";
 const TYPEDEF_STRUCT_HEAD: &str = "typedef struct {\n";
 const TYPEDEF_FIELD_PREFIX: &str = "    ";
 const TYPEDEF_CLOSE: &str = "} ";
+const STRUCT_POINTER_MARK: &str = "*";
+const TYPEDEF_STRUCT_HEAD_PACKED: &str = "typedef struct __attribute__((packed, may_alias)) {
+";
+const LIFTED_AGGREGATE_TYPE_PREFIX: &str = "recovered_struct_";
+const LIFTED_AGGREGATE_TYPE_SUFFIX: &str = "_t";
+const LIFTED_AGGREGATE_FIELD_PREFIX: &str = "field_";
+const MS_X64_REGISTER_BODY_NAMES: [&str; 4] = ["r_rcx", "r_rdx", "r_r8", "r_r9"];
 const LOCAL_DECLARATION_PREFIX: &str = "    uint64_t ";
 const REGISTER_BINDING_PREFIX: &str = "    uint64_t r_";
 const FLOAT_REGISTER_BINDING_PREFIX: &str = "    uint64_t x_";
@@ -286,42 +293,50 @@ impl ManagedReturn {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ManagedSlot {
     InstanceReference,
     Value(ManagedValue),
+    StructPointer(ManagedStruct),
 }
 
 impl ManagedSlot {
-    const fn c_type(self) -> &'static str {
+    fn declaration(&self, index: usize) -> String {
         match self {
-            Self::InstanceReference => OBJECT_REFERENCE_C_TYPE,
-            Self::Value(value) => value.c_type(),
+            Self::InstanceReference => format!("{OBJECT_REFERENCE_C_TYPE} a{index}"),
+            Self::Value(value) => format!("{} a{index}", value.c_type()),
+            Self::StructPointer(managed) => {
+                format!("{} {STRUCT_POINTER_MARK}a{index}", managed.name)
+            }
         }
     }
 
-    const fn lifted_c_type(self) -> &'static str {
+    const fn lifted_c_type(&self) -> &'static str {
         match self {
-            Self::InstanceReference | Self::Value(ManagedValue::Integral(_)) => {
-                GENERIC_PARAMETER_TYPE
-            }
+            Self::InstanceReference
+            | Self::Value(ManagedValue::Integral(_))
+            | Self::StructPointer(_) => GENERIC_PARAMETER_TYPE,
             Self::Value(ManagedValue::Floating(width)) => width.c_type(),
         }
     }
 
-    const fn floating(self) -> Option<ManagedFloat> {
+    const fn floating(&self) -> Option<ManagedFloat> {
         match self {
-            Self::InstanceReference | Self::Value(ManagedValue::Integral(_)) => None,
-            Self::Value(ManagedValue::Floating(width)) => Some(width),
+            Self::InstanceReference
+            | Self::Value(ManagedValue::Integral(_))
+            | Self::StructPointer(_) => None,
+            Self::Value(ManagedValue::Floating(width)) => Some(*width),
         }
     }
 
-    const fn reinterpreted_integral(self) -> Option<ManagedPrimitive> {
+    const fn reinterpreted_integral(&self) -> Option<ManagedPrimitive> {
         match self {
-            Self::InstanceReference | Self::Value(ManagedValue::Floating(_)) => None,
+            Self::InstanceReference
+            | Self::Value(ManagedValue::Floating(_))
+            | Self::StructPointer(_) => None,
             Self::Value(ManagedValue::Integral(primitive)) => {
                 if primitive.reinterprets_unsigned_bits() {
-                    Some(primitive)
+                    Some(*primitive)
                 } else {
                     None
                 }
@@ -329,10 +344,18 @@ impl ManagedSlot {
         }
     }
 
-    const fn is_boolean(self) -> bool {
+    fn is_boolean(&self) -> bool {
         match self {
             Self::InstanceReference | Self::Value(ManagedValue::Floating(_)) => false,
             Self::Value(ManagedValue::Integral(primitive)) => primitive.is_boolean(),
+            Self::StructPointer(managed) => managed.uses_boolean(),
+        }
+    }
+
+    const fn managed_struct(&self) -> Option<&ManagedStruct> {
+        match self {
+            Self::InstanceReference | Self::Value(_) => None,
+            Self::StructPointer(managed) => Some(managed),
         }
     }
 }
@@ -389,7 +412,7 @@ impl ManagedPlan {
             slots.push(ManagedSlot::InstanceReference);
         }
         for parameter in &signature.parameter_types {
-            slots.push(ManagedSlot::Value(resolve_value(*parameter, types)?));
+            slots.push(resolve_slot(*parameter, types, layouts)?);
         }
         Ok(Self {
             slots,
@@ -398,8 +421,8 @@ impl ManagedPlan {
     }
 
     fn include_prefix(&self, preamble: &str) -> String {
-        let uses_boolean: bool = self.return_type.is_boolean()
-            || self.slots.iter().copied().any(ManagedSlot::is_boolean);
+        let uses_boolean: bool =
+            self.return_type.is_boolean() || self.slots.iter().any(ManagedSlot::is_boolean);
         if uses_boolean && !preamble.contains(STDBOOL_INCLUDE) {
             format!("{STDBOOL_INCLUDE}{preamble}")
         } else {
@@ -415,12 +438,11 @@ impl ManagedPlan {
             .iter()
             .enumerate()
             .map(|(index, slot): (usize, &ManagedSlot)| {
-                let rendered: &'static str = if lifted {
-                    slot.lifted_c_type()
+                if lifted {
+                    format!("{} a{index}", slot.lifted_c_type())
                 } else {
-                    slot.c_type()
-                };
-                format!("{rendered} a{index}")
+                    slot.declaration(index)
+                }
             })
             .collect::<Vec<String>>()
             .join(", ")
@@ -595,6 +617,118 @@ fn resolve_value(signature: AotTypeSignature, types: &[AotType]) -> Reattached<M
         .ok_or(AotSignatureAbstention::TypeOutsidePrimitiveTable)
 }
 
+const fn passed_in_register(size: usize) -> bool {
+    matches!(size, 1 | 2 | 4 | 8)
+}
+
+fn resolve_slot(
+    signature: AotTypeSignature,
+    types: &[AotType],
+    layouts: &[AotTypeLayout],
+) -> Reattached<ManagedSlot> {
+    let declaration: &AotType = resolve_declaration(signature, types)?;
+    let scalar: AotSignatureAbstention = match resolve_value(signature, types) {
+        Ok(value) => return Ok(ManagedSlot::Value(value)),
+        Err(abstention) => abstention,
+    };
+    let managed: ManagedStruct = resolve_struct(declaration, types, layouts)
+        .map_err(|_error: AotSignatureAbstention| scalar)?;
+    if passed_in_register(managed.size) {
+        return Err(AotSignatureAbstention::TypeOutsidePrimitiveTable);
+    }
+    Ok(ManagedSlot::StructPointer(managed))
+}
+
+fn lifted_aggregate_widths(body: &str, index: &str) -> Reattached<Vec<(usize, usize)>> {
+    let unverified = || AotSignatureAbstention::TypeOutsidePrimitiveTable;
+    let head: &str = TYPEDEF_STRUCT_HEAD_PACKED;
+    let close: String = format!(
+        "{TYPEDEF_CLOSE}{LIFTED_AGGREGATE_TYPE_PREFIX}{index}{LIFTED_AGGREGATE_TYPE_SUFFIX}{STATEMENT_TERMINATOR}"
+    );
+    let at: usize = body.find(close.as_str()).ok_or_else(unverified)?;
+    let opened: usize = body
+        .get(..at)
+        .and_then(|before: &str| before.rfind(head))
+        .ok_or_else(unverified)?;
+    let start: usize = opened.checked_add(head.len()).ok_or_else(unverified)?;
+    let members: &str = body.get(start..at).ok_or_else(unverified)?;
+    let mut fields: Vec<(usize, usize)> = Vec::new();
+    for line in members.lines() {
+        let trimmed: &str = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (scalar, member): (&str, &str) = trimmed
+            .strip_suffix(';')
+            .and_then(|entry: &str| entry.split_once(' '))
+            .ok_or_else(unverified)?;
+        let offset_text: &str = member
+            .strip_prefix(LIFTED_AGGREGATE_FIELD_PREFIX)
+            .ok_or_else(unverified)?;
+        let offset: usize = usize::from_str_radix(offset_text, 16)
+            .map_err(|_error: std::num::ParseIntError| unverified())?;
+        let width: usize = match scalar {
+            "uint8_t" => 1,
+            "uint16_t" => 2,
+            "uint32_t" => 4,
+            "uint64_t" => 8,
+            _ => return Err(unverified()),
+        };
+        fields.push((offset, width));
+    }
+    if fields.is_empty() {
+        return Err(unverified());
+    }
+    Ok(fields)
+}
+
+fn aggregate_agrees(body: &str, register: &str, managed: &ManagedStruct) -> Reattached<bool> {
+    let unverified = || AotSignatureAbstention::TypeOutsidePrimitiveTable;
+    let mut found: Option<String> = None;
+    for line in body.lines() {
+        let trimmed: &str = line.trim();
+        let Some(rest): Option<&str> = trimmed.strip_prefix(LIFTED_AGGREGATE_TYPE_PREFIX) else {
+            continue;
+        };
+        let Some((index, tail)): Option<(&str, &str)> =
+            rest.split_once(LIFTED_AGGREGATE_TYPE_SUFFIX)
+        else {
+            continue;
+        };
+        let binding: String = format!(
+            " *{LIFTED_AGGREGATE_TYPE_PREFIX}{index} = ({LIFTED_AGGREGATE_TYPE_PREFIX}{index}{LIFTED_AGGREGATE_TYPE_SUFFIX} *)(uintptr_t){register};"
+        );
+        if tail != binding {
+            continue;
+        }
+        if found.is_some() {
+            return Err(unverified());
+        }
+        found = Some(index.to_owned());
+    }
+    let Some(index): Option<String> = found else {
+        return Ok(false);
+    };
+    let lifted: Vec<(usize, usize)> = lifted_aggregate_widths(body, index.as_str())?;
+    let mut offset: usize = 0;
+    let mut declared: Vec<(usize, usize)> = Vec::new();
+    for field in &managed.fields {
+        declared.push((offset, field.value.size()));
+        offset = offset
+            .checked_add(field.value.size())
+            .ok_or(AotSignatureAbstention::AllocationFailed)?;
+    }
+    if lifted.len() > declared.len() {
+        return Err(unverified());
+    }
+    for entry in &lifted {
+        if !declared.contains(entry) {
+            return Err(unverified());
+        }
+    }
+    Ok(true)
+}
+
 fn resolve_return(
     signature: AotTypeSignature,
     types: &[AotType],
@@ -648,7 +782,7 @@ fn struct_return_agrees(recovery: &LeafRecovery, managed: &ManagedStruct) -> Rea
 
 fn slot_binding_agrees(
     index: usize,
-    slot: ManagedSlot,
+    slot: &ManagedSlot,
     binding: PseudoParameterBinding,
 ) -> Reattached<()> {
     if let PseudoParameterBinding::UnobservedMsX64 { .. } = binding {
@@ -718,10 +852,10 @@ fn bindings_agree(recovery: &LeafRecovery, slots: &[ManagedSlot]) -> Reattached<
     bindings
         .iter()
         .copied()
-        .zip(slots.iter().copied())
+        .zip(slots.iter())
         .enumerate()
         .try_for_each(
-            |(index, (binding, slot)): (usize, (PseudoParameterBinding, ManagedSlot))| {
+            |(index, (binding, slot)): (usize, (PseudoParameterBinding, &ManagedSlot))| {
                 let physical: usize = index
                     .checked_add(hidden_slots)
                     .ok_or(AotSignatureAbstention::ArgumentPositionsExceeded)?;
@@ -775,12 +909,65 @@ fn split_prototype(source: &str, plan: &ManagedPlan) -> Reattached<(String, Stri
         .get(at.checked_add(lifted.len()).ok_or_else(isolated)?..)
         .ok_or_else(isolated)?;
     let preamble: String = rewrite_struct_typedef(plan.include_prefix(preamble).as_str(), plan)?;
+    let preamble: String = parameter_typedefs(preamble.as_str(), plan)?;
     let managed: String = format!(
         "{preamble}{}{PROTOTYPE_NAME}{}{PROTOTYPE_TAIL}",
         plan.return_type.c_type(),
         plan.parameter_list(false)
     );
     Ok((managed, body.to_owned()))
+}
+
+fn parameter_layouts_are_evidenced(
+    body: &str,
+    plan: &ManagedPlan,
+    hidden_slots: usize,
+) -> Reattached<()> {
+    let unverified = || AotSignatureAbstention::TypeOutsidePrimitiveTable;
+    for (index, slot) in plan.slots.iter().enumerate() {
+        let Some(managed): Option<&ManagedStruct> = slot.managed_struct() else {
+            continue;
+        };
+        let physical: usize = index.checked_add(hidden_slots).ok_or_else(unverified)?;
+        let register: &str = MS_X64_REGISTER_BODY_NAMES
+            .get(physical)
+            .copied()
+            .ok_or_else(unverified)?;
+        if aggregate_agrees(body, register, managed)? {
+            continue;
+        }
+        let returned: bool = plan
+            .return_type
+            .managed_struct()
+            .is_some_and(|declared: &ManagedStruct| declared == managed);
+        if !returned {
+            return Err(unverified());
+        }
+    }
+    Ok(())
+}
+
+fn parameter_typedefs(preamble: &str, plan: &ManagedPlan) -> Reattached<String> {
+    let collides = || AotSignatureAbstention::PrototypeNotIsolated;
+    let mut rendered: String = preamble.to_owned();
+    let mut emitted: Vec<&ManagedStruct> = plan.return_type.managed_struct().into_iter().collect();
+    for slot in &plan.slots {
+        let Some(managed): Option<&ManagedStruct> = slot.managed_struct() else {
+            continue;
+        };
+        if emitted.contains(&managed) {
+            continue;
+        }
+        if emitted
+            .iter()
+            .any(|placed: &&ManagedStruct| placed.name == managed.name)
+        {
+            return Err(collides());
+        }
+        rendered.push_str(managed.managed_typedef().as_str());
+        emitted.push(managed);
+    }
+    Ok(rendered)
 }
 
 fn rewrite_struct_typedef(preamble: &str, plan: &ManagedPlan) -> Reattached<String> {
@@ -867,13 +1054,20 @@ fn rewrite_argument_bindings(body: &str, plan: &ManagedPlan) -> Reattached<Strin
         if !line.starts_with(REGISTER_BINDING_PREFIX) || !line.ends_with(suffix.as_str()) {
             return Err(isolated());
         }
-        let Some(primitive): Option<ManagedPrimitive> = slot.reinterpreted_integral() else {
-            continue;
-        };
         let head: String = line
             .strip_suffix(suffix.as_str())
             .ok_or_else(isolated)?
             .to_owned();
+        if slot.managed_struct().is_some() {
+            let target: &mut String = lines.get_mut(line_index).ok_or_else(isolated)?;
+            *target = format!(
+                "{head} = ({GENERIC_PARAMETER_TYPE})({OBJECT_REFERENCE_C_TYPE}){argument};\n"
+            );
+            continue;
+        }
+        let Some(primitive): Option<ManagedPrimitive> = slot.reinterpreted_integral() else {
+            continue;
+        };
         let target: &mut String = lines.get_mut(line_index).ok_or_else(isolated)?;
         *target = format!("{head} = ({}){argument};\n", primitive.unsigned_c_type());
     }
@@ -949,6 +1143,7 @@ pub(super) fn reassociate(
     return_agrees(recovery, &plan.return_type)?;
     bindings_agree(recovery, &plan.slots)?;
     let (prototype, body): (String, String) = split_prototype(&recovery.source, &plan)?;
+    parameter_layouts_are_evidenced(&body, &plan, usize::from(recovery.sret.is_some()))?;
     let body: String = rewrite_struct_return_local(&body, &plan)?;
     let body: String = rewrite_argument_bindings(&body, &plan)?;
     let body: String = rewrite_return(&body, &plan)?;
@@ -1382,7 +1577,7 @@ mod tests {
             scalar_type: PseudoScalarType::Double,
         };
 
-        for slot in [INTEGRAL, FLOATING, ManagedSlot::InstanceReference] {
+        for slot in &[INTEGRAL, FLOATING, ManagedSlot::InstanceReference] {
             assert_eq!(
                 slot_binding_agrees(1, slot, UNOBSERVED),
                 Err(AotSignatureAbstention::UnobservedArgumentPosition),
@@ -1394,26 +1589,26 @@ mod tests {
                 "{slot:?}"
             );
         }
-        assert_eq!(slot_binding_agrees(1, INTEGRAL, RDX), Ok(()));
+        assert_eq!(slot_binding_agrees(1, &INTEGRAL, RDX), Ok(()));
         assert_eq!(
-            slot_binding_agrees(1, ManagedSlot::InstanceReference, RDX),
+            slot_binding_agrees(1, &ManagedSlot::InstanceReference, RDX),
             Ok(())
         );
         assert_eq!(
-            slot_binding_agrees(1, FLOATING, RDX),
+            slot_binding_agrees(1, &FLOATING, RDX),
             Err(AotSignatureAbstention::FloatingPointRegisterDisagreement)
         );
         assert_eq!(
-            slot_binding_agrees(0, INTEGRAL, RDX),
+            slot_binding_agrees(0, &INTEGRAL, RDX),
             Err(AotSignatureAbstention::ArgumentRegisterDisagreement)
         );
-        assert_eq!(slot_binding_agrees(1, FLOATING, XMM1_DOUBLE), Ok(()));
+        assert_eq!(slot_binding_agrees(1, &FLOATING, XMM1_DOUBLE), Ok(()));
         assert_eq!(
-            slot_binding_agrees(0, FLOATING, XMM1_DOUBLE),
+            slot_binding_agrees(0, &FLOATING, XMM1_DOUBLE),
             Err(AotSignatureAbstention::FloatingPointRegisterDisagreement)
         );
         assert_eq!(
-            slot_binding_agrees(1, INTEGRAL, XMM1_DOUBLE),
+            slot_binding_agrees(1, &INTEGRAL, XMM1_DOUBLE),
             Err(AotSignatureAbstention::ArgumentRegisterDisagreement)
         );
         for scalar_type in [
@@ -1424,7 +1619,7 @@ mod tests {
             assert_eq!(
                 slot_binding_agrees(
                     1,
-                    FLOATING,
+                    &FLOATING,
                     PseudoParameterBinding::FloatingPoint {
                         register_index: 1,
                         scalar_type,
@@ -1435,7 +1630,7 @@ mod tests {
             );
         }
         assert_eq!(
-            slot_binding_agrees(4, INTEGRAL, RDX),
+            slot_binding_agrees(4, &INTEGRAL, RDX),
             Err(AotSignatureAbstention::ArgumentRegisterDisagreement)
         );
     }

@@ -1,0 +1,40 @@
+Source: managed_abi_param_net9_x86_64.cs
+Project: managed_abi_param_net9_x86_64.csproj.txt
+Target: net9.0, win-x64, PE32+, AMD64, NativeAOT metadata 10.1
+SDK: .NET SDK 9.0.316
+Compiler: Microsoft.DotNet.ILCompiler 9.0.18, runtime.win-x64.microsoft.dotnet.ilcompiler 9.0.18
+Linker: MSVC 14.44.35207 Hostx64\x64\link.exe
+Runtime source tag: https://github.com/dotnet/runtime/tree/v9.0.18
+Managed calling convention: https://raw.githubusercontent.com/dotnet/runtime/v9.0.18/docs/design/coreclr/botr/clr-abi.md
+Microsoft x64 aggregate parameters: a struct or union of 8, 16, 32 or 64 bits is passed as if it were an integer of the same size, so it travels by value in the argument register. A struct of any other size is passed as a pointer to memory the caller allocated, and the callee reads the value through that pointer.
+Microsoft x64 argument registers: RCX, RDX, R8, R9 for integer and pointer arguments
+Microsoft x64 hidden struct return: a return value larger than eight bytes is written through a caller-supplied pointer passed in RCX, which shifts every declared argument to the next position
+Recovered C form: a by-value managed struct parameter of a size the runtime passes indirectly is spelled in the recovered C as a pointer to the struct, because that is what the argument register holds and what the recovered body reads through. Spelling it as a by-value C parameter would describe the same ABI but would not describe the body.
+ECMA-335 field attributes: ECMA-335 6th edition, II.23.1.5 FieldAttributes, Static 0x0010 and Literal 0x0040 exclude a field from the instance layout
+ECMA-335 type layout: ECMA-335 6th edition, II.23.1.15 TypeAttributes, LayoutMask 0x00000018 and SequentialLayout 0x00000008
+Reflection rooting: each probe struct is named in a direct typeof(T).GetFields call so ILCompiler keeps its Field records; without that call the field metadata is trimmed and the field names are absent from the image
+Command: dotnet publish managed_abi_param_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Build directory: the project, Program.cs and publish output live outside the repository; PathMap rewrites the project directory to C:\src\managed_abi_param_net9_x86_64 so no build path is embedded
+Path leak scan: the committed image carries zero occurrences of the byte sequence C:\ in ASCII and in UTF-16LE
+Source SHA-256: B75C761DC4AC5482E76F71D796213C1AB9E6EFEB784BCF7560A04F7BDCD7B986
+Project SHA-256: CD78F8CE06288B347C0499F1E6C0A377B2DDBA9CD6453D48DB24B3EEA04E447A
+Executable SHA-256: 42A795E420DFCCAF7010F9354AC2076B1BF679B41D55B432E53547D84A1C2C48
+Full link map SHA-256: ECEC4DECE293D9E8F976E5F2A47F17F22F617884DEBC8D2CA504192D6F0DD44F
+Unwind evidence tool: dumpbin 14.44.35228.0, command dumpbin -nologo -unwindinfo publish\managed_abi_param_net9_x86_64.exe
+LLVM evidence tool: llvm-objdump 19.1.7, SHA-256 4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022
+Disassembly command: llvm-objdump -d --start-address=<begin> --stop-address=<end> publish\managed_abi_param_net9_x86_64.exe
+Link symbol for the constructor: the linker spells the .ctor metadata name _ctor, so its evidence key is ManagedParamProbe._ctor
+ManagedParamProbe._ctor managed signature: instance System.Void .ctor(System.Int64)
+ManagedParamProbe.Sum managed signature: static System.Int64 Sum(ManagedPair)
+ManagedParamProbe.Scale managed signature: static System.Int64 Scale(ManagedPair, System.Int64)
+ManagedParamProbe.Wide managed signature: static System.Int64 Wide(ManagedTriple)
+ManagedParamProbe.Echo managed signature: static ManagedPair Echo(ManagedPair)
+ManagedParamProbe.Narrow managed signature: static System.Int32 Narrow(ManagedSmall)
+ManagedParamProbe.Blend managed signature: static System.Int64 Blend(ManagedMixed)
+ManagedParamProbe.Weighted managed signature: instance System.Int64 Weighted(ManagedPair)
+ManagedPair declared layout: sequential, System.Int64 Low, System.Int64 High, 16 bytes
+ManagedTriple declared layout: sequential, System.Int64 First, System.Int64 Second, System.Int64 Third, 24 bytes
+ManagedSmall declared layout: sequential, System.Int32 Only, 4 bytes
+ManagedMixed declared layout: sequential, System.Int32 First, System.Int32 Second, System.Int64 Third, 16 bytes
+Mixed width note: ManagedMixed places two four-byte fields before an eight-byte field, so its field offsets are 0, 4 and 8 while its field widths are 4, 4 and 8. A layout check that compared widths alone would accept a reordering of those fields; the offsets separate them.
+Indirect parameter note: ManagedPair at 16 bytes and ManagedTriple at 24 bytes are both passed indirectly. ManagedSmall at 4 bytes is passed by value in the argument register, so the register holds the field rather than an address and no pointer type describes it.
