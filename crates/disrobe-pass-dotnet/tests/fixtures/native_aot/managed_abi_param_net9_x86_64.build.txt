@@ -16,10 +16,10 @@ Reflection rooting: each probe struct is named in a direct typeof(T).GetFields c
 Command: dotnet publish managed_abi_param_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
 Build directory: the project, Program.cs and publish output live outside the repository; PathMap rewrites the project directory to C:\src\managed_abi_param_net9_x86_64 so no build path is embedded
 Path leak scan: the committed image carries zero occurrences of the byte sequence C:\ in ASCII and in UTF-16LE
-Source SHA-256: 48365A0F48B8AD8AD29AFB846C90580EF7C73B08DCC22F9668F981A690B7B8CC
+Source SHA-256: 97F9135EA45067B5E972B01BF5A82B2DD26FBCDBFE24271A70A8ED3D0594A4DA
 Project SHA-256: CD78F8CE06288B347C0499F1E6C0A377B2DDBA9CD6453D48DB24B3EEA04E447A
-Executable SHA-256: B31462F45467E75C13E607D5FBE89B4A44B431753F485AAC03D4EC6470BB5EE4
-Full link map SHA-256: 0D30B7C5309A3962C2F6662461329DB48549ECC4F196D54CAC490DDF7B62A0B0
+Executable SHA-256: 9DF133965F0E4C20B06C2BBDD5F9B06775CA9A53442D97F693419C312B660F12
+Full link map SHA-256: 5EAF684ECE528C2F68524C391B8230442F9B0BE55EA1267AD49E907820C17B6F
 Unwind evidence tool: dumpbin 14.44.35228.0, command dumpbin -nologo -unwindinfo publish\managed_abi_param_net9_x86_64.exe
 LLVM evidence tool: llvm-objdump 19.1.7, SHA-256 4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022
 Disassembly command: llvm-objdump -d --start-address=<begin> --stop-address=<end> publish\managed_abi_param_net9_x86_64.exe
@@ -32,6 +32,7 @@ ManagedParamProbe.Echo managed signature: static ManagedPair Echo(ManagedPair)
 ManagedParamProbe.Narrow managed signature: static System.Int32 Narrow(ManagedSmall)
 ManagedParamProbe.Blend managed signature: static System.Int64 Blend(ManagedMixed)
 ManagedParamProbe.Head managed signature: static System.Int64 Head(ManagedSequentialClass)
+ManagedParamProbe.Tail managed signature: static System.Int64 Tail(ManagedTriple)
 ManagedParamProbe.Weighted managed signature: instance System.Int64 Weighted(ManagedPair)
 ManagedPair declared layout: sequential, System.Int64 Low, System.Int64 High, 16 bytes
 ManagedTriple declared layout: sequential, System.Int64 First, System.Int64 Second, System.Int64 Third, 24 bytes
@@ -41,4 +42,5 @@ ManagedMixed declared layout: sequential, System.Int32 First, System.Int32 Secon
 Mixed width note: ManagedMixed places two four-byte fields before an eight-byte field, so its field offsets are 0, 4 and 8 while its field widths are 4, 4 and 8. A layout check that compared widths alone would accept a reordering of those fields; the offsets separate them.
 ECMA-335 value type: ECMA-335 6th edition, II.10.1.2 and II.23.1.15. A value type derives directly from System.ValueType; a class does not. TypeAttributes carries no bit that distinguishes them, so the base type is the discriminator.
 Reference type note: ManagedSequentialClass is a CLASS carrying [StructLayout(LayoutKind.Sequential)] and three System.Int64 instance fields, First then Second then Third. It is the confusable shape. A class instance places its method-table pointer at offset 0 and begins its instance fields at offset 8, so First sits at 8, Second at 16 and Third at 24. Read as though it were a struct, the same declaration would place First at 0, Second at 8 and Third at 16. Head sums First and Second, which the compiled body loads from offsets 8 and 16, and BOTH of those offsets also exist in the struct reading, so a check comparing only offsets and widths agrees and names those two loads Second and Third. Only the base type separates the two readings.
+Unobserved leading field note: Tail sums Second and Third of a ManagedTriple and never reads First, so the compiled body loads only offsets 8 and 16 and the lifter records the untouched first eight bytes as a padding member rather than a field. Head does the same thing to a reference type. The two lifted bodies are byte-identical, including that padding member and both field offsets, so nothing in the machine code separates them and only the base type does.
 Indirect parameter note: ManagedPair at 16 bytes and ManagedTriple at 24 bytes are both passed indirectly. ManagedSmall at 4 bytes is passed by value in the argument register, so the register holds the field rather than an address and no pointer type describes it.

@@ -39,20 +39,21 @@ const MANAGED_TO_C: [(&str, &str); 15] = [
     ("System.Void", "void"),
 ];
 
-const PROBE_METHODS: [&str; 9] = [
-    "_ctor", "Sum", "Scale", "Wide", "Echo", "Narrow", "Blend", "Head", "Weighted",
+const PROBE_METHODS: [&str; 10] = [
+    "_ctor", "Sum", "Scale", "Wide", "Echo", "Narrow", "Blend", "Head", "Tail", "Weighted",
 ];
 
-const INDIRECT_PARAMETERS: [(&str, &str); 6] = [
+const INDIRECT_PARAMETERS: [(&str, &str); 7] = [
     ("Sum", "ManagedPair"),
     ("Scale", "ManagedPair"),
     ("Wide", "ManagedTriple"),
     ("Echo", "ManagedPair"),
     ("Blend", "ManagedMixed"),
+    ("Tail", "ManagedTriple"),
     ("Weighted", "ManagedPair"),
 ];
 
-const AGGREGATE_EVIDENCED: [&str; 5] = ["Sum", "Scale", "Wide", "Blend", "Weighted"];
+const AGGREGATE_EVIDENCED: [&str; 6] = ["Sum", "Scale", "Wide", "Blend", "Tail", "Weighted"];
 
 const DECLARED_ABSTENTIONS: [(&str, &str); 2] = [
     ("Narrow", "type-outside-primitive-table"),
@@ -63,9 +64,11 @@ const REGISTER_PASSED_ABSTENTIONS: [&str; 1] = ["Narrow"];
 const REFERENCE_TYPE_ABSTENTIONS: [(&str, &str, &str); 1] =
     [("Head", "ManagedSequentialClass", "First")];
 const REFERENCE_HEADER_BYTES: usize = 8;
+const IDENTICAL_EVIDENCE_PAIR: (&str, &str) = ("Head", "Tail");
 
-const MANAGED_SIGNATURE_METHODS: [&str; 7] =
-    ["_ctor", "Sum", "Scale", "Wide", "Echo", "Blend", "Weighted"];
+const MANAGED_SIGNATURE_METHODS: [&str; 8] = [
+    "_ctor", "Sum", "Scale", "Wide", "Echo", "Blend", "Tail", "Weighted",
+];
 
 type DeclaredField = (String, String);
 type DeclaredLayout = (Vec<DeclaredField>, usize);
@@ -622,6 +625,41 @@ fn a_sequential_reference_type_is_never_read_as_a_struct() -> Result<(), &'stati
     }
     Ok(())
 }
+#[test]
+fn the_base_type_alone_separates_two_bodies_with_identical_evidence() -> Result<(), &'static str> {
+    let document: serde_json::Value = document()?;
+    let (reference, value): (&str, &str) = IDENTICAL_EVIDENCE_PAIR;
+    let reference_body: &str = recovered_pseudo_c(&document, reference)?;
+    let value_body: &str = recovered_pseudo_c(&document, value)?;
+    let reference_aggregate: Vec<(usize, usize)> = lifted_aggregate_offsets(reference_body)?;
+    let value_aggregate: Vec<(usize, usize)> = lifted_aggregate_offsets(value_body)?;
+    assert!(
+        !reference_aggregate.is_empty(),
+        "{reference} must carry a recovered aggregate for this comparison to mean anything"
+    );
+    assert_eq!(
+        reference_aggregate, value_aggregate,
+        "{reference} and {value} must read the same offsets and widths, otherwise the machine \
+         code already separates them and the base type is not what decides"
+    );
+    assert!(
+        reference_body.contains("padding_0[8]") && value_body.contains("padding_0[8]"),
+        "both bodies must record the same untouched leading bytes"
+    );
+    assert_eq!(
+        method_record(&document, metadata_name(value))?["body"]["signature_source"],
+        "managed",
+        "{value} takes a value type, so its declared layout is attached"
+    );
+    assert_eq!(
+        method_record(&document, metadata_name(reference))?["body"]["signature_source"],
+        "registers",
+        "{reference} takes a reference type, so nothing is attached even though the recovered \
+         evidence is the same"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_managed_signature_population_is_pinned_by_name() -> Result<(), &'static str> {
     let document: serde_json::Value = document()?;

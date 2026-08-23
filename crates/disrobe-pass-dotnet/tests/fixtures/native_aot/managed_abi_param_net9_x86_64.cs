@@ -17,6 +17,7 @@ Console.WriteLine(ManagedParamProbe.Echo(pair).High.ToString(CultureInfo.Invaria
 Console.WriteLine(ManagedParamProbe.Narrow(small).ToString(CultureInfo.InvariantCulture));
 Console.WriteLine(ManagedParamProbe.Blend(blend).ToString(CultureInfo.InvariantCulture));
 Console.WriteLine(ManagedParamProbe.Head(held).ToString(CultureInfo.InvariantCulture));
+Console.WriteLine(ManagedParamProbe.Tail(triple).ToString(CultureInfo.InvariantCulture));
 
 ManagedParamProbe probe = new ManagedParamProbe(2L);
 Console.WriteLine(probe.Weighted(pair).ToString(CultureInfo.InvariantCulture));
@@ -129,6 +130,9 @@ public sealed class ManagedParamProbe
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static long Head(ManagedSequentialClass held) => held.First + held.Second;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Tail(ManagedTriple triple) => triple.Second + triple.Third;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public long Weighted(ManagedPair pair) => pair.Low * this.Weight + pair.High;

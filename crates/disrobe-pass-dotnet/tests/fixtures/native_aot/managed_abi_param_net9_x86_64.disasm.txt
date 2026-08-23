@@ -1,42 +1,46 @@
-# ManagedParamProbe._ctor [0x14006BFF0, 0x14006BFF5)
-14006bff0: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
-14006bff4: c3                          	retq
-# ManagedParamProbe.Sum [0x14006C000, 0x14006C008)
-14006c000: 48 8b 01                    	movq	(%rcx), %rax
-14006c003: 48 03 41 08                 	addq	0x8(%rcx), %rax
-14006c007: c3                          	retq
-# ManagedParamProbe.Scale [0x14006C010, 0x14006C01C)
-14006c010: 48 8b c2                    	movq	%rdx, %rax
-14006c013: 48 0f af 01                 	imulq	(%rcx), %rax
-14006c017: 48 03 41 08                 	addq	0x8(%rcx), %rax
-14006c01b: c3                          	retq
-# ManagedParamProbe.Wide [0x14006C020, 0x14006C02C)
-14006c020: 48 8b 01                    	movq	(%rcx), %rax
-14006c023: 48 03 41 08                 	addq	0x8(%rcx), %rax
-14006c027: 48 03 41 10                 	addq	0x10(%rcx), %rax
-14006c02b: c3                          	retq
-# ManagedParamProbe.Echo [0x14006C030, 0x14006C042)
-14006c030: 48 8b 42 08                 	movq	0x8(%rdx), %rax
-14006c034: 48 8b 12                    	movq	(%rdx), %rdx
-14006c037: 48 89 01                    	movq	%rax, (%rcx)
-14006c03a: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
-14006c03e: 48 8b c1                    	movq	%rcx, %rax
-14006c041: c3                          	retq
-# ManagedParamProbe.Narrow [0x14006C050, 0x14006C054)
-14006c050: 8d 41 01                    	leal	0x1(%rcx), %eax
-14006c053: c3                          	retq
-# ManagedParamProbe.Blend [0x14006C060, 0x14006C06C)
-14006c060: 8b 01                       	movl	(%rcx), %eax
-14006c062: 03 41 04                    	addl	0x4(%rcx), %eax
-14006c065: 48 98                       	cltq
-14006c067: 48 03 41 08                 	addq	0x8(%rcx), %rax
-14006c06b: c3                          	retq
-# ManagedParamProbe.Head [0x14006C070, 0x14006C079)
-14006c070: 48 8b 41 08                 	movq	0x8(%rcx), %rax
-14006c074: 48 03 41 10                 	addq	0x10(%rcx), %rax
-14006c078: c3                          	retq
-# ManagedParamProbe.Weighted [0x14006C080, 0x14006C08D)
-14006c080: 48 8b 02                    	movq	(%rdx), %rax
-14006c083: 48 0f af 41 08              	imulq	0x8(%rcx), %rax
-14006c088: 48 03 42 08                 	addq	0x8(%rdx), %rax
-14006c08c: c3                          	retq
+# ManagedParamProbe._ctor [0x14006C060, 0x14006C065)
+14006c060: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006c064: c3                          	retq
+# ManagedParamProbe.Sum [0x14006C070, 0x14006C078)
+14006c070: 48 8b 01                    	movq	(%rcx), %rax
+14006c073: 48 03 41 08                 	addq	0x8(%rcx), %rax
+14006c077: c3                          	retq
+# ManagedParamProbe.Scale [0x14006C080, 0x14006C08C)
+14006c080: 48 8b c2                    	movq	%rdx, %rax
+14006c083: 48 0f af 01                 	imulq	(%rcx), %rax
+14006c087: 48 03 41 08                 	addq	0x8(%rcx), %rax
+14006c08b: c3                          	retq
+# ManagedParamProbe.Wide [0x14006C090, 0x14006C09C)
+14006c090: 48 8b 01                    	movq	(%rcx), %rax
+14006c093: 48 03 41 08                 	addq	0x8(%rcx), %rax
+14006c097: 48 03 41 10                 	addq	0x10(%rcx), %rax
+14006c09b: c3                          	retq
+# ManagedParamProbe.Echo [0x14006C0A0, 0x14006C0B2)
+14006c0a0: 48 8b 42 08                 	movq	0x8(%rdx), %rax
+14006c0a4: 48 8b 12                    	movq	(%rdx), %rdx
+14006c0a7: 48 89 01                    	movq	%rax, (%rcx)
+14006c0aa: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006c0ae: 48 8b c1                    	movq	%rcx, %rax
+14006c0b1: c3                          	retq
+# ManagedParamProbe.Narrow [0x14006C0C0, 0x14006C0C4)
+14006c0c0: 8d 41 01                    	leal	0x1(%rcx), %eax
+14006c0c3: c3                          	retq
+# ManagedParamProbe.Blend [0x14006C0D0, 0x14006C0DC)
+14006c0d0: 8b 01                       	movl	(%rcx), %eax
+14006c0d2: 03 41 04                    	addl	0x4(%rcx), %eax
+14006c0d5: 48 98                       	cltq
+14006c0d7: 48 03 41 08                 	addq	0x8(%rcx), %rax
+14006c0db: c3                          	retq
+# ManagedParamProbe.Head [0x14006C0E0, 0x14006C0E9)
+14006c0e0: 48 8b 41 08                 	movq	0x8(%rcx), %rax
+14006c0e4: 48 03 41 10                 	addq	0x10(%rcx), %rax
+14006c0e8: c3                          	retq
+# ManagedParamProbe.Tail [0x14006C0F0, 0x14006C0F9)
+14006c0f0: 48 8b 41 08                 	movq	0x8(%rcx), %rax
+14006c0f4: 48 03 41 10                 	addq	0x10(%rcx), %rax
+14006c0f8: c3                          	retq
+# ManagedParamProbe.Weighted [0x14006C100, 0x14006C10D)
+14006c100: 48 8b 02                    	movq	(%rdx), %rax
+14006c103: 48 0f af 41 08              	imulq	0x8(%rcx), %rax
+14006c108: 48 03 42 08                 	addq	0x8(%rdx), %rax
+14006c10c: c3                          	retq

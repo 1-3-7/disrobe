@@ -39,6 +39,8 @@ const TYPEDEF_STRUCT_HEAD_PACKED: &str = "typedef struct __attribute__((packed, 
 const LIFTED_AGGREGATE_TYPE_PREFIX: &str = "recovered_struct_";
 const LIFTED_AGGREGATE_TYPE_SUFFIX: &str = "_t";
 const LIFTED_AGGREGATE_FIELD_PREFIX: &str = "field_";
+const LIFTED_AGGREGATE_PADDING_PREFIX: &str = "padding_";
+const LIFTED_AGGREGATE_PADDING_SCALAR: &str = "uint8_t";
 const MS_X64_REGISTER_BODY_NAMES: [&str; 4] = ["r_rcx", "r_rdx", "r_r8", "r_r9"];
 const LOCAL_DECLARATION_PREFIX: &str = "    uint64_t ";
 const REGISTER_BINDING_PREFIX: &str = "    uint64_t r_";
@@ -671,6 +673,19 @@ fn lifted_aggregate_widths(body: &str, index: &str) -> Reattached<Vec<(usize, us
             .strip_suffix(';')
             .and_then(|entry: &str| entry.split_once(' '))
             .ok_or_else(unverified)?;
+        if let Some(gap) = member.strip_prefix(LIFTED_AGGREGATE_PADDING_PREFIX) {
+            if scalar != LIFTED_AGGREGATE_PADDING_SCALAR {
+                return Err(unverified());
+            }
+            let (skipped, extent): (&str, &str) = gap.split_once('[').ok_or_else(unverified)?;
+            let extent: &str = extent.strip_suffix(']').ok_or_else(unverified)?;
+            usize::from_str_radix(skipped, 16)
+                .map_err(|_error: std::num::ParseIntError| unverified())?;
+            extent
+                .parse::<usize>()
+                .map_err(|_error: std::num::ParseIntError| unverified())?;
+            continue;
+        }
         let offset_text: &str = member
             .strip_prefix(LIFTED_AGGREGATE_FIELD_PREFIX)
             .ok_or_else(unverified)?;
