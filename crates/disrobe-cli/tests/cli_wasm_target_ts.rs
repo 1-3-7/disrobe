@@ -67,7 +67,7 @@ fn wasm_decompile_target_ts_routes_shared_atomics_to_an_instance_factory() {
 }
 
 #[test]
-fn wasm_decompile_target_ts_refuses_fence_before_writing_output() {
+fn wasm_decompile_target_ts_emits_real_fence_shim() {
     let bytes: Vec<u8> = wat::parse_str(r#"(module (func (export "fence") atomic.fence))"#)
         .expect("fence fixture must assemble");
     let (_src_scratch, src): (disrobe_core::scratch::ScratchDir, PathBuf) =
@@ -84,7 +84,9 @@ fn wasm_decompile_target_ts_refuses_fence_before_writing_output() {
         "--out",
         out.to_str().unwrap(),
     ]);
-    assert_ne!(run.code, 0, "stdout={} stderr={}", run.stdout, run.stderr);
-    assert!(run.stderr.contains("atomic.fence"), "{}", run.stderr);
-    assert!(!out.exists(), "refusal created {}", out.display());
+    assert_eq!(run.code, 0, "stdout={} stderr={}", run.stdout, run.stderr);
+    let source: String = std::fs::read_to_string(&out).expect("read fence TypeScript output");
+    assert!(source.contains("wasmAtomicFence();"), "{source}");
+    assert!(source.contains("new WebAssembly.Module"), "{source}");
+    assert!(source.contains("new WebAssembly.Instance"), "{source}");
 }

@@ -415,6 +415,79 @@ if (isMainThread) {
 }
 
 #[test]
+fn typescript_negative_wait_timeouts_remain_blocked_for_both_widths_until_notify() {
+    let source: String = format!(
+        "{}\n{}",
+        synchronization_module_source(),
+        r#"
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise<void>((resolve: () => void): void => { setTimeout(resolve, milliseconds); });
+
+const ARRIVAL_INDEX: number = 64;
+const INFINITE_WAIT_HOLD_MILLISECONDS: number = 50;
+
+const notifyRegisteredWaiter = async (instance: LiftedInstance, address: number): Promise<number> => {
+  for (let attempt: number = 0; attempt < 400; attempt += 1) {
+    const notified: number = instance.at_notify(address, 1);
+    if (notified === 1) return notified;
+    await sleep(5);
+  }
+  throw new Error(`no waiter registered at address ${address} within 400 attempts`);
+};
+
+if (isMainThread) {
+  const instance: LiftedInstance = instantiate();
+  instance.at_store(64, 0);
+  instance.at_store64(128, 0n);
+  const arrivals: Int32Array = new Int32Array(instance.memory.buffer);
+  const outcomes: Array<readonly [number, number]> = [];
+  const exits: Promise<void>[] = [];
+  const widths: readonly number[] = [32, 64];
+  for (const width of widths) {
+    const worker: Worker = new Worker(import.meta.filename, {
+      execArgv: ["--experimental-strip-types", "--no-warnings"],
+      workerData: { wasmMemory: instance.memory, width },
+    });
+    worker.on("message", (value: readonly [number, number]): void => { outcomes.push(value); });
+    exits.push(new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+      worker.once("exit", (): void => resolve());
+      worker.once("error", (error: Error): void => reject(error));
+    }));
+  }
+  while (Atomics.load(arrivals, ARRIVAL_INDEX) < 2) { await sleep(5); }
+  await sleep(INFINITE_WAIT_HOLD_MILLISECONDS);
+  const notified32: number = await notifyRegisteredWaiter(instance, 64);
+  const notified64: number = await notifyRegisteredWaiter(instance, 128);
+  await Promise.all(exits);
+  outcomes.sort((left: readonly [number, number], right: readonly [number, number]): number => left[0] - right[0]);
+  console.log(JSON.stringify([notified32, notified64, outcomes]));
+} else {
+  const instance: LiftedInstance = instantiate({ memories: [workerData.wasmMemory] });
+  const width: number = workerData.width;
+  Atomics.add(new Int32Array(workerData.wasmMemory.buffer), ARRIVAL_INDEX, 1);
+  const outcome: number = width === 64
+    ? instance.at_wait64(128, 0n, -1n)
+    : instance.at_wait32(64, 0, -1n);
+  const result: readonly [number, number] = [width, outcome];
+  parentPort?.postMessage(result);
+}
+"#
+    );
+    let output: CapturedOutput = run_typescript(&source);
+    assert!(
+        output.exit_code == Some(0),
+        "Node rejected the lifted infinite-wait module: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "[1,1,[[32,0],[64,0]]]"
+    );
+}
+
+#[test]
 fn typescript_module_reinterpretation_does_not_mutate_linear_memory() {
     let bytes: Vec<u8> = wat::parse_str(
         r#"(module

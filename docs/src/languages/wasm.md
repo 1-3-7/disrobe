@@ -13,7 +13,7 @@
 | Execution grade | Return values, trap parity, and linear memory compared against the original under wasmtime |
 | Obfuscators | Jscrambler-WASM, Wobfuscator, and Wasmixer reversed; Tigress-via-Emscripten and wasm-name-obfuscator detected and classified only |
 | Control-flow unflattening | Dispatcher loops whose state lives in a local, a private mutable global, or a non-atomic `i32` memory slot are rebuilt as structured control flow; a dispatcher outside that set is left in place |
-| Envelopes | Component Model, threads, memory64, and the GC type graph parsed by dedicated scanners |
+| Envelopes | Component Model, memory64, and the GC type graph parsed by dedicated scanners; threads instructions also lift to C, Rust, and TypeScript |
 
 ## Commands
 
@@ -72,7 +72,7 @@ An ordinary compiler can emit a shape outside the supported set. `rustc 1.96.1` 
 
 - Two corpus modules are skipped on wat-parse or signature-extraction failure, so the op-coverage figure covers the supported subset, not all of wasm.
 - Functions outside the execution-eligible set are op-coverage-only; their behavior is not compared against the original.
-- The Component Model envelope, threads, memory64, and the GC type graph are parsed and decoded by dedicated scanners. That is distinct from lifting their per-instruction semantics to source.
+- The Component Model envelope, memory64, and the GC type graph are parsed and decoded by dedicated scanners. Their per-instruction semantics are not all lifted to source. Threads are different: all 67 threads-proposal atomic operators lift to C, Rust, and TypeScript, and the runtime tests grade shared-memory contention, wait and notify, fence, and memory growth under a wall-clock deadline.
 - Tigress-via-Emscripten is detected and classified only. Its standalone dispatcher-unflattening and name helpers are not on the `wasm deob` run path.
 - A fifth obfuscator family, wasm-name-obfuscator, is detected and its rename strategy classified, but its high-entropy hex renames destroy the original names, so there is nothing to reverse.
 - Control-flow unflattening runs only while the module stays under the intra-function folding budget. Above that budget the recovery report sets `intra_function_folding_skipped` and no dispatcher is rewritten.

@@ -79,6 +79,49 @@ fn spawn_waiters(
     handles
 }
 
+fn run_infinite_wait_probe(address: i32, wide_value: bool) -> (i32, i32, i32) {
+    let finished: std::sync::Arc<std::sync::atomic::AtomicI32> =
+        std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let outcome: std::sync::Arc<std::sync::atomic::AtomicI32> =
+        std::sync::Arc::new(std::sync::atomic::AtomicI32::new(-1));
+    let worker_finished: std::sync::Arc<std::sync::atomic::AtomicI32> =
+        std::sync::Arc::clone(&finished);
+    let worker_outcome: std::sync::Arc<std::sync::atomic::AtomicI32> =
+        std::sync::Arc::clone(&outcome);
+    let worker: std::thread::JoinHandle<()> = std::thread::spawn(move || {
+        let observed: i32 = if wide_value {
+            at_wait64(address, 0, -1)
+        } else {
+            at_wait32(address, 0, -1)
+        };
+        worker_outcome.store(observed, std::sync::atomic::Ordering::SeqCst);
+        worker_finished.store(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mut registered: bool = false;
+    for _ in 0..400 {
+        let found: bool = {
+            let waiters: std::sync::MutexGuard<'static, Vec<WasmAtomicWaiter>> =
+                wasm_atomic_waiters();
+            waiters
+                .iter()
+                .any(|waiter: &WasmAtomicWaiter| waiter.live && waiter.address == address as usize)
+        };
+        if found {
+            registered = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(registered, "the infinite waiter never registered");
+    WASM_ATOMIC_WAITER_WAKE.notify_all();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let finished_after_spurious: i32 = finished.load(std::sync::atomic::Ordering::SeqCst);
+    let notified: i32 = at_notify(address, 1);
+    worker.join().expect("infinite waiter join");
+    let observed: i32 = outcome.load(std::sync::atomic::Ordering::SeqCst);
+    (finished_after_spurious, notified, observed)
+}
+
 fn main() {
     let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     for _ in 0..WORKER_THREADS_PLACEHOLDER {
@@ -157,6 +200,20 @@ fn main() {
     println!("wait64_not_equal {}", at_wait64(128, 9, -1));
     println!("wait64_timeout_zero {}", at_wait64(128, 0, 0));
 
+    at_store(256, 0);
+    let (wait32_finished, wait32_notified, wait32_outcome): (i32, i32, i32) =
+        run_infinite_wait_probe(256, false);
+    println!("infinite_wait32_finished_after_spurious {wait32_finished}");
+    println!("infinite_wait32_notify {wait32_notified}");
+    println!("infinite_wait32_outcome {wait32_outcome}");
+
+    at_store64(264, 0);
+    let (wait64_finished, wait64_notified, wait64_outcome): (i32, i32, i32) =
+        run_infinite_wait_probe(264, true);
+    println!("infinite_wait64_finished_after_spurious {wait64_finished}");
+    println!("infinite_wait64_notify {wait64_notified}");
+    println!("infinite_wait64_outcome {wait64_outcome}");
+
     at_store(192, 11);
     println!("cmpxchg_hit {}", at_cmpxchg(192, 11, 12));
     println!("cmpxchg_miss {}", at_cmpxchg(192, 11, 13));
@@ -169,23 +226,29 @@ const C_DRIVER: &str = r#"
 typedef HANDLE probe_thread;
 static DWORD WINAPI probe_incrementer(LPVOID argument);
 static DWORD WINAPI probe_waiter(LPVOID argument);
+static DWORD WINAPI probe_infinite_waiter(LPVOID argument);
 static void probe_spawn_incrementer(probe_thread *handle) { *handle = CreateThread(NULL, 0, probe_incrementer, NULL, 0, NULL); }
 static void probe_spawn_waiter(probe_thread *handle) { *handle = CreateThread(NULL, 0, probe_waiter, NULL, 0, NULL); }
+static void probe_spawn_infinite_waiter(probe_thread *handle) { *handle = CreateThread(NULL, 0, probe_infinite_waiter, NULL, 0, NULL); }
 static void probe_join(probe_thread handle) { WaitForSingleObject(handle, INFINITE); CloseHandle(handle); }
 static void probe_pause_ms(unsigned long milliseconds) { Sleep(milliseconds); }
 #define PROBE_INCREMENTER DWORD WINAPI probe_incrementer(LPVOID argument)
 #define PROBE_WAITER DWORD WINAPI probe_waiter(LPVOID argument)
+#define PROBE_INFINITE_WAITER DWORD WINAPI probe_infinite_waiter(LPVOID argument)
 #define PROBE_RETURN return 0
 #else
 typedef pthread_t probe_thread;
 static void *probe_incrementer(void *argument);
 static void *probe_waiter(void *argument);
+static void *probe_infinite_waiter(void *argument);
 static void probe_spawn_incrementer(probe_thread *handle) { pthread_create(handle, NULL, probe_incrementer, NULL); }
 static void probe_spawn_waiter(probe_thread *handle) { pthread_create(handle, NULL, probe_waiter, NULL); }
+static void probe_spawn_infinite_waiter(probe_thread *handle) { pthread_create(handle, NULL, probe_infinite_waiter, NULL); }
 static void probe_join(probe_thread handle) { pthread_join(handle, NULL); }
 static void probe_pause_ms(unsigned long milliseconds) { struct timespec nap; nap.tv_sec = (time_t)(milliseconds / 1000u); nap.tv_nsec = (long)((milliseconds % 1000u) * 1000000u); nanosleep(&nap, NULL); }
 #define PROBE_INCREMENTER void *probe_incrementer(void *argument)
 #define PROBE_WAITER void *probe_waiter(void *argument)
+#define PROBE_INFINITE_WAITER void *probe_infinite_waiter(void *argument)
 #define PROBE_RETURN return NULL
 #endif
 
@@ -193,6 +256,10 @@ static int32_t probe_outcomes[2];
 static int probe_outcome_count;
 static int probe_finished;
 static int probe_arrived;
+static int probe_infinite_finished;
+static int32_t probe_infinite_outcome;
+static int32_t probe_infinite_address;
+static int probe_infinite_wide;
 
 PROBE_INCREMENTER {
   (void)argument;
@@ -211,6 +278,53 @@ PROBE_WAITER {
   if (slot < 2) __atomic_store_n(&probe_outcomes[slot], outcome, __ATOMIC_SEQ_CST);
   __atomic_fetch_add(&probe_finished, 1, __ATOMIC_SEQ_CST);
   PROBE_RETURN;
+}
+
+PROBE_INFINITE_WAITER {
+  (void)argument;
+  int32_t outcome = probe_infinite_wide
+    ? at_wait64(probe_infinite_address, INT64_C(0), INT64_C(-1))
+    : at_wait32(probe_infinite_address, INT32_C(0), INT64_C(-1));
+  __atomic_store_n(&probe_infinite_outcome, outcome, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&probe_infinite_finished, 1, __ATOMIC_SEQ_CST);
+  PROBE_RETURN;
+}
+
+static void probe_run_infinite_wait(
+  int32_t address,
+  int wide,
+  int32_t *finished_after_spurious,
+  int32_t *notified,
+  int32_t *outcome
+) {
+  probe_infinite_address = address;
+  probe_infinite_wide = wide;
+  __atomic_store_n(&probe_infinite_finished, 0, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&probe_infinite_outcome, -1, __ATOMIC_SEQ_CST);
+  probe_thread waiter;
+  probe_spawn_infinite_waiter(&waiter);
+  int registered = 0;
+  for (int attempt = 0; attempt < 400 && !registered; attempt++) {
+    wasm_atomic_waiter_lock();
+    for (int index = 0; index < WASM_ATOMIC_WAITER_CAP; index++) {
+      if (wasm_atomic_waiters[index].live && wasm_atomic_waiters[index].address == (uint64_t)address) {
+        registered = 1;
+        break;
+      }
+    }
+    wasm_atomic_waiter_unlock();
+    if (!registered) probe_pause_ms(5);
+  }
+  if (!registered) {
+    fputs("the infinite waiter never registered\n", stderr);
+    exit(1);
+  }
+  wasm_atomic_waiter_wake();
+  probe_pause_ms(50);
+  *finished_after_spurious = __atomic_load_n(&probe_infinite_finished, __ATOMIC_SEQ_CST);
+  *notified = at_notify(address, 1);
+  probe_join(waiter);
+  *outcome = __atomic_load_n(&probe_infinite_outcome, __ATOMIC_SEQ_CST);
 }
 
 int main(void) {
@@ -257,6 +371,24 @@ int main(void) {
   at_store64(128, INT64_C(0));
   printf("wait64_not_equal %d\n", at_wait64(128, INT64_C(9), INT64_C(-1)));
   printf("wait64_timeout_zero %d\n", at_wait64(128, INT64_C(0), INT64_C(0)));
+
+  int32_t infinite_wait32_finished;
+  int32_t infinite_wait32_notified;
+  int32_t infinite_wait32_outcome;
+  at_store(256, 0);
+  probe_run_infinite_wait(256, 0, &infinite_wait32_finished, &infinite_wait32_notified, &infinite_wait32_outcome);
+  printf("infinite_wait32_finished_after_spurious %d\n", infinite_wait32_finished);
+  printf("infinite_wait32_notify %d\n", infinite_wait32_notified);
+  printf("infinite_wait32_outcome %d\n", infinite_wait32_outcome);
+
+  int32_t infinite_wait64_finished;
+  int32_t infinite_wait64_notified;
+  int32_t infinite_wait64_outcome;
+  at_store64(264, INT64_C(0));
+  probe_run_infinite_wait(264, 1, &infinite_wait64_finished, &infinite_wait64_notified, &infinite_wait64_outcome);
+  printf("infinite_wait64_finished_after_spurious %d\n", infinite_wait64_finished);
+  printf("infinite_wait64_notify %d\n", infinite_wait64_notified);
+  printf("infinite_wait64_outcome %d\n", infinite_wait64_outcome);
 
   at_store(192, 11);
   printf("cmpxchg_hit %d\n", at_cmpxchg(192, 11, 12));
@@ -358,6 +490,12 @@ fn spec_outcomes(with_growth: bool) -> Vec<(&'static str, i64)> {
         ("notify_zero_count", 0),
         ("wait64_not_equal", 1),
         ("wait64_timeout_zero", 2),
+        ("infinite_wait32_finished_after_spurious", 0),
+        ("infinite_wait32_notify", 1),
+        ("infinite_wait32_outcome", 0),
+        ("infinite_wait64_finished_after_spurious", 0),
+        ("infinite_wait64_notify", 1),
+        ("infinite_wait64_outcome", 0),
         ("cmpxchg_hit", 11),
         ("cmpxchg_miss", 12),
         ("cmpxchg_final", 12),
