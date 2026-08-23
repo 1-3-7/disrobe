@@ -20,6 +20,10 @@ const COMMITTED_SAMPLES: [&str; 4] = [
 
 const RECORDED_LIFTED_FLOOR_PERCENT: usize = 70;
 
+const RECORDED_LIFTED_BASELINE: usize = 344_111;
+
+const RECORDED_STATEMENT_POPULATION: usize = 434_826;
+
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -336,5 +340,77 @@ fn body_statements_lift_and_every_unlifted_instruction_stays_marked() {
     eprintln!(
         "committed corpus: lifted {lifted_total} of {} body statements",
         lifted_total + unlifted_total
+    );
+}
+
+#[test]
+fn a_join_keeps_the_operands_every_path_agrees_on_and_raises_the_lifted_population() {
+    let mut lifted_total: usize = 0;
+    let mut statement_total: usize = 0;
+    let mut per_sample: Vec<(String, usize, usize)> = Vec::new();
+
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        let statements: usize = report.lifted_statements + report.unlifted_statements;
+        lifted_total += report.lifted_statements;
+        statement_total += statements;
+        per_sample.push((sample.to_owned(), report.lifted_statements, statements));
+    }
+
+    eprintln!(
+        "body statements lifted once a join keeps what every path agrees on: {lifted_total}/{statement_total}, baseline {RECORDED_LIFTED_BASELINE}/{RECORDED_STATEMENT_POPULATION}, per sample {per_sample:?}"
+    );
+    assert_eq!(
+        statement_total, RECORDED_STATEMENT_POPULATION,
+        "the statement population is pinned, so a rise in the lifted count cannot come from a change in what was measured"
+    );
+    assert!(
+        lifted_total > RECORDED_LIFTED_BASELINE,
+        "merging the tracker state at a join must lift more body statements than the recorded baseline of {RECORDED_LIFTED_BASELINE}, got {lifted_total}"
+    );
+}
+
+#[test]
+fn a_computed_address_never_lets_a_field_access_bind_to_its_displacement() {
+    let mut offenders: Vec<String> = Vec::new();
+    let mut receivers: usize = 0;
+
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        for body in structured_bodies(&report) {
+            for line in body.lines() {
+                for (position, _) in line.match_indices(".field@") {
+                    receivers += 1;
+                    let head: &str = &line[..position];
+                    let literal: &str = head.trim_end_matches(|c: char| c.is_ascii_digit());
+                    if literal.len() == head.len() {
+                        continue;
+                    }
+                    if literal.ends_with('x') || literal.ends_with('_') {
+                        continue;
+                    }
+                    if literal
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c: char| c.is_ascii_alphabetic())
+                    {
+                        continue;
+                    }
+                    offenders.push(format!("{sample}: {}", line.trim()));
+                }
+            }
+        }
+    }
+
+    eprintln!("field-access receivers across the committed corpus: {receivers}");
+    assert!(
+        receivers > 0,
+        "the corpus must render field accesses for this check to read"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a Dart integer has no field, so a field access whose receiver is a bare decimal literal means the address arithmetic did not bind first: {offenders:?}"
     );
 }

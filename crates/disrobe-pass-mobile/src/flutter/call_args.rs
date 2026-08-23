@@ -45,6 +45,8 @@ const MAX_VALUE_DEPTH: usize = 6;
 
 const MAX_TRACKED_CALLS: usize = 1 << 14;
 
+const MAX_MERGE_PREDECESSORS: usize = 64;
+
 const MAX_BOOLEAN_RETURN_INSTRUCTIONS: usize = 64;
 
 const ARM64_IMMEDIATE_SHIFT_BIT: u32 = 1 << 22;
@@ -877,7 +879,7 @@ pub(super) fn recover_call_arguments(
                     *address,
                     format!(
                         "{}.field@{offset:#x} = {};",
-                        render_value(base, pool, &results, 0),
+                        render_operand(base, pool, &results, 0),
                         render_value(value, pool, &results, 0)
                     ),
                 )
@@ -1018,8 +1020,7 @@ fn track_call_sites(
     parameter_count: Option<u8>,
 ) -> (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) {
     let insns: &[Arm64Instruction] = &func.instructions;
-    let predecessors: BTreeMap<u64, usize> = predecessor_counts(blocks);
-    let single: BTreeMap<u64, u64> = single_predecessor(blocks);
+    let predecessors: BTreeMap<u64, Vec<u64>> = predecessors_of(blocks);
     let mut exits: BTreeMap<u64, TrackState> = BTreeMap::new();
     let mut sites: BTreeMap<u64, Vec<Option<DartValue>>> = BTreeMap::new();
     let mut effects: TrackedEffects = TrackedEffects::default();
@@ -1031,13 +1032,8 @@ fn track_call_sites(
         }
         let mut state: TrackState = if Some(block.start) == entry {
             TrackState::entry(parameter_count)
-        } else if predecessors.get(&block.start).copied().unwrap_or(0) == 1
-            && let Some(source) = single.get(&block.start)
-            && let Some(inherited) = exits.get(source)
-        {
-            inherited.clone()
         } else {
-            TrackState::default()
+            entry_state(predecessors.get(&block.start), &exits)
         };
         for insn in insns.iter().filter(|insn: &&Arm64Instruction| {
             insn.address >= block.start && insn.address < block.end
@@ -1049,26 +1045,61 @@ fn track_call_sites(
     (sites, effects)
 }
 
-fn predecessor_counts(blocks: &[&NirBlock]) -> BTreeMap<u64, usize> {
-    let starts: BTreeSet<u64> = blocks.iter().map(|block: &&NirBlock| block.start).collect();
-    let mut counts: BTreeMap<u64, usize> = BTreeMap::new();
-    for block in blocks {
-        for successor in &block.successors {
-            if starts.contains(successor) {
-                *counts.entry(*successor).or_default() += 1;
-            }
-        }
+fn entry_state(sources: Option<&Vec<u64>>, exits: &BTreeMap<u64, TrackState>) -> TrackState {
+    let Some(sources): Option<&Vec<u64>> = sources else {
+        return TrackState::default();
+    };
+    if sources.is_empty() || sources.len() > MAX_MERGE_PREDECESSORS {
+        return TrackState::default();
     }
-    counts
+    let Some(known): Option<Vec<&TrackState>> = sources
+        .iter()
+        .map(|source: &u64| exits.get(source))
+        .collect::<Option<Vec<&TrackState>>>()
+    else {
+        return TrackState::default();
+    };
+    merge_states(&known).unwrap_or_default()
 }
 
-fn single_predecessor(blocks: &[&NirBlock]) -> BTreeMap<u64, u64> {
+fn merge_states(states: &[&TrackState]) -> Option<TrackState> {
+    let (first, rest): (&&TrackState, &[&TrackState]) = states.split_first()?;
+    let mut merged: TrackState = (*first).clone();
+    for other in rest {
+        retain_agreed(&mut merged.integers, &other.integers);
+        retain_agreed(&mut merged.floats, &other.floats);
+        retain_agreed(&mut merged.stack, &other.stack);
+        retain_agreed(&mut merged.frame, &other.frame);
+        merged
+            .written
+            .retain(|register: &u8| other.written.contains(register));
+        merged
+            .selector_registers
+            .extend(other.selector_registers.iter().copied());
+        if merged.flags != other.flags {
+            merged.flags = None;
+        }
+        if merged.last_result != other.last_result {
+            merged.last_result = None;
+        }
+    }
+    Some(merged)
+}
+
+fn retain_agreed<K: Ord, V: PartialEq>(base: &mut BTreeMap<K, V>, other: &BTreeMap<K, V>) {
+    base.retain(|key: &K, value: &mut V| other.get(key) == Some(&*value));
+}
+
+fn predecessors_of(blocks: &[&NirBlock]) -> BTreeMap<u64, Vec<u64>> {
     let starts: BTreeSet<u64> = blocks.iter().map(|block: &&NirBlock| block.start).collect();
-    let mut sources: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut sources: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     for block in blocks {
         for successor in &block.successors {
             if starts.contains(successor) {
-                sources.entry(*successor).or_insert(block.start);
+                let entry: &mut Vec<u64> = sources.entry(*successor).or_default();
+                if !entry.contains(&block.start) {
+                    entry.push(block.start);
+                }
             }
         }
     }
@@ -1931,6 +1962,19 @@ fn stack_arguments(state: &TrackState) -> Vec<Option<DartValue>> {
     arguments
 }
 
+fn render_operand(
+    value: &DartValue,
+    pool: Option<&DartPoolTable>,
+    results: &BTreeMap<u64, usize>,
+    depth: usize,
+) -> String {
+    let rendered: String = render_value(value, pool, results, depth);
+    if matches!(value, DartValue::Offset { .. }) {
+        return format!("({rendered})");
+    }
+    rendered
+}
+
 fn render_value(
     value: &DartValue,
     pool: Option<&DartPoolTable>,
@@ -1954,7 +1998,7 @@ fn render_value(
         },
         DartValue::Field { base, offset } => format!(
             "{}.field@{offset:#x}",
-            render_value(base, pool, results, depth + 1)
+            render_operand(base, pool, results, depth + 1)
         ),
         DartValue::Offset { base, delta } => {
             let rendered: String = render_value(base, pool, results, depth + 1);
@@ -1974,7 +2018,7 @@ fn render_value(
             }
         }
         DartValue::Unary { op, operand } => {
-            let rendered: String = render_value(operand, pool, results, depth + 1);
+            let rendered: String = render_operand(operand, pool, results, depth + 1);
             match op {
                 DartUnaryOp::Negate => format!("-{rendered}"),
                 DartUnaryOp::BitNot => format!("~{rendered}"),
@@ -2318,5 +2362,156 @@ mod tests {
         );
 
         assert_eq!(recover_boolean_return(&function, None), None);
+    }
+
+    fn state_with(integers: &[(u8, DartValue)]) -> TrackState {
+        let mut state: TrackState = TrackState::default();
+        for (register, value) in integers {
+            state.define(*register, Some(value.clone()));
+        }
+        state
+    }
+
+    #[test]
+    fn a_merge_keeps_only_the_values_every_predecessor_agrees_on() {
+        let taken: TrackState = state_with(&[
+            (1, DartValue::Param(0)),
+            (2, DartValue::Int(9)),
+            (3, DartValue::Int(4)),
+        ]);
+        let fallthrough: TrackState =
+            state_with(&[(1, DartValue::Param(0)), (2, DartValue::Int(7))]);
+        let merged: TrackState =
+            merge_states(&[&taken, &fallthrough]).expect("two states merge into one");
+
+        assert_eq!(
+            merged.integers.get(&1),
+            Some(&DartValue::Param(0)),
+            "a register both predecessors set to the same value survives the merge"
+        );
+        assert_eq!(
+            merged.integers.get(&2),
+            None,
+            "a register the two predecessors disagree about must not keep either branch's value"
+        );
+        assert_eq!(
+            merged.integers.get(&3),
+            None,
+            "a register only one predecessor sets is unknown on the other path and must not survive"
+        );
+    }
+
+    #[test]
+    fn a_merge_excludes_a_register_any_predecessor_treats_as_a_dispatch_selector() {
+        let mut selector_path: TrackState = TrackState::default();
+        selector_path
+            .selector_registers
+            .insert(DART_IC_DATA_REGISTER);
+        let value_path: TrackState = TrackState::default();
+        let merged: TrackState =
+            merge_states(&[&selector_path, &value_path]).expect("two states merge into one");
+
+        assert!(
+            merged.selector_registers.contains(&DART_IC_DATA_REGISTER),
+            "a register that carries the dispatch selector on any path stays excluded after the merge, because including it would render the other path's value as an argument"
+        );
+    }
+
+    #[test]
+    fn a_merge_keeps_a_comparison_and_a_call_result_only_when_they_agree() {
+        let mut left: TrackState = TrackState::default();
+        left.flags = Some(DartComparison {
+            left: DartValue::Param(0),
+            right: DartValue::Int(0),
+        });
+        left.last_result = Some(DartValue::CallResult(0x100));
+        let mut right: TrackState = left.clone();
+        let same: TrackState = merge_states(&[&left, &right]).expect("merge");
+        assert_eq!(same.flags, left.flags);
+        assert_eq!(same.last_result, left.last_result);
+
+        right.last_result = Some(DartValue::CallResult(0x200));
+        right.flags = None;
+        let differing: TrackState = merge_states(&[&left, &right]).expect("merge");
+        assert_eq!(
+            differing.flags, None,
+            "a comparison only one predecessor established must not survive the merge"
+        );
+        assert_eq!(
+            differing.last_result, None,
+            "two predecessors returning different calls leave no known result"
+        );
+    }
+
+    #[test]
+    fn a_block_starts_unknown_until_every_predecessor_has_been_evaluated() {
+        let evaluated: TrackState = state_with(&[(1, DartValue::Param(0))]);
+        let mut exits: BTreeMap<u64, TrackState> = BTreeMap::new();
+        exits.insert(0x10, evaluated);
+
+        let complete: TrackState = entry_state(Some(&vec![0x10]), &exits);
+        assert_eq!(
+            complete.integers.get(&1),
+            Some(&DartValue::Param(0)),
+            "one evaluated predecessor is a merge of one and keeps its values"
+        );
+
+        let back_edge: TrackState = entry_state(Some(&vec![0x10, 0x20]), &exits);
+        assert!(
+            back_edge.integers.is_empty(),
+            "a loop header whose back edge has not been evaluated cannot know what that path holds and must start unknown, got {:?}",
+            back_edge.integers
+        );
+
+        let none: TrackState = entry_state(None, &exits);
+        assert!(none.integers.is_empty());
+    }
+
+    #[test]
+    fn a_join_wider_than_the_predecessor_bound_starts_unknown() {
+        let mut exits: BTreeMap<u64, TrackState> = BTreeMap::new();
+        let mut sources: Vec<u64> = Vec::new();
+        for index in 0..=MAX_MERGE_PREDECESSORS {
+            let address: u64 = 0x100 + index as u64;
+            exits.insert(address, state_with(&[(1, DartValue::Param(0))]));
+            sources.push(address);
+        }
+        assert!(
+            entry_state(Some(&sources), &exits).integers.is_empty(),
+            "a join wider than the bound refuses rather than merging an input-controlled number of states"
+        );
+        sources.pop();
+        assert_eq!(
+            entry_state(Some(&sources), &exits).integers.get(&1),
+            Some(&DartValue::Param(0)),
+            "the bound itself still merges, so the refusal is the bound and not an off-by-one"
+        );
+    }
+
+    #[test]
+    fn an_address_expression_parenthesises_before_a_field_access_binds() {
+        let target: DartValue = DartValue::Field {
+            base: Box::new(DartValue::Offset {
+                base: Box::new(DartValue::Param(0)),
+                delta: 15,
+            }),
+            offset: 0,
+        };
+        let results: BTreeMap<u64, usize> = BTreeMap::new();
+        assert_eq!(
+            render_value(&target, None, &results, 0),
+            "(arg0 + 15).field@0x0",
+            "a field access on a computed address must bind to the whole address, never to the displacement literal"
+        );
+
+        let top_level: DartValue = DartValue::Offset {
+            base: Box::new(DartValue::Param(0)),
+            delta: -1,
+        };
+        assert_eq!(
+            render_value(&top_level, None, &results, 0),
+            "arg0 - 1",
+            "an address expression that nothing binds to stays unparenthesised"
+        );
     }
 }
