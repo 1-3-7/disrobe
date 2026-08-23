@@ -31,3 +31,7 @@ disrobe-nir = { workspace = true, optional = true }
 disrobe-core = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
+
+[[test]]
+name = "default_build_parity"
+required-features = ["smt-verify"]
