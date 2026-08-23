@@ -13,11 +13,13 @@ use object::ObjectSection as _;
 const TRACKED_NATIVE_AOT_IMAGE: &[u8] =
     include_bytes!("../../../corpus/dotnet/megafile/EdgeCases.nativeaot.exe");
 
+const TRACKED_PROBE_IMAGE: &[u8] =
+    include_bytes!("fixtures/native_aot/names_probe_net9_x86_64.exe");
+
 fn probe_app_image() -> Vec<u8> {
-    let path: PathBuf = std::env::var_os(SAMPLE_ENV).map(PathBuf::from).expect(
-        "set DISROBE_AOT_SAMPLE to the probe app named in this test's ignore reason; no committed \
-         artifact declares the names this grade compares against",
-    );
+    let Some(path): Option<PathBuf> = std::env::var_os(SAMPLE_ENV).map(PathBuf::from) else {
+        return TRACKED_PROBE_IMAGE.to_vec();
+    };
     std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
 
@@ -135,7 +137,6 @@ fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_yields_type_names_the_source_declared() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
@@ -164,16 +165,14 @@ fn a_real_native_aot_image_yields_type_names_the_source_declared() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
-    let image: Vec<u8> = probe_app_image();
-    let report: AotReport = detect(&image);
+    let report: AotReport = detect(TRACKED_PROBE_IMAGE);
     assert_eq!(
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
     );
-    assert_eq!(report.metadata_attribution.types.len(), 426);
-    assert_eq!(report.metadata_attribution.methods.len(), 44);
+    assert_eq!(report.metadata_attribution.types.len(), 466);
+    assert_eq!(report.metadata_attribution.methods.len(), 45);
     let types: BTreeMap<u32, &AotType> = report
         .metadata_attribution
         .types
@@ -201,7 +200,7 @@ fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
         .iter()
         .map(|type_record: &AotType| type_record.method_record_offsets.len())
         .sum();
-    assert_eq!(type_method_edges, 57);
+    assert_eq!(type_method_edges, 58);
     assert!(
         report
             .metadata_attribution
@@ -211,6 +210,25 @@ fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
                 .method_record_offsets
                 .iter()
                 .all(|offset: &u32| methods.contains_key(offset)))
+    );
+    let declared_population: Vec<&str> = {
+        let mut names: Vec<&str> = report
+            .metadata_attribution
+            .types
+            .iter()
+            .filter(|type_record: &&AotType| {
+                type_record.namespace.as_deref() == Some("DisrobeAotProbe")
+            })
+            .map(|type_record: &AotType| type_record.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    assert_eq!(
+        declared_population,
+        vec!["IGauge", "Program", "Thermometer", "Widget"],
+        "the probe namespace is pinned by name, not by count, so a type the source never \
+         declared cannot hide inside a matching total"
     );
     let known_types: [(&str, usize); 4] = [
         ("Widget", 0),
@@ -256,9 +274,9 @@ fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
         .collect();
     let recovered_names: BTreeSet<&str> =
         report.recovered_names.iter().map(String::as_str).collect();
-    assert_eq!(recovered_names.len(), 1789);
-    assert_eq!(recovered_names.intersection(&attributed_names).count(), 397);
-    assert_eq!(recovered_names.difference(&attributed_names).count(), 1392);
+    assert_eq!(recovered_names.len(), 1880);
+    assert_eq!(recovered_names.intersection(&attributed_names).count(), 422);
+    assert_eq!(recovered_names.difference(&attributed_names).count(), 1458);
     assert!(recovered_names.contains("Read"));
     assert!(recovered_names.contains("ToString"));
     assert!(!attributed_names.contains("Read"));

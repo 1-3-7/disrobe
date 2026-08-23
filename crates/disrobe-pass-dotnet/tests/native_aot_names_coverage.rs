@@ -4,11 +4,14 @@ use std::path::PathBuf;
 
 use disrobe_pass_dotnet::aot::{AotReport, detect};
 
+const TRACKED_PROBE_IMAGE: &[u8] =
+    include_bytes!("fixtures/native_aot/names_probe_net9_x86_64.exe");
+
 fn probe_app_image() -> Vec<u8> {
-    let path: PathBuf = std::env::var_os("DISROBE_AOT_SAMPLE").map(PathBuf::from).expect(
-        "set DISROBE_AOT_SAMPLE to the probe app named in this test's ignore reason; no committed \
-         artifact declares the names this grade compares against",
-    );
+    let Some(path): Option<PathBuf> = std::env::var_os("DISROBE_AOT_SAMPLE").map(PathBuf::from)
+    else {
+        return TRACKED_PROBE_IMAGE.to_vec();
+    };
     std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
 
@@ -24,7 +27,6 @@ fn length_prefixed(image: &[u8], name: &str) -> bool {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn every_name_the_image_still_carries_is_recovered() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
