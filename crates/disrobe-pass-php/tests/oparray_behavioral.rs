@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 22] = [
+const PINNED_SAMPLES: [&str; 23] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -46,6 +46,7 @@ const PINNED_SAMPLES: [&str; 22] = [
     "generators",
     "goto_forward",
     "goto_shapes",
+    "interpolation",
     "keyed_foreach",
     "match_optimized",
     "members",
@@ -60,7 +61,7 @@ const PINNED_SAMPLES: [&str; 22] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 18] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 19] = [
     "arithmetic",
     "closure_bodies",
     "control_flow",
@@ -69,6 +70,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 18] = [
     "functions",
     "generators",
     "goto_forward",
+    "interpolation",
     "keyed_foreach",
     "match_optimized",
     "nullsafe",
@@ -81,7 +83,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 18] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 22] = [
+const OPCODE_NAMING_SAMPLES: [&str; 23] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -92,6 +94,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 22] = [
     "generators",
     "goto_forward",
     "goto_shapes",
+    "interpolation",
     "keyed_foreach",
     "match_optimized",
     "members",
@@ -561,6 +564,11 @@ fn closure_bodies_oparray_roundtrips_behaviorally() {
 #[test]
 fn goto_forward_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("goto_forward");
+}
+
+#[test]
+fn interpolation_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("interpolation");
 }
 
 const GOTO_REFUSED_CONTAINERS: [&str; 2] = ["out_of_loop", "backward"];

@@ -138,6 +138,9 @@ const OPMAP = [
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
     'SPACESHIP' => 170,
+    'ROPE_INIT' => 54,
+    'ROPE_ADD' => 55,
+    'ROPE_END' => 56,
     'INIT_DYNAMIC_CALL' => 128,
     'BIND_LEXICAL' => 182,
     'BIND_STATIC' => 183,
@@ -811,6 +814,29 @@ function parse_dump(string $text): array
                 $op->op2Type = $t;
                 $op->op2 = $v;
             }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'ROPE_INIT' || $mnemonic === 'ROPE_ADD' || $mnemonic === 'ROPE_END') {
+            $countTok = array_shift($tokens);
+            if (!preg_match('/^\d+$/', trim((string) $countTok))) {
+                fail(
+                    "$mnemonic at line $addr does not lead with a rope length or element index: '"
+                    . trim((string) $countTok) . "'"
+                );
+            }
+            $expected = $mnemonic === 'ROPE_INIT' ? 1 : 2;
+            if (count($tokens) !== $expected) {
+                fail(
+                    "$mnemonic at line $addr carries " . count($tokens)
+                    . " operand(s), expected $expected"
+                );
+            }
+            $operands = $mnemonic === 'ROPE_INIT' ? ['', $tokens[0]] : $tokens;
+            $op = build_op($mnemonic, $resultTok, $operands, $current['oa'], $addr + 1);
+            $op->ext = (int) trim((string) $countTok);
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;
