@@ -15,7 +15,7 @@ pub use dts_reverse::{DtsReverseResult, reverse_declarations};
 pub use flow_infer::{InferredType, TypeFlowReport, analyze as analyze_flow};
 pub use preset_env_undo::{PresetEnvUndoResult, undo_preset_env};
 pub use sourcemap_emit::{SourceMapEmitResult, emit_ts_with_source_map};
-pub use terser_restore::{TerserRestoreReport, restore_terser_mangled};
+pub use terser_restore::{MangledCandidate, TerserRestoreReport, restore_terser_mangled};
 pub use type_recover::{TypeRecoveryResult, recover_types};
 
 #[derive(Debug, Clone, Default, Serialize)]

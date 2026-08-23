@@ -24,8 +24,15 @@ pub struct TerserRestoreReport {
     pub identifiers_renamed: usize,
     pub references_rewritten: usize,
     pub restore_stats: RestoreStats,
+    pub candidates: Vec<MangledCandidate>,
     pub renames: Vec<RestoredName>,
     pub rewritten: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MangledCandidate {
+    pub original: String,
+    pub declaration_offset: usize,
 }
 
 #[must_use]
@@ -91,6 +98,15 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         }
         contexts.insert(symbol_id, ctx);
     }
+
+    let mut candidates: Vec<MangledCandidate> = contexts
+        .iter()
+        .map(|(symbol_id, ctx): (&SymbolId, &Context)| MangledCandidate {
+            original: ctx.original.clone(),
+            declaration_offset: symbols.get_span(*symbol_id).start as usize,
+        })
+        .collect();
+    candidates.sort_by_key(|candidate: &MangledCandidate| candidate.declaration_offset);
 
     let mut ordered: Vec<(SymbolId, &Context)> = contexts
         .iter()
@@ -182,6 +198,7 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         identifiers_renamed: idents_renamed,
         references_rewritten: refs_rewritten,
         restore_stats,
+        candidates,
         renames,
         rewritten: out,
     }

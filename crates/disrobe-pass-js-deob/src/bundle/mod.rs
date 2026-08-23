@@ -40,12 +40,12 @@ pub use rollup::detect as detect_rollup;
 pub use sourcemap::{SourceMapInfo, find as find_source_map};
 pub use sourcemap_recover::{
     DeployedRecovery, MergedTreeRecovery, NoMapFallback, OriginalPosition, PositionResolver,
-    RecoverOptions, RecoveredFile, RecoveryReport, SourceCoverage, SourceMap, SourceMapLocation,
-    SourceTreeRecovery, decode_data_url_json, merge_reports, parse as parse_source_map_v3,
-    recover as recover_source_map, recover_deployed_source,
+    RecoverOptions, RecoveredFile, RecoveryReport, RenamedBinding, SourceCoverage, SourceMap,
+    SourceMapLocation, SourceTreeRecovery, decode_data_url_json, merge_reports,
+    parse as parse_source_map_v3, recover as recover_source_map, recover_deployed_source,
     recover_from_inline_data_url as recover_source_map_inline,
     recover_from_json as recover_source_map_json, recover_source_tree_from_chunks,
-    recover_source_tree_from_js,
+    recover_source_tree_from_js, renamed_bindings,
 };
 pub use sourcemap_synth::{
     DecodedInlineMap, DecodedMappings, MappingSegment, RecoveredSourceMap, SourceMapEmit,

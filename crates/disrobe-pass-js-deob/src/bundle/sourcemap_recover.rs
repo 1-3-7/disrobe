@@ -813,6 +813,104 @@ impl PositionResolver {
     }
 }
 
+const MAX_RENAMED_BINDINGS: usize = 100_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenamedBinding {
+    pub generated: String,
+    pub original: String,
+    pub generated_line: u32,
+    pub generated_column: u32,
+}
+
+impl RenamedBinding {
+    #[must_use]
+    pub fn was_renamed(&self) -> bool {
+        self.generated != self.original
+    }
+}
+
+fn byte_offset_for_utf16_column(line: &str, column: u32) -> Option<usize> {
+    let mut units: u32 = 0;
+    for (offset, character) in line.char_indices() {
+        if units == column {
+            return Some(offset);
+        }
+        units = units.checked_add(u32::try_from(character.len_utf16()).ok()?)?;
+        if units > column {
+            return None;
+        }
+    }
+    (units == column).then_some(line.len())
+}
+
+fn identifier_at(text: &str) -> Option<&str> {
+    let mut end: usize = 0;
+    for (offset, character) in text.char_indices() {
+        let head: bool = offset == 0;
+        let allowed: bool = if head {
+            character.is_ascii_alphabetic() || character == '_' || character == '$'
+        } else {
+            character.is_ascii_alphanumeric() || character == '_' || character == '$'
+        };
+        if !allowed {
+            break;
+        }
+        end = offset.saturating_add(character.len_utf8());
+    }
+    (end > 0).then(|| &text[..end])
+}
+
+#[must_use]
+pub fn renamed_bindings(map: &SourceMap, generated_source: &str) -> Vec<RenamedBinding> {
+    let Some(decoded): Option<DecodedMappings> = decode_mappings(&map.mappings) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = generated_source.split('\n').collect();
+    let mut found: Vec<RenamedBinding> = Vec::new();
+    for (line_number, segments) in decoded.lines.iter().enumerate() {
+        let Some(line_text): Option<&&str> = lines.get(line_number) else {
+            continue;
+        };
+        for segment in segments {
+            if found.len() >= MAX_RENAMED_BINDINGS {
+                return found;
+            }
+            let Some(name_index): Option<i64> = segment.name_index else {
+                continue;
+            };
+            let Some(original): Option<&String> = usize::try_from(name_index)
+                .ok()
+                .and_then(|index: usize| map.names.get(index))
+            else {
+                continue;
+            };
+            let Ok(column): core::result::Result<u32, _> = u32::try_from(segment.generated_column)
+            else {
+                continue;
+            };
+            let Some(offset): Option<usize> = byte_offset_for_utf16_column(line_text, column)
+            else {
+                continue;
+            };
+            let Some(generated): Option<&str> = line_text.get(offset..).and_then(identifier_at)
+            else {
+                continue;
+            };
+            let Ok(line_u32): core::result::Result<u32, _> = u32::try_from(line_number) else {
+                continue;
+            };
+            found.push(RenamedBinding {
+                generated: generated.to_owned(),
+                original: original.clone(),
+                generated_line: line_u32,
+                generated_column: column,
+            });
+        }
+    }
+    found
+}
+
 pub fn decode_data_url_json(url: &str) -> Result<String> {
     let rest: &str = url
         .strip_prefix("data:")
