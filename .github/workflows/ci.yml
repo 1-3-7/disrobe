@@ -841,7 +841,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: wasmtime re-execution differential (recovered wasm runs identically to clean)
-        run: cargo test -p disrobe-pass-wasm-deob --features sandbox -- --nocapture
+        run: cargo test -p disrobe-pass-wasm-deob --features sandbox,dwarf -- --nocapture
       - name: lua interpreter re-execution differential
         run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
       - name: luajit decompile re-execution differential
