@@ -81,7 +81,9 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
                 ctx.member_accesses.insert(member);
             }
         }
-        if let Some(name) = assigned_from_name(symbol_id, symbols, nodes) {
+        if let Some(name) = assigned_from_name(symbol_id, symbols, nodes)
+            && is_usable_inferred_name(&name)
+        {
             ctx.assigned_from.insert(name);
         }
         for text in declaration_string_literals(symbol_id, symbols, nodes) {
@@ -288,6 +290,10 @@ fn assigned_from_name(
         },
         _ => None,
     }
+}
+
+fn is_usable_inferred_name(candidate: &str) -> bool {
+    !is_likely_mangled(candidate) && !is_js_reserved(candidate)
 }
 
 const MAX_NEARBY_STRINGS: usize = 4;

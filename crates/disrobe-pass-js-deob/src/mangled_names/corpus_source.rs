@@ -65,7 +65,7 @@ impl CorpusNameSource {
         Self::from_entries(baseline.iter().map(|(o, r, c)| CorpusEntry {
             original: (*o).to_owned(),
             restored: (*r).to_owned(),
-            min_confidence: *c,
+            min_confidence: prior_confidence(*c).0,
         }))
     }
 
@@ -78,6 +78,13 @@ impl CorpusNameSource {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+const MAX_PRIOR_CONFIDENCE: u8 = Confidence::LOW.0;
+
+fn prior_confidence(strength: u8) -> Confidence {
+    let scaled: u16 = u16::from(strength) * u16::from(MAX_PRIOR_CONFIDENCE) / 100;
+    Confidence(u8::try_from(scaled).unwrap_or(MAX_PRIOR_CONFIDENCE))
 }
 
 impl NameSource for CorpusNameSource {
@@ -107,6 +114,60 @@ mod tests {
         let ctx: Context = Context::new("e", SymbolRole::Parameter, ScopeKey(0));
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("lookup hits");
         assert_eq!(s.name, "event");
+    }
+
+    #[test]
+    fn a_context_free_convention_never_reaches_the_evidence_band() {
+        let src: CorpusNameSource = CorpusNameSource::well_known_minified();
+        for letter in [
+            "e", "t", "n", "r", "o", "i", "u", "a", "s", "c", "p", "d", "f", "g", "h", "k", "l",
+            "m", "v", "w", "x", "y", "z",
+        ] {
+            let ctx: Context = Context::new(letter, SymbolRole::Variable, ScopeKey(0));
+            let s: Suggestion = src
+                .suggest(ScopeKey(0), &ctx)
+                .expect("every baseline letter resolves");
+            assert!(
+                s.confidence < Confidence::MEDIUM,
+                "`{letter}` is a convention rather than evidence about this binding, so it must not \
+                 outrank a source that actually looked at the code; got {:?}",
+                s.confidence
+            );
+        }
+    }
+
+    #[test]
+    fn a_stronger_convention_still_outranks_a_weaker_one() {
+        let src: CorpusNameSource = CorpusNameSource::well_known_minified();
+        let strong: Suggestion = src
+            .suggest(
+                ScopeKey(0),
+                &Context::new("i", SymbolRole::Variable, ScopeKey(0)),
+            )
+            .expect("i resolves");
+        let weak: Suggestion = src
+            .suggest(
+                ScopeKey(0),
+                &Context::new("u", SymbolRole::Variable, ScopeKey(0)),
+            )
+            .expect("u resolves");
+        assert!(
+            strong.confidence > weak.confidence,
+            "demoting the whole table must not flatten the ordering within it"
+        );
+    }
+
+    #[test]
+    fn a_supplied_corpus_keeps_the_confidence_it_declares() {
+        let json: &str = r#"[{"original":"q","restored":"query","min_confidence":90}]"#;
+        let src: CorpusNameSource = CorpusNameSource::from_json(json).expect("parse");
+        let ctx: Context = Context::new("q", SymbolRole::Variable, ScopeKey(0));
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("hit");
+        assert_eq!(
+            s.confidence,
+            Confidence(90),
+            "a caller-supplied corpus is an assertion about real data, not a built-in convention"
+        );
     }
 
     #[test]

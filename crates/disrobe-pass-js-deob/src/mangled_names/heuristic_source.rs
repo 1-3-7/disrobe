@@ -1,59 +1,14 @@
 use std::collections::BTreeMap;
 
-use super::{Confidence, Context, NameSource, ScopeKey, Suggestion, SymbolRole};
+use super::{Confidence, Context, NameSource, ScopeKey, Suggestion};
 
 #[derive(Debug, Clone)]
 pub struct HeuristicNameSource {
-    function_pool: Vec<&'static str>,
-    variable_pool: Vec<&'static str>,
-    parameter_pool: Vec<&'static str>,
-    class_pool: Vec<&'static str>,
     member_keywords: BTreeMap<&'static str, (&'static str, Confidence)>,
 }
 
 impl Default for HeuristicNameSource {
     fn default() -> Self {
-        let function_pool: Vec<&'static str> = vec![
-            "init",
-            "render",
-            "handle",
-            "process",
-            "format",
-            "parse",
-            "compute",
-            "create",
-            "build",
-            "load",
-            "save",
-            "update",
-            "execute",
-            "dispatch",
-            "compile",
-            "encode",
-            "decode",
-            "serialize",
-            "deserialize",
-            "validate",
-        ];
-        let variable_pool: Vec<&'static str> = vec![
-            "result", "value", "data", "state", "node", "item", "entry", "record", "context",
-            "options", "config", "buffer", "offset", "length", "index", "count", "total",
-        ];
-        let parameter_pool: Vec<&'static str> = vec![
-            "value", "input", "options", "config", "context", "node", "ev", "event", "props",
-            "state",
-        ];
-        let class_pool: Vec<&'static str> = vec![
-            "Controller",
-            "Model",
-            "View",
-            "Service",
-            "Manager",
-            "Handler",
-            "Builder",
-            "Parser",
-            "Provider",
-        ];
         let mut member_keywords: BTreeMap<&'static str, (&'static str, Confidence)> =
             BTreeMap::new();
         member_keywords.insert("push", ("list", Confidence::HIGH));
@@ -86,13 +41,7 @@ impl Default for HeuristicNameSource {
         member_keywords.insert("write", ("writer", Confidence::MEDIUM));
         member_keywords.insert("read", ("reader", Confidence::MEDIUM));
         member_keywords.insert("length", ("list", Confidence::LOW));
-        Self {
-            function_pool,
-            variable_pool,
-            parameter_pool,
-            class_pool,
-            member_keywords,
-        }
+        Self { member_keywords }
     }
 }
 
@@ -121,15 +70,6 @@ impl HeuristicNameSource {
         };
         Some((name, effective))
     }
-
-    fn pool_for(&self, role: SymbolRole) -> &[&'static str] {
-        match role {
-            SymbolRole::Function | SymbolRole::Method => &self.function_pool,
-            SymbolRole::Class => &self.class_pool,
-            SymbolRole::Variable | SymbolRole::Property => &self.variable_pool,
-            SymbolRole::Parameter => &self.parameter_pool,
-        }
-    }
 }
 
 impl NameSource for HeuristicNameSource {
@@ -141,14 +81,7 @@ impl NameSource for HeuristicNameSource {
                 source_label: self.label(),
             });
         }
-        let pool: &[&'static str] = self.pool_for(context.role);
-        let bucket: usize = hash_str(&context.original) % pool.len().max(1);
-        let candidate: &str = pool.get(bucket).copied()?;
-        Some(Suggestion {
-            name: candidate.to_owned(),
-            confidence: Confidence::LOW,
-            source_label: self.label(),
-        })
+        None
     }
 
     fn label(&self) -> &'static str {
@@ -156,28 +89,20 @@ impl NameSource for HeuristicNameSource {
     }
 }
 
-fn hash_str(s: &str) -> usize {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    usize::try_from(h & 0x0fff_ffff).unwrap_or(0)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::mangled_names::ScopeKey;
+    use crate::mangled_names::{ScopeKey, SymbolRole};
 
     #[test]
-    fn suggests_function_name_from_pool() {
+    fn a_binding_with_no_matching_evidence_gets_no_suggestion() {
         let src: HeuristicNameSource = HeuristicNameSource::new();
         let ctx: Context = Context::new("a", SymbolRole::Function, ScopeKey(0));
-        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("got suggestion");
-        assert!(!s.name.is_empty());
-        assert_eq!(s.source_label, "heuristic");
+        assert!(
+            src.suggest(ScopeKey(0), &ctx).is_none(),
+            "nothing about this binding is known, so naming it would be invention"
+        );
     }
 
     #[test]

@@ -18,12 +18,15 @@ fn corpus_source_resolves_well_known_minified_idents() {
 }
 
 #[test]
-fn heuristic_source_falls_back_to_role_pool() {
+fn heuristic_source_offers_nothing_for_a_binding_it_knows_nothing_about() {
     let src: HeuristicNameSource = HeuristicNameSource::new();
     let ctx: MangledNameContext =
         MangledNameContext::new("zz", MangledSymbolRole::Function, MangledScopeKey(0));
-    let s: MangledSuggestion = src.suggest(MangledScopeKey(0), &ctx).expect("got");
-    assert!(!s.name.is_empty());
+    assert!(
+        src.suggest(MangledScopeKey(0), &ctx).is_none(),
+        "no member access, no string and no assignment means there is nothing to infer from, \
+         and a name produced anyway would be invention rather than recovery"
+    );
 }
 
 #[test]
