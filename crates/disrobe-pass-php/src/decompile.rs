@@ -265,6 +265,15 @@ pub struct UnrecoveredOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Limitation {
+    pub container: String,
+    pub index: u32,
+    pub opcode: u8,
+    pub mnemonic: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decompilation {
     pub fidelity: Fidelity,
     pub php_skeleton: String,
@@ -273,6 +282,10 @@ pub struct Decompilation {
     pub literal_count: usize,
     pub unrecovered: Vec<UnrecoveredOp>,
     pub unrecovered_total: usize,
+    #[serde(default)]
+    pub limitations: Vec<Limitation>,
+    #[serde(default)]
+    pub limitations_total: usize,
 }
 
 pub mod op {
@@ -992,6 +1005,8 @@ pub fn decompile(root: &OpArray) -> Decompilation {
     let (op_array_count, op_count, literal_count): (usize, usize, usize) = count_totals(root);
     let unrecovered: Vec<UnrecoveredOp> = std::mem::take(&mut emitter.unrecovered);
     let unrecovered_total: usize = emitter.unrecovered_total;
+    let limitations: Vec<Limitation> = std::mem::take(&mut emitter.limitations);
+    let limitations_total: usize = emitter.limitations_total;
     Decompilation {
         fidelity: Fidelity::Partial,
         php_skeleton: emitter.finish(),
@@ -1000,6 +1015,8 @@ pub fn decompile(root: &OpArray) -> Decompilation {
         literal_count,
         unrecovered,
         unrecovered_total,
+        limitations,
+        limitations_total,
     }
 }
 
@@ -1022,6 +1039,8 @@ struct SkeletonEmitter {
     emitted_open_tag: bool,
     unrecovered: Vec<UnrecoveredOp>,
     unrecovered_total: usize,
+    limitations: Vec<Limitation>,
+    limitations_total: usize,
 }
 
 impl SkeletonEmitter {
@@ -1155,6 +1174,21 @@ impl SkeletonEmitter {
                 opcode,
                 mnemonic: opcode_name(opcode).to_owned(),
                 reason: reason.to_owned(),
+            });
+        }
+        self.limitations_total = self.limitations_total.saturating_add(lifter.limited.len());
+        let mut limited: Vec<(u32, u8, &'static str)> = std::mem::take(&mut lifter.limitations);
+        limited.sort_unstable_by_key(|(index, _, _): &(u32, u8, &'static str)| *index);
+        for (index, opcode, note) in limited {
+            if self.limitations.len() >= MAX_UNRECOVERED_RECORDS {
+                break;
+            }
+            self.limitations.push(Limitation {
+                container: container.clone(),
+                index,
+                opcode,
+                mnemonic: opcode_name(opcode).to_owned(),
+                note: note.to_owned(),
             });
         }
         for stmt in &stmts {
@@ -1507,6 +1541,8 @@ struct Lifter<'a> {
     result_use_counts: Vec<u32>,
     reserved_names: BTreeSet<String>,
     writable_slots: BTreeMap<(OperandType, u32), u32>,
+    limitations: Vec<(u32, u8, &'static str)>,
+    limited: BTreeSet<u32>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
     breakables: Vec<BreakableFrame>,
@@ -1578,6 +1614,8 @@ impl<'a> Lifter<'a> {
             result_use_counts,
             reserved_names,
             writable_slots: BTreeMap::new(),
+            limitations: Vec::new(),
+            limited: BTreeSet::new(),
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
             breakables: Vec::new(),
@@ -1601,7 +1639,43 @@ impl<'a> Lifter<'a> {
 
     fn lift(&mut self) -> Vec<Stmt> {
         let len: u32 = self.ops.len() as u32;
+        self.record_opaque_literals(len);
         self.lift_range(0, len, 0)
+    }
+
+    fn record_opaque_literals(&mut self, len: u32) {
+        for idx in 0..len {
+            let Some(op): Option<&Op> = self.ops.get(idx as usize) else {
+                break;
+            };
+            if !Self::reads_opaque_array(op, self.literals) {
+                continue;
+            }
+            let opcode: u8 = op.opcode;
+            if self.limited.insert(idx) && self.limitations.len() < MAX_UNRECOVERED_RECORDS {
+                self.limitations
+                    .push((idx, opcode, LIMITATION_OPAQUE_ARRAY_LITERAL));
+            }
+        }
+    }
+
+    fn reads_opaque_array(op: &Op, literals: &[Literal]) -> bool {
+        let operand = |ty: OperandType, value: u32| -> bool {
+            ty == OperandType::Const
+                && matches!(literals.get(value as usize), Some(Literal::Array(_)))
+        };
+        operand(op.op1_type, op.op1) || operand(op.op2_type, op.op2)
+    }
+
+    fn opaque_literal_marker(&self, idx: u32) -> Option<String> {
+        let op: &Op = self.ops.get(idx as usize)?;
+        if !Self::reads_opaque_array(op, self.literals) {
+            return None;
+        }
+        Some(format!(
+            "// disrobe: unverified {} at op {idx} ({LIMITATION_OPAQUE_ARRAY_LITERAL})",
+            opcode_name(op.opcode)
+        ))
     }
 
     fn lift_range(&mut self, start: u32, end: u32, depth: u32) -> Vec<Stmt> {
@@ -1615,7 +1689,12 @@ impl<'a> Lifter<'a> {
                 i = next;
                 continue;
             }
-            if let Some(stmt) = self.eval_op(i) {
+            let marker: Option<String> = self.opaque_literal_marker(i);
+            let lifted: Option<String> = self.eval_op(i);
+            if let Some(marker) = marker {
+                out.push(Stmt::Line(marker));
+            }
+            if let Some(stmt) = lifted {
                 out.push(Stmt::Line(stmt));
             }
             i += 1;
@@ -4422,6 +4501,8 @@ const REASON_CLASS_REFERENCE: &str =
     "the class reference on this member access is not carried in this op array";
 const REASON_COMPOUND_OPERATOR: &str =
     "the compound assignment operator is not a php 8 binary operator";
+const LIMITATION_OPAQUE_ARRAY_LITERAL: &str = "the constant array literal's elements are not carried in this op array, so an empty array \
+     and a populated one are indistinguishable here";
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";

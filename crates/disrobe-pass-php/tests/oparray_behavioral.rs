@@ -511,6 +511,99 @@ fn dynamic_members_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("dynamic_members");
 }
 
+fn recover_sample(php: &Path, dll: &str, sample: &str) -> Decompilation {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_limitation_probe")
+            .expect("create the limitation scratch directory");
+    let dzoa: PathBuf = scratch.path().join(format!("{sample}.dzoa"));
+    emit_dzoa(php, dll, &required_sample(sample), &dzoa)
+        .unwrap_or_else(|diagnosis: String| panic!("emit {sample}: {diagnosis}"));
+    let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read the op array");
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse the op array");
+    decompile_oparray(&parsed)
+}
+
+#[test]
+fn a_constant_array_literal_is_published_with_a_named_limitation_rather_than_refused() {
+    let graded: &str =
+        "the named limitation on a constant array literal this container cannot carry";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+
+    let carried: Decompilation = recover_sample(&php, &dll, "keyed_foreach");
+    assert!(
+        carried.unrecovered.is_empty(),
+        "a constant array literal must NOT refuse the body; `array()` is right whenever the \
+         literal was empty, and keyed_foreach's is. It reported: {:?}",
+        carried.unrecovered
+    );
+    assert!(
+        !carried.limitations.is_empty(),
+        "keyed_foreach assigns `[]`, whose elements this container does not carry, so the \
+         recovery must say so rather than let `array()` pass as verified\n--- recovered ---\n{}",
+        carried.php_skeleton
+    );
+    for limitation in &carried.limitations {
+        assert!(
+            limitation.note.contains("not carried in this op array"),
+            "a limitation must name what cannot be vouched for, got {limitation:?}"
+        );
+        assert!(
+            !limitation.mnemonic.is_empty() && !limitation.container.is_empty(),
+            "a limitation must name the op and the container it sits in, got {limitation:?}"
+        );
+    }
+    let markers: usize = carried
+        .php_skeleton
+        .matches("// disrobe: unverified")
+        .count();
+    assert_eq!(
+        markers,
+        carried.limitations.len(),
+        "every limitation must be visible at its site in the recovered source, and every visible \
+         marker must be in the machine-readable record; the two disagree\n--- recovered ---\n{}",
+        carried.php_skeleton
+    );
+    assert!(
+        carried.php_skeleton.contains("array()"),
+        "the body is published, not refused, so the array must still be emitted\n--- recovered \
+         ---\n{}",
+        carried.php_skeleton
+    );
+    assert_eq!(
+        carried.limitations_total,
+        carried.limitations.len(),
+        "the limitation total must match the records this sample produced"
+    );
+}
+
+#[test]
+fn a_sample_with_nothing_unverifiable_carries_no_limitation() {
+    let graded: &str = "the limitation mechanism's silence on a sample with nothing to qualify";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let clean: Decompilation = recover_sample(&php, &dll, "arithmetic");
+    assert!(
+        clean.limitations.is_empty() && clean.limitations_total == 0,
+        "arithmetic builds no constant array literal, so a limitation there would mean the \
+         mechanism fires on everything and therefore vouches for nothing: {:?}",
+        clean.limitations
+    );
+    assert!(
+        !clean.php_skeleton.contains("// disrobe: unverified"),
+        "a sample with nothing unverifiable must carry no marker\n--- recovered ---\n{}",
+        clean.php_skeleton
+    );
+}
+
 const UNHANDLED_FLAG_SOURCE: &str =
     "<?php\n$b = 1;\n$c = 2;\n$byref = [&$b, 'k' => &$c];\n$b = 9;\necho $byref[0], \"\\n\";\n";
 
