@@ -137,6 +137,9 @@ const OPMAP = [
     'GENERATOR_CREATE' => 214,
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
+    'ASSIGN_REF' => 30,
+    'ASSIGN_OBJ_REF' => 32,
+    'ASSIGN_STATIC_PROP_REF' => 33,
     'ASSIGN_STATIC_PROP' => 25,
     'ASSIGN_DIM_OP' => 27,
     'ASSIGN_OBJ_OP' => 28,
@@ -176,6 +179,7 @@ const CLASS_REFERENCE_FLAGS = [
 const DISCARDED_MEMBER_FLAGS = [
     '(exception)',
     '(dim write)',
+    '(ref)',
 ];
 
 const CAST_TYPE_MAP = [

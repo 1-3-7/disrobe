@@ -30,6 +30,15 @@ class Ledger
         return static::$tag;
     }
 
+    public static function bind(string $seed): string
+    {
+        $local = $seed;
+        Ledger::$tag = &$local;
+        $local = $local . '!';
+
+        return Ledger::$tag;
+    }
+
     public function bump(int $by): int
     {
         $this->value += $by;
@@ -87,6 +96,9 @@ echo Ledger::SCALE, "\n";
 echo Ledger::add(5), "\n";
 echo Ledger::$total, "\n";
 echo Ledger::retag('x'), "\n";
+
+echo Ledger::bind('bound'), "
+";
 
 $ledger = new Ledger();
 echo $ledger->bump(3), "\n";

@@ -401,6 +401,9 @@ pub mod op {
     pub const GENERATOR_CREATE: u8 = 214;
     pub const OP_DATA: u8 = 137;
     pub const ASSIGN_STATIC_PROP: u8 = 25;
+    pub const ASSIGN_REF: u8 = 30;
+    pub const ASSIGN_OBJ_REF: u8 = 32;
+    pub const ASSIGN_STATIC_PROP_REF: u8 = 33;
     pub const ASSIGN_DIM_OP: u8 = 27;
     pub const ASSIGN_OBJ_OP: u8 = 28;
     pub const ASSIGN_STATIC_PROP_OP: u8 = 29;
@@ -451,6 +454,9 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         23 => "ZEND_ASSIGN_DIM",
         24 => "ZEND_ASSIGN_OBJ",
         25 => "ZEND_ASSIGN_STATIC_PROP",
+        30 => "ZEND_ASSIGN_REF",
+        32 => "ZEND_ASSIGN_OBJ_REF",
+        33 => "ZEND_ASSIGN_STATIC_PROP_REF",
         26 => "ZEND_ASSIGN_OP",
         27 => "ZEND_ASSIGN_DIM_OP",
         28 => "ZEND_ASSIGN_OBJ_OP",
@@ -3755,6 +3761,44 @@ impl<'a> Lifter<'a> {
                 self.mark_writable(idx, op);
                 None
             }
+            o if o == op::ASSIGN_REF => {
+                if !matches!(op.op1_type, OperandType::Cv | OperandType::Var) {
+                    return Some(self.refuse(idx, o, REASON_REFERENCE_TARGET));
+                }
+                let Some(target): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1)
+                else {
+                    return Some(self.refuse(idx, o, REASON_REFERENCE_TARGET));
+                };
+                let Some(source): Option<Expr> = self.operand_expr(op.op2_type, op.op2) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                if op.result_type != OperandType::Unused {
+                    self.store_result(op, Expr::atom(target.text.clone()));
+                }
+                Some(format!("{} = &{};", target.text, source.text))
+            }
+            o if o == op::ASSIGN_OBJ_REF => {
+                let target: String = self.property_access(op);
+                let Some(source): Option<Expr> = self.op_data_value(idx) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                if op.result_type != OperandType::Unused {
+                    self.store_result(op, Expr::atom(target.clone()));
+                }
+                Some(format!("{target} = &{};", source.text))
+            }
+            o if o == op::ASSIGN_STATIC_PROP_REF => {
+                let Some(target): Option<String> = self.static_property(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                let Some(source): Option<Expr> = self.op_data_value(idx) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                if op.result_type != OperandType::Unused {
+                    self.store_result(op, Expr::atom(target.clone()));
+                }
+                Some(format!("{target} = &{};", source.text))
+            }
             o if o == op::ASSIGN_STATIC_PROP => {
                 let Some(target): Option<String> = self.static_property(op) else {
                     return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
@@ -4497,6 +4541,8 @@ const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
+const REASON_REFERENCE_TARGET: &str =
+    "a reference assignment requires a writable variable as its target";
 const REASON_CLASS_REFERENCE: &str =
     "the class reference on this member access is not carried in this op array";
 const REASON_COMPOUND_OPERATOR: &str =

@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 15] = [
+const PINNED_SAMPLES: [&str; 16] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -47,13 +47,14 @@ const PINNED_SAMPLES: [&str; 15] = [
     "match_optimized",
     "members",
     "objects",
+    "references",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 12] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 13] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -63,12 +64,13 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 12] = [
     "keyed_foreach",
     "match_optimized",
     "objects",
+    "references",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 15] = [
+const OPCODE_NAMING_SAMPLES: [&str; 16] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -80,6 +82,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 15] = [
     "match_optimized",
     "members",
     "objects",
+    "references",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
@@ -511,6 +514,11 @@ fn dynamic_members_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("dynamic_members");
 }
 
+#[test]
+fn references_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("references");
+}
+
 fn recover_sample(php: &Path, dll: &str, sample: &str) -> Decompilation {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_limitation_probe")
@@ -670,7 +678,7 @@ fn an_operand_flag_the_emitter_cannot_encode_fails_it_and_the_tracked_op_arrays_
     );
 }
 
-const MEMBERS_STATIC_STATEMENTS: [&str; 8] = [
+const MEMBERS_STATIC_STATEMENTS: [&str; 9] = [
     "Ledger::$total += $by;",
     "++Ledger::$total;",
     "--Ledger::$total;",
@@ -679,6 +687,7 @@ const MEMBERS_STATIC_STATEMENTS: [&str; 8] = [
     "Ledger::$tag .= '!';",
     "return static::$tag;",
     "$this->bag[$key] += 10;",
+    "Ledger::$tag = &$local;",
 ];
 
 #[test]
