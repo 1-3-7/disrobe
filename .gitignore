@@ -151,6 +151,7 @@ corpus/**/*.pkg
 corpus/**/*.deb
 corpus/**/*.rpm
 corpus/**/*.rar
+!corpus/binfmt/rar/hostile-filter-staticdata-rar3.rar
 !corpus/binfmt/rar/filter-delta-rar5.rar
 !corpus/binfmt/rar/filter-e8-rar3.rar
 !corpus/binfmt/rar/filter-e8e9-rar5.rar

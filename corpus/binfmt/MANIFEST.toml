@@ -143,7 +143,7 @@ sha256 = "12a4d3bc6d2d7534791fc6312dce438637711f7914f15648ddc27df99a2bd4f9"
 note = "37 MB is the diskpart floor for a default 32 MiB-block VHDX (one fully-allocated payload block); the file is all zeros past offset ~4.3 MB"
 
 [rar_payload]
-description = "RAR archives store hello.txt, lorem.txt and docs/notes.txt. expected/ holds the verbatim source files used as the ground truth for byte-exact member extraction. lorem.txt is 32800 bytes of repeated text so normal-mode compression actually shrinks it. The two filter-* RAR5 archives each hold one member chosen to trigger a post-LZ filter: x86code.bin is a self-authored compiled x86-64 PE (fibonacci/collatz/ackermann, no I/O) whose dense E8/E9 call/jmp opcodes make the RAR5 analyzer apply the x86 (E8E9) filter; delta.bin is interleaved 3-channel byte ramps that trigger the delta filter. expected/x86code.bin and expected/delta.bin are the verbatim originals. RAR 2.9/3.x carries its delta, e8, e8e9, rgb and audio transforms as rarvm programs rather than fixed filter ids, so those members are recovered by identifying each program by exact length and CRC-32 and running a native transform. The four *-rar3 fixtures come from the libarchive test corpus and cover filter records, mixed PPMd and LZ blocks in one member, multiple LZ tables, and low-distance repeat state crossing a table boundary."
+description = "RAR archives store hello.txt, lorem.txt and docs/notes.txt. expected/ holds the verbatim source files used as the ground truth for byte-exact member extraction. lorem.txt is 32800 bytes of repeated text so normal-mode compression actually shrinks it. The two filter-* RAR5 archives each hold one member chosen to trigger a post-LZ filter: x86code.bin is a self-authored compiled x86-64 PE (fibonacci/collatz/ackermann, no I/O) whose dense E8/E9 call/jmp opcodes make the RAR5 analyzer apply the x86 (E8E9) filter; delta.bin is interleaved 3-channel byte ramps that trigger the delta filter. expected/x86code.bin and expected/delta.bin are the verbatim originals. RAR 2.9/3.x carries its delta, e8, e8e9, itanium, rgb and audio transforms as rarvm programs rather than fixed filter ids, so those members are recovered by identifying each program by exact length and CRC-32 and running a native transform. The five *-rar3 fixtures come from the libarchive test corpus and cover filter records, mixed PPMd and LZ blocks in one member, multiple LZ tables, and low-distance repeat state crossing a table boundary."
 
 [[fixtures]]
 path = "rar/store-rar4.rar"
@@ -744,3 +744,13 @@ provenance = "installshield/PROVENANCE.txt; byte copy of unshield test/v5/CVE-20
 size_bytes = 3_113
 sha256 = "6ed3cc2918dfb2611a112db5c88b40765c8ecdc661df40bc3c5fec0f176810c8"
 note = "the only committed artifact whose version field decodes to major 5; 3 records carry the invalid flag and the fourth carries a directory-traversal member name. unshield's own suite asserts that extracting it fails, and disrobe must recover nothing from it"
+
+[[fixtures]]
+path = "rar/hostile-filter-staticdata-rar3.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), rar 2.9/3.x LZ, hostile LZ-carried filter record"
+tool = "libarchive test corpus, commit 34c4a536a88d5114cfab7ca9bff48c0d235fd53a, BSD-2-Clause"
+provenance = "uudecoded from libarchive/test/test_read_format_rar_unbound_staticdata.rar.uu, retrieved 2026-08-23. See corpus/binfmt/rar/provenance.toml. 7-Zip 26.02 refuses the same member with `ERROR: Data Error : poc_b76.txt`"
+size_bytes = 125
+sha256 = "8b1c1c2e19c9d84d7a7a9b30c36dcea09323c14164a747fc05b8cb1c3ca2cd9a"
+member = "poc_b76.txt"
+member_size_bytes = 4
