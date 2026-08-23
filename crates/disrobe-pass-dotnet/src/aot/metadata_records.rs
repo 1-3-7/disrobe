@@ -44,6 +44,8 @@ const FIELD_ATTRIBUTE_STATIC: u32 = 0x0010;
 const FIELD_ATTRIBUTE_LITERAL: u32 = 0x0040;
 const TYPE_ATTRIBUTE_LAYOUT_MASK: u32 = 0x0000_0018;
 const TYPE_ATTRIBUTE_SEQUENTIAL_LAYOUT: u32 = 0x0000_0008;
+const SYSTEM_NAMESPACE_NAME: &str = "System";
+const VALUE_TYPE_NAME: &str = "ValueType";
 const MAX_METADATA_TYPE_SIGNATURE_WORK: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,7 @@ pub(super) struct AotFieldLayout {
 pub(super) struct AotTypeLayout {
     pub(super) record_offset: u32,
     pub(super) sequential: bool,
+    pub(super) value_type: bool,
     pub(super) declared_size: u32,
     pub(super) packing_size: u32,
     pub(super) instance_fields: Vec<AotFieldLayout>,
@@ -653,6 +656,7 @@ struct NamespaceRecord {
 struct TypeRecord {
     offset: u32,
     flags: u32,
+    base_type: RawHandle,
     namespace: u32,
     name: String,
     declared_size: u32,
@@ -1333,7 +1337,7 @@ fn parse_type(
 ) -> crate::error::Result<TypeRecord> {
     let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     let flags: u32 = cursor.unsigned()?;
-    let _base_type: RawHandle = cursor.raw_handle()?;
+    let base_type: RawHandle = cursor.raw_handle()?;
     let namespace: u32 = cursor.typed_handle()?;
     let name_handle: u32 = cursor.typed_handle()?;
     let declared_size: u32 = cursor.unsigned()?;
@@ -1364,6 +1368,7 @@ fn parse_type(
     Ok(TypeRecord {
         offset,
         flags,
+        base_type,
         namespace,
         name,
         declared_size,
@@ -2115,10 +2120,32 @@ fn validate_field_reachability(
     Ok(())
 }
 
+fn derives_from_value_type(
+    type_record: &TypeRecord,
+    types: &BTreeMap<u32, TypeRecord>,
+    qualifications: &BTreeMap<u32, Option<String>>,
+) -> bool {
+    if type_record.base_type.kind != HANDLE_TYPE_DEFINITION {
+        return false;
+    }
+    let Some(base): Option<&TypeRecord> = types.get(&type_record.base_type.offset) else {
+        return false;
+    };
+    if base.name != VALUE_TYPE_NAME {
+        return false;
+    }
+    qualifications
+        .get(&base.offset)
+        .is_some_and(|namespace: &Option<String>| {
+            namespace.as_deref() == Some(SYSTEM_NAMESPACE_NAME)
+        })
+}
+
 fn type_layouts(
     types: &BTreeMap<u32, TypeRecord>,
     fields: &BTreeMap<u32, FieldRecord>,
     field_signatures: &BTreeMap<u32, FieldSignatureRecord>,
+    qualifications: &BTreeMap<u32, Option<String>>,
     budget: &mut MetadataBudget,
 ) -> crate::error::Result<Vec<AotTypeLayout>> {
     let mut layouts: Vec<AotTypeLayout> = Vec::with_capacity(types.len());
@@ -2145,6 +2172,7 @@ fn type_layouts(
             record_offset: type_record.offset,
             sequential: type_record.flags & TYPE_ATTRIBUTE_LAYOUT_MASK
                 == TYPE_ATTRIBUTE_SEQUENTIAL_LAYOUT,
+            value_type: derives_from_value_type(type_record, types, qualifications),
             declared_size: type_record.declared_size,
             packing_size: type_record.packing_size,
             instance_fields,
@@ -2333,12 +2361,17 @@ fn parse_metadata_records(
         &record_ranges,
         root_end,
     )?;
-    let layouts: Vec<AotTypeLayout> =
-        type_layouts(&types, &fields, &field_signatures, &mut budget)?;
     let qualifications: BTreeMap<u32, Option<String>> =
         namespace_qualifications(&scopes, &namespaces, &mut budget)?;
     let mut type_qualifications: BTreeMap<u32, Option<String>> =
         type_namespace_qualifications(&types, &qualifications, &mut budget)?;
+    let layouts: Vec<AotTypeLayout> = type_layouts(
+        &types,
+        &fields,
+        &field_signatures,
+        &type_qualifications,
+        &mut budget,
+    )?;
     let type_capacity: usize = types.len();
     let mut attributed_types: Vec<AotType> = Vec::with_capacity(type_capacity);
     for (_, type_record) in types {
@@ -2493,8 +2526,9 @@ mod tests {
         HANDLE_SZ_ARRAY_SIGNATURE, HANDLE_TYPE_SPECIFICATION, MetadataBudget, MetadataCursor,
         MetadataStrings, MethodRecord, MethodSignatureRecord, NamespaceRecord, RawHandle,
         ScopeRecord, SerializedHandleEncoding, TypeRecord, TypeSignatureValidator,
-        validate_record_ranges, validate_type_containment,
+        derives_from_value_type, validate_record_ranges, validate_type_containment,
     };
+    use super::{HANDLE_TYPE_DEFINITION, HANDLE_TYPE_REFERENCE};
 
     fn encode_unsigned(value: u32) -> Vec<u8> {
         if value < 1 << 7 {
@@ -2531,6 +2565,7 @@ mod tests {
         TypeRecord {
             offset,
             flags: 0,
+            base_type: RawHandle { kind: 0, offset: 0 },
             namespace: 0,
             name: format!("Type{offset}"),
             declared_size: 0,
@@ -2541,6 +2576,65 @@ mod tests {
             fields: Vec::new(),
             end: usize::try_from(offset).map_or(usize::MAX, |value: usize| value.saturating_add(1)),
         }
+    }
+
+    fn based_type(offset: u32, name: &str, kind: u8, base: u32) -> TypeRecord {
+        TypeRecord {
+            offset,
+            flags: 0,
+            base_type: RawHandle { kind, offset: base },
+            namespace: 0,
+            name: name.to_owned(),
+            declared_size: 0,
+            packing_size: 0,
+            enclosing_type: 0,
+            nested_types: Vec::new(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            end: usize::try_from(offset).map_or(usize::MAX, |value: usize| value.saturating_add(1)),
+        }
+    }
+
+    #[test]
+    fn only_a_system_value_type_base_marks_a_type_as_a_value_type() {
+        let mut types: BTreeMap<u32, TypeRecord> = BTreeMap::new();
+        types.insert(10, based_type(10, "ValueType", 0, 0));
+        types.insert(20, based_type(20, "Object", 0, 0));
+        let mut qualifications: BTreeMap<u32, Option<String>> = BTreeMap::new();
+        qualifications.insert(10, Some("System".to_owned()));
+        qualifications.insert(20, Some("System".to_owned()));
+
+        let value: TypeRecord = based_type(30, "Pair", HANDLE_TYPE_DEFINITION, 10);
+        assert!(
+            derives_from_value_type(&value, &types, &qualifications),
+            "a type whose base is the System.ValueType definition is a value type"
+        );
+
+        let reference: TypeRecord = based_type(31, "Held", HANDLE_TYPE_DEFINITION, 20);
+        assert!(
+            !derives_from_value_type(&reference, &types, &qualifications),
+            "a type whose base is System.Object is a reference type however it is laid out"
+        );
+
+        let indirect: TypeRecord = based_type(32, "Pair", HANDLE_TYPE_REFERENCE, 10);
+        assert!(
+            !derives_from_value_type(&indirect, &types, &qualifications),
+            "a base reached only through a type reference is not resolved here, so it is not \
+             proven and must not be treated as a value type"
+        );
+
+        let absent: TypeRecord = based_type(33, "Pair", HANDLE_TYPE_DEFINITION, 99);
+        assert!(
+            !derives_from_value_type(&absent, &types, &qualifications),
+            "a base that does not resolve proves nothing"
+        );
+
+        let mut outside: BTreeMap<u32, Option<String>> = BTreeMap::new();
+        outside.insert(10, Some("Probe".to_owned()));
+        assert!(
+            !derives_from_value_type(&value, &types, &outside),
+            "a ValueType declared outside the System namespace is a different type"
+        );
     }
 
     #[test]

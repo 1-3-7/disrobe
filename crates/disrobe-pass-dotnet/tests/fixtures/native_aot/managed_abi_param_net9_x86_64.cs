@@ -2,11 +2,13 @@ using System;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 ManagedPair pair = new ManagedPair { Low = 3, High = 5 };
 ManagedTriple triple = new ManagedTriple { First = 1, Second = 2, Third = 4 };
 ManagedSmall small = new ManagedSmall { Only = 9 };
 ManagedMixed blend = new ManagedMixed { First = 6, Second = 8, Third = 11 };
+ManagedSequentialClass held = new ManagedSequentialClass { First = 13, Second = 17, Third = 19 };
 
 Console.WriteLine(ManagedParamProbe.Sum(pair).ToString(CultureInfo.InvariantCulture));
 Console.WriteLine(ManagedParamProbe.Scale(pair, 7L).ToString(CultureInfo.InvariantCulture));
@@ -14,6 +16,7 @@ Console.WriteLine(ManagedParamProbe.Wide(triple).ToString(CultureInfo.InvariantC
 Console.WriteLine(ManagedParamProbe.Echo(pair).High.ToString(CultureInfo.InvariantCulture));
 Console.WriteLine(ManagedParamProbe.Narrow(small).ToString(CultureInfo.InvariantCulture));
 Console.WriteLine(ManagedParamProbe.Blend(blend).ToString(CultureInfo.InvariantCulture));
+Console.WriteLine(ManagedParamProbe.Head(held).ToString(CultureInfo.InvariantCulture));
 
 ManagedParamProbe probe = new ManagedParamProbe(2L);
 Console.WriteLine(probe.Weighted(pair).ToString(CultureInfo.InvariantCulture));
@@ -37,6 +40,12 @@ foreach (FieldInfo field in typeof(ManagedSmall).GetFields(
 }
 
 foreach (FieldInfo field in typeof(ManagedMixed).GetFields(
+    BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+{
+    Console.WriteLine(field.ToString());
+}
+
+foreach (FieldInfo field in typeof(ManagedSequentialClass).GetFields(
     BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
 {
     Console.WriteLine(field.ToString());
@@ -79,6 +88,14 @@ public struct ManagedMixed
     public long Third;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public sealed class ManagedSequentialClass
+{
+    public long First;
+    public long Second;
+    public long Third;
+}
+
 public sealed class ManagedParamProbe
 {
     public long Weight;
@@ -109,6 +126,9 @@ public sealed class ManagedParamProbe
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static long Blend(ManagedMixed mixed) => mixed.First + mixed.Second + mixed.Third;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long Head(ManagedSequentialClass held) => held.First + held.Second;
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public long Weighted(ManagedPair pair) => pair.Low * this.Weight + pair.High;

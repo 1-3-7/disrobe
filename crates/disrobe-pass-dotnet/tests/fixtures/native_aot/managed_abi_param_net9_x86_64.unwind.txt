@@ -1,8 +1,9 @@
-  00007E9C 0006BEC0 0006BEC5 00162000  managed_abi_param_net9_x86_64_ManagedParamProbe___ctor
-  00007EA8 0006BED0 0006BED8 00163474  managed_abi_param_net9_x86_64_ManagedParamProbe__Sum
-  00007EB4 0006BEE0 0006BEEC 00164558  managed_abi_param_net9_x86_64_ManagedParamProbe__Scale
-  00007EC0 0006BEF0 0006BEFC 00164558  managed_abi_param_net9_x86_64_ManagedParamProbe__Wide
-  00007ECC 0006BF00 0006BF12 00161FF8  managed_abi_param_net9_x86_64_ManagedParamProbe__Echo
-  00007ED8 0006BF20 0006BF24 0016418C  managed_abi_param_net9_x86_64_ManagedParamProbe__Narrow
-  00007EE4 0006BF30 0006BF3C 00164558  managed_abi_param_net9_x86_64_ManagedParamProbe__Blend
-  00007EF0 0006BF40 0006BF4D 001645A0  managed_abi_param_net9_x86_64_ManagedParamProbe__Weighted
+  00007E9C 0006BFF0 0006BFF5 00162100  managed_abi_param_net9_x86_64_ManagedParamProbe___ctor
+  00007EA8 0006C000 0006C008 00163574  managed_abi_param_net9_x86_64_ManagedParamProbe__Sum
+  00007EB4 0006C010 0006C01C 00164658  managed_abi_param_net9_x86_64_ManagedParamProbe__Scale
+  00007EC0 0006C020 0006C02C 00164658  managed_abi_param_net9_x86_64_ManagedParamProbe__Wide
+  00007ECC 0006C030 0006C042 001620F8  managed_abi_param_net9_x86_64_ManagedParamProbe__Echo
+  00007ED8 0006C050 0006C054 0016428C  managed_abi_param_net9_x86_64_ManagedParamProbe__Narrow
+  00007EE4 0006C060 0006C06C 00164658  managed_abi_param_net9_x86_64_ManagedParamProbe__Blend
+  00007EF0 0006C070 0006C079 0016B488  managed_abi_param_net9_x86_64_ManagedParamProbe__Head
+  00007EFC 0006C080 0006C08D 001646A0  managed_abi_param_net9_x86_64_ManagedParamProbe__Weighted

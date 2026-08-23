@@ -39,8 +39,8 @@ const MANAGED_TO_C: [(&str, &str); 15] = [
     ("System.Void", "void"),
 ];
 
-const PROBE_METHODS: [&str; 8] = [
-    "_ctor", "Sum", "Scale", "Wide", "Echo", "Narrow", "Blend", "Weighted",
+const PROBE_METHODS: [&str; 9] = [
+    "_ctor", "Sum", "Scale", "Wide", "Echo", "Narrow", "Blend", "Head", "Weighted",
 ];
 
 const INDIRECT_PARAMETERS: [(&str, &str); 6] = [
@@ -54,7 +54,15 @@ const INDIRECT_PARAMETERS: [(&str, &str); 6] = [
 
 const AGGREGATE_EVIDENCED: [&str; 5] = ["Sum", "Scale", "Wide", "Blend", "Weighted"];
 
-const DECLARED_ABSTENTIONS: [(&str, &str); 1] = [("Narrow", "type-outside-primitive-table")];
+const DECLARED_ABSTENTIONS: [(&str, &str); 2] = [
+    ("Narrow", "type-outside-primitive-table"),
+    ("Head", "type-outside-primitive-table"),
+];
+
+const REGISTER_PASSED_ABSTENTIONS: [&str; 1] = ["Narrow"];
+const REFERENCE_TYPE_ABSTENTIONS: [(&str, &str, &str); 1] =
+    [("Head", "ManagedSequentialClass", "First")];
+const REFERENCE_HEADER_BYTES: usize = 8;
 
 const MANAGED_SIGNATURE_METHODS: [&str; 7] =
     ["_ctor", "Sum", "Scale", "Wide", "Echo", "Blend", "Weighted"];
@@ -546,6 +554,8 @@ fn a_register_passed_struct_keeps_the_register_typed_body() -> Result<(), &'stat
             body["signature_abstention"], wire,
             "{method} must abstain for the declared reason"
         );
+    }
+    for method in REGISTER_PASSED_ABSTENTIONS {
         let (_has_this, _return_type, parameters): (bool, String, Vec<String>) =
             declared_managed_signature(method)?;
         let declared: &String = parameters
@@ -554,8 +564,8 @@ fn a_register_passed_struct_keeps_the_register_typed_body() -> Result<(), &'stat
         let (_fields, size): DeclaredLayout = declared_layout(declared.as_str())?;
         assert!(
             matches!(size, 1 | 2 | 4 | 8),
-            "{method} is pinned because {declared} is a size the runtime passes in the register, \
-             got {size} bytes"
+            "{method} is pinned because {declared} is a size the runtime passes in the \
+             register, got {size} bytes"
         );
         let pseudo_c: &str = recovered_pseudo_c(&document, method)?;
         assert!(
@@ -566,6 +576,52 @@ fn a_register_passed_struct_keeps_the_register_typed_body() -> Result<(), &'stat
     Ok(())
 }
 
+#[test]
+fn a_sequential_reference_type_is_never_read_as_a_struct() -> Result<(), &'static str> {
+    let document: serde_json::Value = document()?;
+    for (method, declared, source_field) in REFERENCE_TYPE_ABSTENTIONS {
+        assert!(
+            SOURCE.contains("[StructLayout(LayoutKind.Sequential)]")
+                && SOURCE.contains(format!("public sealed class {declared}").as_str()),
+            "the committed source must declare {declared} as a sequential-layout class, \
+             which is the shape a value-type check has to separate from a struct"
+        );
+        let pseudo_c: &str = recovered_pseudo_c(&document, method)?;
+        assert!(
+            !pseudo_c.contains(declared),
+            "{method} must not name a reference type as though it were a struct: {pseudo_c}"
+        );
+        let (fields, _size): DeclaredLayout = declared_layout(declared)?;
+        let placed: Vec<(usize, usize)> = declared_offsets(declared)?;
+        let read_index: usize = fields
+            .iter()
+            .position(|(_managed, name): &DeclaredField| name == source_field)
+            .ok_or("the source field is not in the declared field list")?;
+        let struct_offset: usize = placed
+            .get(read_index)
+            .map(|(offset, _width): &(usize, usize)| *offset)
+            .ok_or("the declared field has no struct-reading offset")?;
+        let object_offset: usize = struct_offset
+            .checked_add(REFERENCE_HEADER_BYTES)
+            .ok_or("the object offset overflowed")?;
+        let confusable: Option<&(usize, usize)> = placed
+            .iter()
+            .find(|(offset, _width): &&(usize, usize)| *offset == object_offset);
+        let (_managed, struct_field): &DeclaredField = placed
+            .iter()
+            .position(|(offset, _width): &(usize, usize)| *offset == object_offset)
+            .and_then(|index: usize| fields.get(index))
+            .ok_or("no declared field sits at the confusable offset")?;
+        assert!(
+            confusable.is_some() && struct_field != source_field,
+            "this grade is only meaningful while a struct reading of {declared} places a \
+             different field at object offset {object_offset} than the {source_field} the \
+             source reads there; it currently names {struct_field}, which is the wrong name \
+             an offset and width check alone would have attached"
+        );
+    }
+    Ok(())
+}
 #[test]
 fn the_managed_signature_population_is_pinned_by_name() -> Result<(), &'static str> {
     let document: serde_json::Value = document()?;

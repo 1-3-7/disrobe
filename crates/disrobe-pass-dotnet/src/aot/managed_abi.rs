@@ -553,6 +553,9 @@ fn resolve_struct(
     if !layout.sequential || layout.packing_size != 0 || layout.instance_fields.is_empty() {
         return Err(hidden());
     }
+    if !layout.value_type {
+        return Err(AotSignatureAbstention::TypeOutsidePrimitiveTable);
+    }
     if !is_c_identifier(declaration.name.as_str()) || declaration.name.starts_with('_') {
         return Err(hidden());
     }
@@ -631,8 +634,14 @@ fn resolve_slot(
         Ok(value) => return Ok(ManagedSlot::Value(value)),
         Err(abstention) => abstention,
     };
-    let managed: ManagedStruct = resolve_struct(declaration, types, layouts)
-        .map_err(|_error: AotSignatureAbstention| scalar)?;
+    let managed: ManagedStruct =
+        resolve_struct(declaration, types, layouts).map_err(|error: AotSignatureAbstention| {
+            if error == AotSignatureAbstention::TypeOutsidePrimitiveTable {
+                error
+            } else {
+                scalar
+            }
+        })?;
     if passed_in_register(managed.size) {
         return Err(AotSignatureAbstention::TypeOutsidePrimitiveTable);
     }
