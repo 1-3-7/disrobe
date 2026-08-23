@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 20] = [
+const PINNED_SAMPLES: [&str; 22] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -44,6 +44,8 @@ const PINNED_SAMPLES: [&str; 20] = [
     "dynamic_members",
     "functions",
     "generators",
+    "goto_forward",
+    "goto_shapes",
     "keyed_foreach",
     "match_optimized",
     "members",
@@ -58,7 +60,7 @@ const PINNED_SAMPLES: [&str; 20] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 17] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 18] = [
     "arithmetic",
     "closure_bodies",
     "control_flow",
@@ -66,6 +68,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 17] = [
     "dynamic_members",
     "functions",
     "generators",
+    "goto_forward",
     "keyed_foreach",
     "match_optimized",
     "nullsafe",
@@ -78,7 +81,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 17] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 20] = [
+const OPCODE_NAMING_SAMPLES: [&str; 22] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -87,6 +90,8 @@ const OPCODE_NAMING_SAMPLES: [&str; 20] = [
     "dynamic_members",
     "functions",
     "generators",
+    "goto_forward",
+    "goto_shapes",
     "keyed_foreach",
     "match_optimized",
     "members",
@@ -448,10 +453,12 @@ fn every_committed_oparray_sample_is_pinned_by_name() {
     let not_behavioral: Vec<&String> = pinned.difference(&behavioral).collect();
     assert_eq!(
         not_behavioral,
-        vec!["closures", "members", "versioned"],
-        "every pinned sample except `closures`, which grades anonymous closure opcode blocks, and \
-         `versioned`, which carries the schema-version cases, must have a behavioral roundtrip; \
-         these do not: {not_behavioral:?}"
+        vec!["closures", "goto_shapes", "members", "versioned"],
+        "every pinned sample except `closures`, which grades anonymous closure opcode blocks, \
+         `goto_shapes`, whose jumps the structurer refuses by name, `members`, whose user class \
+         declaration and static methods are not carried in this container, and `versioned`, \
+         which carries the schema-version cases, must have a behavioral roundtrip; these do \
+         not: {not_behavioral:?}"
     );
     let opcode_naming: BTreeSet<String> = OPCODE_NAMING_SAMPLES
         .iter()
@@ -549,6 +556,47 @@ fn spaceship_oparray_roundtrips_behaviorally() {
 #[test]
 fn closure_bodies_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("closure_bodies");
+}
+
+#[test]
+fn goto_forward_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("goto_forward");
+}
+
+const GOTO_REFUSED_CONTAINERS: [&str; 2] = ["out_of_loop", "backward"];
+
+#[test]
+fn a_goto_the_structurer_cannot_shape_is_refused_by_name_and_never_silently_restructured() {
+    let graded: &str = "the php 8.4 goto shapes the structurer refuses";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let recovered: Decompilation = recover_sample(&php, &dll, "goto_shapes");
+    let refused: Vec<(&str, &str)> = recovered
+        .unrecovered
+        .iter()
+        .map(|entry: &UnrecoveredOp| (entry.container.as_str(), entry.mnemonic.as_str()))
+        .collect();
+    let expected: Vec<(&str, &str)> = GOTO_REFUSED_CONTAINERS
+        .iter()
+        .map(|container: &&str| (*container, "ZEND_JMP"))
+        .collect();
+    assert_eq!(
+        refused, expected,
+        "goto_shapes is pinned to refuse exactly one jump in each of {GOTO_REFUSED_CONTAINERS:?} \
+         and nothing else; a jump that starts structuring, or one that stops, must move this pin \
+         deliberately\n--- recovered ---\n{}",
+        recovered.php_skeleton
+    );
+    for reason in recovered
+        .unrecovered
+        .iter()
+        .map(|entry: &UnrecoveredOp| entry.reason.as_str())
+    {
+        assert_eq!(
+            reason, "this jump matched no structured control-flow shape",
+            "a refused jump must say why it was refused"
+        );
+    }
 }
 
 #[test]
