@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 17] = [
+const PINNED_SAMPLES: [&str; 18] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -47,6 +47,7 @@ const PINNED_SAMPLES: [&str; 17] = [
     "match_optimized",
     "members",
     "nullsafe",
+    "nullsafe_calls",
     "objects",
     "references",
     "switch_linear",
@@ -55,7 +56,7 @@ const PINNED_SAMPLES: [&str; 17] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 14] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 15] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -65,6 +66,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 14] = [
     "keyed_foreach",
     "match_optimized",
     "nullsafe",
+    "nullsafe_calls",
     "objects",
     "references",
     "switch_linear",
@@ -72,7 +74,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 14] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 17] = [
+const OPCODE_NAMING_SAMPLES: [&str; 18] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -84,6 +86,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 17] = [
     "match_optimized",
     "members",
     "nullsafe",
+    "nullsafe_calls",
     "objects",
     "references",
     "switch_linear",
@@ -525,6 +528,11 @@ fn references_oparray_roundtrips_behaviorally() {
 #[test]
 fn nullsafe_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("nullsafe");
+}
+
+#[test]
+fn nullsafe_calls_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("nullsafe_calls");
 }
 
 const NULLSAFE_CHAINS: [(&str, &str); 4] = [

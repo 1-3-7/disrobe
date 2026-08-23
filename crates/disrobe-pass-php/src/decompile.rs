@@ -1474,6 +1474,7 @@ impl Stmt {
 struct PendingCall {
     callee: String,
     is_method: bool,
+    nullsafe: bool,
     object: Option<String>,
     is_static: bool,
     args: Vec<String>,
@@ -1554,6 +1555,7 @@ struct Lifter<'a> {
     writable_slots: BTreeMap<(OperandType, u32), u32>,
     limitations: Vec<(u32, u8, &'static str)>,
     limited: BTreeSet<u32>,
+    nullsafe_link: Option<(OperandType, u32)>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
     breakables: Vec<BreakableFrame>,
@@ -1627,6 +1629,7 @@ impl<'a> Lifter<'a> {
             writable_slots: BTreeMap::new(),
             limitations: Vec::new(),
             limited: BTreeSet::new(),
+            nullsafe_link: None,
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
             breakables: Vec::new(),
@@ -2826,44 +2829,120 @@ impl<'a> Lifter<'a> {
             return None;
         }
         let result_key: (OperandType, u32) = (gate.result_type, gate.result);
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
+        let refused_before: usize = self.refused.len();
         let mut chain: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
         let mut link: (OperandType, u32) = (gate.op1_type, gate.op1);
         let mut cursor: u32 = i;
         let mut links: usize = 0;
         while cursor < join {
-            let guard: &Op = self.ops.get(cursor as usize)?;
+            let guard: Op = self.ops.get(cursor as usize)?.clone();
             if guard.opcode != op::JMP_NULL
                 || guard.op2 != join
                 || (guard.op1_type, guard.op1) != link
                 || (guard.result_type, guard.result) != result_key
             {
-                return None;
+                return self.abandon_nullsafe(incoming_slots, incoming_writable);
             }
-            let fetch: Op = self.ops.get(cursor as usize + 1)?.clone();
-            if fetch.opcode != op::FETCH_OBJ_IS || (fetch.op1_type, fetch.op1) != link {
-                return None;
-            }
-            let name: String = self.literal_string(fetch.op2_type, fetch.op2)?;
-            if !is_valid_php_ident(&name) {
-                return None;
-            }
-            chain = Expr {
-                text: format!("{}?->{name}", chain.wrapped(PREC_CALL)),
-                prec: PREC_CALL,
+            let segment_end: u32 = self.nullsafe_segment_end(cursor, join)?;
+            let head: Op = self.ops.get(cursor as usize + 1)?.clone();
+            let advanced: Option<((OperandType, u32), Expr)> =
+                if head.opcode == op::FETCH_OBJ_IS && segment_end == cursor.saturating_add(2) {
+                    self.nullsafe_property(&head, link, &chain)
+                } else if head.opcode == op::INIT_METHOD_CALL && (head.op1_type, head.op1) == link {
+                    self.nullsafe_call(cursor, segment_end, link, refused_before)
+                } else {
+                    None
+                };
+            let Some((produced, next)): Option<((OperandType, u32), Expr)> = advanced else {
+                return self.abandon_nullsafe(incoming_slots, incoming_writable);
             };
-            link = (fetch.result_type, fetch.result);
-            cursor = cursor.saturating_add(2);
+            chain = next;
+            link = produced;
+            cursor = segment_end;
             links = links.saturating_add(1);
             if links > SANE_NULLSAFE_LINKS {
-                return None;
+                return self.abandon_nullsafe(incoming_slots, incoming_writable);
             }
         }
         if cursor != join || links == 0 || link != result_key {
-            return None;
+            return self.abandon_nullsafe(incoming_slots, incoming_writable);
         }
         self.writable_slots.remove(&result_key);
         self.slots.insert(result_key, chain);
         Some((Vec::new(), join))
+    }
+
+    fn abandon_nullsafe(
+        &mut self,
+        slots: BTreeMap<(OperandType, u32), Expr>,
+        writable: BTreeMap<(OperandType, u32), u32>,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        self.slots = slots;
+        self.writable_slots = writable;
+        self.nullsafe_link = None;
+        None
+    }
+
+    fn nullsafe_segment_end(&self, cursor: u32, join: u32) -> Option<u32> {
+        let mut scan: u32 = cursor.checked_add(1)?;
+        while scan < join {
+            if self.ops.get(scan as usize)?.opcode == op::JMP_NULL {
+                return Some(scan);
+            }
+            scan = scan.checked_add(1)?;
+        }
+        Some(join)
+    }
+
+    fn nullsafe_property(
+        &self,
+        fetch: &Op,
+        link: (OperandType, u32),
+        chain: &Expr,
+    ) -> Option<((OperandType, u32), Expr)> {
+        if (fetch.op1_type, fetch.op1) != link {
+            return None;
+        }
+        let name: String = self.literal_string(fetch.op2_type, fetch.op2)?;
+        if !is_valid_php_ident(&name) {
+            return None;
+        }
+        Some((
+            (fetch.result_type, fetch.result),
+            Expr {
+                text: format!("{}?->{name}", chain.wrapped(PREC_CALL)),
+                prec: PREC_CALL,
+            },
+        ))
+    }
+
+    fn nullsafe_call(
+        &mut self,
+        cursor: u32,
+        segment_end: u32,
+        link: (OperandType, u32),
+        refused_before: usize,
+    ) -> Option<((OperandType, u32), Expr)> {
+        let depth: usize = self.call_stack.len();
+        self.nullsafe_link = Some(link);
+        let mut k: u32 = cursor.saturating_add(1);
+        while k < segment_end {
+            self.eval_op(k);
+            k = k.saturating_add(1);
+        }
+        self.nullsafe_link = None;
+        if self.refused.len() != refused_before || self.call_stack.len() != depth {
+            return None;
+        }
+        let last: Op = self.ops.get(segment_end as usize - 1)?.clone();
+        if last.result_type == OperandType::Unused {
+            return None;
+        }
+        let produced: (OperandType, u32) = (last.result_type, last.result);
+        let expr: Expr = self.slots.get(&produced).cloned()?;
+        Some((produced, expr))
     }
 
     fn fold_default_join(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -3706,6 +3785,7 @@ impl<'a> Lifter<'a> {
                 self.call_stack.push(PendingCall {
                     callee,
                     is_method: false,
+                    nullsafe: false,
                     object: None,
                     is_static: false,
                     args: Vec::new(),
@@ -3723,9 +3803,11 @@ impl<'a> Lifter<'a> {
                 let method: String = self
                     .operand_expr(op.op2_type, op.op2)
                     .map_or_else(|| "method".to_owned(), |e: Expr| strip_quotes(&e.text));
+                let nullsafe: bool = self.nullsafe_link == Some((op.op1_type, op.op1));
                 self.call_stack.push(PendingCall {
                     callee: method,
                     is_method: true,
+                    nullsafe,
                     object: Some(object),
                     is_static: false,
                     args: Vec::new(),
@@ -3743,6 +3825,7 @@ impl<'a> Lifter<'a> {
                 self.call_stack.push(PendingCall {
                     callee: method,
                     is_method: true,
+                    nullsafe: false,
                     object: Some(class),
                     is_static: true,
                     args: Vec::new(),
@@ -3772,6 +3855,7 @@ impl<'a> Lifter<'a> {
                 self.call_stack.push(PendingCall {
                     callee: format!("new {cls}"),
                     is_method: false,
+                    nullsafe: false,
                     object: None,
                     is_static: false,
                     args: Vec::new(),
@@ -4419,7 +4503,13 @@ impl<'a> Lifter<'a> {
         let call: PendingCall = self.call_stack.pop()?;
         let args: String = call.args.join(", ");
         let text: String = if call.is_method {
-            let sep: &str = if call.is_static { "::" } else { "->" };
+            let sep: &str = if call.is_static {
+                "::"
+            } else if call.nullsafe {
+                "?->"
+            } else {
+                "->"
+            };
             let object: String = call.object.unwrap_or_else(|| "$this".to_owned());
             format!("{object}{sep}{}({args})", call.callee)
         } else {
