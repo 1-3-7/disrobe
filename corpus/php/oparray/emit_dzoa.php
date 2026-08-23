@@ -136,6 +136,7 @@ const OPMAP = [
     'MATCH' => 195,
     'JMP_NULL' => 198,
     'CHECK_UNDEF_ARGS' => 199,
+    'CALLABLE_CONVERT' => 202,
     'STRLEN' => 210,
     'COUNT' => 211,
     'VERIFY_RETURN_TYPE' => 212,
@@ -839,6 +840,22 @@ function parse_dump(string $text): array
                 $op->op2Type = $t;
                 $op->op2 = $v;
             }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'FETCH_CLASS') {
+            if (count($tokens) !== 2 || trim($tokens[0]) !== '(exception)') {
+                fail("FETCH_CLASS at line $addr does not carry the exception class operand shape");
+            }
+            $op = build_op($mnemonic, $resultTok, [], $current['oa'], $addr + 1);
+            [$t, $v] = parse_operand($tokens[1], $current['oa']);
+            if ($t === null || $t === OT_UNUSED) {
+                fail("FETCH_CLASS at line $addr has no representable class operand");
+            }
+            $op->op2Type = $t;
+            $op->op2 = $v;
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;

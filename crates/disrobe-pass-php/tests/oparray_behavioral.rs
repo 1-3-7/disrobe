@@ -25,8 +25,8 @@ mod php_toolchain;
 
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
-    Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, UnrecoveredOp,
-    decompile_oparray, opcode_name, parse_oparray,
+    Decompilation, Error, Literal, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray,
+    UnrecoveredOp, decompile_oparray, opcode_name, parse_oparray,
 };
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,6 +36,8 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 const FETCH_IS_DZOA: &[u8] = include_bytes!("fixtures/oparray_fetch_is/fetch_is.dzoa");
+const CALLABLE_CONVERT_DZOA: &[u8] =
+    include_bytes!("fixtures/oparray_callable/callable_convert.dzoa");
 
 const PINNED_SAMPLES: [&str; 25] = [
     "arithmetic",
@@ -638,6 +640,355 @@ fn fetch_is_recovers_local_coalesce_reads_under_php_84() {
         perturbed.as_deref(),
         Some(original.as_str()),
         "the missing-value mutation must fail"
+    );
+}
+
+#[test]
+fn callable_convert_recovers_php_84_first_class_callables() {
+    let graded: &str = "the PHP 8.4 CALLABLE_CONVERT recovery differential";
+    let php: PathBuf = required_php(graded);
+    let banner: String = String::from_utf8_lossy(
+        &Command::new(&php)
+            .arg("-v")
+            .output()
+            .expect("read the PHP 8.4 banner")
+            .stdout,
+    )
+    .into_owned();
+    assert!(
+        banner.starts_with("PHP 8.4."),
+        "expected PHP 8.4, found {banner}"
+    );
+    let dll: String = required_opcache(&php, graded);
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("oparray_callable");
+    let source: PathBuf = fixture.join("callable_convert.php");
+    let original: String =
+        run_php(&php, &source).expect("the tracked callable source must execute");
+    assert_eq!(original, "MIXED:desserts:2025:02:03:04");
+
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_callable_convert")
+            .expect("create callable scratch directory");
+    let emitted: PathBuf = scratch.path().join("callable_convert.dzoa");
+    emit_dzoa(&php, &dll, &source, &emitted).expect("emit tracked callable source");
+    let fresh: Vec<u8> = std::fs::read(&emitted).expect("read regenerated callable DZOA");
+    assert_eq!(
+        fresh, CALLABLE_CONVERT_DZOA,
+        "the tracked callable DZOA must reproduce byte-for-byte"
+    );
+
+    let parsed: OpArray = parse_oparray(&fresh).expect("parse CALLABLE_CONVERT DZOA");
+    let first: Decompilation = decompile_oparray(&parsed);
+    let second: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(
+        first.php_skeleton, second.php_skeleton,
+        "CALLABLE_CONVERT recovery must be byte-identical"
+    );
+    assert!(first.unrecovered.is_empty(), "{:?}", first.unrecovered);
+    for callable in [
+        "strtoupper(...)",
+        "CallableFixture\\lower(...)",
+        "$name(...)",
+        "CallableFixture\\Factory::date(...)",
+        "DateTimeImmutable::createFromFormat(...)",
+        "$date->format(...)",
+        "$date->$instance_method(...)",
+        "$class::$static_method(...)",
+    ] {
+        assert!(
+            first.php_skeleton.contains(callable),
+            "{}",
+            first.php_skeleton
+        );
+    }
+    let recovered: String =
+        run_php_source(&php, &first.php_skeleton).expect("recovered callable source must execute");
+    assert_eq!(recovered, original, "behavioral grade: 8/8 callable shapes");
+
+    let mutant: String =
+        first
+            .php_skeleton
+            .replacen("$dynamic_method('d')", "$dynamic_method('m')", 1);
+    assert_ne!(
+        mutant, first.php_skeleton,
+        "dynamic method mutation must apply"
+    );
+    let perturbed: String =
+        run_php_source(&php, &mutant).expect("mutated callable source must execute");
+    assert_ne!(
+        perturbed, original,
+        "the callable target mutation must differ"
+    );
+
+    let mut malformed: OpArray = parsed.clone();
+    let body: &mut OpArray = malformed
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some("callable_convert_output"))
+        .unwrap_or_else(|| panic!("the tracked sample declares callable_convert_output"));
+    let convert: &mut Op = body
+        .ops
+        .iter_mut()
+        .find(|candidate: &&mut Op| candidate.opcode == op::CALLABLE_CONVERT)
+        .unwrap_or_else(|| panic!("php 8.4 must emit CALLABLE_CONVERT"));
+    convert.op1_type = disrobe_pass_php::OperandType::Const;
+    let rejected: Decompilation = decompile_oparray(&malformed);
+    assert!(
+        rejected.unrecovered.iter().any(|entry: &UnrecoveredOp| {
+            entry.opcode == op::CALLABLE_CONVERT
+                && entry.reason
+                    == "the first-class callable has no verified zero-argument call frame"
+        }),
+        "a malformed CALLABLE_CONVERT must refuse rather than invent a callable: {:?}",
+        rejected.unrecovered
+    );
+}
+
+#[test]
+fn callable_convert_refuses_malformed_frames_without_leaking_call_state() {
+    #[derive(Clone, Copy)]
+    enum Mutation {
+        Op1,
+        Op2,
+        Result,
+        Extended,
+        MissingFrame,
+        SentArgument,
+        InvalidFunction,
+        InvalidClass,
+        InvalidInit,
+        Nullsafe,
+    }
+
+    for mutation in [
+        Mutation::Op1,
+        Mutation::Op2,
+        Mutation::Result,
+        Mutation::Extended,
+        Mutation::MissingFrame,
+        Mutation::SentArgument,
+        Mutation::InvalidFunction,
+        Mutation::InvalidClass,
+        Mutation::InvalidInit,
+        Mutation::Nullsafe,
+    ] {
+        let mut malformed: OpArray = parse_oparray(CALLABLE_CONVERT_DZOA).expect("parse fixture");
+        let name: &str = if matches!(mutation, Mutation::Nullsafe) {
+            "nullsafe_callable_convert_candidate"
+        } else {
+            "callable_convert_output"
+        };
+        let body: &mut OpArray = malformed
+            .children
+            .iter_mut()
+            .find(|child: &&mut OpArray| child.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("the tracked sample declares {name}"));
+        let convert_index: usize = body
+            .ops
+            .iter()
+            .position(|candidate: &Op| {
+                candidate.opcode
+                    == if matches!(mutation, Mutation::Nullsafe) {
+                        op::DO_FCALL
+                    } else {
+                        op::CALLABLE_CONVERT
+                    }
+            })
+            .unwrap_or_else(|| panic!("the tracked sample declares the required call frame"));
+        match mutation {
+            Mutation::Op1 => {
+                body.ops[convert_index].op1_type = disrobe_pass_php::OperandType::Const
+            }
+            Mutation::Op2 => {
+                body.ops[convert_index].op2_type = disrobe_pass_php::OperandType::Const
+            }
+            Mutation::Result => {
+                body.ops[convert_index].result_type = disrobe_pass_php::OperandType::Var
+            }
+            Mutation::Extended => body.ops[convert_index].extended_value = 1,
+            Mutation::MissingFrame => body.ops[convert_index - 1].opcode = op::NOP,
+            Mutation::SentArgument => body.ops.insert(
+                convert_index,
+                Op {
+                    opcode: op::SEND_VAL,
+                    op1_type: disrobe_pass_php::OperandType::Const,
+                    op2_type: disrobe_pass_php::OperandType::Unused,
+                    result_type: disrobe_pass_php::OperandType::Unused,
+                    op1: 0,
+                    op2: 0,
+                    result: 0,
+                    extended_value: 0,
+                    lineno: 0,
+                },
+            ),
+            Mutation::InvalidFunction => body.ops[convert_index - 1].op2 = u32::MAX,
+            Mutation::InvalidClass => {
+                let index: usize = body
+                    .ops
+                    .iter()
+                    .position(|candidate: &Op| candidate.opcode == op::INIT_STATIC_METHOD_CALL)
+                    .unwrap_or_else(|| panic!("the tracked sample has a static callable"));
+                body.ops[index].op1 = u32::MAX;
+            }
+            Mutation::InvalidInit => body.ops[convert_index - 1].extended_value = 1,
+            Mutation::Nullsafe => {
+                body.ops[convert_index].opcode = op::CALLABLE_CONVERT;
+                body.ops[convert_index].result_type = disrobe_pass_php::OperandType::TmpVar;
+                body.ops[convert_index - 2].result_type = disrobe_pass_php::OperandType::TmpVar;
+            }
+        }
+        let rejected: Decompilation = decompile_oparray(&malformed);
+        assert!(
+            rejected
+                .unrecovered
+                .iter()
+                .any(|entry: &UnrecoveredOp| entry.opcode == op::CALLABLE_CONVERT),
+            "every guarded callable frame must refuse: {:?}",
+            rejected.unrecovered
+        );
+        assert!(
+            rejected.php_skeleton.contains("$date->format(...)"),
+            "a rejected earlier frame must not contaminate later call recovery: {}",
+            rejected.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn callable_convert_refuses_invalid_callable_names_without_cross_function_evidence() {
+    #[derive(Clone, Copy)]
+    enum Mutation {
+        DirectLiteral,
+        RepeatedLeadingSeparator,
+        StaticLiteral,
+        DynamicMissingName,
+        DynamicInvalidName,
+    }
+
+    for mutation in [
+        Mutation::DirectLiteral,
+        Mutation::RepeatedLeadingSeparator,
+        Mutation::StaticLiteral,
+        Mutation::DynamicMissingName,
+        Mutation::DynamicInvalidName,
+    ] {
+        let mut malformed: OpArray = parse_oparray(CALLABLE_CONVERT_DZOA).expect("parse fixture");
+        {
+            let body: &mut OpArray = malformed
+                .children
+                .iter_mut()
+                .find(|child: &&mut OpArray| {
+                    child.name.as_deref() == Some("callable_convert_output")
+                })
+                .unwrap_or_else(|| panic!("the tracked sample declares callable_convert_output"));
+            match mutation {
+                Mutation::DirectLiteral | Mutation::RepeatedLeadingSeparator => {
+                    let index: usize = body
+                        .ops
+                        .iter()
+                        .find(|candidate: &&Op| candidate.opcode == op::INIT_FCALL)
+                        .and_then(|init: &Op| {
+                            (init.op2_type == disrobe_pass_php::OperandType::Const)
+                                .then_some(init.op2 as usize)
+                        })
+                        .unwrap_or_else(|| panic!("the tracked sample has a direct callable"));
+                    body.literals[index] = Literal::Str(
+                        if matches!(mutation, Mutation::RepeatedLeadingSeparator) {
+                            "\\\\CallableFixture\\lower"
+                        } else {
+                            "invalid\\9name"
+                        }
+                        .to_owned(),
+                    );
+                }
+                Mutation::StaticLiteral => {
+                    let index: usize = body
+                        .ops
+                        .iter()
+                        .find(|candidate: &&Op| {
+                            candidate.opcode == op::INIT_STATIC_METHOD_CALL
+                                && candidate.op1_type == disrobe_pass_php::OperandType::Const
+                        })
+                        .and_then(|init: &Op| {
+                            (init.op1_type == disrobe_pass_php::OperandType::Const)
+                                .then_some(init.op1 as usize)
+                        })
+                        .unwrap_or_else(|| panic!("the tracked sample has a static callable"));
+                    body.literals[index] = Literal::Str("invalid\\9name".to_owned());
+                }
+                Mutation::DynamicMissingName | Mutation::DynamicInvalidName => {
+                    let slot: usize = body
+                        .ops
+                        .iter()
+                        .find(|candidate: &&Op| candidate.opcode == op::INIT_DYNAMIC_CALL)
+                        .and_then(|init: &Op| {
+                            (init.op1_type == disrobe_pass_php::OperandType::Cv)
+                                .then_some(init.op1 as usize)
+                        })
+                        .unwrap_or_else(|| panic!("the tracked sample has a dynamic callable"));
+                    body.var_names[slot] = if matches!(mutation, Mutation::DynamicMissingName) {
+                        None
+                    } else {
+                        Some("9name".to_owned())
+                    };
+                }
+            }
+        }
+        let body: &OpArray = malformed
+            .children
+            .iter()
+            .find(|child: &&OpArray| child.name.as_deref() == Some("callable_convert_output"))
+            .unwrap_or_else(|| panic!("the tracked sample declares callable_convert_output"));
+        let scoped: Decompilation = decompile_oparray(body);
+        assert!(
+            scoped.unrecovered.iter().any(|entry: &UnrecoveredOp| {
+                entry.opcode
+                    == if matches!(
+                        mutation,
+                        Mutation::DynamicMissingName | Mutation::DynamicInvalidName
+                    ) {
+                        op::INIT_DYNAMIC_CALL
+                    } else {
+                        op::CALLABLE_CONVERT
+                    }
+            }),
+            "invalid callable metadata must refuse: {:?}",
+            scoped.unrecovered
+        );
+        assert!(
+            scoped.php_skeleton.contains("$date->format(...)"),
+            "a rejected frame must not discard a later frame in the same function: {}",
+            scoped.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn fetch_class_refuses_its_own_malformed_shape() {
+    let mut malformed: OpArray = parse_oparray(CALLABLE_CONVERT_DZOA).expect("parse fixture");
+    let body: &mut OpArray = malformed
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some("callable_convert_output"))
+        .unwrap_or_else(|| panic!("the tracked sample declares callable_convert_output"));
+    let fetch: &mut Op = body
+        .ops
+        .iter_mut()
+        .find(|candidate: &&mut Op| candidate.opcode == op::FETCH_CLASS)
+        .unwrap_or_else(|| panic!("the tracked sample has a dynamic static callable"));
+    fetch.op1_type = disrobe_pass_php::OperandType::Const;
+    let rejected: Decompilation = decompile_oparray(body);
+    assert!(
+        rejected.unrecovered.iter().any(|entry: &UnrecoveredOp| {
+            entry.opcode == op::FETCH_CLASS
+                && entry.reason
+                    == "FETCH_CLASS must carry one defined class operand and a variable result"
+        }),
+        "malformed FETCH_CLASS must retain its own refusal: {:?}",
+        rejected.unrecovered
     );
 }
 

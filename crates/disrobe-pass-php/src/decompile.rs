@@ -342,6 +342,7 @@ pub mod op {
     pub const RECV_VARIADIC: u8 = 164;
     pub const SEND_UNPACK: u8 = 165;
     pub const CHECK_UNDEF_ARGS: u8 = 199;
+    pub const CALLABLE_CONVERT: u8 = 202;
     pub const NEW: u8 = 68;
     pub const FREE: u8 = 70;
     pub const INIT_ARRAY: u8 = 71;
@@ -589,6 +590,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         195 => "ZEND_MATCH",
         198 => "ZEND_JMP_NULL",
         199 => "ZEND_CHECK_UNDEF_ARGS",
+        202 => "ZEND_CALLABLE_CONVERT",
         137 => "ZEND_OP_DATA",
         210 => "ZEND_STRLEN",
         211 => "ZEND_COUNT",
@@ -1298,6 +1300,12 @@ fn is_valid_php_ident(name: &str) -> bool {
     chars.all(|c: char| c == '_' || c.is_ascii_alphanumeric())
 }
 
+#[must_use]
+fn is_valid_php_qualified_name(name: &str) -> bool {
+    let trimmed: &str = name.strip_prefix('\\').unwrap_or(name);
+    !trimmed.is_empty() && !trimmed.starts_with('\\') && trimmed.split('\\').all(is_valid_php_ident)
+}
+
 #[derive(Debug, Clone)]
 struct Expr {
     text: String,
@@ -1582,6 +1590,7 @@ struct PendingCall {
     rendered_args: usize,
     positional_count: u32,
     result: Option<(OperandType, u32, u32)>,
+    callable_shape: bool,
 }
 
 struct LiftSnapshot {
@@ -4280,9 +4289,17 @@ impl<'a> Lifter<'a> {
                 }
             }
             o if o == op::INIT_FCALL || o == op::INIT_FCALL_BY_NAME || o == op::INIT_NS_FCALL => {
-                let callee: String = self
-                    .operand_expr(op.op2_type, op.op2)
-                    .map_or_else(|| "func".to_owned(), |e: Expr| strip_quotes(&e.text));
+                let direct_callee: Option<String> = self
+                    .callable_literal_string(op.op2_type, op.op2)
+                    .filter(|name: &&str| is_valid_php_qualified_name(name))
+                    .map(str::to_owned);
+                let callable_shape: bool = op.op1_type == OperandType::Unused
+                    && op.op1 == 0
+                    && op.op2_type == OperandType::Const
+                    && op.result_type == OperandType::Unused
+                    && op.extended_value == 0
+                    && direct_callee.is_some();
+                let callee: String = direct_callee.unwrap_or_else(|| "func".to_owned());
                 self.call_stack.push(PendingCall {
                     callee,
                     is_method: false,
@@ -4293,11 +4310,17 @@ impl<'a> Lifter<'a> {
                     rendered_args: 0,
                     positional_count: 0,
                     result: None,
+                    callable_shape,
                 });
                 None
             }
             o if o == op::INIT_DYNAMIC_CALL => {
-                let Some(callee): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                let callable_shape: bool = op.op2_type == OperandType::Unused
+                    && op.result_type == OperandType::Unused
+                    && op.extended_value == 0
+                    && self.callable_operand_expr(op.op1_type, op.op1).is_some();
+                let Some(callee): Option<Expr> = self.callable_operand_expr(op.op1_type, op.op1)
+                else {
                     return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
                 };
                 self.call_stack.push(PendingCall {
@@ -4310,10 +4333,25 @@ impl<'a> Lifter<'a> {
                     rendered_args: 0,
                     positional_count: 0,
                     result: None,
+                    callable_shape,
                 });
                 None
             }
             o if o == op::INIT_METHOD_CALL => {
+                let callable_shape: bool = op.op2_type != OperandType::Unused
+                    && op.result_type == OperandType::Unused
+                    && op.extended_value == 0
+                    && self
+                        .nullsafe_link
+                        .is_none_or(|link: (OperandType, u32)| link != (op.op1_type, op.op1))
+                    && self
+                        .callable_operand_expr(op.op2_type, op.op2)
+                        .is_some_and(|name: Expr| {
+                            op.op2_type != OperandType::Const
+                                || is_valid_php_ident(name.text.trim_matches('\''))
+                        })
+                    && (op.op1_type == OperandType::Unused && op.op1 == 0
+                        || self.callable_operand_expr(op.op1_type, op.op1).is_some());
                 let object: String = match op.op1_type {
                     OperandType::Unused => "$this".to_owned(),
                     ty => self
@@ -4334,16 +4372,43 @@ impl<'a> Lifter<'a> {
                     rendered_args: 0,
                     positional_count: 0,
                     result: None,
+                    callable_shape,
                 });
                 None
             }
             o if o == op::INIT_STATIC_METHOD_CALL => {
+                let callable_shape: bool = op.op1_type != OperandType::Unused
+                    && op.op2_type != OperandType::Unused
+                    && op.result_type == OperandType::Unused
+                    && op.extended_value == 0
+                    && (self
+                        .callable_literal_string(op.op1_type, op.op1)
+                        .is_some_and(is_valid_php_qualified_name)
+                        || (op.op1_type != OperandType::Const
+                            && self.callable_operand_expr(op.op1_type, op.op1).is_some()))
+                    && (self
+                        .callable_literal_string(op.op2_type, op.op2)
+                        .is_some_and(is_valid_php_ident)
+                        || (op.op2_type != OperandType::Const
+                            && self.callable_operand_expr(op.op2_type, op.op2).is_some()));
                 let class: String = self
-                    .operand_expr(op.op1_type, op.op1)
-                    .map_or_else(|| "self".to_owned(), |e: Expr| strip_quotes(&e.text));
+                    .callable_literal_string(op.op1_type, op.op1)
+                    .map_or_else(
+                        || {
+                            self.callable_operand_expr(op.op1_type, op.op1)
+                                .map_or_else(|| "self".to_owned(), |e: Expr| e.text)
+                        },
+                        str::to_owned,
+                    );
                 let method: String = self
-                    .operand_expr(op.op2_type, op.op2)
-                    .map_or_else(|| "method".to_owned(), |e: Expr| strip_quotes(&e.text));
+                    .callable_literal_string(op.op2_type, op.op2)
+                    .map_or_else(
+                        || {
+                            self.callable_operand_expr(op.op2_type, op.op2)
+                                .map_or_else(|| "method".to_owned(), |e: Expr| e.text)
+                        },
+                        str::to_owned,
+                    );
                 self.call_stack.push(PendingCall {
                     callee: method,
                     is_method: true,
@@ -4354,6 +4419,7 @@ impl<'a> Lifter<'a> {
                     rendered_args: 0,
                     positional_count: 0,
                     result: None,
+                    callable_shape,
                 });
                 None
             }
@@ -4377,6 +4443,21 @@ impl<'a> Lifter<'a> {
             {
                 self.finish_call(idx, op)
             }
+            o if o == op::CALLABLE_CONVERT => self.finish_callable_convert(idx, op),
+            o if o == op::FETCH_CLASS => {
+                if op.op1_type != OperandType::Unused
+                    || op.result_type != OperandType::Var
+                    || op.extended_value != 0
+                {
+                    return Some(self.refuse(idx, o, REASON_FETCH_CLASS_SHAPE));
+                }
+                let Some(class): Option<Expr> = self.callable_operand_expr(op.op2_type, op.op2)
+                else {
+                    return Some(self.refuse(idx, o, REASON_FETCH_CLASS_SHAPE));
+                };
+                self.store_result(op, class);
+                None
+            }
             o if o == op::NEW => {
                 let cls: String = self
                     .operand_expr(op.op1_type, op.op1)
@@ -4395,6 +4476,7 @@ impl<'a> Lifter<'a> {
                         op.result,
                         idx,
                     )),
+                    callable_shape: false,
                 });
                 None
             }
@@ -5239,19 +5321,7 @@ impl<'a> Lifter<'a> {
             .map(PendingArgument::render)
             .collect::<Vec<String>>()
             .join(", ");
-        let text: String = if call.is_method {
-            let sep: &str = if call.is_static {
-                "::"
-            } else if call.nullsafe {
-                "?->"
-            } else {
-                "->"
-            };
-            let object: String = call.object.unwrap_or_else(|| "$this".to_owned());
-            format!("{object}{sep}{}({args})", call.callee)
-        } else {
-            format!("{}({args})", call.callee)
-        };
+        let text: String = format!("{}({args})", render_pending_callable_target(&call));
         let (target, producer): (Option<(OperandType, u32)>, u32) = call.result.map_or_else(
             || {
                 (
@@ -5280,6 +5350,35 @@ impl<'a> Lifter<'a> {
             }
             _ => Some(format!("{text};")),
         }
+    }
+
+    fn finish_callable_convert(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let Some(call): Option<PendingCall> = self.call_stack.pop() else {
+            return Some(self.refuse(idx, op.opcode, REASON_CALLABLE_CONVERT));
+        };
+        if op.op1_type != OperandType::Unused
+            || op.op2_type != OperandType::Unused
+            || op.op1 != 0
+            || op.op2 != 0
+            || op.result_type != OperandType::TmpVar
+            || op.extended_value != 0
+            || !call.callable_shape
+            || !call.args.is_empty()
+            || call.rendered_args != 0
+            || call.positional_count != 0
+            || call.result.is_some()
+        {
+            return Some(self.refuse(idx, op.opcode, REASON_CALLABLE_CONVERT));
+        }
+        let text: String = format!("{}(...)", render_pending_callable_target(&call));
+        self.store_result(
+            op,
+            Expr {
+                text,
+                prec: PREC_CALL,
+            },
+        );
+        None
     }
 
     fn store_result(&mut self, op: &Op, expr: Expr) {
@@ -5319,6 +5418,42 @@ impl<'a> Lifter<'a> {
             OperandType::Cv => Some(Expr::atom(format!("${}", self.cv(value)))),
             OperandType::TmpVar | OperandType::Var => self.slots.get(&(ty, value)).cloned(),
         }
+    }
+
+    fn callable_operand_expr(&self, ty: OperandType, value: u32) -> Option<Expr> {
+        match ty {
+            OperandType::Cv => self
+                .var_names
+                .get(value as usize)
+                .and_then(Option::as_ref)
+                .filter(|name: &&String| is_valid_php_ident(name))
+                .map(|name: &String| Expr::atom(format!("${name}"))),
+            OperandType::Unused | OperandType::Const | OperandType::TmpVar | OperandType::Var => {
+                self.defined_operand_expr(ty, value)
+            }
+        }
+    }
+
+    fn callable_literal_string(&self, ty: OperandType, value: u32) -> Option<&str> {
+        (ty == OperandType::Const)
+            .then(|| self.literals.get(value as usize).and_then(Literal::as_str))
+            .flatten()
+    }
+}
+
+fn render_pending_callable_target(call: &PendingCall) -> String {
+    if call.is_method {
+        let sep: &str = if call.is_static {
+            "::"
+        } else if call.nullsafe {
+            "?->"
+        } else {
+            "->"
+        };
+        let object: String = call.object.clone().unwrap_or_else(|| "$this".to_owned());
+        format!("{object}{sep}{}", call.callee)
+    } else {
+        call.callee.clone()
     }
 }
 
@@ -5421,6 +5556,8 @@ const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
 const REASON_FETCH_IS_SHAPE: &str =
     "FETCH_IS must be a local read with one defined name operand and a temporary result";
+const REASON_FETCH_CLASS_SHAPE: &str =
+    "FETCH_CLASS must carry one defined class operand and a variable result";
 const REASON_UNSET_CV_OPERAND: &str =
     "UNSET_CV requires one declared compiled variable and no other operands";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
@@ -5442,6 +5579,8 @@ const REASON_CALL_ARGUMENT_NAME: &str =
     "the named call argument has no literal php identifier in this op array";
 const REASON_CALL_ARGUMENT_SHAPE: &str =
     "the call argument order, container evidence, or bounded render shape is invalid";
+const REASON_CALLABLE_CONVERT: &str =
+    "the first-class callable has no verified zero-argument call frame";
 const REASON_VARIADIC_PARAMETER_SHAPE: &str =
     "the variadic receive does not name the cv immediately after the fixed parameters";
 const REASON_LIST_DESTRUCTURING: &str = "list destructuring requires a literal key, a defined container, and one bounded assignment tree";
