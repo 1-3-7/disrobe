@@ -398,8 +398,8 @@ fn corpus_recovery_rate_holds_an_honest_floor() {
          population would keep reporting a healthy percentage over almost nothing: {bodies}"
     );
     assert!(
-        full * 1000 >= bodies * 932,
-        "fully-recovered share must hold the post-restructuring floor (>=93.2%); got \
+        full * 1000 >= bodies * 940,
+        "fully-recovered share must hold the post-restructuring floor (>=94.0%); got \
          {full}/{bodies} = {pct:.2}%. This is a ratchet over a fixed corpus of real Flash titles that is not \
          redistributable and is absent from every fresh checkout, so the number is \
          reproducible only against that exact population and is not a published figure"
