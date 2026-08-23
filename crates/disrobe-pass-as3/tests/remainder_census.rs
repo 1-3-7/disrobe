@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
@@ -100,6 +100,216 @@ fn residual_control_flow(stmts: &[Stmt]) -> bool {
     })
 }
 
+struct Cfg {
+    succ: Vec<Vec<usize>>,
+    node_count: usize,
+}
+
+fn build_cfg(stmts: &[Stmt]) -> Cfg {
+    let node_count: usize = stmts.len();
+    let mut label_pos: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, statement) in stmts.iter().enumerate() {
+        if let Stmt::Label(label) = statement {
+            label_pos.insert(*label, index);
+        }
+    }
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); node_count];
+    for (index, statement) in stmts.iter().enumerate() {
+        match statement {
+            Stmt::Jump { target_label } => {
+                if let Some(target) = label_pos.get(target_label) {
+                    succ[index].push(*target);
+                }
+            }
+            Stmt::If { target_label, .. } => {
+                if let Some(target) = label_pos.get(target_label) {
+                    succ[index].push(*target);
+                }
+                if index + 1 < node_count {
+                    succ[index].push(index + 1);
+                }
+            }
+            Stmt::Switch {
+                case_labels,
+                default_label,
+                ..
+            } => {
+                for label in case_labels.iter().chain(std::iter::once(default_label)) {
+                    if let Some(target) = label_pos.get(label) {
+                        succ[index].push(*target);
+                    }
+                }
+            }
+            Stmt::Return(_) | Stmt::Throw(_) => {}
+            _ => {
+                if index + 1 < node_count {
+                    succ[index].push(index + 1);
+                }
+            }
+        }
+    }
+    Cfg { succ, node_count }
+}
+
+fn reachable(cfg: &Cfg) -> BTreeSet<usize> {
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    if cfg.node_count > 0 {
+        queue.push_back(0);
+        seen.insert(0);
+    }
+    while let Some(node) = queue.pop_front() {
+        for next in &cfg.succ[node] {
+            if seen.insert(*next) {
+                queue.push_back(*next);
+            }
+        }
+    }
+    seen
+}
+
+fn dominators(cfg: &Cfg) -> Vec<BTreeSet<usize>> {
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); cfg.node_count];
+    for (node, outs) in cfg.succ.iter().enumerate() {
+        for next in outs {
+            pred[*next].push(node);
+        }
+    }
+    let all: BTreeSet<usize> = (0..cfg.node_count).collect();
+    let mut dom: Vec<BTreeSet<usize>> = vec![all; cfg.node_count];
+    if cfg.node_count == 0 {
+        return dom;
+    }
+    dom[0] = std::iter::once(0usize).collect();
+    let mut changed: bool = true;
+    let mut rounds: usize = 0;
+    while changed && rounds < 4096 {
+        changed = false;
+        rounds += 1;
+        for node in 1..cfg.node_count {
+            if pred[node].is_empty() {
+                continue;
+            }
+            let mut acc: Option<BTreeSet<usize>> = None;
+            for source in &pred[node] {
+                acc = Some(acc.map_or_else(
+                    || dom[*source].clone(),
+                    |previous: BTreeSet<usize>| {
+                        previous.intersection(&dom[*source]).copied().collect()
+                    },
+                ));
+            }
+            let mut next: BTreeSet<usize> = acc.unwrap_or_default();
+            next.insert(node);
+            if next != dom[node] {
+                dom[node] = next;
+                changed = true;
+            }
+        }
+    }
+    dom
+}
+
+fn retreating_edges(cfg: &Cfg) -> Vec<(usize, usize)> {
+    let mut color: Vec<u8> = vec![0; cfg.node_count];
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    if cfg.node_count == 0 {
+        return out;
+    }
+    let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+    color[0] = 1;
+    while let Some((node, index)) = stack.pop() {
+        if index < cfg.succ[node].len() {
+            stack.push((node, index + 1));
+            let next: usize = cfg.succ[node][index];
+            match color[next] {
+                0 => {
+                    color[next] = 1;
+                    stack.push((next, 0));
+                }
+                1 => out.push((node, next)),
+                _ => {}
+            }
+        } else {
+            color[node] = 2;
+        }
+    }
+    out
+}
+
+fn jump_chain_count(stmts: &[Stmt]) -> usize {
+    let mut label_pos: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, statement) in stmts.iter().enumerate() {
+        if let Stmt::Label(label) = statement {
+            label_pos.insert(*label, index);
+        }
+    }
+    let mut chains: usize = 0;
+    for statement in stmts {
+        let target: usize = match statement {
+            Stmt::Jump { target_label } | Stmt::If { target_label, .. } => *target_label,
+            _ => continue,
+        };
+        let Some(position): Option<&usize> = label_pos.get(&target) else {
+            continue;
+        };
+        let mut next: usize = position + 1;
+        while matches!(stmts.get(next), Some(Stmt::Label(_) | Stmt::Comment(_))) {
+            next += 1;
+        }
+        if matches!(stmts.get(next), Some(Stmt::Jump { .. })) {
+            chains += 1;
+        }
+    }
+    chains
+}
+
+fn classify_residue(stmts: &[Stmt]) -> String {
+    let cfg: Cfg = build_cfg(stmts);
+    if cfg.node_count == 0 {
+        return "empty residue".to_owned();
+    }
+    let live: BTreeSet<usize> = reachable(&cfg);
+    let dom: Vec<BTreeSet<usize>> = dominators(&cfg);
+    let edges: Vec<(usize, usize)> = retreating_edges(&cfg);
+    let irreducible: usize = edges
+        .iter()
+        .filter(|(from, to): &&(usize, usize)| !dom[*from].contains(to))
+        .count();
+    if irreducible > 0 {
+        return "irreducible loop, entered at more than one node".to_owned();
+    }
+    let mut pred_count: Vec<usize> = vec![0; cfg.node_count];
+    for (node, outs) in cfg.succ.iter().enumerate() {
+        if !live.contains(&node) {
+            continue;
+        }
+        for next in outs {
+            pred_count[*next] += 1;
+        }
+    }
+    let multi_join: usize = (0..cfg.node_count)
+        .filter(|node: &usize| live.contains(node) && pred_count[*node] > 2)
+        .count();
+    let chains: usize = jump_chain_count(stmts);
+    if !edges.is_empty() {
+        if chains > 0 {
+            return "loop reachable only through an unthreaded jump chain".to_owned();
+        }
+        if multi_join > 0 {
+            return "loop with a join carrying more than two incoming edges".to_owned();
+        }
+        return "loop the restructurer left in goto form".to_owned();
+    }
+    if chains > 0 {
+        return "acyclic region behind an unthreaded jump chain".to_owned();
+    }
+    if multi_join > 0 {
+        return "acyclic join carrying more than two incoming edges".to_owned();
+    }
+    "acyclic goto region with no named reason".to_owned()
+}
+
 fn precondition(lifted: &LiftedBody) -> String {
     if !lifted.dropped_opcodes.is_empty() {
         return "unmodelled opcode".to_owned();
@@ -118,7 +328,7 @@ fn precondition(lifted: &LiftedBody) -> String {
         return format!("other marker: {first}");
     }
     if residual_control_flow(&lifted.statements) {
-        return "residual branch graph, no named reason".to_owned();
+        return classify_residue(&lifted.statements);
     }
     if lifted.opaque_operands > 0 {
         return "surviving merge operand".to_owned();
@@ -266,18 +476,23 @@ fn compare(census: &Census, pinned: &[RemainderGroup], population: &str) {
 
 const TRACKED_REMAINDER: &[RemainderGroup] = &[
     RemainderGroup {
-        precondition: "residual branch graph, no named reason",
+        precondition: "acyclic join carrying more than two incoming edges",
         must_stay_refused: false,
         anonymous: 0,
         members: &[
             "control_shapes::flash.Boot::start",
             "dispatch_shapes::flash.Boot::start",
             "json_tokenizer::flash.Boot::start",
-            "opcode_breadth::OpcodeBreadth::loops",
             "opcode_breadth::flash.Boot::start",
             "switch_merge::flash.Boot::start",
             "whitespace_short_circuit::flash.Boot::start",
         ],
+    },
+    RemainderGroup {
+        precondition: "loop the restructurer left in goto form",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &["opcode_breadth::OpcodeBreadth::loops"],
     },
     RemainderGroup {
         precondition: "unreconciled scope height",
@@ -295,6 +510,83 @@ const TRACKED_REMAINDER: &[RemainderGroup] = &[
 ];
 
 const CORPUS_REMAINDER: &[RemainderGroup] = &[
+    RemainderGroup {
+        precondition: "acyclic goto region with no named reason",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::nape.phys.Body::contains",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::containTest",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::testCollide",
+            "10_More_Bullets::zpp_nape.space.ZPP_AABBTree::insertLeaf",
+            "1942_Battles_In_The_Sky::ProgBar::create",
+            "1942_Battles_In_The_Sky::ProgBar::updatePercent",
+            "1942_Battles_In_The_Sky::ProgBar::updateValue",
+            "1942_Battles_In_The_Sky::gs.plugins.FilterPlugin::onCompleteTween",
+            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
+            "ASmallCar::com.junkbyte.console.Console::listenUncaughtErrors",
+            "ASmallCar::com.junkbyte.console.core.CommandLine::run",
+            "ASmallCar::com.junkbyte.console.core.MemoryMonitor::Gc",
+            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
+            "ASmallCar::com.junkbyte.console.core.Remoting::set remoting",
+            "ASmallCar::com.junkbyte.console.view.AbstractPanel::onTextFieldMouseMove",
+            "ASmallCar::flare.core.Canvas3D::_140",
+            "ASmallCar::flare.core.Canvas3D::setup",
+            "ASmallCar::flare.loaders.Flare3DLoader::_137",
+            "ASmallCar::mochi.as3.MochiServices::bringToTop",
+            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
+            "ASmallCar::spill.localisation.TextFieldFit::updateProperties",
+            "ATV_Cross_Canada::_-J1._-3e::init",
+            "ATV_Cross_Canada::_-Qp._-6X::_-RL",
+            "ATV_Cross_Canada::_-Qp._-Lm::_-RL",
+            "ATV_Cross_Canada::_-Qp._-OG::poly2poly_test",
+            "ATV_Cross_Canada::_-Qp._-Qc::_-RL",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApi::cache",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-5",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-6b",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.FireBugConsole::_-67",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.GlobalTrace::iniFromFlashVars",
+            "BO_Neo_Rider::mochi.as3.MochiServices::bringToTop",
+            "BO_Twin_Drivers_Level_9000::Game::updateWagons",
+            "BO_Twin_Drivers_Level_9000::lib.GCookie::erase",
+            "BO_Twin_Drivers_Level_9000::lib.GCookie::set",
+        ],
+    },
+    RemainderGroup {
+        precondition: "acyclic join carrying more than two incoming edges",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::com.google.analytics.data.X10::_clearInternal",
+            "10_More_Bullets::flash.Boot::start",
+            "10_More_Bullets::nape.phys.Body::crushFactor",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::empty_intersection",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::find_all",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::single_intersection",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append",
+            "10_More_Bullets::zpp_nape.constraint.ZPP_Constraint::insert_cbtype",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Ray::polysect2",
+            "10_More_Bullets::zpp_nape.geom.ZPP_SweepDistance::distance",
+            "10_More_Bullets::zpp_nape.phys.ZPP_Interactor::insert_cbtype",
+            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::cleanup_lvert",
+            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::lverts_post_adder",
+            "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::__remove",
+            "1942_Battles_In_The_Sky::gs.TweenLite::set enabled",
+            "BO_Awesome_Ranger::alternativa.engine3d.objects.Sprite3D::intersectRay",
+        ],
+    },
+    RemainderGroup {
+        precondition: "acyclic region behind an unthreaded jump chain",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_BodyListener::cbtype_change",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_ConstraintListener::cbtype_change",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::cbtype_change",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append_type",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Ray::aabbsect",
+        ],
+    },
     RemainderGroup {
         precondition: "forward dispatch selector or case has effects",
         must_stay_refused: false,
@@ -372,99 +664,20 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         ],
     },
     RemainderGroup {
-        precondition: "no terminator reached",
+        precondition: "loop reachable only through an unthreaded jump chain",
         must_stay_refused: false,
         anonymous: 0,
         members: &[
-            "10_More_Bullets::bb.panel.BBPanelPause::onTap",
-            "10_More_Bullets::scene.SceneMenuPanel::onTap",
-        ],
-    },
-    RemainderGroup {
-        precondition: "residual branch graph, no named reason",
-        must_stay_refused: false,
-        anonymous: 0,
-        members: &[
-            "10_More_Bullets::com.google.analytics.data.X10::_clearInternal",
             "10_More_Bullets::com.hurlant.crypto.rsa.RSAKey::generate",
-            "10_More_Bullets::com.hurlant.crypto.rsa.RSAKey::pkcs1unpad",
-            "10_More_Bullets::com.hurlant.crypto.symmetric.AESKey::decrypt",
-            "10_More_Bullets::com.hurlant.crypto.symmetric.CTRMode::core",
-            "10_More_Bullets::com.hurlant.math.BigInteger::am",
-            "10_More_Bullets::com.hurlant.math.BigInteger::compareTo",
-            "10_More_Bullets::com.hurlant.math.BigInteger::exp",
-            "10_More_Bullets::com.hurlant.math.BigInteger::fromArray",
-            "10_More_Bullets::com.hurlant.math.BigInteger::multiplyTo",
-            "10_More_Bullets::com.hurlant.math.BigInteger::multiplyUpperTo",
-            "10_More_Bullets::com.hurlant.math.BigInteger::squareTo",
-            "10_More_Bullets::com.hurlant.util.Base64::decodeToByteArray",
-            "10_More_Bullets::flash.Boot::start",
             "10_More_Bullets::nape.dynamics.ArbiterList::at",
             "10_More_Bullets::nape.dynamics.ContactList::at",
             "10_More_Bullets::nape.dynamics.ContactList::clear",
-            "10_More_Bullets::nape.geom.GeomPoly::area",
-            "10_More_Bullets::nape.geom.GeomPoly::bottom",
-            "10_More_Bullets::nape.geom.GeomPoly::bounds",
-            "10_More_Bullets::nape.geom.GeomPoly::contains",
-            "10_More_Bullets::nape.geom.GeomPoly::copy",
-            "10_More_Bullets::nape.geom.GeomPoly::inflate",
-            "10_More_Bullets::nape.geom.GeomPoly::isConvex",
-            "10_More_Bullets::nape.geom.GeomPoly::left",
-            "10_More_Bullets::nape.geom.GeomPoly::right",
-            "10_More_Bullets::nape.geom.GeomPoly::size",
-            "10_More_Bullets::nape.geom.GeomPoly::toString",
-            "10_More_Bullets::nape.geom.GeomPoly::top",
-            "10_More_Bullets::nape.geom.GeomPoly::transform",
-            "10_More_Bullets::nape.geom.GeomPoly::winding",
-            "10_More_Bullets::nape.phys.Body::contains",
-            "10_More_Bullets::nape.phys.Body::crushFactor",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_BodyListener::addedToSpace",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_BodyListener::cbtype_change",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::empty_intersection",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::find_all",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::single_intersection",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_ConstraintListener::addedToSpace",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_ConstraintListener::cbtype_change",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::addedToSpace",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::cbtype_change",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::invalidate_precedence",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append_type",
-            "10_More_Bullets::zpp_nape.constraint.ZPP_Constraint::insert_cbtype",
             "10_More_Bullets::zpp_nape.dynamics.ZPP_SpaceArbiterList::at",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::contactCollide",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::containTest",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::testCollide",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Convex::optimise",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Monotone::isMonotone",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::extract",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::extract_partitions",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::init",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::pull",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::pull_partitions",
-            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::remove_collinear_vertices",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Ray::aabbsect",
-            "10_More_Bullets::zpp_nape.geom.ZPP_Ray::polysect2",
             "10_More_Bullets::zpp_nape.geom.ZPP_Simple::clip_polygon",
             "10_More_Bullets::zpp_nape.geom.ZPP_Simplify::simplify",
-            "10_More_Bullets::zpp_nape.geom.ZPP_SweepDistance::distance",
             "10_More_Bullets::zpp_nape.geom.ZPP_SweepDistance::distanceBody",
             "10_More_Bullets::zpp_nape.geom.ZPP_Triangular::optimise",
-            "10_More_Bullets::zpp_nape.phys.ZPP_Body::removedFromSpace",
-            "10_More_Bullets::zpp_nape.phys.ZPP_Interactor::insert_cbtype",
-            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::cleanup_lvert",
-            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::lverts_post_adder",
-            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::splice_collinear_real",
-            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::valid",
-            "10_More_Bullets::zpp_nape.space.ZPP_AABBTree::insertLeaf",
-            "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::__remove",
-            "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::clear",
             "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::rayCast",
-            "10_More_Bullets::zpp_nape.space.ZPP_Space::clear",
-            "10_More_Bullets::zpp_nape.space.ZPP_Space::removed_shape",
-            "10_More_Bullets::zpp_nape.space.ZPP_SweepPhase::broadphase",
-            "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::has",
-            "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::remove",
             "10_More_Bullets::zpp_nape.util.ZPP_BitmapDebug::__line",
             "10_More_Bullets::zpp_nape.util.ZPP_MixVec2List::at",
             "10_More_Bullets::zpp_nape.util.ZPP_Set_ZPP_Body::insert",
@@ -491,117 +704,154 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.util.ZPP_Set_ZPP_SimpleVert::insert",
             "10_More_Bullets::zpp_nape.util.ZPP_Set_ZPP_SimpleVert::try_insert",
             "10_More_Bullets::zpp_nape.util.ZPP_Set_ZPP_SimpleVert::try_insert_bool",
-            "1942_Battles_In_The_Sky::ProgBar::create",
-            "1942_Battles_In_The_Sky::ProgBar::updatePercent",
-            "1942_Battles_In_The_Sky::ProgBar::updateValue",
-            "1942_Battles_In_The_Sky::gs.TweenLite::set enabled",
-            "1942_Battles_In_The_Sky::gs.plugins.FilterPlugin::onCompleteTween",
-            "1942_Battles_In_The_Sky::mx.utils.NameUtil::displayObjectToString",
-            "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap",
-            "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap_data",
-            "1942_Battles_In_The_Sky::org.flixel.FlxG::createBitmap",
-            "1942_Battles_In_The_Sky::org.flixel.FlxTilemap::overlaps",
             "ASmallCar::com.greensock.OverwriteManager::manageOverwrites",
-            "ASmallCar::com.greensock.TweenLite::init",
-            "ASmallCar::com.greensock.TweenMax::changePause",
-            "ASmallCar::com.greensock.TweenMax::getAllTweens",
-            "ASmallCar::com.greensock.TweenMax::getTweensOf",
+            "ASmallCar::com.greensock.plugins.EndArrayPlugin::set changeFactor",
+            "ASmallCar::com.greensock.plugins.FilterPlugin::onCompleteTween",
+            "ASmallCar::com.greensock.plugins.TweenPlugin::updateTweens",
+            "ASmallCar::com.junkbyte.console.core.Executer::execNest",
+            "ATV_Cross_Canada::Playtomic._-6v::Base64Decode",
+            "ATV_Cross_Canada::_-E3._-OQ::manageOverwrites",
+            "ATV_Cross_Canada::_-Fw.EndArrayPlugin::set changeFactor",
+            "ATV_Cross_Canada::_-Fw._-Fn::_-H7",
+            "ATV_Cross_Canada::_-Fw._-L0::_-Ih",
+            "BO_Awesome_Ranger::TweenEngine::update",
+            "BO_Twin_Drivers_Level_9000::Preloader::cleanRow",
+            "BO_Twin_Drivers_Level_9000::Preloader::newsCallback",
+            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONDecoder::parseArray",
+            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONDecoder::parseObject",
+        ],
+    },
+    RemainderGroup {
+        precondition: "loop the restructurer left in goto form",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::com.hurlant.crypto.rsa.RSAKey::pkcs1unpad",
+            "10_More_Bullets::com.hurlant.crypto.symmetric.CTRMode::core",
+            "10_More_Bullets::com.hurlant.math.BigInteger::am",
+            "10_More_Bullets::com.hurlant.math.BigInteger::compareTo",
+            "10_More_Bullets::com.hurlant.math.BigInteger::multiplyTo",
+            "10_More_Bullets::com.hurlant.math.BigInteger::multiplyUpperTo",
+            "10_More_Bullets::com.hurlant.math.BigInteger::squareTo",
+            "10_More_Bullets::com.hurlant.util.Base64::decodeToByteArray",
+            "10_More_Bullets::nape.geom.GeomPoly::area",
+            "10_More_Bullets::nape.geom.GeomPoly::bounds",
+            "10_More_Bullets::nape.geom.GeomPoly::copy",
+            "10_More_Bullets::nape.geom.GeomPoly::size",
+            "10_More_Bullets::nape.geom.GeomPoly::toString",
+            "10_More_Bullets::nape.geom.GeomPoly::transform",
+            "10_More_Bullets::nape.geom.GeomPoly::winding",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_BodyListener::addedToSpace",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_ConstraintListener::addedToSpace",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::extract",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::extract_partitions",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::init",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::pull_partitions",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::remove_collinear_vertices",
+            "10_More_Bullets::zpp_nape.phys.ZPP_Body::removedFromSpace",
+            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::splice_collinear_real",
+            "10_More_Bullets::zpp_nape.space.ZPP_DynAABBPhase::clear",
+            "10_More_Bullets::zpp_nape.space.ZPP_SweepPhase::broadphase",
+            "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::has",
+            "1942_Battles_In_The_Sky::org.flixel.FlxTilemap::overlaps",
             "ASmallCar::com.greensock.TweenMax::init",
             "ASmallCar::com.greensock.TweenMax::insertPropTween",
             "ASmallCar::com.greensock.TweenMax::isTweening",
-            "ASmallCar::com.greensock.TweenMax::killAll",
-            "ASmallCar::com.greensock.TweenMax::killChildTweensOf",
             "ASmallCar::com.greensock.TweenMax::killProperties",
             "ASmallCar::com.greensock.plugins.BezierPlugin::set changeFactor",
-            "ASmallCar::com.greensock.plugins.EndArrayPlugin::init",
-            "ASmallCar::com.greensock.plugins.EndArrayPlugin::set changeFactor",
-            "ASmallCar::com.greensock.plugins.FilterPlugin::initFilter",
-            "ASmallCar::com.greensock.plugins.FilterPlugin::onCompleteTween",
-            "ASmallCar::com.greensock.plugins.FilterPlugin::set changeFactor",
             "ASmallCar::com.greensock.plugins.FrameLabelPlugin::onInitTween",
-            "ASmallCar::com.greensock.plugins.TintPlugin::init",
-            "ASmallCar::com.greensock.plugins.TweenPlugin::activate",
-            "ASmallCar::com.greensock.plugins.TweenPlugin::killProps",
             "ASmallCar::com.greensock.plugins.TweenPlugin::onTweenEvent",
-            "ASmallCar::com.greensock.plugins.TweenPlugin::updateTweens",
-            "ASmallCar::com.junkbyte.console.Console::listenUncaughtErrors",
-            "ASmallCar::com.junkbyte.console.core.CommandLine::run",
-            "ASmallCar::com.junkbyte.console.core.Executer::execNest",
-            "ASmallCar::com.junkbyte.console.core.MemoryMonitor::Gc",
-            "ASmallCar::com.junkbyte.console.core.Remoting::remoteSync",
-            "ASmallCar::com.junkbyte.console.core.Remoting::set remoting",
-            "ASmallCar::com.junkbyte.console.view.AbstractPanel::onTextFieldMouseMove",
-            "ASmallCar::flare.core.Canvas3D::_140",
-            "ASmallCar::flare.core.Canvas3D::setup",
-            "ASmallCar::flare.loaders.Flare3DLoader::_137",
-            "ASmallCar::mochi.as3.MochiServices::bringToTop",
-            "ASmallCar::mx.utils.NameUtil::displayObjectToString",
-            "ASmallCar::spill.localisation.TextFieldFit::updateProperties",
-            "ATV_Cross_Canada::Playtomic._-6v::Base64Decode",
             "ATV_Cross_Canada::_-98._-3A::simplify",
-            "ATV_Cross_Canada::_-E3.TweenMax::_-9U",
             "ATV_Cross_Canada::_-E3.TweenMax::_-BQ",
             "ATV_Cross_Canada::_-E3.TweenMax::_-FP",
-            "ATV_Cross_Canada::_-E3.TweenMax::_-Oq",
-            "ATV_Cross_Canada::_-E3.TweenMax::_-b",
-            "ATV_Cross_Canada::_-E3._-Jr::init",
-            "ATV_Cross_Canada::_-E3._-OQ::manageOverwrites",
-            "ATV_Cross_Canada::_-Fw.EndArrayPlugin::init",
-            "ATV_Cross_Canada::_-Fw.EndArrayPlugin::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-6d::_-N3",
-            "ATV_Cross_Canada::_-Fw._-Fn::_-H7",
             "ATV_Cross_Canada::_-Fw._-Fn::_-R2",
-            "ATV_Cross_Canada::_-Fw._-L0::_-AS",
-            "ATV_Cross_Canada::_-Fw._-L0::_-Ih",
-            "ATV_Cross_Canada::_-Fw._-L0::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-Le::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-Nj::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-PE::set changeFactor",
             "ATV_Cross_Canada::_-Fw._-Qo::onInitTween",
             "ATV_Cross_Canada::_-I1._-48::removeObject",
             "ATV_Cross_Canada::_-J1.Level::_-Qq",
-            "ATV_Cross_Canada::_-J1._-3e::init",
             "ATV_Cross_Canada::_-JM._-I-::_-0a",
-            "ATV_Cross_Canada::_-JM._-I-::clear",
-            "ATV_Cross_Canada::_-Qp._-6X::_-RL",
-            "ATV_Cross_Canada::_-Qp._-Lm::_-RL",
-            "ATV_Cross_Canada::_-Qp._-OG::poly2poly_test",
-            "ATV_Cross_Canada::_-Qp._-Qc::_-RL",
             "ATV_Cross_Canada::_-RG.Base64::_-8r",
             "BO_Awesome_Ranger::TweenEngine::_-d",
+            "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-x",
+            "BO_Awesome_Ranger::alternativa.engine3d.materials.TextureMaterial::calculateMipMaps",
+            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.Base64::decodeToByteArray",
+            "BO_Neo_Rider::ZumspielAPI::_encode_",
+            "BO_Neo_Rider::sandy.materials.ColorMaterial::renderPolygon",
+            "BO_Neo_Rider::sandy.materials.attributes.LineAttributes::draw",
+            "BO_Neo_Rider::sandy.view.Frustum::boxInFrustum",
+            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONTokenizer::skipIgnored",
+        ],
+    },
+    RemainderGroup {
+        precondition: "loop with a join carrying more than two incoming edges",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::com.hurlant.crypto.symmetric.AESKey::decrypt",
+            "10_More_Bullets::com.hurlant.math.BigInteger::exp",
+            "10_More_Bullets::com.hurlant.math.BigInteger::fromArray",
+            "10_More_Bullets::nape.geom.GeomPoly::bottom",
+            "10_More_Bullets::nape.geom.GeomPoly::contains",
+            "10_More_Bullets::nape.geom.GeomPoly::inflate",
+            "10_More_Bullets::nape.geom.GeomPoly::isConvex",
+            "10_More_Bullets::nape.geom.GeomPoly::left",
+            "10_More_Bullets::nape.geom.GeomPoly::right",
+            "10_More_Bullets::nape.geom.GeomPoly::top",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::addedToSpace",
+            "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::invalidate_precedence",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Collide::contactCollide",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Convex::optimise",
+            "10_More_Bullets::zpp_nape.geom.ZPP_Monotone::isMonotone",
+            "10_More_Bullets::zpp_nape.geom.ZPP_PartitionedPoly::pull",
+            "10_More_Bullets::zpp_nape.shape.ZPP_Polygon::valid",
+            "10_More_Bullets::zpp_nape.space.ZPP_Space::clear",
+            "10_More_Bullets::zpp_nape.space.ZPP_Space::removed_shape",
+            "10_More_Bullets::zpp_nape.util.FastHash2_Hashable2_Boolfalse::remove",
+            "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap",
+            "1942_Battles_In_The_Sky::org.flixel.FlxG::addBitmap_data",
+            "1942_Battles_In_The_Sky::org.flixel.FlxG::createBitmap",
+            "ASmallCar::com.greensock.TweenLite::init",
+            "ASmallCar::com.greensock.TweenMax::changePause",
+            "ASmallCar::com.greensock.TweenMax::getAllTweens",
+            "ASmallCar::com.greensock.TweenMax::getTweensOf",
+            "ASmallCar::com.greensock.TweenMax::killAll",
+            "ASmallCar::com.greensock.TweenMax::killChildTweensOf",
+            "ASmallCar::com.greensock.plugins.EndArrayPlugin::init",
+            "ASmallCar::com.greensock.plugins.FilterPlugin::initFilter",
+            "ASmallCar::com.greensock.plugins.FilterPlugin::set changeFactor",
+            "ASmallCar::com.greensock.plugins.TintPlugin::init",
+            "ASmallCar::com.greensock.plugins.TweenPlugin::activate",
+            "ASmallCar::com.greensock.plugins.TweenPlugin::killProps",
+            "ATV_Cross_Canada::_-E3.TweenMax::_-9U",
+            "ATV_Cross_Canada::_-E3.TweenMax::_-Oq",
+            "ATV_Cross_Canada::_-E3.TweenMax::_-b",
+            "ATV_Cross_Canada::_-E3._-Jr::init",
+            "ATV_Cross_Canada::_-Fw.EndArrayPlugin::init",
+            "ATV_Cross_Canada::_-Fw._-L0::_-AS",
+            "ATV_Cross_Canada::_-Fw._-L0::set changeFactor",
+            "ATV_Cross_Canada::_-JM._-I-::clear",
             "BO_Awesome_Ranger::TweenEngine::addTween",
-            "BO_Awesome_Ranger::TweenEngine::update",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3D::cullingInCamera",
             "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::_-4b",
             "BO_Awesome_Ranger::alternativa.engine3d.core.View::_-3G",
             "BO_Awesome_Ranger::alternativa.engine3d.core.View::_-3f",
-            "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-x",
-            "BO_Awesome_Ranger::alternativa.engine3d.materials.TextureMaterial::calculateMipMaps",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::checkIntersection",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::intersectRay",
             "BO_Awesome_Ranger::alternativa.engine3d.objects.Mesh::optimizeForDynamicBSP",
-            "BO_Awesome_Ranger::alternativa.engine3d.objects.Sprite3D::intersectRay",
             "BO_Awesome_Ranger::bodies.BossScene::_-0r",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.GameAllianzApi::cache",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-5",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.gui.Background::_-6b",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.Base64::decodeToByteArray",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.FireBugConsole::_-67",
-            "BO_Awesome_Ranger::com.gameallianz.api.as3.utils.GlobalTrace::iniFromFlashVars",
-            "BO_Neo_Rider::ZumspielAPI::_encode_",
-            "BO_Neo_Rider::mochi.as3.MochiServices::bringToTop",
             "BO_Neo_Rider::sandy.core.data.BSPNode::lazyBSPFaces2Planes",
-            "BO_Neo_Rider::sandy.materials.ColorMaterial::renderPolygon",
-            "BO_Neo_Rider::sandy.materials.attributes.LineAttributes::draw",
-            "BO_Neo_Rider::sandy.view.Frustum::boxInFrustum",
-            "BO_Twin_Drivers_Level_9000::Game::updateWagons",
-            "BO_Twin_Drivers_Level_9000::Preloader::cleanRow",
-            "BO_Twin_Drivers_Level_9000::Preloader::newsCallback",
-            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONDecoder::parseArray",
-            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONDecoder::parseObject",
-            "BO_Twin_Drivers_Level_9000::com.adobe.serialization.json.JSONTokenizer::skipIgnored",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::erase",
-            "BO_Twin_Drivers_Level_9000::lib.GCookie::set",
+        ],
+    },
+    RemainderGroup {
+        precondition: "no terminator reached",
+        must_stay_refused: false,
+        anonymous: 0,
+        members: &[
+            "10_More_Bullets::bb.panel.BBPanelPause::onTap",
+            "10_More_Bullets::scene.SceneMenuPanel::onTap",
         ],
     },
     RemainderGroup {
@@ -1496,4 +1746,17 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             group.precondition
         );
     }
+    let unexplained: usize = CORPUS_REMAINDER
+        .iter()
+        .filter(|group: &&RemainderGroup| group.precondition.ends_with("no named reason"))
+        .fold(0usize, |running: usize, group: &RemainderGroup| {
+            running + group.members.len() + group.anonymous
+        });
+    assert!(
+        unexplained <= 35,
+        "the bodies whose stop carries no named shape are a declared wall with a ceiling that may \
+         only ratchet down; got {unexplained} against 35. A body arriving here is one this \
+         classifier could not describe, which is the state the rest of the census exists to \
+         eliminate"
+    );
 }
