@@ -519,6 +519,27 @@ fn references_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("references");
 }
 
+fn required_php(graded: &str) -> PathBuf {
+    find_php(graded).unwrap_or_else(|| {
+        panic!(
+            "{graded} is graded only by running php, so this case must not report success \
+             without it. Missing prerequisite: a php 8.4 interpreter on PATH or at \
+             DISROBE_PHP_BIN."
+        )
+    })
+}
+
+fn required_opcache(php: &Path, graded: &str) -> String {
+    find_opcache(php, graded).unwrap_or_else(|| {
+        panic!(
+            "{graded} is graded only by compiling php source into an op array, so this case \
+             must not report success without the compiler that makes them. Missing \
+             prerequisite: the php 8.4 opcache extension beside the php binary or at \
+             DZOA_OPCACHE_DLL."
+        )
+    })
+}
+
 fn recover_sample(php: &Path, dll: &str, sample: &str) -> Decompilation {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_limitation_probe")
@@ -535,12 +556,8 @@ fn recover_sample(php: &Path, dll: &str, sample: &str) -> Decompilation {
 fn a_constant_array_literal_is_published_with_a_named_limitation_rather_than_refused() {
     let graded: &str =
         "the named limitation on a constant array literal this container cannot carry";
-    let Some(php): Option<PathBuf> = find_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<String> = find_opcache(&php, graded) else {
-        return;
-    };
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
 
     let carried: Decompilation = recover_sample(&php, &dll, "keyed_foreach");
     assert!(
@@ -592,12 +609,8 @@ fn a_constant_array_literal_is_published_with_a_named_limitation_rather_than_ref
 #[test]
 fn a_sample_with_nothing_unverifiable_carries_no_limitation() {
     let graded: &str = "the limitation mechanism's silence on a sample with nothing to qualify";
-    let Some(php): Option<PathBuf> = find_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<String> = find_opcache(&php, graded) else {
-        return;
-    };
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
     let clean: Decompilation = recover_sample(&php, &dll, "arithmetic");
     assert!(
         clean.limitations.is_empty() && clean.limitations_total == 0,
@@ -619,12 +632,8 @@ const UNHANDLED_FLAG_SOURCE: &str =
 fn an_operand_flag_the_emitter_cannot_encode_fails_it_and_the_tracked_op_arrays_still_reproduce() {
     let graded: &str =
         "the op_array emitter's refusal to drop an operand flag it would otherwise shift past";
-    let Some(php): Option<PathBuf> = find_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<String> = find_opcache(&php, graded) else {
-        return;
-    };
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_emitter_flag_guard")
             .expect("create the emitter guard scratch directory");
@@ -693,25 +702,21 @@ const MEMBERS_STATIC_STATEMENTS: [&str; 9] = [
 #[test]
 fn members_recovers_every_static_member_form_and_refuses_only_its_class_declaration() {
     let graded: &str = "the php 8.4 static property, class constant and member step recovery";
-    let Some(php): Option<PathBuf> = find_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<String> = find_opcache(&php, graded) else {
-        return;
-    };
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
     let src: PathBuf = required_sample("members");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_members_recover")
             .expect("create the member recovery scratch directory");
     let dzoa: PathBuf = scratch.path().join("members.dzoa");
-    if let Err(diag) = emit_dzoa(&php, &dll, &src, &dzoa) {
-        unmeasured(
-            &PHP_OPCACHE,
-            graded,
-            &format!("this php and opcache build emits no op_array dump for members\n{diag}"),
-        );
-        return;
-    }
+    emit_dzoa(&php, &dll, &src, &dzoa).unwrap_or_else(|diag: String| {
+        panic!(
+            "{graded} is graded only against an op array the php 8.4 compiler produced, so a \
+             run that emits none must not report success. Missing prerequisite: an opcache \
+             build that honours opt_debug_level, beside the php binary or at \
+             DZOA_OPCACHE_DLL.\n{diag}"
+        )
+    });
     let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read the member op array");
     let parsed: OpArray = parse_oparray(&bytes).expect("parse the member op array");
     let first: Decompilation = decompile_oparray(&parsed);
