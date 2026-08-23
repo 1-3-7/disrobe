@@ -77,6 +77,7 @@ pub enum HirExpr {
     },
     Mem {
         cell: String,
+        width: Option<u32>,
     },
     Unary {
         op: BinaryOp,
@@ -1626,6 +1627,7 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
             cell: instr.operands.first().map_or_else(
                 || HirExpr::Mem {
                     cell: String::new(),
+                    width: None,
                 },
                 |operand: &String| operand_expr(operand, lang),
             ),
@@ -1641,12 +1643,14 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
         NirOp::RawLoad { addr, size } => HirInstrStmt::Assign {
             dst: destination_expr(instr, lang),
             value: HirExpr::Mem {
-                cell: format!("{addr}:u{}", size.saturating_mul(8)),
+                cell: addr.clone(),
+                width: Some(size.saturating_mul(8)),
             },
         },
         NirOp::RawStore { addr, value, size } => HirInstrStmt::Store {
             cell: HirExpr::Mem {
-                cell: format!("{addr}:u{}", size.saturating_mul(8)),
+                cell: addr.clone(),
+                width: Some(size.saturating_mul(8)),
             },
             value: operand_expr(value, lang),
         },
@@ -1924,6 +1928,7 @@ fn operand_expr(operand: &str, _lang: SourceLang) -> HirExpr {
     if trimmed.contains('[') && trimmed.contains(']') {
         return HirExpr::Mem {
             cell: trimmed.to_owned(),
+            width: None,
         };
     }
     if is_constant_literal(trimmed) {
@@ -2916,6 +2921,38 @@ mod tests {
             value.render(),
             "0x1f",
             "a recognized literal renders exactly the bytes the producer supplied"
+        );
+    }
+
+    #[test]
+    fn a_raw_load_width_reaches_the_hir_as_a_number_rather_than_inside_the_cell_text() {
+        let lowered: HirInstrStmt = lower_instr(
+            &instr(
+                0x1000,
+                NirOp::RawLoad {
+                    addr: "rax".to_owned(),
+                    size: 4,
+                },
+                "load",
+                &["rbx"],
+            ),
+            SourceLang::NativeX86,
+        );
+        let HirInstrStmt::Assign {
+            value: HirExpr::Mem { cell, width },
+            ..
+        } = &lowered
+        else {
+            panic!("a raw load must lower to a memory read, got {lowered:?}");
+        };
+        assert_eq!(
+            cell, "rax",
+            "the cell must carry the address alone, with no width glued onto it"
+        );
+        assert_eq!(
+            *width,
+            Some(32),
+            "the producer holds a byte size, so the hir must carry the bit width as a number"
         );
     }
 

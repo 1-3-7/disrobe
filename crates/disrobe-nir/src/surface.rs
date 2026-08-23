@@ -45,6 +45,7 @@ pub enum SurfaceExpr {
     },
     Field {
         cell: String,
+        width: Option<u32>,
     },
     Unary {
         op: BinaryOp,
@@ -757,7 +758,10 @@ impl Lifter {
                 value: value.clone(),
             },
             HirExpr::Var { name } => SurfaceExpr::Local { name: name.clone() },
-            HirExpr::Mem { cell } => SurfaceExpr::Field { cell: cell.clone() },
+            HirExpr::Mem { cell, width } => SurfaceExpr::Field {
+                cell: cell.clone(),
+                width: *width,
+            },
             HirExpr::Unary { op, operand } => SurfaceExpr::Unary {
                 op: *op,
                 operand: Box::new(self.lift_expr(operand, child_depth)),

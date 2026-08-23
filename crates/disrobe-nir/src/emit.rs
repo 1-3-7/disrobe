@@ -579,9 +579,13 @@ fn emit_expr(expr: &SurfaceExpr, output: &mut BoundedOutput) {
                 SurfaceExpr::Local { name: text } | SurfaceExpr::Raw { text } => {
                     output.push_str(text);
                 }
-                SurfaceExpr::Field { cell } => {
+                SurfaceExpr::Field { cell, width } => {
                     output.push_str("mem[");
                     output.push_str(cell);
+                    if let Some(bits) = width {
+                        output.push_str(":u");
+                        output.push_str(&bits.to_string());
+                    }
                     output.push(']');
                 }
                 SurfaceExpr::Unary { op, operand } => {
@@ -1245,6 +1249,30 @@ mod tests {
             })
             .expect("spawn expression render thread");
         handle.join().expect("expression render thread");
+    }
+
+    #[test]
+    fn a_width_carried_beside_the_cell_renders_the_same_suffix_it_used_to_bake_in() {
+        let sized: SurfaceExpr = SurfaceExpr::Field {
+            cell: "rax".to_owned(),
+            width: Some(32),
+        };
+        let mut output: BoundedOutput = BoundedOutput::new(MAX_EMITTED_BYTES);
+        emit_expr(&sized, &mut output);
+        assert_eq!(
+            output.text, "mem[rax:u32]",
+            "a typed width must render exactly the text the cell string used to carry"
+        );
+        let unsized_cell: SurfaceExpr = SurfaceExpr::Field {
+            cell: "cursor".to_owned(),
+            width: None,
+        };
+        let mut plain: BoundedOutput = BoundedOutput::new(MAX_EMITTED_BYTES);
+        emit_expr(&unsized_cell, &mut plain);
+        assert_eq!(
+            plain.text, "mem[cursor]",
+            "a cell with no known width must render without a suffix"
+        );
     }
 
     #[test]
