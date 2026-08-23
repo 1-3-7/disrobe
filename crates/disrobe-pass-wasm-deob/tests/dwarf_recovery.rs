@@ -1,19 +1,24 @@
-#![cfg(feature = "dwarf")]
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#[cfg(feature = "dwarf")]
 use std::collections::BTreeMap;
 
+#[cfg(feature = "dwarf")]
 use disrobe_pass_wasm_deob::dwarf::{
     BaseEncoding, FunctionInfo, RecoveredDwarfType, SourceLocation, WasmDwarfRecovery,
     function_banner, line_for_pc, recover_source_map,
 };
+#[cfg(feature = "dwarf")]
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Range, RangeList,
     Sections, StringTable,
 };
+#[cfg(feature = "dwarf")]
 use gimli::{Encoding, Format, LineEncoding};
 
+#[cfg(feature = "dwarf")]
 const EMPTY_WASM_HEADER: [u8; 8] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
+#[cfg(feature = "dwarf")]
 fn write_uleb128(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let mut byte: u8 = (value & 0x7f) as u8;
@@ -28,6 +33,7 @@ fn write_uleb128(out: &mut Vec<u8>, mut value: u64) {
     }
 }
 
+#[cfg(feature = "dwarf")]
 fn embed_custom_section(out: &mut Vec<u8>, name: &str, data: &[u8]) {
     let mut name_bytes: Vec<u8> = Vec::new();
     write_uleb128(&mut name_bytes, name.len() as u64);
@@ -42,10 +48,12 @@ fn embed_custom_section(out: &mut Vec<u8>, name: &str, data: &[u8]) {
     out.extend_from_slice(&body);
 }
 
+#[cfg(feature = "dwarf")]
 struct SynthDwarf {
     sections: BTreeMap<gimli::SectionId, Vec<u8>>,
 }
 
+#[cfg(feature = "dwarf")]
 fn make_line_program(encoding: Encoding) -> LineProgram {
     let mut program: LineProgram = LineProgram::new(
         encoding,
@@ -70,6 +78,7 @@ fn make_line_program(encoding: Encoding) -> LineProgram {
     program
 }
 
+#[cfg(feature = "dwarf")]
 struct Strings {
     producer: gimli::write::StringId,
     name: gimli::write::StringId,
@@ -82,6 +91,7 @@ struct Strings {
     y: gimli::write::StringId,
 }
 
+#[cfg(feature = "dwarf")]
 fn populate_strings(dwarf: &mut DwarfUnit) -> Strings {
     Strings {
         producer: dwarf.strings.add(b"disrobe-synth-clang"[..].to_vec()),
@@ -96,6 +106,7 @@ fn populate_strings(dwarf: &mut DwarfUnit) -> Strings {
     }
 }
 
+#[cfg(feature = "dwarf")]
 fn add_subprogram(
     dwarf: &mut DwarfUnit,
     name_id: gimli::write::StringId,
@@ -118,6 +129,7 @@ fn add_subprogram(
     sub_id
 }
 
+#[cfg(feature = "dwarf")]
 fn add_point_struct(dwarf: &mut DwarfUnit, strings: &Strings, int_ref: gimli::write::UnitEntryId) {
     let root = dwarf.unit.root();
     let point_id = dwarf.unit.add(root, gimli::DW_TAG_structure_type);
@@ -142,6 +154,7 @@ fn add_point_struct(dwarf: &mut DwarfUnit, strings: &Strings, int_ref: gimli::wr
     }
 }
 
+#[cfg(feature = "dwarf")]
 fn serialize_dwarf(dwarf: &mut DwarfUnit) -> BTreeMap<gimli::SectionId, Vec<u8>> {
     let mut sections: Sections<EndianVec<gimli::LittleEndian>> =
         Sections::new(EndianVec::new(gimli::LittleEndian));
@@ -163,6 +176,7 @@ fn serialize_dwarf(dwarf: &mut DwarfUnit) -> BTreeMap<gimli::SectionId, Vec<u8>>
     out
 }
 
+#[cfg(feature = "dwarf")]
 fn synthesize_minimal_dwarf() -> SynthDwarf {
     let encoding: Encoding = Encoding {
         format: Format::Dwarf32,
@@ -221,6 +235,7 @@ fn synthesize_minimal_dwarf() -> SynthDwarf {
     }
 }
 
+#[cfg(feature = "dwarf")]
 fn build_wasm_with_dwarf(dwarf: &SynthDwarf) -> Vec<u8> {
     let mut bytes: Vec<u8> = Vec::with_capacity(4096);
     bytes.extend_from_slice(&EMPTY_WASM_HEADER);
@@ -230,6 +245,7 @@ fn build_wasm_with_dwarf(dwarf: &SynthDwarf) -> Vec<u8> {
     bytes
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn dwarf_recovers_function_names_from_synth_wasm() {
     let synth: SynthDwarf = synthesize_minimal_dwarf();
@@ -258,6 +274,7 @@ fn dwarf_recovers_function_names_from_synth_wasm() {
     assert!(saw_hello_cu, "expected compile-unit named hello.c");
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn dwarf_recovers_line_table() {
     let synth: SynthDwarf = synthesize_minimal_dwarf();
@@ -285,6 +302,7 @@ fn dwarf_recovers_line_table() {
     assert_eq!(row_at_120.line, 3);
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn dwarf_recovers_type_graph() {
     let synth: SynthDwarf = synthesize_minimal_dwarf();
@@ -335,6 +353,7 @@ fn dwarf_recovers_type_graph() {
     }
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn dwarf_sourcemap_json_includes_functions_and_lines() {
     let synth: SynthDwarf = synthesize_minimal_dwarf();
@@ -351,6 +370,7 @@ fn dwarf_sourcemap_json_includes_functions_and_lines() {
     assert_eq!(function_for_pc.name.as_deref(), Some("add"));
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn recover_handles_module_with_no_dwarf() {
     let recovery: WasmDwarfRecovery =
@@ -359,6 +379,7 @@ fn recover_handles_module_with_no_dwarf() {
     assert_eq!(recovery.function_count(), 0);
 }
 
+#[cfg(feature = "dwarf")]
 #[test]
 fn function_banner_and_line_helpers_resolve_recovered_info() {
     let synth: SynthDwarf = synthesize_minimal_dwarf();
@@ -378,4 +399,16 @@ fn function_banner_and_line_helpers_resolve_recovered_info() {
 
     assert!(function_banner(&recovery, 0xDEAD_BEEF).is_none());
     assert!(line_for_pc(&recovery, 0).is_none());
+}
+
+#[cfg(not(feature = "dwarf"))]
+#[test]
+fn dwarf_recovery_refuses_to_report_success_without_the_dwarf_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-DWARF: this target grades recovered debug information against ",
+        "tracked artifacts. The missing prerequisite is the crate feature `dwarf`. ",
+        "Re-run it as `cargo test -p disrobe-pass-wasm-deob --features dwarf --test ",
+        "dwarf_recovery`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }
