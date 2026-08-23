@@ -10,7 +10,8 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::time::Instant;
 
 use disrobe_core::Artifact;
@@ -83,6 +84,44 @@ fn read_fixture(rel: &str) -> Option<Vec<u8>> {
         return None;
     }
     std::fs::read(&path).ok()
+}
+
+fn run_wasm_auto_cli(
+    bytes: &[u8],
+    purpose: &str,
+    capture_stages: bool,
+) -> disrobe_core::scratch::ScratchDir {
+    let input: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&format!("wasm-auto-{purpose}-input"))
+            .expect("create wasm auto input directory");
+    let output: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&format!("wasm-auto-{purpose}-output"))
+            .expect("create wasm auto output directory");
+    let input_path: PathBuf = input.path().join("module.wasm");
+    std::fs::write(&input_path, bytes).expect("write wasm auto input");
+    let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
+    command
+        .arg("auto")
+        .arg(&input_path)
+        .arg("--out")
+        .arg(output.path());
+    if capture_stages {
+        command.arg("--capture-stages");
+    }
+    let process: Output = command.output().expect("run disrobe auto for wasm");
+    assert!(
+        process.status.success(),
+        "disrobe auto failed: {}",
+        String::from_utf8_lossy(&process.stderr)
+    );
+    drop(input);
+    output
+}
+
+fn read_chain_json(output: &Path) -> serde_json::Value {
+    let bytes: Vec<u8> =
+        std::fs::read(output.join("chain.json")).expect("read disrobe auto chain.json");
+    serde_json::from_slice(&bytes).expect("parse disrobe auto chain.json")
 }
 
 fn run_chain_auto(bytes: Vec<u8>, source_path: &str) -> ChainDocument {
@@ -215,6 +254,111 @@ fn real_extractor_wasm_module() {
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://wasm/module.wasm");
     assert_pass_id(&doc, "wasm.deob");
     assert_pass_completes(&doc, "wasm.deob");
+}
+
+#[test]
+fn threaded_wasm_module_completes_through_auto() {
+    let bytes: Vec<u8> = wat::parse_str(
+        r#"(module
+            (memory 1 1 shared)
+            (func (export "atomic_add") (param i32) (result i32)
+                local.get 0
+                i32.const 1
+                i32.atomic.rmw.add align=4))"#,
+    )
+    .expect("assemble tracked threaded wasm module");
+    let first_output: disrobe_core::scratch::ScratchDir =
+        run_wasm_auto_cli(&bytes, "threaded-first", true);
+    let first_chain: serde_json::Value = read_chain_json(first_output.path());
+    let node: &serde_json::Value = first_chain["nodes"]
+        .as_array()
+        .expect("chain nodes")
+        .iter()
+        .find(|node: &&serde_json::Value| node["pass"] == "wasm.deob")
+        .expect("auto must dispatch wasm.deob");
+    assert_eq!(node["verdict"], "complete");
+    assert!(
+        node["output_kind"]["kind"] == "source"
+            && node["output_kind"]["language"] == "WebAssembly"
+            && node["output_kind"]["formatted"] == true,
+        "unexpected auto output kind: {}",
+        node["output_kind"]
+    );
+    let first_wat: Vec<u8> =
+        std::fs::read(first_output.path().join("01-wasm-deob").join("output.bin"))
+            .expect("read captured wasm.deob source");
+    let first_text: &str = std::str::from_utf8(&first_wat).expect("wasm.deob emits UTF-8 WAT");
+    let reassembled: Vec<u8> =
+        wat::parse_str(first_text).expect("captured source must be valid WAT");
+    let mut shared_memory: bool = false;
+    let mut atomic_add: bool = false;
+    for payload in wasmparser::Parser::new(0).parse_all(&reassembled) {
+        match payload.expect("reassembled WAT must parse as WebAssembly") {
+            wasmparser::Payload::MemorySection(section) => {
+                for memory in section {
+                    shared_memory |= memory.expect("memory declaration must decode").shared;
+                }
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                let mut operators: wasmparser::OperatorsReader<'_> = body
+                    .get_operators_reader()
+                    .expect("function body must decode");
+                while !operators.eof() {
+                    atomic_add |= matches!(
+                        operators.read().expect("operator must decode"),
+                        wasmparser::Operator::I32AtomicRmwAdd { .. }
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        shared_memory,
+        "captured WAT lost shared memory: {first_text}"
+    );
+    assert!(atomic_add, "captured WAT lost atomic add: {first_text}");
+
+    let second_output: disrobe_core::scratch::ScratchDir =
+        run_wasm_auto_cli(&bytes, "threaded-second", true);
+    let second_wat: Vec<u8> =
+        std::fs::read(second_output.path().join("01-wasm-deob").join("output.bin"))
+            .expect("read repeated captured wasm.deob source");
+    assert_eq!(first_wat, second_wat, "repeated auto output changed bytes");
+}
+
+#[test]
+fn wasm_auto_json_names_a_static_recovery_refusal() {
+    let bytes: Vec<u8> = wat::parse_str(
+        r#"(module
+            (func (export "a") (param i32) (result i32) local.get 0)
+            (func (export "b") (param i32) (result i32) local.get 0)
+            (func (export "c") (param i32) (result i32) local.get 0)
+            (func (export "d") (param i32) (result i32) local.get 0))"#,
+    )
+    .expect("assemble tracked name-obfuscated wasm module");
+    let output: disrobe_core::scratch::ScratchDir =
+        run_wasm_auto_cli(&bytes, "named-refusal", false);
+    let chain: serde_json::Value = read_chain_json(output.path());
+    let node: &serde_json::Value = chain["nodes"]
+        .as_array()
+        .expect("chain nodes")
+        .iter()
+        .find(|node: &&serde_json::Value| node["pass"] == "wasm.deob")
+        .expect("auto must dispatch wasm.deob");
+    assert_eq!(node["verdict"], "error");
+    let error: &str = node["error"]
+        .as_str()
+        .expect("refusal must reach chain.json");
+    assert!(
+        error.contains("DR-WASM-0905"),
+        "unexpected refusal: {error}"
+    );
+    let json: String = serde_json::to_string(&chain).expect("serialize chain document");
+    assert!(
+        json.contains("DR-WASM-0905"),
+        "missing JSON refusal: {json}"
+    );
 }
 
 #[test]
