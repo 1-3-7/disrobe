@@ -134,6 +134,135 @@ pub enum WasmValType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum RecoveredStorageType {
+    I8,
+    I16,
+    I32,
+    I64,
+    F32,
+    F64,
+    V128,
+}
+
+impl RecoveredStorageType {
+    #[inline]
+    #[must_use]
+    pub const fn width_bytes(self) -> u32 {
+        match self {
+            Self::I8 => 1,
+            Self::I16 => 2,
+            Self::I32 | Self::F32 => 4,
+            Self::I64 | Self::F64 => 8,
+            Self::V128 => 16,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn alignment_bytes(self) -> u32 {
+        self.width_bytes()
+    }
+}
+
+impl LoadKind {
+    #[inline]
+    #[must_use]
+    pub const fn storage_type(self) -> RecoveredStorageType {
+        match self {
+            Self::I32_8U | Self::I32_8S | Self::I64_8U | Self::I64_8S => RecoveredStorageType::I8,
+            Self::I32_16U | Self::I32_16S | Self::I64_16U | Self::I64_16S => {
+                RecoveredStorageType::I16
+            }
+            Self::I32 | Self::I64_32U | Self::I64_32S => RecoveredStorageType::I32,
+            Self::I64 => RecoveredStorageType::I64,
+            Self::F32 => RecoveredStorageType::F32,
+            Self::F64 => RecoveredStorageType::F64,
+        }
+    }
+}
+
+impl StoreKind {
+    #[inline]
+    #[must_use]
+    pub const fn storage_type(self) -> RecoveredStorageType {
+        match self {
+            Self::I32_8 | Self::I64_8 => RecoveredStorageType::I8,
+            Self::I32_16 | Self::I64_16 => RecoveredStorageType::I16,
+            Self::I32 | Self::I64_32 => RecoveredStorageType::I32,
+            Self::I64 => RecoveredStorageType::I64,
+            Self::F32 => RecoveredStorageType::F32,
+            Self::F64 => RecoveredStorageType::F64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum TypeRecoveryRefusal {
+    UnsupportedSsa,
+    Memory64,
+    AmbiguousAddress,
+    AddressDepth,
+    OffsetOutOfRange,
+    InvalidAccess,
+    ConflictingAccess,
+    OverlappingAccess,
+    InconsistentArray,
+    UnrepresentableLayout,
+    CyclicAddress,
+    AddressBudget,
+}
+
+impl TypeRecoveryRefusal {
+    #[inline]
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::UnsupportedSsa => "DR-WASMDEOB-TYPES-0001",
+            Self::Memory64 => "DR-WASMDEOB-TYPES-0002",
+            Self::AmbiguousAddress => "DR-WASMDEOB-TYPES-0003",
+            Self::AddressDepth => "DR-WASMDEOB-TYPES-0004",
+            Self::OffsetOutOfRange => "DR-WASMDEOB-TYPES-0005",
+            Self::InvalidAccess => "DR-WASMDEOB-TYPES-0006",
+            Self::ConflictingAccess => "DR-WASMDEOB-TYPES-0007",
+            Self::OverlappingAccess => "DR-WASMDEOB-TYPES-0008",
+            Self::InconsistentArray => "DR-WASMDEOB-TYPES-0009",
+            Self::UnrepresentableLayout => "DR-WASMDEOB-TYPES-0010",
+            Self::CyclicAddress => "DR-WASMDEOB-TYPES-0011",
+            Self::AddressBudget => "DR-WASMDEOB-TYPES-0012",
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::UnsupportedSsa => "SSA cannot represent every operator in this function",
+            Self::Memory64 => "memory64 layouts exceed the declaration address model",
+            Self::AmbiguousAddress => "the memory address has no single static base",
+            Self::AddressDepth => "the memory address exceeds the bounded analysis depth",
+            Self::OffsetOutOfRange => "the memory offset exceeds the declaration range",
+            Self::InvalidAccess => "the memory access has no consistent storage type",
+            Self::ConflictingAccess => "the same memory offset has conflicting storage types",
+            Self::OverlappingAccess => "recovered memory fields overlap",
+            Self::InconsistentArray => "indexed memory accesses disagree on element layout",
+            Self::UnrepresentableLayout => {
+                "the recovered offsets cannot be expressed by the target layout"
+            }
+            Self::CyclicAddress => "the memory address contains a cyclic SSA dependency",
+            Self::AddressBudget => "the memory address exceeds the bounded SSA visit budget",
+        }
+    }
+}
+
+impl core::fmt::Display for TypeRecoveryRefusal {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{}: {}", self.code(), self.message())
+    }
+}
+
+impl std::error::Error for TypeRecoveryRefusal {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct AccessPattern {
     pub load_kind: Option<LoadKind>,
     pub store_kind: Option<StoreKind>,
@@ -148,14 +277,24 @@ pub struct AccessPattern {
 pub struct FieldRecord {
     pub offset: i32,
     pub width: u32,
-    pub kind: WasmValType,
+    pub kind: RecoveredStorageType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum RecoveredType {
     Scalar(WasmValType),
-    Struct { fields: Vec<FieldRecord> },
-    Array { elem_size: u32, count: Option<u32> },
+    StorageScalar(RecoveredStorageType),
+    Struct {
+        fields: Vec<FieldRecord>,
+    },
+    Array {
+        elem_size: u32,
+        count: Option<u32>,
+    },
+    TypedArray {
+        elem: RecoveredStorageType,
+        count: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -231,10 +370,19 @@ pub fn classify_aggregates(patterns: &[AccessPattern]) -> Vec<(BaseOrigin, Recov
         }
         let mut fields: Vec<FieldRecord> = members
             .iter()
-            .map(|p| FieldRecord {
-                offset: p.offset_class,
-                width: p.width,
-                kind: width_to_valtype(p.width),
+            .map(|p| {
+                let Some(kind): Option<RecoveredStorageType> = access_storage_type(p) else {
+                    return FieldRecord {
+                        offset: p.offset_class,
+                        width: p.width,
+                        kind: width_to_storage_type(p.width),
+                    };
+                };
+                FieldRecord {
+                    offset: p.offset_class,
+                    width: p.width,
+                    kind,
+                }
             })
             .collect();
         fields.sort_by_key(|f| f.offset);
@@ -242,6 +390,135 @@ pub fn classify_aggregates(patterns: &[AccessPattern]) -> Vec<(BaseOrigin, Recov
         out.push((base, RecoveredType::Struct { fields }));
     }
     out
+}
+
+pub(crate) fn classify_aggregates_checked(
+    patterns: &[AccessPattern],
+) -> Result<Vec<(BaseOrigin, RecoveredType)>, TypeRecoveryRefusal> {
+    use std::collections::BTreeMap;
+
+    let mut groups: BTreeMap<BaseOrigin, Vec<&AccessPattern>> = BTreeMap::new();
+    for pattern in patterns {
+        if pattern.base_origin == BaseOrigin::Unknown || pattern.offset_class < 0 {
+            return Err(TypeRecoveryRefusal::AmbiguousAddress);
+        }
+        let Some(storage_type): Option<RecoveredStorageType> = access_storage_type(pattern) else {
+            return Err(TypeRecoveryRefusal::InvalidAccess);
+        };
+        if storage_type.width_bytes() != pattern.width {
+            return Err(TypeRecoveryRefusal::InvalidAccess);
+        }
+        groups.entry(pattern.base_origin).or_default().push(pattern);
+    }
+
+    let mut out: Vec<(BaseOrigin, RecoveredType)> = Vec::with_capacity(groups.len());
+    for (base, members) in groups {
+        let indexed_count: usize = members
+            .iter()
+            .filter(|pattern: &&&AccessPattern| pattern.is_indexed)
+            .count();
+        if indexed_count > 0 {
+            if indexed_count != members.len() {
+                return Err(TypeRecoveryRefusal::InconsistentArray);
+            }
+            let first: &AccessPattern = members[0];
+            let Some(elem): Option<RecoveredStorageType> = access_storage_type(first) else {
+                return Err(TypeRecoveryRefusal::InvalidAccess);
+            };
+            if first.offset_class != 0
+                || members.iter().any(|pattern: &&AccessPattern| {
+                    pattern.offset_class != 0 || access_storage_type(pattern) != Some(elem)
+                })
+            {
+                return Err(TypeRecoveryRefusal::InconsistentArray);
+            }
+            out.push((base, RecoveredType::TypedArray { elem, count: None }));
+            continue;
+        }
+
+        let mut fields: Vec<FieldRecord> = members
+            .iter()
+            .map(|pattern: &&AccessPattern| {
+                let kind: RecoveredStorageType =
+                    access_storage_type(pattern).ok_or(TypeRecoveryRefusal::InvalidAccess)?;
+                Ok(FieldRecord {
+                    offset: pattern.offset_class,
+                    width: pattern.width,
+                    kind,
+                })
+            })
+            .collect::<Result<Vec<FieldRecord>, TypeRecoveryRefusal>>()?;
+        fields.sort_by_key(|field: &FieldRecord| field.offset);
+        let mut unique: Vec<FieldRecord> = Vec::with_capacity(fields.len());
+        for field in fields {
+            if let Some(previous) = unique.last() {
+                if field.offset == previous.offset {
+                    if field.width != previous.width || field.kind != previous.kind {
+                        return Err(TypeRecoveryRefusal::ConflictingAccess);
+                    }
+                    continue;
+                }
+                let previous_end: i32 = previous
+                    .offset
+                    .checked_add(
+                        i32::try_from(previous.width)
+                            .map_err(|_| TypeRecoveryRefusal::OffsetOutOfRange)?,
+                    )
+                    .ok_or(TypeRecoveryRefusal::OffsetOutOfRange)?;
+                if field.offset < previous_end {
+                    return Err(TypeRecoveryRefusal::OverlappingAccess);
+                }
+            }
+            unique.push(field);
+        }
+        let Some(first): Option<&FieldRecord> = unique.first() else {
+            continue;
+        };
+        if unique.len() == 1 && first.offset == 0 {
+            let recovered: RecoveredType = match first.kind {
+                RecoveredStorageType::I8 | RecoveredStorageType::I16 => {
+                    RecoveredType::StorageScalar(first.kind)
+                }
+                RecoveredStorageType::I32 => RecoveredType::Scalar(WasmValType::I32),
+                RecoveredStorageType::I64 => RecoveredType::Scalar(WasmValType::I64),
+                RecoveredStorageType::F32 => RecoveredType::Scalar(WasmValType::F32),
+                RecoveredStorageType::F64 => RecoveredType::Scalar(WasmValType::F64),
+                RecoveredStorageType::V128 => RecoveredType::Scalar(WasmValType::V128),
+            };
+            out.push((base, recovered));
+            continue;
+        }
+        let is_array: bool = first.offset == 0
+            && unique
+                .iter()
+                .enumerate()
+                .all(|(index, field): (usize, &FieldRecord)| {
+                    field.kind == first.kind
+                        && usize::try_from(field.offset).ok()
+                            == usize::try_from(first.width)
+                                .ok()
+                                .and_then(|width: usize| index.checked_mul(width))
+                });
+        if is_array {
+            let count: u32 =
+                u32::try_from(unique.len()).map_err(|_| TypeRecoveryRefusal::OffsetOutOfRange)?;
+            let recovered: RecoveredType = if first.kind == RecoveredStorageType::I32 {
+                RecoveredType::Array {
+                    elem_size: first.width,
+                    count: Some(count),
+                }
+            } else {
+                RecoveredType::TypedArray {
+                    elem: first.kind,
+                    count: Some(count),
+                }
+            };
+            out.push((base, recovered));
+        } else {
+            out.push((base, RecoveredType::Struct { fields: unique }));
+        }
+    }
+    Ok(out)
 }
 
 fn is_strided(offsets: &[i32], stride: u32) -> bool {
@@ -271,12 +548,33 @@ const fn width_to_valtype(width: u32) -> WasmValType {
     }
 }
 
+const fn width_to_storage_type(width: u32) -> RecoveredStorageType {
+    match width {
+        1 => RecoveredStorageType::I8,
+        2 => RecoveredStorageType::I16,
+        8 => RecoveredStorageType::I64,
+        16 => RecoveredStorageType::V128,
+        _ => RecoveredStorageType::I32,
+    }
+}
+
+fn access_storage_type(pattern: &AccessPattern) -> Option<RecoveredStorageType> {
+    match (pattern.load_kind, pattern.store_kind) {
+        (Some(load), None) => Some(load.storage_type()),
+        (None, Some(store)) => Some(store.storage_type()),
+        (Some(load), Some(store)) if load.storage_type() == store.storage_type() => {
+            Some(load.storage_type())
+        }
+        (None, None) | (Some(_), Some(_)) => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NamedField {
     pub name: String,
     pub offset: i32,
     pub width: u32,
-    pub kind: WasmValType,
+    pub kind: RecoveredStorageType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -287,13 +585,13 @@ pub enum NamedType {
     },
     Array {
         name: String,
-        elem: WasmValType,
+        elem: RecoveredStorageType,
         elem_size: u32,
         count: Option<u32>,
     },
     Scalar {
         name: String,
-        kind: WasmValType,
+        kind: RecoveredStorageType,
     },
 }
 
@@ -322,12 +620,22 @@ fn synthesize_one(base: BaseOrigin, ty: &RecoveredType) -> NamedType {
     match ty {
         RecoveredType::Scalar(kind) => NamedType::Scalar {
             name: format!("Scalar_{suffix}"),
+            kind: wasm_val_to_storage_type(*kind),
+        },
+        RecoveredType::StorageScalar(kind) => NamedType::Scalar {
+            name: format!("Scalar_{suffix}"),
             kind: *kind,
         },
         RecoveredType::Array { elem_size, count } => NamedType::Array {
             name: format!("Array_{suffix}"),
-            elem: width_to_valtype(*elem_size),
+            elem: width_to_storage_type(*elem_size),
             elem_size: *elem_size,
+            count: *count,
+        },
+        RecoveredType::TypedArray { elem, count } => NamedType::Array {
+            name: format!("Array_{suffix}"),
+            elem: *elem,
+            elem_size: elem.width_bytes(),
             count: *count,
         },
         RecoveredType::Struct { fields } => NamedType::Struct {
@@ -342,6 +650,17 @@ fn synthesize_one(base: BaseOrigin, ty: &RecoveredType) -> NamedType {
                 })
                 .collect(),
         },
+    }
+}
+
+const fn wasm_val_to_storage_type(kind: WasmValType) -> RecoveredStorageType {
+    match kind {
+        WasmValType::I32 => RecoveredStorageType::I32,
+        WasmValType::I64 => RecoveredStorageType::I64,
+        WasmValType::F32 => RecoveredStorageType::F32,
+        WasmValType::F64 => RecoveredStorageType::F64,
+        WasmValType::V128 => RecoveredStorageType::V128,
+        WasmValType::FuncRef | WasmValType::ExternRef => RecoveredStorageType::I32,
     }
 }
 
@@ -786,7 +1105,9 @@ mod tests {
     #[test]
     fn named_struct_synthesizes_offset_field_names() {
         let base: BaseOrigin = BaseOrigin::Param(2);
-        let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), pat(base, 12, 8)];
+        let mut wide: AccessPattern = pat(base, 12, 8);
+        wide.load_kind = Some(LoadKind::I64);
+        let patterns: Vec<AccessPattern> = vec![pat(base, 0, 4), pat(base, 4, 4), wide];
         let aggregates: Vec<(BaseOrigin, RecoveredType)> = classify_aggregates(&patterns);
         let named: Vec<NamedType> = synthesize_named_types(&aggregates);
         assert_eq!(named.len(), 1);
@@ -797,7 +1118,7 @@ mod tests {
                 assert_eq!(fields[0].name, "field_0");
                 assert_eq!(fields[1].name, "field_4");
                 assert_eq!(fields[2].name, "field_12");
-                assert_eq!(fields[2].kind, WasmValType::I64);
+                assert_eq!(fields[2].kind, RecoveredStorageType::I64);
             }
             other => panic!("expected named struct, got {other:?}"),
         }

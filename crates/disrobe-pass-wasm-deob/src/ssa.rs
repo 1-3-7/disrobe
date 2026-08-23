@@ -1258,7 +1258,7 @@ fn lift_call_and_memory(
     }
 }
 
-const fn load_descriptor(op: &Operator<'_>) -> Option<(LoadKind, ValType, MemArg)> {
+pub(crate) const fn load_descriptor(op: &Operator<'_>) -> Option<(LoadKind, ValType, MemArg)> {
     let (kind, ty, memarg): (LoadKind, ValType, MemArg) = match op {
         Operator::I32Load { memarg } => (LoadKind::I32, ValType::I32, *memarg),
         Operator::I64Load { memarg } => (LoadKind::I64, ValType::I64, *memarg),
@@ -1300,7 +1300,7 @@ fn lift_load(
     Ok(())
 }
 
-const fn store_descriptor(op: &Operator<'_>) -> Option<(StoreKind, MemArg)> {
+pub(crate) const fn store_descriptor(op: &Operator<'_>) -> Option<(StoreKind, MemArg)> {
     let (kind, memarg): (StoreKind, MemArg) = match op {
         Operator::I32Store { memarg } => (StoreKind::I32, *memarg),
         Operator::I64Store { memarg } => (StoreKind::I64, *memarg),

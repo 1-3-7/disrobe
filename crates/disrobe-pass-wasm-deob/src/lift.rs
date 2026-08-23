@@ -3,7 +3,10 @@ use wasmparser::{ExternalKind, FunctionBody, Parser, Payload, ValType, Validator
 
 use crate::error::{AtomicMemoryRefusal, Error, Result};
 use crate::signature::{FunctionSig, ModuleSignatures, extract_signatures};
-use crate::ssa::{OpKind, UnOp};
+use crate::ssa::{CallSignatures, OpKind, SsaFunction, UnOp, build_ssa_with_calls};
+use crate::types::{
+    NamedField, NamedType, RecoveredStorageType, TypeRecoveryRefusal, synthesize_named_types,
+};
 
 const MAX_TYPESCRIPT_MODULE_FUNCTIONS: usize = 4096;
 const MAX_TYPESCRIPT_MODULE_EXPORTS: usize = 65_536;
@@ -137,7 +140,301 @@ impl PreparedModuleLift {
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
-        try_lift_function_body(&body, sig, &self.callees, target)
+        let mut lifted: LiftResult = try_lift_function_body(&body, sig, &self.callees, target)?;
+        let declarations: String =
+            self.recovered_type_declarations(bytes, &body, sig, defined_function_index, target);
+        if !declarations.is_empty() {
+            lifted.pseudo_source = format!("{declarations}\n{}", lifted.pseudo_source);
+        }
+        Ok(lifted)
+    }
+
+    fn recovered_type_declarations(
+        &self,
+        bytes: &[u8],
+        body: &FunctionBody<'_>,
+        sig: &FunctionSig,
+        defined_function_index: usize,
+        target: LiftTarget,
+    ) -> String {
+        if target == LiftTarget::Wat {
+            return String::new();
+        }
+        if !has_recoverable_memory_access(body) {
+            return String::new();
+        }
+        match crate::memory64::scan_memories(bytes) {
+            Ok(report) if report.uses_memory64 => {
+                return render_recovered_type_refusal(TypeRecoveryRefusal::Memory64);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            }
+        }
+        let Ok(cfg): Result<crate::cfg::FunctionCfg> = crate::cfg::build_function_cfg(body) else {
+            return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+        };
+        let call_signatures: CallSignatures =
+            CallSignatures::new(self.signatures.call_signatures());
+        let Ok(ssa): Result<SsaFunction> =
+            build_ssa_with_calls(&cfg, body, &sig.params, &call_signatures)
+        else {
+            return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+        };
+        let recovered: crate::types::RecoveredTypes = match crate::recover_types_full(bytes, &ssa) {
+            Ok(recovered) => recovered,
+            Err(crate::RecoveredTypesError::Memory(refusal)) => {
+                return render_recovered_type_refusal(refusal);
+            }
+            Err(crate::RecoveredTypesError::Gc(_)) => {
+                return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            }
+        };
+        let named: Vec<NamedType> = synthesize_named_types(&recovered.memory_aggregates);
+        match render_recovered_type_declarations(&named, defined_function_index, target) {
+            Ok(declarations) => declarations,
+            Err(refusal) => render_recovered_type_refusal(refusal),
+        }
+    }
+}
+
+fn render_recovered_type_refusal(refusal: TypeRecoveryRefusal) -> String {
+    format!(
+        "// {}: {}; recovered type declarations are unavailable\n\n",
+        refusal.code(),
+        refusal.message()
+    )
+}
+
+fn has_recoverable_memory_access(body: &FunctionBody<'_>) -> bool {
+    let Ok(mut operators): std::result::Result<wasmparser::OperatorsReader<'_>, _> =
+        body.get_operators_reader()
+    else {
+        return false;
+    };
+    while !operators.eof() {
+        let Ok(operator): std::result::Result<wasmparser::Operator<'_>, _> = operators.read()
+        else {
+            return false;
+        };
+        if crate::ssa::load_descriptor(&operator).is_some()
+            || crate::ssa::store_descriptor(&operator).is_some()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn render_recovered_type_declarations(
+    named_types: &[NamedType],
+    defined_function_index: usize,
+    target: LiftTarget,
+) -> std::result::Result<String, TypeRecoveryRefusal> {
+    let mut out: String = String::new();
+    for named_type in named_types {
+        let name: String = recovered_declaration_name(named_type, defined_function_index);
+        match (target, named_type) {
+            (LiftTarget::Rust, NamedType::Struct { fields, .. }) => {
+                let layout: Vec<(u32, &NamedField)> = checked_layout(fields)?;
+                crate::push_string_fmt(&mut out, format_args!("#[repr(C)]\nstruct {name} {{\n"));
+                for (padding, field) in layout {
+                    if padding > 0 {
+                        crate::push_string_fmt(
+                            &mut out,
+                            format_args!(
+                                "    disrobe_padding_{}: [u8; {padding}],\n",
+                                field.offset
+                            ),
+                        );
+                    }
+                    crate::push_string_fmt(
+                        &mut out,
+                        format_args!("    {}: {},\n", field.name, recovered_rust_type(field.kind)),
+                    );
+                }
+                out.push_str("}\n\n");
+            }
+            (LiftTarget::Rust, NamedType::Array { elem, count, .. }) => {
+                let declaration: String = count.map_or_else(
+                    || format!("[{}]", recovered_rust_type(*elem)),
+                    |value: u32| format!("[{}; {value}]", recovered_rust_type(*elem)),
+                );
+                crate::push_string_fmt(&mut out, format_args!("type {name} = {declaration};\n\n"));
+            }
+            (LiftTarget::Rust, NamedType::Scalar { kind, .. }) => {
+                crate::push_string_fmt(
+                    &mut out,
+                    format_args!("type {name} = {};\n\n", recovered_rust_type(*kind)),
+                );
+            }
+            (LiftTarget::C, NamedType::Struct { fields, .. }) => {
+                let layout: Vec<(u32, &NamedField)> = checked_layout(fields)?;
+                out.push_str("typedef struct {\n");
+                for (padding, field) in layout {
+                    if padding > 0 {
+                        crate::push_string_fmt(
+                            &mut out,
+                            format_args!(
+                                "    uint8_t disrobe_padding_{}[{padding}];\n",
+                                field.offset
+                            ),
+                        );
+                    }
+                    crate::push_string_fmt(
+                        &mut out,
+                        format_args!("    {} {};\n", recovered_c_type(field.kind), field.name),
+                    );
+                }
+                crate::push_string_fmt(&mut out, format_args!("}} {name};\n\n"));
+            }
+            (LiftTarget::C, NamedType::Array { elem, count, .. }) => {
+                let count: String = count.map_or_else(String::new, |value: u32| value.to_string());
+                crate::push_string_fmt(
+                    &mut out,
+                    format_args!("typedef {} {name}[{count}];\n\n", recovered_c_type(*elem)),
+                );
+            }
+            (LiftTarget::C, NamedType::Scalar { kind, .. }) => {
+                crate::push_string_fmt(
+                    &mut out,
+                    format_args!("typedef {} {name};\n\n", recovered_c_type(*kind)),
+                );
+            }
+            (LiftTarget::TypeScript, NamedType::Struct { fields, .. }) => {
+                crate::push_string_fmt(&mut out, format_args!("export interface {name} {{\n"));
+                for field in fields {
+                    crate::push_string_fmt(
+                        &mut out,
+                        format_args!(
+                            "    readonly {}: {};\n",
+                            field.name,
+                            recovered_typescript_type(field.kind)
+                        ),
+                    );
+                }
+                out.push_str("}\n\n");
+            }
+            (LiftTarget::TypeScript, NamedType::Array { elem, .. }) => {
+                crate::push_string_fmt(
+                    &mut out,
+                    format_args!(
+                        "export type {name} = ReadonlyArray<{}>;\n\n",
+                        recovered_typescript_type(*elem)
+                    ),
+                );
+            }
+            (LiftTarget::TypeScript, NamedType::Scalar { kind, .. }) => {
+                crate::push_string_fmt(
+                    &mut out,
+                    format_args!(
+                        "export type {name} = {};\n\n",
+                        recovered_typescript_type(*kind)
+                    ),
+                );
+            }
+            (LiftTarget::Wat, _) => {}
+        }
+    }
+    Ok(out)
+}
+
+fn checked_layout(
+    fields: &[NamedField],
+) -> std::result::Result<Vec<(u32, &NamedField)>, TypeRecoveryRefusal> {
+    let mut cursor: u32 = 0;
+    let mut layout: Vec<(u32, &NamedField)> = Vec::with_capacity(fields.len());
+    for field in fields {
+        let offset: u32 =
+            u32::try_from(field.offset).map_err(|_| TypeRecoveryRefusal::UnrepresentableLayout)?;
+        let alignment: u32 =
+            recovered_alignment(field.kind).ok_or(TypeRecoveryRefusal::UnrepresentableLayout)?;
+        if offset < cursor || !offset.is_multiple_of(alignment) {
+            return Err(TypeRecoveryRefusal::UnrepresentableLayout);
+        }
+        let padding: u32 = offset - cursor;
+        cursor = offset
+            .checked_add(field.width)
+            .ok_or(TypeRecoveryRefusal::UnrepresentableLayout)?;
+        layout.push((padding, field));
+    }
+    Ok(layout)
+}
+
+const fn recovered_alignment(kind: RecoveredStorageType) -> Option<u32> {
+    match kind {
+        RecoveredStorageType::I8 => Some(1),
+        RecoveredStorageType::I16 => Some(2),
+        RecoveredStorageType::I32 | RecoveredStorageType::F32 => Some(4),
+        RecoveredStorageType::I64 | RecoveredStorageType::F64 => Some(8),
+        RecoveredStorageType::V128 => None,
+    }
+}
+
+fn recovered_declaration_name(named_type: &NamedType, defined_function_index: usize) -> String {
+    let kind: &str = match named_type {
+        NamedType::Struct { .. } => "Struct",
+        NamedType::Array { .. } => "Array",
+        NamedType::Scalar { .. } => "Scalar",
+    };
+    let suffix: Option<&str> = named_type
+        .type_name()
+        .strip_prefix("Struct_")
+        .or_else(|| named_type.type_name().strip_prefix("Array_"))
+        .or_else(|| named_type.type_name().strip_prefix("Scalar_"));
+    let Some(suffix): Option<&str> = suffix else {
+        return format!(
+            "Disrobe{kind}Function{defined_function_index}{}",
+            upper_camel_suffix(named_type.type_name())
+        );
+    };
+    format!(
+        "Disrobe{kind}Function{defined_function_index}{}",
+        upper_camel_suffix(suffix)
+    )
+}
+
+fn upper_camel_suffix(value: &str) -> String {
+    let mut chars: std::str::Chars<'_> = value.chars();
+    let Some(first): Option<char> = chars.next() else {
+        return String::new();
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+const fn recovered_rust_type(kind: RecoveredStorageType) -> &'static str {
+    match kind {
+        RecoveredStorageType::I8 => "u8",
+        RecoveredStorageType::I16 => "u16",
+        RecoveredStorageType::I32 => "i32",
+        RecoveredStorageType::I64 => "i64",
+        RecoveredStorageType::F32 => "f32",
+        RecoveredStorageType::F64 => "f64",
+        RecoveredStorageType::V128 => "i128",
+    }
+}
+
+const fn recovered_c_type(kind: RecoveredStorageType) -> &'static str {
+    match kind {
+        RecoveredStorageType::I8 => "uint8_t",
+        RecoveredStorageType::I16 => "uint16_t",
+        RecoveredStorageType::I32 => "int32_t",
+        RecoveredStorageType::I64 => "int64_t",
+        RecoveredStorageType::F32 => "float",
+        RecoveredStorageType::F64 => "double",
+        RecoveredStorageType::V128 => "v128_t",
+    }
+}
+
+const fn recovered_typescript_type(kind: RecoveredStorageType) -> &'static str {
+    match kind {
+        RecoveredStorageType::I64 | RecoveredStorageType::V128 => "bigint",
+        RecoveredStorageType::I8
+        | RecoveredStorageType::I16
+        | RecoveredStorageType::I32
+        | RecoveredStorageType::F32
+        | RecoveredStorageType::F64 => "number",
     }
 }
 
@@ -204,6 +501,7 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
         }
     }
     let mut lifted_functions: Vec<String> = Vec::with_capacity(function_count);
+    let mut recovered_declarations: String = String::new();
     let mut coverage: LiftCoverage = LiftCoverage::default();
     for (defined_function_index, signature) in signatures.iter().enumerate() {
         let module: &crate::structured::ModuleCtx = prepared
@@ -211,6 +509,13 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
+        recovered_declarations.push_str(&prepared.recovered_type_declarations(
+            bytes,
+            &body,
+            signature,
+            defined_function_index,
+            LiftTarget::TypeScript,
+        ));
         let (pseudo_source, blocks_emitted, function_coverage): (String, usize, LiftCoverage) =
             crate::structured::lift_body_structured_typescript_module(&body, signature, &callees)?;
         let lifted: LiftResult = LiftResult {
@@ -268,8 +573,10 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
     let runtime: &str = TS_PRELUDE
         .get(runtime_start..)
         .ok_or_else(|| Error::Parse("TypeScript runtime memory boundary is invalid".to_owned()))?;
-    let mut source: String = String::from(
-        "import { writeSync } from \"node:fs\";\n\nexport type LiftedInstance = Readonly<{\n  readonly memory: WebAssembly.Memory;\n",
+    let mut source: String = String::from("import { writeSync } from \"node:fs\";\n\n");
+    source.push_str(&recovered_declarations);
+    source.push_str(
+        "export type LiftedInstance = Readonly<{\n  readonly memory: WebAssembly.Memory;\n",
     );
     for (export_name, _, defined_function_index) in &export_bindings {
         let export_literal: String =

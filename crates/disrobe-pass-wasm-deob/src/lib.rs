@@ -148,8 +148,9 @@ pub use tail_call::{TailCallKind, TailCallRecord, TailCallReport, scan_tail_call
 pub use threads::{AtomicOpKind, AtomicOpRecord, SharedMemoryRecord, ThreadsReport, scan_threads};
 pub use types::{
     AccessPattern, BaseOrigin, FieldRecord, LoadKind, NamedField, NamedType, PointerType,
-    RecoveredType, RecoveredTypes, ScalarIntType, Signedness, SignednessReport, StoreKind,
-    WasmValType, classify_aggregates, recover_signedness, synthesize_named_types,
+    RecoveredStorageType, RecoveredType, RecoveredTypes, ScalarIntType, Signedness,
+    SignednessReport, StoreKind, TypeRecoveryRefusal, WasmValType, classify_aggregates,
+    recover_signedness, synthesize_named_types,
 };
 
 pub use component::{
@@ -165,59 +166,467 @@ pub use gc_types::{
     TypeIdx, recover_gc_types,
 };
 
-#[must_use]
-pub fn recover_types(ssa: &SsaFunction) -> Vec<(BaseOrigin, RecoveredType)> {
-    let patterns: Vec<AccessPattern> = build_access_patterns(ssa);
-    classify_aggregates(&patterns)
+pub fn recover_types(
+    ssa: &SsaFunction,
+) -> std::result::Result<Vec<(BaseOrigin, RecoveredType)>, TypeRecoveryRefusal> {
+    let patterns: Vec<AccessPattern> = build_access_patterns_checked(ssa)?;
+    types::classify_aggregates_checked(&patterns)
 }
 
-pub fn recover_types_full(bytes: &[u8], ssa: &SsaFunction) -> Result<RecoveredTypes> {
-    let aggregates: Vec<(BaseOrigin, RecoveredType)> = recover_types(ssa);
-    let gc_graph: GcTypeGraph = recover_gc_types(bytes)?;
+#[derive(Debug, thiserror::Error)]
+pub enum RecoveredTypesError {
+    #[error("{0}")]
+    Memory(#[source] TypeRecoveryRefusal),
+    #[error("{0}")]
+    Gc(#[source] Error),
+}
+
+pub fn recover_types_full(
+    bytes: &[u8],
+    ssa: &SsaFunction,
+) -> std::result::Result<RecoveredTypes, RecoveredTypesError> {
+    let aggregates: Vec<(BaseOrigin, RecoveredType)> =
+        recover_types(ssa).map_err(RecoveredTypesError::Memory)?;
+    let gc_graph: GcTypeGraph = recover_gc_types(bytes).map_err(RecoveredTypesError::Gc)?;
     Ok(RecoveredTypes::new(aggregates, gc_graph))
 }
 
-fn build_access_patterns(ssa: &SsaFunction) -> Vec<AccessPattern> {
+fn build_access_patterns_checked(
+    ssa: &SsaFunction,
+) -> std::result::Result<Vec<AccessPattern>, TypeRecoveryRefusal> {
     let mut out: Vec<AccessPattern> = Vec::new();
+    let mut resolver: AddressResolver<'_> = AddressResolver::new(ssa)?;
     for block in &ssa.blocks {
-        for vid in &block.instrs {
-            let Some(def): Option<&ValueDef> = ssa.values.get(vid.0 as usize) else {
-                continue;
+        for value_id in &block.instrs {
+            let Some(definition): Option<&ValueDef> = ssa.values.get(value_id.0 as usize) else {
+                return Err(TypeRecoveryRefusal::AmbiguousAddress);
             };
             if let ValueDef::Load {
                 addr, memarg, kind, ..
-            } = def
+            } = definition
             {
-                let base_origin: BaseOrigin = classify_base_origin(*addr, ssa);
-                let is_indexed: bool = address_is_indexed(*addr, ssa);
-                let width: u32 = kind.width_bytes();
+                let (base_origin, static_addend, index_stride): (BaseOrigin, u64, Option<u64>) =
+                    resolver.resolve_address(*addr)?;
+                if index_stride.is_some_and(|stride: u64| stride != u64::from(kind.width_bytes())) {
+                    return Err(TypeRecoveryRefusal::InconsistentArray);
+                }
+                let offset_class: i32 = checked_declaration_offset(static_addend, memarg.offset)?;
                 out.push(AccessPattern {
                     load_kind: Some(*kind),
                     store_kind: None,
-                    width,
+                    width: kind.width_bytes(),
                     alignment: alignment_from_exponent(memarg.align),
-                    offset_class: i32::try_from(memarg.offset).unwrap_or(i32::MAX),
+                    offset_class,
                     base_origin,
-                    is_indexed,
+                    is_indexed: index_stride.is_some(),
                 });
             }
         }
         for store in &block.stores {
-            let base_origin: BaseOrigin = classify_base_origin(store.addr, ssa);
-            let is_indexed: bool = address_is_indexed(store.addr, ssa);
-            let width: u32 = store.kind.width_bytes();
+            let (base_origin, static_addend, index_stride): (BaseOrigin, u64, Option<u64>) =
+                resolver.resolve_address(store.addr)?;
+            if index_stride.is_some_and(|stride: u64| stride != u64::from(store.kind.width_bytes()))
+            {
+                return Err(TypeRecoveryRefusal::InconsistentArray);
+            }
+            let offset_class: i32 = checked_declaration_offset(static_addend, store.memarg.offset)?;
             out.push(AccessPattern {
                 load_kind: None,
                 store_kind: Some(store.kind),
-                width,
+                width: store.kind.width_bytes(),
                 alignment: alignment_from_exponent(store.memarg.align),
-                offset_class: i32::try_from(store.memarg.offset).unwrap_or(i32::MAX),
+                offset_class,
                 base_origin,
-                is_indexed,
+                is_indexed: index_stride.is_some(),
             });
         }
     }
-    out
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddressTerm {
+    Base {
+        origin: BaseOrigin,
+        addend: u64,
+        index_stride: Option<u64>,
+    },
+    Absolute(u64),
+    Index {
+        stride: u64,
+        addend: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AddressResolution {
+    term: AddressTerm,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddressResolutionState {
+    Unvisited,
+    Visiting,
+    Resolved(std::result::Result<AddressResolution, TypeRecoveryRefusal>),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddressDefinition {
+    Param(u16),
+    Global(u32),
+    I32Const(i32),
+    I64Const(i64),
+    Binary(OpKind, ValueId, ValueId),
+    Extend(ValueId),
+    Unsupported,
+}
+
+struct AddressResolver<'a> {
+    ssa: &'a SsaFunction,
+    states: Vec<AddressResolutionState>,
+    remaining_steps: usize,
+}
+
+impl<'a> AddressResolver<'a> {
+    fn new(ssa: &'a SsaFunction) -> std::result::Result<Self, TypeRecoveryRefusal> {
+        let dependency_count: usize = ssa
+            .values
+            .iter()
+            .try_fold(0usize, |count: usize, definition: &ValueDef| {
+                count.checked_add(address_dependency_count(definition))
+            })
+            .ok_or(TypeRecoveryRefusal::AddressBudget)?;
+        let root_count: usize = ssa
+            .blocks
+            .iter()
+            .try_fold(0usize, |count: usize, block: &SsaBlock| {
+                count
+                    .checked_add(block.instrs.len())
+                    .and_then(|value: usize| value.checked_add(block.stores.len()))
+            })
+            .ok_or(TypeRecoveryRefusal::AddressBudget)?;
+        let remaining_steps: usize = ssa
+            .values
+            .len()
+            .checked_add(dependency_count)
+            .and_then(|value: usize| value.checked_add(root_count))
+            .ok_or(TypeRecoveryRefusal::AddressBudget)?;
+        Ok(Self {
+            ssa,
+            states: vec![AddressResolutionState::Unvisited; ssa.values.len()],
+            remaining_steps,
+        })
+    }
+
+    fn resolve_address(
+        &mut self,
+        value_id: ValueId,
+    ) -> std::result::Result<(BaseOrigin, u64, Option<u64>), TypeRecoveryRefusal> {
+        match self.resolve_term(value_id, 0)?.term {
+            AddressTerm::Base {
+                origin,
+                addend,
+                index_stride,
+            } => Ok((origin, addend, index_stride)),
+            AddressTerm::Absolute(addend) => Ok((BaseOrigin::Heap, addend, None)),
+            AddressTerm::Index { .. } => Err(TypeRecoveryRefusal::AmbiguousAddress),
+        }
+    }
+
+    fn resolve_term(
+        &mut self,
+        value_id: ValueId,
+        depth: u32,
+    ) -> std::result::Result<AddressResolution, TypeRecoveryRefusal> {
+        if depth >= MAX_ORIGIN_DEPTH {
+            return Err(TypeRecoveryRefusal::AddressDepth);
+        }
+        self.remaining_steps = self
+            .remaining_steps
+            .checked_sub(1)
+            .ok_or(TypeRecoveryRefusal::AddressBudget)?;
+        let index: usize =
+            usize::try_from(value_id.0).map_err(|_| TypeRecoveryRefusal::AmbiguousAddress)?;
+        let state: AddressResolutionState = *self
+            .states
+            .get(index)
+            .ok_or(TypeRecoveryRefusal::AmbiguousAddress)?;
+        match state {
+            AddressResolutionState::Visiting => return Err(TypeRecoveryRefusal::CyclicAddress),
+            AddressResolutionState::Resolved(result) => {
+                return validate_cached_resolution(result, depth);
+            }
+            AddressResolutionState::Unvisited => {}
+        }
+        self.states[index] = AddressResolutionState::Visiting;
+        let definition: AddressDefinition = address_definition(
+            self.ssa
+                .values
+                .get(index)
+                .ok_or(TypeRecoveryRefusal::AmbiguousAddress)?,
+        );
+        let result: std::result::Result<AddressResolution, TypeRecoveryRefusal> =
+            self.resolve_definition(definition, depth);
+        self.states[index] = AddressResolutionState::Resolved(result);
+        validate_cached_resolution(result, depth)
+    }
+
+    fn resolve_definition(
+        &mut self,
+        definition: AddressDefinition,
+        depth: u32,
+    ) -> std::result::Result<AddressResolution, TypeRecoveryRefusal> {
+        match definition {
+            AddressDefinition::Param(index) => Ok(AddressResolution {
+                term: AddressTerm::Base {
+                    origin: BaseOrigin::Param(u32::from(index)),
+                    addend: 0,
+                    index_stride: None,
+                },
+                height: 0,
+            }),
+            AddressDefinition::Global(global) => Ok(AddressResolution {
+                term: AddressTerm::Base {
+                    origin: BaseOrigin::Global(global),
+                    addend: 0,
+                    index_stride: None,
+                },
+                height: 0,
+            }),
+            AddressDefinition::I32Const(value) => Ok(AddressResolution {
+                term: AddressTerm::Absolute(u64::from(u32::from_ne_bytes(value.to_ne_bytes()))),
+                height: 0,
+            }),
+            AddressDefinition::I64Const(value) => Ok(AddressResolution {
+                term: AddressTerm::Absolute(u64::from_ne_bytes(value.to_ne_bytes())),
+                height: 0,
+            }),
+            AddressDefinition::Binary(OpKind::I32Add | OpKind::I64Add, left, right) => {
+                let left: AddressResolution = self.resolve_term(left, depth + 1)?;
+                let right: AddressResolution = self.resolve_term(right, depth + 1)?;
+                Ok(AddressResolution {
+                    term: combine_address_terms(left.term, right.term)?,
+                    height: resolution_height(left.height, right.height)?,
+                })
+            }
+            AddressDefinition::Binary(OpKind::I32Mul | OpKind::I64Mul, left, right) => {
+                let left: AddressResolution = self.resolve_term(left, depth + 1)?;
+                let right: AddressResolution = self.resolve_term(right, depth + 1)?;
+                let (source, stride): (AddressTerm, u64) = match (left.term, right.term) {
+                    (AddressTerm::Absolute(stride), source)
+                    | (source, AddressTerm::Absolute(stride))
+                        if !matches!(source, AddressTerm::Absolute(_)) =>
+                    {
+                        (source, stride)
+                    }
+                    _ => {
+                        return Err(TypeRecoveryRefusal::AmbiguousAddress);
+                    }
+                };
+                validate_index_source(source)?;
+                if stride == 0 {
+                    return Err(TypeRecoveryRefusal::InconsistentArray);
+                }
+                Ok(AddressResolution {
+                    term: AddressTerm::Index { stride, addend: 0 },
+                    height: resolution_height(left.height, right.height)?,
+                })
+            }
+            AddressDefinition::Binary(OpKind::I32Shl | OpKind::I64Shl, source, shift) => {
+                let source: AddressResolution = self.resolve_term(source, depth + 1)?;
+                let shift_resolution: AddressResolution = self.resolve_term(shift, depth + 1)?;
+                let AddressTerm::Absolute(shift): AddressTerm = shift_resolution.term else {
+                    return Err(TypeRecoveryRefusal::AmbiguousAddress);
+                };
+                let shift: u32 =
+                    u32::try_from(shift).map_err(|_| TypeRecoveryRefusal::InconsistentArray)?;
+                let stride: u64 = 1u64
+                    .checked_shl(shift)
+                    .ok_or(TypeRecoveryRefusal::InconsistentArray)?;
+                validate_index_source(source.term)?;
+                Ok(AddressResolution {
+                    term: AddressTerm::Index { stride, addend: 0 },
+                    height: resolution_height(source.height, shift_resolution.height)?,
+                })
+            }
+            AddressDefinition::Extend(value_id) => {
+                let inner: AddressResolution = self.resolve_term(value_id, depth + 1)?;
+                Ok(AddressResolution {
+                    term: inner.term,
+                    height: inner
+                        .height
+                        .checked_add(1)
+                        .ok_or(TypeRecoveryRefusal::AddressDepth)?,
+                })
+            }
+            AddressDefinition::Binary(_, _, _) | AddressDefinition::Unsupported => {
+                Err(TypeRecoveryRefusal::AmbiguousAddress)
+            }
+        }
+    }
+}
+
+fn address_definition(definition: &ValueDef) -> AddressDefinition {
+    match definition {
+        ValueDef::Param(_, index) => AddressDefinition::Param(*index),
+        ValueDef::GlobalGet { global, .. } => AddressDefinition::Global(*global),
+        ValueDef::Const(ConstVal::I32(value)) => AddressDefinition::I32Const(*value),
+        ValueDef::Const(ConstVal::I64(value)) => AddressDefinition::I64Const(*value),
+        ValueDef::Op { kind, args, .. } if args.len() == 2 => {
+            AddressDefinition::Binary(*kind, args[0], args[1])
+        }
+        ValueDef::Unary {
+            op: UnOp::I64ExtendI32U,
+            arg,
+            ..
+        } => AddressDefinition::Extend(*arg),
+        ValueDef::Const(_)
+        | ValueDef::Phi { .. }
+        | ValueDef::Op { .. }
+        | ValueDef::Unary { .. }
+        | ValueDef::Select { .. }
+        | ValueDef::Load { .. }
+        | ValueDef::Call { .. }
+        | ValueDef::CallIndirect { .. }
+        | ValueDef::MemorySize { .. }
+        | ValueDef::MemoryGrow { .. } => AddressDefinition::Unsupported,
+    }
+}
+
+fn address_dependency_count(definition: &ValueDef) -> usize {
+    match address_definition(definition) {
+        AddressDefinition::Binary(_, _, _) => 2,
+        AddressDefinition::Extend(_) => 1,
+        AddressDefinition::Param(_)
+        | AddressDefinition::Global(_)
+        | AddressDefinition::I32Const(_)
+        | AddressDefinition::I64Const(_)
+        | AddressDefinition::Unsupported => 0,
+    }
+}
+
+fn validate_cached_resolution(
+    result: std::result::Result<AddressResolution, TypeRecoveryRefusal>,
+    depth: u32,
+) -> std::result::Result<AddressResolution, TypeRecoveryRefusal> {
+    let resolution: AddressResolution = result?;
+    let deepest: u32 = depth
+        .checked_add(resolution.height)
+        .ok_or(TypeRecoveryRefusal::AddressDepth)?;
+    if deepest >= MAX_ORIGIN_DEPTH {
+        return Err(TypeRecoveryRefusal::AddressDepth);
+    }
+    Ok(resolution)
+}
+
+fn resolution_height(left: u32, right: u32) -> std::result::Result<u32, TypeRecoveryRefusal> {
+    left.max(right)
+        .checked_add(1)
+        .ok_or(TypeRecoveryRefusal::AddressDepth)
+}
+
+const fn validate_index_source(term: AddressTerm) -> std::result::Result<(), TypeRecoveryRefusal> {
+    match term {
+        AddressTerm::Base {
+            addend: 0,
+            index_stride: None,
+            ..
+        } => Ok(()),
+        AddressTerm::Base { .. } | AddressTerm::Absolute(_) | AddressTerm::Index { .. } => {
+            Err(TypeRecoveryRefusal::AmbiguousAddress)
+        }
+    }
+}
+
+fn combine_address_terms(
+    left: AddressTerm,
+    right: AddressTerm,
+) -> std::result::Result<AddressTerm, TypeRecoveryRefusal> {
+    match (left, right) {
+        (AddressTerm::Absolute(left), AddressTerm::Absolute(right)) => left
+            .checked_add(right)
+            .map(AddressTerm::Absolute)
+            .ok_or(TypeRecoveryRefusal::OffsetOutOfRange),
+        (
+            AddressTerm::Base {
+                origin,
+                addend,
+                index_stride,
+            },
+            AddressTerm::Absolute(extra),
+        )
+        | (
+            AddressTerm::Absolute(extra),
+            AddressTerm::Base {
+                origin,
+                addend,
+                index_stride,
+            },
+        ) => Ok(AddressTerm::Base {
+            origin,
+            addend: addend
+                .checked_add(extra)
+                .ok_or(TypeRecoveryRefusal::OffsetOutOfRange)?,
+            index_stride,
+        }),
+        (
+            AddressTerm::Base {
+                origin,
+                addend,
+                index_stride,
+            },
+            AddressTerm::Index {
+                stride,
+                addend: extra,
+            },
+        )
+        | (
+            AddressTerm::Index {
+                stride,
+                addend: extra,
+            },
+            AddressTerm::Base {
+                origin,
+                addend,
+                index_stride,
+            },
+        ) => {
+            if index_stride.is_some() {
+                return Err(TypeRecoveryRefusal::AmbiguousAddress);
+            }
+            Ok(AddressTerm::Base {
+                origin,
+                addend: addend
+                    .checked_add(extra)
+                    .ok_or(TypeRecoveryRefusal::OffsetOutOfRange)?,
+                index_stride: Some(stride),
+            })
+        }
+        (AddressTerm::Index { stride, addend }, AddressTerm::Absolute(extra))
+        | (AddressTerm::Absolute(extra), AddressTerm::Index { stride, addend }) => {
+            Ok(AddressTerm::Index {
+                stride,
+                addend: addend
+                    .checked_add(extra)
+                    .ok_or(TypeRecoveryRefusal::OffsetOutOfRange)?,
+            })
+        }
+        (AddressTerm::Index { .. }, AddressTerm::Index { .. })
+        | (AddressTerm::Base { .. }, AddressTerm::Base { .. }) => {
+            Err(TypeRecoveryRefusal::AmbiguousAddress)
+        }
+    }
+}
+
+fn checked_declaration_offset(
+    address_addend: u64,
+    memory_offset: u64,
+) -> std::result::Result<i32, TypeRecoveryRefusal> {
+    let offset: u64 = address_addend
+        .checked_add(memory_offset)
+        .ok_or(TypeRecoveryRefusal::OffsetOutOfRange)?;
+    i32::try_from(offset).map_err(|_| TypeRecoveryRefusal::OffsetOutOfRange)
 }
 
 fn alignment_from_exponent(align: u8) -> u32 {
@@ -265,28 +674,6 @@ fn classify_base_origin_depth(v: ValueId, ssa: &SsaFunction, depth: u32) -> Base
     }
 }
 
-fn address_is_indexed(v: ValueId, ssa: &SsaFunction) -> bool {
-    address_is_indexed_depth(v, ssa, 0)
-}
-
-fn address_is_indexed_depth(v: ValueId, ssa: &SsaFunction, depth: u32) -> bool {
-    if depth >= MAX_ORIGIN_DEPTH {
-        return false;
-    }
-    let Some(def): Option<&ValueDef> = ssa.values.get(v.0 as usize) else {
-        return false;
-    };
-    match def {
-        ValueDef::Op { kind, args, .. } => {
-            matches!(kind, OpKind::I32Shl | OpKind::I32Mul)
-                || args
-                    .iter()
-                    .any(|a| address_is_indexed_depth(*a, ssa, depth + 1))
-        }
-        _ => false,
-    }
-}
-
 #[cfg(feature = "llm-metadata")]
 pub use llm::{METADATA_CAPABILITY as WASM_METADATA_CAPABILITY, WasmFn, WasmImport, WasmLlmInput};
 
@@ -326,7 +713,6 @@ mod tests {
             }],
             entry: BlockId(0),
         };
-        let recovered: Vec<(BaseOrigin, RecoveredType)> = recover_types(&ssa);
-        assert_eq!(recovered.len(), 1);
+        assert!(matches!(recover_types(&ssa), Ok(recovered) if recovered.len() == 1));
     }
 }

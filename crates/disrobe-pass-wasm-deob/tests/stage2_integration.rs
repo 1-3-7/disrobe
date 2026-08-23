@@ -48,7 +48,8 @@ fn end_to_end_sum_struct_recovers_three_field_aggregate() {
                 "ssa must contain at least one Load value"
             );
 
-            let recovered: Vec<(BaseOrigin, RecoveredType)> = recover_types(&ssa);
+            let recovered: Vec<(BaseOrigin, RecoveredType)> =
+                recover_types(&ssa).expect("type recovery accepts the tracked SSA");
             assert!(!recovered.is_empty(), "must recover at least one aggregate");
 
             let param_aggregate: &RecoveredType = recovered
