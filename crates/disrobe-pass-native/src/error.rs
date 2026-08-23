@@ -116,4 +116,9 @@ pub enum Error {
 
     #[error("DR-NATIVE-0028: PDB build provenance failure: {0}")]
     PdbProvenance(#[from] crate::debug_info::PdbProvenanceError),
+
+    #[error(
+        "DR-NATIVE-0029: declared function boundary 0x{boundary:016X} starts with trap byte 0x{observed:02X}"
+    )]
+    DeclaredFunctionBoundaryTrap { boundary: u64, observed: u8 },
 }

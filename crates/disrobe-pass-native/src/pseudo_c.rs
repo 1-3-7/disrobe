@@ -2003,6 +2003,7 @@ fn recover_leaf_function_in_object_with_tail_proofs(
     calls: &[ResolvedCall],
     proven_integer64_tail_targets: &BTreeSet<u64>,
 ) -> Result<LeafRecovery> {
+    reject_declared_boundary_trap(machine_code, base)?;
     require_x86_abi(abi)?;
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
         return Ok(recovery);
@@ -3573,6 +3574,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     object_facts: ObjectCallFacts<'_>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
+    reject_declared_boundary_trap(machine_code, base)?;
     let LeafItems {
         insns,
         mut items,
@@ -3685,6 +3687,16 @@ fn recover_leaf_function_calls_with_tail_proofs(
         sret,
         call_site_signature: None,
     })
+}
+
+fn reject_declared_boundary_trap(machine_code: &[u8], boundary: u64) -> Result<()> {
+    let Some(&observed): Option<&u8> = machine_code.first() else {
+        return Ok(());
+    };
+    if observed == 0xcc {
+        return Err(Error::DeclaredFunctionBoundaryTrap { boundary, observed });
+    }
+    Ok(())
 }
 
 pub fn recover_leaf_function_rust_abi(machine_code: &[u8], base: u64, abi: Abi) -> Result<String> {
