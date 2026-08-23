@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
@@ -265,6 +265,307 @@ impl Encoder {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    lo: u64,
+    hi: u64,
+}
+
+#[derive(Debug, Clone)]
+struct UnaryDomain {
+    width: Width,
+    spans: Vec<Span>,
+    excluded: BTreeSet<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UnaryAtom {
+    variable: u32,
+    op: CmpOp,
+    constant: u64,
+    width: Width,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Preflight {
+    Decided(SmtVerdict),
+    Unsupported,
+}
+
+const fn complement_comparison(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Eq => CmpOp::Ne,
+        CmpOp::Ne => CmpOp::Eq,
+        CmpOp::UnsignedLt => CmpOp::UnsignedGe,
+        CmpOp::UnsignedLe => CmpOp::UnsignedGt,
+        CmpOp::UnsignedGt => CmpOp::UnsignedLe,
+        CmpOp::UnsignedGe => CmpOp::UnsignedLt,
+        CmpOp::SignedLt => CmpOp::SignedGe,
+        CmpOp::SignedLe => CmpOp::SignedGt,
+        CmpOp::SignedGt => CmpOp::SignedLe,
+        CmpOp::SignedGe => CmpOp::SignedLt,
+    }
+}
+
+const fn reverse_comparison(op: CmpOp) -> CmpOp {
+    match op {
+        CmpOp::Eq | CmpOp::Ne => op,
+        CmpOp::UnsignedLt => CmpOp::UnsignedGt,
+        CmpOp::UnsignedLe => CmpOp::UnsignedGe,
+        CmpOp::UnsignedGt => CmpOp::UnsignedLt,
+        CmpOp::UnsignedGe => CmpOp::UnsignedLe,
+        CmpOp::SignedLt => CmpOp::SignedGt,
+        CmpOp::SignedLe => CmpOp::SignedGe,
+        CmpOp::SignedGt => CmpOp::SignedLt,
+        CmpOp::SignedGe => CmpOp::SignedLe,
+    }
+}
+
+const fn normalize_atom(predicate: &Predicate, expected: bool, width: Width) -> Option<UnaryAtom> {
+    let (variable, mut op, constant): (u32, CmpOp, u64) = match predicate {
+        Predicate::Compare {
+            op,
+            left: Expr::Var(variable),
+            right: Expr::Const(constant),
+        } => (*variable, *op, *constant),
+        Predicate::Compare {
+            op,
+            left: Expr::Const(constant),
+            right: Expr::Var(variable),
+        } => (*variable, reverse_comparison(*op), *constant),
+        Predicate::Nonzero(Expr::Var(variable)) => (*variable, CmpOp::Ne, 0),
+        Predicate::Compare { .. }
+        | Predicate::Nonzero(_)
+        | Predicate::Or(_, _)
+        | Predicate::And(_, _) => return None,
+    };
+    if !expected {
+        op = complement_comparison(op);
+    }
+    Some(UnaryAtom {
+        variable,
+        op,
+        constant: constant & width.mask(),
+        width,
+    })
+}
+
+const fn signed_value(value: u64, width: Width) -> i64 {
+    let bits: u32 = width.bits();
+    if bits == 64 {
+        value as i64
+    } else {
+        let shift: u32 = 64 - bits;
+        ((value << shift) as i64) >> shift
+    }
+}
+
+fn signed_spans(lo: i64, hi: i64, width: Width) -> Vec<Span> {
+    if lo > hi {
+        return Vec::new();
+    }
+    let mask: u64 = width.mask();
+    let encoded_lo: u64 = lo as u64 & mask;
+    let encoded_hi: u64 = hi as u64 & mask;
+    if lo < 0 && hi >= 0 {
+        vec![
+            Span {
+                lo: encoded_lo,
+                hi: mask,
+            },
+            Span {
+                lo: 0,
+                hi: encoded_hi,
+            },
+        ]
+    } else {
+        vec![Span {
+            lo: encoded_lo,
+            hi: encoded_hi,
+        }]
+    }
+}
+
+fn allowed_spans(atom: UnaryAtom) -> Option<Vec<Span>> {
+    let mask: u64 = atom.width.mask();
+    let spans: Vec<Span> = match atom.op {
+        CmpOp::Eq => vec![Span {
+            lo: atom.constant,
+            hi: atom.constant,
+        }],
+        CmpOp::Ne => return None,
+        CmpOp::UnsignedLt => atom
+            .constant
+            .checked_sub(1)
+            .map_or_else(Vec::new, |hi: u64| vec![Span { lo: 0, hi }]),
+        CmpOp::UnsignedLe => vec![Span {
+            lo: 0,
+            hi: atom.constant,
+        }],
+        CmpOp::UnsignedGt => atom
+            .constant
+            .checked_add(1)
+            .filter(|lo: &u64| *lo <= mask)
+            .map_or_else(Vec::new, |lo: u64| vec![Span { lo, hi: mask }]),
+        CmpOp::UnsignedGe => vec![Span {
+            lo: atom.constant,
+            hi: mask,
+        }],
+        CmpOp::SignedLt | CmpOp::SignedLe | CmpOp::SignedGt | CmpOp::SignedGe => {
+            let bits: u32 = atom.width.bits();
+            let signed_min: i64 = if bits == 64 {
+                i64::MIN
+            } else {
+                -(1i64 << (bits - 1))
+            };
+            let signed_max: i64 = if bits == 64 {
+                i64::MAX
+            } else {
+                (1i64 << (bits - 1)) - 1
+            };
+            let constant: i64 = signed_value(atom.constant, atom.width);
+            let (lo, hi): (i64, i64) = match atom.op {
+                CmpOp::SignedLt => (signed_min, constant.checked_sub(1)?),
+                CmpOp::SignedLe => (signed_min, constant),
+                CmpOp::SignedGt => (constant.checked_add(1)?, signed_max),
+                CmpOp::SignedGe => (constant, signed_max),
+                CmpOp::Eq
+                | CmpOp::Ne
+                | CmpOp::UnsignedLt
+                | CmpOp::UnsignedLe
+                | CmpOp::UnsignedGt
+                | CmpOp::UnsignedGe => return Some(Vec::new()),
+            };
+            signed_spans(lo, hi, atom.width)
+        }
+    };
+    Some(spans)
+}
+
+fn intersect_spans(current: &[Span], allowed: &[Span]) -> Vec<Span> {
+    let mut intersections: Vec<Span> = current
+        .iter()
+        .flat_map(|left: &Span| {
+            allowed.iter().filter_map(move |right: &Span| {
+                let lo: u64 = left.lo.max(right.lo);
+                let hi: u64 = left.hi.min(right.hi);
+                (lo <= hi).then_some(Span { lo, hi })
+            })
+        })
+        .collect();
+    intersections.sort_unstable_by_key(|span: &Span| span.lo);
+    let mut merged: Vec<Span> = Vec::with_capacity(intersections.len());
+    for span in intersections {
+        if let Some(last) = merged.last_mut()
+            && span.lo <= last.hi.saturating_add(1)
+        {
+            last.hi = last.hi.max(span.hi);
+        } else {
+            merged.push(span);
+        }
+    }
+    merged
+}
+
+impl UnaryDomain {
+    fn new(width: Width) -> Self {
+        Self {
+            width,
+            spans: vec![Span {
+                lo: 0,
+                hi: width.mask(),
+            }],
+            excluded: BTreeSet::new(),
+        }
+    }
+
+    fn constrain(&mut self, atom: UnaryAtom) {
+        if atom.op == CmpOp::Ne {
+            self.excluded.insert(atom.constant);
+        } else {
+            let allowed: Vec<Span> = allowed_spans(atom).unwrap_or_default();
+            self.spans = intersect_spans(&self.spans, &allowed);
+        }
+    }
+
+    fn witness(&self) -> Option<u64> {
+        for span in &self.spans {
+            let mut candidate: u64 = span.lo;
+            for excluded in self.excluded.range(span.lo..=span.hi) {
+                if *excluded > candidate {
+                    return Some(candidate);
+                }
+                if *excluded == candidate {
+                    if candidate == span.hi {
+                        break;
+                    }
+                    candidate += 1;
+                }
+            }
+            if candidate <= span.hi && !self.excluded.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
+
+fn atom_holds(atom: UnaryAtom, value: u64) -> bool {
+    let unsigned: std::cmp::Ordering = value.cmp(&atom.constant);
+    let signed: std::cmp::Ordering =
+        signed_value(value, atom.width).cmp(&signed_value(atom.constant, atom.width));
+    match atom.op {
+        CmpOp::Eq => unsigned.is_eq(),
+        CmpOp::Ne => unsigned.is_ne(),
+        CmpOp::UnsignedLt => unsigned.is_lt(),
+        CmpOp::UnsignedLe => unsigned.is_le(),
+        CmpOp::UnsignedGt => unsigned.is_gt(),
+        CmpOp::UnsignedGe => unsigned.is_ge(),
+        CmpOp::SignedLt => signed.is_lt(),
+        CmpOp::SignedLe => signed.is_le(),
+        CmpOp::SignedGt => signed.is_gt(),
+        CmpOp::SignedGe => signed.is_ge(),
+    }
+}
+
+fn unary_preflight(constraints: &[(Predicate, bool, Width)]) -> Preflight {
+    let Some(atoms): Option<Vec<UnaryAtom>> = constraints
+        .iter()
+        .map(|(predicate, expected, width): &(Predicate, bool, Width)| {
+            normalize_atom(predicate, *expected, *width)
+        })
+        .collect()
+    else {
+        return Preflight::Unsupported;
+    };
+    let mut domains: BTreeMap<u32, UnaryDomain> = BTreeMap::new();
+    for atom in &atoms {
+        let domain: &mut UnaryDomain = domains
+            .entry(atom.variable)
+            .or_insert_with(|| UnaryDomain::new(atom.width));
+        if domain.width != atom.width {
+            return Preflight::Unsupported;
+        }
+        domain.constrain(*atom);
+    }
+    let mut witnesses: BTreeMap<u32, u64> = BTreeMap::new();
+    for (variable, domain) in &domains {
+        let Some(witness): Option<u64> = domain.witness() else {
+            return Preflight::Decided(SmtVerdict::Unsat);
+        };
+        witnesses.insert(*variable, witness);
+    }
+    if atoms.iter().all(|atom: &UnaryAtom| {
+        witnesses
+            .get(&atom.variable)
+            .is_some_and(|value: &u64| atom_holds(*atom, *value))
+    }) {
+        Preflight::Decided(SmtVerdict::Sat)
+    } else {
+        Preflight::Unsupported
+    }
+}
+
 #[must_use]
 pub fn check_unsat(constraints: &[(Predicate, bool, Width)], budget: SmtBudget) -> SmtVerdict {
     if constraints.is_empty() {
@@ -274,6 +575,9 @@ pub fn check_unsat(constraints: &[(Predicate, bool, Width)], budget: SmtBudget) 
         if predicate.depth() > crate::expr::MAX_MBA_DEPTH {
             return SmtVerdict::Indeterminate;
         }
+    }
+    if let Preflight::Decided(verdict) = unary_preflight(constraints) {
+        return verdict;
     }
     let Some(query_width): Option<Width> = constraints
         .iter()
@@ -363,6 +667,240 @@ mod tests {
             check_unsat(&constraints, SmtBudget::default()),
             SmtVerdict::Unsat
         );
+    }
+
+    #[test]
+    fn one_variable_signed_dispatch_path_is_decided_before_the_smt_backend() {
+        let constraints: [(Predicate, bool, Width); 3] = [
+            (
+                Predicate::Compare {
+                    op: CmpOp::SignedGt,
+                    left: Expr::var(0),
+                    right: Expr::konst(1_773_180_476),
+                },
+                false,
+                Width::W32,
+            ),
+            (
+                Predicate::eq(Expr::var(0), Expr::konst(844_609_675)),
+                false,
+                Width::W32,
+            ),
+            (
+                Predicate::ne(Expr::var(0), Expr::konst(1_483_007_430)),
+                false,
+                Width::W32,
+            ),
+        ];
+        let exhausted_backend: SmtBudget = SmtBudget {
+            timeout: Duration::ZERO,
+            max_conflicts: 0,
+            max_decisions: 0,
+            ..SmtBudget::bounded_default()
+        };
+        assert_eq!(
+            check_unsat(&constraints, exhausted_backend),
+            SmtVerdict::Sat
+        );
+    }
+
+    #[test]
+    fn unary_preflight_handles_signed_and_unsigned_boundaries_exactly() {
+        let signed_min: u64 = i32::MIN as u32 as u64;
+        let signed_max: u64 = i32::MAX as u64;
+        for (op, constant, expected) in [
+            (CmpOp::SignedLt, signed_min, SmtVerdict::Unsat),
+            (CmpOp::SignedGe, signed_min, SmtVerdict::Sat),
+            (CmpOp::SignedGt, signed_max, SmtVerdict::Unsat),
+            (CmpOp::SignedLt, 0, SmtVerdict::Sat),
+            (CmpOp::SignedGt, u32::MAX as u64, SmtVerdict::Sat),
+            (CmpOp::UnsignedLt, 0, SmtVerdict::Unsat),
+            (CmpOp::UnsignedGe, u32::MAX as u64, SmtVerdict::Sat),
+        ] {
+            let constraints: [(Predicate, bool, Width); 1] = [(
+                Predicate::Compare {
+                    op,
+                    left: Expr::var(0),
+                    right: Expr::konst(constant),
+                },
+                true,
+                Width::W32,
+            )];
+            assert_eq!(
+                unary_preflight(&constraints),
+                Preflight::Decided(expected),
+                "{op:?} against {constant:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn false_expectation_complements_every_comparison_operator() {
+        let operators: [CmpOp; 10] = [
+            CmpOp::Eq,
+            CmpOp::Ne,
+            CmpOp::UnsignedLt,
+            CmpOp::UnsignedLe,
+            CmpOp::UnsignedGt,
+            CmpOp::UnsignedGe,
+            CmpOp::SignedLt,
+            CmpOp::SignedLe,
+            CmpOp::SignedGt,
+            CmpOp::SignedGe,
+        ];
+        for op in operators {
+            for constant in 0..4 {
+                let predicate: Predicate = Predicate::Compare {
+                    op,
+                    left: Expr::var(0),
+                    right: Expr::konst(constant),
+                };
+                let atom: UnaryAtom =
+                    normalize_atom(&predicate, false, Width::W2).expect("unary atom");
+                for value in 0..4 {
+                    assert_eq!(
+                        atom_holds(atom, value),
+                        !predicate.evaluate(&[value], Width::W2),
+                        "{op:?}: value={value}, constant={constant}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unary_preflight_counts_distinct_exclusions_and_keeps_the_last_value() {
+        let excluded: Vec<(Predicate, bool, Width)> = (0..4)
+            .map(|value: u64| {
+                (
+                    Predicate::ne(Expr::var(0), Expr::konst(value)),
+                    true,
+                    Width::W2,
+                )
+            })
+            .collect();
+        assert_eq!(
+            unary_preflight(&excluded),
+            Preflight::Decided(SmtVerdict::Unsat)
+        );
+
+        let one_left: Vec<(Predicate, bool, Width)> = [0, 0, 1, 2]
+            .into_iter()
+            .map(|value: u64| {
+                (
+                    Predicate::ne(Expr::var(0), Expr::konst(value)),
+                    true,
+                    Width::W2,
+                )
+            })
+            .collect();
+        assert_eq!(
+            unary_preflight(&one_left),
+            Preflight::Decided(SmtVerdict::Sat)
+        );
+    }
+
+    #[test]
+    fn unary_preflight_reverses_constant_left_comparisons() {
+        let constraints: [(Predicate, bool, Width); 2] = [
+            (
+                Predicate::Compare {
+                    op: CmpOp::UnsignedLt,
+                    left: Expr::konst(3),
+                    right: Expr::var(0),
+                },
+                true,
+                Width::W8,
+            ),
+            (
+                Predicate::Compare {
+                    op: CmpOp::UnsignedLe,
+                    left: Expr::var(0),
+                    right: Expr::konst(3),
+                },
+                true,
+                Width::W8,
+            ),
+        ];
+        assert_eq!(
+            unary_preflight(&constraints),
+            Preflight::Decided(SmtVerdict::Unsat)
+        );
+    }
+
+    #[test]
+    fn unary_preflight_supports_independent_widths_but_rejects_mixed_width_aliases() {
+        let independent: [(Predicate, bool, Width); 2] = [
+            (
+                Predicate::eq(Expr::var(0), Expr::konst(0xff)),
+                true,
+                Width::W8,
+            ),
+            (
+                Predicate::eq(Expr::var(1), Expr::konst(0x100)),
+                true,
+                Width::W16,
+            ),
+        ];
+        assert_eq!(
+            unary_preflight(&independent),
+            Preflight::Decided(SmtVerdict::Sat)
+        );
+
+        let independently_contradictory: [(Predicate, bool, Width); 3] = [
+            (
+                Predicate::eq(Expr::var(0), Expr::konst(0xff)),
+                true,
+                Width::W8,
+            ),
+            (
+                Predicate::eq(Expr::var(1), Expr::konst(0x100)),
+                true,
+                Width::W16,
+            ),
+            (
+                Predicate::ne(Expr::var(1), Expr::konst(0x100)),
+                true,
+                Width::W16,
+            ),
+        ];
+        assert_eq!(
+            unary_preflight(&independently_contradictory),
+            Preflight::Decided(SmtVerdict::Unsat)
+        );
+
+        let aliased: [(Predicate, bool, Width); 2] = [
+            (
+                Predicate::eq(Expr::var(0), Expr::konst(0xff)),
+                true,
+                Width::W8,
+            ),
+            (
+                Predicate::eq(Expr::var(0), Expr::konst(0xff)),
+                true,
+                Width::W16,
+            ),
+        ];
+        assert_eq!(unary_preflight(&aliased), Preflight::Unsupported);
+    }
+
+    #[test]
+    fn unary_preflight_leaves_arithmetic_and_boolean_trees_to_the_certified_solver() {
+        let arithmetic: [(Predicate, bool, Width); 1] = [(
+            Predicate::eq(Expr::add(Expr::var(0), Expr::konst(1)), Expr::konst(2)),
+            true,
+            Width::W8,
+        )];
+        let boolean: [(Predicate, bool, Width); 1] = [(
+            Predicate::and(
+                Predicate::eq(Expr::var(0), Expr::konst(1)),
+                Predicate::eq(Expr::var(1), Expr::konst(2)),
+            ),
+            true,
+            Width::W8,
+        )];
+        assert_eq!(unary_preflight(&arithmetic), Preflight::Unsupported);
+        assert_eq!(unary_preflight(&boolean), Preflight::Unsupported);
     }
 
     #[test]
