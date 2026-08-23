@@ -108,18 +108,22 @@ fn is_increment_two_fp(name: &str) -> bool {
     INCREMENT_TWO_FP_FUNCTIONS.contains(&name)
 }
 
-const INCREMENT_THREE_FP_FUNCTIONS: &[&str] = &[
-    "fp_floor_d",
-    "fp_ceil_f",
-    "fp_trunc_d",
-    "fp_round_d",
-    "fp_rint_d",
-];
-const INCREMENT_THREE_EXPECTED_CASES: usize = 25;
+const INCREMENT_THREE_FP_FUNCTIONS: &[&str] =
+    &["fp_floor_d", "fp_ceil_f", "fp_trunc_d", "fp_round_d"];
+const INCREMENT_THREE_EXPECTED_CASES: usize = 20;
 
 fn is_increment_three_fp(name: &str) -> bool {
     INCREMENT_THREE_FP_FUNCTIONS.contains(&name)
 }
+
+const FPCR_REFUSED_CASES: &[&str] = &[
+    "O0 fp_rint_d",
+    "O1 fp_rint_d",
+    "O2 fp_rint_d",
+    "O3 fp_rint_d",
+    "Os fp_rint_d",
+];
+const FPCR_REFUSAL_REASON: &str = "untracked FPCR rounding mode";
 
 const INCREMENT_FOUR_FP_FUNCTIONS: &[&str] =
     &["fp_max_f", "fp_min_f", "fp_max_d", "fp_min_d", "fp_clamp_f"];
@@ -1416,6 +1420,16 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_two_recovered, INCREMENT_TWO_EXPECTED_CASES,
         "every increment-2 corpus case must recover"
+    );
+    let mut fpcr_refused_observed: Vec<String> = rejections
+        .iter()
+        .filter(|(_, _, reason): &&(String, String, String)| reason.contains(FPCR_REFUSAL_REASON))
+        .map(|(opt, name, _): &(String, String, String)| format!("{opt} {name}"))
+        .collect();
+    fpcr_refused_observed.sort();
+    assert_eq!(
+        fpcr_refused_observed, FPCR_REFUSED_CASES,
+        "the population refusing on {FPCR_REFUSAL_REASON} moved; recovering one of these is a capability change, not a fix"
     );
     assert_eq!(
         increment_three_recovered, INCREMENT_THREE_EXPECTED_CASES,
