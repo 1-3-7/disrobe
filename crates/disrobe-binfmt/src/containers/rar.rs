@@ -25,6 +25,13 @@ const RAR5_SOLID_FLAG: u64 = 0x0040;
 const RAR4_LHD_LARGE: u16 = 0x0100;
 const RAR4_LHD_UNICODE: u16 = 0x0200;
 
+pub const RAR3_CANONICAL_FILTERS: [&str; 6] =
+    ["delta", "x86 e8", "x86 e8/e9", "itanium", "rgb", "audio"];
+
+pub const RAR3_FILTERS_WITHOUT_REAL_ARTIFACT: [&str; 4] = ["x86 e8", "itanium", "rgb", "audio"];
+
+pub const RAR3_FILTER_COVERAGE_NOTE: &str = "disrobe identifies all six canonical rar 2.9/3.x filter programs by exact length and crc32 and runs a native transform for each; it never executes rarvm bytecode. Four of the six have no rar 2.9/3.x archive in corpus/binfmt/rar that carries them, because none was found in a permissively licensed corpus and producing one needs a rar 3.x capable archiver. Their transforms are graded against constructed inputs and the crc32 every decoded member passes, not against extraction from a real archive. A green disrobe-binfmt suite is not evidence that those four decode a real archive.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RarMethod {

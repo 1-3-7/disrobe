@@ -778,6 +778,44 @@ mod tests {
     }
 
     #[test]
+    fn the_published_filter_roster_names_every_fingerprint_the_table_carries() {
+        let mut declared: Vec<&str> = crate::containers::rar::RAR3_CANONICAL_FILTERS.to_vec();
+        declared.sort_unstable();
+        let mut actual: Vec<&str> = FINGERPRINTS
+            .iter()
+            .map(|&(_, filter): &(u64, StandardFilter)| filter.label())
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(
+            declared, actual,
+            "RAR3_CANONICAL_FILTERS must name exactly the programs the fingerprint table identifies"
+        );
+    }
+
+    #[test]
+    fn the_published_coverage_gap_names_the_filters_no_committed_archive_exercises() {
+        let ungraded: [&str; 4] = crate::containers::rar::RAR3_FILTERS_WITHOUT_REAL_ARTIFACT;
+        for name in ungraded {
+            assert!(
+                FINGERPRINTS
+                    .iter()
+                    .any(|&(_, filter): &(u64, StandardFilter)| filter.label() == name),
+                "the coverage gap names `{name}`, which is not a canonical filter"
+            );
+        }
+        let graded: Vec<&str> = FINGERPRINTS
+            .iter()
+            .map(|&(_, filter): &(u64, StandardFilter)| filter.label())
+            .filter(|label: &&str| !ungraded.contains(label))
+            .collect();
+        assert_eq!(
+            graded,
+            vec!["delta", "x86 e8/e9"],
+            "only the delta and x86 e8/e9 transforms are graded against a real archive; adding a fixture for another program must shrink RAR3_FILTERS_WITHOUT_REAL_ARTIFACT in the same change"
+        );
+    }
+
+    #[test]
     fn every_canonical_fingerprint_maps_to_exactly_one_transform() {
         let mut seen: Vec<u64> = FINGERPRINTS
             .iter()
