@@ -6,8 +6,8 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::mangled_names::{
-    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameRegistry, RestoreStats,
-    ScopeKey, SymbolRole,
+    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameDecision, NameRegistry,
+    RestoreStats, ScopeKey, SymbolRole,
 };
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -39,8 +39,12 @@ pub fn undo_closure_advanced(source: &str) -> ClosureAdvancedReport {
         }
         contexts.insert(ident.clone(), ctx);
     }
-    let (plan, restore_stats): (BTreeMap<String, String>, RestoreStats) =
+    let (decisions, restore_stats): (BTreeMap<String, NameDecision>, RestoreStats) =
         registry.restore(&contexts);
+    let plan: BTreeMap<String, String> = decisions
+        .into_iter()
+        .map(|(original, decision): (String, NameDecision)| (original, decision.restored))
+        .collect();
 
     let mut rewritten: String = source.to_owned();
     for (original, restored) in &plan {

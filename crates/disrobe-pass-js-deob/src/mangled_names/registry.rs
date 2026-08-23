@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{Context, NameSource, RestoreStats, ScopeKey, Suggestion};
+use super::{Context, NameDecision, NameSource, RestoreStats, ScopeKey, Suggestion};
 
 #[derive(Debug, Clone)]
 pub struct NameRegistry {
@@ -53,8 +53,8 @@ impl NameRegistry {
     pub fn restore(
         &mut self,
         contexts: &BTreeMap<String, Context>,
-    ) -> (BTreeMap<String, String>, RestoreStats) {
-        let mut plan: BTreeMap<String, String> = BTreeMap::new();
+    ) -> (BTreeMap<String, NameDecision>, RestoreStats) {
+        let mut plan: BTreeMap<String, NameDecision> = BTreeMap::new();
         let mut stats: RestoreStats = RestoreStats::default();
         let mut by_source: BTreeMap<String, usize> = BTreeMap::new();
         for (original, ctx) in contexts {
@@ -70,7 +70,15 @@ impl NameRegistry {
             *by_source
                 .entry(suggestion.source_label.to_owned())
                 .or_insert(0) += 1;
-            plan.insert(original.clone(), resolved);
+            plan.insert(
+                original.clone(),
+                NameDecision {
+                    restored: resolved,
+                    confidence: suggestion.confidence,
+                    tier: suggestion.confidence.tier(),
+                    source_label: suggestion.source_label,
+                },
+            );
             stats.suggestions_made += 1;
         }
         stats.by_source = by_source;
@@ -186,9 +194,15 @@ mod tests {
             "e2".into(),
             Context::new("e", SymbolRole::Parameter, ScopeKey(0)),
         );
-        let (plan, stats): (BTreeMap<String, String>, RestoreStats) = reg.restore(&contexts);
-        assert_eq!(plan.get("e").map(String::as_str), Some("event"));
-        assert_eq!(plan.get("e2").map(String::as_str), Some("event_2"));
+        let (plan, stats): (BTreeMap<String, NameDecision>, RestoreStats) = reg.restore(&contexts);
+        assert_eq!(
+            plan.get("e").map(|d: &NameDecision| d.restored.as_str()),
+            Some("event")
+        );
+        assert_eq!(
+            plan.get("e2").map(|d: &NameDecision| d.restored.as_str()),
+            Some("event_2")
+        );
         assert_eq!(stats.suggestions_made, 2);
         assert_eq!(stats.conflicts_resolved, 1);
     }

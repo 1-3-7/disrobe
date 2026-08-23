@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use disrobe_pass_js_deob::{
     ContextNameSource, CorpusNameSource, HeuristicNameSource, MangledNameContext,
-    MangledNameRegistry, MangledRestoreStats, MangledScopeKey, MangledSuggestion,
-    MangledSymbolRole, NameSource,
+    MangledNameDecision, MangledNameRegistry, MangledRestoreStats, MangledScopeKey,
+    MangledSuggestion, MangledSymbolRole, NameSource,
 };
 
 #[test]
@@ -62,8 +62,17 @@ fn registry_restore_emits_collision_safe_plan() {
         "e_other".into(),
         MangledNameContext::new("e", MangledSymbolRole::Parameter, MangledScopeKey(0)),
     );
-    let (plan, stats): (BTreeMap<String, String>, MangledRestoreStats) = reg.restore(&contexts);
-    assert_eq!(plan.get("e").map(String::as_str), Some("event"));
-    assert_eq!(plan.get("e_other").map(String::as_str), Some("event_2"));
+    let (plan, stats): (BTreeMap<String, MangledNameDecision>, MangledRestoreStats) =
+        reg.restore(&contexts);
+    assert_eq!(
+        plan.get("e")
+            .map(|d: &MangledNameDecision| d.restored.as_str()),
+        Some("event")
+    );
+    assert_eq!(
+        plan.get("e_other")
+            .map(|d: &MangledNameDecision| d.restored.as_str()),
+        Some("event_2")
+    );
     assert_eq!(stats.conflicts_resolved, 1);
 }

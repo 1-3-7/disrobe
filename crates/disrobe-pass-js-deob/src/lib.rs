@@ -100,10 +100,12 @@ pub use jsobfu::{
     try_recover as try_recover_jsobfu,
 };
 pub use mangled_names::{
-    Confidence as MangledNameConfidence, Context as MangledNameContext, ContextNameSource,
-    CorpusEntry as MangledCorpusEntry, CorpusNameSource, HeuristicNameSource,
+    Confidence as MangledNameConfidence, ConfidenceTier as MangledConfidenceTier,
+    Context as MangledNameContext, ContextNameSource, CorpusEntry as MangledCorpusEntry,
+    CorpusNameSource, HeuristicNameSource, NameDecision as MangledNameDecision,
     NameRegistry as MangledNameRegistry, NameSource, RestoreStats as MangledRestoreStats,
-    ScopeKey as MangledScopeKey, Suggestion as MangledSuggestion, SymbolRole as MangledSymbolRole,
+    RestoredName as MangledRestoredName, ScopeKey as MangledScopeKey,
+    Suggestion as MangledSuggestion, SymbolRole as MangledSymbolRole,
 };
 pub use obfuscator_io::{
     DEFAULT_PASSES as OBFUSCATOR_IO_DEFAULT_PASSES,

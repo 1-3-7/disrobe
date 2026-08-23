@@ -62,6 +62,54 @@ impl Confidence {
     pub const MEDIUM: Self = Self(50);
     pub const HIGH: Self = Self(80);
     pub const EXACT: Self = Self(100);
+
+    #[must_use]
+    pub const fn tier(self) -> ConfidenceTier {
+        match self.0 {
+            100..=u8::MAX => ConfidenceTier::Exact,
+            80..=99 => ConfidenceTier::High,
+            50..=79 => ConfidenceTier::Medium,
+            _ => ConfidenceTier::Low,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum ConfidenceTier {
+    Low,
+    Medium,
+    High,
+    Exact,
+}
+
+impl ConfidenceTier {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Exact => "exact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NameDecision {
+    pub restored: String,
+    pub confidence: Confidence,
+    pub tier: ConfidenceTier,
+    pub source_label: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoredName {
+    pub original: String,
+    pub restored: String,
+    pub confidence: Confidence,
+    pub tier: ConfidenceTier,
+    pub source_label: &'static str,
+    pub declaration_offset: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

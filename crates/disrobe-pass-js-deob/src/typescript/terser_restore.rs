@@ -14,8 +14,8 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use crate::mangled_names::{
-    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameRegistry, RestoreStats,
-    ScopeKey, SymbolRole,
+    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameDecision, NameRegistry,
+    RestoreStats, RestoredName, ScopeKey, SymbolRole,
 };
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -23,6 +23,7 @@ pub struct TerserRestoreReport {
     pub identifiers_renamed: usize,
     pub references_rewritten: usize,
     pub restore_stats: RestoreStats,
+    pub renames: Vec<RestoredName>,
     pub rewritten: String,
 }
 
@@ -63,6 +64,9 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
             }
         }
     }
+    for name in scopes.root_unresolved_references().keys() {
+        registry.reserve((*name).to_string());
+    }
 
     let mut contexts: BTreeMap<SymbolId, Context> = BTreeMap::new();
     for symbol_id in iter_symbols(symbols) {
@@ -92,21 +96,31 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         .values()
         .map(|c: &Context| (c.original.clone(), c.clone()))
         .collect();
-    let (plan, restore_stats): (BTreeMap<String, String>, RestoreStats) =
+    let (plan, restore_stats): (BTreeMap<String, NameDecision>, RestoreStats) =
         registry.restore(&context_by_name);
 
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
     let mut idents_renamed: usize = 0;
     let mut refs_rewritten: usize = 0;
     let mut seen_originals: BTreeSet<String> = BTreeSet::new();
+    let mut renames: Vec<RestoredName> = Vec::new();
     for (symbol_id, ctx) in &contexts {
-        let Some(new_name): Option<&String> = plan.get(&ctx.original) else {
+        let Some(decision): Option<&NameDecision> = plan.get(&ctx.original) else {
             continue;
         };
+        let new_name: &String = &decision.restored;
         if seen_originals.insert(ctx.original.clone()) {
             idents_renamed = idents_renamed.saturating_add(1);
         }
         let decl_span: oxc_span::Span = symbols.get_span(*symbol_id);
+        renames.push(RestoredName {
+            original: ctx.original.clone(),
+            restored: decision.restored.clone(),
+            confidence: decision.confidence,
+            tier: decision.tier,
+            source_label: decision.source_label,
+            declaration_offset: decl_span.start as usize,
+        });
         edits.push((
             decl_span.start as usize..decl_span.end as usize,
             new_name.clone(),
@@ -136,10 +150,14 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         }
     }
 
+    renames.sort_by(|left: &RestoredName, right: &RestoredName| {
+        left.declaration_offset.cmp(&right.declaration_offset)
+    });
     TerserRestoreReport {
         identifiers_renamed: idents_renamed,
         references_rewritten: refs_rewritten,
         restore_stats,
+        renames,
         rewritten: out,
     }
 }
