@@ -635,6 +635,12 @@ const PROMETHEUS_MEDIUM_CLEAN: &str =
     include_str!("../../../corpus/lua/prometheus/medium/clean.lua");
 const PROMETHEUS_MEDIUM_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/medium/obfuscated.lua");
+const PROMETHEUS_NUMBERS_BEFORE_VMIFY_CLEAN: &str =
+    include_str!("prometheus_numbers_before_vmify_clean.lua");
+const PROMETHEUS_NUMBERS_BEFORE_VMIFY_CONFIG: &str =
+    include_str!("prometheus_numbers_before_vmify_config.lua");
+const PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED: &str =
+    include_str!("prometheus_numbers_before_vmify_obfuscated.lua");
 
 #[test]
 fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
@@ -734,6 +740,83 @@ fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
     assert_eq!(
         expected, actual,
         "Medium-preset recovery must preserve runtime output under real Lua 5.1\n--- recovered ---\n{recovered}"
+    );
+}
+
+#[test]
+fn prometheus_numbers_before_vmify_recovers_and_reexecutes_identically() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let numbers_step: usize = PROMETHEUS_NUMBERS_BEFORE_VMIFY_CONFIG
+        .find("NumbersToExpressions")
+        .expect("the fixture config must name NumbersToExpressions");
+    let vmify_step: usize = PROMETHEUS_NUMBERS_BEFORE_VMIFY_CONFIG
+        .find("Vmify")
+        .expect("the fixture config must name Vmify");
+    assert!(numbers_step < vmify_step);
+    assert!(!PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED.contains("40 + 2"));
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_numbers_before_vmify_clean",
+        PROMETHEUS_NUMBERS_BEFORE_VMIFY_CLEAN,
+    )
+    .expect("the authored pipeline-order input must run under real Lua 5.1");
+    let protected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_numbers_before_vmify_obfuscated",
+        PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED,
+    )
+    .expect("the pinned upstream pipeline-order output must run under real Lua 5.1");
+    assert_eq!(
+        expected, protected,
+        "NumbersToExpressions before Vmify must preserve the tracked program's output"
+    );
+
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_NUMBERS_BEFORE_VMIFY_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on the tracked pipeline-order fixture");
+    assert!(
+        peeled.fully_recovered,
+        "NumbersToExpressions before Vmify must recover without residual VM code; passes={:?}, residual={:?}",
+        peeled.passes_run, peeled.residual_markers
+    );
+    assert!(
+        peeled
+            .passes_run
+            .iter()
+            .any(|pass: &String| pass == "prometheus-vmify-container-devirt"),
+        "NumbersToExpressions before Vmify must reach Vmify recovery; passes={:?}, residual={:?}",
+        peeled.passes_run,
+        peeled.residual_markers
+    );
+
+    let recovered: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_numbers_before_vmify_recovered",
+        &recovered,
+    )
+    .unwrap_or_else(|| {
+        let stderr: String = std::fs::read_to_string(
+            dir.join("prometheus_numbers_before_vmify_recovered.stderr.txt"),
+        )
+        .unwrap_or_default();
+        panic!(
+            "the recovered pipeline-order source must run under real Lua 5.1\n{stderr}\n--- recovered ---\n{recovered}"
+        )
+    });
+    assert_eq!(
+        expected, actual,
+        "NumbersToExpressions-before-Vmify recovery must preserve runtime output under real Lua 5.1\n--- recovered ---\n{recovered}"
     );
 }
 
