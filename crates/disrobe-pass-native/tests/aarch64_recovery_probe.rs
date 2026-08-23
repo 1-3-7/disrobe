@@ -775,10 +775,18 @@ fn scalar_fp_half_precision_c_rendering_compiles() {
 
 #[test]
 fn half_rust_paths_preserve_or_quiet_bits_as_required() {
-    let cases: [(Vec<u32>, &str); 12] = [
+    let cases: [(Vec<u32>, &str); 14] = [
         (
             vec![0x1ee0_4000],
             "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(bits), bits); }",
+        ),
+        (
+            vec![0x9ee6_0000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(bits), u64::from(bits)); }",
+        ),
+        (
+            vec![0x9ee7_0000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(u64::from(bits)), bits); assert_eq!(recovered(u64::from(bits) | 0xffff_ffff_ffff_0000), bits); }",
         ),
         (
             vec![0x7d40_0000],
@@ -917,6 +925,71 @@ fn half_c_sign_operations_preserve_every_payload_across_compilers() {
         }
     }
     assert!(executions >= cases.len());
+}
+
+#[test]
+fn half_precision_wide_general_register_transfers_execute_across_compilers() {
+    let cases: [(u32, &str); 2] = [
+        (
+            0x9ee6_0000,
+            "for (uint32_t bits = 0; bits <= 0xffffu; bits++) { if (recovered(fp_h_from_bits((uint16_t)bits)) != (uint64_t)bits) return 1; }",
+        ),
+        (
+            0x9ee7_0000,
+            "for (uint32_t bits = 0; bits <= 0xffffu; bits++) { if (fp_h_to_bits(recovered((uint64_t)bits)) != (uint16_t)bits) return 1; if (fp_h_to_bits(recovered((uint64_t)bits | 0xffffffffffff0000ull)) != (uint16_t)bits) return 1; }",
+        ),
+    ];
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary C sources");
+    let mut executions: usize = 0;
+    for compiler in ["gcc", "clang"] {
+        if !Command::new(compiler)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success())
+        {
+            continue;
+        }
+        for (index, (word, body)) in cases.into_iter().enumerate() {
+            let code: Vec<u8> = [word, 0xd65f_03c0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            let recovery: LeafRecovery =
+                recover_aarch64_function(&code, 0).expect("wide half transfer");
+            let source: String = format!(
+                "{}\nint main(void) {{ {body} return 0; }}\n",
+                recovery.source
+            );
+            let source_path: std::path::PathBuf = directory
+                .path()
+                .join(format!("half_wide_{compiler}_{index}.c"));
+            let executable_path: std::path::PathBuf = directory
+                .path()
+                .join(format!("half_wide_{compiler}_{index}.exe"));
+            fs::write(&source_path, source).expect("write generated C");
+            let built: std::process::Output = Command::new(compiler)
+                .args(["-std=c11", "-O0", "-Werror", "-o"])
+                .arg(&executable_path)
+                .arg(&source_path)
+                .output()
+                .expect("compile generated C");
+            assert!(
+                built.status.success(),
+                "{compiler}: {}{}",
+                String::from_utf8_lossy(&built.stdout),
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let executed: std::process::Output = Command::new(&executable_path)
+                .output()
+                .expect("execute generated C");
+            assert!(executed.status.success(), "{compiler} case {index}");
+            executions += 1;
+        }
+    }
+    assert!(
+        executions >= cases.len(),
+        "no host c compiler executed the wide half-precision transfers; install gcc or clang"
+    );
 }
 
 #[test]

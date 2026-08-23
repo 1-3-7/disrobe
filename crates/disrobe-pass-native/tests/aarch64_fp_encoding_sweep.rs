@@ -22,7 +22,15 @@ const EXPECTED_ABSTENTIONS: &[(&str, &str)] = &[
         "round to integral uses the untracked FPCR rounding mode",
     ),
     (
+        "g_frinti_h",
+        "round to integral uses the untracked FPCR rounding mode",
+    ),
+    (
         "g_frintx_d",
+        "round to integral uses the untracked FPCR rounding mode",
+    ),
+    (
+        "g_frintx_h",
         "round to integral uses the untracked FPCR rounding mode",
     ),
     (
@@ -58,6 +66,8 @@ const GATED_ENCODINGS: &[&str] = &[
     "fadd h0, h0, h1",
     "fmov h0, h1",
     "fcvt h0, d0",
+    "fmov x0, h0",
+    "fmov h0, x0",
 ];
 
 fn abstentions() -> BTreeMap<&'static str, String> {
@@ -74,7 +84,7 @@ fn abstentions() -> BTreeMap<&'static str, String> {
 #[test]
 fn the_assembled_sweep_still_carries_every_feature_gated_encoding() {
     assert!(
-        SWEEP_CASES.len() >= 90,
+        SWEEP_CASES.len() >= 156,
         "the assembled sweep shrank to {} cases; a rebuild dropped encodings",
         SWEEP_CASES.len()
     );
@@ -182,7 +192,7 @@ fn recovered_scalar_forms_reach_both_emitted_backends() {
         "every sweep case must be classified"
     );
     assert!(
-        scalar_with_rust >= 80,
+        scalar_with_rust >= 143,
         "only {scalar_with_rust} scalar forms reached pseudo-rust; the second backend regressed"
     );
 }

@@ -3952,11 +3952,13 @@ const fn fp_storage_width(width: FpWidth) -> Width {
     }
 }
 
-const fn fp_gpr_transfer_width(width: FpWidth) -> Width {
-    match width {
-        FpWidth::F16 | FpWidth::F32 => Width::W32,
-        FpWidth::F64 => Width::W64,
-    }
+const fn fp_gpr_transfer_is_encodable(fp: FpWidth, gpr: Width) -> bool {
+    matches!(
+        (fp, gpr),
+        (FpWidth::F16, Width::W32 | Width::W64)
+            | (FpWidth::F32, Width::W32)
+            | (FpWidth::F64, Width::W64)
+    )
 }
 
 fn vfp_expand_imm_bits(imm8: u8, width: FpWidth) -> u64 {
@@ -4125,11 +4127,10 @@ fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             Ok(vec![Stmt::FpMov { dest, src, width }])
         }
         (Some((dest, width)), None) => {
-            let expected: Width = fp_gpr_transfer_width(width);
             let src: RegRef = parse_reg(operands[1]).map_err(|_| {
                 reject_at(insn, "fmov source is not a width-matched general register")
             })?;
-            if src.width != expected {
+            if !fp_gpr_transfer_is_encodable(width, src.width) {
                 return Err(reject_at(
                     insn,
                     "fmov source general register has the wrong width",
@@ -4138,14 +4139,13 @@ fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             Ok(vec![Stmt::GprToXmm { dest, src, width }])
         }
         (None, Some((src, width))) => {
-            let expected: Width = fp_gpr_transfer_width(width);
             let dest: RegRef = parse_reg(operands[0]).map_err(|_| {
                 reject_at(
                     insn,
                     "fmov destination is not a width-matched general register",
                 )
             })?;
-            if dest.width != expected {
+            if !fp_gpr_transfer_is_encodable(width, dest.width) {
                 return Err(reject_at(
                     insn,
                     "fmov destination general register has the wrong width",
