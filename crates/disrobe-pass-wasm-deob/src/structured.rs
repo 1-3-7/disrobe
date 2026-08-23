@@ -274,6 +274,7 @@ struct Translator<'a> {
     sig: &'a FunctionSig,
     module: Option<&'a ModuleCtx>,
     locals: Vec<ValType>,
+    local_names: Vec<String>,
     stack: Vec<Operand>,
     control: Vec<Frame>,
     out: String,
@@ -339,6 +340,7 @@ fn lift_body_structured_inner(
         callees,
         sig,
         module: callees.module_ctx(),
+        local_names: build_local_names(sig, locals.len(), lang),
         locals,
         stack: Vec::new(),
         control: Vec::new(),
@@ -604,14 +606,10 @@ impl Translator<'_> {
     }
 
     fn local_name(&self, idx: u32) -> String {
-        if let Some(real) = self.sig.local_name(idx) {
-            return sanitize_local(real);
-        }
-        if (idx as usize) < self.sig.params.len() {
-            format!("p{idx}")
-        } else {
-            format!("l{idx}")
-        }
+        self.local_names
+            .get(idx as usize)
+            .cloned()
+            .unwrap_or_else(|| fallback_local_name(idx, self.sig.params.len()))
     }
 
     fn local_type(&self, idx: u32) -> ValType {
@@ -3569,6 +3567,54 @@ fn f64_lit(bits: u64, lang: HighLang) -> String {
     }
 }
 
+fn fallback_local_name(idx: u32, param_count: usize) -> String {
+    if (idx as usize) < param_count {
+        format!("p{idx}")
+    } else {
+        format!("l{idx}")
+    }
+}
+
+fn looks_like_temporary(name: &str) -> bool {
+    name.strip_prefix('t')
+        .is_some_and(|rest: &str| !rest.is_empty() && rest.bytes().all(|b: u8| b.is_ascii_digit()))
+}
+
+fn is_usable_identifier(name: &str) -> bool {
+    !name.is_empty() && name != "_" && !looks_like_temporary(name)
+}
+
+fn build_local_names(sig: &FunctionSig, local_count: usize, lang: HighLang) -> Vec<String> {
+    let param_count: usize = sig.params.len();
+    let mut taken: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut names: Vec<String> = Vec::with_capacity(local_count);
+    for idx in 0..local_count {
+        let index: u32 = u32::try_from(idx).unwrap_or(u32::MAX);
+        let mut candidate: String = sig.local_name(index).map_or_else(
+            || fallback_local_name(index, param_count),
+            |raw: &str| sanitize_local(raw),
+        );
+        if !is_usable_identifier(&candidate) {
+            candidate = fallback_local_name(index, param_count);
+        }
+        if is_reserved_word(&candidate, lang) {
+            candidate.insert(0, '_');
+        }
+        if taken.contains(&candidate) {
+            let base: String = candidate.clone();
+            candidate = format!("{base}_{index}");
+            let mut disambiguator: u32 = 0;
+            while taken.contains(&candidate) {
+                disambiguator = disambiguator.saturating_add(1);
+                candidate = format!("{base}_{index}_{disambiguator}");
+            }
+        }
+        taken.insert(candidate.clone());
+        names.push(candidate);
+    }
+    names
+}
+
 fn sanitize_local(raw: &str) -> String {
     let mut out: String = String::with_capacity(raw.len() + 1);
     for (i, ch) in raw.chars().enumerate() {
@@ -3582,65 +3628,149 @@ fn sanitize_local(raw: &str) -> String {
     if out.is_empty() {
         out.push('_');
     }
-    if is_reserved_word(&out) {
-        out.insert(0, '_');
-    }
     out
 }
 
-fn is_reserved_word(name: &str) -> bool {
+fn shared_reserved(name: &str) -> bool {
     matches!(
         name,
-        "as" | "break"
+        "break"
+            | "case"
             | "const"
             | "continue"
+            | "default"
+            | "do"
             | "else"
             | "enum"
-            | "false"
-            | "fn"
+            | "export"
+            | "extern"
             | "for"
             | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "ref"
             | "return"
-            | "self"
             | "static"
             | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "async"
-            | "await"
-            | "dyn"
-            | "function"
-            | "var"
-            | "void"
-            | "int"
-            | "char"
-            | "double"
-            | "float"
-            | "class"
-            | "new"
-            | "delete"
-            | "this"
-            | "default"
             | "switch"
-            | "case"
-            | "do"
-            | "goto"
+            | "union"
+            | "while"
     )
+}
+
+fn is_reserved_word(name: &str, lang: HighLang) -> bool {
+    if shared_reserved(name) {
+        return true;
+    }
+    match lang {
+        HighLang::Rust => matches!(
+            name,
+            "Self"
+                | "abstract"
+                | "as"
+                | "async"
+                | "await"
+                | "become"
+                | "box"
+                | "crate"
+                | "dyn"
+                | "false"
+                | "final"
+                | "fn"
+                | "impl"
+                | "in"
+                | "let"
+                | "loop"
+                | "macro"
+                | "match"
+                | "mod"
+                | "move"
+                | "mut"
+                | "override"
+                | "priv"
+                | "pub"
+                | "ref"
+                | "self"
+                | "super"
+                | "trait"
+                | "true"
+                | "try"
+                | "type"
+                | "typeof"
+                | "unsafe"
+                | "unsized"
+                | "use"
+                | "virtual"
+                | "where"
+                | "yield"
+        ),
+        HighLang::C => matches!(
+            name,
+            "auto"
+                | "bool"
+                | "char"
+                | "complex"
+                | "double"
+                | "float"
+                | "goto"
+                | "imaginary"
+                | "inline"
+                | "int"
+                | "int32_t"
+                | "int64_t"
+                | "long"
+                | "register"
+                | "restrict"
+                | "short"
+                | "signed"
+                | "sizeof"
+                | "typedef"
+                | "typeof"
+                | "unsigned"
+                | "void"
+                | "volatile"
+        ),
+        HighLang::TypeScript => matches!(
+            name,
+            "any"
+                | "as"
+                | "async"
+                | "await"
+                | "boolean"
+                | "catch"
+                | "class"
+                | "debugger"
+                | "declare"
+                | "delete"
+                | "extends"
+                | "false"
+                | "finally"
+                | "function"
+                | "implements"
+                | "import"
+                | "in"
+                | "instanceof"
+                | "interface"
+                | "let"
+                | "new"
+                | "null"
+                | "number"
+                | "package"
+                | "private"
+                | "protected"
+                | "public"
+                | "string"
+                | "super"
+                | "symbol"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "typeof"
+                | "undefined"
+                | "var"
+                | "void"
+                | "with"
+                | "yield"
+        ),
+    }
 }
 
 fn snake_to_camel(name: &str) -> String {
