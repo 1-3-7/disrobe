@@ -1,5 +1,6 @@
 pub mod formatter;
 pub mod llm_json;
+pub mod marker_guard;
 pub mod source;
 
 use std::time::Instant;
@@ -17,6 +18,7 @@ pub use formatter::{
     provenance_header, pyversion_label,
 };
 pub use llm_json::{LlmJsonBundle, SCHEMA_ID as LLM_JSON_SCHEMA_ID, build_llm_sidecar};
+pub use marker_guard::{LeakedMarker, authentic_markers, carries_a_marker, find_leaked_marker};
 pub use source::{SourceOpts, render_source, render_source_with};
 
 pub struct EmitPipeline {

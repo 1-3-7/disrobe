@@ -2,7 +2,6 @@ use super::branches::{CompoundIf, jump_taken_if_true, try_recover_compound_if};
 use super::exprs::{
     build_linear_stmts_sim, inner_short_circuit_polarity, is_chain_compare_jump,
     is_chain_cond_jump, local_name_at, local_target, name_at, recover_chain_target,
-    unrecovered_context,
 };
 use super::function_meta::load_const;
 use super::loops::{
@@ -6976,10 +6975,9 @@ fn structure_async_with(
     };
     let (_, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[region.try_start..context_end])?;
-    let context_expr: Expr = residual
-        .into_iter()
-        .next_back()
-        .unwrap_or_else(unrecovered_context);
+    let Some(context_expr): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
     let enter_await: usize = (setup_end..region.try_end)
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
         .unwrap_or(setup_end);
@@ -7346,10 +7344,9 @@ fn recover_with_setup(
     if stmts.len() > carried_fused_store {
         return Ok(None);
     }
-    let context_expr: Expr = residual
-        .into_iter()
-        .next_back()
-        .unwrap_or_else(unrecovered_context);
+    let Some(context_expr): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
     let (optional_vars, next_start): (Option<Expr>, usize) =
         recover_with_target(code, stream, setup_end, hi);
     Ok(Some(WithSetup {
@@ -7394,19 +7391,12 @@ fn structure_with(
     let (chain, body_start): (Vec<WithChainEntry>, usize) =
         collect_with_chain(code, stream, region)?;
     if chain.is_empty() {
-        let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, region.try_end)?;
-        return Ok((
-            Stmt::With {
-                items: vec![WithItem {
-                    context_expr: unrecovered_context(),
-                    optional_vars: None,
-                }],
-                body: non_empty(body),
-                is_async: false,
-                line: None,
-            },
-            Vec::new(),
-        ));
+        return Err(DecompileError::AstDesync {
+            offset: region.try_start,
+            reason: "with region carries no recoverable context-manager setup, so the statement \
+                     header cannot be reconstructed from its body"
+                .to_owned(),
+        });
     }
     let search_end: usize = region.region_end.max(region.try_end);
     let bounds: WithBodyBounds =

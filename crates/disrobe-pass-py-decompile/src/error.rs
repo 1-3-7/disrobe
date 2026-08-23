@@ -47,6 +47,14 @@ pub enum DecompileError {
     #[diagnostic(code("DR-PYDEC-0009"))]
     Emit { reason: String },
 
+    #[error(
+        "recovery left an unresolved reconstruction placeholder ({stem}) at line {line} of the \
+         emitted source; that placeholder names an internal of the recovery engine and is not \
+         python, so this body is refused rather than published"
+    )]
+    #[diagnostic(code("DR-PYDEC-0014"))]
+    UnresolvedMarker { stem: String, line: usize },
+
     #[error("io error: {0}")]
     #[diagnostic(code("DR-PYDEC-0010"))]
     Io(#[from] std::io::Error),

@@ -19,7 +19,7 @@ use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile}
 use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
-const ABSTENTION_MARKER: &str = "__DR_UNRECOVERED_CONTEXT__";
+const MARKER_PREFIX: &str = "__DR_";
 
 const SPECIAL_NAMES: [&str; 4] = ["__enter__", "__exit__", "__aenter__", "__aexit__"];
 
@@ -250,15 +250,11 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
     }
 }
 
-fn unmarked_special_leak(recovered: &str) -> Option<String> {
-    for name in SPECIAL_NAMES {
-        let marked: String = format!("{ABSTENTION_MARKER}.{name}");
-        let stripped: String = recovered.replace(marked.as_str(), "");
-        if stripped.contains(name) {
-            return Some(name.to_owned());
-        }
-    }
-    None
+fn special_lookup_leak(recovered: &str) -> Option<String> {
+    SPECIAL_NAMES
+        .into_iter()
+        .find(|name: &&str| recovered.contains(*name))
+        .map(str::to_owned)
 }
 
 #[test]
@@ -291,8 +287,18 @@ fn with_regions_never_emit_a_plausible_placeholder() {
                 read_code(&orig_pyc).unwrap_or_else(|e| panic!("py{alias}/{label} read: {e}"));
             let version: PyVersion = marshal_to_decompile(marshal_version)
                 .unwrap_or_else(|e| panic!("py{alias}/{label} version map: {e:?}"));
-            let recovered: String = build_real_source(&original, &version, marshal_version)
-                .unwrap_or_else(|e| panic!("py{alias}/{label} decompile: {e}"));
+            let recovered: String = match build_real_source(&original, &version, marshal_version) {
+                Ok(source) => source,
+                Err(refusal) => {
+                    graded += 1;
+                    if case.equivalent_on.contains(&alias) {
+                        failures.push(format!(
+                            "py{alias}/{label}: pinned equivalent and instead refused: {refusal}"
+                        ));
+                    }
+                    continue;
+                }
+            };
 
             graded += 1;
 
@@ -309,10 +315,17 @@ fn with_regions_never_emit_a_plausible_placeholder() {
                      source\n{recovered}"
                 ));
             }
-            if let Some(name) = unmarked_special_leak(&recovered) {
+            if let Some(name) = special_lookup_leak(&recovered) {
                 failures.push(format!(
-                    "py{alias}/{label}: {name} reached recovered source without the abstention \
-                     marker\n{recovered}"
+                    "py{alias}/{label}: the {name} lookup reached recovered source, where it \
+                     reads as ordinary attribute access the program never wrote. A with region \
+                     that cannot be structured is refused, not rendered\n{recovered}"
+                ));
+            }
+            if recovered.contains(MARKER_PREFIX) {
+                failures.push(format!(
+                    "py{alias}/{label}: an internal reconstruction placeholder reached recovered \
+                     source, which a caller may read, save or feed to a tool\n{recovered}"
                 ));
             }
 
@@ -329,12 +342,6 @@ fn with_regions_never_emit_a_plausible_placeholder() {
                     )
                 });
 
-            if recovered.contains(ABSTENTION_MARKER) && equivalent {
-                failures.push(format!(
-                    "py{alias}/{label}: an object carrying the abstention marker graded \
-                     equivalent, so a marked guess would count toward the recovery rate"
-                ));
-            }
             if case.equivalent_on.contains(&alias) && !equivalent {
                 failures.push(format!(
                     "py{alias}/{label}: pinned equivalent and is not\n{recovered}"
