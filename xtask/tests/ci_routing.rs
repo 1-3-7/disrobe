@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
@@ -33,6 +34,29 @@ fn rust_toolchain_action() -> String {
         .and_then(toml::Value::as_str)
         .expect("rust-toolchain.toml toolchain channel");
     format!("dtolnay/rust-toolchain@{channel}")
+}
+
+fn command_packages(command: &str, selector: &str) -> BTreeSet<String> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words
+        .windows(2)
+        .filter(|pair: &&[&str]| pair[0] == selector)
+        .map(|pair: &[&str]| pair[1].to_owned())
+        .collect()
+}
+
+fn test_step<'a>(steps: &'a [Value], name: &str) -> &'a Value {
+    steps
+        .iter()
+        .find(|step: &&Value| step.get("name").and_then(Value::as_str) == Some(name))
+        .unwrap_or_else(|| panic!("ci.yml test step {name}"))
+}
+
+fn test_step_command<'a>(steps: &'a [Value], name: &str) -> &'a str {
+    test_step(steps, name)
+        .get("run")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("ci.yml test step {name} command"))
 }
 
 #[test]
@@ -116,19 +140,36 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         Some(true),
         "ci.yml must cancel obsolete runs within each event route"
     );
-    let test_platforms: &Vec<Value> = jobs
+    let test_matrix: &Vec<Value> = jobs
         .get("test")
         .and_then(|value: &Value| value.get("strategy"))
         .and_then(|value: &Value| value.get("matrix"))
-        .and_then(|value: &Value| value.get("os"))
+        .and_then(|value: &Value| value.get("include"))
         .and_then(Value::as_sequence)
-        .expect("ci.yml test matrix platforms");
+        .expect("ci.yml test matrix entries");
+    let test_routes: Vec<(&str, &str)> = test_matrix
+        .iter()
+        .map(|entry: &Value| {
+            (
+                entry
+                    .get("os")
+                    .and_then(Value::as_str)
+                    .expect("test matrix os"),
+                entry
+                    .get("shard")
+                    .and_then(Value::as_str)
+                    .expect("test matrix shard"),
+            )
+        })
+        .collect();
     assert_eq!(
-        test_platforms,
-        &vec![
-            Value::String("ubuntu-latest".to_owned()),
-            Value::String("macos-latest".to_owned()),
-            Value::String("windows-latest".to_owned())
+        test_routes,
+        vec![
+            ("ubuntu-latest", "all"),
+            ("macos-latest", "all"),
+            ("windows-latest", "one"),
+            ("windows-latest", "two"),
+            ("windows-latest", "three"),
         ]
     );
     let test_steps: &Vec<Value> = jobs
@@ -136,6 +177,127 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .and_then(|value: &Value| value.get("steps"))
         .and_then(Value::as_sequence)
         .expect("ci.yml test steps");
+    let windows_one: BTreeSet<String> = command_packages(
+        test_step_command(test_steps, "Windows workspace shard one"),
+        "-p",
+    );
+    let windows_two: BTreeSet<String> = command_packages(
+        test_step_command(test_steps, "Windows workspace shard two"),
+        "-p",
+    );
+    assert!(!windows_one.is_empty());
+    assert!(!windows_two.is_empty());
+    assert!(windows_one.is_disjoint(&windows_two));
+    let dedicated_steps: [(&str, &str, &str); 3] = [
+        (
+            "elixir recompile differential, printing the graded export count",
+            "disrobe-pass-beam",
+            "matrix.shard == 'all' || matrix.shard == 'two'",
+        ),
+        (
+            "R serialization differential, printing the graded object count",
+            "disrobe-pass-scriptlang",
+            "matrix.shard == 'all' || matrix.shard == 'three'",
+        ),
+        (
+            "XLM formula differential against an independent deobfuscator, printing the graded cell count",
+            "disrobe-pass-shell",
+            "matrix.shard == 'all' || matrix.shard == 'two'",
+        ),
+    ];
+    let dedicated_packages: BTreeSet<String> = dedicated_steps
+        .iter()
+        .map(|(_, package, _): &(&str, &str, &str)| (*package).to_owned())
+        .collect();
+    assert!(windows_one.is_disjoint(&dedicated_packages));
+    assert!(windows_two.is_disjoint(&dedicated_packages));
+    for (name, package, condition) in dedicated_steps {
+        let command: &str = test_step_command(test_steps, name);
+        assert_eq!(
+            command_packages(command, "-p"),
+            BTreeSet::from([package.to_owned()])
+        );
+        assert!(command.contains("--all-features"));
+        assert!(command.contains("--no-fail-fast"));
+        assert!(command.ends_with("-- --nocapture"));
+        assert_eq!(
+            test_step(test_steps, name)
+                .get("if")
+                .and_then(Value::as_str),
+            Some(condition),
+            "{name} must run once per operating system"
+        );
+    }
+    let unix_command: &str = test_step_command(test_steps, "Full workspace suite on Unix");
+    assert!(unix_command.contains("cargo test --workspace --all-features --no-fail-fast"));
+    assert_eq!(
+        command_packages(unix_command, "--exclude"),
+        dedicated_packages
+    );
+    let selected: BTreeSet<String> = windows_one
+        .union(&windows_two)
+        .cloned()
+        .chain(dedicated_packages.iter().cloned())
+        .collect();
+    let complement_command: &str = test_step_command(test_steps, "Windows workspace shard three");
+    assert!(complement_command.contains("cargo test --workspace --all-features --no-fail-fast"));
+    assert_eq!(
+        command_packages(complement_command, "--exclude"),
+        selected,
+        "the complement shard must exclude every package owned by an explicit or dedicated command"
+    );
+    let singleton_condition: &str = "matrix.shard == 'all' || matrix.shard == 'one'";
+    let determinism_step: &str = "stage this OS leg's cross-platform determinism hash file";
+    assert_eq!(
+        test_step(test_steps, determinism_step)
+            .get("if")
+            .and_then(Value::as_str),
+        Some(singleton_condition),
+        "{determinism_step} must run once per operating system"
+    );
+    let artifact_upload: &Value = test_steps
+        .iter()
+        .find(|step: &&Value| {
+            step.get("uses").and_then(Value::as_str) == Some("actions/upload-artifact@v7")
+                && step
+                    .get("with")
+                    .and_then(|value: &Value| value.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("determinism-hashes-${{ matrix.os }}")
+        })
+        .expect("determinism artifact upload");
+    assert_eq!(
+        artifact_upload.get("if").and_then(Value::as_str),
+        Some(singleton_condition)
+    );
+    assert_eq!(
+        jobs.get("test")
+            .and_then(|value: &Value| value.get("timeout-minutes"))
+            .and_then(Value::as_u64),
+        Some(180)
+    );
+    assert_eq!(
+        test_step(test_steps, "Full workspace suite on Unix")
+            .get("timeout-minutes")
+            .and_then(Value::as_u64),
+        Some(100)
+    );
+    for name in [
+        "Windows workspace shard one",
+        "Windows workspace shard two",
+        "Windows workspace shard three",
+    ] {
+        let command: &str = test_step_command(test_steps, name);
+        assert!(command.contains("--all-features"));
+        assert!(command.contains("--no-fail-fast"));
+        assert_eq!(
+            test_step(test_steps, name)
+                .get("timeout-minutes")
+                .and_then(Value::as_u64),
+            Some(160),
+            "{name} must leave time for setup and teardown inside the job cap"
+        );
+    }
     let java_setup_index: usize = test_steps
         .iter()
         .position(|step: &Value| {

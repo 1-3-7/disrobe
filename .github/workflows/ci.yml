@@ -100,7 +100,7 @@ jobs:
 
   test:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }} / ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
@@ -109,7 +109,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            shard: all
+          - os: macos-latest
+            shard: all
+          - os: windows-latest
+            shard: one
+          - os: windows-latest
+            shard: two
+          - os: windows-latest
+            shard: three
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -488,17 +498,84 @@ jobs:
           echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
       - name: elixir recompile differential, printing the graded export count
-        run: cargo test -p disrobe-pass-beam --test elixir_source_recover -- --nocapture
+        if: matrix.shard == 'all' || matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-beam --all-features --no-fail-fast -- --nocapture
       - name: R serialization differential, printing the graded object count
-        run: cargo test -p disrobe-pass-scriptlang --test real_r_reference_grade -- --nocapture
+        if: matrix.shard == 'all' || matrix.shard == 'three'
+        run: cargo test -p disrobe-pass-scriptlang --all-features --no-fail-fast -- --nocapture
       - name: XLM formula differential against an independent deobfuscator, printing the graded cell count
-        run: cargo test -p disrobe-pass-shell --test xlm_independent_reference -- --nocapture
-      - run: cargo test --workspace --all-features --no-fail-fast
+        if: matrix.shard == 'all' || matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-shell --all-features --no-fail-fast -- --nocapture
+      - name: Full workspace suite on Unix
+        if: matrix.shard == 'all'
+        run: >-
+          cargo test --workspace --all-features --no-fail-fast
+          --exclude disrobe-pass-beam --exclude disrobe-pass-scriptlang
+          --exclude disrobe-pass-shell
         timeout-minutes: 100
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
           DISROBE_PY_315_OPTIONAL: "1"
+      - name: Windows workspace shard one
+        if: matrix.shard == 'one'
+        run: >-
+          cargo test --all-features --no-fail-fast
+          -p disrobe-pass-jvm -p disrobe-cli -p disrobe-binfmt -p disrobe-pass-py-deob
+          -p disrobe-nir-lift -p disrobe-mba -p disrobe-pass-ruby -p disrobe-pass-pyarmor
+          -p disrobe-sleigh -p disrobe-pass-nativelang -p disrobe-pass-pyinstaller
+          -p disrobe-pass-sourcedefender -p disrobe-pyarmor-cextract -p disrobe-query
+          -p disrobe-py-marshal -p disrobe-transcode -p disrobe-bytes -p disrobe-plugin-host
+          -p disrobe-validator -p disrobe-ir
+        timeout-minutes: 160
+        env:
+          DISROBE_TYPEREC_CC: optional
+          DISROBE_PY_315_OPTIONAL: "1"
+      - name: Windows workspace shard two
+        if: matrix.shard == 'two'
+        run: >-
+          cargo test --all-features --no-fail-fast
+          -p disrobe-pass-native -p disrobe-pass-py-decompile -p disrobe-pass-wasm-deob
+          -p disrobe-pass-php -p disrobe-pass-swift-objc -p disrobe-pass-pyfreeze
+          -p disrobe-pass-as3
+          -p disrobe-llm-metadata -p disrobe-pass-pickle -p disrobe-taint
+          -p disrobe-vulnmatch -p disrobe-irsummary -p disrobe-capabilities
+          -p disrobe-evidence-mba -p disrobe-nir -p disrobe-prowl -p disrobe-lift-x86
+          -p disrobe-plugin-loader -p disrobe-bench-head-to-head
+          -p disrobe-bench-native-unpack -p disrobe-python -p disrobe-pyarmor-pytrace
+          -p disrobe-wasm -p disrobe-tool-process
+        timeout-minutes: 160
+        env:
+          DISROBE_TYPEREC_CC: optional
+          DISROBE_PY_315_OPTIONAL: "1"
+      - name: Windows workspace shard three
+        if: matrix.shard == 'three'
+        run: >-
+          cargo test --workspace --all-features --no-fail-fast
+          --exclude disrobe-pass-jvm --exclude disrobe-cli --exclude disrobe-binfmt
+          --exclude disrobe-pass-py-deob --exclude disrobe-nir-lift --exclude disrobe-mba
+          --exclude disrobe-pass-ruby --exclude disrobe-pass-pyarmor --exclude disrobe-sleigh
+          --exclude disrobe-pass-nativelang --exclude disrobe-pass-pyinstaller
+          --exclude disrobe-pass-sourcedefender --exclude disrobe-pyarmor-cextract
+          --exclude disrobe-query --exclude disrobe-py-marshal --exclude disrobe-transcode
+          --exclude disrobe-bytes --exclude disrobe-plugin-host --exclude disrobe-validator
+          --exclude disrobe-ir --exclude disrobe-pass-native --exclude disrobe-pass-py-decompile
+          --exclude disrobe-pass-wasm-deob --exclude disrobe-pass-php
+          --exclude disrobe-pass-swift-objc --exclude disrobe-pass-pyfreeze
+          --exclude disrobe-pass-as3
+          --exclude disrobe-llm-metadata --exclude disrobe-pass-pickle --exclude disrobe-taint
+          --exclude disrobe-vulnmatch --exclude disrobe-irsummary --exclude disrobe-capabilities
+          --exclude disrobe-evidence-mba --exclude disrobe-nir --exclude disrobe-prowl
+          --exclude disrobe-lift-x86 --exclude disrobe-plugin-loader
+          --exclude disrobe-bench-head-to-head --exclude disrobe-bench-native-unpack
+          --exclude disrobe-python --exclude disrobe-pyarmor-pytrace --exclude disrobe-wasm
+          --exclude disrobe-tool-process --exclude disrobe-pass-beam
+          --exclude disrobe-pass-scriptlang --exclude disrobe-pass-shell
+        timeout-minutes: 160
+        env:
+          DISROBE_TYPEREC_CC: optional
+          DISROBE_PY_315_OPTIONAL: "1"
       - name: stage this OS leg's cross-platform determinism hash file
+        if: matrix.shard == 'all' || matrix.shard == 'one'
         shell: bash
         run: |
           set -euo pipefail
@@ -506,6 +583,7 @@ jobs:
           cp target/determinism-hashes.txt "target/determinism-hashes-${{ matrix.os }}.txt"
           cat "target/determinism-hashes-${{ matrix.os }}.txt"
       - uses: actions/upload-artifact@v7
+        if: matrix.shard == 'all' || matrix.shard == 'one'
         with:
           name: determinism-hashes-${{ matrix.os }}
           path: target/determinism-hashes-${{ matrix.os }}.txt
