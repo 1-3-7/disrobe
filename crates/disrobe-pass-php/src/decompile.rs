@@ -25,6 +25,7 @@ const SANE_SWITCH_LABEL_WORK_CAP: usize = 1 << 20;
 const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
 const SANE_LOOP_RELIFT_WORK_CAP: usize = 1 << 20;
 const SANE_FOR_STEP_CAP: usize = 16;
+const SANE_NULLSAFE_LINKS: usize = 64;
 const SANE_TRY_CATCH_CAP: u32 = 1 << 16;
 const SANE_CATCH_TYPE_CAP: usize = 256;
 const SANE_CATCH_CLAUSE_CAP: usize = 256;
@@ -412,6 +413,8 @@ pub mod op {
     pub const POST_INC_STATIC_PROP: u8 = 40;
     pub const POST_DEC_STATIC_PROP: u8 = 41;
     pub const SEND_REF: u8 = 67;
+    pub const FETCH_DIM_IS: u8 = 90;
+    pub const FETCH_OBJ_IS: u8 = 91;
     pub const FETCH_DIM_W: u8 = 84;
     pub const FETCH_OBJ_W: u8 = 85;
     pub const FETCH_DIM_RW: u8 = 87;
@@ -505,6 +508,8 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         82 => "ZEND_FETCH_OBJ_R",
         83 => "ZEND_FETCH_W",
         84 => "ZEND_FETCH_DIM_W",
+        90 => "ZEND_FETCH_DIM_IS",
+        91 => "ZEND_FETCH_OBJ_IS",
         85 => "ZEND_FETCH_OBJ_W",
         86 => "ZEND_FETCH_RW",
         87 => "ZEND_FETCH_DIM_RW",
@@ -1733,6 +1738,7 @@ impl<'a> Lifter<'a> {
             }
             o if o == op::JMPZ_EX || o == op::JMPNZ_EX => self.fold_short_circuit(i, end),
             o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
+            o if o == op::JMP_NULL => self.fold_nullsafe_chain(i, end),
             o if o == op::JMP => {
                 let structured: Option<(Vec<Stmt>, u32)> = self
                     .structure_while(i, end, depth)
@@ -2810,6 +2816,53 @@ impl<'a> Lifter<'a> {
                 },
             },
         );
+        Some((Vec::new(), join))
+    }
+
+    fn fold_nullsafe_chain(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let gate: Op = self.ops.get(i as usize)?.clone();
+        let join: u32 = gate.op2;
+        if join <= i || join > end || gate.result_type == OperandType::Unused {
+            return None;
+        }
+        let result_key: (OperandType, u32) = (gate.result_type, gate.result);
+        let mut chain: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        let mut link: (OperandType, u32) = (gate.op1_type, gate.op1);
+        let mut cursor: u32 = i;
+        let mut links: usize = 0;
+        while cursor < join {
+            let guard: &Op = self.ops.get(cursor as usize)?;
+            if guard.opcode != op::JMP_NULL
+                || guard.op2 != join
+                || (guard.op1_type, guard.op1) != link
+                || (guard.result_type, guard.result) != result_key
+            {
+                return None;
+            }
+            let fetch: Op = self.ops.get(cursor as usize + 1)?.clone();
+            if fetch.opcode != op::FETCH_OBJ_IS || (fetch.op1_type, fetch.op1) != link {
+                return None;
+            }
+            let name: String = self.literal_string(fetch.op2_type, fetch.op2)?;
+            if !is_valid_php_ident(&name) {
+                return None;
+            }
+            chain = Expr {
+                text: format!("{}?->{name}", chain.wrapped(PREC_CALL)),
+                prec: PREC_CALL,
+            };
+            link = (fetch.result_type, fetch.result);
+            cursor = cursor.saturating_add(2);
+            links = links.saturating_add(1);
+            if links > SANE_NULLSAFE_LINKS {
+                return None;
+            }
+        }
+        if cursor != join || links == 0 || link != result_key {
+            return None;
+        }
+        self.writable_slots.remove(&result_key);
+        self.slots.insert(result_key, chain);
         Some((Vec::new(), join))
     }
 

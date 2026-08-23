@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 16] = [
+const PINNED_SAMPLES: [&str; 17] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -46,6 +46,7 @@ const PINNED_SAMPLES: [&str; 16] = [
     "keyed_foreach",
     "match_optimized",
     "members",
+    "nullsafe",
     "objects",
     "references",
     "switch_linear",
@@ -54,7 +55,7 @@ const PINNED_SAMPLES: [&str; 16] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 13] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 14] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -63,6 +64,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 13] = [
     "generators",
     "keyed_foreach",
     "match_optimized",
+    "nullsafe",
     "objects",
     "references",
     "switch_linear",
@@ -70,7 +72,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 13] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 16] = [
+const OPCODE_NAMING_SAMPLES: [&str; 17] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -81,6 +83,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 16] = [
     "keyed_foreach",
     "match_optimized",
     "members",
+    "nullsafe",
     "objects",
     "references",
     "switch_linear",
@@ -519,6 +522,133 @@ fn references_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("references");
 }
 
+#[test]
+fn nullsafe_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("nullsafe");
+}
+
+const NULLSAFE_CHAINS: [(&str, &str); 4] = [
+    ("read_one", "return (string) ($box?->label ?? 'none');"),
+    (
+        "read_chain",
+        "return (string) ($box?->inner?->label ?? 'none');",
+    ),
+    (
+        "read_deep",
+        "return (string) ($box?->inner?->inner?->label ?? 'none');",
+    ),
+    ("read_plain", "return (string) ($box?->label ?? '');"),
+];
+
+const NULLSAFE_LINKS: usize = 7;
+
+fn nullsafe_body<'a>(parsed: &'a mut OpArray, function: &str) -> &'a mut Vec<Op> {
+    &mut parsed
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some(function))
+        .unwrap_or_else(|| panic!("the nullsafe sample declares {function}"))
+        .ops
+}
+
+#[test]
+fn a_nullsafe_chain_whose_guards_do_not_form_one_php_8_chain_is_refused_rather_than_folded() {
+    let graded: &str = "the php 8.4 nullsafe chain shape boundary";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+
+    for (label, mutate) in [
+        ("guards that jump to different joins", 0_u8),
+        (
+            "a chain whose last fetch does not land in the guarded slot",
+            1_u8,
+        ),
+    ] {
+        let mut parsed: OpArray = parse_sample(&php, &dll, "nullsafe");
+        {
+            let ops: &mut Vec<Op> = nullsafe_body(&mut parsed, "read_chain");
+            let guards: Vec<usize> = ops
+                .iter()
+                .enumerate()
+                .filter(|(_, op): &(usize, &Op)| op.opcode == 198)
+                .map(|(index, _): (usize, &Op)| index)
+                .collect();
+            assert_eq!(
+                guards.len(),
+                2,
+                "read_chain is pinned as a two-link nullsafe chain; the sample changed"
+            );
+            if mutate == 0 {
+                let second: usize = guards[1];
+                ops[second].op2 = ops[second].op2.saturating_sub(1);
+            } else {
+                let last: usize = ops.len() - 1;
+                let fetch: usize = guards[1] + 1;
+                assert_eq!(
+                    ops[fetch].opcode, 91,
+                    "the guard is followed by FETCH_OBJ_IS"
+                );
+                ops[fetch].result = ops[fetch].result.wrapping_add(64);
+                let _ = last;
+            }
+        }
+        let recovered: Decompilation = decompile_oparray(&parsed);
+        assert!(
+            recovered
+                .unrecovered
+                .iter()
+                .any(|entry: &UnrecoveredOp| entry.mnemonic == "ZEND_JMP_NULL"),
+            "{label} is not a php 8 nullsafe chain, so it must be refused by name rather than \
+             folded into an operator that short-circuits differently; got {:?}\n--- recovered \
+             ---\n{}",
+            recovered.unrecovered,
+            recovered.php_skeleton
+        );
+        assert!(
+            !recovered.php_skeleton.contains("$box?->inner?->label"),
+            "{label} must not still render the two-link chain it no longer describes\n--- \
+             recovered ---\n{}",
+            recovered.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn every_nullsafe_chain_keeps_the_operator_that_short_circuits_it() {
+    let graded: &str = "the php 8.4 nullsafe property chain recovery";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let recovered: Decompilation = recover_sample(&php, &dll, "nullsafe");
+    assert!(
+        recovered.unrecovered.is_empty(),
+        "nullsafe is graded as a fully recovered sample: {:?}\n--- recovered ---\n{}",
+        recovered.unrecovered,
+        recovered.php_skeleton
+    );
+    let source: &str = &recovered.php_skeleton;
+    let mut lost: Vec<&str> = Vec::new();
+    let mut restored: usize = 0;
+    for (site, statement) in NULLSAFE_CHAINS {
+        if source.contains(statement) {
+            restored += 1;
+        } else {
+            lost.push(site);
+        }
+    }
+    assert!(
+        lost.is_empty(),
+        "{restored}/{} nullsafe chains recovered their operator; these did not: {lost:?}\n--- \
+         recovered ---\n{source}",
+        NULLSAFE_CHAINS.len()
+    );
+    assert_eq!(
+        source.matches("?->").count(),
+        NULLSAFE_LINKS,
+        "the sample writes exactly {NULLSAFE_LINKS} nullsafe links, so the recovery must not \
+         invent or drop one\n--- recovered ---\n{source}"
+    );
+}
+
 fn required_php(graded: &str) -> PathBuf {
     find_php(graded).unwrap_or_else(|| {
         panic!(
@@ -538,6 +668,17 @@ fn required_opcache(php: &Path, graded: &str) -> String {
              DZOA_OPCACHE_DLL."
         )
     })
+}
+
+fn parse_sample(php: &Path, dll: &str, sample: &str) -> OpArray {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_parse_probe")
+            .expect("create the parse scratch directory");
+    let dzoa: PathBuf = scratch.path().join(format!("{sample}.dzoa"));
+    emit_dzoa(php, dll, &required_sample(sample), &dzoa)
+        .unwrap_or_else(|diagnosis: String| panic!("emit {sample}: {diagnosis}"));
+    let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read the op array");
+    parse_oparray(&bytes).expect("parse the op array")
 }
 
 fn recover_sample(php: &Path, dll: &str, sample: &str) -> Decompilation {
