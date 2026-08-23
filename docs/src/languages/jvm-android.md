@@ -21,6 +21,7 @@ disrobe jvm decompile App.class --emit source --out src/          # write the in
 disrobe jvm decompile app.jar --backend vineflower --out src/
 disrobe jvm decompile app.apk --backend jadx --out src/
 disrobe jvm decompile classes.dex --backend jadx --out src/
+disrobe jvm decompile classes.dex --format ghidra --out recovered/
 disrobe jvm decompile app.jar --mapping mapping.txt --out src/   # write name-restoration.json
 disrobe jvm extract app.apk --out classes/    # extract a .jar / .apk + dump classfile inventory
 disrobe jvm backends                          # report available JVM/Android backends on PATH
@@ -30,9 +31,12 @@ disrobe jvm jni module.aar                    # nested classes.jar against jni/<
 disrobe jvm jni base.apk --native split.apk    # cross-split link against an APK Set member
 disrobe apk app.apk                           # also prints the JNI link table for the embedded dex/.so pair
 disrobe auto app.apk --out recovered/         # recursively process recognized payloads
+disrobe auto classes.dex --format json --out recovered/
 ```
 
 Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik source by default and invoke an Android backend only when `--backend jadx` or `--backend dex2jar` is selected. `.jar` writes in-house per-class source by default, and `--backend auto` also invokes the first available JVM backend. `.class` uses `--backend auto` for the first available JVM backend; add `--emit source` to write the in-house source. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
+
+For a standalone DEX, `jvm decompile --format ghidra|ida|json` writes descriptor-keyed class, method, and field entries beside the normal output. `auto` accepts the same formats when the original input itself reaches a successful `jvm.classify` node and writes the sidecar under `exports/dalvik/`. It does not reuse a DEX extracted from an APK or another container. Each entry keeps the original owner, original member name, descriptor, and replacement as separate values. When the current recovery path has not changed a name, the original and replacement stay identical. The Ghidra and IDAPython scripts resolve the original logical identity in the loaded DEX database before renaming the database object; they do not assign virtual addresses to Dalvik identifiers. IDAPython class renames require IDA 9.4 or later because that release introduced the loader's persistent DEX type-rename store. Method and field renames use the older DEX record APIs.
 
 ## Coverage and fidelity
 

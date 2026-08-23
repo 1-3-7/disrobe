@@ -411,8 +411,10 @@ fn write_flutter_symbol_export(
         symbols,
     };
     let rendered: String = match format {
-        ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map),
-        ExportFormat::Ida => render_idapython(&symbol_map),
+        ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map)
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
+        ExportFormat::Ida => render_idapython(&symbol_map)
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
         ExportFormat::Json => render_symbol_map_json(&symbol_map)
             .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
     };

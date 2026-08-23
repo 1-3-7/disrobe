@@ -27,7 +27,10 @@ const UNKNOWN_PACKAGE: &str = "verification-command-unknown-package";
 const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-binfmt", &["chain"]),
     ("disrobe-capabilities", &["yaml_rules"]),
-    ("disrobe-cli", &["!(prowl & net-fetch & server)", "!wasm"]),
+    (
+        "disrobe-cli",
+        &["!(prowl & net-fetch & server)", "!jvm", "!wasm"],
+    ),
     ("disrobe-core", &["chain"]),
     ("disrobe-irsummary", &["llm-metadata"]),
     ("disrobe-mba", &["smt-solver"]),

@@ -1852,8 +1852,10 @@ pub(crate) fn export(
     let sidecar_name: String = format!("{stem}.{}", format.sidecar_extension());
     let sidecar_path: PathBuf = out_dir.join(&sidecar_name);
     let sidecar_body: String = match format {
-        ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map),
-        ExportFormat::Ida => render_idapython(&symbol_map),
+        ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map)
+            .map_err(|e| miette::miette!("DR-NATIVE-0105: symbol export: {e}"))?,
+        ExportFormat::Ida => render_idapython(&symbol_map)
+            .map_err(|e| miette::miette!("DR-NATIVE-0105: symbol export: {e}"))?,
         ExportFormat::Json => render_symbol_map_json(&symbol_map)
             .map_err(|e| miette::miette!("DR-NATIVE-0105: symbol-map serialize: {e}"))?,
     };

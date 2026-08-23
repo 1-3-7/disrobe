@@ -20,6 +20,8 @@ use cli::apk;
 use cli::as3::{self, As3Cmd};
 #[cfg(feature = "chain")]
 use cli::auto;
+#[cfg(feature = "chain")]
+use cli::backend_export::BackendExportTarget;
 #[cfg(feature = "beam")]
 use cli::beam::{self, BeamCmd};
 use cli::behavior;
@@ -884,6 +886,12 @@ enum Cmd {
             help = "comma-separated emit kinds; for `auto` only `recovery` (echo recovery.json to stdout) is accepted"
         )]
         emit: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            help = "emit a direct-root DEX symbol map under <out>/exports/dalvik for Ghidra, IDA, or JSON"
+        )]
+        format: Option<BackendExportTarget>,
         #[arg(long, help = "report what would happen without writing any output")]
         dry_run: bool,
         #[arg(
@@ -1989,6 +1997,7 @@ fn main() -> miette::Result<()> {
             out,
             max_depth,
             emit,
+            format,
             dry_run,
             redact,
             capture_stages,
@@ -2036,6 +2045,7 @@ fn main() -> miette::Result<()> {
                     dry_run: dry_run || global_dry_run,
                     redact: redact || eff.redact,
                     capture_stages,
+                    backend_export: format,
                     i_have_authorization: llm_flags.i_have_authorization,
                 },
                 auto::BatchArgs {
@@ -2064,6 +2074,7 @@ fn main() -> miette::Result<()> {
                 redact: false,
                 capture_stages,
                 emit_recovery: false,
+                backend_export: None,
                 i_have_authorization: llm_flags.i_have_authorization,
             },
         ),

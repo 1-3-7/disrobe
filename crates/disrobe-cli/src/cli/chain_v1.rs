@@ -18,6 +18,7 @@ use disrobe_core::chain::{
 use disrobe_core::pass::PassContext;
 use disrobe_core::{Artifact, Redactor, Rung};
 
+use super::backend_export::{BackendExportTarget, SupplementalOutput, write_supplemental_output};
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
@@ -385,6 +386,7 @@ pub(crate) struct ChainRunOptions {
     pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) emit_recovery: bool,
+    pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) i_have_authorization: bool,
 }
 
@@ -400,6 +402,57 @@ impl ChainRunOptions {
     }
 }
 
+#[cfg(feature = "jvm")]
+fn direct_root_dalvik_node(plan: &ChainPlan, input_hash: [u8; 32]) -> Option<&Node> {
+    plan.nodes.iter().find(|node: &&Node| {
+        node.parent_id == Some(plan.root_id)
+            && node.pass_id.as_deref() == Some("jvm.classify")
+            && node.format_tag_in.as_deref() == Some("android-dex")
+            && node.input_blake3 == input_hash
+            && matches!(
+                node.output_kind.as_ref(),
+                Some(OutputKind::Mixed { children }) if !children.is_empty()
+            )
+            && matches!(node.verdict, Verdict::FanOut { count } if count > 0)
+    })
+}
+
+#[cfg(feature = "jvm")]
+fn prepare_dalvik_symbol_export(
+    plan: &ChainPlan,
+    input: &[u8],
+    input_path: &Path,
+    target: Option<BackendExportTarget>,
+) -> miette::Result<Option<SupplementalOutput>> {
+    let Some(target): Option<BackendExportTarget> = target else {
+        return Ok(None);
+    };
+    let input_hash: [u8; 32] = blake3_hash(input);
+    if direct_root_dalvik_node(plan, input_hash).is_none() {
+        return Err(miette::miette!(
+            "DR-CLI-0442: requested Dalvik symbol export requires a successful direct root `jvm.classify` android-dex node for the original input"
+        ));
+    }
+    let dex: disrobe_pass_jvm::DexFile = disrobe_pass_jvm::parse_dex(input)
+        .map_err(|error| miette::miette!("DR-CLI-0443: requested Dalvik symbol export cannot parse the classified root DEX: {error}"))?;
+    super::jvm::render_dalvik_symbol_export(input_path, &dex, target, target.auto_path()).map(Some)
+}
+
+#[cfg(not(feature = "jvm"))]
+fn prepare_dalvik_symbol_export(
+    _plan: &ChainPlan,
+    _input: &[u8],
+    _input_path: &Path,
+    target: Option<BackendExportTarget>,
+) -> miette::Result<Option<SupplementalOutput>> {
+    if target.is_some() {
+        return Err(miette::miette!(
+            "DR-CLI-0441: this binary was built without the `jvm` feature, so it cannot emit a requested Dalvik symbol export"
+        ));
+    }
+    Ok(None)
+}
+
 pub(crate) fn run_with_disk(
     input: PathBuf,
     out: Option<PathBuf>,
@@ -413,6 +466,7 @@ pub(crate) fn run_with_disk(
         redact,
         capture_stages,
         emit_recovery,
+        backend_export,
         ..
     } = options;
     let spec_raw: String = match pin_arg {
@@ -469,6 +523,11 @@ pub(crate) fn run_with_disk(
     if let Some(error) = stream_error {
         return Err(error);
     }
+    let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
+        prepare_dalvik_symbol_export(&plan, &seed_for_scan, &input, backend_export)?
+    } else {
+        None
+    };
     progress.finish(&format!("{} pass(es) ran", progress.steps()));
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
     let anti: AntiAnalysisReport = scan_anti_analysis(
@@ -603,11 +662,20 @@ pub(crate) fn run_with_disk(
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
     let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
     let chain_path_str: String = redacted_text(chain_path.display().to_string(), redact)?;
+    let supplemental_path_str: Option<String> = supplemental_output
+        .as_ref()
+        .map(|output: &SupplementalOutput| write_supplemental_output(&out_dir, output))
+        .transpose()?
+        .map(|path: PathBuf| redacted_text(path.display().to_string(), redact))
+        .transpose()?;
     let rendered = || {
         println!("chain.json written: {chain_path_str}");
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
         println!("report.json written: {forensic_path_str}");
+        if let Some(path) = supplemental_path_str.as_ref() {
+            println!("Dalvik symbol export written: {path}");
+        }
         if let Some(path) = delphi_path_str.as_ref() {
             println!("delphi.json written: {path}");
         }
@@ -773,6 +841,7 @@ pub(crate) struct ChainOutcome {
     pub(crate) doc: ChainDocument,
     pub(crate) report: ChainRecoveryReport,
     pub(crate) anti: AntiAnalysisReport,
+    pub(crate) supplemental_outputs: Vec<String>,
 }
 
 pub(crate) fn run_chain_to_dir(
@@ -782,6 +851,7 @@ pub(crate) fn run_chain_to_dir(
     chain_arg: &str,
     redact: bool,
     capture_stages: bool,
+    backend_export: Option<BackendExportTarget>,
     i_have_authorization: bool,
 ) -> miette::Result<ChainOutcome> {
     let spec: ChainSpec = ChainSpec::parse(chain_arg)
@@ -795,12 +865,19 @@ pub(crate) fn run_chain_to_dir(
         redact,
         capture_stages,
         emit_recovery: false,
+        backend_export,
         i_have_authorization,
     }
     .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
+    let supplemental_output: Option<SupplementalOutput> = prepare_dalvik_symbol_export(
+        &plan,
+        &seed_for_scan,
+        Path::new(input_label),
+        backend_export,
+    )?;
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
     let anti: AntiAnalysisReport = scan_anti_analysis(&seed_for_scan, Some(input_label), &evidence);
     let doc: ChainDocument = ChainDocument::from_plan(
@@ -840,7 +917,19 @@ pub(crate) fn run_chain_to_dir(
     .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
     std::fs::write(out_dir.join("report.json"), &forensic_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
-    Ok(ChainOutcome { doc, report, anti })
+    let supplemental_outputs: Vec<String> = supplemental_output
+        .as_ref()
+        .map(|output: &SupplementalOutput| write_supplemental_output(out_dir, output))
+        .transpose()?
+        .into_iter()
+        .map(|path: PathBuf| path.display().to_string())
+        .collect();
+    Ok(ChainOutcome {
+        doc,
+        report,
+        anti,
+        supplemental_outputs,
+    })
 }
 
 pub(crate) fn serialized_value<T: serde::Serialize>(
@@ -1103,6 +1192,7 @@ mod tests {
             redact: false,
             capture_stages: false,
             emit_recovery: false,
+            backend_export: None,
             i_have_authorization,
         }
     }

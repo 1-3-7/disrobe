@@ -5,6 +5,8 @@ pub(crate) mod apk;
 pub(crate) mod as3;
 #[cfg(feature = "chain")]
 pub(crate) mod auto;
+#[cfg(any(feature = "chain", feature = "jvm"))]
+pub(crate) mod backend_export;
 #[cfg(feature = "chain")]
 pub(crate) mod batch;
 #[cfg(feature = "beam")]

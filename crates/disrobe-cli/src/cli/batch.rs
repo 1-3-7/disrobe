@@ -1,5 +1,6 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::needless_pass_by_value)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -7,6 +8,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use walkdir::{DirEntry, WalkDir};
 
+use super::backend_export::BackendExportTarget;
 use super::chain_v1::{self, ChainOutcome};
 use super::glob::GlobMatcher;
 use super::output::{OutputFormat, emit};
@@ -23,6 +25,7 @@ pub(crate) struct BatchOptions {
     pub(crate) jobs: usize,
     pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
+    pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) i_have_authorization: bool,
 }
 
@@ -37,6 +40,8 @@ pub(crate) struct ManifestEntry {
     pub(crate) recovery_score: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub(crate) anti_analysis: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub(crate) supplemental_outputs: Vec<String>,
     pub(crate) output_dir: Option<String>,
     pub(crate) duration_ms: u128,
     pub(crate) error: Option<String>,
@@ -88,6 +93,40 @@ fn relative_stem(relative: &Path) -> String {
     } else {
         slug
     }
+}
+
+fn output_stems(files: &[(PathBuf, PathBuf)], disambiguate: bool) -> miette::Result<Vec<String>> {
+    let bases: Vec<String> = files
+        .iter()
+        .map(|(_path, relative): &(PathBuf, PathBuf)| relative_stem(relative))
+        .collect();
+    if !disambiguate {
+        return Ok(bases);
+    }
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for base in &bases {
+        let count: &mut usize = counts.entry(base.clone()).or_default();
+        *count = count.saturating_add(1);
+    }
+    let mut reserved: BTreeSet<String> = bases.iter().cloned().collect();
+    let attempt_limit: usize = files.len().saturating_add(1);
+    bases
+        .into_iter()
+        .map(|base: String| -> miette::Result<String> {
+            if counts.get(&base).copied().unwrap_or(0) < 2 {
+                return Ok(base);
+            }
+            for ordinal in 1..=attempt_limit {
+                let candidate: String = format!("{base}-{ordinal}");
+                if reserved.insert(candidate.clone()) {
+                    return Ok(candidate);
+                }
+            }
+            Err(miette::miette!(
+                "DR-CLI-0444: cannot assign a collision-free batch output directory for {base}"
+            ))
+        })
+        .collect()
 }
 
 fn recovery_score(report: &disrobe_core::chain::ChainRecoveryReport) -> Option<f64> {
@@ -166,12 +205,11 @@ fn collect_files(root: &Path, opts: &BatchOptions) -> miette::Result<Vec<(PathBu
     Ok(files)
 }
 
-fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEntry {
+fn process_one(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions) -> ManifestEntry {
     let started: Instant = Instant::now();
     let size: u64 = std::fs::metadata(path).map_or(0, |m: std::fs::Metadata| m.len());
     let rel_display: String = relative.to_string_lossy().replace('\\', "/");
-    let stem: String = relative_stem(relative);
-    let out_dir: PathBuf = opts.out_root.join(&stem);
+    let out_dir: PathBuf = opts.out_root.join(stem);
     let bytes: Vec<u8> = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -184,6 +222,7 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
                 verdict: None,
                 recovery_score: None,
                 anti_analysis: Vec::new(),
+                supplemental_outputs: Vec::new(),
                 output_dir: None,
                 duration_ms: started.elapsed().as_millis(),
                 error: Some(format!("read failed: {e}")),
@@ -197,9 +236,15 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
         &opts.chain_arg,
         opts.redact,
         opts.capture_stages,
+        opts.backend_export,
         opts.i_have_authorization,
     ) {
-        Ok(ChainOutcome { doc, report, anti }) => ManifestEntry {
+        Ok(ChainOutcome {
+            doc,
+            report,
+            anti,
+            supplemental_outputs,
+        }) => ManifestEntry {
             input: path.display().to_string(),
             relative: rel_display,
             size,
@@ -208,6 +253,7 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
             verdict: Some(format!("{:?}", doc.verdict)),
             recovery_score: recovery_score(&report),
             anti_analysis: anti_analysis_lines(&anti),
+            supplemental_outputs,
             output_dir: Some(out_dir.display().to_string()),
             duration_ms: started.elapsed().as_millis(),
             error: None,
@@ -221,6 +267,7 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
             verdict: None,
             recovery_score: None,
             anti_analysis: Vec::new(),
+            supplemental_outputs: Vec::new(),
             output_dir: None,
             duration_ms: started.elapsed().as_millis(),
             error: Some(format!("{e}")),
@@ -241,21 +288,23 @@ const fn classify(entry: &ManifestEntry, summary: &mut BatchSummary) {
 
 pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Result<BatchManifest> {
     let files: Vec<(PathBuf, PathBuf)> = collect_files(root, opts)?;
+    let stems: Vec<String> = output_stems(&files, opts.backend_export.is_some())?;
     let bar: ActiveProgress = progress_ui::make_progress("disrobe auto");
     bar.set_total(u64::try_from(files.len()).unwrap_or(u64::MAX));
     let entries: Vec<ManifestEntry> = if opts.jobs <= 1 || files.len() <= 1 {
         files
             .iter()
-            .map(|(path, relative): &(PathBuf, PathBuf)| {
+            .zip(&stems)
+            .map(|((path, relative), stem): (&(PathBuf, PathBuf), &String)| {
                 let label: String = relative.to_string_lossy().replace('\\', "/");
                 bar.set_message(&label);
-                let entry: ManifestEntry = process_one(path, relative, opts);
+                let entry: ManifestEntry = process_one(path, relative, stem, opts);
                 bar.tick();
                 entry
             })
             .collect()
     } else {
-        run_parallel(&files, opts, &bar)?
+        run_parallel(&files, &stems, opts, &bar)?
     };
     bar.finish(&format!("{} file(s) processed", entries.len()));
     let mut summary: BatchSummary = BatchSummary::default();
@@ -326,6 +375,7 @@ pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> m
 
 fn run_parallel(
     files: &[(PathBuf, PathBuf)],
+    stems: &[String],
     opts: &BatchOptions,
     bar: &ActiveProgress,
 ) -> miette::Result<Vec<ManifestEntry>> {
@@ -336,10 +386,10 @@ fn run_parallel(
     let slots: Vec<Mutex<Option<ManifestEntry>>> =
         (0..files.len()).map(|_| Mutex::new(None)).collect();
     pool.scope(|scope: &rayon::Scope<'_>| {
-        for (idx, (path, relative)) in files.iter().enumerate() {
+        for (idx, ((path, relative), stem)) in files.iter().zip(stems).enumerate() {
             let slot: &Mutex<Option<ManifestEntry>> = &slots[idx];
             scope.spawn(move |_| {
-                let entry: ManifestEntry = process_one(path, relative, opts);
+                let entry: ManifestEntry = process_one(path, relative, stem, opts);
                 bar.tick();
                 if let Ok(mut guard) = slot.lock() {
                     *guard = Some(entry);
@@ -379,6 +429,7 @@ mod tests {
             jobs: 1,
             redact: false,
             capture_stages: false,
+            backend_export: None,
             i_have_authorization: false,
         }
     }

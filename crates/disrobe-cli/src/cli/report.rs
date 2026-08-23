@@ -912,6 +912,7 @@ fn resolve_document(
             jobs: 1,
             redact,
             capture_stages: false,
+            backend_export: None,
             i_have_authorization: false,
         };
         let manifest: BatchManifest = batch::compute_manifest(target, &opts)?;
@@ -934,6 +935,7 @@ fn resolve_document(
             "auto:8",
             redact,
             false,
+            None,
             false,
         )?;
         return Ok(ReportDocument::Single(Box::new(build_single(

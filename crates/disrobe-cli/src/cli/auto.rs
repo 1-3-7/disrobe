@@ -2,6 +2,7 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::path::PathBuf;
 
+use super::backend_export::BackendExportTarget;
 use super::batch::{self, BatchOptions};
 use super::chain_v1::{self, ChainRunOptions};
 use super::emit::{EmitKind, EmitSpec};
@@ -20,6 +21,7 @@ pub(crate) struct AutoOptions {
     pub(crate) dry_run: bool,
     pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
+    pub(crate) backend_export: Option<BackendExportTarget>,
     pub(crate) i_have_authorization: bool,
 }
 
@@ -36,8 +38,15 @@ pub(crate) fn run(
         dry_run,
         redact,
         capture_stages,
+        backend_export,
         i_have_authorization,
     } = options;
+    #[cfg(not(feature = "jvm"))]
+    if backend_export.is_some() {
+        return Err(miette::miette!(
+            "DR-CLI-0441: this binary was built without the `jvm` feature, so it cannot emit a requested Dalvik symbol export"
+        ));
+    }
     let emit_spec: EmitSpec = EmitSpec::parse(&emit_kinds)?;
     let emit_recovery: bool = emit_spec.contains(EmitKind::Recovery);
     let other_kinds: bool = emit_spec.iter().any(|k: EmitKind| k != EmitKind::Recovery);
@@ -64,6 +73,7 @@ pub(crate) fn run(
             jobs: batch_args.jobs.max(1),
             redact,
             capture_stages,
+            backend_export,
             i_have_authorization,
         };
         return batch::run_dir(input, opts, fmt);
@@ -85,6 +95,7 @@ pub(crate) fn run(
             redact,
             capture_stages,
             emit_recovery,
+            backend_export,
             i_have_authorization,
         },
     )

@@ -9,19 +9,24 @@ use clap::{Subcommand, ValueEnum};
 use disrobe_pass_jvm::{
     AabExtract, AarExtract, AndroidBackend, ApkExtract, ApksExtract, AppliedNames,
     BackendCapability, BackendInvocation, CLASS_MAGIC, ClassFile, DEX_MAGIC_PREFIX,
-    DecompiledClass, DecompiledDex, DexFile, DexStringRecovery, FingerprintReport, Instruction,
-    JarEntry, JarExtract, JniPrototype, JniSurfaceReport, JvmBackend, LibrarySignatureSet,
-    NativeMethod, OatEmbeddedDex, Operands, PeelStatus, PeeledClass, ProguardMapping,
-    ProtectorPeelReport, ResolvedNative, RetracedFrame, analyze_jni_native_methods,
-    apply_proguard_mapping, decompile_class, decompile_dex, detect_available,
-    detect_protector_family, disassemble, emit_jni_prototypes, extract_aab, extract_aar,
-    extract_apk, extract_apks, extract_jar, extract_native_methods, extract_oat_dex,
+    DecompiledClass, DecompiledDex, DexFile, DexStringRecovery, FieldId, FingerprintReport,
+    Instruction, JarEntry, JarExtract, JniPrototype, JniSurfaceReport, JvmBackend,
+    LibrarySignatureSet, MethodId, NativeMethod, OatEmbeddedDex, Operands, PeelStatus, PeeledClass,
+    ProguardMapping, ProtectorPeelReport, ResolvedNative, RetracedFrame,
+    analyze_jni_native_methods, apply_proguard_mapping, decompile_class, decompile_dex,
+    detect_available, detect_protector_family, disassemble, emit_jni_prototypes, extract_aab,
+    extract_aar, extract_apk, extract_apks, extract_jar, extract_native_methods, extract_oat_dex,
     fingerprint_library_symbols, invoke_android, invoke_jvm, native_methods_from_class,
     parse_classfile, parse_code_attribute, parse_dex, parse_proguard_mapping,
     peel_and_decompile_classfile, recover_dex_reflection_strings,
 };
+use disrobe_pass_native::backend_export::{
+    DalvikSymbolKey, ExportFormat, ExportSymbol, SYMBOL_EXPORT_SCHEMA, SymbolClass, SymbolExport,
+    SymbolKey, SymbolOrigin, render_ghidra_postscript, render_idapython, render_symbol_map_json,
+};
 use std::fmt::Write as _;
 
+use super::backend_export::{BackendExportTarget, SupplementalOutput, write_supplemental_output};
 use super::emit::{EmitKind, EmitSpec};
 use super::globals;
 
@@ -50,6 +55,12 @@ pub(crate) enum JvmCmd {
             help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
         emit: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            help = "emit recovered standalone DEX class, method, and field identifiers as a Ghidra script, IDAPython script, or JSON symbol map"
+        )]
+        format: Option<BackendExportTarget>,
         #[arg(
             long,
             help = "apply a ProGuard/R8 mapping.txt to restore original class/method/field names; writes name-restoration.json"
@@ -133,6 +144,18 @@ pub(crate) enum JvmBackendKind {
     Dex2Jar,
 }
 
+struct DecompileOptions {
+    input: PathBuf,
+    out: Option<PathBuf>,
+    backend: JvmBackendKind,
+    timeout_secs: u64,
+    emit: Vec<String>,
+    format: Option<BackendExportTarget>,
+    mapping: Option<PathBuf>,
+    library: Vec<PathBuf>,
+    peel: bool,
+}
+
 pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
     match action {
         JvmCmd::Decompile {
@@ -141,19 +164,21 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             backend,
             timeout_secs,
             emit,
+            format,
             mapping,
             library,
             peel,
-        } => decompile(
+        } => decompile(DecompileOptions {
             input,
             out,
             backend,
             timeout_secs,
             emit,
+            format,
             mapping,
             library,
             peel,
-        ),
+        }),
         JvmCmd::Extract { input, out } => extract(input, out),
         JvmCmd::Backends => backends(),
         JvmCmd::Retrace {
@@ -912,16 +937,18 @@ fn fingerprint_against_libraries(
     Ok(())
 }
 
-fn decompile(
-    input: PathBuf,
-    out: Option<PathBuf>,
-    backend_choice: JvmBackendKind,
-    timeout_secs: u64,
-    emit_kinds: Vec<String>,
-    mapping: Option<PathBuf>,
-    library: Vec<PathBuf>,
-    peel: bool,
-) -> miette::Result<()> {
+fn decompile(options: DecompileOptions) -> miette::Result<()> {
+    let DecompileOptions {
+        input,
+        out,
+        backend: backend_choice,
+        timeout_secs,
+        emit: emit_kinds,
+        format: export_target,
+        mapping,
+        library,
+        peel,
+    }: DecompileOptions = options;
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0400: cannot read input: {e}"))?;
     let stem: String = input
@@ -932,6 +959,11 @@ fn decompile(
     let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-jvm")));
     let g: globals::Globals = globals::current();
     let format: ClassformatKind = classify(&bytes, &input);
+    if export_target.is_some() && !matches!(format, ClassformatKind::Dex) {
+        return Err(miette::miette!(
+            "DR-CLI-0435: --format requires a standalone DEX input because class, JAR, and APK identifiers use different source keys"
+        ));
+    }
 
     if g.dry_run {
         println!("jvm decompile: DRY-RUN");
@@ -948,6 +980,7 @@ fn decompile(
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let mut class_report: Option<(usize, usize)> = None;
     let mut peel_summaries: Vec<PeelSummary> = Vec::new();
+    let mut symbol_sidecar: Option<PathBuf> = None;
 
     let (summary, native_emitted): (serde_json::Value, bool) = match format {
         ClassformatKind::Classfile => {
@@ -975,6 +1008,15 @@ fn decompile(
             let native: DecompiledDex = decompile_dex(&dx, &bytes);
             let string_recovery: Vec<DexStringRecovery> =
                 recover_dex_reflection_strings(&dx, &bytes);
+            if let Some(target) = export_target {
+                let output: SupplementalOutput = render_dalvik_symbol_export(
+                    &input,
+                    &dx,
+                    target,
+                    target.standalone_path(&stem),
+                )?;
+                symbol_sidecar = Some(write_supplemental_output(&out_dir, &output)?);
+            }
             if let Some(s) = dex_peel_summary(&string_recovery) {
                 peel_summaries.push(s);
             }
@@ -1048,6 +1090,9 @@ fn decompile(
     print_peel_summaries(&peel_summaries);
     println!("  out dir:      {}", out_dir.display());
     println!("  manifest:     {}", manifest_path.display());
+    if let Some(path) = symbol_sidecar {
+        println!("  symbols:      {}", path.display());
+    }
     Ok(())
 }
 
@@ -1429,6 +1474,89 @@ const fn android_label(b: AndroidBackend) -> &'static str {
         AndroidBackend::Jadx => "jadx",
         AndroidBackend::Dex2Jar => "d2j-dex2jar",
     }
+}
+
+fn dalvik_symbol_export(input: &std::path::Path, dex: &DexFile) -> SymbolExport {
+    let capacity: usize = dex
+        .class_descriptors
+        .len()
+        .saturating_add(dex.method_ids.len())
+        .saturating_add(dex.field_ids.len());
+    let mut symbols: Vec<ExportSymbol> = Vec::with_capacity(capacity);
+    for descriptor in &dex.class_descriptors {
+        let descriptor: &String = descriptor;
+        symbols.push(ExportSymbol {
+            key: SymbolKey::Dalvik(DalvikSymbolKey::Class {
+                descriptor: descriptor.clone(),
+            }),
+            name: descriptor.clone(),
+            demangled: None,
+            class: SymbolClass::Class,
+            origin: SymbolOrigin::DalvikIdentifier,
+            note: None,
+        });
+    }
+    for method in &dex.method_ids {
+        let method: &MethodId = method;
+        let parameters: String = method.proto.parameters.concat();
+        let signature: String = format!("({parameters}){}", method.proto.return_type);
+        symbols.push(ExportSymbol {
+            key: SymbolKey::Dalvik(DalvikSymbolKey::Method {
+                owner: method.class.clone(),
+                original_name: method.name.clone(),
+                descriptor: signature,
+            }),
+            name: method.name.clone(),
+            demangled: None,
+            class: SymbolClass::Method,
+            origin: SymbolOrigin::DalvikIdentifier,
+            note: None,
+        });
+    }
+    for field in &dex.field_ids {
+        let field: &FieldId = field;
+        symbols.push(ExportSymbol {
+            key: SymbolKey::Dalvik(DalvikSymbolKey::Field {
+                owner: field.class.clone(),
+                original_name: field.name.clone(),
+                descriptor: field.type_name.clone(),
+            }),
+            name: field.name.clone(),
+            demangled: None,
+            class: SymbolClass::Field,
+            origin: SymbolOrigin::DalvikIdentifier,
+            note: None,
+        });
+    }
+    let symbol_count: usize = symbols.len();
+    SymbolExport {
+        schema: SYMBOL_EXPORT_SCHEMA,
+        source: input.display().to_string(),
+        format: "dex-dalvik".to_owned(),
+        image_base: None,
+        original_entry_point: None,
+        symbol_count,
+        symbols,
+    }
+}
+
+pub(crate) fn render_dalvik_symbol_export(
+    input: &std::path::Path,
+    dex: &DexFile,
+    target: BackendExportTarget,
+    relative_path: PathBuf,
+) -> miette::Result<SupplementalOutput> {
+    let format: ExportFormat = target.format();
+    let export: SymbolExport = dalvik_symbol_export(input, dex);
+    let rendered: String = match format {
+        ExportFormat::Ghidra => render_ghidra_postscript(&export)
+            .map_err(|error| miette::miette!("DR-CLI-0436: Dalvik symbol export: {error}"))?,
+        ExportFormat::Ida => render_idapython(&export)
+            .map_err(|error| miette::miette!("DR-CLI-0436: Dalvik symbol export: {error}"))?,
+        ExportFormat::Json => render_symbol_map_json(&export)
+            .map_err(|error| miette::miette!("DR-CLI-0436: Dalvik symbol export: {error}"))?,
+    };
+    SupplementalOutput::new(relative_path, rendered.into_bytes())
 }
 
 fn classfile_summary(
