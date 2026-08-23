@@ -29,6 +29,8 @@ const SANE_LOOP_RELIFT_WORK_CAP: usize = 1 << 20;
 const SANE_FOR_STEP_CAP: usize = 16;
 const SANE_NULLSAFE_LINKS: usize = 64;
 const SANE_CLOSURE_USE_CAP: usize = 256;
+const SANE_CALL_ARGUMENT_CAP: usize = 1 << 16;
+const SANE_CALL_RENDER_CAP: usize = 1 << 20;
 const SANE_TRY_CATCH_CAP: u32 = 1 << 16;
 const SANE_CATCH_TYPE_CAP: usize = 256;
 const SANE_CATCH_CLAUSE_CAP: usize = 256;
@@ -337,6 +339,9 @@ pub mod op {
     pub const RECV_INIT: u8 = 64;
     pub const SEND_VAL: u8 = 65;
     pub const SEND_VAR_EX: u8 = 66;
+    pub const RECV_VARIADIC: u8 = 164;
+    pub const SEND_UNPACK: u8 = 165;
+    pub const CHECK_UNDEF_ARGS: u8 = 199;
     pub const NEW: u8 = 68;
     pub const FREE: u8 = 70;
     pub const INIT_ARRAY: u8 = 71;
@@ -568,6 +573,8 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         154 => "ZEND_ISSET_ISEMPTY_CV",
         160 => "ZEND_YIELD",
         161 => "ZEND_GENERATOR_RETURN",
+        164 => "ZEND_RECV_VARIADIC",
+        165 => "ZEND_SEND_UNPACK",
         166 => "ZEND_YIELD_FROM",
         169 => "ZEND_COALESCE",
         128 => "ZEND_INIT_DYNAMIC_CALL",
@@ -579,6 +586,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         188 => "ZEND_SWITCH_STRING",
         195 => "ZEND_MATCH",
         198 => "ZEND_JMP_NULL",
+        199 => "ZEND_CHECK_UNDEF_ARGS",
         137 => "ZEND_OP_DATA",
         210 => "ZEND_STRLEN",
         211 => "ZEND_COUNT",
@@ -1178,11 +1186,31 @@ impl SkeletonEmitter {
     }
 
     fn param_list(node: &OpArray) -> String {
-        if node.num_args == 0 {
+        if node.num_args > SANE_VAR_CAP {
             return String::new();
         }
-        (0..node.num_args)
-            .map(|i: u32| format!("${}", cv_name(i, &node.var_names)))
+        let expected_position: Option<u32> = node.num_args.checked_add(1);
+        let variadic: bool = node.ops.iter().any(|op: &Op| {
+            op.opcode == op::RECV_VARIADIC
+                && op.op1_type == OperandType::Unused
+                && Some(op.op1) == expected_position
+                && op.op2_type == OperandType::Unused
+                && op.result_type == OperandType::Cv
+                && op.result == node.num_args
+        });
+        let count: u32 = node.num_args.saturating_add(u32::from(variadic));
+        if count == 0 {
+            return String::new();
+        }
+        (0..count)
+            .map(|i: u32| {
+                let prefix: &str = if variadic && i == node.num_args {
+                    "..."
+                } else {
+                    ""
+                };
+                format!("{prefix}${}", cv_name(i, &node.var_names))
+            })
             .collect::<Vec<String>>()
             .join(", ")
     }
@@ -1194,6 +1222,7 @@ impl SkeletonEmitter {
             &node.var_names,
             &node.try_catch,
             &node.children,
+            node.num_args,
         );
         let stmts: Vec<Stmt> = lifter.lift();
         let container: String = Self::container_label(node);
@@ -1516,13 +1545,40 @@ impl Stmt {
 }
 
 #[derive(Clone)]
+enum PendingArgument {
+    Positional(String),
+    Named { name: String, value: String },
+    Unpacked(String),
+}
+
+impl PendingArgument {
+    fn render(&self) -> String {
+        match self {
+            Self::Positional(value) => value.clone(),
+            Self::Named { name, value } => format!("{name}: {value}"),
+            Self::Unpacked(value) => format!("...{value}"),
+        }
+    }
+
+    fn rendered_len(&self) -> usize {
+        match self {
+            Self::Positional(value) => value.len(),
+            Self::Named { name, value } => name.len().saturating_add(value.len()).saturating_add(2),
+            Self::Unpacked(value) => value.len().saturating_add(3),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct PendingCall {
     callee: String,
     is_method: bool,
     nullsafe: bool,
     object: Option<String>,
     is_static: bool,
-    args: Vec<String>,
+    args: Vec<PendingArgument>,
+    rendered_args: usize,
+    positional_count: u32,
     result: Option<(OperandType, u32, u32)>,
 }
 
@@ -1619,6 +1675,7 @@ struct Lifter<'a> {
     limited: BTreeSet<u32>,
     nullsafe_link: Option<(OperandType, u32)>,
     children: &'a [OpArray],
+    num_args: u32,
     goto_targets: BTreeSet<u32>,
     placed_labels: BTreeSet<u32>,
     emit_gotos: bool,
@@ -1635,6 +1692,7 @@ impl<'a> Lifter<'a> {
         var_names: &'a [Option<String>],
         try_catch: &'a [TryCatch],
         children: &'a [OpArray],
+        num_args: u32,
     ) -> Self {
         let back_jump_targets: BTreeSet<u32> = ops
             .iter()
@@ -1698,6 +1756,7 @@ impl<'a> Lifter<'a> {
             limited: BTreeSet::new(),
             nullsafe_link: None,
             children,
+            num_args,
             goto_targets: BTreeSet::new(),
             placed_labels: BTreeSet::new(),
             emit_gotos: false,
@@ -1718,6 +1777,12 @@ impl<'a> Lifter<'a> {
         )
     }
 
+    fn limit(&mut self, idx: u32, opcode: u8, note: &'static str) {
+        if self.limited.insert(idx) && self.limitations.len() < MAX_UNRECOVERED_RECORDS {
+            self.limitations.push((idx, opcode, note));
+        }
+    }
+
     fn cv(&self, slot: u32) -> String {
         cv_name(slot, self.var_names)
     }
@@ -1736,6 +1801,7 @@ impl<'a> Lifter<'a> {
             self.var_names,
             self.try_catch,
             self.children,
+            self.num_args,
         );
         second.goto_targets.clone_from(&targets);
         second.emit_gotos = true;
@@ -2981,10 +3047,7 @@ impl<'a> Lifter<'a> {
             }
             _ => return None,
         };
-        let params: String = (0..child.num_args)
-            .map(|arg: u32| format!("${}", cv_name(arg, &child.var_names)))
-            .collect::<Vec<String>>()
-            .join(", ");
+        let params: String = SkeletonEmitter::param_list(child);
         let signature: String = if uses.is_empty() {
             format!("function ({params})")
         } else {
@@ -2996,6 +3059,7 @@ impl<'a> Lifter<'a> {
             &child.var_names,
             &child.try_catch,
             &child.children,
+            child.num_args,
         );
         let body: Vec<Stmt> = inner.lift();
         if !inner.unrecovered.is_empty() {
@@ -4200,6 +4264,19 @@ impl<'a> Lifter<'a> {
             o if o == op::VERIFY_RETURN_TYPE || o == op::NOP || o == op::HANDLE_EXCEPTION => None,
             o if o == op::FAST_CALL || o == op::FAST_RET || o == op::DISCARD_EXCEPTION => None,
             o if o == op::RECV || o == op::RECV_INIT || o == op::BIND_STATIC => None,
+            o if o == op::RECV_VARIADIC => {
+                if self.num_args.checked_add(1) == Some(op.op1)
+                    && op.op1_type == OperandType::Unused
+                    && op.op2_type == OperandType::Unused
+                    && op.result_type == OperandType::Cv
+                    && op.result == self.num_args
+                {
+                    self.limit(idx, o, LIMITATION_VARIADIC_PARAMETER_REFERENCE);
+                    None
+                } else {
+                    Some(self.refuse(idx, o, REASON_VARIADIC_PARAMETER_SHAPE))
+                }
+            }
             o if o == op::INIT_FCALL || o == op::INIT_FCALL_BY_NAME || o == op::INIT_NS_FCALL => {
                 let callee: String = self
                     .operand_expr(op.op2_type, op.op2)
@@ -4211,6 +4288,8 @@ impl<'a> Lifter<'a> {
                     object: None,
                     is_static: false,
                     args: Vec::new(),
+                    rendered_args: 0,
+                    positional_count: 0,
                     result: None,
                 });
                 None
@@ -4226,6 +4305,8 @@ impl<'a> Lifter<'a> {
                     object: None,
                     is_static: false,
                     args: Vec::new(),
+                    rendered_args: 0,
+                    positional_count: 0,
                     result: None,
                 });
                 None
@@ -4248,6 +4329,8 @@ impl<'a> Lifter<'a> {
                     object: Some(object),
                     is_static: false,
                     args: Vec::new(),
+                    rendered_args: 0,
+                    positional_count: 0,
                     result: None,
                 });
                 None
@@ -4266,17 +4349,24 @@ impl<'a> Lifter<'a> {
                     object: Some(class),
                     is_static: true,
                     args: Vec::new(),
+                    rendered_args: 0,
+                    positional_count: 0,
                     result: None,
                 });
                 None
             }
-            o if is_send(o) => {
-                if let Some(arg) = self.operand_expr(op.op1_type, op.op1)
-                    && let Some(call) = self.call_stack.last_mut()
+            o if is_send(o) => self.push_send(idx, op),
+            o if o == op::SEND_UNPACK => self.push_unpack(idx, op),
+            o if o == op::CHECK_UNDEF_ARGS => {
+                if op.op1_type != OperandType::Unused
+                    || op.op2_type != OperandType::Unused
+                    || op.result_type != OperandType::Unused
+                    || self.call_stack.is_empty()
                 {
-                    call.args.push(arg.text);
+                    Some(self.refuse(idx, o, REASON_CALL_ARGUMENT_SHAPE))
+                } else {
+                    None
                 }
-                None
             }
             o if o == op::DO_FCALL
                 || o == op::DO_ICALL
@@ -4296,6 +4386,8 @@ impl<'a> Lifter<'a> {
                     object: None,
                     is_static: false,
                     args: Vec::new(),
+                    rendered_args: 0,
+                    positional_count: 0,
                     result: (op.result_type != OperandType::Unused).then_some((
                         op.result_type,
                         op.result,
@@ -4986,9 +5078,115 @@ impl<'a> Lifter<'a> {
         None
     }
 
+    fn push_send(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let Some(value): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let argument: PendingArgument = match op.op2_type {
+            OperandType::Unused => {
+                let Some(call): Option<&PendingCall> = self.call_stack.last() else {
+                    return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+                };
+                let Some(expected_position): Option<u32> = call.positional_count.checked_add(1)
+                else {
+                    return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+                };
+                if op.op2 != 0 && op.op2 != expected_position {
+                    return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+                }
+                PendingArgument::Positional(value.text)
+            }
+            OperandType::Const => {
+                let Some(Literal::Str(name)): Option<&Literal> = self.literals.get(op.op2 as usize)
+                else {
+                    return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_NAME));
+                };
+                if !is_valid_php_ident(name) {
+                    return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_NAME));
+                }
+                PendingArgument::Named {
+                    name: name.clone(),
+                    value: value.text,
+                }
+            }
+            _ => return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE)),
+        };
+        let positional: bool = matches!(argument, PendingArgument::Positional(_));
+        let refusal: Option<String> = self.push_call_argument(idx, op.opcode, argument);
+        if refusal.is_none()
+            && positional
+            && let Some(call) = self.call_stack.last_mut()
+        {
+            call.positional_count = call.positional_count.saturating_add(1);
+        }
+        refusal
+    }
+
+    fn push_unpack(&mut self, idx: u32, op: &Op) -> Option<String> {
+        if op.op2_type != OperandType::Unused || op.result_type != OperandType::Unused {
+            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+        }
+        let Some(call): Option<&PendingCall> = self.call_stack.last() else {
+            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+        };
+        if op.op2 != call.positional_count {
+            return Some(self.refuse(idx, op.opcode, REASON_CALL_ARGUMENT_SHAPE));
+        }
+        let Some(value): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        self.push_call_argument(idx, op.opcode, PendingArgument::Unpacked(value.text))
+    }
+
+    fn push_call_argument(
+        &mut self,
+        idx: u32,
+        opcode: u8,
+        argument: PendingArgument,
+    ) -> Option<String> {
+        let Some(call): Option<&PendingCall> = self.call_stack.last() else {
+            return Some(self.refuse(idx, opcode, REASON_CALL_ARGUMENT_SHAPE));
+        };
+        let invalid_order: bool = match &argument {
+            PendingArgument::Positional(_) => call.args.iter().any(|existing: &PendingArgument| {
+                matches!(existing, PendingArgument::Named { .. } | PendingArgument::Unpacked(_))
+            }),
+            PendingArgument::Unpacked(_) => call
+                .args
+                .iter()
+                .any(|existing: &PendingArgument| matches!(existing, PendingArgument::Named { .. })),
+            PendingArgument::Named { name, .. } => call.args.iter().any(
+                |existing: &PendingArgument| {
+                    matches!(existing, PendingArgument::Named { name: existing_name, .. } if existing_name == name)
+                },
+            ),
+        };
+        let rendered: usize = call
+            .rendered_args
+            .saturating_add(argument.rendered_len())
+            .saturating_add(usize::from(!call.args.is_empty()) * 2);
+        if invalid_order
+            || call.args.len() >= SANE_CALL_ARGUMENT_CAP
+            || rendered > SANE_CALL_RENDER_CAP
+        {
+            return Some(self.refuse(idx, opcode, REASON_CALL_ARGUMENT_SHAPE));
+        }
+        let Some(call): Option<&mut PendingCall> = self.call_stack.last_mut() else {
+            return Some(self.refuse(idx, opcode, REASON_CALL_ARGUMENT_SHAPE));
+        };
+        call.rendered_args = rendered;
+        call.args.push(argument);
+        None
+    }
+
     fn finish_call(&mut self, idx: u32, op: &Op) -> Option<String> {
         let call: PendingCall = self.call_stack.pop()?;
-        let args: String = call.args.join(", ");
+        let args: String = call
+            .args
+            .iter()
+            .map(PendingArgument::render)
+            .collect::<Vec<String>>()
+            .join(", ");
         let text: String = if call.is_method {
             let sep: &str = if call.is_static {
                 "::"
@@ -5181,10 +5379,17 @@ const REASON_COMPOUND_OPERATOR: &str =
     "the compound assignment operator is not a php 8 binary operator";
 const LIMITATION_OPAQUE_ARRAY_LITERAL: &str = "the constant array literal's elements are not carried in this op array, so an empty array \
      and a populated one are indistinguishable here";
+const LIMITATION_VARIADIC_PARAMETER_REFERENCE: &str = "the op array does not carry parameter metadata, so a by-value variadic parameter and a by-reference variadic parameter are indistinguishable";
 const REASON_TYPE_CHECK: &str =
     "the type check names no php 8 type combination this container can spell";
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
+const REASON_CALL_ARGUMENT_NAME: &str =
+    "the named call argument has no literal php identifier in this op array";
+const REASON_CALL_ARGUMENT_SHAPE: &str =
+    "the call argument order, container evidence, or bounded render shape is invalid";
+const REASON_VARIADIC_PARAMETER_SHAPE: &str =
+    "the variadic receive does not name the cv immediately after the fixed parameters";
 const REASON_LIST_DESTRUCTURING: &str = "list destructuring requires a literal key, a defined container, and one bounded assignment tree";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
 const REASON_GOTO_TARGET: &str = "a jump targets a position no label can be placed at, so this whole function is \
@@ -5360,6 +5565,7 @@ const fn is_rope_intermediate(opcode: u8) -> bool {
     is_binary(opcode)
         || is_isset_isempty(opcode)
         || is_send(opcode)
+        || matches!(opcode, op::SEND_UNPACK | op::CHECK_UNDEF_ARGS)
         || matches!(
             opcode,
             op::NOP
@@ -5642,7 +5848,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[], 0).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(
                 stmts.len(),
@@ -5706,7 +5912,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[], 0).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(stmts.len(), rope_count.saturating_mul(4));
             elapsed.as_secs_f64()
@@ -5739,7 +5945,7 @@ mod oparray_bounds_tests {
         ];
         let literals: Vec<Literal> = vec![Literal::Bool(true)];
         let var_names: Vec<Option<String>> = Vec::new();
-        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
+        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[], 0).lift();
         assert!(
             matches!(stmts.first(), Some(Stmt::DoWhile { .. })),
             "back-jump target present in cache should still structure a do-while, got {stmts:?}"

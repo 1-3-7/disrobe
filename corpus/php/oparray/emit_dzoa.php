@@ -72,8 +72,10 @@ const OPMAP = [
     'RETURN' => 62,
     'RECV' => 63,
     'RECV_INIT' => 64,
+    'RECV_VARIADIC' => 164,
     'SEND_VAL' => 65,
     'SEND_VAR_EX' => 66,
+    'SEND_UNPACK' => 165,
     'NEW' => 68,
     'INIT_NS_FCALL_BY_NAME' => 69,
     'FREE' => 70,
@@ -132,6 +134,7 @@ const OPMAP = [
     'SWITCH_STRING' => 188,
     'MATCH' => 195,
     'JMP_NULL' => 198,
+    'CHECK_UNDEF_ARGS' => 199,
     'STRLEN' => 210,
     'COUNT' => 211,
     'VERIFY_RETURN_TYPE' => 212,
@@ -990,10 +993,33 @@ function parse_dump(string $text): array
             continue;
         }
 
+        if ($mnemonic === 'RECV_VARIADIC') {
+            $position = $tokens[0] ?? '';
+            if (count($tokens) !== 1 || preg_match('/^\d+$/', trim($position)) !== 1) {
+                fail("RECV_VARIADIC at line $addr does not carry one numeric parameter position");
+            }
+            $op = build_op($mnemonic, $resultTok, [], $current['oa'], $addr + 1);
+            $op->op1 = (int) $position;
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
         $isSend = str_starts_with($mnemonic, 'SEND_');
         if ($isSend) {
-            $valueTok = $tokens[0] ?? '';
-            $op = build_op('SEND_VAL', [OT_UNUSED, 0], [$valueTok], $current['oa'], $addr + 1);
+            if (count($tokens) < 1 || count($tokens) > 2) {
+                fail("$mnemonic at line $addr carries " . count($tokens) . ' operands, expected one or two');
+            }
+            $named = isset($tokens[1]) && preg_match('/^string\("/', trim($tokens[1])) === 1;
+            $encodedMnemonic = $mnemonic === 'SEND_UNPACK' || $named ? $mnemonic : 'SEND_VAL';
+            $encodedOperands = $named ? $tokens : [$tokens[0]];
+            $op = build_op(
+                $encodedMnemonic,
+                [OT_UNUSED, 0],
+                $encodedOperands,
+                $current['oa'],
+                $addr + 1
+            );
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;
