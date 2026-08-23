@@ -1335,12 +1335,17 @@ mod tests {
     #[test]
     fn the_published_coverage_note_states_the_case_it_does_not_cover() {
         assert!(
-            OPERAND_ORDER_COVERAGE.contains("register-to-register"),
-            "the note must name the case that has no witness"
+            OPERAND_ORDER_COVERAGE.contains(
+                "a register-to-register instruction sets neither, so operands reversed between \
+                 two registers are not covered"
+            ),
+            "the note must tie the uncovered case to the absent witness in one claim; naming \
+             both separately would survive an edit that dismantles the link between them"
         );
         assert!(
-            OPERAND_ORDER_COVERAGE.contains("not covered"),
-            "the note must not read as a closed hole"
+            OPERAND_ORDER_COVERAGE.contains("record which operand is the destination"),
+            "the note must keep naming the producer-side fix, so this guard cannot be read as \
+             the final answer"
         );
     }
 
