@@ -4,12 +4,10 @@ use std::path::{Path, PathBuf};
 use wasmparser::{Parser, Payload};
 
 use disrobe_pass_wasm_deob::{
-    ComponentManifest, FunctionCfg, FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget,
-    ModuleSignatures, ModuleSummary, RecoveredModule, RecoveryReport, ThreadsReport,
-    TypeScriptModuleLift, analyze_module, build_function_cfg, c_runtime_prelude,
-    extract_signatures, lift_gc_module, lift_module_to_wat, parse_component_manifest,
-    recover_gc_types, recover_module, rust_runtime_prelude, scan_threads,
-    try_lift_functions_from_module, try_lift_typescript_module, typescript_runtime_prelude,
+    ComponentManifest, FunctionCfg, FunctionSig, GcHirModule, GcTypeGraph, LiftTarget,
+    ModuleSignatures, ModuleSourceLift, ModuleSummary, RecoveredModule, RecoveryReport,
+    analyze_module, build_function_cfg, extract_signatures, lift_gc_module, lift_module_source,
+    lift_module_to_wat, parse_component_manifest, recover_gc_types, recover_module,
 };
 
 use super::emit::{EmitKind, EmitSpec, write_applicable_payload, write_not_applicable_stub};
@@ -216,17 +214,10 @@ fn lift_module(
     let stem: String = input_stem(input);
     let out_path: PathBuf =
         out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.lifted.{ext}")));
-    let (combined, func_count): (String, usize) = match target {
-        LiftTarget::Wat => {
-            let sigs: ModuleSignatures =
-                extract_signatures(&bytes).map_err(|e| miette::miette!("DR-WASMDEOB-0001: {e}"))?;
-            let combined: String = assemble_wat(&bytes, &sigs)?;
-            (combined, sigs.defined().len())
-        }
-        LiftTarget::Rust | LiftTarget::TypeScript | LiftTarget::C => {
-            assemble_high_level(&bytes, target)?
-        }
-    };
+    let lifted: ModuleSourceLift =
+        lift_module_source(&bytes, target).map_err(|error| miette::miette!("{error}"))?;
+    let combined: String = lifted.source;
+    let func_count: usize = lifted.functions_emitted;
 
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
@@ -242,36 +233,6 @@ fn lift_module(
     let stub_dir: &Path = out_path.parent().unwrap_or_else(|| Path::new("."));
     apply_emit_stubs(spec, input, stub_dir)?;
     Ok(())
-}
-
-fn assemble_high_level(bytes: &[u8], target: LiftTarget) -> miette::Result<(String, usize)> {
-    if target == LiftTarget::TypeScript {
-        let thread_report: ThreadsReport =
-            scan_threads(bytes).map_err(|error| miette::miette!("{error}"))?;
-        let requires_instance_memory: bool = !thread_report.shared_memories.is_empty();
-        if requires_instance_memory {
-            let module: TypeScriptModuleLift =
-                try_lift_typescript_module(bytes).map_err(|error| miette::miette!("{error}"))?;
-            return Ok((module.source, module.functions_emitted));
-        }
-    }
-    let mut combined: String = match target {
-        LiftTarget::Rust => rust_runtime_prelude().to_owned(),
-        LiftTarget::TypeScript => typescript_runtime_prelude().to_owned(),
-        LiftTarget::C => c_runtime_prelude().to_owned(),
-        LiftTarget::Wat => String::new(),
-    };
-    let results: Vec<LiftResult> = try_lift_functions_from_module(bytes, target)
-        .map_err(|error| miette::miette!("{error}"))?;
-    let function_count: usize = results.len();
-    for result in results {
-        combined.push('\n');
-        combined.push_str(&result.pseudo_source);
-        if !result.pseudo_source.ends_with('\n') {
-            combined.push('\n');
-        }
-    }
-    Ok((combined, function_count))
 }
 
 fn assemble_wat(bytes: &[u8], sigs: &ModuleSignatures) -> miette::Result<String> {

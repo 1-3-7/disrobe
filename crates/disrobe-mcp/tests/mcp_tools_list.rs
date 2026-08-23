@@ -31,7 +31,13 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
     for expected in ["auto", "decompile"] {
         assert!(names.contains(&expected), "missing chain tool {expected}");
     }
-    let expected_count: usize = if cfg!(feature = "chain") { 14 } else { 12 };
+    #[cfg(feature = "wasm")]
+    assert!(
+        names.contains(&"wasm_lift"),
+        "missing WebAssembly lift tool"
+    );
+    let expected_count: usize =
+        13 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
     assert_eq!(
         tools.len(),
         expected_count,
@@ -135,5 +141,15 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
             t.input_schema["properties"].get("bytes_b64").is_some(),
             "tool {name} must accept bytes_b64"
         );
+    }
+    #[cfg(feature = "wasm")]
+    {
+        let tool: &rmcp::model::Tool = tools
+            .iter()
+            .find(|tool: &&rmcp::model::Tool| tool.name == "wasm_lift")
+            .unwrap();
+        assert!(tool.input_schema["properties"].get("bytes_b64").is_some());
+        assert!(tool.input_schema["properties"].get("target").is_some());
+        assert!(tool.output_schema.is_some());
     }
 }

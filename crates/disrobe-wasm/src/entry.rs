@@ -45,11 +45,12 @@ use disrobe_pass_swift_objc::{SwiftObjcReport, analyze as swift_objc_analyze};
 use disrobe_pass_wasm_deob::{
     ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg, FunctionSig,
     GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
-    ModuleSummary, RecoveredModule, RecoveryReport, SourceMap, WasmDetection, analyze_module,
-    build_function_cfg, c_runtime_prelude, extract_signatures, lift_component_manifest,
-    lift_gc_module, lift_module_faithful_wat, lift_module_to_wat, parse_component_manifest,
-    parse_source_map, recover_gc_types, recover_module, rust_runtime_prelude, scan_memories,
-    scan_module_eh, try_lift_functions_from_module, typescript_runtime_prelude,
+    ModuleSummary, RecoveredModule, RecoveryReport, SourceMap, TypeScriptModuleLift, WasmDetection,
+    analyze_module, build_function_cfg, c_runtime_prelude, extract_signatures,
+    lift_component_manifest, lift_gc_module, lift_module_faithful_wat, lift_module_to_wat,
+    parse_component_manifest, parse_source_map, recover_gc_types, recover_module,
+    rust_runtime_prelude, scan_memories, scan_module_eh, scan_threads,
+    try_lift_functions_from_module, try_lift_typescript_module, typescript_runtime_prelude,
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 use serde::Serialize;
@@ -671,6 +672,22 @@ fn assemble_high_level(
     target: LiftTarget,
     target_label: &'static str,
 ) -> Result<WasmHighLevelResult, String> {
+    if target == LiftTarget::TypeScript
+        && !scan_threads(bytes)
+            .map_err(|error| format!("wasm threads: {error}"))?
+            .shared_memories
+            .is_empty()
+    {
+        let module: TypeScriptModuleLift =
+            try_lift_typescript_module(bytes).map_err(|error| format!("wasm lift: {error}"))?;
+        return Ok(WasmHighLevelResult {
+            ok: true,
+            format: "wasm",
+            target: target_label,
+            function_count: module.functions_emitted,
+            source: module.source,
+        });
+    }
     let mut source: String = match target {
         LiftTarget::Rust => rust_runtime_prelude().to_owned(),
         LiftTarget::TypeScript => typescript_runtime_prelude().to_owned(),

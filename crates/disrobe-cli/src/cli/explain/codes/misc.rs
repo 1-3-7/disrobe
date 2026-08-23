@@ -50,6 +50,28 @@ pub(super) const MISC: &[CodeEntry] = &[
         crate_path: "crates/disrobe-pass-wasm-deob/src/error.rs",
     },
     CodeEntry {
+        code: "DR-WASMDEOB-0004",
+        title: "WebAssembly source output limit",
+        description: "the lifted source would exceed the configured output limit.",
+        common_causes: &["a large module", "a small consumer output limit"],
+        common_fixes: &[
+            "use a smaller module",
+            "raise the output limit when memory permits",
+        ],
+        crate_path: "crates/disrobe-pass-wasm-deob/src/error.rs",
+    },
+    CodeEntry {
+        code: "DR-WASMDEOB-0005",
+        title: "WebAssembly lifting input limit",
+        description: "the module exceeds the configured lifting input limit.",
+        common_causes: &["a large module", "a small consumer lifting limit"],
+        common_fixes: &[
+            "use a smaller module",
+            "raise the lifting limit when memory permits",
+        ],
+        crate_path: "crates/disrobe-pass-wasm-deob/src/error.rs",
+    },
+    CodeEntry {
         code: "DR-MARSHAL-0001",
         title: "marshal EOF",
         description: "input ran out before parsing completed.",

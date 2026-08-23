@@ -3,7 +3,8 @@ use std::fmt::Arguments;
 use wasmparser::{BlockType, Catch, FunctionBody, Operator, ValType};
 
 use crate::MAX_RENDER_INDENT;
-use crate::lift::{LiftCoverage, LiftResult, LiftTarget};
+use crate::error::{Error, Result as CrateResult};
+use crate::lift::{LiftCoverage, LiftResult, LiftTarget, ModuleRenderBudget, ModuleSourceBuffer};
 use crate::op_names::operator_mnemonic;
 use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
 use crate::ssa::{binop_kind, unop_kind};
@@ -46,28 +47,67 @@ pub(crate) enum RenderMode {
 
 #[must_use]
 pub(crate) fn lift_function_body_wat(body: &FunctionBody<'_>, sig: &FunctionSig) -> LiftResult {
-    let func: WatFunc = render_func(body, sig, 0, RenderMode::SingleFunction);
-    let mut out: String = String::with_capacity(func.text.len() + 96);
-    out.push_str(&module_prelude(&func.globals_used, &func.reqs));
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+    match lift_function_body_wat_with_budget(body, sig, &mut budget) {
+        Ok(result) => result,
+        Err(error) => unreachable!("unbounded WAT rendering failed: {error}"),
+    }
+}
+
+pub(crate) fn lift_function_body_wat_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    budget: &mut ModuleRenderBudget,
+) -> CrateResult<LiftResult> {
+    let func: WatFunc = render_func_in_module_with_budget(
+        body,
+        sig,
+        0,
+        RenderMode::SingleFunction,
+        &[],
+        &[],
+        budget,
+    )?;
+    let mut out: String = module_prelude_with_budget(&func.globals_used, &func.reqs, budget)?;
+    let mut additions: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
     if func.has_calls {
-        out.push_str("  (type $stub (func))\n");
+        additions.push_str("  (type $stub (func))\n");
     }
-    emit_ref_func_targets(&mut out, &func.reqs);
+    emit_ref_func_targets(&mut additions, &func.reqs);
+    let additions: String = additions.finish()?;
+    out.push_str(&additions);
     out.push_str(&func.text);
+    let mut suffix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
     if sig.exported {
-        push_line!(out, "  (export \"{}\" (func $f0))", sig.name);
+        push_line!(suffix, "  (export \"{}\" (func $f0))", sig.name);
     }
-    out.push_str(")\n");
-    LiftResult {
+    suffix.push_str(")\n");
+    let suffix: String = suffix.finish()?;
+    out.push_str(&suffix);
+    Ok(LiftResult {
         target: LiftTarget::Wat,
         pseudo_source: out,
         blocks_emitted: func.blocks_emitted,
         coverage: func.coverage,
-    }
+    })
 }
 
-fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String {
-    let mut out: String = String::from("(module\n");
+fn module_prelude_with_budget(
+    globals_used: &[(u32, ValType)],
+    reqs: &FeatureReqs,
+    budget: &mut ModuleRenderBudget,
+) -> CrateResult<String> {
+    let mut out: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    out.push_str("(module\n");
+    emit_module_prelude(&mut out, globals_used, reqs);
+    out.finish()
+}
+
+fn emit_module_prelude(
+    mut out: &mut impl std::fmt::Write,
+    globals_used: &[(u32, ValType)],
+    reqs: &FeatureReqs,
+) {
     emit_gc_type_decls(&mut out, reqs);
     emit_tag_decls(&mut out, reqs);
     let mut seen: Vec<u32> = Vec::new();
@@ -102,9 +142,9 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
     for mem in &reqs.extra_memories {
         push_line!(out, "  (memory $m{mem} {}1 16)", idx64(reqs, *mem));
     }
-    out.push_str("  (table $dr_tbl_func 1 funcref)\n");
+    push_text!(out, "  (table $dr_tbl_func 1 funcref)\n");
     if reqs.externref_table {
-        out.push_str("  (table $dr_tbl_ext 1 externref)\n");
+        push_text!(out, "  (table $dr_tbl_ext 1 externref)\n");
     }
     for seg in &reqs.data_segments {
         push_line!(out, "  (data $d{seg} \"\\00\\00\\00\\00\")");
@@ -112,10 +152,9 @@ fn module_prelude(globals_used: &[(u32, ValType)], reqs: &FeatureReqs) -> String
     for seg in &reqs.elem_segments {
         push_line!(out, "  (elem $e{seg} funcref)");
     }
-    out
 }
 
-fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
+fn emit_gc_type_decls(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs) {
     for (idx, field_count) in &reqs.struct_types {
         if reqs.array_types.contains(idx)
             || reqs.func_types.contains_key(idx)
@@ -133,7 +172,7 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
                 .unwrap_or(ValType::I32);
             push_text!(out, " (field (mut {}))", val_type_str(ty));
         }
-        out.push_str("))\n");
+        push_text!(out, "))\n");
     }
     for idx in &reqs.array_types {
         if reqs.func_types.contains_key(idx) || reqs.cont_types.contains_key(idx) {
@@ -156,7 +195,7 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
         for ty in results {
             push_text!(out, " (result {})", val_type_str(*ty));
         }
-        out.push_str("))\n");
+        push_text!(out, "))\n");
     }
     for (idx, func_type_index) in &reqs.cont_types {
         push_line!(out, "  (type $t{idx} (cont $t{func_type_index}))");
@@ -173,17 +212,17 @@ fn emit_gc_type_decls(mut out: &mut String, reqs: &FeatureReqs) {
     }
 }
 
-fn emit_tag_decls(mut out: &mut String, reqs: &FeatureReqs) {
+fn emit_tag_decls(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs) {
     for (idx, params) in &reqs.tags {
         push_text!(out, "  (tag $tag{idx} (param");
         for ty in params {
             push_text!(out, " {}", val_type_str(*ty));
         }
-        out.push_str("))\n");
+        push_text!(out, "))\n");
     }
 }
 
-fn emit_ref_func_targets(mut out: &mut String, reqs: &FeatureReqs) {
+fn emit_ref_func_targets(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs) {
     if reqs.ref_func_indices.is_empty() {
         return;
     }
@@ -196,22 +235,22 @@ fn emit_ref_func_targets(mut out: &mut String, reqs: &FeatureReqs) {
             for ty in results {
                 push_text!(out, " ({}.const 0)", val_type_str(*ty));
             }
-            out.push_str(")\n");
+            push_text!(out, ")\n");
         } else if let Some((t, (_, results))) = reqs.func_types.iter().next() {
             push_text!(out, "  (func $rf{idx} (type $t{t})");
             for ty in results {
                 push_text!(out, " ({}.const 0)", val_type_str(*ty));
             }
-            out.push_str(")\n");
+            push_text!(out, ")\n");
         } else {
             push_line!(out, "  (func $rf{idx})");
         }
     }
-    out.push_str("  (elem declare func");
+    push_text!(out, "  (elem declare func");
     for idx in &reqs.ref_func_indices {
         push_text!(out, " $rf{idx}");
     }
-    out.push_str(")\n");
+    push_text!(out, ")\n");
 }
 
 #[must_use]
@@ -366,18 +405,30 @@ pub fn lift_module_to_wat(
     funcs: &[(FunctionBody<'_>, FunctionSig)],
     defined_offset: u32,
 ) -> String {
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+    match lift_module_to_wat_with_budget(funcs, defined_offset, &mut budget) {
+        Ok((source, _)) => source,
+        Err(error) => unreachable!("unbounded WAT rendering failed: {error}"),
+    }
+}
+
+pub(crate) fn lift_module_to_wat_with_budget(
+    funcs: &[(FunctionBody<'_>, FunctionSig)],
+    defined_offset: u32,
+    budget: &mut ModuleRenderBudget,
+) -> CrateResult<(String, LiftCoverage)> {
     let mut globals: Vec<(u32, ValType)> = Vec::new();
     let mut bodies: String = String::new();
-    let mut exports: String = String::new();
-    let mut imports: String = String::new();
+    let mut imports_buffer: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
     let total: u32 = defined_offset.saturating_add(u32::try_from(funcs.len()).unwrap_or(u32::MAX));
 
     for i in 0..defined_offset {
         push_line!(
-            imports,
+            imports_buffer,
             "  (func $f{i} (param i32) (result i32) i32.const 0)"
         );
     }
+    let imports: String = imports_buffer.finish()?;
     let mut module_sigs: Vec<(Vec<ValType>, Vec<ValType>)> = Vec::new();
     for _ in 0..defined_offset {
         module_sigs.push((vec![ValType::I32], vec![ValType::I32]));
@@ -386,17 +437,20 @@ pub fn lift_module_to_wat(
         module_sigs.push((sig.params.clone(), sig.results.clone()));
     }
     let mut reqs: FeatureReqs = FeatureReqs::default();
+    let mut coverage: LiftCoverage = LiftCoverage::default();
+    let mut exported: Vec<(String, u32)> = Vec::new();
     for (offset, (body, sig)) in funcs.iter().enumerate() {
         let global_index: u32 =
             defined_offset.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
-        let f: WatFunc = render_func_in_module(
+        let f: WatFunc = render_func_in_module_with_budget(
             body,
             sig,
             global_index,
             RenderMode::WholeModule,
             &module_sigs,
             &[],
-        );
+            budget,
+        )?;
         for g in f.globals_used {
             if !globals.iter().any(|(i, _)| *i == g.0) {
                 globals.push(g);
@@ -404,42 +458,52 @@ pub fn lift_module_to_wat(
         }
         reqs.merge(&f.reqs);
         bodies.push_str(&f.text);
+        coverage.total_ops = coverage
+            .total_ops
+            .checked_add(f.coverage.total_ops)
+            .ok_or_else(|| {
+                Error::Parse("module lift operation count exceeds host limits".to_owned())
+            })?;
+        coverage.translated_ops = coverage
+            .translated_ops
+            .checked_add(f.coverage.translated_ops)
+            .ok_or_else(|| {
+                Error::Parse("module lift translation count exceeds host limits".to_owned())
+            })?;
+        coverage.untranslated.extend(f.coverage.untranslated);
         if sig.exported {
-            push_line!(
-                exports,
-                "  (export \"{}\" (func $f{global_index}))",
-                sig.name
-            );
+            exported.push((sig.name.clone(), global_index));
         }
     }
     let _ = total;
-    let mut out: String = module_prelude(&globals, &reqs);
+    let mut out: String = module_prelude_with_budget(&globals, &reqs, budget)?;
     out.push_str(&imports);
-    emit_elem_declare_for_real_funcs(&mut out, &reqs);
+    let mut suffix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    emit_elem_declare_for_real_funcs(&mut suffix, &reqs);
+    let elem_declaration: String = suffix.finish()?;
+    out.push_str(&elem_declaration);
     out.push_str(&bodies);
+    let mut exports: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    for (name, global_index) in exported {
+        push_line!(exports, "  (export \"{name}\" (func $f{global_index}))");
+    }
+    let exports: String = exports.finish()?;
     out.push_str(&exports);
+    budget.charge(2);
+    budget.ensure()?;
     out.push_str(")\n");
-    out
+    Ok((out, coverage))
 }
 
-fn emit_elem_declare_for_real_funcs(mut out: &mut String, reqs: &FeatureReqs) {
+fn emit_elem_declare_for_real_funcs(mut out: &mut impl std::fmt::Write, reqs: &FeatureReqs) {
     if reqs.ref_func_indices.is_empty() {
         return;
     }
-    out.push_str("  (elem declare func");
+    push_text!(out, "  (elem declare func");
     for idx in &reqs.ref_func_indices {
         push_text!(out, " $f{idx}");
     }
-    out.push_str(")\n");
-}
-
-fn render_func(
-    body: &FunctionBody<'_>,
-    sig: &FunctionSig,
-    func_index: u32,
-    mode: RenderMode,
-) -> WatFunc {
-    render_func_in_module(body, sig, func_index, mode, &[], &[])
+    push_text!(out, ")\n");
 }
 
 pub(crate) fn render_func_in_module(
@@ -450,7 +514,31 @@ pub(crate) fn render_func_in_module(
     module_sigs: &[(Vec<ValType>, Vec<ValType>)],
     block_func_types: &[(Vec<ValType>, Vec<ValType>)],
 ) -> WatFunc {
-    let mut text: String = String::with_capacity(256);
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+    match render_func_in_module_with_budget(
+        body,
+        sig,
+        func_index,
+        mode,
+        module_sigs,
+        block_func_types,
+        &mut budget,
+    ) {
+        Ok(function) => function,
+        Err(error) => unreachable!("unbounded WAT function rendering failed: {error}"),
+    }
+}
+
+fn render_func_in_module_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    func_index: u32,
+    mode: RenderMode,
+    module_sigs: &[(Vec<ValType>, Vec<ValType>)],
+    block_func_types: &[(Vec<ValType>, Vec<ValType>)],
+    budget: &mut ModuleRenderBudget,
+) -> CrateResult<WatFunc> {
+    let mut text: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
     push_text!(text, "  (func $f{func_index}");
     for (i, ty) in sig.params.iter().enumerate() {
         push_text!(text, " (param $p{i} {})", val_type_str(*ty));
@@ -476,33 +564,38 @@ pub(crate) fn render_func_in_module(
     let mut has_calls: bool = false;
     let mut coverage: LiftCoverage = LiftCoverage::default();
     let mut reqs: FeatureReqs = FeatureReqs::default();
-    if render_operators(
-        body,
-        sig,
-        &mut text,
-        &mut globals_used,
-        &mut blocks_emitted,
-        &mut has_calls,
-        &mut coverage,
-        &mut reqs,
-        mode,
-        module_sigs,
-        block_func_types,
-    )
-    .is_err()
-    {
-        coverage.record_untranslated("<operator-decode-failure>");
+    let rendered: std::result::Result<(), ()> = if text.ensure().is_ok() {
+        render_operators(
+            body,
+            sig,
+            &mut text,
+            &mut globals_used,
+            &mut blocks_emitted,
+            &mut has_calls,
+            &mut coverage,
+            &mut reqs,
+            mode,
+            module_sigs,
+            block_func_types,
+        )
+    } else {
+        Err(())
+    };
+    if rendered.is_err() && text.ensure().is_ok() {
+        let mnemonic: &str = "<operator-decode-failure>";
+        text.charge_coverage_entry(mnemonic.len())?;
+        coverage.record_untranslated(mnemonic);
         text.push_str("    unreachable\n");
     }
     text.push_str("  )\n");
-    WatFunc {
-        text,
+    Ok(WatFunc {
+        text: text.finish()?,
         globals_used,
         blocks_emitted,
         has_calls,
         coverage,
         reqs,
-    }
+    })
 }
 
 fn read_local_decls(body: &FunctionBody<'_>) -> Result<Vec<ValType>, ()> {
@@ -524,7 +617,7 @@ fn read_local_decls(body: &FunctionBody<'_>) -> Result<Vec<ValType>, ()> {
 fn render_operators(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
-    mut out: &mut String,
+    mut out: &mut ModuleSourceBuffer<'_>,
     globals_used: &mut Vec<(u32, ValType)>,
     blocks_emitted: &mut usize,
     has_calls: &mut bool,
@@ -588,11 +681,14 @@ fn render_operators(
             }
             Rendered::Translated(None) => coverage.record_translated(),
             Rendered::Untranslated => {
-                coverage.record_untranslated(operator_mnemonic(op));
+                let mnemonic: String = operator_mnemonic(op);
+                out.charge_coverage_entry(mnemonic.len()).map_err(|_| ())?;
+                coverage.record_untranslated(mnemonic);
                 let pad: String = "  ".repeat(depth.min(MAX_RENDER_INDENT));
                 push_line!(out, "{pad}unreachable");
             }
         }
+        out.ensure().map_err(|_| ())?;
         if matches!(
             op,
             Operator::Block { .. }

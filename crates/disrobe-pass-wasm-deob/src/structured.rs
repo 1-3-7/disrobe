@@ -9,7 +9,10 @@ use crate::error::{AtomicMemoryRefusal, Error, Result};
 use crate::gc_types::{
     ArrayTypeRecord, GcStorageKind, GcTypeGraph, StructTypeRecord, recover_gc_types,
 };
-use crate::lift::{CalleeNames, HighLang, LiftCoverage, rust_op_fn_name, rust_unop_fn_name};
+use crate::lift::{
+    CalleeNames, HighLang, LiftCoverage, ModuleRenderBudget, ModuleSourceBuffer, rust_op_fn_name,
+    rust_unop_fn_name,
+};
 use crate::memory64::{MemoryRecord, ModuleMemoryScan, scan_module_memories};
 use crate::op_names::operator_mnemonic;
 use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
@@ -266,7 +269,7 @@ struct Frame {
     merged_into: Option<usize>,
 }
 
-struct Translator<'a> {
+struct Translator<'a, 'budget> {
     lang: HighLang,
     typescript_module: bool,
     typescript_standalone: bool,
@@ -277,7 +280,7 @@ struct Translator<'a> {
     local_names: Vec<String>,
     stack: Vec<Operand>,
     control: Vec<Frame>,
-    out: String,
+    out: ModuleSourceBuffer<'budget>,
     next_tmp: u32,
     next_label: usize,
     indent: usize,
@@ -294,23 +297,52 @@ pub(crate) fn lift_body_structured(
     callees: &CalleeNames,
     lang: HighLang,
 ) -> Result<(String, usize, LiftCoverage)> {
-    lift_body_structured_inner(body, sig, callees, lang, false, false)
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+    lift_body_structured_inner(body, sig, callees, lang, false, false, &mut budget)
 }
 
-pub(crate) fn lift_body_structured_typescript_module(
+pub(crate) fn lift_body_structured_with_budget(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
     callees: &CalleeNames,
+    lang: HighLang,
+    budget: &mut ModuleRenderBudget,
 ) -> Result<(String, usize, LiftCoverage)> {
-    lift_body_structured_inner(body, sig, callees, HighLang::TypeScript, true, false)
+    lift_body_structured_inner(body, sig, callees, lang, false, false, budget)
 }
 
-pub(crate) fn lift_body_structured_typescript_standalone(
+pub(crate) fn lift_body_structured_typescript_module_with_budget(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
     callees: &CalleeNames,
+    budget: &mut ModuleRenderBudget,
 ) -> Result<(String, usize, LiftCoverage)> {
-    lift_body_structured_inner(body, sig, callees, HighLang::TypeScript, false, true)
+    lift_body_structured_inner(
+        body,
+        sig,
+        callees,
+        HighLang::TypeScript,
+        true,
+        false,
+        budget,
+    )
+}
+
+pub(crate) fn lift_body_structured_typescript_standalone_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    budget: &mut ModuleRenderBudget,
+) -> Result<(String, usize, LiftCoverage)> {
+    lift_body_structured_inner(
+        body,
+        sig,
+        callees,
+        HighLang::TypeScript,
+        false,
+        true,
+        budget,
+    )
 }
 
 fn lift_body_structured_inner(
@@ -320,6 +352,7 @@ fn lift_body_structured_inner(
     lang: HighLang,
     typescript_module: bool,
     typescript_standalone: bool,
+    budget: &mut ModuleRenderBudget,
 ) -> Result<(String, usize, LiftCoverage)> {
     let locals: Vec<ValType> = read_locals(body, &sig.params)?;
 
@@ -333,7 +366,7 @@ fn lift_body_structured_inner(
     let targeted_labels: std::collections::BTreeSet<usize> = scan_branch_targets(&ops);
     let loop_block_merges: BTreeMap<usize, usize> = scan_loop_block_merges(&ops);
 
-    let mut t: Translator<'_> = Translator {
+    let mut t: Translator<'_, '_> = Translator {
         lang,
         typescript_module,
         typescript_standalone,
@@ -344,7 +377,7 @@ fn lift_body_structured_inner(
         locals,
         stack: Vec::new(),
         control: Vec::new(),
-        out: String::new(),
+        out: ModuleSourceBuffer::new(budget),
         next_tmp: 0,
         next_label: 0,
         indent: 1,
@@ -354,15 +387,21 @@ fn lift_body_structured_inner(
         targeted_labels,
         loop_block_merges,
     };
+    t.emit_signature_prefix();
     t.emit_local_decls();
+    t.out.ensure()?;
 
     let op_count: usize = ops.len();
     for (i, op) in ops.iter().enumerate() {
         let is_final_end: bool = i + 1 == op_count && matches!(op, Operator::End);
         t.translate(op, is_final_end)?;
+        t.out.ensure()?;
     }
     t.finish();
-    Ok((t.out, t.blocks_emitted, t.coverage))
+    let blocks_emitted: usize = t.blocks_emitted;
+    let coverage: LiftCoverage = t.coverage;
+    let source: String = t.out.finish()?;
+    Ok((source, blocks_emitted, coverage))
 }
 
 fn scan_branch_targets(ops: &[Operator<'_>]) -> std::collections::BTreeSet<usize> {
@@ -512,59 +551,57 @@ fn read_locals(body: &FunctionBody<'_>, params: &[ValType]) -> Result<Vec<ValTyp
     Ok(out)
 }
 
-impl Translator<'_> {
-    fn emit_signature_prefix(&self) -> String {
-        let mut s: String = String::new();
+impl Translator<'_, '_> {
+    fn emit_signature_prefix(&mut self) {
         match self.lang {
             HighLang::Rust => {
-                push_text!(s, "pub fn {}(", self.sig.name);
+                push_text!(self.out, "pub fn {}(", self.sig.name);
                 for (i, ty) in self.sig.params.iter().enumerate() {
                     if i > 0 {
-                        s.push_str(", ");
+                        self.out.push_str(", ");
                     }
                     let name: String = self.param_name(i);
-                    push_text!(s, "{name}: {}", rust_ty(*ty));
+                    push_text!(self.out, "{name}: {}", rust_ty(*ty));
                 }
-                s.push(')');
+                self.out.push(')');
                 if let Some(ret) = self.sig.results.first() {
-                    push_text!(s, " -> {}", rust_ty(*ret));
+                    push_text!(self.out, " -> {}", rust_ty(*ret));
                 }
-                s.push_str(" {\n");
+                self.out.push_str(" {\n");
             }
             HighLang::TypeScript => {
-                push_text!(s, "export function {}(", self.sig.name);
+                push_text!(self.out, "export function {}(", self.sig.name);
                 for (i, ty) in self.sig.params.iter().enumerate() {
                     if i > 0 {
-                        s.push_str(", ");
+                        self.out.push_str(", ");
                     }
                     let name: String = self.param_name(i);
-                    push_text!(s, "{name}: {}", typescript_type(*ty));
+                    push_text!(self.out, "{name}: {}", typescript_type(*ty));
                 }
                 let ret: &str = self
                     .sig
                     .results
                     .first()
                     .map_or("void", |t| typescript_type(*t));
-                push_line!(s, "): {ret} {{");
+                push_line!(self.out, "): {ret} {{");
             }
             HighLang::C => {
                 let ret: &str = self.sig.results.first().map_or("void", |t| c_ty(*t));
-                push_text!(s, "{ret} {}(", self.sig.name);
+                push_text!(self.out, "{ret} {}(", self.sig.name);
                 if self.sig.params.is_empty() {
-                    s.push_str("void");
+                    self.out.push_str("void");
                 } else {
                     for (i, ty) in self.sig.params.iter().enumerate() {
                         if i > 0 {
-                            s.push_str(", ");
+                            self.out.push_str(", ");
                         }
                         let name: String = self.param_name(i);
-                        push_text!(s, "{} {name}", c_ty(*ty));
+                        push_text!(self.out, "{} {name}", c_ty(*ty));
                     }
                 }
-                s.push_str(") {\n");
+                self.out.push_str(") {\n");
             }
         }
-        s
     }
 
     fn emit_local_decls(&mut self) {
@@ -911,7 +948,7 @@ impl Translator<'_> {
         if self.try_misc(op)? {
             return Ok(());
         }
-        self.emit_untranslated(op);
+        self.emit_untranslated(op)?;
         Ok(())
     }
 
@@ -1043,8 +1080,9 @@ impl Translator<'_> {
         Ok(true)
     }
 
-    fn emit_untranslated(&mut self, op: &Operator<'_>) {
+    fn emit_untranslated(&mut self, op: &Operator<'_>) -> Result<()> {
         let mnemonic: String = operator_mnemonic(op);
+        self.out.charge_coverage_entry(mnemonic.len())?;
         match self.lang {
             HighLang::Rust | HighLang::C => {
                 self.emit_stmt(&format!(
@@ -1058,6 +1096,7 @@ impl Translator<'_> {
             }
         }
         self.coverage.record_untranslated(mnemonic);
+        Ok(())
     }
 
     fn helper(&self, rust_name: &str) -> String {
@@ -3217,12 +3256,7 @@ impl Translator<'_> {
     }
 
     fn finish(&mut self) {
-        let prefix: String = self.emit_signature_prefix();
-        let mut full: String = String::with_capacity(prefix.len() + self.out.len() + 4);
-        full.push_str(&prefix);
-        full.push_str(&self.out);
-        full.push_str("}\n");
-        self.out = full;
+        self.out.push_str("}\n");
     }
 }
 

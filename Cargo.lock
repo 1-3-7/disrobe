@@ -2154,6 +2154,7 @@ dependencies = [
  "disrobe-pass-pyfreeze",
  "disrobe-pass-pyinstaller",
  "disrobe-pass-sourcedefender",
+ "disrobe-pass-wasm-deob",
  "disrobe-passes",
  "disrobe-query",
  "iced-x86",
@@ -3108,6 +3109,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wasmparser 0.250.0",
+ "wat",
 ]
 
 [[package]]

@@ -104,4 +104,14 @@ pub enum Error {
 
     #[error("DR-WASMDEOB-0003: atomic memory model is unsupported: {0}")]
     AtomicMemoryModel(#[from] AtomicMemoryRefusal),
+
+    #[error(
+        "DR-WASMDEOB-0004: lifted module source uses {actual} bytes, exceeding the {limit}-byte limit"
+    )]
+    ModuleSourceLimit { actual: usize, limit: usize },
+
+    #[error(
+        "DR-WASMDEOB-0005: WebAssembly module input uses {actual} bytes, exceeding the {limit}-byte lifting limit"
+    )]
+    ModuleInputLimit { actual: usize, limit: usize },
 }

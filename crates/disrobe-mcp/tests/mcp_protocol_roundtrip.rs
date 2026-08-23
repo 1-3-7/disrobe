@@ -17,6 +17,15 @@ use serde_json::{Map, Value};
 
 type Client = RunningService<RoleClient, ()>;
 
+const ATOMIC_WAIT_NOTIFY_WASM: &[u8] = &[
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0e, 0x02, 0x60, 0x03, 0x7f, 0x7f, 0x7e,
+    0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x03, 0x02, 0x00, 0x01, 0x05, 0x04, 0x01,
+    0x03, 0x01, 0x01, 0x07, 0x13, 0x02, 0x06, 0x77, 0x61, 0x69, 0x74, 0x33, 0x32, 0x00, 0x00, 0x06,
+    0x6e, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x00, 0x01, 0x0a, 0x19, 0x02, 0x0c, 0x00, 0x20, 0x00, 0x20,
+    0x01, 0x20, 0x02, 0xfe, 0x01, 0x02, 0x00, 0x0b, 0x0a, 0x00, 0x20, 0x00, 0x20, 0x01, 0xfe, 0x00,
+    0x02, 0x00, 0x0b,
+];
+
 fn server_command() -> tokio::process::Command {
     let mut cmd: tokio::process::Command =
         tokio::process::Command::new(env!("CARGO_BIN_EXE_disrobe-mcp"));
@@ -270,6 +279,35 @@ async fn initialize_advertises_real_analysis_tools_over_stdio() {
     }
 
     client.cancel().await.expect("graceful client shutdown");
+}
+
+#[cfg(feature = "wasm")]
+#[tokio::test]
+async fn wasm_lift_returns_atomic_wait_and_notify_source_over_stdio() {
+    let client: Client = connect().await;
+    let result: CallToolResult = call(
+        &client,
+        "wasm_lift",
+        args(&[
+            (
+                "bytes_b64",
+                Value::String(BASE64_STANDARD.encode(ATOMIC_WAIT_NOTIFY_WASM)),
+            ),
+            ("target", Value::String("typescript".to_owned())),
+        ]),
+    )
+    .await;
+    let value: Value = structured(&result);
+    let source: &str = str_field(&value, "source");
+
+    assert_eq!(str_field(&value, "schema"), "disrobe.wasm.lift/v1");
+    assert_eq!(str_field(&value, "target"), "typescript");
+    assert_eq!(u64_field(&value, "function_count"), 2);
+    assert_eq!(value["coverage"]["fully_recovered"], Value::Bool(true));
+    assert!(source.contains("wasmMemoryAtomicWait32"));
+    assert!(source.contains("wasmMemoryAtomicNotify"));
+    assert!(source.contains("Atomics.wait"));
+    assert!(source.contains("Atomics.notify"));
 }
 
 #[tokio::test]

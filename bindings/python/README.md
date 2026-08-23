@@ -62,7 +62,7 @@ See `help(disrobe)` for the full function list & per-function docstrings.
 | mach-o | `macho_dump` |
 | jvm / android | `jvm_parse_class`, `jvm_parse_dex`, `jvm_decompile_class`, `jvm_decompile_dex`, `jvm_detect`, `jvm_backends` |
 | .net | `dotnet_parse_pe`, `dotnet_parse_metadata`, `dotnet_detect`, `dotnet_analyze`, `dotnet_decompile`, `dotnet_recover_decoders`, `dotnet_backends` |
-| wasm | `wasm_analyze`, `wasm_detect` |
+| wasm | `wasm_analyze`, `wasm_detect`, `wasm_lift` |
 | js | `js_detect`, `js_unminify`, `js_unbundle` |
 | native | `native_format`, `native_detect`, `native_probe_backends` |
 | pickle | `pickle_disasm`, `pickle_decompile`, `pickle_safety`, `pickle_trace`, `pickle_polyglot`, `pickle_ml_detect` |

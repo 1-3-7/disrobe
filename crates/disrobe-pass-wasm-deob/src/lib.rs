@@ -7,16 +7,19 @@
     clippy::redundant_pub_crate
 )]
 
-pub(crate) fn push_string_fmt(out: &mut String, args: std::fmt::Arguments<'_>) {
+pub(crate) fn push_string_fmt(out: &mut impl std::fmt::Write, args: std::fmt::Arguments<'_>) {
     match std::fmt::write(out, args) {
         Ok(()) => {}
         Err(error) => unreachable!("string formatting failed: {error:?}"),
     }
 }
 
-pub(crate) fn push_string_line(out: &mut String, args: std::fmt::Arguments<'_>) {
+pub(crate) fn push_string_line(out: &mut impl std::fmt::Write, args: std::fmt::Arguments<'_>) {
     push_string_fmt(out, args);
-    out.push('\n');
+    match out.write_char('\n') {
+        Ok(()) => {}
+        Err(error) => unreachable!("string formatting failed: {error:?}"),
+    }
 }
 
 mod analyze;
@@ -95,9 +98,10 @@ pub use js_string_builtins::{
     TEXT_ENCODER_NAMESPACE, scan_js_string_builtins,
 };
 pub use lift::{
-    CalleeNames, LiftCoverage, LiftResult, LiftTarget, TypeScriptModuleLift, lift_function_body,
-    rust_runtime_prelude, try_lift_function_from_module, try_lift_functions_from_module,
-    try_lift_typescript_module, typescript_runtime_prelude,
+    CalleeNames, DEFAULT_MODULE_SOURCE_LIMIT_BYTES, LiftCoverage, LiftResult, LiftTarget,
+    ModuleSourceLift, TypeScriptModuleLift, lift_function_body, lift_module_source,
+    lift_module_source_with_limit, rust_runtime_prelude, try_lift_function_from_module,
+    try_lift_functions_from_module, try_lift_typescript_module, typescript_runtime_prelude,
 };
 pub use lift_c::c_runtime_prelude;
 pub use lift_module_faithful::lift_module_faithful_wat;

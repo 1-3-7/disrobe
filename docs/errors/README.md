@@ -177,3 +177,5 @@ Each `DR-<DOMAIN>-<NNNN>` code in the in-tree registry (`crates/disrobe-cli/src/
 | [DR-SDEF-0010](./DR-SDEF-0010.md) | sourcedefender inlined no decrypt |
 | [DR-WASMDEOB-0001](./DR-WASMDEOB-0001.md) | not a valid WebAssembly module |
 | [DR-WASMDEOB-0002](./DR-WASMDEOB-0002.md) | wasm-deob I/O error |
+| [DR-WASMDEOB-0004](./DR-WASMDEOB-0004.md) | WebAssembly source output limit |
+| [DR-WASMDEOB-0005](./DR-WASMDEOB-0005.md) | WebAssembly lifting input limit |

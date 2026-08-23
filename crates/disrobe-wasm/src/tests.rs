@@ -9,6 +9,14 @@ const UNSAFE_ATOMIC_WASM: &[u8] = &[
     0x03, 0x02, 0x01, 0x00, 0x05, 0x04, 0x01, 0x03, 0x01, 0x02, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f,
     0x61, 0x64, 0x00, 0x00, 0x0a, 0x0a, 0x01, 0x08, 0x00, 0x20, 0x00, 0xfe, 0x10, 0x02, 0x00, 0x0b,
 ];
+const SHARED_ATOMIC_WAT: &str = r#"
+(module
+  (memory (export "memory") 1 1 shared)
+  (func (export "notify") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    memory.atomic.notify))
+"#;
 
 fn write_input(bytes: &[u8]) -> *mut u8 {
     let ptr: *mut u8 = super::disrobe_alloc(bytes.len());
@@ -198,6 +206,16 @@ fn wasm_lift_rust_reports_unsafe_atomic_state() {
         json.get("source").is_none(),
         "unsafe atomic state returned a stub"
     );
+}
+
+#[test]
+fn wasm_lift_ts_uses_the_shared_memory_module_surface() {
+    let module: Vec<u8> = wat::parse_str(SHARED_ATOMIC_WAT).expect("shared module assembles");
+    let json: Value = run(super::wasm_lift_ts, &module);
+    assert_eq!(json["ok"], Value::Bool(true));
+    let source: &str = json["source"].as_str().expect("source");
+    assert!(source.contains("export const instantiate"));
+    assert!(source.contains("Atomics.notify"));
 }
 
 #[test]

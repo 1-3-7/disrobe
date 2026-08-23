@@ -6,6 +6,9 @@ mod chain;
     reason = "parent-only visibility keeps navigation protocol types behind the private module while satisfying unreachable_pub"
 )]
 mod navigation;
+#[cfg(feature = "wasm")]
+#[allow(clippy::redundant_pub_crate)]
+mod wasm;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -39,6 +42,7 @@ const MAX_IMPORT_BYTES: usize = 4096;
 const MAX_INLINE_BASE64_CHARS: usize = 22 * 1024 * 1024;
 const MAX_INLINE_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INLINE_JSON_BYTES: usize = 4 * 1024 * 1024;
+const MAX_WASM_LIFT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROVENANCE_LINES: usize = 262_144;
 const MAX_RENAME_FIELD_BYTES: usize = 4096;
 const MAX_RENAME_NOTE_BYTES: usize = 8192;
@@ -214,6 +218,47 @@ pub struct DecompileOut {
     pub schema: String,
     pub verdict: String,
     pub recovered: Vec<RecoveredSourceOut>,
+}
+
+#[cfg(feature = "wasm")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(crate = "rmcp::schemars")]
+pub enum WasmLiftTarget {
+    Rust,
+    TypeScript,
+    C,
+    Wat,
+}
+
+#[cfg(feature = "wasm")]
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct WasmLiftParams {
+    pub bytes_b64: String,
+    pub target: WasmLiftTarget,
+}
+
+#[cfg(feature = "wasm")]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct WasmLiftCoverageOut {
+    pub total_ops: usize,
+    pub translated_ops: usize,
+    pub fully_recovered: bool,
+    pub untranslated: Vec<String>,
+}
+
+#[cfg(feature = "wasm")]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct WasmLiftOut {
+    pub schema: String,
+    pub target: WasmLiftTarget,
+    pub function_count: usize,
+    pub coverage: WasmLiftCoverageOut,
+    pub source: String,
 }
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
@@ -763,6 +808,26 @@ impl DisrobeMcp {
         }))
     }
 
+    #[cfg(feature = "wasm")]
+    #[rmcp::tool(
+        name = "wasm_lift",
+        description = "Lift inline WebAssembly bytes to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never reads disk or executes the module."
+    )]
+    fn wasm_lift(
+        &self,
+        Parameters(p): Parameters<WasmLiftParams>,
+    ) -> Result<Json<WasmLiftOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        wasm::lift(&bytes, p.target, MAX_WASM_LIFT_SOURCE_BYTES)
+            .map(Json)
+            .map_err(|error: wasm::WasmLiftError| {
+                ErrorData::invalid_params(
+                    format!("DR-MCP-0670: WebAssembly lift failed: {error}"),
+                    None,
+                )
+            })
+    }
+
     #[rmcp::tool(
         name = "ioc",
         description = "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants) from inline base64 bytes, decoding one layer of base64/hex. Never reads disk."
@@ -897,7 +962,9 @@ impl rmcp::ServerHandler for DisrobeMcp {
         info.capabilities = rmcp::model::ServerCapabilities::builder()
             .enable_tools()
             .build();
-        #[cfg(feature = "chain")]
+        #[cfg(feature = "wasm")]
+        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        #[cfg(all(feature = "chain", not(feature = "wasm")))]
         let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         #[cfg(not(feature = "chain"))]
         let analysis_tools: &str = "extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
@@ -1380,7 +1447,13 @@ mod tests {
         for expected in ["auto", "decompile"] {
             assert!(names.contains(&expected), "missing chain tool {expected}");
         }
-        let expected_count: usize = if cfg!(feature = "chain") { 15 } else { 13 };
+        #[cfg(feature = "wasm")]
+        assert!(
+            names.contains(&"wasm_lift"),
+            "missing WebAssembly lift tool"
+        );
+        let expected_count: usize =
+            13 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();

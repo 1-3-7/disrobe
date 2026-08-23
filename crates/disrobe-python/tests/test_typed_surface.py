@@ -8,6 +8,7 @@ registry. Run with: python -m pytest crates/disrobe-python/tests
 
 from __future__ import annotations
 
+import json
 import pathlib
 import struct
 
@@ -46,6 +47,59 @@ def _build_disasm_dr() -> bytes:
 def test_version_is_string() -> None:
     assert isinstance(disrobe.__version__, str)
     assert disrobe.__version__.count(".") >= 2
+
+
+def test_wasm_lift_returns_typed_source_for_every_target() -> None:
+    wasm: bytes = bytes.fromhex(
+        "0061736d010000000105016000017f030201000a06010400412a0b"
+    )
+    for target in ("rust", "typescript", "c", "wat"):
+        report: disrobe.WasmLift = disrobe.wasm_lift(wasm, target=target)
+        assert isinstance(report, disrobe.WasmLift)
+        assert report.target == target
+        assert report.functions_emitted == 1
+        assert report.fully_recovered is True
+        assert report.total_ops == report.translated_ops
+        assert report.source
+
+
+def test_wasm_lift_refusal_is_json_visible() -> None:
+    with pytest.raises(disrobe.DisrobeError) as excinfo:
+        disrobe.wasm_lift(b"not wasm", target="rust")
+    payload = json.loads(str(excinfo.value))
+    assert payload["code"] == "DR-WASMDEOB-0001"
+    assert payload["operation"] == "wasm lift"
+    assert "valid WebAssembly module" in payload["message"]
+
+    with pytest.raises(disrobe.DisrobeError) as target_excinfo:
+        disrobe.wasm_lift(b"", target="javascript")
+    target_payload = json.loads(str(target_excinfo.value))
+    assert target_payload == {
+        "accepted_targets": ["rust", "typescript", "c", "wat"],
+        "code": "DR-PY-0420",
+        "message": "unsupported WebAssembly lift target `javascript`",
+        "operation": "wasm lift",
+        "target": "javascript",
+    }
+
+
+def test_wasm_lift_typescript_owns_shared_atomic_memory() -> None:
+    wasm: bytes = bytes.fromhex(
+        "0061736d0100000001110360027f7f017f60037f7f7e017f60000003050400010002"
+        "050401030101072805066d656d6f7279020003616464000004776169740001066e6f"
+        "7469667900020566656e636500030a2a040a0020002001fe1e02000b0c0020002001"
+        "2002fe0102000b0a0020002001fe0002000b0500fe03000b"
+    )
+    report: disrobe.WasmLift = disrobe.wasm_lift(wasm, target="typescript")
+    assert report.functions_emitted == 4
+    assert "export const instantiate" in report.source
+    assert "new WebAssembly.Memory" in report.source
+    assert "SharedArrayBuffer" in report.source
+    assert "Atomics.add" in report.source
+    assert "Atomics.wait" in report.source
+    assert "Atomics.notify" in report.source
+    assert "wasmAtomicFence" in report.source
+    assert report.fully_recovered is True
 
 
 def test_jvm_dex_decompile_recovers_core_library_calls() -> None:

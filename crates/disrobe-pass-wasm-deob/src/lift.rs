@@ -13,7 +13,120 @@ use crate::types::{
 
 const MAX_TYPESCRIPT_MODULE_FUNCTIONS: usize = 4096;
 const MAX_TYPESCRIPT_MODULE_EXPORTS: usize = 65_536;
+pub const DEFAULT_MODULE_SOURCE_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TYPESCRIPT_EXPORT_NAME_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct ModuleRenderBudget {
+    limit: usize,
+    used: usize,
+    exceeded: Option<usize>,
+}
+
+impl ModuleRenderBudget {
+    pub(crate) const fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: 0,
+            exceeded: None,
+        }
+    }
+
+    pub(crate) const fn checkpoint(&self) -> usize {
+        self.used
+    }
+
+    pub(crate) const fn rollback(&mut self, checkpoint: usize) {
+        self.used = checkpoint;
+        self.exceeded = None;
+    }
+
+    pub(crate) const fn charge(&mut self, bytes: usize) -> bool {
+        if self.exceeded.is_some() {
+            return false;
+        }
+        let actual: usize = self.used.saturating_add(bytes);
+        if actual > self.limit {
+            self.exceeded = Some(actual);
+            return false;
+        }
+        self.used = actual;
+        true
+    }
+
+    pub(crate) const fn refund(&mut self, bytes: usize) {
+        self.used = self.used.saturating_sub(bytes);
+    }
+
+    pub(crate) const fn ensure(&self) -> Result<()> {
+        let Some(actual): Option<usize> = self.exceeded else {
+            return Ok(());
+        };
+        Err(Error::ModuleSourceLimit {
+            actual,
+            limit: self.limit,
+        })
+    }
+}
+
+pub(crate) struct ModuleSourceBuffer<'a> {
+    value: String,
+    budget: &'a mut ModuleRenderBudget,
+}
+
+impl<'a> ModuleSourceBuffer<'a> {
+    pub(crate) const fn new(budget: &'a mut ModuleRenderBudget) -> Self {
+        Self {
+            value: String::new(),
+            budget,
+        }
+    }
+
+    pub(crate) fn push_str(&mut self, value: &str) {
+        if self.budget.charge(value.len()) {
+            self.value.push_str(value);
+        }
+    }
+
+    pub(crate) fn push(&mut self, value: char) {
+        if self.budget.charge(value.len_utf8()) {
+            self.value.push(value);
+        }
+    }
+
+    pub(crate) fn push_precharged(&mut self, value: &str) -> Result<()> {
+        self.budget.ensure()?;
+        self.value.push_str(value);
+        Ok(())
+    }
+
+    pub(crate) const fn charge_coverage_entry(&mut self, bytes: usize) -> Result<()> {
+        let allocation_bytes: usize = bytes.saturating_add(std::mem::size_of::<String>());
+        self.budget.charge(allocation_bytes);
+        self.budget.ensure()
+    }
+
+    pub(crate) const fn ensure(&self) -> Result<()> {
+        self.budget.ensure()
+    }
+
+    pub(crate) fn finish(self) -> Result<String> {
+        self.budget.ensure()?;
+        Ok(self.value)
+    }
+}
+
+impl std::fmt::Write for ModuleSourceBuffer<'_> {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.push_str(value);
+        Ok(())
+    }
+
+    fn write_char(&mut self, value: char) -> std::fmt::Result {
+        self.push(value);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum LiftTarget {
@@ -36,6 +149,14 @@ pub struct TypeScriptModuleLift {
     pub source: String,
     pub functions_emitted: usize,
     pub exported_functions: Vec<String>,
+    pub coverage: LiftCoverage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModuleSourceLift {
+    pub target: String,
+    pub source: String,
+    pub functions_emitted: usize,
     pub coverage: LiftCoverage,
 }
 
@@ -117,11 +238,23 @@ impl RecoveredTypeSurface {
         }
     }
 
-    fn refusal(refusal: TypeRecoveryRefusal) -> Self {
-        Self {
-            declarations: render_recovered_type_refusal(refusal),
+    fn refusal_with_budget(
+        refusal: TypeRecoveryRefusal,
+        budget: &mut ModuleRenderBudget,
+    ) -> Result<Self> {
+        let mut declarations: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+        crate::push_string_fmt(
+            &mut declarations,
+            format_args!(
+                "// {}: {}; recovered type declarations are unavailable\n\n",
+                refusal.code(),
+                refusal.message()
+            ),
+        );
+        Ok(Self {
+            declarations: declarations.finish()?,
             parameter_names: Vec::new(),
-        }
+        })
     }
 
     fn enrich_signature<'a>(&self, signature: &'a FunctionSig) -> Cow<'a, FunctionSig> {
@@ -194,8 +327,15 @@ impl PreparedModuleLift {
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
-        let recovered: RecoveredTypeSurface =
-            self.recovered_type_surface(bytes, &body, sig, defined_function_index, target);
+        let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+        let recovered: RecoveredTypeSurface = self.recovered_type_surface_with_budget(
+            bytes,
+            &body,
+            sig,
+            defined_function_index,
+            target,
+            &mut budget,
+        )?;
         let enriched_signature: Cow<'_, FunctionSig> = recovered.enrich_signature(sig);
         let mut lifted: LiftResult =
             try_lift_function_body(&body, enriched_signature.as_ref(), &self.callees, target)?;
@@ -205,54 +345,130 @@ impl PreparedModuleLift {
         Ok(lifted)
     }
 
-    fn recovered_type_surface(
+    fn try_lift_with_budget(
+        &self,
+        bytes: &[u8],
+        defined_function_index: usize,
+        target: LiftTarget,
+        budget: &mut ModuleRenderBudget,
+    ) -> Result<LiftResult> {
+        let sig: &FunctionSig = self
+            .signatures
+            .defined()
+            .get(defined_function_index)
+            .ok_or_else(|| {
+                Error::Parse(format!(
+                    "defined function index {defined_function_index} is unavailable"
+                ))
+            })?;
+        let module: &crate::structured::ModuleCtx = self
+            .callees
+            .module_ctx()
+            .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
+        let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
+        let recovered: RecoveredTypeSurface = self.recovered_type_surface_with_budget(
+            bytes,
+            &body,
+            sig,
+            defined_function_index,
+            target,
+            budget,
+        )?;
+        let enriched_signature: Cow<'_, FunctionSig> = recovered.enrich_signature(sig);
+        let mut lifted: LiftResult = try_lift_function_body_with_budget(
+            &body,
+            enriched_signature.as_ref(),
+            &self.callees,
+            target,
+            budget,
+        )?;
+        if !recovered.declarations.is_empty() {
+            budget.charge(1);
+            budget.ensure()?;
+            let mut source: String = recovered.declarations;
+            source.push('\n');
+            source.push_str(&lifted.pseudo_source);
+            lifted.pseudo_source = source;
+        }
+        Ok(lifted)
+    }
+
+    fn recovered_type_surface_with_budget(
         &self,
         bytes: &[u8],
         body: &FunctionBody<'_>,
         sig: &FunctionSig,
         defined_function_index: usize,
         target: LiftTarget,
-    ) -> RecoveredTypeSurface {
+        budget: &mut ModuleRenderBudget,
+    ) -> Result<RecoveredTypeSurface> {
         if target == LiftTarget::Wat {
-            return RecoveredTypeSurface::empty();
+            return Ok(RecoveredTypeSurface::empty());
         }
         if !has_recoverable_memory_access(body) {
-            return RecoveredTypeSurface::empty();
+            return Ok(RecoveredTypeSurface::empty());
         }
         match crate::memory64::scan_memories(bytes) {
             Ok(report) if report.uses_memory64 => {
-                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::Memory64);
+                return RecoveredTypeSurface::refusal_with_budget(
+                    TypeRecoveryRefusal::Memory64,
+                    budget,
+                );
             }
             Ok(_) => {}
             Err(_) => {
-                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
+                return RecoveredTypeSurface::refusal_with_budget(
+                    TypeRecoveryRefusal::UnsupportedSsa,
+                    budget,
+                );
             }
         }
         let Ok(cfg): Result<crate::cfg::FunctionCfg> = crate::cfg::build_function_cfg(body) else {
-            return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            return RecoveredTypeSurface::refusal_with_budget(
+                TypeRecoveryRefusal::UnsupportedSsa,
+                budget,
+            );
         };
         let call_signatures: CallSignatures =
             CallSignatures::new(self.signatures.call_signatures());
         let Ok(ssa): Result<SsaFunction> =
             build_ssa_with_calls(&cfg, body, &sig.params, &call_signatures)
         else {
-            return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            return RecoveredTypeSurface::refusal_with_budget(
+                TypeRecoveryRefusal::UnsupportedSsa,
+                budget,
+            );
         };
         let recovered: crate::types::RecoveredTypes = match crate::recover_types_full(bytes, &ssa) {
             Ok(recovered) => recovered,
             Err(crate::RecoveredTypesError::Memory(refusal)) => {
-                return RecoveredTypeSurface::refusal(refusal);
+                return RecoveredTypeSurface::refusal_with_budget(refusal, budget);
             }
             Err(crate::RecoveredTypesError::Gc(_)) => {
-                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
+                return RecoveredTypeSurface::refusal_with_budget(
+                    TypeRecoveryRefusal::UnsupportedSsa,
+                    budget,
+                );
             }
         };
         let named: Vec<NamedType> = synthesize_named_types(&recovered.memory_aggregates);
-        let declarations: String =
-            match render_recovered_type_declarations(&named, defined_function_index, target) {
-                Ok(declarations) => declarations,
-                Err(refusal) => return RecoveredTypeSurface::refusal(refusal),
-            };
+        let checkpoint: usize = budget.checkpoint();
+        let mut declarations: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+        let rendered: std::result::Result<(), TypeRecoveryRefusal> =
+            render_recovered_type_declarations_into(
+                &mut declarations,
+                &named,
+                defined_function_index,
+                target,
+            );
+        let declarations: String = match rendered {
+            Ok(()) => declarations.finish()?,
+            Err(refusal) => {
+                drop(declarations);
+                budget.rollback(checkpoint);
+                return RecoveredTypeSurface::refusal_with_budget(refusal, budget);
+            }
+        };
         let parameter_names: Vec<(usize, &'static str)> = recovered
             .memory_aggregates
             .iter()
@@ -267,10 +483,10 @@ impl PreparedModuleLift {
                 Some((parameter_index, recovered_parameter_role(recovered_type)))
             })
             .collect();
-        RecoveredTypeSurface {
+        Ok(RecoveredTypeSurface {
             declarations,
             parameter_names,
-        }
+        })
     }
 }
 
@@ -285,14 +501,6 @@ const fn recovered_parameter_role(recovered_type: &RecoveredType) -> &'static st
         RecoveredType::Array { .. } | RecoveredType::TypedArray { .. } => "items_address",
         RecoveredType::Scalar(_) | RecoveredType::StorageScalar(_) => "value_address",
     }
-}
-
-fn render_recovered_type_refusal(refusal: TypeRecoveryRefusal) -> String {
-    format!(
-        "// {}: {}; recovered type declarations are unavailable\n\n",
-        refusal.code(),
-        refusal.message()
-    )
 }
 
 fn has_recoverable_memory_access(body: &FunctionBody<'_>) -> bool {
@@ -315,12 +523,12 @@ fn has_recoverable_memory_access(body: &FunctionBody<'_>) -> bool {
     false
 }
 
-fn render_recovered_type_declarations(
+fn render_recovered_type_declarations_into(
+    mut out: &mut impl std::fmt::Write,
     named_types: &[NamedType],
     defined_function_index: usize,
     target: LiftTarget,
-) -> std::result::Result<String, TypeRecoveryRefusal> {
-    let mut out: String = String::new();
+) -> std::result::Result<(), TypeRecoveryRefusal> {
     for named_type in named_types {
         let name: String = recovered_declaration_name(named_type, defined_function_index);
         match (target, named_type) {
@@ -342,7 +550,7 @@ fn render_recovered_type_declarations(
                         format_args!("    {}: {},\n", field.name, recovered_rust_type(field.kind)),
                     );
                 }
-                out.push_str("}\n\n");
+                crate::push_string_fmt(out, format_args!("}}\n\n"));
             }
             (LiftTarget::Rust, NamedType::Array { elem, count, .. }) => {
                 let declaration: String = count.map_or_else(
@@ -359,7 +567,7 @@ fn render_recovered_type_declarations(
             }
             (LiftTarget::C, NamedType::Struct { fields, .. }) => {
                 let layout: Vec<(u32, &NamedField)> = checked_layout(fields)?;
-                out.push_str("typedef struct {\n");
+                crate::push_string_fmt(out, format_args!("typedef struct {{\n"));
                 for (padding, field) in layout {
                     if padding > 0 {
                         crate::push_string_fmt(
@@ -402,7 +610,7 @@ fn render_recovered_type_declarations(
                         ),
                     );
                 }
-                out.push_str("}\n\n");
+                crate::push_string_fmt(out, format_args!("}}\n\n"));
             }
             (LiftTarget::TypeScript, NamedType::Array { elem, .. }) => {
                 crate::push_string_fmt(
@@ -425,7 +633,7 @@ fn render_recovered_type_declarations(
             (LiftTarget::Wat, _) => {}
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn checked_layout(
@@ -544,7 +752,153 @@ pub fn try_lift_functions_from_module(bytes: &[u8], target: LiftTarget) -> Resul
     Ok(results)
 }
 
+pub fn lift_module_source(bytes: &[u8], target: LiftTarget) -> Result<ModuleSourceLift> {
+    lift_module_source_with_limit(bytes, target, DEFAULT_MODULE_SOURCE_LIMIT_BYTES)
+}
+
+pub fn lift_module_source_with_limit(
+    bytes: &[u8],
+    target: LiftTarget,
+    max_source_bytes: usize,
+) -> Result<ModuleSourceLift> {
+    if bytes.len() > max_source_bytes {
+        return Err(Error::ModuleInputLimit {
+            actual: bytes.len(),
+            limit: max_source_bytes,
+        });
+    }
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(max_source_bytes);
+    let (source, functions_emitted, coverage): (String, usize, LiftCoverage) = match target {
+        LiftTarget::Wat => assemble_wat_module(bytes, &mut budget)?,
+        LiftTarget::TypeScript
+            if !crate::threads::scan_threads(bytes)?
+                .shared_memories
+                .is_empty() =>
+        {
+            let module: TypeScriptModuleLift =
+                try_lift_typescript_module_with_budget(bytes, &mut budget)?;
+            (module.source, module.functions_emitted, module.coverage)
+        }
+        LiftTarget::Rust | LiftTarget::TypeScript | LiftTarget::C => {
+            assemble_high_level_module(bytes, target, &mut budget)?
+        }
+    };
+    Ok(ModuleSourceLift {
+        target: lift_target_name(target).to_owned(),
+        source,
+        functions_emitted,
+        coverage,
+    })
+}
+
+fn assemble_high_level_module(
+    bytes: &[u8],
+    target: LiftTarget,
+    budget: &mut ModuleRenderBudget,
+) -> Result<(String, usize, LiftCoverage)> {
+    let prelude: &str = match target {
+        LiftTarget::Rust => rust_runtime_prelude(),
+        LiftTarget::TypeScript => typescript_runtime_prelude(),
+        LiftTarget::C => crate::lift_c::c_runtime_prelude(),
+        LiftTarget::Wat => "",
+    };
+    let mut initial: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    initial.push_str(prelude);
+    let mut source: String = initial.finish()?;
+    let prepared: PreparedModuleLift = PreparedModuleLift::from_bytes(bytes)?;
+    let functions_emitted: usize = prepared.defined_function_count();
+    let mut coverage: LiftCoverage = LiftCoverage::default();
+    for defined_function_index in 0..functions_emitted {
+        let result: LiftResult =
+            prepared.try_lift_with_budget(bytes, defined_function_index, target, budget)?;
+        merge_coverage(&mut coverage, result.coverage)?;
+        budget.charge(1);
+        budget.ensure()?;
+        source.push('\n');
+        source.push_str(&result.pseudo_source);
+        if !result.pseudo_source.ends_with('\n') {
+            budget.charge(1);
+            budget.ensure()?;
+            source.push('\n');
+        }
+    }
+    Ok((source, functions_emitted, coverage))
+}
+
+fn assemble_wat_module(
+    bytes: &[u8],
+    budget: &mut ModuleRenderBudget,
+) -> Result<(String, usize, LiftCoverage)> {
+    let signatures: ModuleSignatures = extract_signatures(bytes)?;
+    let defined: &[FunctionSig] = signatures.defined();
+    let mut bodies: Vec<(FunctionBody<'_>, FunctionSig)> = Vec::with_capacity(defined.len());
+    let mut defined_index: usize = 0;
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload: Payload<'_> =
+            payload.map_err(|error| Error::Parse(format!("parse: {error}")))?;
+        if let Payload::CodeSectionEntry(body) = payload {
+            let placeholder_index: u32 = u32::try_from(defined_index).map_err(|_| {
+                Error::Parse("module function count exceeds WebAssembly limits".to_owned())
+            })?;
+            let signature: FunctionSig = defined
+                .get(defined_index)
+                .cloned()
+                .unwrap_or_else(|| FunctionSig::placeholder(placeholder_index));
+            bodies.push((body, signature));
+            defined_index = defined_index.checked_add(1).ok_or_else(|| {
+                Error::Parse("module function count exceeds host limits".to_owned())
+            })?;
+        }
+    }
+    let function_offset: u32 = u32::try_from(signatures.imported_function_count())
+        .map_err(|_| Error::Parse("module import count exceeds WebAssembly limits".to_owned()))?;
+    let mut prefix: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    prefix.push_str(";; disrobe wasm lift target=wat\n");
+    let mut source: String = prefix.finish()?;
+    let (module, coverage): (String, LiftCoverage) =
+        crate::lift_wat::lift_module_to_wat_with_budget(&bodies, function_offset, budget)?;
+    source.push_str(&module);
+    Ok((source, bodies.len(), coverage))
+}
+
+fn merge_coverage(total: &mut LiftCoverage, next: LiftCoverage) -> Result<()> {
+    total.total_ops = total.total_ops.checked_add(next.total_ops).ok_or_else(|| {
+        Error::Parse("module lift operation count exceeds host limits".to_owned())
+    })?;
+    total.translated_ops = total
+        .translated_ops
+        .checked_add(next.translated_ops)
+        .ok_or_else(|| {
+            Error::Parse("module lift translation count exceeds host limits".to_owned())
+        })?;
+    total.untranslated.extend(next.untranslated);
+    Ok(())
+}
+
+const fn lift_target_name(target: LiftTarget) -> &'static str {
+    match target {
+        LiftTarget::Rust => "rust",
+        LiftTarget::TypeScript => "typescript",
+        LiftTarget::Wat => "wat",
+        LiftTarget::C => "c",
+    }
+}
+
 pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> {
+    if bytes.len() > DEFAULT_MODULE_SOURCE_LIMIT_BYTES {
+        return Err(Error::ModuleInputLimit {
+            actual: bytes.len(),
+            limit: DEFAULT_MODULE_SOURCE_LIMIT_BYTES,
+        });
+    }
+    let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(DEFAULT_MODULE_SOURCE_LIMIT_BYTES);
+    try_lift_typescript_module_with_budget(bytes, &mut budget)
+}
+
+fn try_lift_typescript_module_with_budget(
+    bytes: &[u8],
+    budget: &mut ModuleRenderBudget,
+) -> Result<TypeScriptModuleLift> {
     let mut validator: Validator = Validator::new_with_features(WasmFeatures::default());
     validator
         .validate_all(bytes)
@@ -597,20 +951,22 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
-        let recovered: RecoveredTypeSurface = prepared.recovered_type_surface(
+        let recovered: RecoveredTypeSurface = prepared.recovered_type_surface_with_budget(
             bytes,
             &body,
             signature,
             defined_function_index,
             LiftTarget::TypeScript,
-        );
+            budget,
+        )?;
         recovered_declarations.push_str(&recovered.declarations);
         let enriched_signature: Cow<'_, FunctionSig> = recovered.enrich_signature(signature);
         let (pseudo_source, blocks_emitted, function_coverage): (String, usize, LiftCoverage) =
-            crate::structured::lift_body_structured_typescript_module(
+            crate::structured::lift_body_structured_typescript_module_with_budget(
                 &body,
                 enriched_signature.as_ref(),
                 &callees,
+                budget,
             )?;
         let lifted: LiftResult = LiftResult {
             target: LiftTarget::TypeScript,
@@ -618,22 +974,12 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
             blocks_emitted,
             coverage: function_coverage,
         };
-        coverage.total_ops = coverage
-            .total_ops
-            .checked_add(lifted.coverage.total_ops)
-            .ok_or_else(|| Error::Parse("TypeScript module operation count overflow".to_owned()))?;
-        coverage.translated_ops = coverage
-            .translated_ops
-            .checked_add(lifted.coverage.translated_ops)
-            .ok_or_else(|| Error::Parse("TypeScript module recovery count overflow".to_owned()))?;
-        coverage.untranslated.extend(lifted.coverage.untranslated);
-        let function_source: String = lifted
-            .pseudo_source
-            .strip_prefix("export function ")
-            .map_or_else(
-                || lifted.pseudo_source.clone(),
-                |body: &str| format!("function {body}"),
-            );
+        merge_coverage(&mut coverage, lifted.coverage)?;
+        let mut function_source: String = lifted.pseudo_source;
+        if function_source.starts_with("export function ") {
+            function_source.drain(.."export ".len());
+            budget.refund("export ".len());
+        }
         lifted_functions.push(function_source);
     }
     let imported_function_count: usize = prepared.signatures.imported_function_count();
@@ -667,8 +1013,9 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
     let runtime: &str = TS_PRELUDE
         .get(runtime_start..)
         .ok_or_else(|| Error::Parse("TypeScript runtime memory boundary is invalid".to_owned()))?;
-    let mut source: String = String::from("import { writeSync } from \"node:fs\";\n\n");
-    source.push_str(&recovered_declarations);
+    let mut source: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    source.push_str("import { writeSync } from \"node:fs\";\n\n");
+    source.push_precharged(&recovered_declarations)?;
     source.push_str(
         "export type LiftedInstance = Readonly<{\n  readonly memory: WebAssembly.Memory;\n",
     );
@@ -719,10 +1066,12 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
         source.push('\n');
     }
     for function_source in &lifted_functions {
-        for line in function_source.lines() {
+        for segment in function_source.split_inclusive('\n') {
             source.push_str("  ");
-            source.push_str(line);
-            source.push('\n');
+            source.push_precharged(segment)?;
+            if !segment.ends_with('\n') {
+                source.push('\n');
+            }
         }
     }
     source.push_str("  return { memory");
@@ -736,7 +1085,7 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
     }
     source.push_str(" };\n};\n");
     Ok(TypeScriptModuleLift {
-        source,
+        source: source.finish()?,
         functions_emitted: lifted_functions.len(),
         exported_functions,
         coverage,
@@ -785,6 +1134,54 @@ fn exact_typescript_function_exports(bytes: &[u8]) -> Result<Vec<(u32, String)>>
     Ok(exports)
 }
 
+fn try_lift_function_body_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+    budget: &mut ModuleRenderBudget,
+) -> Result<LiftResult> {
+    let checkpoint: usize = budget.checkpoint();
+    let result: Result<LiftResult> = match target {
+        LiftTarget::Rust => try_lift_body_high_with_budget(
+            body,
+            sig,
+            callees,
+            LiftTarget::Rust,
+            HighLang::Rust,
+            budget,
+        ),
+        LiftTarget::TypeScript => {
+            crate::structured::lift_body_structured_typescript_standalone_with_budget(
+                body, sig, callees, budget,
+            )
+            .map(
+                |(pseudo_source, blocks_emitted, coverage): (String, usize, LiftCoverage)| {
+                    LiftResult {
+                        target: LiftTarget::TypeScript,
+                        pseudo_source,
+                        blocks_emitted,
+                        coverage,
+                    }
+                },
+            )
+        }
+        LiftTarget::C => {
+            crate::lift_c::try_lift_function_body_c_with_budget(body, sig, callees, budget)
+        }
+        LiftTarget::Wat => crate::lift_wat::lift_function_body_wat_with_budget(body, sig, budget),
+    };
+    match result {
+        Ok(result) => Ok(result),
+        Err(error @ Error::AtomicMemoryModel(_)) => Err(error),
+        Err(error @ Error::ModuleSourceLimit { .. }) => Err(error),
+        Err(_) => {
+            budget.rollback(checkpoint);
+            lift_function_body_with_budget(body, sig, callees, target, budget)
+        }
+    }
+}
+
 fn try_lift_function_body(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
@@ -795,17 +1192,25 @@ fn try_lift_function_body(
         LiftTarget::Rust => {
             try_lift_body_high(body, sig, callees, LiftTarget::Rust, HighLang::Rust)
         }
-        LiftTarget::TypeScript => crate::structured::lift_body_structured_typescript_standalone(
-            body, sig, callees,
-        )
-        .map(
-            |(pseudo_source, blocks_emitted, coverage): (String, usize, LiftCoverage)| LiftResult {
-                target: LiftTarget::TypeScript,
-                pseudo_source,
-                blocks_emitted,
-                coverage,
-            },
-        ),
+        LiftTarget::TypeScript => {
+            let mut budget: ModuleRenderBudget = ModuleRenderBudget::new(usize::MAX);
+            crate::structured::lift_body_structured_typescript_standalone_with_budget(
+                body,
+                sig,
+                callees,
+                &mut budget,
+            )
+            .map(
+                |(pseudo_source, blocks_emitted, coverage): (String, usize, LiftCoverage)| {
+                    LiftResult {
+                        target: LiftTarget::TypeScript,
+                        pseudo_source,
+                        blocks_emitted,
+                        coverage,
+                    }
+                },
+            )
+        }
         LiftTarget::C => crate::lift_c::try_lift_function_body_c(body, sig, callees),
         LiftTarget::Wat => Ok(crate::lift_wat::lift_function_body_wat(body, sig)),
     };
@@ -813,6 +1218,32 @@ fn try_lift_function_body(
         Ok(result) => Ok(result),
         Err(error @ Error::AtomicMemoryModel(_)) => Err(error),
         Err(_) => Ok(lift_function_body(body, sig, callees, target)),
+    }
+}
+
+fn lift_function_body_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+    budget: &mut ModuleRenderBudget,
+) -> Result<LiftResult> {
+    match target {
+        LiftTarget::Rust => {
+            lift_body_high_with_budget(body, sig, callees, LiftTarget::Rust, HighLang::Rust, budget)
+        }
+        LiftTarget::TypeScript => lift_body_high_with_budget(
+            body,
+            sig,
+            callees,
+            LiftTarget::TypeScript,
+            HighLang::TypeScript,
+            budget,
+        ),
+        LiftTarget::C => {
+            crate::lift_c::lift_function_body_c_with_budget(body, sig, callees, budget)
+        }
+        LiftTarget::Wat => crate::lift_wat::lift_function_body_wat_with_budget(body, sig, budget),
     }
 }
 
@@ -848,6 +1279,50 @@ fn lift_body_high(
     }
 }
 
+fn lift_body_high_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+    lang: HighLang,
+    budget: &mut ModuleRenderBudget,
+) -> Result<LiftResult> {
+    let checkpoint: usize = budget.checkpoint();
+    match try_lift_body_high_with_budget(body, sig, callees, target, lang, budget) {
+        Ok(result) => Ok(result),
+        Err(error @ Error::ModuleSourceLimit { .. }) => Err(error),
+        Err(Error::AtomicMemoryModel(reason)) => {
+            budget.rollback(checkpoint);
+            let reason: String = Error::AtomicMemoryModel(reason).to_string();
+            let pseudo_source: String =
+                atomic_memory_refusal_stub_with_budget(sig, target, &reason, budget)?;
+            charge_coverage_entry(budget, "<unsupported-atomic-memory-model>")?;
+            Ok(LiftResult {
+                target,
+                pseudo_source,
+                blocks_emitted: 0,
+                coverage: atomic_memory_refusal_coverage(),
+            })
+        }
+        Err(error) => {
+            budget.rollback(checkpoint);
+            let reason: String = error.to_string();
+            let pseudo_source: String = unliftable_stub_with_budget(sig, target, &reason, budget)?;
+            charge_coverage_entry(budget, "<parse-failure>")?;
+            Ok(LiftResult {
+                target,
+                pseudo_source,
+                blocks_emitted: 0,
+                coverage: LiftCoverage {
+                    total_ops: 0,
+                    translated_ops: 0,
+                    untranslated: vec!["<parse-failure>".to_owned()],
+                },
+            })
+        }
+    }
+}
+
 fn try_lift_body_high(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
@@ -865,6 +1340,33 @@ fn try_lift_body_high(
     })
 }
 
+fn try_lift_body_high_with_budget(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    target: LiftTarget,
+    lang: HighLang,
+    budget: &mut ModuleRenderBudget,
+) -> Result<LiftResult> {
+    let (source, blocks_emitted, coverage): (String, usize, LiftCoverage) =
+        crate::structured::lift_body_structured_with_budget(body, sig, callees, lang, budget)?;
+    Ok(LiftResult {
+        target,
+        pseudo_source: source,
+        blocks_emitted,
+        coverage,
+    })
+}
+
+pub(crate) const fn charge_coverage_entry(
+    budget: &mut ModuleRenderBudget,
+    entry: &str,
+) -> Result<()> {
+    let allocation_bytes: usize = entry.len().saturating_add(std::mem::size_of::<String>());
+    budget.charge(allocation_bytes);
+    budget.ensure()
+}
+
 pub(crate) fn atomic_memory_refusal_coverage() -> LiftCoverage {
     LiftCoverage {
         total_ops: 1,
@@ -875,102 +1377,139 @@ pub(crate) fn atomic_memory_refusal_coverage() -> LiftCoverage {
 
 fn atomic_memory_refusal_stub(sig: &FunctionSig, target: LiftTarget, reason: &str) -> String {
     let mut source: String = String::new();
+    render_atomic_memory_refusal_stub(&mut source, sig, target, reason);
+    source
+}
+
+fn atomic_memory_refusal_stub_with_budget(
+    sig: &FunctionSig,
+    target: LiftTarget,
+    reason: &str,
+    budget: &mut ModuleRenderBudget,
+) -> Result<String> {
+    let mut source: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    render_atomic_memory_refusal_stub(&mut source, sig, target, reason);
+    source.finish()
+}
+
+fn render_atomic_memory_refusal_stub(
+    source: &mut impl std::fmt::Write,
+    sig: &FunctionSig,
+    target: LiftTarget,
+    reason: &str,
+) {
     match target {
         LiftTarget::Rust => {
-            crate::push_string_fmt(&mut source, format_args!("pub fn {}(", sig.name));
+            crate::push_string_fmt(source, format_args!("pub fn {}(", sig.name));
             let params: std::iter::Enumerate<std::slice::Iter<'_, ValType>> =
                 sig.params.iter().enumerate();
             for (index, ty) in params {
                 if index > 0 {
-                    source.push_str(", ");
+                    crate::push_string_fmt(source, format_args!(", "));
                 }
-                crate::push_string_fmt(&mut source, format_args!("p{index}: {}", rust_type(*ty)));
+                crate::push_string_fmt(source, format_args!("p{index}: {}", rust_type(*ty)));
             }
-            source.push(')');
+            crate::push_string_fmt(source, format_args!(")"));
             let result: Option<&ValType> = sig.results.first();
             if let Some(result) = result {
-                crate::push_string_fmt(&mut source, format_args!(" -> {}", rust_type(*result)));
+                crate::push_string_fmt(source, format_args!(" -> {}", rust_type(*result)));
             }
-            source.push_str(" {\n");
+            crate::push_string_fmt(source, format_args!(" {{\n"));
             for index in 0..sig.params.len() {
-                crate::push_string_line(&mut source, format_args!("    let _ = p{index};"));
+                crate::push_string_line(source, format_args!("    let _ = p{index};"));
             }
-            crate::push_string_line(&mut source, format_args!("    panic!({reason:?});"));
-            source.push_str("}\n");
+            crate::push_string_line(source, format_args!("    panic!({reason:?});"));
+            crate::push_string_fmt(source, format_args!("}}\n"));
         }
         LiftTarget::TypeScript => {
-            crate::push_string_fmt(&mut source, format_args!("export function {}(", sig.name));
+            crate::push_string_fmt(source, format_args!("export function {}(", sig.name));
             let params: std::iter::Enumerate<std::slice::Iter<'_, ValType>> =
                 sig.params.iter().enumerate();
             for (index, ty) in params {
                 if index > 0 {
-                    source.push_str(", ");
+                    crate::push_string_fmt(source, format_args!(", "));
                 }
-                crate::push_string_fmt(&mut source, format_args!("p{index}: {}", ts_type(*ty)));
+                crate::push_string_fmt(source, format_args!("p{index}: {}", ts_type(*ty)));
             }
             let result: &str = sig
                 .results
                 .first()
                 .map_or("void", |ty: &ValType| ts_type(*ty));
-            crate::push_string_line(&mut source, format_args!("): {result} {{"));
-            crate::push_string_line(
-                &mut source,
-                format_args!("    throw new Error({reason:?});"),
-            );
-            source.push_str("}\n");
+            crate::push_string_line(source, format_args!("): {result} {{"));
+            crate::push_string_line(source, format_args!("    throw new Error({reason:?});"));
+            crate::push_string_fmt(source, format_args!("}}\n"));
         }
         LiftTarget::Wat | LiftTarget::C => unreachable!("handled separately"),
     }
-    source
 }
 
 fn unliftable_stub(sig: &FunctionSig, target: LiftTarget, reason: &str) -> String {
     let mut s: String = String::new();
+    render_unliftable_stub(&mut s, sig, target, reason);
+    s
+}
+
+fn unliftable_stub_with_budget(
+    sig: &FunctionSig,
+    target: LiftTarget,
+    reason: &str,
+    budget: &mut ModuleRenderBudget,
+) -> Result<String> {
+    let mut source: ModuleSourceBuffer<'_> = ModuleSourceBuffer::new(budget);
+    render_unliftable_stub(&mut source, sig, target, reason);
+    source.finish()
+}
+
+fn render_unliftable_stub(
+    s: &mut impl std::fmt::Write,
+    sig: &FunctionSig,
+    target: LiftTarget,
+    reason: &str,
+) {
     match target {
         LiftTarget::Rust => {
-            crate::push_string_line(&mut s, format_args!("/// not lifted: {reason}"));
-            crate::push_string_fmt(&mut s, format_args!("pub fn {}(", sig.name));
+            crate::push_string_line(s, format_args!("/// not lifted: {reason}"));
+            crate::push_string_fmt(s, format_args!("pub fn {}(", sig.name));
             for (i, ty) in sig.params.iter().enumerate() {
                 if i > 0 {
-                    s.push_str(", ");
+                    crate::push_string_fmt(s, format_args!(", "));
                 }
-                crate::push_string_fmt(&mut s, format_args!("p{i}: {}", rust_type(*ty)));
+                crate::push_string_fmt(s, format_args!("p{i}: {}", rust_type(*ty)));
             }
-            s.push(')');
+            crate::push_string_fmt(s, format_args!(")"));
             if let Some(ret) = sig.results.first() {
-                crate::push_string_fmt(&mut s, format_args!(" -> {}", rust_type(*ret)));
+                crate::push_string_fmt(s, format_args!(" -> {}", rust_type(*ret)));
             }
-            s.push_str(" {\n");
+            crate::push_string_fmt(s, format_args!(" {{\n"));
             for i in 0..sig.params.len() {
-                crate::push_string_line(&mut s, format_args!("    let _ = p{i};"));
+                crate::push_string_line(s, format_args!("    let _ = p{i};"));
             }
             if let Some(ret) = sig.results.first() {
-                crate::push_string_line(&mut s, format_args!("    {}", zero_literal(*ret, target)));
+                crate::push_string_line(s, format_args!("    {}", zero_literal(*ret, target)));
             }
-            s.push_str("}\n");
+            crate::push_string_fmt(s, format_args!("}}\n"));
         }
         LiftTarget::TypeScript => {
-            crate::push_string_line(&mut s, format_args!("// not lifted: {reason}"));
-            crate::push_string_fmt(&mut s, format_args!("export function {}(", sig.name));
+            crate::push_string_line(s, format_args!("// not lifted: {reason}"));
+            crate::push_string_fmt(s, format_args!("export function {}(", sig.name));
             for (i, ty) in sig.params.iter().enumerate() {
                 if i > 0 {
-                    s.push_str(", ");
+                    crate::push_string_fmt(s, format_args!(", "));
                 }
-                crate::push_string_fmt(&mut s, format_args!("p{i}: {}", ts_type(*ty)));
+                crate::push_string_fmt(s, format_args!("p{i}: {}", ts_type(*ty)));
             }
             let ret: &str = sig.results.first().map_or("void", |t| ts_type(*t));
-            crate::push_string_line(&mut s, format_args!("): {ret} {{"));
+            crate::push_string_line(s, format_args!("): {ret} {{"));
             if let Some(ret) = sig.results.first() {
                 crate::push_string_line(
-                    &mut s,
+                    s,
                     format_args!("    return {};", zero_literal(*ret, target)),
                 );
             }
-            s.push_str("}\n");
+            crate::push_string_fmt(s, format_args!("}}\n"));
         }
         LiftTarget::Wat | LiftTarget::C => unreachable!("handled separately"),
     }
-    s
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -979,6 +979,20 @@ typed_report!(
 );
 
 typed_report!(
+    WasmLift,
+    "WasmLift",
+    "WebAssembly source lift with its target, source text, emitted function count and operation coverage.",
+    accessors {
+        target -> String : |d| field_str(d, "target").unwrap_or_default(),
+        source -> String : |d| field_str(d, "source").unwrap_or_default(),
+        functions_emitted -> usize : |d| field_u64(d, "functions_emitted").map_or(0, u64_to_usize),
+        total_ops -> usize : |d| nested_u64(d, "coverage", "total_ops").map_or(0, u64_to_usize),
+        translated_ops -> usize : |d| nested_u64(d, "coverage", "translated_ops").map_or(0, u64_to_usize),
+        fully_recovered -> bool : |d| field(d, "coverage").is_some_and(|coverage: &Json| array_len(coverage, "untranslated") == 0),
+    }
+);
+
+typed_report!(
     JsDetection,
     "JsDetection",
     "JavaScript obfuscator detection: family, confidence, and matched markers.",
@@ -1373,6 +1387,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DotnetNativeAot>()?;
     m.add_class::<WasmAnalysis>()?;
     m.add_class::<WasmDetection>()?;
+    m.add_class::<WasmLift>()?;
     m.add_class::<JsDetection>()?;
     m.add_class::<JsUnminify>()?;
     m.add_class::<JsUnbundle>()?;

@@ -45,7 +45,7 @@ chain = [
 ]
 
 js = ["chain", "disrobe-passes/js"]
-wasm = ["chain", "disrobe-passes/wasm"]
+wasm = ["chain", "disrobe-passes/wasm", "dep:disrobe-pass-wasm-deob"]
 php = ["chain", "disrobe-passes/php"]
 ruby = ["chain", "disrobe-passes/ruby"]
 shell = ["chain", "disrobe-passes/shell"]
@@ -74,6 +74,7 @@ disrobe-pass-nuitka = { workspace = true }
 disrobe-pass-py-disasm = { workspace = true }
 disrobe-pass-py-decompile = { workspace = true }
 disrobe-pass-pyinstaller = { workspace = true }
+disrobe-pass-wasm-deob = { workspace = true, optional = true }
 disrobe-query = { workspace = true }
 disrobe-passes = { workspace = true, optional = true }
 rmcp = { workspace = true }
