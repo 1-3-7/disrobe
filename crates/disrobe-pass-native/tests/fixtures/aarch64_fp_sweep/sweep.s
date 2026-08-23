@@ -72,6 +72,54 @@ FN a_fminnm_s
     ret
 END a_fminnm_s
 
+FN a_fmul_h
+    fmul h0, h0, h1
+    ret
+END a_fmul_h
+FN a_fsub_h
+    fsub h0, h0, h1
+    ret
+END a_fsub_h
+FN a_fabd_d
+    fabd d0, d0, d1
+    ret
+END a_fabd_d
+FN a_fnmul_s
+    fnmul s0, s0, s1
+    ret
+END a_fnmul_s
+FN a_fneg_h
+    fneg h0, h0
+    ret
+END a_fneg_h
+FN a_fabs_h
+    fabs h0, h0
+    ret
+END a_fabs_h
+FN a_fmax_h
+    fmax h0, h0, h1
+    ret
+END a_fmax_h
+FN a_fmin_s
+    fmin s0, s0, s1
+    ret
+END a_fmin_s
+FN a_fmaxnm_d
+    fmaxnm d0, d0, d1
+    ret
+END a_fmaxnm_d
+FN a_fminnm_h
+    fminnm h0, h0, h1
+    ret
+END a_fminnm_h
+FN a_fsqrt_s
+    fsqrt s0, s0
+    ret
+END a_fsqrt_s
+FN a_fsqrt_d
+    fsqrt d0, d0
+    ret
+END a_fsqrt_d
 FN b_fmadd_s
     fmadd s0, s0, s1, s2
     ret
@@ -89,6 +137,22 @@ FN b_fnmsub_d
     ret
 END b_fnmsub_d
 
+FN b_fmadd_d
+    fmadd d0, d0, d1, d2
+    ret
+END b_fmadd_d
+FN b_fmsub_h
+    fmsub h0, h0, h1, h2
+    ret
+END b_fmsub_h
+FN b_fnmadd_s
+    fnmadd s0, s0, s1, s2
+    ret
+END b_fnmadd_s
+FN b_fnmsub_h
+    fnmsub h0, h0, h1, h2
+    ret
+END b_fnmsub_h
 FN c_fcmp_s
     fcmp s0, s1
     cset w0, gt
@@ -137,6 +201,38 @@ FN c_fcsel_h
     ret
 END c_fcsel_h
 
+FN c_fcmp_d
+    fcmp d0, d1
+    cset w0, lt
+    ret
+END c_fcmp_d
+FN c_fcmp_zero_h
+    fcmp h0, #0.0
+    cset w0, eq
+    ret
+END c_fcmp_zero_h
+FN c_fcmpe_h
+    fcmpe h0, h1
+    cset w0, mi
+    ret
+END c_fcmpe_h
+FN c_fccmp_h
+    fcmp h0, h1
+    fccmp h0, h1, #4, gt
+    cset w0, eq
+    ret
+END c_fccmp_h
+FN c_fccmpe_d
+    fcmp d0, d1
+    fccmpe d0, d1, #2, ne
+    cset w0, mi
+    ret
+END c_fccmpe_d
+FN c_fcsel_s
+    fcmp s0, s1
+    fcsel s0, s0, s1, mi
+    ret
+END c_fcsel_s
 FN d_fcvt_s_to_d
     fcvt d0, s0
     ret
@@ -223,6 +319,50 @@ FN e_fjcvtzs
     ret
 END e_fjcvtzs
 
+FN e_fcvtzs_w_h
+    fcvtzs w0, h0
+    ret
+END e_fcvtzs_w_h
+FN e_fcvtas_x_h
+    fcvtas x0, h0
+    ret
+END e_fcvtas_x_h
+FN e_fcvtau_w_h
+    fcvtau w0, h0
+    ret
+END e_fcvtau_w_h
+FN e_fcvtns_x_h
+    fcvtns x0, h0
+    ret
+END e_fcvtns_x_h
+FN e_fcvtnu_w_h
+    fcvtnu w0, h0
+    ret
+END e_fcvtnu_w_h
+FN e_fcvtms_x_h
+    fcvtms x0, h0
+    ret
+END e_fcvtms_x_h
+FN e_fcvtmu_w_h
+    fcvtmu w0, h0
+    ret
+END e_fcvtmu_w_h
+FN e_fcvtps_x_h
+    fcvtps x0, h0
+    ret
+END e_fcvtps_x_h
+FN e_fcvtpu_w_h
+    fcvtpu w0, h0
+    ret
+END e_fcvtpu_w_h
+FN e_fcvtzs_fixed_x_h
+    fcvtzs x0, h0, #4
+    ret
+END e_fcvtzs_fixed_x_h
+FN e_fcvtzu_fixed_w_h
+    fcvtzu w0, h0, #2
+    ret
+END e_fcvtzu_fixed_w_h
 FN f_scvtf_s_w
     scvtf s0, w0
     ret
@@ -248,6 +388,26 @@ FN f_ucvtf_fixed_s_x
     ret
 END f_ucvtf_fixed_s_x
 
+FN f_scvtf_h_x
+    scvtf h0, x0
+    ret
+END f_scvtf_h_x
+FN f_scvtf_s_x
+    scvtf s0, x0
+    ret
+END f_scvtf_s_x
+FN f_ucvtf_d_w
+    ucvtf d0, w0
+    ret
+END f_ucvtf_d_w
+FN f_scvtf_fixed_h_w
+    scvtf h0, w0, #3
+    ret
+END f_scvtf_fixed_h_w
+FN f_ucvtf_fixed_h_x
+    ucvtf h0, x0, #6
+    ret
+END f_ucvtf_fixed_h_x
 FN g_frinta_s
     frinta s0, s0
     ret
@@ -293,6 +453,54 @@ FN g_frint64x_s
     ret
 END g_frint64x_s
 
+FN g_frinta_d
+    frinta d0, d0
+    ret
+END g_frinta_d
+FN g_frinta_h
+    frinta h0, h0
+    ret
+END g_frinta_h
+FN g_frintm_h
+    frintm h0, h0
+    ret
+END g_frintm_h
+FN g_frintm_d
+    frintm d0, d0
+    ret
+END g_frintm_d
+FN g_frintn_s
+    frintn s0, s0
+    ret
+END g_frintn_s
+FN g_frintn_h
+    frintn h0, h0
+    ret
+END g_frintn_h
+FN g_frintz_d
+    frintz d0, d0
+    ret
+END g_frintz_d
+FN g_frintz_h
+    frintz h0, h0
+    ret
+END g_frintz_h
+FN g_frintp_s
+    frintp s0, s0
+    ret
+END g_frintp_s
+FN g_frintp_d
+    frintp d0, d0
+    ret
+END g_frintp_d
+FN g_frinti_h
+    frinti h0, h0
+    ret
+END g_frinti_h
+FN g_frintx_h
+    frintx h0, h0
+    ret
+END g_frintx_h
 FN h_fmov_reg_d
     fmov d0, d1
     ret
@@ -334,6 +542,22 @@ FN h_fmov_top_half
     ret
 END h_fmov_top_half
 
+FN h_fmov_w_from_h
+    fmov w0, h0
+    ret
+END h_fmov_w_from_h
+FN h_fmov_h_from_w
+    fmov h0, w0
+    ret
+END h_fmov_h_from_w
+FN h_fmov_x_from_h
+    fmov x0, h0
+    ret
+END h_fmov_x_from_h
+FN h_fmov_h_from_x
+    fmov h0, x0
+    ret
+END h_fmov_h_from_x
 FN i_ldr_s
     ldr s0, [x0]
     ret
@@ -385,6 +609,34 @@ FN i_ldr_lit_d
     .xword 0x3ff8000000000000
 END i_ldr_lit_d
 
+FN i_str_s
+    str s0, [x0]
+    ret
+END i_str_s
+FN i_str_h
+    str h0, [x0]
+    ret
+END i_str_h
+FN i_ldur_d
+    ldur d0, [x0, #-8]
+    ret
+END i_ldur_d
+FN i_ldur_h
+    ldur h0, [x0, #-2]
+    ret
+END i_ldur_h
+FN i_stur_s
+    stur s0, [x0, #-4]
+    ret
+END i_stur_s
+FN i_str_pre_d
+    str d0, [x0, #8]!
+    ret
+END i_str_pre_d
+FN i_str_post_s
+    str s0, [x0], #4
+    ret
+END i_str_post_s
 FN j_stp_d
     stp d8, d9, [sp, #-16]!
     ldp d8, d9, [sp], #16
@@ -404,6 +656,14 @@ FN j_str_d_pre
     ret
 END j_str_d_pre
 
+FN j_ldp_d
+    ldp d0, d1, [x0]
+    ret
+END j_ldp_d
+FN j_stp_s
+    stp s0, s1, [x0]
+    ret
+END j_stp_s
 FN k_callee_saved_v16
     fadd d16, d0, d1
     fmul d0, d16, d16
