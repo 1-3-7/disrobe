@@ -55,7 +55,7 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-shell", &["chain"]),
     ("disrobe-pass-sourcedefender", &["chain"]),
     ("disrobe-pass-swift-objc", &["chain"]),
-    ("disrobe-pass-wasm-deob", &["chain", "dwarf", "sandbox"]),
+    ("disrobe-pass-wasm-deob", &["chain"]),
     ("disrobe-pass-webview", &["chain"]),
 ];
 
