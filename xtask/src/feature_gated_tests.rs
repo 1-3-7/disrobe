@@ -651,6 +651,7 @@ struct Invocation {
     all_features: bool,
     no_default_features: bool,
     narrowed: bool,
+    all_targets: bool,
     placeholder: bool,
 }
 
@@ -692,7 +693,8 @@ fn parse_invocation(line: &str) -> Invocation {
             "--all-features" => out.all_features = true,
             "--no-default-features" => out.no_default_features = true,
             "--lib" | "--bins" | "--bin" | "--example" | "--examples" | "--bench" | "--benches"
-            | "--doc" | "--all-targets" => out.narrowed = true,
+            | "--doc" => out.narrowed = true,
+            "--all-targets" => out.all_targets = true,
             _ => {
                 if let Some(value) = flag_value("--package", token) {
                     raw_package = Some(value.to_owned());
@@ -867,11 +869,17 @@ fn report_skipped_tests(
         return;
     }
     let labels: BTreeSet<String> = facts.hidden_labels();
+    let shape: &str = if invocation.all_targets {
+        "the per-crate command with `--all-targets`, which selects every target but no extra \
+         feature, for"
+    } else {
+        "the bare per-crate command for"
+    };
     findings.push(Finding {
         check: SKIPPING_COMMAND,
         detail: format!(
-            "{whence} runs the bare per-crate command for {}, which compiles away {} test-bearing \
-             file(s) held behind [{}]; write `{}` instead",
+            "{whence} runs {shape} {}, which compiles away {} test-bearing file(s) held behind \
+             [{}]; write `{}` instead",
             facts.package,
             hidden.len(),
             render_labels(&labels),
@@ -983,6 +991,57 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].check, SKIPPING_COMMAND);
         assert!(findings[0].detail.contains("--features chain"));
+    }
+
+    #[test]
+    fn all_targets_does_not_excuse_a_command_from_the_hidden_test_check() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &[]), ("chain", &[])],
+            vec![chain_detector(19)],
+        );
+        let invocation: Invocation =
+            parse_invocation("cargo test -p disrobe-pass-example --all-targets");
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut findings: Vec<Finding> = Vec::new();
+        report_skipped_tests(
+            &facts,
+            &invocation,
+            &selection,
+            "docs/x.md:1",
+            &mut findings,
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "`--all-targets` selects every target but enables no feature, so it compiles a gated \
+             test away exactly as the bare command does and must be reported"
+        );
+        assert_eq!(findings[0].check, SKIPPING_COMMAND);
+        assert!(findings[0].detail.contains("--all-targets"));
+        assert!(findings[0].detail.contains("--features chain"));
+    }
+
+    #[test]
+    fn a_doc_test_run_is_still_excused_because_it_genuinely_narrows() {
+        let facts: CrateFacts = crate_facts(
+            &[("default", &[]), ("chain", &[])],
+            vec![chain_detector(19)],
+        );
+        let invocation: Invocation = parse_invocation("cargo test -p disrobe-pass-example --doc");
+        let selection: Selection = invocation_selection(&facts, &invocation);
+        let mut findings: Vec<Finding> = Vec::new();
+        report_skipped_tests(
+            &facts,
+            &invocation,
+            &selection,
+            "docs/x.md:1",
+            &mut findings,
+        );
+        assert!(
+            findings.is_empty(),
+            "`--doc` runs only doctests, so a gated integration test not running is the flag \
+             working rather than a missed surface"
+        );
     }
 
     #[test]
