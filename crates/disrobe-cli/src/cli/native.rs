@@ -1738,6 +1738,41 @@ fn symbol_image_base(bytes: &[u8]) -> u64 {
     object::File::parse(bytes).map_or(0, |f: object::File<'_>| f.relative_address_base())
 }
 
+#[derive(Debug)]
+enum UnbindOutcome {
+    Applied(disrobe_pass_native::UnbindReport),
+    NotApplicable(String),
+}
+
+impl UnbindOutcome {
+    fn summary(&self) -> String {
+        match self {
+            Self::Applied(report) => format!(
+                "{} of {} relocation(s) unapplied, {} of {} import thunk(s) restored, {} of {} \
+                 resource offset(s) restored",
+                report.relocations_unapplied,
+                report.relocations_walked,
+                report.iat_thunks_restored,
+                report.iat_descriptors_walked,
+                report.resource_offsets_restored,
+                report.resource_data_entries_walked
+            ),
+            Self::NotApplicable(reason) => format!("not applied ({reason})"),
+        }
+    }
+}
+
+fn unbind_rebuilt_image(rebuilt: &mut disrobe_pass_native::RebuiltImage) -> UnbindOutcome {
+    let load_base: u64 = symbol_image_base(&rebuilt.bytes);
+    match disrobe_pass_native::unbind_pe(&mut rebuilt.bytes, load_base) {
+        Ok(report) => {
+            rebuilt.iat_slots_rewritten = report.iat_thunks_restored;
+            UnbindOutcome::Applied(report)
+        }
+        Err(error) => UnbindOutcome::NotApplicable(error.to_string()),
+    }
+}
+
 fn rebuild_for_kind(
     packed: &[u8],
     artifact: &RecoveredArtifact,
@@ -1789,7 +1824,8 @@ pub(crate) fn export(
     let recovered_oep_va: Option<u64> = artifact
         .recovered_oep_va
         .or_else(|| entry_va_of_pe(&artifact.bytes));
-    let rebuilt: RebuiltImage = rebuild_for_kind(&bytes, &artifact, recovered_oep_va)?;
+    let mut rebuilt: RebuiltImage = rebuild_for_kind(&bytes, &artifact, recovered_oep_va)?;
+    let unbind: UnbindOutcome = unbind_rebuilt_image(&mut rebuilt);
 
     let recovered_oep_for_map: Option<u64> = rebuilt
         .restored_entry_point_rva
@@ -1845,6 +1881,22 @@ pub(crate) fn export(
         "rebuild_layout": rebuilt.layout.label(),
         "sections_overlaid": rebuilt.sections_overlaid,
         "bytes_placed": rebuilt.bytes_placed,
+        "iat_slots_rewritten": rebuilt.iat_slots_rewritten,
+        "unbind": match &unbind {
+            UnbindOutcome::Applied(report) => serde_json::json!({
+                "applied": true,
+                "relocations_walked": report.relocations_walked,
+                "relocations_unapplied": report.relocations_unapplied,
+                "iat_descriptors_walked": report.iat_descriptors_walked,
+                "iat_thunks_restored": report.iat_thunks_restored,
+                "resource_data_entries_walked": report.resource_data_entries_walked,
+                "resource_offsets_restored": report.resource_offsets_restored,
+            }),
+            UnbindOutcome::NotApplicable(reason) => serde_json::json!({
+                "applied": false,
+                "reason": reason,
+            }),
+        },
         "restored_entry_point_rva": rebuilt.restored_entry_point_rva,
         "rebuild_note": rebuilt.note,
         "symbol_sidecar": sidecar_path.display().to_string(),
@@ -1863,6 +1915,7 @@ pub(crate) fn export(
     println!("  format:       {}", format.label());
     println!("  rebuilt:      {}", rebuilt_path.display());
     println!("  layout:       {}", rebuilt.layout.label());
+    println!("  unbind:       {}", unbind.summary());
     println!(
         "  recovered:    {} bytes placed ({} section(s) overlaid)",
         rebuilt.bytes_placed, rebuilt.sections_overlaid
