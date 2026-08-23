@@ -23,6 +23,7 @@
 )]
 mod php_toolchain;
 
+use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, UnrecoveredOp,
     decompile_oparray, opcode_name, parse_oparray,
@@ -35,7 +36,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 24] = [
+const PINNED_SAMPLES: [&str; 25] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -58,11 +59,12 @@ const PINNED_SAMPLES: [&str; 24] = [
     "switch_linear",
     "switch_optimized",
     "type_checks",
+    "unset_cv",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 21] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 22] = [
     "arithmetic",
     "closure_bodies",
     "control_flow",
@@ -83,10 +85,11 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 21] = [
     "switch_linear",
     "switch_optimized",
     "type_checks",
+    "unset_cv",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 24] = [
+const OPCODE_NAMING_SAMPLES: [&str; 25] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -109,6 +112,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 24] = [
     "switch_linear",
     "switch_optimized",
     "type_checks",
+    "unset_cv",
     "variable_variable",
     "versioned",
 ];
@@ -508,6 +512,133 @@ fn do_while_oparray_roundtrips_behaviorally() {
 #[test]
 fn keyed_foreach_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("keyed_foreach");
+}
+
+#[test]
+fn unset_cv_recovers_the_compiled_variable_and_preserves_runtime_state() {
+    let graded: &str = "the php 8.4 UNSET_CV recovery";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let original: String = run_php(&php, &required_sample("unset_cv"))
+        .unwrap_or_else(|| panic!("the tracked unset_cv source must execute"));
+    let parsed: OpArray = parse_sample(&php, &dll, "unset_cv");
+    let first: Decompilation = decompile_oparray(&parsed);
+    let second: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(
+        first.php_skeleton, second.php_skeleton,
+        "one op array must recover byte-identical source on repeated runs"
+    );
+    assert!(
+        first.unrecovered.is_empty(),
+        "the real php 8.4 UNSET_CV must recover without a refusal: {:?}\n--- recovered ---\n{}",
+        first.unrecovered,
+        first.php_skeleton
+    );
+    assert!(
+        first.php_skeleton.contains("unset($removed);"),
+        "the recovered unset must name the CV php compiled: {}",
+        first.php_skeleton
+    );
+    assert!(
+        !first.php_skeleton.contains("unset($kept);"),
+        "the adjacent CV must remain live: {}",
+        first.php_skeleton
+    );
+    let recovered: String = run_php_source(&php, &first.php_skeleton)
+        .unwrap_or_else(|| panic!("the recovered unset_cv source must execute"));
+    assert_eq!(
+        original, recovered,
+        "UNSET_CV recovery must preserve observable variable state\n--- recovered ---\n{}",
+        first.php_skeleton
+    );
+
+    let mut wrong_cv: OpArray = parsed.clone();
+    let body: &mut OpArray = wrong_cv
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some("remove_first"))
+        .unwrap_or_else(|| panic!("the tracked sample declares remove_first"));
+    let unset: &mut Op = body
+        .ops
+        .iter_mut()
+        .find(|candidate: &&mut Op| candidate.opcode == op::UNSET_CV)
+        .unwrap_or_else(|| panic!("php 8.4 must compile unset($removed) as UNSET_CV"));
+    assert_eq!(unset.op1, 0, "php must encode $removed as the first CV");
+    unset.op1 = 1;
+    let wrong: Decompilation = decompile_oparray(&wrong_cv);
+    let wrong_output: String = run_php_source(&php, &wrong.php_skeleton)
+        .unwrap_or_else(|| panic!("the deliberately wrong-CV recovery must still execute"));
+    assert_ne!(
+        original, wrong_output,
+        "the runtime differential must fail if recovery unsets the adjacent CV"
+    );
+}
+
+#[test]
+fn malformed_unset_cv_operands_are_refused_by_name() {
+    #[derive(Clone, Copy)]
+    enum Mutation {
+        OperandType,
+        Index,
+        MissingName,
+        InvalidName,
+        SecondOperand,
+        Result,
+        ExtendedValue,
+    }
+
+    let graded: &str = "the php 8.4 UNSET_CV operand boundary";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let parsed: OpArray = parse_sample(&php, &dll, "unset_cv");
+
+    for (label, mutation) in [
+        ("a non-CV operand", Mutation::OperandType),
+        (
+            "a CV index outside the declared variable table",
+            Mutation::Index,
+        ),
+        ("a CV slot without a declared name", Mutation::MissingName),
+        ("an invalid PHP variable name", Mutation::InvalidName),
+        ("a second operand", Mutation::SecondOperand),
+        ("a result operand", Mutation::Result),
+        ("an extended-value payload", Mutation::ExtendedValue),
+    ] {
+        let mut malformed: OpArray = parsed.clone();
+        let body: &mut OpArray = malformed
+            .children
+            .iter_mut()
+            .find(|child: &&mut OpArray| child.name.as_deref() == Some("remove_first"))
+            .unwrap_or_else(|| panic!("the tracked sample declares remove_first"));
+        let unset: &mut Op = body
+            .ops
+            .iter_mut()
+            .find(|candidate: &&mut Op| candidate.opcode == op::UNSET_CV)
+            .unwrap_or_else(|| panic!("php 8.4 must compile unset($removed) as UNSET_CV"));
+        match mutation {
+            Mutation::OperandType => unset.op1_type = disrobe_pass_php::OperandType::Var,
+            Mutation::Index => {
+                unset.op1 = u32::try_from(body.var_names.len())
+                    .unwrap_or_else(|_| panic!("the tracked CV table length fits in u32"));
+            }
+            Mutation::MissingName => body.var_names[unset.op1 as usize] = None,
+            Mutation::InvalidName => {
+                body.var_names[unset.op1 as usize] = Some("invalid-name".to_owned());
+            }
+            Mutation::SecondOperand => unset.op2_type = disrobe_pass_php::OperandType::Cv,
+            Mutation::Result => unset.result_type = disrobe_pass_php::OperandType::TmpVar,
+            Mutation::ExtendedValue => unset.extended_value = 1,
+        }
+        let recovered: Decompilation = decompile_oparray(&malformed);
+        assert!(
+            recovered.unrecovered.iter().any(|entry: &UnrecoveredOp| {
+                entry.opcode == op::UNSET_CV && entry.reason.contains("compiled variable")
+            }),
+            "{label} must produce the existing typed refusal record: {:?}\n--- recovered ---\n{}",
+            recovered.unrecovered,
+            recovered.php_skeleton
+        );
+    }
 }
 
 #[test]

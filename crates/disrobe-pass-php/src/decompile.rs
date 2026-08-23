@@ -374,6 +374,7 @@ pub mod op {
     pub const FAST_CALL: u8 = 162;
     pub const FAST_RET: u8 = 163;
     pub const JMP_SET: u8 = 152;
+    pub const UNSET_CV: u8 = 153;
     pub const YIELD: u8 = 160;
     pub const GENERATOR_RETURN: u8 = 161;
     pub const YIELD_FROM: u8 = 166;
@@ -559,6 +560,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         162 => "ZEND_FAST_CALL",
         163 => "ZEND_FAST_RET",
         152 => "ZEND_JMP_SET",
+        153 => "ZEND_UNSET_CV",
         154 => "ZEND_ISSET_ISEMPTY_CV",
         160 => "ZEND_YIELD",
         161 => "ZEND_GENERATOR_RETURN",
@@ -4313,6 +4315,25 @@ impl<'a> Lifter<'a> {
                 let v: Expr = self.operand_expr(op.op1_type, op.op1)?;
                 Some(format!("unset({});", v.text))
             }
+            o if o == op::UNSET_CV => {
+                if op.op1_type != OperandType::Cv
+                    || op.op2_type != OperandType::Unused
+                    || op.result_type != OperandType::Unused
+                    || op.extended_value != 0
+                {
+                    return Some(self.refuse(idx, o, REASON_UNSET_CV_OPERAND));
+                }
+                let name: Option<String> = self
+                    .var_names
+                    .get(op.op1 as usize)
+                    .and_then(Option::as_deref)
+                    .filter(|name: &&str| is_valid_php_ident(name))
+                    .map(str::to_owned);
+                let Some(name): Option<String> = name else {
+                    return Some(self.refuse(idx, o, REASON_UNSET_CV_OPERAND));
+                };
+                Some(format!("unset(${name});"))
+            }
             o if o == op::FREE => None,
             o if o == op::INCLUDE_OR_EVAL => {
                 let arg: Expr = self
@@ -4897,6 +4918,8 @@ const REASON_INC_DEC_OPERAND: &str =
 const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
 const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
+const REASON_UNSET_CV_OPERAND: &str =
+    "UNSET_CV requires one declared compiled variable and no other operands";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
 const REASON_REFERENCE_TARGET: &str =

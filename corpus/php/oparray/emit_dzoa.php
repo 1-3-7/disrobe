@@ -121,6 +121,7 @@ const OPMAP = [
     'ISSET_ISEMPTY_PROP_OBJ' => 148,
     'HANDLE_EXCEPTION' => 149,
     'JMP_SET' => 152,
+    'UNSET_CV' => 153,
     'ISSET_ISEMPTY_CV' => 154,
     'YIELD' => 160,
     'GENERATOR_RETURN' => 161,
