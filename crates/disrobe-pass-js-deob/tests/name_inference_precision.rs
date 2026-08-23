@@ -249,12 +249,80 @@ fn an_inferred_name_never_captures_a_free_reference() {
     );
 }
 
+const OUTER_BINDING_COLLISION: &str =
+    "var list = [1, 2]; function g(a){ a.push(3); return list.length; }";
+
+#[test]
+fn an_inferred_name_never_shadows_an_outer_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(OUTER_BINDING_COLLISION);
+    let renamed: Option<&str> = report
+        .renames
+        .iter()
+        .find(|rename: &&MangledRestoredName| rename.original == "a")
+        .map(|rename: &MangledRestoredName| rename.restored.as_str());
+    assert_eq!(
+        renamed,
+        Some("list_2"),
+        "`list` is bound in an enclosing scope, so the parameter must not take that name; got {renamed:?}"
+    );
+    assert!(
+        report.rewritten.contains("var list = [1, 2]"),
+        "the outer binding must be left alone:\n{}",
+        report.rewritten
+    );
+    assert!(
+        report.rewritten.contains("return list.length"),
+        "the reference to the outer binding must still resolve to it:\n{}",
+        report.rewritten
+    );
+}
+
+const DESCENDANT_BINDING_COLLISION: &str = "function outer(a){ a.push(1); function inner(){ var list = 5; return list; } return inner(); }";
+
+#[test]
+fn an_inferred_name_never_collides_with_a_descendant_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(DESCENDANT_BINDING_COLLISION);
+    let renamed: Option<&str> = report
+        .renames
+        .iter()
+        .find(|rename: &&MangledRestoredName| rename.original == "a")
+        .map(|rename: &MangledRestoredName| rename.restored.as_str());
+    assert_eq!(
+        renamed,
+        Some("list_2"),
+        "a nested scope binds `list`, so taking that name would put the parameter behind a shadow; got {renamed:?}"
+    );
+    assert!(
+        report.rewritten.contains("var list = 5"),
+        "the nested binding must be left alone:\n{}",
+        report.rewritten
+    );
+}
+
+const SIBLING_SCOPES_MAY_REUSE: &str =
+    "function first(a){ a.push(1); } function second(b){ b.push(2); }";
+
+#[test]
+fn two_bindings_in_sibling_scopes_may_receive_the_same_name() {
+    let report: TerserRestoreReport = restore_terser_mangled(SIBLING_SCOPES_MAY_REUSE);
+    let names: Vec<&str> = report
+        .renames
+        .iter()
+        .map(|rename: &MangledRestoredName| rename.restored.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["list", "list"],
+        "sibling scopes cannot capture each other, so suffixing them apart would be needless churn; got {names:?}"
+    );
+}
+
 const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/collection|a|args|groupBy|medium",
     "esbuild/collection|e|event|index|medium",
     "esbuild/collection|e|event|keys|medium",
     "esbuild/collection|e|event|offset|medium",
-    "esbuild/collection|e|event|rejected|medium",
+    "esbuild/collection|e|list_2|rejected|high",
     "esbuild/collection|f|fn|right|medium",
     "esbuild/collection|i|index|chunk|medium",
     "esbuild/collection|n|node|cursor|medium",
@@ -267,10 +335,10 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/collection|p|props|bucket|medium",
     "esbuild/collection|p|props|name|medium",
     "esbuild/collection|p|props|position|medium",
+    "esbuild/collection|r|list|matched|high",
+    "esbuild/collection|r|list|result|high",
     "esbuild/collection|r|result|groups|medium",
-    "esbuild/collection|r|result|matched|medium",
     "esbuild/collection|r|result|output|medium",
-    "esbuild/collection|r|result|result|medium",
     "esbuild/collection|s|state|partition|medium",
     "esbuild/collection|t|target|records|medium",
     "esbuild/collection|t|target|source|medium",
@@ -287,7 +355,7 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/loader|i|index|error|medium",
     "esbuild/loader|i|index|response|medium",
     "esbuild/loader|l|list|createLoader|medium",
-    "esbuild/loader|n|node|query|medium",
+    "esbuild/loader|n|list_2|query|high",
     "esbuild/loader|n|node|removed|medium",
     "esbuild/loader|n|node|url|medium",
     "esbuild/loader|o|options|resource|medium",
@@ -302,62 +370,62 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/widget|e|event|label|medium",
     "esbuild/widget|f|fn|position|medium",
     "esbuild/widget|i|index|options|medium",
-    "esbuild/widget|l|list|subscribe|medium",
+    "esbuild/widget|l|list_2|subscribe|medium",
     "esbuild/widget|n|node|counter|medium",
     "esbuild/widget|o|options|render|medium",
     "esbuild/widget|r|result|index|medium",
     "esbuild/widget|s|target|button|high",
-    "esbuild/widget|t|list_2|listeners|high",
+    "esbuild/widget|t|list|listeners|high",
     "esbuild/widget|u|root|root|high",
     "esbuild/widget|v|value|mountWidget|medium",
     "terser/collection|c|context|right|medium",
+    "terser/collection|e|event_2|value|medium",
     "terser/collection|e|event|records|medium",
     "terser/collection|e|event|source|medium",
     "terser/collection|e|event|target|medium",
-    "terser/collection|e|event|value|medium",
     "terser/collection|e|event|values|medium",
     "terser/collection|n|node|cursor|medium",
     "terser/collection|n|node|position|medium",
     "terser/collection|n|node|record|medium",
+    "terser/collection|o|list_2|rejected|high",
     "terser/collection|o|options|index|medium",
     "terser/collection|o|options|keys|medium",
     "terser/collection|o|options|offset|medium",
-    "terser/collection|o|options|rejected|medium",
     "terser/collection|p|props|left|medium",
     "terser/collection|r|result|patch|medium",
     "terser/collection|r|result|predicate|medium",
     "terser/collection|r|result|selector|medium",
     "terser/collection|r|result|size|medium",
+    "terser/collection|t|list|matched|high",
+    "terser/collection|t|list|result|high",
     "terser/collection|t|target|groups|medium",
-    "terser/collection|t|target|matched|medium",
     "terser/collection|t|target|output|medium",
-    "terser/collection|t|target|result|medium",
     "terser/collection|u|utils|bucket|medium",
     "terser/collection|u|utils|name|medium",
     "terser/loader|a|args|url|medium",
+    "terser/loader|e|event_2|params|medium",
     "terser/loader|e|event|cache|medium",
-    "terser/loader|e|event|params|medium",
     "terser/loader|i|index|promise|medium",
+    "terser/loader|n|node_2|error|medium",
+    "terser/loader|n|node_2|response|medium",
     "terser/loader|n|node|baseUrl|medium",
-    "terser/loader|n|node|error|medium",
-    "terser/loader|n|node|response|medium",
-    "terser/loader|o|options|key|medium",
+    "terser/loader|o|options_2|key|medium",
     "terser/loader|o|options|params|medium",
     "terser/loader|o|options|removed|medium",
-    "terser/loader|r|result|resource|medium",
+    "terser/loader|r|result_2|resource|medium",
     "terser/loader|r|result|transport|medium",
+    "terser/loader|t|list|query|high",
     "terser/loader|t|target|prefix|medium",
-    "terser/loader|t|target|query|medium",
     "terser/loader|t|target|resource|medium",
     "terser/widget|e|list|listeners|high",
     "terser/widget|i|index|counter|medium",
-    "terser/widget|n|node|index|medium",
+    "terser/widget|n|node_2|index|medium",
+    "terser/widget|n|node_2|position|medium",
     "terser/widget|n|node|options|medium",
-    "terser/widget|n|node|position|medium",
     "terser/widget|o|options|render|medium",
     "terser/widget|r|result|increment|medium",
+    "terser/widget|t|root|root|high",
     "terser/widget|t|target|callback|medium",
     "terser/widget|t|target|event|medium",
-    "terser/widget|t|target|root|medium",
     "terser/widget|u|target_2|button|high",
 ];

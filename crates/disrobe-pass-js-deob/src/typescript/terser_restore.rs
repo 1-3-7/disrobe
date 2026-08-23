@@ -14,9 +14,10 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use crate::mangled_names::{
-    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameDecision, NameRegistry,
-    RestoreStats, RestoredName, ScopeKey, SymbolRole,
+    Context, ContextNameSource, CorpusNameSource, HeuristicNameSource, NameRegistry, RestoreStats,
+    RestoredName, ScopeKey, Suggestion, SymbolRole,
 };
+use crate::rename::scope_names::{conflicts_in_scope, is_js_reserved};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct TerserRestoreReport {
@@ -53,19 +54,13 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
     let scopes: &ScopeTree = semantic.scopes();
     let nodes: &AstNodes<'_> = semantic.nodes();
 
-    let mut registry: NameRegistry = NameRegistry::new()
+    let registry: NameRegistry = NameRegistry::new()
         .with_source(Arc::new(CorpusNameSource::well_known_minified()))
         .with_source(Arc::new(ContextNameSource::new()))
         .with_source(Arc::new(HeuristicNameSource::new()));
-    for scope_id in scopes.descendants_from_root() {
-        for name in scopes.get_bindings(scope_id).keys() {
-            if !is_likely_mangled(name.as_str()) {
-                registry.reserve(name.as_str().to_owned());
-            }
-        }
-    }
+    let mut free_references: BTreeSet<String> = BTreeSet::new();
     for name in scopes.root_unresolved_references().keys() {
-        registry.reserve((*name).to_string());
+        free_references.insert(name.to_string());
     }
 
     let mut contexts: BTreeMap<SymbolId, Context> = BTreeMap::new();
@@ -92,35 +87,60 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         contexts.insert(symbol_id, ctx);
     }
 
-    let context_by_name: BTreeMap<String, Context> = contexts
-        .values()
-        .map(|c: &Context| (c.original.clone(), c.clone()))
+    let mut ordered: Vec<(SymbolId, &Context)> = contexts
+        .iter()
+        .map(|(symbol_id, ctx): (&SymbolId, &Context)| (*symbol_id, ctx))
         .collect();
-    let (plan, restore_stats): (BTreeMap<String, NameDecision>, RestoreStats) =
-        registry.restore(&context_by_name);
+    ordered.sort_by_key(|(symbol_id, _): &(SymbolId, &Context)| {
+        (symbols.get_span(*symbol_id).start, *symbol_id)
+    });
+
+    let mut allocator: ScopeAllocator<'_> = ScopeAllocator {
+        scopes,
+        free_references: &free_references,
+        assigned: BTreeMap::new(),
+    };
+    let mut restore_stats: RestoreStats = RestoreStats::default();
+    let mut by_source: BTreeMap<String, usize> = BTreeMap::new();
+    let mut plan: BTreeMap<SymbolId, String> = BTreeMap::new();
+    let mut renames: Vec<RestoredName> = Vec::new();
+    for (symbol_id, ctx) in ordered {
+        let Some(suggestion): Option<Suggestion> = registry.best_suggestion(ctx.scope, ctx) else {
+            restore_stats.fallback_to_original += 1;
+            continue;
+        };
+        let owner: ScopeId = symbols.get_scope_id(symbol_id);
+        let Some((new_name, suffixed)): Option<(String, bool)> =
+            allocator.allocate(owner, &suggestion.name)
+        else {
+            restore_stats.fallback_to_original += 1;
+            continue;
+        };
+        if suffixed {
+            restore_stats.conflicts_resolved += 1;
+        }
+        restore_stats.suggestions_made += 1;
+        *by_source
+            .entry(suggestion.source_label.to_owned())
+            .or_insert(0) += 1;
+        renames.push(RestoredName {
+            original: ctx.original.clone(),
+            restored: new_name.clone(),
+            confidence: suggestion.confidence,
+            tier: suggestion.confidence.tier(),
+            source_label: suggestion.source_label,
+            declaration_offset: symbols.get_span(symbol_id).start as usize,
+        });
+        plan.insert(symbol_id, new_name);
+    }
+    restore_stats.by_source = by_source;
 
     let mut edits: Vec<(Range<usize>, String)> = Vec::new();
     let mut idents_renamed: usize = 0;
     let mut refs_rewritten: usize = 0;
-    let mut seen_originals: BTreeSet<String> = BTreeSet::new();
-    let mut renames: Vec<RestoredName> = Vec::new();
-    for (symbol_id, ctx) in &contexts {
-        let Some(decision): Option<&NameDecision> = plan.get(&ctx.original) else {
-            continue;
-        };
-        let new_name: &String = &decision.restored;
-        if seen_originals.insert(ctx.original.clone()) {
-            idents_renamed = idents_renamed.saturating_add(1);
-        }
+    for (symbol_id, new_name) in &plan {
+        idents_renamed = idents_renamed.saturating_add(1);
         let decl_span: oxc_span::Span = symbols.get_span(*symbol_id);
-        renames.push(RestoredName {
-            original: ctx.original.clone(),
-            restored: decision.restored.clone(),
-            confidence: decision.confidence,
-            tier: decision.tier,
-            source_label: decision.source_label,
-            declaration_offset: decl_span.start as usize,
-        });
         edits.push((
             decl_span.start as usize..decl_span.end as usize,
             new_name.clone(),
@@ -159,6 +179,50 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
         restore_stats,
         renames,
         rewritten: out,
+    }
+}
+
+const MAX_SUFFIX_ATTEMPTS: u32 = 512;
+
+struct ScopeAllocator<'s> {
+    scopes: &'s ScopeTree,
+    free_references: &'s BTreeSet<String>,
+    assigned: BTreeMap<ScopeId, BTreeSet<String>>,
+}
+
+impl ScopeAllocator<'_> {
+    fn already_assigned(&self, owner: ScopeId, name: &str) -> bool {
+        let holds = |scope: ScopeId| -> bool {
+            self.assigned
+                .get(&scope)
+                .is_some_and(|names: &BTreeSet<String>| names.contains(name))
+        };
+        holds(owner)
+            || self.scopes.ancestors(owner).any(holds)
+            || self.scopes.iter_all_child_ids(owner).any(holds)
+    }
+
+    fn allocate(&mut self, owner: ScopeId, base: &str) -> Option<(String, bool)> {
+        for attempt in 0..MAX_SUFFIX_ATTEMPTS {
+            let candidate: String = if attempt == 0 {
+                base.to_owned()
+            } else {
+                format!("{base}_{}", attempt.saturating_add(1))
+            };
+            if is_js_reserved(&candidate)
+                || self.free_references.contains(&candidate)
+                || conflicts_in_scope(self.scopes, owner, &candidate)
+                || self.already_assigned(owner, &candidate)
+            {
+                continue;
+            }
+            self.assigned
+                .entry(owner)
+                .or_default()
+                .insert(candidate.clone());
+            return Some((candidate, attempt > 0));
+        }
+        None
     }
 }
 

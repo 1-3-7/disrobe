@@ -10,6 +10,7 @@ use regex::Regex;
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::rename::scope_names::{conflicts_in_scope, is_js_reserved};
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ScopeAwareStats {
@@ -120,87 +121,7 @@ fn is_conflict_free(
     name: &str,
     reserved: &IndexSet<String>,
 ) -> bool {
-    if reserved.contains(name) {
-        return false;
-    }
-    if is_js_reserved(name) {
-        return false;
-    }
-    if scopes.has_binding(owner, name) {
-        return false;
-    }
-    if scopes
-        .ancestors(owner)
-        .any(|sid| scopes.has_binding(sid, name))
-    {
-        return false;
-    }
-    if scopes
-        .iter_all_child_ids(owner)
-        .any(|sid| scopes.has_binding(sid, name))
-    {
-        return false;
-    }
-    true
-}
-
-fn is_js_reserved(name: &str) -> bool {
-    matches!(
-        name,
-        "arguments"
-            | "as"
-            | "async"
-            | "await"
-            | "break"
-            | "case"
-            | "catch"
-            | "class"
-            | "const"
-            | "continue"
-            | "debugger"
-            | "default"
-            | "delete"
-            | "do"
-            | "else"
-            | "enum"
-            | "eval"
-            | "export"
-            | "extends"
-            | "false"
-            | "finally"
-            | "for"
-            | "from"
-            | "function"
-            | "if"
-            | "implements"
-            | "import"
-            | "in"
-            | "instanceof"
-            | "interface"
-            | "let"
-            | "new"
-            | "null"
-            | "of"
-            | "package"
-            | "private"
-            | "protected"
-            | "public"
-            | "return"
-            | "static"
-            | "super"
-            | "switch"
-            | "this"
-            | "throw"
-            | "true"
-            | "try"
-            | "typeof"
-            | "undefined"
-            | "var"
-            | "void"
-            | "while"
-            | "with"
-            | "yield"
-    )
+    !reserved.contains(name) && !is_js_reserved(name) && !conflicts_in_scope(scopes, owner, name)
 }
 
 #[cfg(test)]

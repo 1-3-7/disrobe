@@ -1,5 +1,6 @@
 mod hex_idents;
 mod scope_aware;
+pub(crate) mod scope_names;
 
 use serde::Serialize;
 
