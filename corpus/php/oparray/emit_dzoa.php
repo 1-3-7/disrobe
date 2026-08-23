@@ -487,7 +487,14 @@ function build_op(string $mnemonic, array $resultTok, array $operands, ParsedOpA
 
     $parsed = [];
     foreach ($operands as $tok) {
-        $parsed[] = parse_operand($tok, $oa);
+        $slot = parse_operand($tok, $oa);
+        if ($slot[0] === null && preg_match('/^\(.*\)$/', trim($tok))) {
+            fail(
+                "unhandled operand flag '" . trim($tok) . "' on $mnemonic (line $line); DZOA would "
+                . 'drop it and shift every operand after it, so handle the flag or restrict the sample'
+            );
+        }
+        $parsed[] = $slot;
     }
 
     if (isset($parsed[0]) && $parsed[0][0] !== null) {
