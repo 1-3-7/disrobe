@@ -417,6 +417,65 @@ fn a_hostile_local_name_still_parses_as_typescript() {
     report("TypeScript parse", &failures);
 }
 
+const MEASURED_ACCEPTED_BUT_KEPT_RESERVED: [(LiftTarget, &str); 24] = [
+    (LiftTarget::Rust, "case"),
+    (LiftTarget::Rust, "default"),
+    (LiftTarget::Rust, "export"),
+    (LiftTarget::Rust, "switch"),
+    (LiftTarget::Rust, "union"),
+    (LiftTarget::C, "bool"),
+    (LiftTarget::C, "complex"),
+    (LiftTarget::C, "export"),
+    (LiftTarget::C, "imaginary"),
+    (LiftTarget::C, "int32_t"),
+    (LiftTarget::C, "int64_t"),
+    (LiftTarget::C, "typeof"),
+    (LiftTarget::TypeScript, "any"),
+    (LiftTarget::TypeScript, "as"),
+    (LiftTarget::TypeScript, "async"),
+    (LiftTarget::TypeScript, "boolean"),
+    (LiftTarget::TypeScript, "declare"),
+    (LiftTarget::TypeScript, "extern"),
+    (LiftTarget::TypeScript, "number"),
+    (LiftTarget::TypeScript, "string"),
+    (LiftTarget::TypeScript, "struct"),
+    (LiftTarget::TypeScript, "symbol"),
+    (LiftTarget::TypeScript, "undefined"),
+    (LiftTarget::TypeScript, "union"),
+];
+
+#[test]
+fn words_measured_as_accepted_stay_reserved_on_purpose() {
+    let mut unprefixed: Vec<String> = Vec::new();
+    for (target, word) in MEASURED_ACCEPTED_BUT_KEPT_RESERVED {
+        let names: [String; LOCAL_COUNT] = [
+            word.to_owned(),
+            "b".to_owned(),
+            "c".to_owned(),
+            "d".to_owned(),
+        ];
+        let source: String = lift_body(&module_with_names(&names), target);
+        if declared_identifiers(&source, target)
+            .iter()
+            .any(|d: &String| d == word)
+        {
+            unprefixed.push(format!("{target:?}/{word}"));
+        }
+    }
+    assert!(
+        unprefixed.is_empty(),
+        "{} word(s) measured as ACCEPTED by their target compiler are no longer being prefixed: \
+         {unprefixed:?}. Each entry in this list was compiled individually as a plain local \
+         binding against rustc 1.96.1, gcc 16.2.0 -std=c11, and node v24.19 in ES-module mode, \
+         and each one compiled. They are kept reserved anyway, deliberately: over-prefixing costs \
+         one leading underscore, under-prefixing emits source that does not compile, and an \
+         isolated probe cannot model the emitter's own context. `int32_t int32_t = 0;` is the \
+         clearest case, because it compiles alone and then poisons every later declaration in the \
+         same function. Removing an entry here is a product decision, not a cleanup",
+        unprefixed.len()
+    );
+}
+
 #[test]
 fn the_typescript_gate_rejects_a_program_the_emitter_must_never_produce() {
     let node: PathBuf = required_tool(&["node", "node.exe"], "the hostile-name TypeScript gate");
