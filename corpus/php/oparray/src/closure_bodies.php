@@ -43,6 +43,13 @@ function pick(int $base, bool $rising): callable
     return $rising ? $increase : $decrease;
 }
 
+function pair(int $base, bool $rising): callable
+{
+    $up = function (int $value) use ($base): int { return $value + $base; }; $down = function (int $value) use ($base): int { return $value * $base; };
+
+    return $rising ? $up : $down;
+}
+
 function apply_twice(callable $fn, int $seed): int
 {
     $once = $fn($seed);
@@ -62,3 +69,5 @@ echo apply_twice($add, 1), "\n";
 echo apply_twice($scale, 2), "\n";
 echo pick(3, true)(10), "\n";
 echo pick(3, false)(10), "\n";
+echo pair(4, true)(10), "\n";
+echo pair(4, false)(10), "\n";
