@@ -89,6 +89,7 @@ const OPMAP = [
     'FETCH_OBJ_R' => 82,
     'FETCH_W' => 83,
     'FETCH_RW' => 86,
+    'FETCH_LIST_R' => 98,
     'FETCH_CONSTANT' => 99,
     'CATCH' => 107,
     'DISCARD_EXCEPTION' => 159,

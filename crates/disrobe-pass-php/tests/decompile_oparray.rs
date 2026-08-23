@@ -209,6 +209,7 @@ fn every_opcode_constant_is_named_with_its_zend_mnemonic_in_this_table() {
     assert_eq!(opcode_name(op::ROPE_ADD), "ZEND_ROPE_ADD");
     assert_eq!(opcode_name(op::ROPE_END), "ZEND_ROPE_END");
     assert_eq!(opcode_name(op::FE_FETCH_R), "ZEND_FE_FETCH_R");
+    assert_eq!(opcode_name(op::FETCH_LIST_R), "ZEND_FETCH_LIST_R");
     assert_eq!(opcode_name(op::YIELD_FROM), "ZEND_YIELD_FROM");
     assert_eq!(opcode_name(op::GENERATOR_CREATE), "ZEND_GENERATOR_CREATE");
 }

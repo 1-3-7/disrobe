@@ -20,6 +20,8 @@ const MAX_PREALLOC: usize = 1 << 16;
 const SANE_LIFT_DEPTH: u32 = 256;
 const MAX_UNRECOVERED_RECORDS: usize = 4096;
 const SANE_ROPE_WORK_CAP: usize = 1 << 16;
+const SANE_LIST_ELEMENT_CAP: usize = 1 << 16;
+const SANE_LIST_RENDER_CAP: usize = 1 << 20;
 const SANE_SWITCH_ARM_CAP: usize = 1 << 16;
 const SANE_SWITCH_LABEL_WORK_CAP: usize = 1 << 20;
 const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
@@ -345,6 +347,7 @@ pub mod op {
     pub const FE_FETCH_R: u8 = 78;
     pub const FETCH_R: u8 = 80;
     pub const FETCH_DIM_R: u8 = 81;
+    pub const FETCH_LIST_R: u8 = 98;
     pub const FETCH_OBJ_R: u8 = 82;
     pub const FETCH_W: u8 = 83;
     pub const FETCH_RW: u8 = 86;
@@ -521,6 +524,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         86 => "ZEND_FETCH_RW",
         87 => "ZEND_FETCH_DIM_RW",
         88 => "ZEND_FETCH_OBJ_RW",
+        98 => "ZEND_FETCH_LIST_R",
         99 => "ZEND_FETCH_CONSTANT",
         107 => "ZEND_CATCH",
         108 => "ZEND_THROW",
@@ -1584,6 +1588,21 @@ struct TryRegion {
     construct_end: u32,
 }
 
+struct ListEntry {
+    key: ListKey,
+    value: ListValue,
+}
+
+struct ListKey {
+    literal: u32,
+    position: Option<usize>,
+}
+
+enum ListValue {
+    Variable(String),
+    Nested(Vec<ListEntry>),
+}
+
 struct Lifter<'a> {
     ops: &'a [Op],
     literals: &'a [Literal],
@@ -1821,6 +1840,7 @@ impl<'a> Lifter<'a> {
             op::MATCH => self
                 .structure_optimized_match(i, end)
                 .or_else(|| self.refuse_optimized_match_region(i, end)),
+            o if o == op::FETCH_LIST_R => self.fold_list_assign(i, end),
             o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
@@ -3800,6 +3820,236 @@ impl<'a> Lifter<'a> {
         Some((format!("${}", self.cv(assign.op1)), after_fetch + 1))
     }
 
+    fn fold_list_assign(&mut self, start: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let first: &Op = self.ops.get(start as usize)?;
+        if first.opcode != op::FETCH_LIST_R
+            || !matches!(
+                first.op1_type,
+                OperandType::Const | OperandType::TmpVar | OperandType::Var
+            )
+            || matches!(
+                (first.op1_type, self.literals.get(first.op1 as usize)),
+                (OperandType::Const, Some(Literal::Array(_)))
+            )
+        {
+            return None;
+        }
+        let subject: Expr = self.defined_operand_expr(first.op1_type, first.op1)?;
+        let container: (OperandType, u32) = (first.op1_type, first.op1);
+        let mut work: usize = 0;
+        let mut name_bytes: usize = 0;
+        let (entries, nested_end): (Vec<ListEntry>, u32) =
+            self.list_entries(start, end, container, 0, &mut work, &mut name_bytes)?;
+        let next: u32 = self.skip_list_free(nested_end, end, container)?;
+        let mut pattern: String = String::new();
+        self.render_list_entries(&entries, &mut pattern)?;
+        let statement_bytes: usize = pattern
+            .len()
+            .checked_add(subject.text.len())?
+            .checked_add(4)?;
+        if statement_bytes > SANE_LIST_RENDER_CAP {
+            return None;
+        }
+        let used_after: bool = matches!(container.0, OperandType::TmpVar | OperandType::Var)
+            && self
+                .ops
+                .get(next as usize..end as usize)?
+                .iter()
+                .any(|op: &Op| {
+                    op.opcode != op::FREE
+                        && ((op.op1_type, op.op1) == container
+                            || (op.op2_type, op.op2) == container)
+                });
+        if !used_after {
+            return Some((
+                vec![Stmt::Line(format!("{pattern} = {};", subject.text))],
+                next,
+            ));
+        }
+        let spill: String = self.reserve_spill("list", start);
+        let spill_expr: String = format!("${spill}");
+        let spill_bytes: usize = statement_bytes
+            .checked_add(spill_expr.len().checked_mul(2)?)?
+            .checked_add(8)?;
+        if spill_bytes > SANE_LIST_RENDER_CAP {
+            self.reserved_names.remove(&spill);
+            return None;
+        }
+        self.writable_slots.remove(&container);
+        self.slots.insert(container, Expr::atom(spill_expr.clone()));
+        Some((
+            vec![
+                Stmt::Line(format!("{spill_expr} = {};", subject.text)),
+                Stmt::Line(format!("{pattern} = {spill_expr};")),
+            ],
+            next,
+        ))
+    }
+
+    fn list_entries(
+        &self,
+        start: u32,
+        end: u32,
+        container: (OperandType, u32),
+        depth: u32,
+        work: &mut usize,
+        name_bytes: &mut usize,
+    ) -> Option<(Vec<ListEntry>, u32)> {
+        if depth >= SANE_NEST_DEPTH {
+            return None;
+        }
+        let mut entries: Vec<ListEntry> = Vec::new();
+        let mut cursor: u32 = start;
+        while cursor < end {
+            let fetch: &Op = self.ops.get(cursor as usize)?;
+            if fetch.opcode != op::FETCH_LIST_R || (fetch.op1_type, fetch.op1) != container {
+                break;
+            }
+            *work = work.checked_add(1)?;
+            if *work > SANE_LIST_ELEMENT_CAP
+                || fetch.op2_type != OperandType::Const
+                || !matches!(fetch.result_type, OperandType::TmpVar | OperandType::Var)
+                || fetch.extended_value != 0
+            {
+                return None;
+            }
+            let key_literal: &Literal = self.literals.get(fetch.op2 as usize)?;
+            let position: Option<usize> = match key_literal {
+                Literal::Long(value) if *value >= 0 => usize::try_from(*value)
+                    .ok()
+                    .filter(|position: &usize| *position < SANE_LIST_ELEMENT_CAP),
+                Literal::Long(_) | Literal::Str(_) => None,
+                _ => return None,
+            };
+            let key: ListKey = ListKey {
+                literal: fetch.op2,
+                position,
+            };
+            let result: (OperandType, u32) = (fetch.result_type, fetch.result);
+            let consumer_index: u32 = cursor.checked_add(1)?;
+            let consumer: &Op = self.ops.get(consumer_index as usize)?;
+            let (value, next): (ListValue, u32) = if consumer.opcode == op::ASSIGN {
+                if consumer.op1_type != OperandType::Cv
+                    || (consumer.op2_type, consumer.op2) != result
+                    || consumer.result_type != OperandType::Unused
+                    || consumer.extended_value != 0
+                    || self.result_use_counts.get(cursor as usize).copied() != Some(1)
+                {
+                    return None;
+                }
+                let name: String = self
+                    .var_names
+                    .get(consumer.op1 as usize)
+                    .and_then(Option::as_deref)
+                    .filter(|name: &&str| is_valid_php_ident(name))
+                    .map(str::to_owned)?;
+                *name_bytes = name_bytes.checked_add(name.len().checked_add(1)?)?;
+                if *name_bytes > SANE_LIST_RENDER_CAP {
+                    return None;
+                }
+                (
+                    ListValue::Variable(format!("${name}")),
+                    consumer_index.checked_add(1)?,
+                )
+            } else if consumer.opcode == op::FETCH_LIST_R
+                && (consumer.op1_type, consumer.op1) == result
+            {
+                let (nested, nested_end): (Vec<ListEntry>, u32) = self.list_entries(
+                    consumer_index,
+                    end,
+                    result,
+                    depth.checked_add(1)?,
+                    work,
+                    name_bytes,
+                )?;
+                let direct_uses: u32 = u32::try_from(nested.len()).ok()?;
+                if self.result_use_counts.get(cursor as usize).copied() != Some(direct_uses) {
+                    return None;
+                }
+                let next: u32 = self.skip_list_free(nested_end, end, result)?;
+                (ListValue::Nested(nested), next)
+            } else {
+                return None;
+            };
+            entries.push(ListEntry { key, value });
+            cursor = next;
+        }
+        (!entries.is_empty()).then_some((entries, cursor))
+    }
+
+    fn skip_list_free(&self, cursor: u32, end: u32, container: (OperandType, u32)) -> Option<u32> {
+        if cursor >= end {
+            return Some(cursor);
+        }
+        let next: &Op = self.ops.get(cursor as usize)?;
+        if next.opcode != op::FREE {
+            return Some(cursor);
+        }
+        if (next.op1_type, next.op1) != container
+            || next.op2_type != OperandType::Unused
+            || next.result_type != OperandType::Unused
+            || next.extended_value_provenance() != ExtendedValueProvenance::Unavailable
+        {
+            return None;
+        }
+        cursor.checked_add(1)
+    }
+
+    fn render_list_entries(&self, entries: &[ListEntry], out: &mut String) -> Option<()> {
+        Self::push_list_text(out, "[")?;
+        let mut prior: Option<usize> = None;
+        let positional: bool = entries.iter().all(|entry: &ListEntry| {
+            entry.key.position.is_some_and(|position: usize| {
+                let ordered: bool = prior.is_none_or(|held: usize| position > held);
+                prior = Some(position);
+                ordered
+            })
+        });
+        if positional {
+            let last: usize = entries.last()?.key.position?;
+            let mut entry_index: usize = 0;
+            for position in 0..=last {
+                if position != 0 {
+                    Self::push_list_text(out, ", ")?;
+                }
+                let Some(entry): Option<&ListEntry> = entries.get(entry_index) else {
+                    continue;
+                };
+                if entry.key.position == Some(position) {
+                    self.render_list_value(&entry.value, out)?;
+                    entry_index = entry_index.checked_add(1)?;
+                }
+            }
+        } else {
+            for (index, entry) in entries.iter().enumerate() {
+                if index != 0 {
+                    Self::push_list_text(out, ", ")?;
+                }
+                let key: &Literal = self.literals.get(entry.key.literal as usize)?;
+                Self::push_list_text(out, &key.render())?;
+                Self::push_list_text(out, " => ")?;
+                self.render_list_value(&entry.value, out)?;
+            }
+        }
+        Self::push_list_text(out, "]")
+    }
+
+    fn render_list_value(&self, value: &ListValue, out: &mut String) -> Option<()> {
+        match value {
+            ListValue::Variable(name) => Self::push_list_text(out, name),
+            ListValue::Nested(entries) => self.render_list_entries(entries, out),
+        }
+    }
+
+    fn push_list_text(out: &mut String, text: &str) -> Option<()> {
+        let next: usize = out.len().checked_add(text.len())?;
+        if next > SANE_LIST_RENDER_CAP {
+            return None;
+        }
+        out.push_str(text);
+        Some(())
+    }
+
     fn eval_op(&mut self, idx: u32) -> Option<String> {
         let op: Op = self.ops.get(idx as usize)?.clone();
         let op: &Op = &op;
@@ -3826,6 +4076,7 @@ impl<'a> Lifter<'a> {
                 self.fold_unary_call(op, builtin_name(o));
                 None
             }
+            o if o == op::FETCH_LIST_R => Some(self.refuse(idx, o, REASON_LIST_DESTRUCTURING)),
             o if o == op::FETCH_DIM_R => {
                 self.fold_fetch_dim(op);
                 None
@@ -4934,6 +5185,7 @@ const REASON_TYPE_CHECK: &str =
     "the type check names no php 8 type combination this container can spell";
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
+const REASON_LIST_DESTRUCTURING: &str = "list destructuring requires a literal key, a defined container, and one bounded assignment tree";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
 const REASON_GOTO_TARGET: &str = "a jump targets a position no label can be placed at, so this whole function is \
      rejected rather than recovered around it";
@@ -4965,6 +5217,7 @@ const fn refusal_reason(opcode: u8) -> &'static str {
         op::SWITCH_LONG | op::SWITCH_STRING | op::MATCH | op::CASE => REASON_DISPATCH,
         op::ROPE_INIT | op::ROPE_ADD | op::ROPE_END => REASON_ROPE,
         op::CATCH | op::FAST_CALL | op::FAST_RET | op::DISCARD_EXCEPTION => REASON_EXCEPTION,
+        op::FETCH_LIST_R => REASON_LIST_DESTRUCTURING,
         op::DECLARE_FUNCTION
         | op::DECLARE_LAMBDA_FUNCTION
         | op::DECLARE_CLASS
