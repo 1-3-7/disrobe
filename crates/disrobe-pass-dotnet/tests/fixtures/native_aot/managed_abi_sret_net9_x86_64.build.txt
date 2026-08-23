@@ -1,0 +1,44 @@
+Source: managed_abi_sret_net9_x86_64.cs
+Project: managed_abi_sret_net9_x86_64.csproj.txt
+Target: net9.0, win-x64, PE32+, AMD64, NativeAOT metadata 10.1
+SDK: .NET SDK 9.0.316
+Compiler: Microsoft.DotNet.ILCompiler 9.0.18, runtime.win-x64.microsoft.dotnet.ilcompiler 9.0.18
+Linker: MSVC 14.44.35207 Hostx64\x64\link.exe
+Runtime source tag: https://github.com/dotnet/runtime/tree/v9.0.18
+Managed calling convention: https://raw.githubusercontent.com/dotnet/runtime/v9.0.18/docs/design/coreclr/botr/clr-abi.md
+NativeFormat TypeDefinition record: https://raw.githubusercontent.com/dotnet/runtime/v9.0.18/src/coreclr/tools/Common/Internal/Metadata/NativeFormat/NativeFormatReaderGen.cs, members Flags, BaseType, NamespaceDefinition, Name, Size, PackingSize, EnclosingType, NestedTypes, Methods, Fields, Properties, Events, GenericParameters, Interfaces, CustomAttributes
+NativeFormat Field record: same file, members Flags, Name, Signature, DefaultValue, Offset, CustomAttributes
+NativeFormat FieldSignature record: same file, single member Type, one of TypeDefinition, TypeReference, TypeSpecification, ModifiedType
+NativeFormat record order is identical at tags v7.0.20, v8.0.14, v9.0.18 and v10.0.0-preview.7.25380.108 for all three records
+ECMA-335 field attributes: ECMA-335 6th edition, II.23.1.5 FieldAttributes, Static 0x0010 and Literal 0x0040 exclude a field from the instance layout
+ECMA-335 type layout: ECMA-335 6th edition, II.23.1.15 TypeAttributes, LayoutMask 0x00000018 and SequentialLayout 0x00000008
+Microsoft x64 argument registers: RCX, RDX, R8, R9 for integer and pointer arguments
+Microsoft x64 hidden struct return: a return value larger than eight bytes is written through a caller-supplied pointer passed in RCX, which shifts every declared argument to the next position, so a declared argument at position N binds the register of physical position N plus one
+Microsoft x64 register-returned struct: a struct of one, two, four or eight bytes is returned in RAX with no hidden pointer
+Convention low nibble on this image: 0x0 for static methods and 0x0 plus HASTHIS for instance methods and constructors
+Reflection rooting: each probe struct is named in a direct typeof(T).GetFields call so ILCompiler keeps its Field records; without that call the field metadata is trimmed and the field names are absent from the image
+Command: dotnet publish managed_abi_sret_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Build directory: the project, Program.cs and publish output live outside the repository; PathMap rewrites the project directory to C:\src\managed_abi_sret_net9_x86_64 so no build path is embedded
+Path leak scan: the committed image carries zero occurrences of the byte sequence C:\ in ASCII and in UTF-16LE
+Source SHA-256: 7D450DA11173C74A9EF0B26EE57BC6086B0327E477DBC454BC824740369B0280
+Project SHA-256: 4592AD060D3901753A35D5F342F21029FC5FCD6781819F6745496D652F1B43FC
+Executable SHA-256: 43D102FDF5C2D404B0FE4266BBA36A3BC087574842ED84B8424624C6D4E30A98
+Full link map SHA-256: FE52691672F2D5EDA9FBB29BBA428D144B8A93E3F1C34B76CB788E585DBE7F43
+Unwind evidence tool: dumpbin 14.44.35228.0, command dumpbin -nologo -unwindinfo publish\managed_abi_sret_net9_x86_64.exe
+LLVM evidence tool: llvm-objdump 19.1.7, SHA-256 4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022
+Disassembly command: llvm-objdump -d --start-address=<begin> --stop-address=<end> publish\managed_abi_sret_net9_x86_64.exe
+Link symbol for the constructor: the linker spells the .ctor metadata name _ctor, so its evidence key is ManagedSretProbe._ctor
+ManagedSretProbe._ctor managed signature: instance System.Void .ctor(System.Int64)
+ManagedSretProbe.Split managed signature: static ManagedPair Split(System.Int64)
+ManagedSretProbe.Spread managed signature: static ManagedTriple Spread(System.Int64)
+ManagedSretProbe.Quarter managed signature: static ManagedQuad Quarter(System.Int32)
+ManagedSretProbe.Narrow managed signature: static ManagedSmall Narrow(System.Int32)
+ManagedSretProbe.Widen managed signature: static ManagedMixed Widen(System.Int32)
+ManagedSretProbe.Label managed signature: static ManagedLabelled Label(System.Int64)
+ManagedSretProbe.Doubled managed signature: instance ManagedPair Doubled()
+ManagedPair declared layout: sequential, System.Int64 Low, System.Int64 High, 16 bytes
+ManagedTriple declared layout: sequential, System.Int64 First, System.Int64 Second, System.Int64 Third, 24 bytes
+ManagedQuad declared layout: sequential, System.Int32 First, System.Int32 Second, System.Int32 Third, System.Int32 Fourth, 16 bytes
+ManagedSmall declared layout: sequential, System.Int32 Only, 4 bytes
+ManagedMixed declared layout: sequential, System.Int32 First, System.Double Second, 16 bytes with four bytes of padding after First
+ManagedLabelled declared layout: sequential, System.String Text, System.Int64 Count, 16 bytes

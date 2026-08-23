@@ -40,6 +40,10 @@ const MAX_METADATA_STRING_BYTES: usize = 4_096;
 const MAX_METADATA_STRING_STORAGE_BYTES: usize = 16_777_216;
 const MAX_METADATA_OUTPUT_BYTES: usize = 16_777_216;
 const MAX_METADATA_TYPE_SIGNATURE_DEPTH: usize = 256;
+const FIELD_ATTRIBUTE_STATIC: u32 = 0x0010;
+const FIELD_ATTRIBUTE_LITERAL: u32 = 0x0040;
+const TYPE_ATTRIBUTE_LAYOUT_MASK: u32 = 0x0000_0018;
+const TYPE_ATTRIBUTE_SEQUENTIAL_LAYOUT: u32 = 0x0000_0008;
 const MAX_METADATA_TYPE_SIGNATURE_WORK: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +156,21 @@ pub struct AotType {
     pub name: String,
     pub enclosing_type_record_offset: Option<u32>,
     pub method_record_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AotFieldLayout {
+    pub(super) name: String,
+    pub(super) field_type: AotTypeSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AotTypeLayout {
+    pub(super) record_offset: u32,
+    pub(super) sequential: bool,
+    pub(super) declared_size: u32,
+    pub(super) packing_size: u32,
+    pub(super) instance_fields: Vec<AotFieldLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,11 +652,29 @@ struct NamespaceRecord {
 
 struct TypeRecord {
     offset: u32,
+    flags: u32,
     namespace: u32,
     name: String,
+    declared_size: u32,
+    packing_size: u32,
     enclosing_type: u32,
     nested_types: Vec<u32>,
     methods: Vec<u32>,
+    fields: Vec<u32>,
+    end: usize,
+}
+
+struct FieldRecord {
+    offset: u32,
+    flags: u32,
+    name: String,
+    signature_offset: u32,
+    end: usize,
+}
+
+struct FieldSignatureRecord {
+    offset: u32,
+    field_type: RawHandle,
     end: usize,
 }
 
@@ -1295,16 +1332,16 @@ fn parse_type(
     strings: &mut MetadataStrings,
 ) -> crate::error::Result<TypeRecord> {
     let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
-    let _flags: u32 = cursor.unsigned()?;
+    let flags: u32 = cursor.unsigned()?;
     let _base_type: RawHandle = cursor.raw_handle()?;
     let namespace: u32 = cursor.typed_handle()?;
     let name_handle: u32 = cursor.typed_handle()?;
-    let _size: u32 = cursor.unsigned()?;
-    let _packing_size: u32 = cursor.unsigned()?;
+    let declared_size: u32 = cursor.unsigned()?;
+    let packing_size: u32 = cursor.unsigned()?;
     let enclosing_type: u32 = cursor.typed_handle()?;
     let nested_types: Vec<u32> = cursor.typed_collection(budget)?;
     let methods: Vec<u32> = cursor.typed_collection(budget)?;
-    cursor.skip_typed_collection(budget)?;
+    let fields: Vec<u32> = cursor.typed_collection(budget)?;
     cursor.skip_typed_collection(budget)?;
     cursor.skip_typed_collection(budget)?;
     cursor.skip_typed_collection(budget)?;
@@ -1316,6 +1353,7 @@ fn parse_type(
         "nested type handle is nil or duplicated",
     )?;
     require_unique_nonzero(&methods, offset, "method handle is nil or duplicated")?;
+    require_unique_nonzero(&fields, offset, "field handle is nil or duplicated")?;
     let name: String = owned_metadata_string(bytes, name_handle, budget, strings)?;
     if name.is_empty() {
         return Err(invalid_metadata(
@@ -1325,11 +1363,65 @@ fn parse_type(
     }
     Ok(TypeRecord {
         offset,
+        flags,
         namespace,
         name,
+        declared_size,
+        packing_size,
         enclosing_type,
         nested_types,
         methods,
+        fields,
+        end: cursor.at,
+    })
+}
+
+fn parse_field(
+    bytes: &[u8],
+    offset: u32,
+    handle_encoding: SerializedHandleEncoding,
+    budget: &mut MetadataBudget,
+    strings: &mut MetadataStrings,
+) -> crate::error::Result<FieldRecord> {
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
+    let flags: u32 = cursor.unsigned()?;
+    let name_handle: u32 = cursor.typed_handle()?;
+    let signature_offset: u32 = cursor.typed_handle()?;
+    let _default_value: RawHandle = cursor.raw_handle()?;
+    let _field_offset: u32 = cursor.unsigned()?;
+    cursor.skip_typed_collection(budget)?;
+    let name: String = owned_metadata_string(bytes, name_handle, budget, strings)?;
+    if name.is_empty() {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "field name is empty",
+        ));
+    }
+    if signature_offset == 0 {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "field signature handle is nil",
+        ));
+    }
+    Ok(FieldRecord {
+        offset,
+        flags,
+        name,
+        signature_offset,
+        end: cursor.at,
+    })
+}
+
+fn parse_field_signature(
+    bytes: &[u8],
+    offset: u32,
+    handle_encoding: SerializedHandleEncoding,
+) -> crate::error::Result<FieldSignatureRecord> {
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
+    let field_type: RawHandle = cursor.raw_handle()?;
+    Ok(FieldSignatureRecord {
+        offset,
+        field_type,
         end: cursor.at,
     })
 }
@@ -1530,7 +1622,7 @@ fn validate_graph(
     methods: &BTreeMap<u32, MethodRecord>,
     signatures: &BTreeMap<u32, MethodSignatureRecord>,
     strings: &MetadataStrings,
-    type_signature_ranges: &[RecordRange],
+    record_ranges: &[RecordRange],
     root_end: usize,
 ) -> crate::error::Result<()> {
     let mut type_owner_counts: BTreeMap<u32, u8> = BTreeMap::new();
@@ -1713,7 +1805,7 @@ fn validate_graph(
         methods,
         signatures,
         strings,
-        type_signature_ranges,
+        record_ranges,
         root_end,
     )
 }
@@ -1773,7 +1865,7 @@ fn validate_record_ranges(
     methods: &BTreeMap<u32, MethodRecord>,
     signatures: &BTreeMap<u32, MethodSignatureRecord>,
     strings: &MetadataStrings,
-    type_signature_ranges: &[RecordRange],
+    record_ranges: &[RecordRange],
     root_end: usize,
 ) -> crate::error::Result<()> {
     let record_count: usize = scopes
@@ -1783,7 +1875,7 @@ fn validate_record_ranges(
         .and_then(|value: usize| value.checked_add(methods.len()))
         .and_then(|value: usize| value.checked_add(signatures.len()))
         .and_then(|value: usize| value.checked_add(strings.records.len()))
-        .and_then(|value: usize| value.checked_add(type_signature_ranges.len()))
+        .and_then(|value: usize| value.checked_add(record_ranges.len()))
         .and_then(|value: usize| value.checked_add(1))
         .ok_or_else(|| invalid_metadata(4, "metadata record range count overflowed"))?;
     let mut ranges: Vec<RecordRange> = Vec::with_capacity(record_count);
@@ -1824,7 +1916,7 @@ fn validate_record_ranges(
     for record in strings.records.values() {
         ranges.push(record.range);
     }
-    ranges.extend_from_slice(type_signature_ranges);
+    ranges.extend_from_slice(record_ranges);
     ranges.sort_unstable_by_key(|range: &RecordRange| range.start);
     for range in &ranges {
         if range.start >= range.end {
@@ -1999,10 +2091,72 @@ fn type_namespace_qualifications(
     Ok(qualifications)
 }
 
+fn validate_field_reachability(
+    types: &BTreeMap<u32, TypeRecord>,
+    fields: &BTreeMap<u32, FieldRecord>,
+    field_signatures: &BTreeMap<u32, FieldSignatureRecord>,
+) -> crate::error::Result<()> {
+    for type_record in types.values() {
+        for field_offset in &type_record.fields {
+            let field: &FieldRecord = fields.get(field_offset).ok_or_else(|| {
+                invalid_metadata(
+                    usize::try_from(type_record.offset).map_or(usize::MAX, |value: usize| value),
+                    "type field is not reachable",
+                )
+            })?;
+            if !field_signatures.contains_key(&field.signature_offset) {
+                return Err(invalid_metadata(
+                    usize::try_from(field.offset).map_or(usize::MAX, |value: usize| value),
+                    "field signature is not reachable",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn type_layouts(
+    types: &BTreeMap<u32, TypeRecord>,
+    fields: &BTreeMap<u32, FieldRecord>,
+    field_signatures: &BTreeMap<u32, FieldSignatureRecord>,
+    budget: &mut MetadataBudget,
+) -> crate::error::Result<Vec<AotTypeLayout>> {
+    let mut layouts: Vec<AotTypeLayout> = Vec::with_capacity(types.len());
+    for type_record in types.values() {
+        let at: usize = usize::try_from(type_record.offset).map_or(usize::MAX, |value| value);
+        budget.claim_output(type_record.fields.len(), at)?;
+        let mut instance_fields: Vec<AotFieldLayout> = Vec::with_capacity(type_record.fields.len());
+        for field_offset in &type_record.fields {
+            let field: &FieldRecord = fields
+                .get(field_offset)
+                .ok_or_else(|| invalid_metadata(at, "validated field record is absent"))?;
+            if field.flags & (FIELD_ATTRIBUTE_STATIC | FIELD_ATTRIBUTE_LITERAL) != 0 {
+                continue;
+            }
+            let signature: &FieldSignatureRecord = field_signatures
+                .get(&field.signature_offset)
+                .ok_or_else(|| invalid_metadata(at, "validated field signature is absent"))?;
+            instance_fields.push(AotFieldLayout {
+                name: field.name.clone(),
+                field_type: type_signature(signature.field_type)?,
+            });
+        }
+        layouts.push(AotTypeLayout {
+            record_offset: type_record.offset,
+            sequential: type_record.flags & TYPE_ATTRIBUTE_LAYOUT_MASK
+                == TYPE_ATTRIBUTE_SEQUENTIAL_LAYOUT,
+            declared_size: type_record.declared_size,
+            packing_size: type_record.packing_size,
+            instance_fields,
+        });
+    }
+    Ok(layouts)
+}
+
 fn parse_metadata_records(
     bytes: &[u8],
     profile: MetadataProfile,
-) -> crate::error::Result<(Vec<AotType>, Vec<AotMethod>)> {
+) -> crate::error::Result<(Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>)> {
     let signature_bytes: &[u8] = bytes
         .get(0..4)
         .ok_or_else(|| invalid_metadata(0, "metadata signature is truncated"))?;
@@ -2063,6 +2217,7 @@ fn parse_metadata_records(
     }
     let mut types: BTreeMap<u32, TypeRecord> = BTreeMap::new();
     let mut method_offsets: BTreeSet<u32> = BTreeSet::new();
+    let mut field_offsets: BTreeSet<u32> = BTreeSet::new();
     while let Some(offset) = type_queue.pop_front() {
         if types.contains_key(&offset) {
             continue;
@@ -2081,7 +2236,32 @@ fn parse_metadata_records(
         for method_offset in &type_record.methods {
             method_offsets.insert(*method_offset);
         }
+        for field_offset in &type_record.fields {
+            field_offsets.insert(*field_offset);
+        }
         types.insert(offset, type_record);
+    }
+    let mut fields: BTreeMap<u32, FieldRecord> = BTreeMap::new();
+    for field_offset in field_offsets {
+        claim_record(&mut record_count, field_offset)?;
+        let field: FieldRecord = parse_field(
+            bytes,
+            field_offset,
+            profile.handle_encoding,
+            &mut budget,
+            &mut strings,
+        )?;
+        fields.insert(field_offset, field);
+    }
+    let mut field_signatures: BTreeMap<u32, FieldSignatureRecord> = BTreeMap::new();
+    for field in fields.values() {
+        if field_signatures.contains_key(&field.signature_offset) {
+            continue;
+        }
+        claim_record(&mut record_count, field.signature_offset)?;
+        let signature: FieldSignatureRecord =
+            parse_field_signature(bytes, field.signature_offset, profile.handle_encoding)?;
+        field_signatures.insert(field.signature_offset, signature);
     }
     let mut methods: BTreeMap<u32, MethodRecord> = BTreeMap::new();
     for method_offset in method_offsets {
@@ -2112,7 +2292,7 @@ fn parse_metadata_records(
         }
         parsed
     };
-    let type_signature_ranges: Vec<RecordRange> = {
+    let mut record_ranges: Vec<RecordRange> = {
         let mut validator: TypeSignatureValidator<'_> = TypeSignatureValidator::new(
             bytes,
             profile.handle_encoding,
@@ -2125,8 +2305,24 @@ fn parse_metadata_records(
         for signature in signatures.values() {
             validator.validate_root_method_signature(signature, 1)?;
         }
+        for signature in field_signatures.values() {
+            validator.validate_type(signature.field_type, 1)?;
+        }
         validator.ranges
     };
+    for field in fields.values() {
+        record_ranges.push(RecordRange {
+            start: usize::try_from(field.offset).map_or(usize::MAX, |value: usize| value),
+            end: field.end,
+        });
+    }
+    for signature in field_signatures.values() {
+        record_ranges.push(RecordRange {
+            start: usize::try_from(signature.offset).map_or(usize::MAX, |value: usize| value),
+            end: signature.end,
+        });
+    }
+    validate_field_reachability(&types, &fields, &field_signatures)?;
     validate_graph(
         &scopes,
         &namespaces,
@@ -2134,9 +2330,11 @@ fn parse_metadata_records(
         &methods,
         &signatures,
         &strings,
-        &type_signature_ranges,
+        &record_ranges,
         root_end,
     )?;
+    let layouts: Vec<AotTypeLayout> =
+        type_layouts(&types, &fields, &field_signatures, &mut budget)?;
     let qualifications: BTreeMap<u32, Option<String>> =
         namespace_qualifications(&scopes, &namespaces, &mut budget)?;
     let mut type_qualifications: BTreeMap<u32, Option<String>> =
@@ -2180,7 +2378,7 @@ fn parse_metadata_records(
             body: None,
         });
     }
-    Ok((attributed_types, attributed_methods))
+    Ok((attributed_types, attributed_methods, layouts))
 }
 
 fn metadata_section(header: &ReadyToRunHeader) -> crate::error::Result<Option<&AotSection>> {
@@ -2273,11 +2471,11 @@ pub fn recover_metadata_attribution(
         });
     };
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
-    let (types, mut methods): (Vec<AotType>, Vec<AotMethod>) =
+    let (types, mut methods, layouts): (Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>) =
         parse_metadata_records(bytes, profile)?;
     attach_invoke_map_entrypoints(image, header, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
-        attach_method_bodies(image, &pe, &types, &mut methods)?;
+        attach_method_bodies(image, &pe, &types, &layouts, &mut methods)?;
     }
     Ok(AotMetadataAttribution {
         status: AotMetadataStatus::Recovered,
@@ -2332,11 +2530,15 @@ mod tests {
     fn type_record(offset: u32, enclosing_type: u32, nested_types: Vec<u32>) -> TypeRecord {
         TypeRecord {
             offset,
+            flags: 0,
             namespace: 0,
             name: format!("Type{offset}"),
+            declared_size: 0,
+            packing_size: 0,
             enclosing_type,
             nested_types,
             methods: Vec::new(),
+            fields: Vec::new(),
             end: usize::try_from(offset).map_or(usize::MAX, |value: usize| value.saturating_add(1)),
         }
     }

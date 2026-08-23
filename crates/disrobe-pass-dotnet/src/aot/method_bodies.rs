@@ -2,7 +2,8 @@ use disrobe_pass_native::{LeafRecovery, PseudoAbi, recover_leaf_function_abi};
 
 use super::managed_abi;
 use super::{
-    AotCodeRange, AotMethod, AotMethodBody, AotSignatureAbstention, AotSignatureProvenance, AotType,
+    AotCodeRange, AotMethod, AotMethodBody, AotSignatureAbstention, AotSignatureProvenance,
+    AotType, AotTypeLayout,
 };
 use crate::pe::PeImage;
 
@@ -200,6 +201,7 @@ pub(super) fn attach_method_bodies(
     image: &[u8],
     pe: &PeImage,
     types: &[AotType],
+    layouts: &[AotTypeLayout],
     methods: &mut [AotMethod],
 ) -> crate::error::Result<()> {
     let method_count: usize = methods
@@ -268,7 +270,7 @@ pub(super) fn attach_method_bodies(
                     let method: &AotMethod = methods
                         .get(method_index)
                         .ok_or_else(|| invalid(range, "method body signature method is absent"))?;
-                    managed_abi::reassociate(&recovery, method, types)
+                    managed_abi::reassociate(&recovery, method, types, layouts)
                 } else {
                     Err(AotSignatureAbstention::SharedCodeRange)
                 };
@@ -359,7 +361,7 @@ mod tests {
             })
             .collect();
 
-        attach_method_bodies(&image, &pe, &[], &mut methods)?;
+        attach_method_bodies(&image, &pe, &[], &[], &mut methods)?;
 
         assert_eq!(methods.len(), 5_000);
         assert!(methods.iter().all(|method: &AotMethod| matches!(

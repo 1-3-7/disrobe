@@ -25,6 +25,7 @@ pub use metadata_records::{
     AotMethodBody, AotMethodSignature, AotSignatureAbstention, AotSignatureProvenance, AotType,
     AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
+use metadata_records::{AotFieldLayout, AotTypeLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotReport {

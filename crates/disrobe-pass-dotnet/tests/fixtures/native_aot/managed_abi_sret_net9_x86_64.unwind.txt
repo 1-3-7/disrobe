@@ -1,0 +1,8 @@
+  00007EB4 0006C070 0006C075 00162100  managed_abi_sret_net9_x86_64_ManagedSretProbe___ctor
+  00007EC0 0006C080 0006C092 001620F8  managed_abi_sret_net9_x86_64_ManagedSretProbe__Split
+  00007ECC 0006C0A0 0006C0B7 0016A8F4  managed_abi_sret_net9_x86_64_ManagedSretProbe__Spread
+  00007ED8 0006C0C0 0006C0DC 001641FC  managed_abi_sret_net9_x86_64_ManagedSretProbe__Quarter
+  00007EE4 0006C0E0 0006C0E4 0016428C  managed_abi_sret_net9_x86_64_ManagedSretProbe__Narrow
+  00007EF0 0006C0F0 0006C102 001620F8  managed_abi_sret_net9_x86_64_ManagedSretProbe__Widen
+  00007EFC 0006C110 0006C11D 001646A0  managed_abi_sret_net9_x86_64_ManagedSretProbe__Label
+  00007F08 0006C120 0006C132 001620F8  managed_abi_sret_net9_x86_64_ManagedSretProbe__Doubled
