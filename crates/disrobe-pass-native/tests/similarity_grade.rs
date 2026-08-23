@@ -15,6 +15,7 @@ mod grade;
 mod truth;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use corpus::{Artifact, BuildKey, Compiler, Flavor, Toolchain};
@@ -25,6 +26,7 @@ use disrobe_pass_native::extract_function_features;
 use disrobe_similarity::{
     FunctionFeatures, FunctionVerdict, MatchReport, Verdict, match_functions,
 };
+use object::{Object as _, ObjectSymbol as _, SymbolKind as ObjectSymbolKind};
 
 const TRUTH_SOURCE: &str = include_str!("similarity_grade/truth.rs");
 
@@ -47,6 +49,111 @@ const PAIR_PRECISION_FLOOR_PERMILLE: u64 = 900;
 const PAIR_PRECISION_SAMPLE: usize = 8;
 
 const WRONG_REPORT_LIMIT: usize = 40;
+
+const AARCH64_BASELINE_MISSED: usize = 23;
+
+const DYNAMIC_SYMBOL_STRIPPED_ELF: &[u8] =
+    include_bytes!("../../../corpus/native/discovery/disc_aarch64_shared.stripped.elf");
+
+const AARCH64_CORRESPONDENCE_IDENTITIES: [&str; 97] = [
+    "base32::_start",
+    "base32::b32_decode",
+    "base32::b32_encode",
+    "base32::b64_decode",
+    "base32::b64_encode",
+    "base32::codec_report",
+    "base32::corpus_main",
+    "base32::memcmp",
+    "base32::memcpy",
+    "base32::memset",
+    "bignum::_start",
+    "bignum::bn_add",
+    "bignum::bn_compare",
+    "bignum::bn_div_small",
+    "bignum::bn_format_hex",
+    "bignum::bn_mul_small",
+    "bignum::bn_shift_left",
+    "bignum::bn_status",
+    "bignum::bn_sub",
+    "bignum::corpus_main",
+    "bignum::memcmp",
+    "bignum::memcpy",
+    "bignum::memset",
+    "crc_hash::_start",
+    "crc_hash::adler32",
+    "crc_hash::corpus_main",
+    "crc_hash::crc32_build_table",
+    "crc_hash::crc32_update",
+    "crc_hash::digest_label",
+    "crc_hash::djb2",
+    "crc_hash::fnv1a64",
+    "crc_hash::memcmp",
+    "crc_hash::memcpy",
+    "crc_hash::memset",
+    "crc_hash::murmur3_32",
+    "crc_hash::splitmix64",
+    "json_scan::_start",
+    "json_scan::corpus_main",
+    "json_scan::json_diagnosis",
+    "json_scan::json_scan_literal",
+    "json_scan::json_scan_number",
+    "json_scan::json_scan_string",
+    "json_scan::json_skip_space",
+    "json_scan::json_validate",
+    "json_scan::memcmp",
+    "json_scan::memcpy",
+    "json_scan::memset",
+    "matrix::_start",
+    "matrix::corpus_main",
+    "matrix::matrix_determinant",
+    "matrix::matrix_identity",
+    "matrix::matrix_minor",
+    "matrix::matrix_multiply",
+    "matrix::matrix_power",
+    "matrix::matrix_shape",
+    "matrix::matrix_trace",
+    "matrix::matrix_transpose",
+    "matrix::memcmp",
+    "matrix::memcpy",
+    "matrix::memset",
+    "sortsearch::_start",
+    "sortsearch::binary_search",
+    "sortsearch::corpus_main",
+    "sortsearch::heapsort",
+    "sortsearch::hoare_partition",
+    "sortsearch::insertion_sort",
+    "sortsearch::is_sorted",
+    "sortsearch::memcmp",
+    "sortsearch::memcpy",
+    "sortsearch::memset",
+    "sortsearch::merge_runs",
+    "sortsearch::ordering_report",
+    "sortsearch::quicksort",
+    "sortsearch::sift_down",
+    "text_util::_start",
+    "text_util::corpus_main",
+    "text_util::memcmp",
+    "text_util::memcpy",
+    "text_util::memset",
+    "text_util::text_case_fold",
+    "text_util::text_length",
+    "text_util::text_levenshtein",
+    "text_util::text_run_length",
+    "text_util::text_summary",
+    "text_util::text_tokens",
+    "text_util::text_trim",
+    "text_util::text_wrap_lines",
+    "vm_interp::_start",
+    "vm_interp::corpus_main",
+    "vm_interp::memcmp",
+    "vm_interp::memcpy",
+    "vm_interp::memset",
+    "vm_interp::vm_build_program",
+    "vm_interp::vm_opcode_name",
+    "vm_interp::vm_reset",
+    "vm_interp::vm_run",
+    "vm_interp::vm_verify",
+];
 
 #[derive(Debug, Clone, Copy)]
 struct Leg {
@@ -168,6 +275,23 @@ const RECIPES: [Recipe; 7] = [
 struct Prepared {
     symbols: ImageSymbols,
     features: Vec<FunctionFeatures>,
+    stripped_symbol_free: bool,
+}
+
+fn stripped_image_has_no_function_symbols(bytes: &[u8]) -> Option<bool> {
+    let file: object::File<'_> = object::File::parse(bytes).ok()?;
+    let has_defined_function_symbol: bool =
+        file.symbols()
+            .chain(file.dynamic_symbols())
+            .any(|symbol: object::Symbol<'_, '_>| {
+                !symbol.is_undefined()
+                    && matches!(
+                        symbol.kind(),
+                        ObjectSymbolKind::Text | ObjectSymbolKind::Label
+                    )
+                    && symbol.section_index().is_some()
+            });
+    Some(!has_defined_function_symbol)
 }
 
 #[derive(Debug)]
@@ -199,7 +323,13 @@ impl Bench {
                     let symbols: ImageSymbols = ImageSymbols::read(&artifact.symbols)?;
                     let features: Vec<FunctionFeatures> =
                         extract_function_features(&artifact.stripped).ok()?;
-                    Some(Rc::new(Prepared { symbols, features }))
+                    Some(Rc::new(Prepared {
+                        symbols,
+                        features,
+                        stripped_symbol_free: stripped_image_has_no_function_symbols(
+                            &artifact.stripped,
+                        )?,
+                    }))
                 });
         if value.is_some() {
             self.built += 1;
@@ -231,6 +361,22 @@ struct PairOutcome {
     subjects: usize,
     control_wrong: usize,
     control_recovered: usize,
+    correspondence_identities: BTreeSet<String>,
+    missed_identities: BTreeSet<String>,
+    left_stripped_symbol_free: bool,
+}
+
+fn correspondence_identities(program: &str, table: &TruthTable) -> BTreeMap<Address, String> {
+    table
+        .entries
+        .iter()
+        .map(
+            |(address, correspondence): (&Address, &truth::Correspondence)| {
+                let names: Vec<&str> = correspondence.names.iter().map(String::as_str).collect();
+                (*address, format!("{program}::{}", names.join("|")))
+            },
+        )
+        .collect()
 }
 
 fn emissions_of(report: &MatchReport) -> Vec<Emission> {
@@ -319,6 +465,17 @@ fn run_pair(
     let table: TruthTable = TruthTable::derive(&left.symbols, &right.symbols);
     let report: MatchReport = match_functions(&left.features, &right.features);
     let emitted: Vec<Emission> = emissions_of(&report);
+    let emitted_subjects: BTreeSet<Address> = emitted
+        .iter()
+        .map(|entry: &Emission| entry.subject)
+        .collect();
+    let identities: BTreeMap<Address, String> = correspondence_identities(program, &table);
+    let correspondence_identities: BTreeSet<String> = identities.values().cloned().collect();
+    let missed_identities: BTreeSet<String> = identities
+        .iter()
+        .filter(|(address, _): &(&Address, &String)| !emitted_subjects.contains(address))
+        .map(|(_, identity): (&Address, &String)| identity.clone())
+        .collect();
     let outcome: Grade = grade::grade(&emitted, &table);
     let control: Grade = grade::grade(&rotated(&emitted), &table);
 
@@ -348,6 +505,9 @@ fn run_pair(
         subjects: emitted.len(),
         control_wrong: control.overall.wrong,
         control_recovered: control.overall.recovered,
+        correspondence_identities,
+        missed_identities,
+        left_stripped_symbol_free: left.stripped_symbol_free,
         grade: outcome,
     })
 }
@@ -527,27 +687,41 @@ fn a_deliberately_wrong_matching_is_graded_as_wrong() {
 }
 
 #[test]
+fn a_dynamic_function_symbol_disqualifies_a_stripped_grade_input() {
+    assert_eq!(
+        stripped_image_has_no_function_symbols(DYNAMIC_SYMBOL_STRIPPED_ELF),
+        Some(false)
+    );
+}
+
+#[test]
 fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
+    let corpus_path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("similarity_corpus");
+    assert!(
+        corpus_path.is_dir(),
+        "required similarity corpus fixture directory is absent: {}",
+        corpus_path.display()
+    );
     let Some(tools): Option<Toolchain> = Toolchain::discover() else {
-        eprintln!("skipping: the corpus fixture directory is absent");
-        return;
+        panic!("required writable scratch directory for the similarity corpus is unavailable");
     };
-    if !tools.can_strip() {
-        eprintln!("skipping: neither llvm-strip nor strip is on PATH");
-        return;
-    }
-    if !tools.has_gcc() && !tools.has_clang() {
-        eprintln!("skipping: neither gcc nor clang is on PATH");
-        return;
-    }
+    assert!(
+        tools.can_strip(),
+        "required similarity corpus stripper is absent from PATH: need llvm-strip or strip"
+    );
+    assert!(
+        tools.has_gcc(),
+        "required similarity corpus compiler is absent from PATH: gcc"
+    );
+    assert!(
+        tools.has_clang(),
+        "required similarity corpus compiler is absent from PATH: clang"
+    );
     for (name, version) in tools.versions() {
         println!("toolchain {name}: {version}");
-    }
-    if !tools.has_gcc() {
-        eprintln!("note: gcc absent, every hosted PE pair will skip");
-    }
-    if !tools.has_clang() {
-        eprintln!("note: clang absent, every freestanding ELF pair will skip");
     }
 
     println!(
@@ -584,10 +758,10 @@ fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
         }
     }
 
-    if outcomes.is_empty() {
-        eprintln!("skipping: no corpus pair built with the toolchain present here");
-        return;
-    }
+    assert!(
+        !outcomes.is_empty(),
+        "required compiler-backed similarity corpus outcomes are absent: no corpus pair built"
+    );
 
     let mut total: Grade = Grade::default();
     let mut truth_total: usize = 0;
@@ -602,6 +776,10 @@ fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
     let mut subjects: usize = 0;
     let mut control_wrong: usize = 0;
     let mut control_recovered: usize = 0;
+    let mut aarch64_correspondence_identities: BTreeSet<String> = BTreeSet::new();
+    let mut aarch64_missed_identities: BTreeSet<String> = BTreeSet::new();
+    let mut aarch64_symbol_bearing_inputs: BTreeSet<String> = BTreeSet::new();
+    let mut aarch64_total: Grade = Grade::default();
     for outcome in &outcomes {
         print_pair(outcome);
         total.absorb(&outcome.grade);
@@ -617,6 +795,15 @@ fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
         subjects += outcome.subjects;
         control_wrong += outcome.control_wrong;
         control_recovered += outcome.control_recovered;
+        if matches!(outcome.flavor, Flavor::FreestandingAarch64) {
+            aarch64_total.absorb(&outcome.grade);
+            aarch64_correspondence_identities
+                .extend(outcome.correspondence_identities.iter().cloned());
+            aarch64_missed_identities.extend(outcome.missed_identities.iter().cloned());
+            if !outcome.left_stripped_symbol_free {
+                aarch64_symbol_bearing_inputs.insert(outcome.label.clone());
+            }
+        }
     }
 
     println!();
@@ -713,6 +900,50 @@ fn the_corpus_grades_the_matcher_against_compiler_produced_ground_truth() {
         overall.expected() >= CORRESPONDENCE_FLOOR,
         "the corpus produced {} correspondences, below the pinned floor of {CORRESPONDENCE_FLOOR}",
         overall.expected()
+    );
+    assert!(
+        !aarch64_correspondence_identities.is_empty(),
+        "required AArch64 compiler-backed similarity corpus outcomes are absent"
+    );
+    assert!(
+        aarch64_missed_identities.is_empty(),
+        "the AArch64 discovery caller missed compiler-backed correspondences: {aarch64_missed_identities:?}; the measured population was {aarch64_correspondence_identities:?}"
+    );
+    let expected_aarch64_identities: BTreeSet<String> = AARCH64_CORRESPONDENCE_IDENTITIES
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        aarch64_correspondence_identities, expected_aarch64_identities,
+        "the compiler-backed AArch64 correspondence membership changed"
+    );
+    assert!(
+        aarch64_symbol_bearing_inputs.is_empty(),
+        "the AArch64 recovery grade was given inputs whose symbol tables already expose function starts: {aarch64_symbol_bearing_inputs:?}"
+    );
+    let aarch64: Tally = aarch64_total.overall;
+    assert_eq!(
+        (
+            aarch64.expected(),
+            aarch64.recovered,
+            aarch64.wrong,
+            aarch64.refused,
+            aarch64.missed,
+        ),
+        (97, 0, 0, 97, 0),
+        "AArch64 candidates must present all 97 compiler-backed correspondences while every match remains refused"
+    );
+    let presented_gain: usize = AARCH64_BASELINE_MISSED.saturating_sub(aarch64.missed);
+    assert_eq!(
+        presented_gain, AARCH64_BASELINE_MISSED,
+        "AArch64 candidate presentation did not retain the measured +{AARCH64_BASELINE_MISSED} starts"
+    );
+    println!(
+        "AArch64 candidate presentation: +{presented_gain} starts, {} presented, {} recovered, {} wrong, {} refused",
+        aarch64.expected().saturating_sub(aarch64.missed),
+        aarch64.recovered,
+        aarch64.wrong,
+        aarch64.refused
     );
     assert!(
         control_wrong > overall.wrong,

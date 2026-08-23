@@ -22,7 +22,7 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-jvm", 69),
     ("disrobe-pass-lua", 31),
     ("disrobe-pass-mobile", 5),
-    ("disrobe-pass-native", 294),
+    ("disrobe-pass-native", 291),
     ("disrobe-pass-nativelang", 2),
     ("disrobe-pass-nuitka", 45),
     ("disrobe-pass-php", 6),

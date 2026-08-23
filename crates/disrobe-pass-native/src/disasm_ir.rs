@@ -1,6 +1,6 @@
 mod aarch64_seeds;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use disrobe_binfmt::native::{
     Arch as BinArch, Endian, NativeFile, NativeFormat, SectionInfo, parse_native,
@@ -314,12 +314,28 @@ fn inject_discovered_functions(
         {
             return BTreeSet::new();
         }
-        let seeds: Vec<u64> = aarch64_function_seeds(native, bytes);
-        let Some(discovered): Option<DiscoveredFunctions> =
+        let mut seeds: Vec<u64> = aarch64_function_seeds(native, bytes);
+        let Some(mut discovered): Option<DiscoveredFunctions> =
             discover_aarch64_functions(&code, instructions, &seeds)
         else {
             return BTreeSet::new();
         };
+        let boundary_seeds: Vec<u64> = if aarch64_boundary_prologue_discovery_supported(bytes) {
+            aarch64_boundary_prologue_seeds(instructions, &discovered.starts)
+        } else {
+            Vec::new()
+        };
+        if !boundary_seeds.is_empty() {
+            seeds.extend(boundary_seeds);
+            seeds.sort_unstable();
+            seeds.dedup();
+            let Some(expanded): Option<DiscoveredFunctions> =
+                discover_aarch64_functions(&code, instructions, &seeds)
+            else {
+                return BTreeSet::new();
+            };
+            discovered = expanded;
+        }
         discovered
     } else {
         let Some(bitness): Option<Bitness> = discovery_bitness(arch) else {
@@ -436,6 +452,170 @@ fn aarch64_function_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
     seeds.extend(aarch64_seeds::collect(native, bytes).addresses());
     seeds.sort_unstable();
     seeds.dedup();
+    seeds
+}
+
+const AARCH64_SUB_SP_MASK: u32 = 0xff80_03ff;
+
+const AARCH64_SUB_SP_IMMEDIATE: u32 = 0xd100_03ff;
+
+const fn aarch64_allocates_stack(word: u32) -> bool {
+    word & AARCH64_SUB_SP_MASK == AARCH64_SUB_SP_IMMEDIATE && word & 0x003f_fc00 != 0
+}
+
+fn aarch64_is_frame_prologue(instruction: &DisasmInstruction) -> bool {
+    let Ok(raw): core::result::Result<
+        [u8; AARCH64_INSTRUCTION_BYTES],
+        core::array::TryFromSliceError,
+    > = instruction.bytes.as_slice().try_into() else {
+        return false;
+    };
+    aarch64_allocates_stack(u32::from_le_bytes(raw))
+}
+
+fn aarch64_boundary_prologue_discovery_supported(bytes: &[u8]) -> bool {
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return false;
+    };
+    matches!(file.format(), object::BinaryFormat::Elf)
+        && matches!(file.architecture(), object::Architecture::Aarch64)
+        && file.is_64()
+        && file.is_little_endian()
+        && matches!(
+            file.kind(),
+            object::ObjectKind::Executable | object::ObjectKind::Dynamic
+        )
+}
+
+fn aarch64_sequential_index(instructions: &[DisasmInstruction], index: usize) -> Option<usize> {
+    let instruction: &DisasmInstruction = instructions.get(index)?;
+    let next_index: usize = index.checked_add(1)?;
+    let next: &DisasmInstruction = instructions.get(next_index)?;
+    instruction
+        .offset
+        .checked_add(AARCH64_INSTRUCTION_BYTES as u64)
+        .is_some_and(|address: u64| address == next.offset)
+        .then_some(next_index)
+}
+
+fn aarch64_local_branch_index(instructions: &[DisasmInstruction], target: u64) -> Option<usize> {
+    instructions
+        .binary_search_by_key(&target, |instruction: &DisasmInstruction| {
+            instruction.offset
+        })
+        .ok()
+}
+
+fn aarch64_gap_boundary_prologue_seeds(
+    instructions: &[DisasmInstruction],
+    limit: usize,
+) -> Vec<u64> {
+    if instructions.is_empty() || instructions.len() > MAX_PAYLOAD_INSTRUCTIONS || limit == 0 {
+        return Vec::new();
+    }
+    let mut visited: Vec<u8> = vec![0; instructions.len()];
+    let mut pending: VecDeque<usize> = VecDeque::from([0]);
+    let mut candidates: BTreeSet<usize> = BTreeSet::new();
+    let mut seeds: Vec<u64> = Vec::new();
+    loop {
+        while let Some(index) = pending.pop_front() {
+            let Some(visited_entry): Option<&mut u8> = visited.get_mut(index) else {
+                return Vec::new();
+            };
+            if *visited_entry != 0 {
+                continue;
+            }
+            *visited_entry = 1;
+            let Some(instruction): Option<&DisasmInstruction> = instructions.get(index) else {
+                return Vec::new();
+            };
+            let sequential: Option<usize> = aarch64_sequential_index(instructions, index);
+            match instruction.flow {
+                InsnFlow::Sequential | InsnFlow::Call | InsnFlow::IndirectCall => {
+                    pending.extend(sequential);
+                }
+                InsnFlow::ConditionalBranch => {
+                    let Some(target): Option<u64> = instruction.branch_target else {
+                        return Vec::new();
+                    };
+                    pending.extend(aarch64_local_branch_index(instructions, target));
+                    pending.extend(sequential);
+                }
+                InsnFlow::UnconditionalBranch => {
+                    let Some(target): Option<u64> = instruction.branch_target else {
+                        return Vec::new();
+                    };
+                    pending.extend(aarch64_local_branch_index(instructions, target));
+                }
+                InsnFlow::Return => {
+                    if let Some(candidate_index) = sequential
+                        && instructions
+                            .get(candidate_index)
+                            .is_some_and(aarch64_is_frame_prologue)
+                    {
+                        candidates.insert(candidate_index);
+                    }
+                }
+                InsnFlow::IndirectBranch | InsnFlow::Interrupt => return Vec::new(),
+            }
+        }
+        let next_candidate: Option<usize> = candidates
+            .iter()
+            .copied()
+            .find(|candidate: &usize| visited.get(*candidate).is_some_and(|seen: &u8| *seen == 0));
+        let Some(next_candidate) = next_candidate else {
+            break;
+        };
+        candidates.remove(&next_candidate);
+        let Some(candidate): Option<&DisasmInstruction> = instructions.get(next_candidate) else {
+            return Vec::new();
+        };
+        seeds.push(candidate.offset);
+        if seeds.len() >= limit {
+            break;
+        }
+        pending.push_back(next_candidate);
+    }
+    seeds
+}
+
+fn aarch64_boundary_prologue_seeds(
+    instructions: &[DisasmInstruction],
+    established: &[u64],
+) -> Vec<u64> {
+    if established.len() < 2 || established.len() > aarch64_seeds::MAX_SEEDS {
+        return Vec::new();
+    }
+    let mut ordered: Vec<u64> = established.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    let mut seeds: Vec<u64> = Vec::new();
+    let limit: usize = aarch64_seeds::MAX_SEEDS.saturating_sub(ordered.len());
+    for gap in ordered.windows(2) {
+        if seeds.len() >= limit {
+            break;
+        }
+        let Some((&gap_start, &gap_end)): Option<(&u64, &u64)> = gap.first().zip(gap.get(1)) else {
+            continue;
+        };
+        let low: usize = instructions
+            .partition_point(|instruction: &DisasmInstruction| instruction.offset < gap_start);
+        let high: usize = instructions
+            .partition_point(|instruction: &DisasmInstruction| instruction.offset < gap_end);
+        let Some(body): Option<&[DisasmInstruction]> = instructions.get(low..high) else {
+            continue;
+        };
+        if body
+            .first()
+            .is_none_or(|instruction: &DisasmInstruction| instruction.offset != gap_start)
+        {
+            continue;
+        }
+        let remaining: usize = limit.saturating_sub(seeds.len());
+        seeds.extend(aarch64_gap_boundary_prologue_seeds(body, remaining));
+    }
     seeds
 }
 
@@ -1472,7 +1652,7 @@ mod tests {
         Object as WriteObject, StandardSection, Symbol as WriteSymbol,
         SymbolFlags as WriteSymbolFlags, SymbolKind as WriteSymbolKind, SymbolScope, SymbolSection,
     };
-    use object::{Architecture, BinaryFormat, Endianness};
+    use object::{Architecture, BinaryFormat, Endianness, Object as _};
 
     use super::*;
 
@@ -1522,6 +1702,14 @@ mod tests {
         internal_boundary(isa, &model, X86_BOUNDARY_BASE, end, &refs)
     }
 
+    fn aarch64_body(words: &[u32]) -> Vec<DisasmInstruction> {
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        decoded_body(DisasmArch::Aarch64, X86_BOUNDARY_BASE, &bytes)
+    }
+
     fn padded(head: &[u8], padding: usize, tail: &[u8]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::with_capacity(head.len() + padding + tail.len());
         out.extend_from_slice(head);
@@ -1537,6 +1725,52 @@ mod tests {
             boundary_of(DisasmArch::X86_64, X86_ISA, &bytes),
             Some(0x1010)
         );
+    }
+
+    #[test]
+    fn aarch64_adjacent_frame_prologue_inside_an_evidence_gap_is_a_seed() {
+        let body: Vec<DisasmInstruction> =
+            aarch64_body(&[0xd65f_03c0, 0xd100_43ff, 0xd65f_03c0, 0xd503_201f]);
+        assert_eq!(
+            aarch64_boundary_prologue_seeds(&body, &[0x1000, 0x100c]),
+            vec![0x1004]
+        );
+    }
+
+    #[test]
+    fn aarch64_direct_branch_across_a_prologue_keeps_it_inside_the_function() {
+        let body: Vec<DisasmInstruction> = aarch64_body(&[
+            0x1400_0002,
+            0xd65f_03c0,
+            0xd100_43ff,
+            0xd65f_03c0,
+            0xd503_201f,
+        ]);
+        assert!(aarch64_boundary_prologue_seeds(&body, &[0x1000, 0x1010]).is_empty());
+    }
+
+    #[test]
+    fn aarch64_indirect_branch_makes_the_remaining_gap_ambiguous() {
+        let body: Vec<DisasmInstruction> = aarch64_body(&[
+            0xd61f_0000,
+            0xd65f_03c0,
+            0xd100_43ff,
+            0xd65f_03c0,
+            0xd503_201f,
+        ]);
+        assert!(aarch64_boundary_prologue_seeds(&body, &[0x1000, 0x1010]).is_empty());
+    }
+
+    #[test]
+    fn aarch64_inline_ret_and_prologue_words_without_cfg_provenance_do_not_seed() {
+        let body: Vec<DisasmInstruction> = aarch64_body(&[
+            0xd65f_03c0,
+            0xd65f_03c0,
+            0xd100_43ff,
+            0xd65f_03c0,
+            0xd503_201f,
+        ]);
+        assert!(aarch64_boundary_prologue_seeds(&body, &[0x1000, 0x1010]).is_empty());
     }
 
     #[test]
@@ -1863,6 +2097,41 @@ mod tests {
         elf
     }
 
+    fn aarch64_relocatable_with_bracketed_prologue() -> Vec<u8> {
+        let words: [u32; 6] = [
+            0xd503_201f,
+            0xd65f_03c0,
+            0xd100_43ff,
+            0xd65f_03c0,
+            0xd503_201f,
+            0xd65f_03c0,
+        ];
+        let code: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect();
+        let mut obj: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
+        let text: object::write::SectionId = obj.section_id(StandardSection::Text);
+        let _: u64 = obj.append_section_data(text, &code, 4);
+        let symbol: WriteSymbol = WriteSymbol {
+            name: b"retained_end".to_vec(),
+            value: 0x14,
+            size: 4,
+            kind: WriteSymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: WriteSymbolFlags::None,
+        };
+        let _: object::write::SymbolId = obj.add_symbol(symbol);
+        let mut elf: Vec<u8> = obj.write().expect("aarch64 relocatable write");
+        elf.get_mut(24..32)
+            .expect("elf64 entry field")
+            .copy_from_slice(&4_u64.to_le_bytes());
+        elf
+    }
+
     #[test]
     fn builds_instructions_and_symbols_from_real_elf() {
         let elf: Vec<u8> = two_function_elf();
@@ -1968,6 +2237,15 @@ mod tests {
         assert!(!build.function_universe.reference_anchors_trusted(0x4));
         assert!(build.function_universe.reference_anchors_trusted(0x10));
         assert!(!build.function_universe.reference_anchors_trusted(0x18));
+    }
+
+    #[test]
+    fn aarch64_relocatable_elf_does_not_run_the_linked_boundary_heuristic() {
+        let elf: Vec<u8> = aarch64_relocatable_with_bracketed_prologue();
+        let parsed: object::File<'_> = object::File::parse(&*elf).expect("parse relocatable");
+        assert_eq!(parsed.kind(), object::ObjectKind::Relocatable);
+        let payload: DisasmPayload = build_disasm_payload(&elf).expect("build payload");
+        assert_eq!(discovered_symbol_starts(&payload), vec![0x4, 0x14]);
     }
 
     #[test]
