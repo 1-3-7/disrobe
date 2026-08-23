@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use oxc_allocator::Allocator;
 use oxc_ast::Visit;
 use oxc_ast::ast::{
-    AssignmentOperator, BinaryOperator, BindingIdentifier, BindingPatternKind, Expression,
-    ForStatement, ForStatementInit, Function, Statement, TryStatement, UnaryOperator,
-    UpdateOperator, VariableDeclaration, VariableDeclarationKind,
+    ArrayExpressionElement, AssignmentOperator, BinaryOperator, BindingIdentifier,
+    BindingPatternKind, Expression, ForStatement, ForStatementInit, Function, Statement,
+    TryStatement, UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
@@ -652,6 +652,25 @@ impl<'a> Visit<'a> for Collector<'_> {
                 continue;
             }
             if index + 1 < slice.len()
+                && let Some(hoisted_edits) = try_convert_hoisted_snapshot(
+                    &slice[index..],
+                    self.source,
+                    self.string_subjects,
+                    self.array_subjects,
+                    self.materializer_scope,
+                )
+            {
+                if hoisted_edits
+                    .iter()
+                    .all(|edit: &Edit| !edit_overlaps_comments(edit, self.comments))
+                {
+                    self.edits.extend(hoisted_edits);
+                    self.helper_loops_converted += 1;
+                }
+                index += 2;
+                continue;
+            }
+            if index + 1 < slice.len()
                 && let Some((edit, consumed)) =
                     try_convert_helper_sequence(&slice[index..], self.source)
             {
@@ -843,6 +862,118 @@ fn try_convert(
             element = m.element.text
         ),
     })
+}
+
+fn snapshot_initializer_subject<'a>(
+    init: &'a Expression<'a>,
+    scope: MaterializerScope<'_>,
+) -> Option<&'a Expression<'a>> {
+    if let Some(inner) = materializing_helper_argument(init, scope) {
+        return Some(inner);
+    }
+    let Expression::ArrayExpression(array) = init.get_inner_expression() else {
+        return None;
+    };
+    if array.elements.len() != 1 {
+        return None;
+    }
+    let ArrayExpressionElement::SpreadElement(spread) = array.elements.first()? else {
+        return None;
+    };
+    Some(&spread.argument)
+}
+
+fn hoisted_snapshot_binding<'a>(
+    stmt: &'a Statement<'a>,
+    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    scope: MaterializerScope<'_>,
+) -> Option<(&'a str, &'a Expression<'a>)> {
+    let Statement::VariableDeclaration(decl) = stmt else {
+        return None;
+    };
+    if decl.declarations.len() != 1 {
+        return None;
+    }
+    let declarator: &oxc_ast::ast::VariableDeclarator<'a> = decl.declarations.first()?;
+    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+        return None;
+    };
+    let subject: &Expression<'a> = snapshot_initializer_subject(declarator.init.as_ref()?, scope)?;
+    if !array_evidence(subject, array_subjects).proves_plain_array() {
+        return None;
+    }
+    if !matches!(subject.get_inner_expression(), Expression::Identifier(_)) {
+        return None;
+    }
+    Some((binding.name.as_str(), subject))
+}
+
+fn try_convert_hoisted_snapshot<'a>(
+    slice: &'a [Statement<'a>],
+    source: &str,
+    string_subjects: &BTreeMap<String, StringEvidence>,
+    array_subjects: &BTreeMap<String, ArrayEvidence>,
+    scope: MaterializerScope<'_>,
+) -> Option<Vec<Edit>> {
+    let binding_stmt: &Statement<'a> = slice.first()?;
+    let (temp_name, subject): (&str, &Expression<'a>) =
+        hoisted_snapshot_binding(binding_stmt, array_subjects, scope)?;
+    let Statement::ForStatement(for_stmt) = slice.get(1)? else {
+        return None;
+    };
+    let after: &[Statement<'a>] = slice.get(2..)?;
+    if body_uses(after, temp_name) {
+        return None;
+    }
+    let m: DirectMatch<'a> = match_direct_loop(for_stmt, source)?;
+    if m.length_cache_name.is_some() {
+        return None;
+    }
+    let Expression::Identifier(iterable) = m.iterable.get_inner_expression() else {
+        return None;
+    };
+    if iterable.name.as_str() != temp_name {
+        return None;
+    }
+    if body_uses(m.remaining, m.index_name)
+        || m.element.binds_name(m.index_name)
+        || m.element.references_name(m.index_name)
+    {
+        return None;
+    }
+    if body_uses(m.remaining, temp_name) || body_reassigns(m.remaining, temp_name) {
+        return None;
+    }
+    if subject_blocks_index_resugar(subject, string_subjects) {
+        return None;
+    }
+    let Expression::Identifier(subject_name) = subject.get_inner_expression() else {
+        return None;
+    };
+    if subject_mutated(m.remaining, subject_name.name.as_str()) {
+        return None;
+    }
+    if body_reassigns(m.remaining, subject_name.name.as_str()) {
+        return None;
+    }
+    let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
+    let subject_src: &str = subject.span().source_text(source);
+    let body_src: String = remaining_body_source(m.remaining, source);
+    Some(vec![
+        Edit {
+            start: binding_stmt.span().start as usize,
+            end: binding_stmt.span().end as usize,
+            replacement: String::new(),
+        },
+        Edit {
+            start: for_stmt.span.start as usize,
+            end: for_stmt.span.end as usize,
+            replacement: format!(
+                "for ({kind} {element} of {subject_src}) {{{body_src}}}",
+                element = m.element.text
+            ),
+        },
+    ])
 }
 
 struct DirectMatch<'a> {
