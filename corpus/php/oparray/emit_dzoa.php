@@ -91,6 +91,7 @@ const OPMAP = [
     'FETCH_OBJ_R' => 82,
     'FETCH_W' => 83,
     'FETCH_RW' => 86,
+    'FETCH_IS' => 89,
     'FETCH_LIST_R' => 98,
     'FETCH_CONSTANT' => 99,
     'CATCH' => 107,
@@ -221,6 +222,13 @@ const CAST_TYPE_MAP = [
 const ISSET_FLAG_MAP = [
     'isset' => 0,
     'empty' => 1,
+];
+
+const FETCH_IS_SCOPE_MAP = [
+    '(local)' => 0,
+    '(global)' => 1,
+    '(static)' => 2,
+    '(global lock)' => 3,
 ];
 
 const ARG_COUNT_PREFIXED = [
@@ -1030,6 +1038,18 @@ function parse_dump(string $text): array
                 return $t !== '(packed)' && $t !== '(hash)' && !preg_match('/^\d+$/', $t);
             }));
             $op = build_op($mnemonic, $resultTok, $valueOperands, $current['oa'], $addr + 1);
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'FETCH_IS') {
+            $scope = array_shift($tokens);
+            if (!isset(FETCH_IS_SCOPE_MAP[$scope]) || count($tokens) !== 1) {
+                fail("FETCH_IS at line $addr has an unencodable scope or operand shape");
+            }
+            $op = build_op($mnemonic, $resultTok, $tokens, $current['oa'], $addr + 1);
+            $op->ext = FETCH_IS_SCOPE_MAP[$scope];
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;

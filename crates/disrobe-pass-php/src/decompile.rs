@@ -356,6 +356,7 @@ pub mod op {
     pub const FETCH_OBJ_R: u8 = 82;
     pub const FETCH_W: u8 = 83;
     pub const FETCH_RW: u8 = 86;
+    pub const FETCH_IS: u8 = 89;
     pub const FETCH_CONSTANT: u8 = 99;
     pub const THROW: u8 = 108;
     pub const FETCH_CLASS: u8 = 109;
@@ -529,6 +530,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         86 => "ZEND_FETCH_RW",
         87 => "ZEND_FETCH_DIM_RW",
         88 => "ZEND_FETCH_OBJ_RW",
+        89 => "ZEND_FETCH_IS",
         98 => "ZEND_FETCH_LIST_R",
         99 => "ZEND_FETCH_CONSTANT",
         107 => "ZEND_CATCH",
@@ -4253,9 +4255,9 @@ impl<'a> Lifter<'a> {
                 );
                 None
             }
+            o if o == op::FETCH_IS => self.fold_fetch_is(idx, op),
             o if o == op::FETCH_R || o == op::FETCH_W || o == op::FETCH_RW => {
-                self.fold_variable_variable(idx, op);
-                None
+                self.fold_variable_variable(idx, op)
             }
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 Some(self.refuse(idx, o, REASON_ITERATION))
@@ -4990,9 +4992,9 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn fold_variable_variable(&mut self, idx: u32, op: &Op) {
+    fn fold_variable_variable(&mut self, idx: u32, op: &Op) -> Option<String> {
         let Some(name): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
-            return;
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
         };
         let text: String = match op.op1_type {
             OperandType::Cv => format!("${}", name.text),
@@ -5012,6 +5014,56 @@ impl<'a> Lifter<'a> {
         if op.result_type == OperandType::Var && matches!(op.opcode, op::FETCH_W | op::FETCH_RW) {
             self.writable_slots.insert((op.result_type, op.result), idx);
         }
+        None
+    }
+
+    fn fold_fetch_is(&mut self, idx: u32, op: &Op) -> Option<String> {
+        if op.extended_value != 0
+            || op.op2_type != OperandType::Unused
+            || op.op2 != 0
+            || op.result_type != OperandType::TmpVar
+        {
+            return Some(self.refuse(idx, op.opcode, REASON_FETCH_IS_SHAPE));
+        }
+        let name: Option<Expr> = match op.op1_type {
+            OperandType::Const => self
+                .literals
+                .get(op.op1 as usize)
+                .map(Literal::render)
+                .map(Expr::atom),
+            OperandType::Cv => self
+                .var_names
+                .get(op.op1 as usize)
+                .and_then(Option::as_deref)
+                .filter(|name: &&str| is_valid_php_ident(name))
+                .map(|name: &str| Expr::atom(format!("${name}"))),
+            OperandType::TmpVar | OperandType::Var => {
+                self.slots.get(&(op.op1_type, op.op1)).cloned()
+            }
+            OperandType::Unused => None,
+        };
+        let Some(name): Option<Expr> = name else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let text: String = match op.op1_type {
+            OperandType::Cv => format!("${}", name.text),
+            OperandType::Const => match self.literals.get(op.op1 as usize) {
+                Some(Literal::Str(value)) if is_valid_php_ident(value) => format!("${value}"),
+                _ => format!("${{{}}}", name.text),
+            },
+            OperandType::TmpVar | OperandType::Var => format!("${{{}}}", name.text),
+            OperandType::Unused => {
+                return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+            }
+        };
+        self.store_result(
+            op,
+            Expr {
+                text,
+                prec: PREC_ATOM,
+            },
+        );
+        None
     }
 
     fn array_element(&self, op: &Op) -> Option<String> {
@@ -5367,6 +5419,8 @@ const REASON_INC_DEC_OPERAND: &str =
 const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
 const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
+const REASON_FETCH_IS_SHAPE: &str =
+    "FETCH_IS must be a local read with one defined name operand and a temporary result";
 const REASON_UNSET_CV_OPERAND: &str =
     "UNSET_CV requires one declared compiled variable and no other operands";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
@@ -5582,6 +5636,7 @@ const fn is_rope_intermediate(opcode: u8) -> bool {
                 | op::INSTANCEOF
                 | op::CLONE
                 | op::FETCH_R
+                | op::FETCH_IS
                 | op::FREE
                 | op::VERIFY_RETURN_TYPE
                 | op::HANDLE_EXCEPTION

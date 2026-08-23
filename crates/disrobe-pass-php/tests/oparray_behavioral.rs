@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
+const FETCH_IS_DZOA: &[u8] = include_bytes!("fixtures/oparray_fetch_is/fetch_is.dzoa");
 
 const PINNED_SAMPLES: [&str; 25] = [
     "arithmetic",
@@ -571,6 +572,72 @@ fn unset_cv_recovers_the_compiled_variable_and_preserves_runtime_state() {
     assert_ne!(
         original, wrong_output,
         "the runtime differential must fail if recovery unsets the adjacent CV"
+    );
+}
+
+#[test]
+fn fetch_is_recovers_local_coalesce_reads_under_php_84() {
+    let graded: &str = "the PHP 8.4 FETCH_IS recovery differential";
+    let php: PathBuf = required_php(graded);
+    let banner: String = String::from_utf8_lossy(
+        &Command::new(&php)
+            .arg("-v")
+            .output()
+            .expect("read the PHP 8.4 banner")
+            .stdout,
+    )
+    .into_owned();
+    assert!(
+        banner.starts_with("PHP 8.4."),
+        "expected PHP 8.4, found {banner}"
+    );
+    let dll: String = required_opcache(&php, graded);
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("oparray_fetch_is");
+    let source: PathBuf = fixture.join("fetch_is.php");
+    let original: String =
+        run_php(&php, &source).expect("the tracked FETCH_IS source must execute");
+    assert_eq!(original, "present\nmissing\n");
+
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_fetch_is")
+            .expect("create FETCH_IS scratch directory");
+    let emitted: PathBuf = scratch.path().join("fetch_is.dzoa");
+    emit_dzoa(&php, &dll, &source, &emitted).expect("emit tracked FETCH_IS source");
+    let fresh: Vec<u8> = std::fs::read(&emitted).expect("read regenerated FETCH_IS DZOA");
+    assert_eq!(
+        fresh, FETCH_IS_DZOA,
+        "the tracked FETCH_IS DZOA must reproduce byte-for-byte"
+    );
+
+    let parsed: OpArray = parse_oparray(&fresh).expect("parse FETCH_IS DZOA");
+    let first: Decompilation = decompile_oparray(&parsed);
+    let second: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(
+        first.php_skeleton, second.php_skeleton,
+        "FETCH_IS recovery must be byte-identical"
+    );
+    assert!(first.unrecovered.is_empty(), "{:?}", first.unrecovered);
+    assert!(
+        first.php_skeleton.contains("return $$name ?? 'missing';"),
+        "{}",
+        first.php_skeleton
+    );
+    let recovered: String =
+        run_php_source(&php, &first.php_skeleton).expect("recovered FETCH_IS source must execute");
+    assert_eq!(recovered, original, "behavioral grade: 2/2 calls");
+
+    let mutant: String = first
+        .php_skeleton
+        .replacen("$$name ?? 'missing'", "$$name", 1);
+    assert_ne!(mutant, first.php_skeleton, "FETCH_IS mutation must apply");
+    let perturbed: Option<String> = run_php_source(&php, &mutant);
+    assert_ne!(
+        perturbed.as_deref(),
+        Some(original.as_str()),
+        "the missing-value mutation must fail"
     );
 }
 

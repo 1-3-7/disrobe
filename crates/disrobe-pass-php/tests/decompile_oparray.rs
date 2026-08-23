@@ -14,7 +14,7 @@
 
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
-    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, OpArray, OperandType,
+    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, Op, OpArray, OperandType,
     UnrecoveredOp, build_cfg, decompile_oparray, opcode_name, parse_oparray,
 };
 
@@ -2098,6 +2098,120 @@ fn read_fetches_never_grant_increment_write_provenance() {
         });
         assert_eq!(valid_decomp.unrecovered_total, 0);
         assert!(valid_decomp.php_skeleton.contains("$$name++;"));
+    }
+}
+
+#[test]
+fn isset_variable_fetch_recovers_a_read_only_variable_variable() {
+    const FETCH_IS: u8 = 89;
+
+    let decompilation: Decompilation = decompiled(|builder: &mut OpArrayBuilder| {
+        builder.var("name").var("answer");
+        let answer: u32 = builder.lit_str("answer");
+        let present: u32 = builder.lit_str("present");
+        builder.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, answer, 0, 0, 1);
+        builder.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, present, 0, 0, 2);
+        builder.op(FETCH_IS, T_CV, T_UNUSED, T_TMP, 0, 0, 30, 0, 3);
+        builder.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 30, 0, 0, 0, 3);
+    });
+
+    assert_eq!(decompilation.unrecovered_total, 0, "{decompilation:#?}");
+    assert!(
+        decompilation.php_skeleton.contains("echo $$name;"),
+        "{}",
+        decompilation.php_skeleton
+    );
+    if let Some(php) = php_bin() {
+        let recovered: String = php_eval_source(
+            &php,
+            decompilation
+                .php_skeleton
+                .strip_prefix("<?php")
+                .expect("decompilation has php open tag"),
+        );
+        assert_eq!(recovered, "present");
+    }
+}
+
+#[test]
+fn fetch_is_without_a_name_operand_is_refused() {
+    const FETCH_IS: u8 = 89;
+
+    let decompilation: Decompilation = decompiled(|builder: &mut OpArrayBuilder| {
+        builder.op(FETCH_IS, T_UNUSED, T_UNUSED, T_TMP, 0, 0, 30, 0, 1);
+        builder.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 30, 0, 0, 0, 1);
+    });
+
+    assert!(
+        decompilation
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| {
+                entry.opcode == FETCH_IS
+                    && entry.reason == "an expression operand has no literal or reaching definition"
+            }),
+        "{decompilation:#?}"
+    );
+}
+
+#[test]
+fn fetch_is_requires_the_local_read_shape_and_a_defined_name() {
+    type FetchMutation = fn(&mut Op);
+
+    let parsed: OpArray = parse_oparray(&{
+        let mut builder: OpArrayBuilder = OpArrayBuilder::main();
+        builder.var("name");
+        builder.op(op::FETCH_IS, T_CV, T_UNUSED, T_TMP, 0, 0, 30, 0, 1);
+        builder.build_container()
+    })
+    .expect("parse FETCH_IS shape fixture");
+    let cases: [(&str, FetchMutation); 9] = [
+        ("global scope", |operation: &mut Op| {
+            operation.extended_value = 1
+        }),
+        ("unexpected second operand", |operation: &mut Op| {
+            operation.op2_type = OperandType::Const
+        }),
+        ("invalid result kind", |operation: &mut Op| {
+            operation.result_type = OperandType::Var
+        }),
+        ("constant outside literal table", |operation: &mut Op| {
+            operation.op1_type = OperandType::Const;
+            operation.op1 = 9;
+        }),
+        ("cv outside name table", |operation: &mut Op| {
+            operation.op1 = 9
+        }),
+        ("cv without a name", |operation: &mut Op| operation.op1 = 0),
+        ("cv with an invalid name", |operation: &mut Op| {
+            operation.op1 = 0
+        }),
+        ("undefined temporary", |operation: &mut Op| {
+            operation.op1_type = OperandType::TmpVar;
+            operation.op1 = 9;
+        }),
+        ("undefined variable", |operation: &mut Op| {
+            operation.op1_type = OperandType::Var;
+            operation.op1 = 9;
+        }),
+    ];
+    for (index, (label, mutate)) in cases.into_iter().enumerate() {
+        let mut malformed: OpArray = parsed.clone();
+        if label == "cv without a name" {
+            malformed.var_names[0] = None;
+        }
+        if label == "cv with an invalid name" {
+            malformed.var_names[0] = Some("not-valid".to_owned());
+        }
+        mutate(&mut malformed.ops[0]);
+        let decompilation: Decompilation = decompile_oparray(&malformed);
+        assert!(
+            decompilation
+                .unrecovered
+                .iter()
+                .any(|entry: &UnrecoveredOp| entry.opcode == op::FETCH_IS),
+            "case {index} ({label}): {decompilation:#?}"
+        );
     }
 }
 
