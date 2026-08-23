@@ -38,6 +38,27 @@ const ENTRY_ARITY: usize = 3;
 const OVER_INFERRED_ARGUMENT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 const REJECTION_MARKER: &str = "multiple/early returns not in forward-skip class";
 
+const MARKER_SHAPES: &[&str] = &[
+    "nested_loop_multi_latch_return",
+    "sibling_tail_after_frame_teardown",
+    "three_way_join_then_return",
+];
+
+const MARKER_PRECONDITIONS: &[&str] = &[
+    "a direct jump leaves this function, so its target is not an edge inside the block graph",
+    "a join block is reached from two arms without a common follow",
+    "a region the control flow enters at more than one block is outside the reducible structurer",
+];
+
+fn marker_precondition(detail: &str) -> &str {
+    detail
+        .split_once(REJECTION_MARKER)
+        .map_or(detail, |(_, rest): (&str, &str)| {
+            rest.trim_start_matches([':', ' '])
+        })
+        .trim()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AbiTarget {
     MsX64,
@@ -1135,6 +1156,9 @@ fn early_exit_shapes_recompile_to_equivalence_or_name_their_abstention() {
     let mut unnamed: Vec<String> = Vec::new();
     let mut teeth: usize = 0;
     let mut reported_equivalent: usize = 0;
+    let mut marker_rows: Vec<String> = Vec::new();
+    let mut marker_preconditions: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let mut equivalent_by_shape: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
 
@@ -1169,6 +1193,8 @@ fn early_exit_shapes_recompile_to_equivalence_or_name_their_abstention() {
                 abstained += 1;
                 if detail.contains(REJECTION_MARKER) {
                     hit_marker += 1;
+                    marker_rows.push(row_key(row));
+                    marker_preconditions.insert(marker_precondition(detail).to_owned());
                 }
                 if detail.trim().is_empty() {
                     unnamed.push(row_key(row));
@@ -1186,6 +1212,25 @@ fn early_exit_shapes_recompile_to_equivalence_or_name_their_abstention() {
     assert!(
         mismatched.is_empty(),
         "a recovered early-exit body computed a different value than the compiled function: {mismatched:#?}"
+    );
+    let unexpected_marker_rows: Vec<&String> = marker_rows
+        .iter()
+        .filter(|key: &&String| {
+            !key.split_once('|')
+                .is_some_and(|(shape, _): (&str, &str)| MARKER_SHAPES.contains(&shape))
+        })
+        .collect();
+    assert!(
+        unexpected_marker_rows.is_empty(),
+        "a shape outside the recorded residue started hitting the multi-return reject: {unexpected_marker_rows:#?}"
+    );
+    let unexpected_preconditions: Vec<&String> = marker_preconditions
+        .iter()
+        .filter(|reason: &&String| !MARKER_PRECONDITIONS.contains(&reason.as_str()))
+        .collect();
+    assert!(
+        unexpected_preconditions.is_empty(),
+        "the multi-return reject named a precondition outside the recorded set: {unexpected_preconditions:#?}"
     );
     assert!(
         unnamed.is_empty(),

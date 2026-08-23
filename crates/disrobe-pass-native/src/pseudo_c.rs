@@ -11231,6 +11231,23 @@ const fn stmt_is_cloneable(stmt: &Stmt) -> bool {
     !stmt_writes_memory(stmt) && !matches!(stmt, Stmt::Call { .. })
 }
 
+const MULTI_ENTRY_REGION_REFUSAL: &str =
+    "a region the control flow enters at more than one block is outside the reducible structurer";
+
+const UNJOINED_ARMS_REFUSAL: &str = "a join block is reached from two arms without a common follow";
+
+fn join_refusal(ctx: &CfgCtx<'_>) -> &'static str {
+    let multi_entry: bool =
+        cfg_from_leaf_blocks(ctx.blocks).is_some_and(|cfg: structuring::Cfg| {
+            !structuring::multi_entry_irreducible_sccs(&cfg).is_empty()
+        });
+    if multi_entry {
+        MULTI_ENTRY_REGION_REFUSAL
+    } else {
+        UNJOINED_ARMS_REFUSAL
+    }
+}
+
 fn emit_cloned_pure_tail(
     ctx: &CfgCtx<'_>,
     start: usize,
@@ -11328,9 +11345,7 @@ fn emit_region(
             {
                 return Ok(());
             }
-            return Err(StructureError::new(
-                "a join block is reached from two arms without a common follow",
-            ));
+            return Err(StructureError::new(join_refusal(ctx)));
         }
         emit_stmts(ctx.blocks, current, out);
         match &ctx.blocks[current].term {
@@ -26806,6 +26821,64 @@ mod tests {
         assert!(
             refusal.is_some(),
             "a rejected irreducible cycle must name the precondition that failed"
+        );
+    }
+
+    fn probe_branch(target: u64) -> ItemKind {
+        ItemKind::Branch {
+            kind: CondKind::E,
+            flags: Flags::Test {
+                operand: RegRef {
+                    reg: Reg::Rcx,
+                    width: Width::W64,
+                },
+            },
+            target,
+        }
+    }
+
+    #[test]
+    fn a_cycle_the_control_flow_enters_at_two_blocks_names_the_multi_entry_precondition() {
+        let items: Vec<Item> = vec![
+            Item {
+                address: 0,
+                kind: probe_branch(3),
+            },
+            Item {
+                address: 1,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(0),
+                }),
+            },
+            Item {
+                address: 2,
+                kind: probe_branch(1),
+            },
+            Item {
+                address: 3,
+                kind: probe_branch(2),
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Ret,
+            },
+        ];
+        let mut refusal: Option<&'static str> = None;
+        let out: Option<Block> =
+            structure_reducible_cfg(&items, 0, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
+        assert!(
+            out.is_none(),
+            "a cycle entered at two blocks must not be structured as a reducible loop"
+        );
+        assert_eq!(
+            refusal,
+            Some(MULTI_ENTRY_REGION_REFUSAL),
+            "the refusal must name the multi-entry region rather than the join it happens to reach first"
         );
     }
 
