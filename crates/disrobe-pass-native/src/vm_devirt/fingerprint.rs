@@ -875,6 +875,94 @@ mod tests {
         );
     }
 
+    use super::super::detect::{DispatchKind, Segment};
+
+    const SHIFT_HANDLER_VA: u64 = 0x0040_1000;
+
+    const ARITHMETIC_SHIFT_HANDLER: [u8; 46] = [
+        0x4c, 0x8b, 0x47, 0x08, 0x4c, 0x8b, 0x4f, 0x10, 0x41, 0x8b, 0x09, 0x49, 0x8b, 0x44, 0xc8,
+        0xf8, 0x49, 0x8b, 0x54, 0xc8, 0xf0, 0x48, 0x83, 0xe0, 0x3f, 0x49, 0x89, 0xca, 0x48, 0x89,
+        0xc1, 0x48, 0xd3, 0xfa, 0x4b, 0x89, 0x54, 0xd0, 0xf0, 0x41, 0xff, 0xca, 0x45, 0x89, 0x11,
+        0xc3,
+    ];
+
+    const LOGICAL_SHIFT_HANDLER: [u8; 46] = [
+        0x4c, 0x8b, 0x47, 0x08, 0x4c, 0x8b, 0x4f, 0x10, 0x41, 0x8b, 0x09, 0x49, 0x8b, 0x44, 0xc8,
+        0xf8, 0x49, 0x8b, 0x54, 0xc8, 0xf0, 0x48, 0x83, 0xe0, 0x3f, 0x49, 0x89, 0xca, 0x48, 0x89,
+        0xc1, 0x48, 0xd3, 0xea, 0x4b, 0x89, 0x54, 0xd0, 0xf0, 0x41, 0xff, 0xca, 0x45, 0x89, 0x11,
+        0xc3,
+    ];
+
+    fn structure_for(body: &[u8]) -> VmStructure {
+        VmStructure {
+            bitness: Bitness::Bits64,
+            image_base: SHIFT_HANDLER_VA,
+            dispatcher_va: SHIFT_HANDLER_VA,
+            dispatch_kind: DispatchKind::SwitchJumpTable,
+            handlers: vec![HandlerEntry {
+                index: 0,
+                va: SHIFT_HANDLER_VA,
+                code: body.to_vec(),
+            }],
+            bytecode_va: 0,
+            bytecode: Vec::new(),
+            entry_vip: 0,
+            loaded: vec![Segment {
+                va: SHIFT_HANDLER_VA,
+                bytes: body.to_vec(),
+                executable: true,
+            }],
+        }
+    }
+
+    fn summarize(body: &[u8]) -> HandlerSemantics {
+        let structure: VmStructure = structure_for(body);
+        let mut summaries: Vec<HandlerSemantics> =
+            fingerprint_handlers(&[], Bitness::Bits64, &structure)
+                .expect("a single handler must summarize");
+        assert_eq!(summaries.len(), 1);
+        summaries.remove(0)
+    }
+
+    #[test]
+    fn two_handler_bodies_differing_by_one_bit_do_not_summarize_alike() {
+        let differing: Vec<usize> = ARITHMETIC_SHIFT_HANDLER
+            .iter()
+            .zip(LOGICAL_SHIFT_HANDLER.iter())
+            .enumerate()
+            .filter_map(|(at, (left, right)): (usize, (&u8, &u8))| (left != right).then_some(at))
+            .collect();
+        assert_eq!(
+            differing.len(),
+            1,
+            "these two bodies must differ in exactly one byte or this proves nothing"
+        );
+        let position: usize = differing[0];
+        assert_eq!(
+            (ARITHMETIC_SHIFT_HANDLER[position] ^ LOGICAL_SHIFT_HANDLER[position]).count_ones(),
+            1,
+            "the two bodies must differ in exactly one bit"
+        );
+
+        let arithmetic: HandlerSemantics = summarize(&ARITHMETIC_SHIFT_HANDLER);
+        let logical: HandlerSemantics = summarize(&LOGICAL_SHIFT_HANDLER);
+
+        assert_eq!(
+            arithmetic.micro_op,
+            MicroOp::Binary { op: BinKind::Sar },
+            "the arithmetic shift body must summarize as an arithmetic shift"
+        );
+        assert_eq!(
+            logical.micro_op,
+            MicroOp::Binary { op: BinKind::Shr },
+            "the logical shift body must summarize as a logical shift"
+        );
+        assert_ne!(
+            arithmetic, logical,
+            "two handlers whose behaviour differs must not collapse to one summary"
+        );
+    }
+
     #[test]
     fn a_probe_drives_an_arithmetic_right_shift_of_a_negative_value() {
         let vectors: Vec<ProbeVector> = probe_vectors();
