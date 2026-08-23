@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::hir::{
-    HirCond, HirCondExpr, HirCondRoute, HirCondTest, HirDispatchCase, HirExpr, HirFunction,
-    HirInstrStmt, HirLeafStmt, HirModule, HirStmt,
+    HirCond, HirCondExpr, HirCondRoute, HirCondTest, HirConst, HirDispatchCase, HirExpr,
+    HirFunction, HirInstrStmt, HirLeafStmt, HirModule, HirStmt,
 };
 use crate::types::{BinaryOp, NirInstr, NirModule, NirSymbol, SourceLang, SourceRef};
 
@@ -38,7 +38,7 @@ impl SurfaceType {
 #[serde(rename_all = "kebab-case")]
 pub enum SurfaceExpr {
     Literal {
-        text: String,
+        value: HirConst,
     },
     Local {
         name: String,
@@ -754,7 +754,7 @@ impl Lifter {
         let child_depth: usize = depth.saturating_add(1);
         match expr {
             HirExpr::Const { value } => SurfaceExpr::Literal {
-                text: value.render(),
+                value: value.clone(),
             },
             HirExpr::Var { name } => SurfaceExpr::Local { name: name.clone() },
             HirExpr::Mem { cell } => SurfaceExpr::Field { cell: cell.clone() },
@@ -1089,7 +1089,7 @@ fn collect_condition_instructions(expression: &SurfaceConditionExpr, out: &mut V
 mod tests {
     use super::*;
     use crate::emit::emit_pseudo_source;
-    use crate::hir::{HirConst, structurize_function};
+    use crate::hir::structurize_function;
     use crate::types::{NirFunction, NirOp};
 
     fn instr(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
@@ -1376,7 +1376,7 @@ mod tests {
             .stack_size(1_048_576)
             .spawn(|| {
                 let mut expression: SurfaceExpr = SurfaceExpr::Literal {
-                    text: "1".to_owned(),
+                    value: HirConst::counted(1),
                 };
                 for _index in 0..100_000 {
                     expression = SurfaceExpr::Unary {

@@ -2,6 +2,7 @@ use std::fmt::{self, Write};
 
 use thiserror::Error;
 
+use crate::hir::HirConst;
 use crate::surface::{
     SurfaceCase, SurfaceCondition, SurfaceConditionExpr, SurfaceConditionTest, SurfaceExpr,
     SurfaceFunction, SurfaceLeaf, SurfaceStatement, SurfaceStmt,
@@ -571,9 +572,13 @@ fn emit_expr(expr: &SurfaceExpr, output: &mut BoundedOutput) {
                 }
             }
             ExprAction::Expr(expression) => match expression {
-                SurfaceExpr::Literal { text }
-                | SurfaceExpr::Local { name: text }
-                | SurfaceExpr::Raw { text } => output.push_str(text),
+                SurfaceExpr::Literal { value } => match value {
+                    HirConst::Integer { value } => output.push_str(&value.to_string()),
+                    HirConst::Literal { text } => output.push_str(text),
+                },
+                SurfaceExpr::Local { name: text } | SurfaceExpr::Raw { text } => {
+                    output.push_str(text);
+                }
                 SurfaceExpr::Field { cell } => {
                     output.push_str("mem[");
                     output.push_str(cell);
@@ -1225,7 +1230,7 @@ mod tests {
             .stack_size(1_048_576)
             .spawn(|| {
                 let mut expression: SurfaceExpr = SurfaceExpr::Literal {
-                    text: "1".to_owned(),
+                    value: HirConst::counted(1),
                 };
                 for _index in 0..10_000 {
                     expression = SurfaceExpr::Unary {
@@ -1245,7 +1250,7 @@ mod tests {
     #[test]
     fn maximum_bounded_expression_renders_successfully() {
         let mut expression: SurfaceExpr = SurfaceExpr::Literal {
-            text: "1".to_owned(),
+            value: HirConst::counted(1),
         };
         for _index in 0..127 {
             expression = SurfaceExpr::Unary {
