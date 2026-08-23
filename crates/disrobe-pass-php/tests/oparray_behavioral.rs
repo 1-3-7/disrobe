@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 23] = [
+const PINNED_SAMPLES: [&str; 24] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -57,11 +57,12 @@ const PINNED_SAMPLES: [&str; 23] = [
     "spaceship",
     "switch_linear",
     "switch_optimized",
+    "type_checks",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 20] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 21] = [
     "arithmetic",
     "closure_bodies",
     "control_flow",
@@ -81,10 +82,11 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 20] = [
     "spaceship",
     "switch_linear",
     "switch_optimized",
+    "type_checks",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 23] = [
+const OPCODE_NAMING_SAMPLES: [&str; 24] = [
     "arithmetic",
     "closure_bodies",
     "closures",
@@ -106,6 +108,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 23] = [
     "spaceship",
     "switch_linear",
     "switch_optimized",
+    "type_checks",
     "variable_variable",
     "versioned",
 ];
@@ -575,6 +578,11 @@ fn interpolation_oparray_roundtrips_behaviorally() {
 #[test]
 fn goto_shapes_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("goto_shapes");
+}
+
+#[test]
+fn type_checks_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("type_checks");
 }
 
 const GOTO_RECOVERED_SITES: [(&str, &str); 2] = [("out_of_loop", "goto "), ("backward", "goto ")];

@@ -138,6 +138,7 @@ const OPMAP = [
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
     'SPACESHIP' => 170,
+    'TYPE_CHECK' => 123,
     'ROPE_INIT' => 54,
     'ROPE_ADD' => 55,
     'ROPE_END' => 56,
@@ -189,6 +190,17 @@ const DISCARDED_MEMBER_FLAGS = [
     '(exception)',
     '(dim write)',
     '(ref)',
+];
+
+const TYPE_CHECK_MASK = [
+    'null' => 2,
+    'bool' => 12,
+    'long' => 16,
+    'double' => 32,
+    'string' => 64,
+    'array' => 128,
+    'object' => 256,
+    'resource' => 512,
 ];
 
 const CAST_TYPE_MAP = [
@@ -814,6 +826,51 @@ function parse_dump(string $text): array
                 $op->op2Type = $t;
                 $op->op2 = $v;
             }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'TYPE_CHECK') {
+            $mask = 0;
+            $operands = [];
+            $index = 0;
+            while ($index < count($tokens)) {
+                $token = trim($tokens[$index]);
+                if (preg_match('/^\(([a-z]+)\)$/', $token, $tm)) {
+                    if (!isset(TYPE_CHECK_MASK[$tm[1]])) {
+                        fail("TYPE_CHECK at line $addr checks unmapped type '{$tm[1]}'");
+                    }
+                    $mask |= TYPE_CHECK_MASK[$tm[1]];
+                    $index++;
+                    continue;
+                }
+                if ($token === 'TYPE') {
+                    $index++;
+                    while ($index < count($tokens)) {
+                        $part = trim($tokens[$index], " \t[],");
+                        $index++;
+                        if ($part === '') {
+                            continue;
+                        }
+                        if (!isset(TYPE_CHECK_MASK[$part])) {
+                            fail("TYPE_CHECK at line $addr lists unmapped type '$part'");
+                        }
+                        $mask |= TYPE_CHECK_MASK[$part];
+                        if (str_ends_with(trim($tokens[$index - 1]), ']')) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                $operands[] = $tokens[$index];
+                $index++;
+            }
+            if ($mask === 0) {
+                fail("TYPE_CHECK at line $addr names no type to check");
+            }
+            $op = build_op($mnemonic, $resultTok, $operands, $current['oa'], $addr + 1);
+            $op->ext = $mask;
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;

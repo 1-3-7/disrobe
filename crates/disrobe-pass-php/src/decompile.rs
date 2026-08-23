@@ -403,6 +403,7 @@ pub mod op {
     pub const GENERATOR_CREATE: u8 = 214;
     pub const OP_DATA: u8 = 137;
     pub const ASSIGN_STATIC_PROP: u8 = 25;
+    pub const TYPE_CHECK: u8 = 123;
     pub const SPACESHIP: u8 = 170;
     pub const INIT_DYNAMIC_CALL: u8 = 128;
     pub const BIND_LEXICAL: u8 = 182;
@@ -564,6 +565,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         166 => "ZEND_YIELD_FROM",
         169 => "ZEND_COALESCE",
         128 => "ZEND_INIT_DYNAMIC_CALL",
+        123 => "ZEND_TYPE_CHECK",
         170 => "ZEND_SPACESHIP",
         182 => "ZEND_BIND_LEXICAL",
         183 => "ZEND_BIND_STATIC",
@@ -4061,6 +4063,25 @@ impl<'a> Lifter<'a> {
                 self.refused.insert(idx);
                 Some(format!("goto {};", Self::goto_label(target)))
             }
+            o if o == op::TYPE_CHECK => {
+                let Some(subject): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let text: String = match type_check_probe(op.extended_value) {
+                    Some(TypeProbe::Builtin(name)) => format!("{name}({})", subject.text),
+                    Some(TypeProbe::NotNull) => {
+                        format!("{} !== null", subject.wrapped(PREC_CMP + 1))
+                    }
+                    None => return Some(self.refuse(idx, o, REASON_TYPE_CHECK)),
+                };
+                let prec: u8 = if op.extended_value == TYPE_MASK_NOT_NULL {
+                    PREC_CMP
+                } else {
+                    PREC_CALL
+                };
+                self.store_result(op, Expr { text, prec });
+                None
+            }
             o if o == op::FETCH_CLASS_CONSTANT => {
                 let Some(text): Option<String> = self.class_constant_access(op) else {
                     return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
@@ -4886,6 +4907,8 @@ const REASON_COMPOUND_OPERATOR: &str =
     "the compound assignment operator is not a php 8 binary operator";
 const LIMITATION_OPAQUE_ARRAY_LITERAL: &str = "the constant array literal's elements are not carried in this op array, so an empty array \
      and a populated one are indistinguishable here";
+const REASON_TYPE_CHECK: &str =
+    "the type check names no php 8 type combination this container can spell";
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
@@ -4925,6 +4948,29 @@ const fn refusal_reason(opcode: u8) -> &'static str {
         | op::DECLARE_CLASS_DELAYED
         | op::DECLARE_ANON_CLASS => REASON_DECLARATION,
         _ => REASON_UNMODELLED,
+    }
+}
+
+const TYPE_MASK_NOT_NULL: u32 = 0x0C | 0x10 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200;
+
+enum TypeProbe {
+    Builtin(&'static str),
+    NotNull,
+}
+
+#[must_use]
+const fn type_check_probe(mask: u32) -> Option<TypeProbe> {
+    match mask {
+        2 => Some(TypeProbe::Builtin("is_null")),
+        12 => Some(TypeProbe::Builtin("is_bool")),
+        16 => Some(TypeProbe::Builtin("is_int")),
+        32 => Some(TypeProbe::Builtin("is_float")),
+        64 => Some(TypeProbe::Builtin("is_string")),
+        128 => Some(TypeProbe::Builtin("is_array")),
+        256 => Some(TypeProbe::Builtin("is_object")),
+        512 => Some(TypeProbe::Builtin("is_resource")),
+        TYPE_MASK_NOT_NULL => Some(TypeProbe::NotNull),
+        _ => None,
     }
 }
 
