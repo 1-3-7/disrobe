@@ -138,6 +138,9 @@ const OPMAP = [
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
     'SPACESHIP' => 170,
+    'INIT_DYNAMIC_CALL' => 128,
+    'BIND_LEXICAL' => 182,
+    'BIND_STATIC' => 183,
     'ASSIGN_REF' => 30,
     'ASSIGN_OBJ_REF' => 32,
     'ASSIGN_STATIC_PROP_REF' => 33,
@@ -201,6 +204,7 @@ const ISSET_FLAG_MAP = [
 ];
 
 const ARG_COUNT_PREFIXED = [
+    'INIT_DYNAMIC_CALL' => 1,
     'INIT_METHOD_CALL' => 2,
     'INIT_STATIC_METHOD_CALL' => 2,
     'NEW' => 1,
@@ -272,6 +276,7 @@ final class ParsedOpArray
     public array $children = [];
     public array $vars = [];
     public array $tryCatch = [];
+    public ?string $declaredBy = null;
 
     public function __construct()
     {
@@ -716,6 +721,9 @@ function parse_dump(string $text): array
             } elseif (str_starts_with($rawName, '{closure')) {
                 $oa->kind = K_CLOSURE;
                 $oa->name = null;
+                if (preg_match('/^\{closure:(.+)\(\):\d+\}$/', $rawName, $cm)) {
+                    $oa->declaredBy = $cm[1];
+                }
             } else {
                 $oa->kind = K_FUNCTION;
                 $oa->name = $rawName;
@@ -794,6 +802,19 @@ function parse_dump(string $text): array
                 $op->op2Type = $t;
                 $op->op2 = $v;
             }
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'DECLARE_LAMBDA_FUNCTION') {
+            $indexTok = $tokens[0] ?? '';
+            if (!preg_match('/^\d+$/', trim($indexTok))) {
+                fail("DECLARE_LAMBDA_FUNCTION at line $addr does not lead with a closure "
+                    . "index: '" . trim($indexTok) . "'");
+            }
+            $op = build_op($mnemonic, $resultTok, [], $current['oa'], $addr + 1);
+            $op->ext = (int) trim($indexTok);
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;
@@ -1082,8 +1103,26 @@ function nest_arrays(array $arrays): ParsedOpArray
     if ($main === null) {
         fail('no $_main op_array found in dump');
     }
+    $byName = [];
     foreach ($children as $child) {
-        $main->children[] = $child;
+        if ($child->kind === K_FUNCTION && $child->name !== null) {
+            $byName[$child->name] = $child;
+        } elseif ($child->kind === K_METHOD && $child->name !== null) {
+            $byName[$child->className . '::' . $child->name] = $child;
+        }
+    }
+    foreach ($children as $child) {
+        $parent = $main;
+        if ($child->kind === K_CLOSURE && $child->declaredBy !== null) {
+            if (!isset($byName[$child->declaredBy])) {
+                fail(
+                    "a closure names {$child->declaredBy} as the op_array that declared it, and no "
+                    . 'such op_array is in this dump, so its declaration site cannot be linked'
+                );
+            }
+            $parent = $byName[$child->declaredBy];
+        }
+        $parent->children[] = $child;
     }
 
     return $main;

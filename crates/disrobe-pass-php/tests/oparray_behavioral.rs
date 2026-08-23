@@ -35,8 +35,9 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 19] = [
+const PINNED_SAMPLES: [&str; 20] = [
     "arithmetic",
+    "closure_bodies",
     "closures",
     "control_flow",
     "do_while",
@@ -57,8 +58,9 @@ const PINNED_SAMPLES: [&str; 19] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 16] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 17] = [
     "arithmetic",
+    "closure_bodies",
     "control_flow",
     "do_while",
     "dynamic_members",
@@ -76,8 +78,9 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 16] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 19] = [
+const OPCODE_NAMING_SAMPLES: [&str; 20] = [
     "arithmetic",
+    "closure_bodies",
     "closures",
     "control_flow",
     "do_while",
@@ -541,6 +544,60 @@ fn nullsafe_calls_oparray_roundtrips_behaviorally() {
 #[test]
 fn spaceship_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("spaceship");
+}
+
+#[test]
+fn closure_bodies_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("closure_bodies");
+}
+
+#[test]
+fn a_lexical_bind_that_does_not_target_its_declared_closure_is_refused_rather_than_captured() {
+    let graded: &str = "the php 8.4 closure use-list binding boundary";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let clean: Decompilation = decompile_oparray(&parse_sample(&php, &dll, "closure_bodies"));
+    assert!(
+        clean.unrecovered.is_empty(),
+        "the unmutated sample must recover fully before a mutation can mean anything: {:?}",
+        clean.unrecovered
+    );
+    let captured: usize = clean.php_skeleton.matches("use ($base)").count();
+    assert!(
+        captured >= 2,
+        "pick declares two closures that each capture $base, so the clean recovery must show at \
+         least two; the sample changed\n--- recovered ---\n{}",
+        clean.php_skeleton
+    );
+
+    let mut parsed: OpArray = parse_sample(&php, &dll, "closure_bodies");
+    {
+        let ops: &mut Vec<Op> = nullsafe_body(&mut parsed, "pick");
+        let bind: &mut Op = ops
+            .iter_mut()
+            .find(|op: &&mut Op| op.opcode == 182)
+            .expect("pick binds a lexical into its first closure");
+        bind.op1 = bind.op1.wrapping_add(64);
+    }
+    let recovered: Decompilation = decompile_oparray(&parsed);
+    assert!(
+        recovered
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.mnemonic == "ZEND_DECLARE_LAMBDA_FUNCTION"),
+        "a lexical bind whose target is not the closure just declared is not a php 8 use list, so \
+         the declaration must be refused rather than given a capture it does not have; got \
+         {:?}\n--- recovered ---\n{}",
+        recovered.unrecovered,
+        recovered.php_skeleton
+    );
+    assert_eq!(
+        recovered.php_skeleton.matches("use ($base)").count(),
+        captured - 1,
+        "exactly the closure whose bind was broken must lose its use list; the others must keep \
+         theirs\n--- recovered ---\n{}",
+        recovered.php_skeleton
+    );
 }
 
 const NULLSAFE_CHAINS: [(&str, &str); 4] = [

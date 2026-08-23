@@ -26,6 +26,7 @@ const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
 const SANE_LOOP_RELIFT_WORK_CAP: usize = 1 << 20;
 const SANE_FOR_STEP_CAP: usize = 16;
 const SANE_NULLSAFE_LINKS: usize = 64;
+const SANE_CLOSURE_USE_CAP: usize = 256;
 const SANE_TRY_CATCH_CAP: u32 = 1 << 16;
 const SANE_CATCH_TYPE_CAP: usize = 256;
 const SANE_CATCH_CLAUSE_CAP: usize = 256;
@@ -403,6 +404,9 @@ pub mod op {
     pub const OP_DATA: u8 = 137;
     pub const ASSIGN_STATIC_PROP: u8 = 25;
     pub const SPACESHIP: u8 = 170;
+    pub const INIT_DYNAMIC_CALL: u8 = 128;
+    pub const BIND_LEXICAL: u8 = 182;
+    pub const BIND_STATIC: u8 = 183;
     pub const ASSIGN_REF: u8 = 30;
     pub const ASSIGN_OBJ_REF: u8 = 32;
     pub const ASSIGN_STATIC_PROP_REF: u8 = 33;
@@ -559,7 +563,10 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         161 => "ZEND_GENERATOR_RETURN",
         166 => "ZEND_YIELD_FROM",
         169 => "ZEND_COALESCE",
+        128 => "ZEND_INIT_DYNAMIC_CALL",
         170 => "ZEND_SPACESHIP",
+        182 => "ZEND_BIND_LEXICAL",
+        183 => "ZEND_BIND_STATIC",
         187 => "ZEND_SWITCH_LONG",
         188 => "ZEND_SWITCH_STRING",
         195 => "ZEND_MATCH",
@@ -1089,6 +1096,9 @@ impl SkeletonEmitter {
                 self.emit_body(node, indent + 1);
                 self.line(indent, "}");
                 for child in &node.children {
+                    if child.kind == OpArrayKind::Closure {
+                        continue;
+                    }
                     self.out.push('\n');
                     self.emit_oparray(child, indent);
                 }
@@ -1139,7 +1149,7 @@ impl SkeletonEmitter {
             self.out.push('\n');
         }
         for child in &node.children {
-            if child.kind == OpArrayKind::Method {
+            if child.kind == OpArrayKind::Method || child.kind == OpArrayKind::Closure {
                 continue;
             }
             self.emit_oparray(child, indent);
@@ -1170,8 +1180,13 @@ impl SkeletonEmitter {
     }
 
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
-        let mut lifter: Lifter<'_> =
-            Lifter::new(&node.ops, &node.literals, &node.var_names, &node.try_catch);
+        let mut lifter: Lifter<'_> = Lifter::new(
+            &node.ops,
+            &node.literals,
+            &node.var_names,
+            &node.try_catch,
+            &node.children,
+        );
         let stmts: Vec<Stmt> = lifter.lift();
         let container: String = Self::container_label(node);
         self.unrecovered_total = self.unrecovered_total.saturating_add(lifter.refused.len());
@@ -1314,6 +1329,12 @@ enum Stmt {
         by_reference: bool,
         body: Vec<Self>,
     },
+    Closure {
+        prefix: String,
+        signature: String,
+        body: Vec<Self>,
+        suffix: String,
+    },
     Switch {
         subject: String,
         arms: Vec<SwitchArm>,
@@ -1447,6 +1468,18 @@ impl Stmt {
                 }
                 emitter.line(indent, "}");
             }
+            Self::Closure {
+                prefix,
+                signature,
+                body,
+                suffix,
+            } => {
+                emitter.line(indent, &format!("{prefix}{signature} {{"));
+                for stmt in body {
+                    stmt.render_into(emitter, indent + 1);
+                }
+                emitter.line(indent, &format!("}}{suffix}"));
+            }
             Self::Switch { subject, arms } => {
                 emitter.line(indent, &format!("switch ({subject}) {{"));
                 for arm in arms {
@@ -1558,6 +1591,7 @@ struct Lifter<'a> {
     limitations: Vec<(u32, u8, &'static str)>,
     limited: BTreeSet<u32>,
     nullsafe_link: Option<(OperandType, u32)>,
+    children: &'a [OpArray],
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
     breakables: Vec<BreakableFrame>,
@@ -1570,6 +1604,7 @@ impl<'a> Lifter<'a> {
         literals: &'a [Literal],
         var_names: &'a [Option<String>],
         try_catch: &'a [TryCatch],
+        children: &'a [OpArray],
     ) -> Self {
         let back_jump_targets: BTreeSet<u32> = ops
             .iter()
@@ -1632,6 +1667,7 @@ impl<'a> Lifter<'a> {
             limitations: Vec::new(),
             limited: BTreeSet::new(),
             nullsafe_link: None,
+            children,
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
             breakables: Vec::new(),
@@ -1744,6 +1780,7 @@ impl<'a> Lifter<'a> {
             o if o == op::JMPZ_EX || o == op::JMPNZ_EX => self.fold_short_circuit(i, end),
             o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
             o if o == op::JMP_NULL => self.fold_nullsafe_chain(i, end),
+            o if o == op::DECLARE_LAMBDA_FUNCTION => self.fold_closure(i, end),
             o if o == op::JMP => {
                 let structured: Option<(Vec<Stmt>, u32)> = self
                     .structure_while(i, end, depth)
@@ -2824,6 +2861,85 @@ impl<'a> Lifter<'a> {
         Some((Vec::new(), join))
     }
 
+    fn fold_closure(&self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let declare: Op = self.ops.get(i as usize)?.clone();
+        if declare.result_type != OperandType::TmpVar {
+            return None;
+        }
+        let slot: (OperandType, u32) = (declare.result_type, declare.result);
+        let child: &OpArray = self
+            .children
+            .iter()
+            .filter(|node: &&OpArray| node.kind == OpArrayKind::Closure)
+            .nth(declare.extended_value as usize)?;
+        let mut uses: Vec<String> = Vec::new();
+        let mut cursor: u32 = i.saturating_add(1);
+        while cursor < end {
+            let bind: &Op = self.ops.get(cursor as usize)?;
+            if bind.opcode != op::BIND_LEXICAL {
+                break;
+            }
+            if (bind.op1_type, bind.op1) != slot || bind.op2_type != OperandType::Cv {
+                return None;
+            }
+            uses.push(format!("${}", self.cv(bind.op2)));
+            if uses.len() > SANE_CLOSURE_USE_CAP {
+                return None;
+            }
+            cursor = cursor.saturating_add(1);
+        }
+        if self
+            .ops
+            .get(cursor as usize)
+            .is_some_and(|op: &Op| op.opcode == op::VERIFY_RETURN_TYPE)
+        {
+            cursor = cursor.saturating_add(1);
+        }
+        let consumer: Op = self.ops.get(cursor as usize)?.clone();
+        let (prefix, suffix): (String, String) = match consumer.opcode {
+            op::ASSIGN
+                if (consumer.op2_type, consumer.op2) == slot
+                    && consumer.op1_type == OperandType::Cv
+                    && consumer.result_type == OperandType::Unused =>
+            {
+                (format!("${} = ", self.cv(consumer.op1)), ";".to_owned())
+            }
+            op::RETURN if (consumer.op1_type, consumer.op1) == slot => {
+                ("return ".to_owned(), ";".to_owned())
+            }
+            _ => return None,
+        };
+        let params: String = (0..child.num_args)
+            .map(|arg: u32| format!("${}", cv_name(arg, &child.var_names)))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let signature: String = if uses.is_empty() {
+            format!("function ({params})")
+        } else {
+            format!("function ({params}) use ({})", uses.join(", "))
+        };
+        let mut inner: Lifter<'_> = Lifter::new(
+            &child.ops,
+            &child.literals,
+            &child.var_names,
+            &child.try_catch,
+            &child.children,
+        );
+        let body: Vec<Stmt> = inner.lift();
+        if !inner.unrecovered.is_empty() {
+            return None;
+        }
+        Some((
+            vec![Stmt::Closure {
+                prefix,
+                signature,
+                body,
+                suffix,
+            }],
+            cursor.saturating_add(1),
+        ))
+    }
+
     fn fold_nullsafe_chain(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
         let gate: Op = self.ops.get(i as usize)?.clone();
         let join: u32 = gate.op2;
@@ -3779,13 +3895,28 @@ impl<'a> Lifter<'a> {
             o if o == op::FE_FREE => None,
             o if o == op::VERIFY_RETURN_TYPE || o == op::NOP || o == op::HANDLE_EXCEPTION => None,
             o if o == op::FAST_CALL || o == op::FAST_RET || o == op::DISCARD_EXCEPTION => None,
-            o if o == op::RECV || o == op::RECV_INIT => None,
+            o if o == op::RECV || o == op::RECV_INIT || o == op::BIND_STATIC => None,
             o if o == op::INIT_FCALL || o == op::INIT_FCALL_BY_NAME || o == op::INIT_NS_FCALL => {
                 let callee: String = self
                     .operand_expr(op.op2_type, op.op2)
                     .map_or_else(|| "func".to_owned(), |e: Expr| strip_quotes(&e.text));
                 self.call_stack.push(PendingCall {
                     callee,
+                    is_method: false,
+                    nullsafe: false,
+                    object: None,
+                    is_static: false,
+                    args: Vec::new(),
+                    result: None,
+                });
+                None
+            }
+            o if o == op::INIT_DYNAMIC_CALL => {
+                let Some(callee): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.call_stack.push(PendingCall {
+                    callee: callee.wrapped(PREC_CALL),
                     is_method: false,
                     nullsafe: false,
                     object: None,
@@ -5126,7 +5257,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(
                 stmts.len(),
@@ -5190,7 +5321,7 @@ mod oparray_bounds_tests {
             let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
             let var_names: Vec<Option<String>> = Vec::new();
             let start: Instant = Instant::now();
-            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
             let elapsed: Duration = start.elapsed();
             assert_eq!(stmts.len(), rope_count.saturating_mul(4));
             elapsed.as_secs_f64()
@@ -5223,7 +5354,7 @@ mod oparray_bounds_tests {
         ];
         let literals: Vec<Literal> = vec![Literal::Bool(true)];
         let var_names: Vec<Option<String>> = Vec::new();
-        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[]).lift();
+        let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names, &[], &[]).lift();
         assert!(
             matches!(stmts.first(), Some(Stmt::DoWhile { .. })),
             "back-jump target present in cache should still structure a do-while, got {stmts:?}"
