@@ -20,6 +20,7 @@ pub mod detect;
 pub mod emit;
 pub mod eval;
 pub mod fingerprint;
+pub mod layout;
 pub mod lift;
 pub mod microop;
 pub mod structure;
