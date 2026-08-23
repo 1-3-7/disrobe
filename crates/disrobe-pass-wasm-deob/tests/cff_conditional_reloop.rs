@@ -1,27 +1,37 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "sandbox")]
 use std::process::{Command, Output};
 
+#[cfg(feature = "sandbox")]
 #[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
+#[cfg(feature = "sandbox")]
 #[cfg(feature = "chain")]
 use disrobe_core::{Artifact, Rung};
+#[cfg(feature = "sandbox")]
 #[cfg(feature = "chain")]
 use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 20_000_000;
 
+#[cfg(feature = "sandbox")]
 fn real_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real")
 }
 
+#[cfg(feature = "sandbox")]
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+#[cfg(feature = "sandbox")]
 fn assemble_path(path: PathBuf, hint: Option<&str>) -> Vec<u8> {
     let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
         hint.map_or_else(
@@ -32,6 +42,7 @@ fn assemble_path(path: PathBuf, hint: Option<&str>) -> Vec<u8> {
     wat::parse_str(&text).unwrap_or_else(|e| panic!("assemble {}: {e}", path.display()))
 }
 
+#[cfg(feature = "sandbox")]
 fn assemble(name: &str) -> Vec<u8> {
     assemble_path(
         real_dir().join(name),
@@ -39,21 +50,25 @@ fn assemble(name: &str) -> Vec<u8> {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn assemble_fixture(name: &str) -> Vec<u8> {
     assemble_path(fixture_dir().join(name), None)
 }
 
+#[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     let mut config: Config = Config::new();
     config.consume_fuel(true);
     Engine::new(&config).expect("engine")
 }
 
+#[cfg(feature = "sandbox")]
 struct Inst {
     store: Store<()>,
     instance: wasmtime::Instance,
 }
 
+#[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     let module: Module = Module::new(eng, bytes).expect("module compiles");
     let mut store: Store<()> = Store::new(eng, ());
@@ -66,12 +81,14 @@ fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     Inst { store, instance }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Ret(i32),
     Trap,
 }
 
+#[cfg(feature = "sandbox")]
 fn call_i32(inst: &mut Inst, export: &str, arg: i32) -> Outcome {
     let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
         Some(f) => f,
@@ -91,12 +108,14 @@ fn call_i32(inst: &mut Inst, export: &str, arg: i32) -> Outcome {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn battery() -> Vec<i32> {
     vec![
         -1000, -100, -5, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 63, 100, 257, 1000,
     ]
 }
 
+#[cfg(feature = "sandbox")]
 fn assert_equivalent(reference: &mut Inst, candidate: &mut Inst, export: &str) {
     for arg in battery() {
         let want: Outcome = call_i32(reference, export, arg);
@@ -108,6 +127,7 @@ fn assert_equivalent(reference: &mut Inst, candidate: &mut Inst, export: &str) {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn assert_distinguished(reference: &mut Inst, candidate: &mut Inst, export: &str) {
     let distinguished: bool = battery()
         .into_iter()
@@ -118,12 +138,14 @@ fn assert_distinguished(reference: &mut Inst, candidate: &mut Inst, export: &str
     );
 }
 
+#[cfg(feature = "sandbox")]
 struct CondCase {
     clean: &'static str,
     obf: &'static str,
     export: &'static str,
 }
 
+#[cfg(feature = "sandbox")]
 fn cond_cases() -> Vec<CondCase> {
     vec![
         CondCase {
@@ -139,6 +161,7 @@ fn cond_cases() -> Vec<CondCase> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 fn assert_reloops_to_clean_behavior(
     clean_bytes: &[u8],
     obf_bytes: &[u8],
@@ -173,6 +196,7 @@ fn assert_reloops_to_clean_behavior(
     assert_equivalent(&mut clean_inst, &mut recovered_inst, export);
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
     for case in cond_cases() {
@@ -182,6 +206,7 @@ fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 #[cfg(feature = "chain")]
 fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
@@ -221,6 +246,7 @@ fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
     assert!(!source.contains("br_table"));
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() {
     let fixture: String =
@@ -311,6 +337,7 @@ fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() 
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn clang_select_transition_reloops_through_the_public_recovery_api() {
     let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
@@ -323,6 +350,7 @@ fn clang_select_transition_reloops_through_the_public_recovery_api() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn arithmetic_select_successors_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -335,6 +363,7 @@ fn arithmetic_select_successors_reloop_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_arithmetic_select_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -345,6 +374,7 @@ fn runtime_differential_rejects_swapped_arithmetic_select_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn effectful_select_successor_expression_remains_walled() {
     let mut source: String = computed_select_state_source(
@@ -359,6 +389,7 @@ fn effectful_select_successor_expression_remains_walled() {
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_select_successors() {
     let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
@@ -369,6 +400,7 @@ fn runtime_differential_rejects_swapped_select_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_select");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn select_transition_that_consumes_candidate_values_remains_walled() {
     let bytes: Vec<u8> = assemble_fixture("cff_select_stack_alias.obf.wat");
@@ -377,12 +409,14 @@ fn select_transition_that_consumes_candidate_values_remains_walled() {
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
 }
 
+#[cfg(feature = "sandbox")]
 fn assert_fixture_reloops(clean: &str, obf: &str, export: &str) {
     let clean_bytes: Vec<u8> = assemble_fixture(clean);
     let obf_bytes: Vec<u8> = assemble_fixture(obf);
     assert_reloops_to_clean_behavior(&clean_bytes, &obf_bytes, export, obf);
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn state_held_in_a_local_reloops_under_wasmtime() {
     assert_fixture_reloops(
@@ -392,6 +426,7 @@ fn state_held_in_a_local_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_dispatch_loop_with_two_exit_states_reloops_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_loop.clean.wat");
@@ -411,6 +446,7 @@ fn a_dispatch_loop_with_two_exit_states_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_multi_exit_successors() {
     let eng: Engine = engine();
@@ -432,6 +468,7 @@ fn runtime_differential_rejects_swapped_multi_exit_successors() {
     assert_distinguished(&mut clean_inst, &mut mutant_inst, "reduce_bounded");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn two_exit_states_that_rejoin_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_multi_exit_join.clean.wat");
@@ -451,6 +488,7 @@ fn two_exit_states_that_rejoin_reloop_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_rejoining_exit_bodies() {
     let eng: Engine = engine();
@@ -472,6 +510,7 @@ fn runtime_differential_rejects_swapped_rejoining_exit_bodies() {
     assert_distinguished(&mut clean_inst, &mut mutant_inst, "reduce_join");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_dispatcher_that_leaves_its_root_block_does_not_run_the_dead_suffix() {
     let obf_bytes: Vec<u8> = assemble_fixture("cff_root_exit_suffix.obf.wat");
@@ -489,6 +528,7 @@ fn a_dispatcher_that_leaves_its_root_block_does_not_run_the_dead_suffix() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn constant_arithmetic_state_updates_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -504,6 +544,7 @@ fn constant_arithmetic_state_updates_reloop_under_wasmtime() {
     assert!(!contains_computed_state_binop(&recovered.bytes));
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn wrapping_and_masked_shift_state_updates_reloop_under_wasmtime() {
     let overflow: Vec<u8> = computed_state_variant(
@@ -517,6 +558,7 @@ fn wrapping_and_masked_shift_state_updates_reloop_under_wasmtime() {
     assert_reloops_to_clean_behavior(&clean_bytes, &shifted, "classify_local", "shifted state");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn observed_entry_state_write_is_preserved_when_relooping() {
     let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
@@ -540,6 +582,7 @@ fn observed_entry_state_write_is_preserved_when_relooping() {
     assert!(contains_computed_state_binop(&recovered.bytes));
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn guarded_arithmetic_state_updates_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -552,6 +595,7 @@ fn guarded_arithmetic_state_updates_reloop_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_guarded_arithmetic_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -562,6 +606,7 @@ fn runtime_differential_rejects_swapped_guarded_arithmetic_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn effectful_guarded_state_expression_remains_walled() {
     let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
@@ -580,6 +625,7 @@ fn effectful_guarded_state_expression_remains_walled() {
     assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn unsafe_or_oversized_state_expressions_remain_walled() {
     let input_dependent: Vec<u8> =
@@ -611,6 +657,7 @@ fn unsafe_or_oversized_state_expressions_remain_walled() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_computed_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -622,6 +669,7 @@ fn runtime_differential_rejects_swapped_computed_state_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
+#[cfg(feature = "sandbox")]
 fn computed_state_variant(replacement: &str) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
@@ -634,6 +682,7 @@ fn computed_state_variant(replacement: &str) -> Vec<u8> {
     wat::parse_str(&variant).expect("assemble computed-state variant")
 }
 
+#[cfg(feature = "sandbox")]
 fn computed_state_call_variant() -> Vec<u8> {
     let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
@@ -648,6 +697,7 @@ fn computed_state_call_variant() -> Vec<u8> {
     wat::parse_str(&variant).expect("assemble effectful computed-state variant")
 }
 
+#[cfg(feature = "sandbox")]
 fn computed_guard_state_variant(swapped: bool) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
@@ -679,6 +729,7 @@ fn computed_guard_state_variant(swapped: bool) -> Vec<u8> {
     wat::parse_str(&variant).expect("assemble computed guarded states")
 }
 
+#[cfg(feature = "sandbox")]
 fn computed_select_state_variant(swapped: bool) -> Vec<u8> {
     let (then_expression, else_expression): (&str, &str) = if swapped {
         (
@@ -695,6 +746,7 @@ fn computed_select_state_variant(swapped: bool) -> Vec<u8> {
     wat::parse_str(&source).expect("assemble computed select states")
 }
 
+#[cfg(feature = "sandbox")]
 fn computed_select_state_source(then_expression: &str, else_expression: &str) -> String {
     let path: PathBuf = fixture_dir().join("cff_local_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read local-state fixture");
@@ -722,6 +774,7 @@ fn computed_select_state_source(then_expression: &str, else_expression: &str) ->
     variant
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn state_held_in_a_global_reloops_under_wasmtime() {
     assert_fixture_reloops(
@@ -731,6 +784,7 @@ fn state_held_in_a_global_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn state_global_copied_through_local_tee_reloops_under_wasmtime() {
     assert_fixture_reloops(
@@ -740,6 +794,7 @@ fn state_global_copied_through_local_tee_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_global_tee_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_global_state.clean.wat");
@@ -750,6 +805,7 @@ fn runtime_differential_rejects_swapped_global_tee_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_global");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_nested_suffix_read_of_the_tee_source_global_is_walled() {
     let bytes: Vec<u8> = assemble_fixture("cff_global_tee_state_suffix_read.obf.wat");
@@ -776,6 +832,7 @@ fn a_nested_suffix_read_of_the_tee_source_global_is_walled() {
     assert_equivalent(&mut original, &mut candidate, "classify_global");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn an_effectful_global_tee_selector_prefix_is_not_relooped() {
     let bytes: Vec<u8> = assemble_fixture("cff_global_tee_state_effectful_prefix.obf.wat");
@@ -815,6 +872,7 @@ fn an_effectful_global_tee_selector_prefix_is_not_relooped() {
     assert_equivalent(&mut original, &mut candidate, "classify_global");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_trapping_global_tee_selector_prefix_is_not_relooped() {
     let source: String =
@@ -852,6 +910,7 @@ fn a_trapping_global_tee_selector_prefix_is_not_relooped() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
     assert_fixture_reloops(
@@ -861,6 +920,7 @@ fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn state_held_at_a_fixed_memory_address_reloops_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
@@ -873,6 +933,7 @@ fn state_held_at_a_fixed_memory_address_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn equivalent_constant_expression_memory_addresses_reloop_under_wasmtime() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
@@ -886,6 +947,7 @@ fn equivalent_constant_expression_memory_addresses_reloop_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn input_dependent_memory_address_remains_walled_and_preserves_traps() {
     let bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::InputDependentAddress);
@@ -909,6 +971,7 @@ fn input_dependent_memory_address_remains_walled_and_preserves_traps() {
     assert_equivalent(&mut original, &mut candidate, "classify_memory");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn out_of_bounds_local_memory_address_remains_walled_and_preserves_traps() {
     let bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::LocalOutOfBoundsAddress);
@@ -928,6 +991,7 @@ fn out_of_bounds_local_memory_address_remains_walled_and_preserves_traps() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn unresolved_local_address_reloops_with_a_preceding_in_bounds_access() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
@@ -940,6 +1004,7 @@ fn unresolved_local_address_reloops_with_a_preceding_in_bounds_access() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn unresolved_local_address_rejects_a_later_access_before_observable_effects_move() {
     let bytes: Vec<u8> = unresolved_local_memory_state_variant(UnresolvedLocalProof::Later);
@@ -961,6 +1026,7 @@ fn unresolved_local_address_rejects_a_later_access_before_observable_effects_mov
     assert_eq!(read_global_i32(&mut candidate, "marker"), Some(0));
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn unresolved_local_address_rejects_conditional_or_incompatible_bounds_evidence() {
     for proof in [
@@ -984,6 +1050,7 @@ fn unresolved_local_address_rejects_conditional_or_incompatible_bounds_evidence(
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_fixed_memory_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
@@ -994,6 +1061,7 @@ fn runtime_differential_rejects_swapped_fixed_memory_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_memory");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn fixed_memory_selector_with_mismatched_store_metadata_remains_walled() {
     for mutation in [
@@ -1009,6 +1077,7 @@ fn fixed_memory_selector_with_mismatched_store_metadata_remains_walled() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn fixed_memory_selector_without_private_in_bounds_storage_remains_walled() {
     for mutation in [
@@ -1025,6 +1094,7 @@ fn fixed_memory_selector_without_private_in_bounds_storage_remains_walled() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Clone, Copy)]
 enum FixedMemoryMutation {
     None,
@@ -1039,6 +1109,7 @@ enum FixedMemoryMutation {
     ExportedMemory,
 }
 
+#[cfg(feature = "sandbox")]
 fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
@@ -1109,6 +1180,7 @@ fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
     wat::parse_str(&variant).expect("assemble fixed-address memory state")
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy)]
 enum UnresolvedLocalProof {
     Preceding,
@@ -1119,6 +1191,7 @@ enum UnresolvedLocalProof {
     Weaker,
 }
 
+#[cfg(feature = "sandbox")]
 fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8> {
     let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
     let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
@@ -1172,6 +1245,7 @@ fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8>
     wat::parse_str(&variant).expect("assemble unresolved-local memory state")
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn runtime_differential_rejects_swapped_local_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
@@ -1182,6 +1256,7 @@ fn runtime_differential_rejects_swapped_local_state_successors() {
     assert_distinguished(&mut clean, &mut mutant, "classify_local");
 }
 
+#[cfg(feature = "sandbox")]
 fn read_global_i32(inst: &mut Inst, name: &str) -> Option<i32> {
     let global: wasmtime::Global = inst.instance.get_global(&mut inst.store, name)?;
     match global.get(&mut inst.store) {
@@ -1190,6 +1265,7 @@ fn read_global_i32(inst: &mut Inst, name: &str) -> Option<i32> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn call_no_args(inst: &mut Inst, export: &str) -> Outcome {
     let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
         Some(f) => f,
@@ -1206,6 +1282,7 @@ fn call_no_args(inst: &mut Inst, export: &str) -> Outcome {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn an_exported_state_global_is_walled_rather_than_elided() {
     let bytes: Vec<u8> = assemble_fixture("cff_global_state_observable.obf.wat");
@@ -1246,6 +1323,7 @@ fn an_exported_state_global_is_walled_rather_than_elided() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
     let bytes: Vec<u8> = assemble_fixture("cff_global_state_shared.obf.wat");
@@ -1286,6 +1364,7 @@ fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn a_state_memory_slot_read_by_another_function_is_walled_rather_than_elided() {
     let bytes: Vec<u8> = assemble_fixture("cff_memory_state_shared.obf.wat");
@@ -1326,12 +1405,16 @@ fn a_state_memory_slot_read_by_another_function_is_walled_rather_than_elided() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 const WALL_HARNESS_ENV: &str = "DISROBE_WASM_DEOB_WALL_HARNESS";
+#[cfg(feature = "sandbox")]
 const OBSERVABLE_CELL_REASON: &str =
     "[debug:wasm-deob] unflatten-wall = state cell is observable outside the dispatcher";
+#[cfg(feature = "sandbox")]
 const UNSUPPORTED_TRANSITION_REASON: &str =
     "[debug:wasm-deob] unflatten-wall = state transition is not a resolvable constant edge";
 
+#[cfg(feature = "sandbox")]
 #[test]
 #[ignore = "spawned as a subprocess by the wall-reason contract test"]
 fn wall_reason_harness_entrypoint() {
@@ -1344,6 +1427,7 @@ fn wall_reason_harness_entrypoint() {
     recover_module(&unsupported).expect("recover effectful state transition module");
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn every_wall_names_the_reason_it_refused() {
     let exe: PathBuf = std::env::current_exe().expect("test executable path");
@@ -1370,6 +1454,7 @@ fn every_wall_names_the_reason_it_refused() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 #[cfg(feature = "chain")]
 fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
@@ -1409,12 +1494,14 @@ fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
     assert!(!source.contains("br_table"));
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryMutation {
     Load,
     Store,
 }
 
+#[cfg(feature = "sandbox")]
 fn mutate_first_memory_offset(
     bytes: &[u8],
     mutation: MemoryMutation,
@@ -1453,6 +1540,7 @@ fn mutate_first_memory_offset(
     module.emit_wasm()
 }
 
+#[cfg(feature = "sandbox")]
 fn add_temporary_read(bytes: &[u8]) -> Vec<u8> {
     let mut module: walrus::Module = walrus::Module::from_buffer(bytes).expect("parse read escape");
     let mut changed: usize = 0;
@@ -1494,6 +1582,7 @@ fn add_temporary_read(bytes: &[u8]) -> Vec<u8> {
     module.emit_wasm()
 }
 
+#[cfg(feature = "sandbox")]
 fn mutate_first_successor(bytes: &[u8], offset: u32, from: i32, to: i32) -> Vec<u8> {
     let mut module: walrus::Module =
         walrus::Module::from_buffer(bytes).expect("parse successor mutation");
@@ -1531,6 +1620,7 @@ fn mutate_first_successor(bytes: &[u8], offset: u32, from: i32, to: i32) -> Vec<
     module.emit_wasm()
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn rustc_temporary_state_runtime_evidence_rejects_a_successor_mutation() {
     let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
@@ -1551,6 +1641,7 @@ fn rustc_temporary_state_runtime_evidence_rejects_a_successor_mutation() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn rustc_temporary_state_escape_and_partial_transfer_remain_walled() {
     let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
@@ -1585,6 +1676,7 @@ fn rustc_temporary_state_escape_and_partial_transfer_remain_walled() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn default_dispatch_state_reloops_under_wasmtime() {
     assert_fixture_reloops(
@@ -1594,6 +1686,7 @@ fn default_dispatch_state_reloops_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn default_entry_and_conditional_state_reloop_under_wasmtime() {
     assert_fixture_reloops(
@@ -1603,10 +1696,12 @@ fn default_entry_and_conditional_state_reloop_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 fn contains_br_table(bytes: &[u8]) -> bool {
     count_br_tables(bytes) != 0
 }
 
+#[cfg(feature = "sandbox")]
 fn count_br_tables(bytes: &[u8]) -> usize {
     let module: walrus::Module = walrus::Module::from_buffer(bytes).expect("round-trip");
     module
@@ -1627,6 +1722,7 @@ fn count_br_tables(bytes: &[u8]) -> usize {
         .sum()
 }
 
+#[cfg(feature = "sandbox")]
 fn contains_computed_state_binop(bytes: &[u8]) -> bool {
     let module: walrus::Module = walrus::Module::from_buffer(bytes).expect("round-trip");
     module.funcs.iter_local().any(|(_, func)| {
@@ -1643,6 +1739,7 @@ fn contains_computed_state_binop(bytes: &[u8]) -> bool {
     })
 }
 
+#[cfg(feature = "sandbox")]
 fn func_seq_ids(func: &walrus::LocalFunction) -> Vec<walrus::ir::InstrSeqId> {
     let mut out: Vec<walrus::ir::InstrSeqId> = Vec::new();
     let mut stack: Vec<walrus::ir::InstrSeqId> = vec![func.entry_block()];
@@ -1661,4 +1758,16 @@ fn func_seq_ids(func: &walrus::LocalFunction) -> Vec<walrus::ir::InstrSeqId> {
         }
     }
     out
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn cff_conditional_reloop_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "cff_conditional_reloop`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

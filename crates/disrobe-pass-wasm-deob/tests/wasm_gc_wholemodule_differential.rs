@@ -1,14 +1,19 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::fs;
+#[cfg(feature = "sandbox")]
 use std::path::Path;
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     FunctionSig, ModuleSignatures, extract_signatures, lift_module_to_wat,
 };
+#[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 fn rich() -> Config {
     let mut c: Config = Config::new();
     c.wasm_gc(true)
@@ -17,6 +22,7 @@ fn rich() -> Config {
     c
 }
 
+#[cfg(feature = "sandbox")]
 fn bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
     for p in Parser::new(0).parse_all(bytes) {
@@ -27,6 +33,7 @@ fn bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn seeds(ty: ValType) -> Vec<Val> {
     match ty {
         ValType::I32 => vec![
@@ -47,6 +54,7 @@ fn seeds(ty: ValType) -> Vec<Val> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     if params.is_empty() {
         return vec![vec![]];
@@ -73,6 +81,7 @@ fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> Option<Vec<i64>> {
     let m: Module = Module::new(eng, bytes).ok()?;
     let mut store: Store<()> = Store::new(eng, ());
@@ -95,10 +104,12 @@ fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> O
     )
 }
 
+#[cfg(feature = "sandbox")]
 const fn numeric(ty: ValType) -> bool {
     matches!(ty, ValType::I32 | ValType::I64)
 }
 
+#[cfg(feature = "sandbox")]
 fn check(path: &Path) {
     let eng: Engine = Engine::new(&rich()).expect("eng");
     let text: String = fs::read_to_string(path).expect("read");
@@ -155,9 +166,22 @@ fn check(path: &Path) {
     assert_eq!(eligible, equiv, "{}", path.display());
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn corpus_gc_funcref_equiv() {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     check(&root.join("../../corpus/wasm/wat/gc_numeric_roundtrip.wat"));
     check(&root.join("../../corpus/wasm/wat/funcref_numeric.wat"));
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn wasm_gc_wholemodule_differential_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wasm_gc_wholemodule_differential`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

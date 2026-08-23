@@ -1,16 +1,23 @@
-#![cfg(feature = "sandbox")]
+#![allow(clippy::panic)]
 
+#[cfg(feature = "sandbox")]
 use std::fs;
+#[cfg(feature = "sandbox")]
 use std::path::PathBuf;
+#[cfg(feature = "sandbox")]
 use std::process::Command;
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftTarget, ModuleSignatures, extract_signatures, lift_function_body,
     rust_runtime_prelude,
 };
+#[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const BR_TABLE_RESULT_VALUES: &str = r#"
 (module
   (func (export "pick") (param $selector i32) (param $value i64) (result i64)
@@ -29,6 +36,7 @@ const BR_TABLE_RESULT_VALUES: &str = r#"
     end))
 "#;
 
+#[cfg(feature = "sandbox")]
 const LOOP_RESULT_LABEL: &str = r#"
 (module
   (func (export "loop_result") (param $go i32)
@@ -42,6 +50,7 @@ const LOOP_RESULT_LABEL: &str = r#"
     drop))
 "#;
 
+#[cfg(feature = "sandbox")]
 fn first_body<'a>(bytes: &'a [u8]) -> Result<FunctionBody<'a>, String> {
     for payload in Parser::new(0).parse_all(bytes) {
         let payload: Payload<'a> = payload.map_err(|error| error.to_string())?;
@@ -52,6 +61,7 @@ fn first_body<'a>(bytes: &'a [u8]) -> Result<FunctionBody<'a>, String> {
     Err("fixture has no defined function body".to_owned())
 }
 
+#[cfg(feature = "sandbox")]
 fn callees(signatures: &ModuleSignatures, bytes: &[u8]) -> CalleeNames {
     CalleeNames::with_signatures(
         signatures.callee_names(),
@@ -61,6 +71,7 @@ fn callees(signatures: &ModuleSignatures, bytes: &[u8]) -> CalleeNames {
     .with_module_context(bytes)
 }
 
+#[cfg(feature = "sandbox")]
 fn call_i64(
     engine: &Engine,
     bytes: &[u8],
@@ -91,6 +102,7 @@ fn call_i64(
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn call_void(engine: &Engine, bytes: &[u8], export: &str, argument: i32) -> Result<(), String> {
     let module: Module = Module::new(engine, bytes).map_err(|error| error.to_string())?;
     let mut store: Store<()> = Store::new(engine, ());
@@ -107,6 +119,7 @@ fn call_void(engine: &Engine, bytes: &[u8], export: &str, argument: i32) -> Resu
         .map_err(|error| error.to_string())
 }
 
+#[cfg(feature = "sandbox")]
 const fn expected(selector: i32, value: i64) -> i64 {
     match selector {
         0 => value.wrapping_add(110),
@@ -115,6 +128,7 @@ const fn expected(selector: i32, value: i64) -> i64 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn compile_recovered_wasm(source: &str) -> Result<Vec<u8>, String> {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wasm_br_table_result_values")
@@ -163,6 +177,7 @@ fn compile_recovered_wasm(source: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn lift_fixture(wat_text: &str) -> Result<(Vec<u8>, String), String> {
     let original: Vec<u8> = wat::parse_str(wat_text).map_err(|error| error.to_string())?;
     wasmparser::validate(&original).map_err(|error| error.to_string())?;
@@ -191,6 +206,7 @@ fn lift_fixture(wat_text: &str) -> Result<(Vec<u8>, String), String> {
     Ok((original, source))
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn br_table_carries_i64_results_to_all_typed_label_targets() -> Result<(), String> {
     let (original, mut source): (Vec<u8>, String) = lift_fixture(BR_TABLE_RESULT_VALUES)?;
@@ -224,6 +240,7 @@ fn br_table_carries_i64_results_to_all_typed_label_targets() -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn loop_result_labels_do_not_consume_outer_stack_values() -> Result<(), String> {
     let (original, mut source): (Vec<u8>, String) = lift_fixture(LOOP_RESULT_LABEL)?;
@@ -236,4 +253,16 @@ fn loop_result_labels_do_not_consume_outer_stack_values() -> Result<(), String> 
     call_void(&engine, &original, "loop_result", 0)?;
     call_void(&engine, &recovered, "recovered_loop_result", 0)?;
     Ok(())
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn wasm_br_table_result_values_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wasm_br_table_result_values`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

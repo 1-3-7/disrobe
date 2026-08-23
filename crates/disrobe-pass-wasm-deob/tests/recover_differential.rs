@@ -1,19 +1,24 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     RecoveredModule, RecoveryReport, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport,
     recover_module,
 };
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 5_000_000;
 
+#[cfg(feature = "sandbox")]
 fn real_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real")
 }
 
+#[cfg(feature = "sandbox")]
 fn assemble(name: &str) -> Vec<u8> {
     let path: PathBuf = real_dir().join(name);
     let text: String = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -25,17 +30,20 @@ fn assemble(name: &str) -> Vec<u8> {
     wat::parse_str(&text).unwrap_or_else(|e| panic!("assemble {}: {e}", path.display()))
 }
 
+#[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     let mut config: Config = Config::new();
     config.consume_fuel(true);
     Engine::new(&config).expect("engine")
 }
 
+#[cfg(feature = "sandbox")]
 struct Inst {
     store: Store<()>,
     instance: wasmtime::Instance,
 }
 
+#[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     let module: Module = Module::new(eng, bytes).expect("module compiles");
     let mut store: Store<()> = Store::new(eng, ());
@@ -48,12 +56,14 @@ fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     Inst { store, instance }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Ret(i32),
     Trap,
 }
 
+#[cfg(feature = "sandbox")]
 fn call_i32(inst: &mut Inst, export: &str, args: &[i32]) -> Outcome {
     let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
         Some(f) => f,
@@ -71,6 +81,7 @@ fn call_i32(inst: &mut Inst, export: &str, args: &[i32]) -> Outcome {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn battery() -> Vec<[i32; 2]> {
     let mut out: Vec<[i32; 2]> = Vec::new();
     let samples: [i32; 9] = [0, 1, 2, 3, 7, -1, -5, 1000, i32::MIN / 2];
@@ -82,6 +93,7 @@ fn battery() -> Vec<[i32; 2]> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn assert_export_equivalent(clean: &mut Inst, recovered: &mut Inst, export: &str, arity: usize) {
     for inputs in battery() {
         let args: &[i32] = &inputs[..arity];
@@ -94,6 +106,7 @@ fn assert_export_equivalent(clean: &mut Inst, recovered: &mut Inst, export: &str
     }
 }
 
+#[cfg(feature = "sandbox")]
 struct Case {
     clean: &'static str,
     obf: &'static str,
@@ -101,6 +114,7 @@ struct Case {
     expect: fn(&RecoveryReport) -> bool,
 }
 
+#[cfg(feature = "sandbox")]
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -130,6 +144,7 @@ fn cases() -> Vec<Case> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn obfuscated_recovers_to_clean_behavior_under_wasmtime() {
     let eng: Engine = engine();
@@ -170,6 +185,7 @@ fn obfuscated_recovers_to_clean_behavior_under_wasmtime() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn recovery_is_byte_stable_and_valid() {
     for case in cases() {
@@ -198,6 +214,7 @@ fn recovery_is_byte_stable_and_valid() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn decrypt_stub_static_extraction_reveals_plaintext() {
     let obf_bytes: Vec<u8> = assemble("decrypt_stub.obf.wat");
@@ -220,6 +237,7 @@ fn decrypt_stub_static_extraction_reveals_plaintext() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
     let eng: Engine = engine();
@@ -243,6 +261,7 @@ fn opaque_predicate_o0_folds_interprocedurally_and_stays_intact() {
     assert_export_equivalent(&mut clean_inst, &mut recovered_inst, "scale", 1);
 }
 
+#[cfg(feature = "sandbox")]
 struct FamilyCase {
     family: WasmObfuscator,
     clean: &'static str,
@@ -251,6 +270,7 @@ struct FamilyCase {
     expect: fn(&RecoveryReport) -> bool,
 }
 
+#[cfg(feature = "sandbox")]
 fn family_cases() -> Vec<FamilyCase> {
     vec![
         FamilyCase {
@@ -281,6 +301,7 @@ fn family_cases() -> Vec<FamilyCase> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn named_obfuscator_families_recover_to_clean_behavior_under_wasmtime() {
     let eng: Engine = engine();
@@ -336,6 +357,7 @@ fn named_obfuscator_families_recover_to_clean_behavior_under_wasmtime() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn named_family_recovery_is_idempotent_and_import_free() {
     for case in family_cases() {
@@ -368,6 +390,7 @@ fn named_family_recovery_is_idempotent_and_import_free() {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn tabulated_expected_outputs_match_clean_originals() {
     let eng: Engine = engine();
@@ -397,4 +420,16 @@ fn tabulated_expected_outputs_match_clean_originals() {
             "{file}::{export}{args:?} expected {want}, got {got:?}"
         );
     }
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn recover_differential_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "recover_differential`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

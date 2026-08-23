@@ -1,12 +1,17 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::fs;
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{ModuleSignatures, extract_signatures, lift_module_faithful_wat};
+#[cfg(feature = "sandbox")]
 use wasmparser::ValType;
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
@@ -16,6 +21,7 @@ fn corpus_dirs() -> Vec<PathBuf> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 fn wat_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in corpus_dirs() {
@@ -33,6 +39,7 @@ fn wat_files() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn config() -> Config {
     let mut c: Config = Config::new();
     c.wasm_gc(true)
@@ -46,6 +53,7 @@ fn config() -> Config {
     c
 }
 
+#[cfg(feature = "sandbox")]
 fn seeds(ty: ValType) -> Vec<Val> {
     match ty {
         ValType::I32 => vec![Val::I32(0), Val::I32(1), Val::I32(3), Val::I32(255)],
@@ -54,6 +62,7 @@ fn seeds(ty: ValType) -> Vec<Val> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     if params.is_empty() {
         return vec![vec![]];
@@ -80,6 +89,7 @@ fn battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> Option<Vec<i64>> {
     let m: Module = Module::new(eng, bytes).ok()?;
     let mut store: Store<()> = Store::new(eng, ());
@@ -103,10 +113,12 @@ fn run(eng: &Engine, bytes: &[u8], export: &str, arg: &[Val], arity: usize) -> O
     )
 }
 
+#[cfg(feature = "sandbox")]
 const fn numeric(ty: ValType) -> bool {
     matches!(ty, ValType::I32 | ValType::I64)
 }
 
+#[cfg(feature = "sandbox")]
 struct Outcome {
     eligible: usize,
     equiv: usize,
@@ -114,6 +126,7 @@ struct Outcome {
     lift_failures: Vec<String>,
 }
 
+#[cfg(feature = "sandbox")]
 fn measure() -> Outcome {
     let eng: Engine = Engine::new(&config()).expect("engine");
     let mut eligible: usize = 0;
@@ -190,6 +203,7 @@ fn measure() -> Outcome {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn faithful_lift_is_behaviorally_identical_across_corpus() {
     let outcome: Outcome = measure();
@@ -222,4 +236,16 @@ fn faithful_lift_is_behaviorally_identical_across_corpus() {
         outcome.eligible,
         outcome.diverged.join("\n")
     );
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn wholemodule_behavioral_oracle_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wholemodule_behavioral_oracle`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

@@ -1,38 +1,61 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 #[path = "common/published.rs"]
 mod published;
 
+#[cfg(feature = "sandbox")]
 use std::collections::BTreeMap;
+#[cfg(feature = "sandbox")]
 use std::fs;
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "sandbox")]
 use std::sync::Arc;
+#[cfg(feature = "sandbox")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "sandbox")]
 use std::time::Duration;
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, lift_module_faithful_wat, recover_gc_types, scan_function_refs,
     scan_module_eh, scan_stack_switching,
 };
+#[cfg(feature = "sandbox")]
 use published::{published_bar, published_group};
+#[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const PUBLISHED_HEADING: &str = "WebAssembly (committed 133-fn corpus";
+#[cfg(feature = "sandbox")]
 const PUBLISHED_BAR: &str = "op-coverage";
+#[cfg(feature = "sandbox")]
 const PUBLISHED_EXECUTION_BAR: &str = "execution-equivalence";
+#[cfg(feature = "sandbox")]
 const ELIGIBLE_ROSTER: &str = "tests/golden/wasm_execution_eligible.txt";
+#[cfg(feature = "sandbox")]
 const HEADING_ANCHOR: &str = " execution-verified under wasmtime";
+#[cfg(feature = "sandbox")]
 const DETAIL_RATIO_ANCHOR: &str = " execution-eligible functions are EXECUTION-EQUIVALENT";
+#[cfg(feature = "sandbox")]
 const SOURCE_RATIO_ANCHOR: &str = " execution-eligible equivalent (";
+#[cfg(feature = "sandbox")]
 const BYTE_IDENTICAL_ANCHOR: &str = " byte-identical)";
 
+#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 2_000_000;
+#[cfg(feature = "sandbox")]
 const EPOCH_DEADLINE_TICKS: u64 = 1;
+#[cfg(feature = "sandbox")]
 const WALL_DEADLINE_MS: u64 = 2_000;
+#[cfg(feature = "sandbox")]
 const MEMORY_COMPARE_BYTES: usize = 4_096;
 
+#[cfg(feature = "sandbox")]
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
@@ -43,6 +66,7 @@ fn corpus_dirs() -> Vec<PathBuf> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 fn wat_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in corpus_dirs() {
@@ -60,6 +84,7 @@ fn wat_files() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     CalleeNames::with_signatures(
         sigs.callee_names(),
@@ -68,6 +93,7 @@ fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
@@ -78,6 +104,7 @@ fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CmpVal {
     I32(i32),
@@ -88,12 +115,14 @@ enum CmpVal {
     RefNonNull,
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Outcome {
     Returned(Vec<CmpVal>),
     Trapped,
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Default)]
 struct DiffTally {
     total_functions: usize,
@@ -106,6 +135,7 @@ struct DiffTally {
     ineligible_reason: BTreeMap<String, usize>,
 }
 
+#[cfg(feature = "sandbox")]
 fn rich_config() -> Config {
     let mut config: Config = Config::new();
     config
@@ -126,23 +156,27 @@ fn rich_config() -> Config {
     config
 }
 
+#[cfg(feature = "sandbox")]
 fn core_config() -> Config {
     let mut config: Config = Config::new();
     config.consume_fuel(true).epoch_interruption(true);
     config
 }
 
+#[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     Engine::new(&rich_config())
         .or_else(|_| Engine::new(&core_config()))
         .expect("wasmtime engine with at least core deterministic features")
 }
 
+#[cfg(feature = "sandbox")]
 struct Sandbox {
     store: Store<()>,
     instance: wasmtime::Instance,
 }
 
+#[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
     let module: Module = Module::new(eng, bytes).ok()?;
     let mut store: Store<()> = Store::new(eng, ());
@@ -154,6 +188,7 @@ fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
     Some(Sandbox { store, instance })
 }
 
+#[cfg(feature = "sandbox")]
 fn spawn_watchdog(eng: Engine, stopper: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("disrobe-diff-watchdog".to_owned())
@@ -171,6 +206,7 @@ fn spawn_watchdog(eng: Engine, stopper: Arc<AtomicBool>) -> std::thread::JoinHan
         .expect("spawn watchdog")
 }
 
+#[cfg(feature = "sandbox")]
 const fn to_cmp(val: &Val) -> Option<CmpVal> {
     match val {
         Val::I32(v) => Some(CmpVal::I32(*v)),
@@ -196,6 +232,7 @@ const fn to_cmp(val: &Val) -> Option<CmpVal> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 const fn canonical_f32(bits: u32) -> u32 {
     if f32::from_bits(bits).is_nan() {
         0x7fc0_0000
@@ -204,6 +241,7 @@ const fn canonical_f32(bits: u32) -> u32 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 const fn canonical_f64(bits: u64) -> u64 {
     if f64::from_bits(bits).is_nan() {
         0x7ff8_0000_0000_0000
@@ -212,6 +250,7 @@ const fn canonical_f64(bits: u64) -> u64 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn call_outcome(sandbox: &mut Sandbox, export: &str, args: &[Val], result_arity: usize) -> Outcome {
     let Some(func): Option<wasmtime::Func> = sandbox.instance.get_func(&mut sandbox.store, export)
     else {
@@ -227,6 +266,7 @@ fn call_outcome(sandbox: &mut Sandbox, export: &str, args: &[Val], result_arity:
     mapped.map_or(Outcome::Trapped, Outcome::Returned)
 }
 
+#[cfg(feature = "sandbox")]
 fn first_memory(sandbox: &mut Sandbox) -> Option<wasmtime::Memory> {
     let names: Vec<String> = sandbox
         .instance
@@ -240,6 +280,7 @@ fn first_memory(sandbox: &mut Sandbox) -> Option<wasmtime::Memory> {
     sandbox.instance.get_memory(&mut sandbox.store, first)
 }
 
+#[cfg(feature = "sandbox")]
 fn memory_prefix(sandbox: &mut Sandbox) -> Option<Vec<u8>> {
     let memory: wasmtime::Memory = first_memory(sandbox)?;
     let data: &[u8] = memory.data(&sandbox.store);
@@ -247,6 +288,7 @@ fn memory_prefix(sandbox: &mut Sandbox) -> Option<Vec<u8>> {
     Some(data[..take].to_vec())
 }
 
+#[cfg(feature = "sandbox")]
 const fn numeric(ty: ValType) -> bool {
     matches!(
         ty,
@@ -254,10 +296,12 @@ const fn numeric(ty: ValType) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 const fn nullable_ref(ty: ValType) -> bool {
     matches!(ty, ValType::Ref(r) if r.is_nullable())
 }
 
+#[cfg(feature = "sandbox")]
 const fn comparable(ty: ValType) -> bool {
     matches!(
         ty,
@@ -265,18 +309,22 @@ const fn comparable(ty: ValType) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 const fn seedable(ty: ValType) -> bool {
     numeric(ty) || nullable_ref(ty)
 }
 
+#[cfg(feature = "sandbox")]
 fn signature_is_numeric(sig: &FunctionSig) -> bool {
     sig.params.iter().copied().all(numeric) && sig.results.iter().copied().all(numeric)
 }
 
+#[cfg(feature = "sandbox")]
 fn signature_is_executable(sig: &FunctionSig) -> bool {
     sig.params.iter().copied().all(seedable) && sig.results.iter().copied().all(comparable)
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModuleConstruct {
     Plain,
@@ -285,6 +333,7 @@ enum ModuleConstruct {
     StackSwitching,
 }
 
+#[cfg(feature = "sandbox")]
 fn classify_module_construct(bytes: &[u8]) -> ModuleConstruct {
     if scan_stack_switching(bytes).is_ok_and(|r| !r.is_empty()) {
         return ModuleConstruct::StackSwitching;
@@ -300,6 +349,7 @@ fn classify_module_construct(bytes: &[u8]) -> ModuleConstruct {
     ModuleConstruct::Plain
 }
 
+#[cfg(feature = "sandbox")]
 fn module_has_memory(bytes: &[u8]) -> bool {
     for payload in Parser::new(0).parse_all(bytes) {
         match payload {
@@ -317,6 +367,7 @@ fn module_has_memory(bytes: &[u8]) -> bool {
     false
 }
 
+#[cfg(feature = "sandbox")]
 fn module_has_nonzero_data(bytes: &[u8]) -> bool {
     for payload in Parser::new(0).parse_all(bytes) {
         let Ok(Payload::DataSection(reader)) = payload else {
@@ -334,12 +385,14 @@ fn module_has_nonzero_data(bytes: &[u8]) -> bool {
     false
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Eligibility {
     Ok { writes_memory: bool },
     Reject(&'static str),
 }
 
+#[cfg(feature = "sandbox")]
 const fn is_atomic(op: &Operator<'_>) -> bool {
     matches!(
         op,
@@ -413,6 +466,7 @@ const fn is_atomic(op: &Operator<'_>) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn memarg_uses_nonzero_memory(op: &Operator<'_>) -> bool {
     let memarg: Option<wasmparser::MemArg> = match op {
         Operator::I32Load { memarg }
@@ -443,6 +497,7 @@ fn memarg_uses_nonzero_memory(op: &Operator<'_>) -> bool {
     memarg.is_some_and(|m| m.memory != 0)
 }
 
+#[cfg(feature = "sandbox")]
 const fn op_breaks_faithful_render(op: &Operator<'_>) -> bool {
     matches!(
         op,
@@ -463,6 +518,7 @@ const fn op_breaks_faithful_render(op: &Operator<'_>) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn body_renders_faithfully(body: &FunctionBody<'_>) -> bool {
     let Ok(reader): Result<wasmparser::OperatorsReader<'_>, _> = body.get_operators_reader() else {
         return false;
@@ -478,6 +534,7 @@ fn body_renders_faithfully(body: &FunctionBody<'_>) -> bool {
     true
 }
 
+#[cfg(feature = "sandbox")]
 fn body_has_atomics(body: &FunctionBody<'_>) -> bool {
     let Ok(reader): Result<wasmparser::OperatorsReader<'_>, _> = body.get_operators_reader() else {
         return true;
@@ -493,6 +550,7 @@ fn body_has_atomics(body: &FunctionBody<'_>) -> bool {
     false
 }
 
+#[cfg(feature = "sandbox")]
 fn classify_executability(body: &FunctionBody<'_>) -> Eligibility {
     let Ok(reader): Result<wasmparser::OperatorsReader<'_>, _> = body.get_operators_reader() else {
         return Eligibility::Reject("operator-decode");
@@ -549,6 +607,7 @@ fn classify_executability(body: &FunctionBody<'_>) -> Eligibility {
     Eligibility::Ok { writes_memory }
 }
 
+#[cfg(feature = "sandbox")]
 fn seed_values(ty: ValType) -> Vec<Val> {
     match ty {
         ValType::I32 => [0_i32, 1, -1, 2, 7, -8, 100, i32::MIN, i32::MAX, 0x5555_5555]
@@ -581,6 +640,7 @@ fn seed_values(ty: ValType) -> Vec<Val> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn null_ref_value(r: wasmparser::RefType) -> Val {
     use wasmparser::{AbstractHeapType, HeapType};
     match r.heap_type() {
@@ -596,6 +656,7 @@ fn null_ref_value(r: wasmparser::RefType) -> Val {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn argument_battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     if params.is_empty() {
         return vec![Vec::new()];
@@ -623,6 +684,7 @@ fn argument_battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 const fn reason_covered_by_whole_module(reason: &str) -> bool {
     matches!(
         reason.as_bytes(),
@@ -630,6 +692,7 @@ const fn reason_covered_by_whole_module(reason: &str) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 struct Candidate {
     label: String,
     export: String,
@@ -638,6 +701,7 @@ struct Candidate {
     writes_memory: bool,
 }
 
+#[cfg(feature = "sandbox")]
 fn collect_candidates(wat_path: &Path, tally: &mut DiffTally) -> Option<(Vec<u8>, Vec<Candidate>)> {
     let text: String = fs::read_to_string(wat_path).expect("read wat");
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
@@ -716,6 +780,7 @@ fn collect_candidates(wat_path: &Path, tally: &mut DiffTally) -> Option<(Vec<u8>
     Some((original, candidates))
 }
 
+#[cfg(feature = "sandbox")]
 fn expose_memory(wat_text: &str) -> String {
     const HEADER: &str = "(module\n";
     let Some(rest): Option<&str> = wat_text.strip_prefix(HEADER) else {
@@ -724,6 +789,7 @@ fn expose_memory(wat_text: &str) -> String {
     format!("{HEADER}  (export \"disrobe_diff_mem\" (memory 0))\n{rest}")
 }
 
+#[cfg(feature = "sandbox")]
 fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>> {
     let text: String = fs::read_to_string(wat_path).ok()?;
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
@@ -744,6 +810,7 @@ fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>>
     None
 }
 
+#[cfg(feature = "sandbox")]
 fn whole_module_gc_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
     let text: String = fs::read_to_string(wat_path).expect("read wat");
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
@@ -856,6 +923,7 @@ fn whole_module_gc_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn per_function_eligible(body: &FunctionBody<'_>, sig: &FunctionSig, nonzero_data: bool) -> bool {
     if !sig.exported || !signature_is_numeric(sig) {
         return false;
@@ -866,6 +934,7 @@ fn per_function_eligible(body: &FunctionBody<'_>, sig: &FunctionSig, nonzero_dat
     matches!(classify_executability(body), Eligibility::Ok { .. })
 }
 
+#[cfg(feature = "sandbox")]
 fn whole_module_plain_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
     let text: String = fs::read_to_string(wat_path).expect("read wat");
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
@@ -1001,6 +1070,7 @@ fn whole_module_plain_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn file_label(wat_path: &Path) -> String {
     wat_path
         .file_name()
@@ -1008,6 +1078,7 @@ fn file_label(wat_path: &Path) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(feature = "sandbox")]
 fn flag_unsupported_construct(wat_path: &Path, tally: &mut DiffTally, construct: ModuleConstruct) {
     let Ok(text): Result<String, _> = fs::read_to_string(wat_path) else {
         return;
@@ -1030,6 +1101,7 @@ fn flag_unsupported_construct(wat_path: &Path, tally: &mut DiffTally, construct:
         .or_default() += count;
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExecutionDifferential {
     eligible: u64,
@@ -1037,6 +1109,7 @@ struct ExecutionDifferential {
     byte_identical: u64,
 }
 
+#[cfg(feature = "sandbox")]
 fn digits_start(text: &str) -> Option<usize> {
     let mut start: Option<usize> = None;
     for (index, ch) in text.char_indices().rev() {
@@ -1049,11 +1122,13 @@ fn digits_start(text: &str) -> Option<usize> {
     start
 }
 
+#[cfg(feature = "sandbox")]
 fn trailing_integer(head: &str) -> Option<u64> {
     let start: usize = digits_start(head)?;
     head[start..].parse::<u64>().ok()
 }
 
+#[cfg(feature = "sandbox")]
 fn trailing_ratio(head: &str, separator: &str) -> Option<(u64, u64)> {
     let denominator_start: usize = digits_start(head)?;
     let denominator: u64 = head[denominator_start..].parse::<u64>().ok()?;
@@ -1062,6 +1137,7 @@ fn trailing_ratio(head: &str, separator: &str) -> Option<(u64, u64)> {
     Some((numerator, denominator))
 }
 
+#[cfg(feature = "sandbox")]
 fn head_before(text: &str, anchor: &str, site: &str) -> String {
     let cut: usize = text.find(anchor).unwrap_or_else(|| {
         panic!(
@@ -1073,6 +1149,7 @@ fn head_before(text: &str, anchor: &str, site: &str) -> String {
     text[..cut].to_owned()
 }
 
+#[cfg(feature = "sandbox")]
 fn integer_before(text: &str, anchor: &str, site: &str) -> u64 {
     let head: String = head_before(text, anchor, site);
     trailing_integer(&head).unwrap_or_else(|| {
@@ -1083,6 +1160,7 @@ fn integer_before(text: &str, anchor: &str, site: &str) -> u64 {
     })
 }
 
+#[cfg(feature = "sandbox")]
 fn ratio_before(text: &str, anchor: &str, separator: &str, site: &str) -> (u64, u64) {
     let head: String = head_before(text, anchor, site);
     trailing_ratio(&head, separator).unwrap_or_else(|| {
@@ -1094,6 +1172,7 @@ fn ratio_before(text: &str, anchor: &str, separator: &str, site: &str) -> (u64, 
     })
 }
 
+#[cfg(feature = "sandbox")]
 fn published_execution_differential() -> ExecutionDifferential {
     let group: serde_json::Value = published_group(PUBLISHED_HEADING);
     let heading: &str = group["heading"]
@@ -1166,6 +1245,7 @@ fn published_execution_differential() -> ExecutionDifferential {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn pinned_eligible_roster() -> Vec<String> {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join(ELIGIBLE_ROSTER);
     let raw: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
@@ -1186,6 +1266,7 @@ fn pinned_eligible_roster() -> Vec<String> {
     rows
 }
 
+#[cfg(feature = "sandbox")]
 fn roster_defects(measured: &[String], pinned: &[String]) -> Vec<String> {
     let mut defects: Vec<String> = Vec::new();
     for label in pinned {
@@ -1205,6 +1286,7 @@ fn roster_defects(measured: &[String], pinned: &[String]) -> Vec<String> {
     defects
 }
 
+#[cfg(feature = "sandbox")]
 fn differential_defects(
     measured: ExecutionDifferential,
     published: ExecutionDifferential,
@@ -1251,6 +1333,7 @@ fn differential_defects(
     defects
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn differential_execution_equivalence_under_wasmtime() {
     let mut tally: DiffTally = DiffTally::default();
@@ -1459,6 +1542,7 @@ fn differential_execution_equivalence_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn the_pinned_execution_differential_rejects_a_dropped_function_and_a_shrunken_population() {
     let published: ExecutionDifferential = published_execution_differential();
@@ -1560,6 +1644,19 @@ fn the_pinned_execution_differential_rejects_a_dropped_function_and_a_shrunken_p
     );
 }
 
+#[cfg(feature = "sandbox")]
 const fn wasmtime_pin() -> &'static str {
     "36"
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn semantic_differential_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "semantic_differential`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

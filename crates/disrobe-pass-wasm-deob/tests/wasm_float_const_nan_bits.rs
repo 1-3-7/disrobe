@@ -1,14 +1,17 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::lift_module_faithful_wat;
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     let mut c: Config = Config::new();
     c.wasm_multi_memory(true);
     Engine::new(&c).expect("engine")
 }
 
+#[cfg(feature = "sandbox")]
 fn call_i32(eng: &Engine, bytes: &[u8], export: &str) -> i32 {
     let m: Module = Module::new(eng, bytes).expect("module compiles");
     let mut store: Store<()> = Store::new(eng, ());
@@ -23,6 +26,7 @@ fn call_i32(eng: &Engine, bytes: &[u8], export: &str) -> i32 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn call_i64(eng: &Engine, bytes: &[u8], export: &str) -> i64 {
     let m: Module = Module::new(eng, bytes).expect("module compiles");
     let mut store: Store<()> = Store::new(eng, ());
@@ -37,6 +41,7 @@ fn call_i64(eng: &Engine, bytes: &[u8], export: &str) -> i64 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 const SRC: &str = r#"(module
     (global $gf32 f32 (f32.const nan:0x400001))
     (func (export "f32_body_quiet") (result i32)
@@ -54,6 +59,7 @@ const SRC: &str = r#"(module
     (func (export "f64_body_signaling") (result i64)
         f64.const nan:0x4000000000001 i64.reinterpret_f64))"#;
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn faithful_lift_preserves_nan_sign_and_payload_bits() {
     let eng: Engine = engine();
@@ -83,4 +89,16 @@ fn faithful_lift_preserves_nan_sign_and_payload_bits() {
             "{export}: orig=0x{orig:016x} lifted=0x{got:016x}\n{lifted_wat}"
         );
     }
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn wasm_float_const_nan_bits_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wasm_float_const_nan_bits`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

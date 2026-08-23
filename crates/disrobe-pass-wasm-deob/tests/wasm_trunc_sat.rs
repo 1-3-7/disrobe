@@ -1,16 +1,21 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, lift_module_to_wat,
 };
+#[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Parser, Payload};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 2_000_000;
 
+#[cfg(feature = "sandbox")]
 fn real_wat() -> String {
     let path: PathBuf =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/wasm/obf/real/trunc_sat.obf.wat");
@@ -22,6 +27,7 @@ fn real_wat() -> String {
     })
 }
 
+#[cfg(feature = "sandbox")]
 fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
@@ -32,6 +38,7 @@ fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     CalleeNames::with_signatures(
         sigs.callee_names(),
@@ -40,17 +47,20 @@ fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn engine() -> Engine {
     let mut config: Config = Config::new();
     config.consume_fuel(true);
     Engine::new(&config).expect("engine")
 }
 
+#[cfg(feature = "sandbox")]
 struct Inst {
     store: Store<()>,
     instance: wasmtime::Instance,
 }
 
+#[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     let module: Module = Module::new(eng, bytes).expect("module compiles");
     let mut store: Store<()> = Store::new(eng, ());
@@ -63,6 +73,7 @@ fn instantiate(eng: &Engine, bytes: &[u8]) -> Inst {
     Inst { store, instance }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Outcome {
     F32ToI32(i32),
@@ -72,6 +83,7 @@ enum Outcome {
     Trap,
 }
 
+#[cfg(feature = "sandbox")]
 fn call(inst: &mut Inst, export: &str, arg: Val, want: ResultKind) -> Outcome {
     let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
         Some(f) => f,
@@ -95,12 +107,14 @@ fn call(inst: &mut Inst, export: &str, arg: Val, want: ResultKind) -> Outcome {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy)]
 enum ResultKind {
     I32,
     I64,
 }
 
+#[cfg(feature = "sandbox")]
 fn f32_battery() -> Vec<Val> {
     let raw: [f32; 14] = [
         0.0,
@@ -121,6 +135,7 @@ fn f32_battery() -> Vec<Val> {
     raw.into_iter().map(|f| Val::F32(f.to_bits())).collect()
 }
 
+#[cfg(feature = "sandbox")]
 fn f64_battery() -> Vec<Val> {
     let raw: [f64; 16] = [
         0.0,
@@ -143,6 +158,7 @@ fn f64_battery() -> Vec<Val> {
     raw.into_iter().map(|f| Val::F64(f.to_bits())).collect()
 }
 
+#[cfg(feature = "sandbox")]
 fn case_for(export: &str) -> (ResultKind, &'static str) {
     if export.starts_with("i32_from") {
         (
@@ -157,6 +173,7 @@ fn case_for(export: &str) -> (ResultKind, &'static str) {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn real_o0_trunc_sat_lifts_fully_and_executes_identically_under_wasmtime() {
     let text: String = real_wat();
@@ -221,4 +238,16 @@ fn real_o0_trunc_sat_lifts_fully_and_executes_identically_under_wasmtime() {
         checked >= 8 * 14,
         "expected the full float edge-case battery across all eight trunc_sat exports, ran {checked}"
     );
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn wasm_trunc_sat_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wasm_trunc_sat`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }

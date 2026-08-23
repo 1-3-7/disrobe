@@ -1,23 +1,33 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[cfg(feature = "sandbox")]
 use std::fmt::Write as _;
+#[cfg(feature = "sandbox")]
 use std::fs;
+#[cfg(feature = "sandbox")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "sandbox")]
 use std::process::Command;
 
+#[cfg(feature = "sandbox")]
 #[path = "common/div_cases.rs"]
 mod div_cases;
 
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, rust_runtime_prelude,
 };
+#[cfg(feature = "sandbox")]
 use div_cases::{DIV_REM_MODULE, I32Case, I64Case, i32_cases, i64_cases};
+#[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
+#[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
+#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 4_000_000;
 
+#[cfg(feature = "sandbox")]
 fn corpus_dirs() -> Vec<PathBuf> {
     let root: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
@@ -28,6 +38,7 @@ fn corpus_dirs() -> Vec<PathBuf> {
     ]
 }
 
+#[cfg(feature = "sandbox")]
 fn wat_files() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in corpus_dirs() {
@@ -45,6 +56,7 @@ fn wat_files() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
@@ -55,6 +67,7 @@ fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     CalleeNames::with_signatures(
         sigs.callee_names(),
@@ -63,6 +76,7 @@ fn callees(sigs: &ModuleSignatures) -> CalleeNames {
     )
 }
 
+#[cfg(feature = "sandbox")]
 const fn numeric(ty: ValType) -> bool {
     matches!(
         ty,
@@ -70,12 +84,14 @@ const fn numeric(ty: ValType) -> bool {
     )
 }
 
+#[cfg(feature = "sandbox")]
 fn signature_is_numeric(sig: &FunctionSig) -> bool {
     sig.params.iter().copied().all(numeric)
         && sig.results.len() == 1
         && sig.results.iter().copied().all(numeric)
 }
 
+#[cfg(feature = "sandbox")]
 fn body_is_self_contained_and_total(body: &FunctionBody<'_>) -> bool {
     let Ok(reader): Result<wasmparser::OperatorsReader<'_>, _> = body.get_operators_reader() else {
         return false;
@@ -147,12 +163,14 @@ fn body_is_self_contained_and_total(body: &FunctionBody<'_>) -> bool {
     true
 }
 
+#[cfg(feature = "sandbox")]
 trait OpClass {
     fn is_simd(&self) -> bool;
     fn is_atomic(&self) -> bool;
     fn is_reference_or_gc(&self) -> bool;
 }
 
+#[cfg(feature = "sandbox")]
 impl OpClass for Operator<'_> {
     fn is_simd(&self) -> bool {
         let mnemonic: String = format!("{self:?}");
@@ -187,6 +205,7 @@ impl OpClass for Operator<'_> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CmpVal {
     I32(i32),
@@ -195,6 +214,7 @@ enum CmpVal {
     F64Bits(u64),
 }
 
+#[cfg(feature = "sandbox")]
 const fn canonical_f32(bits: u32) -> u32 {
     if f32::from_bits(bits).is_nan() {
         0x7fc0_0000
@@ -203,6 +223,7 @@ const fn canonical_f32(bits: u32) -> u32 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 const fn canonical_f64(bits: u64) -> u64 {
     if f64::from_bits(bits).is_nan() {
         0x7ff8_0000_0000_0000
@@ -211,6 +232,7 @@ const fn canonical_f64(bits: u64) -> u64 {
     }
 }
 
+#[cfg(feature = "sandbox")]
 const fn from_val(val: &Val) -> Option<CmpVal> {
     match val {
         Val::I32(v) => Some(CmpVal::I32(*v)),
@@ -221,6 +243,7 @@ const fn from_val(val: &Val) -> Option<CmpVal> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn seed_values(ty: ValType) -> Vec<Val> {
     match ty {
         ValType::I32 => [0_i32, 1, -1, 2, 7, -8, 100, i32::MIN, i32::MAX]
@@ -243,6 +266,7 @@ fn seed_values(ty: ValType) -> Vec<Val> {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn argument_battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     if params.is_empty() {
         return vec![Vec::new()];
@@ -270,6 +294,7 @@ fn argument_battery(params: &[ValType], cap: usize) -> Vec<Vec<Val>> {
     out
 }
 
+#[cfg(feature = "sandbox")]
 fn result_print_expr(ty: ValType, call: &str) -> String {
     match ty {
         ValType::I32 => format!("println!(\"I32 {{}}\", ({call}))"),
@@ -280,17 +305,20 @@ fn result_print_expr(ty: ValType, call: &str) -> String {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn rich_config() -> Config {
     let mut config: Config = Config::new();
     config.consume_fuel(true);
     config
 }
 
+#[cfg(feature = "sandbox")]
 struct Sandbox {
     store: Store<()>,
     instance: wasmtime::Instance,
 }
 
+#[cfg(feature = "sandbox")]
 fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
     let module: Module = Module::new(eng, bytes).ok()?;
     let mut store: Store<()> = Store::new(eng, ());
@@ -301,6 +329,7 @@ fn instantiate(eng: &Engine, bytes: &[u8]) -> Option<Sandbox> {
     Some(Sandbox { store, instance })
 }
 
+#[cfg(feature = "sandbox")]
 fn wasm_outcome(
     sandbox: &mut Sandbox,
     export: &str,
@@ -317,6 +346,7 @@ fn wasm_outcome(
     from_val(results.first()?)
 }
 
+#[cfg(feature = "sandbox")]
 fn tool_on_path(tool: &str) -> Option<PathBuf> {
     let probe: &str = if cfg!(windows) { "where" } else { "which" };
     let output: std::process::Output = Command::new(probe).arg(tool).output().ok()?;
@@ -328,6 +358,7 @@ fn tool_on_path(tool: &str) -> Option<PathBuf> {
     (!first.is_empty()).then(|| PathBuf::from(first))
 }
 
+#[cfg(feature = "sandbox")]
 struct Target {
     export: String,
     rust_name: String,
@@ -336,6 +367,7 @@ struct Target {
     battery: Vec<Vec<Val>>,
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
@@ -553,6 +585,7 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 fn lifted_div_rem_program(bytes: &[u8], sigs: &ModuleSignatures, driver: &str) -> String {
     let defined: Vec<FunctionSig> = sigs.defined().to_vec();
     let calls: CalleeNames = callees(sigs);
@@ -573,6 +606,7 @@ fn lifted_div_rem_program(bytes: &[u8], sigs: &ModuleSignatures, driver: &str) -
     program
 }
 
+#[cfg(feature = "sandbox")]
 #[test]
 fn divide_and_remainder_helpers_execute_identically_on_non_trapping_inputs() {
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
@@ -715,6 +749,7 @@ fn divide_and_remainder_helpers_execute_identically_on_non_trapping_inputs() {
     );
 }
 
+#[cfg(feature = "sandbox")]
 fn val_to_rust_arg_string(val: &Val) -> String {
     match val {
         Val::I32(v) => format!("{v}"),
@@ -725,6 +760,7 @@ fn val_to_rust_arg_string(val: &Val) -> String {
     }
 }
 
+#[cfg(feature = "sandbox")]
 fn parse_cmp(line: &str) -> Option<CmpVal> {
     let (tag, rest): (&str, &str) = line.split_once(' ')?;
     match tag {
@@ -740,4 +776,16 @@ fn parse_cmp(line: &str) -> Option<CmpVal> {
             .map(|b| CmpVal::F64Bits(canonical_f64(b))),
         _ => None,
     }
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn rust_execution_differential_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
+        "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "rust_execution_differential`. Without that feature every graded test in this target is ",
+        "compiled out and its `ok` result line grades nothing."
+    ));
 }
