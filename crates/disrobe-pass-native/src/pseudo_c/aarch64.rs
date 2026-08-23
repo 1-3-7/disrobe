@@ -3061,9 +3061,9 @@ fn finish(
     let mut structured: Structured =
         match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
-            aarch64_cfg::Attempt::NotCandidate => structure_items(items)?,
+            aarch64_cfg::Attempt::NotCandidate => structure_items(items, base)?,
             aarch64_cfg::Attempt::RejectedNzcv => {
-                let _: Structured = structure_items(items)?;
+                let _: Structured = structure_items(items, base)?;
                 return Err(reject("conditional branch lacks live nzcv state"));
             }
         };

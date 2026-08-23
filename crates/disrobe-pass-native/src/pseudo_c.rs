@@ -3587,8 +3587,8 @@ fn recover_leaf_function_calls_with_tail_proofs(
         rip_relative_lea_policy,
     )?;
     let frame_shape: FrameShape = classify_frame(&insns, abi);
-    let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, frame_shape)?;
-    let mut structured: Structured = structure_items(&items)?;
+    let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, base, frame_shape)?;
+    let mut structured: Structured = structure_items(&items, base)?;
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
             calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
@@ -7466,7 +7466,7 @@ fn parse_branch_target(operands: &str) -> Option<u64> {
     u64::from_str_radix(body, 16).ok()
 }
 
-fn structure_items(items: &[Item]) -> Result<Structured> {
+fn structure_items(items: &[Item], entry_address: u64) -> Result<Structured> {
     if items.is_empty() {
         return Err(Error::LlvmIr("no structured body".to_owned()));
     }
@@ -7497,7 +7497,7 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
             lifted_loop: false,
         });
     }
-    if let Some(structured) = structure_via_regions(items, false) {
+    if let Some(structured) = structure_via_regions(items, entry_address, false) {
         return Ok(structured);
     }
     if ret_pos + 1 == items.len()
@@ -7510,19 +7510,27 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
         });
     }
     let mut refusal: Option<&'static str> = None;
-    if let Some(body) = structure_reducible_cfg(items, ExitPolicy::ForwardSkipOnly, &mut refusal)? {
+    if let Some(body) = structure_reducible_cfg(
+        items,
+        entry_address,
+        ExitPolicy::ForwardSkipOnly,
+        &mut refusal,
+    )? {
         return Ok(Structured {
             body,
             lifted_split_return: false,
             lifted_loop: true,
         });
     }
-    if let Some(structured) = structure_via_regions(items, true) {
+    if let Some(structured) = structure_via_regions(items, entry_address, true) {
         return Ok(structured);
     }
-    if let Some(body) =
-        structure_reducible_cfg(items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)?
-    {
+    if let Some(body) = structure_reducible_cfg(
+        items,
+        entry_address,
+        ExitPolicy::EarlyAndMultipleExits,
+        &mut refusal,
+    )? {
         return Ok(Structured {
             body,
             lifted_split_return: false,
@@ -10165,8 +10173,12 @@ fn forward_join_lowering_candidates(
     plans
 }
 
-fn structure_via_regions(items: &[Item], allow_loops: bool) -> Option<Structured> {
-    let blocks: Vec<CfgBlock> = build_blocks(items)?;
+fn structure_via_regions(
+    items: &[Item],
+    entry_address: u64,
+    allow_loops: bool,
+) -> Option<Structured> {
+    let blocks: Vec<CfgBlock> = build_blocks(items, entry_address)?;
     let labels: std::collections::BTreeMap<usize, SinkLabel> = std::collections::BTreeMap::new();
     let targets: std::collections::BTreeMap<usize, u32> = std::collections::BTreeMap::new();
     let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops, &targets)?;
@@ -10688,33 +10700,29 @@ impl CfgBlock {
     }
 }
 
-fn item_target_below_entry(items: &[Item]) -> bool {
-    let Some(lowest_address): Option<u64> = items.iter().map(|item: &Item| item.address).min()
-    else {
-        return false;
-    };
+fn item_target_below_entry(items: &[Item], entry_address: u64) -> bool {
     items.iter().any(|item: &Item| match item.kind {
-        ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => target < lowest_address,
+        ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => target < entry_address,
         ItemKind::Ret | ItemKind::Stmt(_) | ItemKind::Switch { .. } => false,
     })
 }
 
-fn block_graph_refusal(items: &[Item]) -> &'static str {
-    if item_target_below_entry(items) {
+fn block_graph_refusal(items: &[Item], entry_address: u64) -> &'static str {
+    if item_target_below_entry(items, entry_address) {
         "a direct jump leaves this function, so its target is not an edge inside the block graph"
     } else {
         "the instruction stream does not form a bounded block graph"
     }
 }
 
-fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
+fn build_blocks(items: &[Item], entry_address: u64) -> Option<Vec<CfgBlock>> {
     let mut addr_to_idx: BTreeMap<u64, usize> = BTreeMap::new();
     for (index, item) in items.iter().enumerate() {
         addr_to_idx.entry(item.address).or_insert(index);
     }
-    let lowest_address: u64 = *addr_to_idx.keys().next()?;
+    addr_to_idx.keys().next()?;
     let resolve = |target: u64| -> Option<usize> {
-        if target < lowest_address {
+        if target < entry_address {
             return None;
         }
         addr_to_idx
@@ -11125,11 +11133,12 @@ fn post_dominator_sets(
 
 fn structure_reducible_cfg(
     items: &[Item],
+    entry_address: u64,
     policy: ExitPolicy,
     refusal: &mut Option<&'static str>,
 ) -> Result<Option<Block>> {
-    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
-        *refusal = Some(block_graph_refusal(items));
+    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items, entry_address) else {
+        *refusal = Some(block_graph_refusal(items, entry_address));
         return Ok(None);
     };
     if blocks.len() < 2 {
@@ -17722,14 +17731,18 @@ fn rewrite_incoming_item(
     Ok(())
 }
 
-fn rewrite_incoming_stack_items(items: &mut [Item], shape: FrameShape) -> Result<bool> {
+fn rewrite_incoming_stack_items(
+    items: &mut [Item],
+    entry_address: u64,
+    shape: FrameShape,
+) -> Result<bool> {
     let Some(frame_base): Option<Reg> = shape.base else {
         return Ok(false);
     };
     let Some(extent): Option<StackFrameExtent> = shape.stack_extent else {
         return Ok(false);
     };
-    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
+    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items, entry_address) else {
         return Ok(false);
     };
     let proven: BTreeSet<Reg> =
@@ -24944,6 +24957,15 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
 }
 
 #[cfg(test)]
+fn lowest_item_address(items: &[Item]) -> u64 {
+    items
+        .iter()
+        .map(|item: &Item| item.address)
+        .min()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -26770,9 +26792,13 @@ mod tests {
             },
         ];
         let mut refusal: Option<&'static str> = None;
-        let out: Option<Block> =
-            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
-                .expect("no hard error");
+        let out: Option<Block> = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error");
         assert!(
             out.is_none(),
             "an irreducible two-entry cycle must be soundly rejected, not misstructured"
@@ -26780,6 +26806,82 @@ mod tests {
         assert!(
             refusal.is_some(),
             "a rejected irreducible cycle must name the precondition that failed"
+        );
+    }
+
+    const LEAVES_THE_FUNCTION: &str =
+        "a direct jump leaves this function, so its target is not an edge inside the block graph";
+
+    fn back_edge_onto_a_folded_prefix() -> Vec<Item> {
+        vec![
+            Item {
+                address: 2,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rcx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 5,
+                },
+            },
+            Item {
+                address: 3,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(0),
+                }),
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Jmp { target: 0 },
+            },
+            Item {
+                address: 5,
+                kind: ItemKind::Ret,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_target_inside_the_folded_entry_prefix_is_resolved_against_the_function_entry() {
+        let items: Vec<Item> = back_edge_onto_a_folded_prefix();
+        let mut refusal: Option<&'static str> = None;
+        let out: Option<Block> =
+            structure_reducible_cfg(&items, 0, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
+        assert_ne!(
+            refusal,
+            Some(LEAVES_THE_FUNCTION),
+            "a branch to the entry address must be an edge inside the block graph even when the \
+             instructions at that address were folded into a later item"
+        );
+        assert!(
+            out.is_some(),
+            "the loop is reducible once its back edge resolves, so it must structure: {refusal:?}"
+        );
+    }
+
+    #[test]
+    fn a_target_below_the_function_entry_is_still_refused_as_leaving_the_function() {
+        let items: Vec<Item> = back_edge_onto_a_folded_prefix();
+        let mut refusal: Option<&'static str> = None;
+        let out: Option<Block> =
+            structure_reducible_cfg(&items, 4, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
+        assert!(
+            out.is_none(),
+            "a jump below the function entry must not be resolved as an intra-function edge"
+        );
+        assert_eq!(
+            refusal,
+            Some(LEAVES_THE_FUNCTION),
+            "the refusal must name the precondition that failed"
         );
     }
 
@@ -26901,10 +27003,14 @@ mod tests {
         let tail: Stmt = assign_tail();
         let items: Vec<Item> = conflicting_join_tail_items(tail.clone());
         let mut refusal: Option<&'static str> = None;
-        let body: Block =
-            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
-                .expect("no hard error")
-                .expect("a pure join tail must structure through cloning");
+        let body: Block = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error")
+        .expect("a pure join tail must structure through cloning");
         assert_eq!(
             count_stmt(&body, &tail),
             2,
@@ -27014,10 +27120,14 @@ mod tests {
     fn a_loop_whose_header_has_two_latches_structures_with_one_continue_per_latch() {
         let items: Vec<Item> = multi_latch_loop_items(2);
         let mut refusal: Option<&'static str> = None;
-        let body: Block =
-            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
-                .expect("no hard error")
-                .expect("a header reached by two latches must structure as one loop");
+        let body: Block = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::ForwardSkipOnly,
+            &mut refusal,
+        )
+        .expect("no hard error")
+        .expect("a header reached by two latches must structure as one loop");
         assert_eq!(
             loop_count(&body),
             1,
@@ -27034,10 +27144,14 @@ mod tests {
     fn a_loop_header_reached_by_three_latches_structures_as_one_loop() {
         let items: Vec<Item> = multi_latch_loop_items(3);
         let mut refusal: Option<&'static str> = None;
-        let body: Block =
-            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
-                .expect("no hard error")
-                .expect("a header reached by three latches must structure as one loop");
+        let body: Block = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::ForwardSkipOnly,
+            &mut refusal,
+        )
+        .expect("no hard error")
+        .expect("a header reached by three latches must structure as one loop");
         assert_eq!(
             loop_count(&body),
             1,
@@ -27077,9 +27191,13 @@ mod tests {
             kind: ItemKind::Ret,
         });
         let mut refusal: Option<&'static str> = None;
-        let structured: Option<Block> =
-            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
-                .expect("no hard error");
+        let structured: Option<Block> = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::ForwardSkipOnly,
+            &mut refusal,
+        )
+        .expect("no hard error");
         let body: Block = structured.unwrap_or_else(|| {
             panic!("a two-header nest must structure, refusal {refusal:?}");
         });
@@ -27094,9 +27212,13 @@ mod tests {
     fn an_impure_conflicting_join_tail_is_refused_rather_than_cloned() {
         let items: Vec<Item> = conflicting_join_tail_items(store_tail());
         let mut refusal: Option<&'static str> = None;
-        let out: Option<Block> =
-            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
-                .expect("no hard error");
+        let out: Option<Block> = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error");
         assert!(
             out.is_none(),
             "a join tail that stores to memory must not be cloned: {out:#?}"
@@ -27197,10 +27319,14 @@ mod tests {
     fn a_shared_tail_within_the_clone_budget_is_cloned_onto_every_reaching_arm() {
         let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET - 1);
         let mut refusal: Option<&'static str> = None;
-        let body: Block =
-            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
-                .expect("no hard error")
-                .expect("a pure tail shorter than the clone budget must structure");
+        let body: Block = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error")
+        .expect("a pure tail shorter than the clone budget must structure");
         let first_link: Stmt = Stmt::Assign {
             dest: RegRef {
                 reg: Reg::Rax,
@@ -27219,9 +27345,13 @@ mod tests {
     fn a_shared_tail_longer_than_the_clone_budget_is_refused_rather_than_cloned() {
         let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET + 1);
         let mut refusal: Option<&'static str> = None;
-        let structured: Option<Block> =
-            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
-                .expect("no hard error");
+        let structured: Option<Block> = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error");
         assert!(
             structured.is_none(),
             "a shared tail longer than the clone budget must not be cloned: {structured:#?}"
@@ -27285,7 +27415,7 @@ mod tests {
             kind: ItemKind::Ret,
         });
         let started: std::time::Instant = std::time::Instant::now();
-        let structured: Result<Structured> = structure_items(&items);
+        let structured: Result<Structured> = structure_items(&items, lowest_item_address(&items));
         let elapsed: std::time::Duration = started.elapsed();
         assert!(
             elapsed < std::time::Duration::from_secs(20),
@@ -31324,7 +31454,7 @@ mod structuring_corpus {
         Abi, AggregatePlan, Arch, BlockTerm, CfgBlock, DisasmInsn, EmptyObjectCallFacts, Item,
         LeafItems, Reg, RegRef, RipRelativeLeaPolicy, SinkLabel, Stmt, SwitchDispatch,
         ValueTableSwitch, Width, block_has_continue_at, build_blocks, build_leaf_items,
-        disassemble, object_switch_case_targets, object_value_table,
+        disassemble, lowest_item_address, object_switch_case_targets, object_value_table,
         outer_resume_lowering_candidates, render_cfg_blocks, resolve_lea_table,
         resolve_packed_constants, resolved_table_offset, structure_items,
         unique_bound_text_section, verify_shared_table_lea,
@@ -32066,7 +32196,7 @@ mod structuring_corpus {
         let mut golden: BTreeSet<&'static str> = BTreeSet::new();
         for shape in CF_CORPUS {
             if let Some(items) = lift(object_bytes, shape.name)
-                && structure_items(&items).is_ok()
+                && structure_items(&items, lowest_item_address(&items)).is_ok()
             {
                 golden.insert(shape.name);
             }
@@ -32118,7 +32248,7 @@ mod structuring_corpus {
     }
 
     fn region_structures(items: &[Item]) -> Option<bool> {
-        let blocks: Vec<CfgBlock> = build_blocks(items)?;
+        let blocks: Vec<CfgBlock> = build_blocks(items, lowest_item_address(items))?;
         let cfg: structuring::Cfg = cfg_from_blocks(&blocks)?;
         Some(structuring::structure(&cfg).is_complete())
     }
@@ -32191,10 +32321,12 @@ mod structuring_corpus {
         )
         .expect("lift nested loop function");
         let structured: super::Structured =
-            structure_items(&leaf.items).expect("structure nested loop function");
+            structure_items(&leaf.items, lowest_item_address(&leaf.items))
+                .expect("structure nested loop function");
         super::infer_params(&structured.body, HOST_ABI)
             .expect("terminating preheader arm must not erase packed writes on the live arm");
-        let blocks: Vec<CfgBlock> = build_blocks(&leaf.items).expect("nested loop blocks");
+        let blocks: Vec<CfgBlock> = build_blocks(&leaf.items, lowest_item_address(&leaf.items))
+            .expect("nested loop blocks");
         let labels: std::collections::BTreeMap<usize, SinkLabel> =
             std::collections::BTreeMap::new();
         let plans: Vec<super::OuterResumePlan> = outer_resume_lowering_candidates(&blocks, &labels);
@@ -32774,7 +32906,7 @@ mod structuring_corpus {
             let Some(items): Option<Vec<Item>> = lift(&object, shape.name) else {
                 continue;
             };
-            let ladder_ok: bool = structure_items(&items).is_ok();
+            let ladder_ok: bool = structure_items(&items, lowest_item_address(&items)).is_ok();
             let region_ok: bool = region_structures(&items).unwrap_or(false);
             if ladder_ok {
                 ladder_total += 1;
@@ -32841,10 +32973,10 @@ mod structuring_corpus {
 
         for shape in CF_CORPUS {
             if let Some(items) = lift(&object, shape.name)
-                && structure_items(&items).is_ok()
+                && structure_items(&items, lowest_item_address(&items)).is_ok()
             {
                 assert!(
-                    build_blocks(&items).is_some(),
+                    build_blocks(&items, lowest_item_address(&items)).is_some(),
                     "the block builder must accept every ladder-structured leaf ({}) so the region engine can consume it",
                     shape.name
                 );
@@ -32926,8 +33058,8 @@ mod structuring_corpus {
 mod forward_join_scope {
     use super::{
         BlockTerm, CfgBlock, CondKind, Flags, Item, ItemKind, Reg, RegRef, SinkLabel, Source, Stmt,
-        Width, forward_join_lowering_candidates, outer_resume_lowering_candidates,
-        render_cfg_blocks,
+        Width, forward_join_lowering_candidates, lowest_item_address,
+        outer_resume_lowering_candidates, render_cfg_blocks,
     };
     use std::collections::BTreeMap;
 
@@ -33353,7 +33485,8 @@ mod forward_join_scope {
             BTreeMap<usize, SinkLabel>,
             super::OuterBodyResume,
         ) = outer_resume_stack_items();
-        let raw_blocks: Vec<CfgBlock> = super::build_blocks(&items).expect("raw fixture blocks");
+        let raw_blocks: Vec<CfgBlock> =
+            super::build_blocks(&items, lowest_item_address(&items)).expect("raw fixture blocks");
         assert_eq!(raw_blocks.len(), 23);
         assert!(
             super::OuterResumeTree::checked(&raw_blocks, &labels, resume).is_none(),
@@ -33377,12 +33510,14 @@ mod forward_join_scope {
             ),
             stack_pointer_break: None,
         };
+        let entry_address: u64 = lowest_item_address(&items);
         assert!(
-            super::rewrite_incoming_stack_items(&mut items, frame_shape)
+            super::rewrite_incoming_stack_items(&mut items, entry_address, frame_shape)
                 .expect("normalize incoming stack items")
         );
         let normalized_blocks: Vec<CfgBlock> =
-            super::build_blocks(&items).expect("normalized fixture blocks");
+            super::build_blocks(&items, lowest_item_address(&items))
+                .expect("normalized fixture blocks");
         assert_eq!(normalized_blocks.len(), 23);
         let body: super::Block = super::render_cfg_blocks_nested(
             &normalized_blocks,
