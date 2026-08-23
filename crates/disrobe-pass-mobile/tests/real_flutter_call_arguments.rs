@@ -21,6 +21,16 @@ const RECORDED_OPAQUE_BASELINE: usize = 25_833;
 
 const RECORDED_RESOLVED_POOL_SLOTS: usize = 2_501;
 
+const RECORDED_SET_TO_ZERO_SLOTS: [(&str, usize); 4] = [
+    ("disrobe_sample/libapp_arm64.so", 0),
+    ("pinned_graph_fixture/receipt_validator_arm64.so", 91),
+    (
+        "pinned_graph_fixture/receipt_validator_obfuscated_arm64.so",
+        91,
+    ),
+    ("pinned_graph_fixture/voucher_validator_arm64.so", 91),
+];
+
 const EXPECTED_UNRESOLVED_REASONS: [&str; 4] = [
     "ClusterBodyUnmodelled",
     "DepthExceeded",
@@ -640,60 +650,65 @@ const fn slot_offset(slot: usize) -> u64 {
 }
 
 #[test]
-fn load_reset_pool_slots_render_the_value_the_snapshot_deserializer_assigns_them() {
-    let table: DartPoolTable = primary_pool();
-    let mut stub_slots: BTreeMap<String, usize> = BTreeMap::new();
-    let mut stub_kind_slots: usize = 0;
-    let mut native_function_slots: usize = 0;
-    let mut stub_rendered_outside_a_reset_slot: Vec<usize> = Vec::new();
+fn a_bootstrap_native_stub_slot_always_follows_the_native_function_slot_it_wraps() {
+    let mut per_sample: Vec<(String, usize, usize, usize)> = Vec::new();
 
-    for slot in 0..table.slot_count() {
-        let kind: DartPoolLiteralKind = table.kind_at_offset(slot_offset(slot), false);
-        let rendered: Option<String> = table.render_slot(slot, false);
-        let is_stub_token: bool = rendered
-            .as_deref()
-            .is_some_and(|text: &str| text.starts_with("stub@"));
-        match kind {
-            DartPoolLiteralKind::StubEntry => {
-                stub_kind_slots += 1;
-                let text: String = rendered
-                    .clone()
-                    .expect("a stub-entry slot must render the stub the deserializer installs");
-                *stub_slots.entry(text).or_default() += 1;
-            }
-            DartPoolLiteralKind::NativeFunction => {
-                native_function_slots += 1;
-                assert_eq!(
-                    rendered.as_deref(),
-                    Some("stub@linkNativeCall"),
-                    "ObjectPoolDeserializationCluster::ReadFill initializes a kNativeFunction entry with NativeEntry::LinkNativeCallEntry()"
-                );
-            }
-            _ => {
-                if is_stub_token {
-                    stub_rendered_outside_a_reset_slot.push(slot);
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool(sample);
+        let mut native: Vec<usize> = Vec::new();
+        let mut bootstrap: Vec<usize> = Vec::new();
+        let mut miss: Vec<usize> = Vec::new();
+        let mut stub_outside_a_reset_slot: Vec<usize> = Vec::new();
+
+        for slot in 0..table.slot_count() {
+            let kind: DartPoolLiteralKind = table.kind_at_offset(slot_offset(slot), false);
+            let rendered: Option<String> = table.render_slot(slot, false);
+            match (kind, rendered.as_deref()) {
+                (DartPoolLiteralKind::NativeFunction, Some("stub@linkNativeCall")) => {
+                    native.push(slot);
                 }
+                (DartPoolLiteralKind::StubEntry, Some("stub@callBootstrapNative")) => {
+                    bootstrap.push(slot);
+                }
+                (DartPoolLiteralKind::StubEntry, Some("stub@switchableCallMiss")) => {
+                    miss.push(slot);
+                }
+                (DartPoolLiteralKind::NativeFunction | DartPoolLiteralKind::StubEntry, other) => {
+                    panic!("slot {slot} of {sample} carries kind {kind:?} but rendered {other:?}")
+                }
+                (_, Some(text)) if text.starts_with("stub@") => {
+                    stub_outside_a_reset_slot.push(slot);
+                }
+                _ => {}
             }
         }
+
+        assert!(
+            stub_outside_a_reset_slot.is_empty(),
+            "{sample}: a stub token may only come from a slot the snapshot marks reset-at-load or native, got slots {stub_outside_a_reset_slot:?}"
+        );
+        assert_eq!(
+            native.len(),
+            bootstrap.len(),
+            "{sample}: gen_snapshot emits one CallBootstrapNative trampoline entry for every native-function entry, so the two populations must have the same size"
+        );
+        assert!(
+            !native.is_empty(),
+            "{sample} must declare at least one native call site for this pairing to mean anything"
+        );
+        for (function_slot, trampoline_slot) in native.iter().zip(bootstrap.iter()) {
+            assert_eq!(
+                *trampoline_slot,
+                function_slot + 1,
+                "{sample}: the CallBootstrapNative trampoline entry sits immediately after the native-function entry it wraps, which is what ties kResetToBootstrapNative to this behavior value rather than to another one"
+            );
+        }
+        per_sample.push((sample.to_owned(), native.len(), bootstrap.len(), miss.len()));
     }
 
     eprintln!(
-        "load-reset pool slots on the real sample: stub_entry_slots={stub_kind_slots} native_function_slots={native_function_slots} rendered={stub_slots:?}"
+        "native-call pool pairs per committed real Dart sample (sample, kNativeFunction, kResetToBootstrapNative, kResetToSwitchableCallMissEntryPoint): {per_sample:?}"
     );
-    assert!(
-        stub_rendered_outside_a_reset_slot.is_empty(),
-        "a stub token may only come from a slot the snapshot marks reset-at-load, got slots {stub_rendered_outside_a_reset_slot:?}"
-    );
-    assert!(
-        stub_kind_slots > 0,
-        "the real sample must carry at least one reset-at-load stub slot"
-    );
-    for token in stub_slots.keys() {
-        assert!(
-            token == "stub@callBootstrapNative" || token == "stub@switchableCallMiss",
-            "SnapshotBehavior carries exactly two reset-to-stub values, got {token}"
-        );
-    }
 }
 
 #[test]
@@ -722,11 +737,13 @@ fn set_to_zero_pool_slots_carry_the_zero_the_deserializer_writes() {
         per_sample.push((sample.to_owned(), reset_zero_slots));
     }
     eprintln!("kSetToZero pool slots per committed real Dart sample: {per_sample:?}");
-    assert!(
-        per_sample
-            .iter()
-            .any(|(_, slots): &(String, usize)| *slots > 0),
-        "at least one committed sample must carry a kSetToZero entry for this rendering to be claimed against real Dart bytes, got {per_sample:?}"
+    assert_eq!(
+        per_sample,
+        RECORDED_SET_TO_ZERO_SLOTS
+            .into_iter()
+            .map(|(sample, slots): (&str, usize)| (sample.to_owned(), slots))
+            .collect::<Vec<(String, usize)>>(),
+        "the kSetToZero population is pinned per committed sample, so a slot that moves between snapshot behaviors is attributable rather than absorbed into one total"
     );
 }
 
