@@ -497,6 +497,7 @@ jobs:
         timeout-minutes: 100
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+          DISROBE_PY_315_OPTIONAL: "1"
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
         run: |

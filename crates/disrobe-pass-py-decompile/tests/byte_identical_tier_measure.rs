@@ -14,9 +14,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use common::band_gate::{
-    BandRelease, BandRequirement, CPYTHON_SERIES, FIRST_CACHED_SERIES, PINNED_MODULE_LIST,
-    REQUIRE_EVERY_BAND_VAR, SeriesMagic, magic_hex, parse_magic, requirement_from_values,
-    resolve_band_interpreter,
+    BandRelease, BandRequirement, CPYTHON_SERIES, FIRST_CACHED_SERIES, OPTIONAL_EVERY_BAND_VAR,
+    PINNED_MODULE_LIST, REQUIRE_EVERY_BAND_VAR, SeriesMagic, magic_hex, parse_magic,
+    requirement_from_values, resolve_band_interpreter,
 };
 use common::stdlib_measure::{
     HarnessRun, MEASURE_HARNESS, find_disrobe, interpreter_stdlib, interpreter_version,
@@ -145,11 +145,18 @@ fn parse_strict_measurement(stdout: &str) -> StrictMeasurement {
 }
 
 fn announce_unmeasurable(defect: &str) {
-    let blanket: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_EVERY_BAND_VAR);
+    let blanket_require: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_EVERY_BAND_VAR);
+    let blanket_optional: Option<std::ffi::OsString> = std::env::var_os(OPTIONAL_EVERY_BAND_VAR);
     assert!(
-        requirement_from_values(None, blanket.as_deref()) == BandRequirement::Optional,
-        "{REQUIRE_EVERY_BAND_VAR} makes every band mandatory for this run, so the byte-identical \
-         and line-table tiers measured nothing and this case must not report success: {defect}"
+        requirement_from_values(
+            None,
+            blanket_require.as_deref(),
+            None,
+            blanket_optional.as_deref(),
+        ) == BandRequirement::Optional,
+        "the byte-identical and line-table tiers are mandatory unless this run declares otherwise, \
+         so they measured nothing and this case must not report success: {defect}. Set \
+         {OPTIONAL_EVERY_BAND_VAR}=1 to declare that this run knows it is skipping them."
     );
     let line: String = format!(
         "\nNOT MEASURED: the byte-identical and line-table tiers compared nothing, because \
