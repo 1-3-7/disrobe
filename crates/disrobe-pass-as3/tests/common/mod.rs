@@ -63,6 +63,7 @@ enum Flow {
 
 pub(crate) struct Machine {
     slots: BTreeMap<u32, Value>,
+    named: BTreeMap<String, Value>,
     steps: usize,
     method: String,
 }
@@ -73,6 +74,7 @@ impl Machine {
     fn new(method: &str, arguments: &[(u32, Value)]) -> Self {
         Self {
             slots: arguments.iter().cloned().collect(),
+            named: BTreeMap::new(),
             steps: 0,
             method: method.to_owned(),
         }
@@ -100,6 +102,12 @@ impl Machine {
             Expr::StringLit(value) => Value::Str(value.clone()),
             Expr::Null | Expr::Undefined => Value::Null,
             Expr::Local(index) | Expr::Param(index) => self.slot(*index),
+            Expr::Name(name) => self.named.get(name).cloned().unwrap_or_else(|| {
+                panic!(
+                    "the recovered {} body reads {name}, which no path in it writes",
+                    self.method
+                )
+            }),
             Expr::Coerce { ty, operand } => {
                 let inner: Value = self.eval(operand);
                 match ty.as_str() {
@@ -257,6 +265,13 @@ impl Machine {
                 } => {
                     let evaluated: Value = self.eval(value);
                     self.slots.insert(*index, evaluated);
+                }
+                Stmt::Assign {
+                    target: Expr::Name(name),
+                    value,
+                } => {
+                    let evaluated: Value = self.eval(value);
+                    self.named.insert(name.clone(), evaluated);
                 }
                 Stmt::Expression(value) => {
                     self.eval(value);

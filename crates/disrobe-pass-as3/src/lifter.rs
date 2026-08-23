@@ -1298,7 +1298,7 @@ impl Lifter<'_> {
                 });
                 continue;
             }
-            let target: Expr = Expr::Name(format!("_temp{}", self.hoisted_temporaries));
+            let target: Expr = Expr::Name(format!("_merge{}", self.hoisted_temporaries));
             self.hoisted_temporaries = self.hoisted_temporaries.saturating_add(1);
             for entry in observed {
                 let Some(value): Option<&Expr> = entry.values.get(slot) else {

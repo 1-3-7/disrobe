@@ -7,10 +7,12 @@ use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
-use disrobe_pass_as3::lifter::{CaseLabel, Expr, LiftedBody, Stmt, SwitchCase, lift_body};
+use disrobe_pass_as3::lifter::{
+    CaseLabel, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
+};
 use disrobe_pass_as3::swf::{self, Swf};
 
-const MERGE_PREFIX: &str = "_temp";
+const MERGE_PREFIX: &str = "_merge";
 
 const CONTROL_SHAPES: &[u8] =
     include_bytes!("../../../corpus/flash/avm2_disasm_oracle/control_shapes.swf");
@@ -254,9 +256,13 @@ fn every_tracked_body_writes_the_merge_temporaries_it_reads() {
          would let it pass over almost nothing; got {}",
         tally.bodies
     );
-    assert!(
-        tally.bodies_using_a_temporary > 0,
-        "no tracked body reached a merge or a stale-read hoist, so this gate graded nothing"
+    assert_eq!(
+        tally.bodies_using_a_temporary, 0,
+        "no compiler fixture tracked here emits a merge join whose operands disagree, so this \
+         case grades the ABSENCE of an undefined merge read over 555 bodies and nothing more. \
+         The merge machinery itself is graded by an_encoded_merge_writes_its_temporary_on_every_incoming_path, \
+         which builds the join from ABC bytes and cannot skip. If a fixture ever does produce \
+         one, this number moves and the pin above starts carrying real weight"
     );
     assert_eq!(
         tally.undefined,
@@ -525,15 +531,15 @@ fn the_gate_reports_one_merge_value_restated_on_two_paths() {
         Stmt::IfElse {
             cond: Expr::Local(2),
             then_body: vec![Stmt::Assign {
-                target: Expr::Name("_temp0".to_owned()),
+                target: Expr::Name("_merge0".to_owned()),
                 value: read.clone(),
             }],
             else_body: vec![Stmt::Assign {
-                target: Expr::Name("_temp0".to_owned()),
+                target: Expr::Name("_merge0".to_owned()),
                 value: read,
             }],
         },
-        Stmt::Return(Some(Expr::Name("_temp0".to_owned()))),
+        Stmt::Return(Some(Expr::Name("_merge0".to_owned()))),
     ];
     let mut found: Vec<(String, String)> = Vec::new();
     restated_definitions(&stmts, &mut found);
@@ -549,7 +555,7 @@ fn the_gate_reports_one_merge_value_restated_on_two_paths() {
     );
 
     let leaf_only: Vec<Stmt> = vec![Stmt::Assign {
-        target: Expr::Name("_temp0".to_owned()),
+        target: Expr::Name("_merge0".to_owned()),
         value: Expr::Local(4),
     }];
     let mut leaves: Vec<(String, String)> = Vec::new();
@@ -562,6 +568,138 @@ fn the_gate_reports_one_merge_value_restated_on_two_paths() {
 }
 
 #[test]
+fn every_corpus_merge_write_sits_at_the_end_of_its_path() {
+    let dir: PathBuf = common::as3_corpus_root();
+    if !common::require_corpus("as3 merge write placement", &dir) {
+        return;
+    }
+    let mut writes: usize = 0;
+    let mut leaf: usize = 0;
+    let mut misplaced: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read corpus") {
+        let path: PathBuf = entry.expect("dir entry").path();
+        if path.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) != Some("swf") {
+            continue;
+        }
+        let label: String = path.file_stem().map_or_else(
+            || "?".to_owned(),
+            |name: &std::ffi::OsStr| name.to_string_lossy().into_owned(),
+        );
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read swf");
+        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
+            continue;
+        };
+        for blob in parsed.collect_do_abc() {
+            let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
+                continue;
+            };
+            for (index, body) in abc.method_bodies.iter().enumerate() {
+                let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
+                let Ok(raw): Result<Vec<Stmt>, _> = lift_body_raw(&abc, body, info) else {
+                    continue;
+                };
+                for (position, statement) in raw.iter().enumerate() {
+                    let Stmt::Assign {
+                        target: Expr::Name(name),
+                        value,
+                    } = statement
+                    else {
+                        continue;
+                    };
+                    if !is_merge_temporary(name) {
+                        continue;
+                    }
+                    writes += 1;
+                    if value_is_a_leaf(value) {
+                        leaf += 1;
+                    }
+                    let mut next: usize = position + 1;
+                    loop {
+                        match raw.get(next) {
+                            Some(Stmt::Comment(_)) => next += 1,
+                            Some(Stmt::Assign {
+                                target: Expr::Name(sibling),
+                                ..
+                            }) if is_merge_temporary(sibling) => next += 1,
+                            _ => break,
+                        }
+                    }
+                    let terminal: bool = matches!(
+                        raw.get(next),
+                        Some(
+                            Stmt::Jump { .. }
+                                | Stmt::If { .. }
+                                | Stmt::Label(_)
+                                | Stmt::Switch { .. }
+                        )
+                    ) || raw.get(next).is_none();
+                    if !terminal {
+                        misplaced.push(format!("{label}#{index}:{name}"));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "AS3 corpus merge write placement: writes={writes} leaf={leaf} non_leaf={}",
+        writes - leaf
+    );
+    assert!(
+        writes >= 100,
+        "the placement invariant must be exercised by real merges, got {writes}"
+    );
+    assert!(
+        misplaced.is_empty(),
+        "a merge value was written somewhere other than the last position on its incoming path. \
+         That placement is the whole reason relocating the expression cannot read different state \
+         than the join would have read: with nothing between the write and the join, no \
+         assignment can come between them. A write that is not terminal breaks that argument and \
+         the recovered value may differ from what the program computed. Offenders: {misplaced:?}"
+    );
+}
+
+#[test]
+fn a_recovered_merge_computes_what_the_bytecode_computes() {
+    let abc: AbcFile = bare_abc();
+
+    for (selector, expected) in [(0u8, 1i64), (1u8, 2i64)] {
+        let code: Vec<u8> = vec![
+            0x24, selector, 0x11, 0x06, 0x00, 0x00, 0x24, 0x01, 0x10, 0x07, 0x00, 0x00, 0x29, 0x24,
+            0x02, 0x10, 0x00, 0x00, 0x00, 0x48,
+        ];
+        let body: MethodBody = merge_body(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("branch join must lift");
+        let produced: common::Value = common::evaluate(&lifted.statements, "branch join", &[]);
+        assert_eq!(
+            produced,
+            common::Value::Int(expected),
+            "iftrue on {selector} reaches the arm that pushes {expected}, so the recovered body \
+             must compute {expected}. A merge that names an operand without writing it, or that \
+             writes the wrong arm's value, is invisible to a control-flow comparison and shows \
+             up only here: {:?}",
+            lifted.statements
+        );
+    }
+
+    for (selector, expected) in [(0u8, 10i64), (1u8, 20i64), (2u8, 30i64)] {
+        let code: Vec<u8> = vec![
+            0x24, selector, 0x1B, 0x17, 0x00, 0x00, 0x01, 0x0B, 0x00, 0x00, 0x11, 0x00, 0x00, 0x24,
+            0x0A, 0x10, 0x08, 0x00, 0x00, 0x24, 0x14, 0x10, 0x02, 0x00, 0x00, 0x24, 0x1E, 0x48,
+        ];
+        let body: MethodBody = merge_body(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("switch join must lift");
+        let produced: common::Value = common::evaluate(&lifted.statements, "switch join", &[]);
+        assert_eq!(
+            produced,
+            common::Value::Int(expected),
+            "lookupswitch on {selector} reaches the case that pushes {expected}, so the recovered \
+             body must compute {expected}: {:?}",
+            lifted.statements
+        );
+    }
+}
+
+#[test]
 fn the_gate_reports_a_temporary_that_no_path_writes() {
     let stmts: Vec<Stmt> = vec![
         Stmt::StructuredSwitch {
@@ -569,28 +707,28 @@ fn the_gate_reports_a_temporary_that_no_path_writes() {
             cases: vec![SwitchCase {
                 labels: vec![CaseLabel::Value(0)],
                 body: vec![Stmt::Assign {
-                    target: Expr::Name("_temp0".to_owned()),
+                    target: Expr::Name("_merge0".to_owned()),
                     value: Expr::IntLit(1),
                 }],
                 breaks: true,
             }],
         },
-        Stmt::Return(Some(Expr::Name("_temp1".to_owned()))),
+        Stmt::Return(Some(Expr::Name("_merge1".to_owned()))),
     ];
     let mut written: BTreeSet<String> = BTreeSet::new();
     let mut read: BTreeSet<String> = BTreeSet::new();
     collect_names(&stmts, &mut written, &mut read);
     assert_eq!(
         written.iter().cloned().collect::<Vec<String>>(),
-        vec!["_temp0".to_owned()]
+        vec!["_merge0".to_owned()]
     );
     assert_eq!(
         read.iter().cloned().collect::<Vec<String>>(),
-        vec!["_temp1".to_owned()]
+        vec!["_merge1".to_owned()]
     );
     assert_eq!(
         read.difference(&written).cloned().collect::<Vec<String>>(),
-        vec!["_temp1".to_owned()],
+        vec!["_merge1".to_owned()],
         "the gate must name a temporary that is read without being written, or it cannot fail \
          on the defect it exists to catch"
     );
