@@ -27,7 +27,7 @@ use disrobe_pass_php::{
     Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, UnrecoveredOp,
     decompile_oparray, opcode_name, parse_oparray,
 };
-use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
+use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -509,6 +509,72 @@ fn php_84_optimized_match_oparray_roundtrips_behaviorally() {
 #[test]
 fn dynamic_members_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("dynamic_members");
+}
+
+const UNHANDLED_FLAG_SOURCE: &str =
+    "<?php\n$b = 1;\n$c = 2;\n$byref = [&$b, 'k' => &$c];\n$b = 9;\necho $byref[0], \"\\n\";\n";
+
+#[test]
+fn an_operand_flag_the_emitter_cannot_encode_fails_it_and_the_tracked_op_arrays_still_reproduce() {
+    let graded: &str =
+        "the op_array emitter's refusal to drop an operand flag it would otherwise shift past";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_emitter_flag_guard")
+            .expect("create the emitter guard scratch directory");
+
+    let flagged: PathBuf = scratch.path().join("by_reference_element.php");
+    write_opcache_source(&flagged, UNHANDLED_FLAG_SOURCE.as_bytes())
+        .expect("stage the by-reference array element source");
+    let refused: PathBuf = scratch.path().join("by_reference_element.dzoa");
+    let outcome: Result<(), String> = emit_dzoa(&php, &dll, &flagged, &refused);
+    let diagnosis: String = match outcome {
+        Ok(()) => panic!(
+            "a by-reference array element carries a `(ref)` operand flag this container cannot \
+             encode. The emitter consumed it as op1 and shifted the real value into the key slot, \
+             which is a silently corrupt op array rather than a refusal. It must fail instead. It \
+             wrote {}",
+            refused.display()
+        ),
+        Err(diagnosis) => diagnosis,
+    };
+    assert!(
+        diagnosis.contains("(ref)"),
+        "the emitter must name the flag it could not encode, so the next author knows what to \
+         handle; it reported: {diagnosis}"
+    );
+    assert!(
+        !refused.exists(),
+        "a refused emission must leave no op array behind for a grader to read as real evidence"
+    );
+
+    let handled: PathBuf = scratch.path().join("members.dzoa");
+    emit_dzoa(&php, &dll, &required_sample("members"), &handled).unwrap_or_else(
+        |diagnosis: String| {
+            panic!(
+                "the guard must reject only the flags the emitter cannot encode. `members` \
+                 carries `(self)`, `(static)` and `(exception)`, which it can, and bare numeric \
+                 jump targets, which a later pass resolves; none of those may fail: {diagnosis}"
+            )
+        },
+    );
+
+    let reproduced: PathBuf = scratch.path().join("generators.dzoa");
+    emit_dzoa(&php, &dll, &required_sample("generators"), &reproduced)
+        .expect("re-emit the tracked generator op array");
+    let fresh: Vec<u8> =
+        std::fs::read(&reproduced).expect("read the re-emitted generator op array");
+    assert_eq!(
+        fresh,
+        include_bytes!("fixtures/oparray_generator/generators.dzoa"),
+        "the guard must not change any op array the emitter already produced, or every tracked \
+         fixture and the grades built on them move at once"
+    );
 }
 
 const MEMBERS_STATIC_STATEMENTS: [&str; 8] = [
