@@ -403,6 +403,164 @@ fn an_encoded_merge_writes_its_temporary_on_every_incoming_path() {
     }
 }
 
+fn restated_definitions(stmts: &[Stmt], out: &mut Vec<(String, String)>) {
+    for statement in stmts {
+        match statement {
+            Stmt::Assign {
+                target: Expr::Name(name),
+                value,
+            } if is_merge_temporary(name) && !value_is_a_leaf(value) => {
+                out.push((name.clone(), format!("{value:?}")));
+            }
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. }
+            | Stmt::For { body, .. } => restated_definitions(body, out),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                restated_definitions(then_body, out);
+                restated_definitions(else_body, out);
+            }
+            Stmt::Try { body, catches } => {
+                restated_definitions(body, out);
+                for clause in catches {
+                    restated_definitions(&clause.body, out);
+                }
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    restated_definitions(&case.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+const fn value_is_a_leaf(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::This
+            | Expr::Local(_)
+            | Expr::Param(_)
+            | Expr::IntLit(_)
+            | Expr::UintLit(_)
+            | Expr::DoubleLit(_)
+            | Expr::StringLit(_)
+            | Expr::BoolLit(_)
+            | Expr::Null
+            | Expr::Undefined
+            | Expr::NaN
+    )
+}
+
+#[test]
+fn no_corpus_body_restates_one_merge_value_on_two_paths() {
+    let dir: PathBuf = common::as3_corpus_root();
+    if !common::require_corpus("as3 merge duplication", &dir) {
+        return;
+    }
+    let mut bodies: usize = 0;
+    let mut restated: usize = 0;
+    let mut duplicated: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read corpus") {
+        let path: PathBuf = entry.expect("dir entry").path();
+        if path.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) != Some("swf") {
+            continue;
+        }
+        let label: String = path.file_stem().map_or_else(
+            || "?".to_owned(),
+            |name: &std::ffi::OsStr| name.to_string_lossy().into_owned(),
+        );
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read swf");
+        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
+            continue;
+        };
+        for blob in parsed.collect_do_abc() {
+            let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
+                continue;
+            };
+            for (index, body) in abc.method_bodies.iter().enumerate() {
+                let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
+                let Ok(lifted): Result<LiftedBody, _> = lift_body(&abc, body, info) else {
+                    continue;
+                };
+                bodies += 1;
+                let mut found: Vec<(String, String)> = Vec::new();
+                restated_definitions(&lifted.statements, &mut found);
+                restated += found.len();
+                let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+                for pair in found {
+                    if !seen.insert(pair.clone()) {
+                        duplicated.push(format!("{label}#{index}:{}", pair.0));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("AS3 corpus restated merge writes: bodies={bodies} non_leaf_definitions={restated}");
+    assert!(bodies > 1000, "the population must stay large enough");
+    assert!(
+        duplicated.is_empty(),
+        "a merge value that is not a simple leaf was written on more than one incoming path with \
+         the same expression, so one evaluation in the bytecode became two in the recovered \
+         source. A property read can run a getter, so this is observable even when nothing is \
+         assigned. Offenders: {duplicated:?}"
+    );
+}
+
+#[test]
+fn the_gate_reports_one_merge_value_restated_on_two_paths() {
+    let read: Expr = Expr::Get {
+        object: Box::new(Expr::Local(1)),
+        property: "length".to_owned(),
+    };
+    let stmts: Vec<Stmt> = vec![
+        Stmt::IfElse {
+            cond: Expr::Local(2),
+            then_body: vec![Stmt::Assign {
+                target: Expr::Name("_temp0".to_owned()),
+                value: read.clone(),
+            }],
+            else_body: vec![Stmt::Assign {
+                target: Expr::Name("_temp0".to_owned()),
+                value: read,
+            }],
+        },
+        Stmt::Return(Some(Expr::Name("_temp0".to_owned()))),
+    ];
+    let mut found: Vec<(String, String)> = Vec::new();
+    restated_definitions(&stmts, &mut found);
+    assert_eq!(
+        found.len(),
+        2,
+        "both arms write the same property read, and a property read is not a simple leaf"
+    );
+    assert_eq!(
+        found[0], found[1],
+        "the two writes must be indistinguishable, which is what makes one bytecode evaluation \
+         two evaluations in the recovered source"
+    );
+
+    let leaf_only: Vec<Stmt> = vec![Stmt::Assign {
+        target: Expr::Name("_temp0".to_owned()),
+        value: Expr::Local(4),
+    }];
+    let mut leaves: Vec<(String, String)> = Vec::new();
+    restated_definitions(&leaf_only, &mut leaves);
+    assert!(
+        leaves.is_empty(),
+        "re-reading a local on two paths costs nothing observable, so the gate must not report \
+         it or it would forbid the reconciler's ordinary case"
+    );
+}
+
 #[test]
 fn the_gate_reports_a_temporary_that_no_path_writes() {
     let stmts: Vec<Stmt> = vec![

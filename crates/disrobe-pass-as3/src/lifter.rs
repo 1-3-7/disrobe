@@ -860,6 +860,7 @@ struct Lifter<'a> {
     short_circuits: Vec<ShortCircuit>,
     branch_marks: Vec<BranchMark>,
     hoisted_temporaries: u32,
+    has_exception_ranges: bool,
     pending_merge_definitions: Vec<(usize, Stmt)>,
     incoming_stacks: BTreeMap<usize, Vec<IncomingStack>>,
     incoming_scopes: BTreeMap<usize, Vec<Vec<ScopeEntry>>>,
@@ -1270,20 +1271,21 @@ impl Lifter<'_> {
                 .fold(0usize, |total: usize, entry: &IncomingStack| {
                     total.saturating_add(entry.sites.len())
                 });
+            let unprotected: bool = !self.has_exception_ranges;
             let relocatable: bool = observed.iter().all(|entry: &IncomingStack| {
                 let Some(value): Option<&Expr> = entry.values.get(slot) else {
                     return false;
                 };
-                if !expr_is_effect_free(value) {
-                    return false;
-                }
                 let restatements: usize = observed
                     .iter()
                     .filter(|other: &&IncomingStack| other.values.get(slot) == Some(value))
                     .fold(0usize, |total: usize, other: &IncomingStack| {
                         total.saturating_add(other.sites.len())
                     });
-                restatements <= 1 || merge_value_is_reproducible(value)
+                if restatements > 1 {
+                    return merge_value_is_reproducible(value);
+                }
+                expr_is_effect_free(value) || unprotected
             }) && self
                 .pending_merge_definitions
                 .len()
@@ -2094,6 +2096,7 @@ fn block_entry_heights(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        has_exception_ranges: !exceptions.is_empty(),
         pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
@@ -6870,6 +6873,7 @@ fn lift_raw(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        has_exception_ranges: !body.exceptions.is_empty(),
         pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
@@ -6971,6 +6975,7 @@ pub fn lift_body(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        has_exception_ranges: !body.exceptions.is_empty(),
         pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
@@ -9078,6 +9083,7 @@ mod tests {
             short_circuits: Vec::new(),
             branch_marks: Vec::new(),
             hoisted_temporaries: 0,
+            has_exception_ranges: false,
             pending_merge_definitions: Vec::new(),
             incoming_stacks: BTreeMap::new(),
             incoming_scopes: BTreeMap::new(),

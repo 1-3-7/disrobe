@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ClassInfo, MethodInfo, TraitInfo};
-use disrobe_pass_as3::lifter::{LiftedBody, Stmt, lift_body};
+use disrobe_pass_as3::lifter::{CaseLabel, Expr, LiftedBody, Stmt, lift_body};
 use disrobe_pass_as3::swf::{self, Swf};
 
 const TRAIT_KIND_METHOD: u8 = 1;
@@ -98,6 +98,175 @@ fn residual_control_flow(stmts: &[Stmt]) -> bool {
         }
         _ => false,
     })
+}
+
+#[derive(Default)]
+struct OperandKinds {
+    phi: bool,
+    opaque: bool,
+}
+
+fn scan_expr(expression: &Expr, seen: &mut OperandKinds) {
+    match expression {
+        Expr::Phi { .. } => seen.phi = true,
+        Expr::Opaque(_) => seen.opaque = true,
+        Expr::Unary { operand, .. }
+        | Expr::Update { operand, .. }
+        | Expr::Coerce { operand, .. }
+        | Expr::Typeof(operand)
+        | Expr::Get {
+            object: operand, ..
+        }
+        | Expr::Delete {
+            object: operand, ..
+        }
+        | Expr::Descendants {
+            object: operand, ..
+        } => scan_expr(operand, seen),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index {
+            object: lhs,
+            index: rhs,
+        } => {
+            scan_expr(lhs, seen);
+            scan_expr(rhs, seen);
+        }
+        Expr::IsType { operand, ty } | Expr::AsType { operand, ty } => {
+            scan_expr(operand, seen);
+            scan_expr(ty, seen);
+        }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            scan_expr(cond, seen);
+            scan_expr(then_value, seen);
+            scan_expr(else_value, seen);
+        }
+        Expr::Call { callee, args, .. } | Expr::Construct { callee, args, .. } => {
+            scan_expr(callee, seen);
+            for argument in args {
+                scan_expr(argument, seen);
+            }
+        }
+        Expr::New { ty: base, args } | Expr::Applied { base, args } => {
+            scan_expr(base, seen);
+            for argument in args {
+                scan_expr(argument, seen);
+            }
+        }
+        Expr::Array(items) => {
+            for item in items {
+                scan_expr(item, seen);
+            }
+        }
+        Expr::Object(pairs) => {
+            for (key, value) in pairs {
+                scan_expr(key, seen);
+                scan_expr(value, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_statements(stmts: &[Stmt], seen: &mut OperandKinds) {
+    for statement in stmts {
+        match statement {
+            Stmt::Assign { target, value } => {
+                scan_expr(target, seen);
+                scan_expr(value, seen);
+            }
+            Stmt::AssignProperty { object, value, .. } => {
+                scan_expr(object, seen);
+                scan_expr(value, seen);
+            }
+            Stmt::AssignIndex {
+                object,
+                index,
+                value,
+            } => {
+                scan_expr(object, seen);
+                scan_expr(index, seen);
+                scan_expr(value, seen);
+            }
+            Stmt::Expression(value) | Stmt::Throw(value) => scan_expr(value, seen),
+            Stmt::Return(value) => {
+                if let Some(value) = value {
+                    scan_expr(value, seen);
+                }
+            }
+            Stmt::If { cond, .. } => scan_expr(cond, seen),
+            Stmt::IfBlock { cond, body }
+            | Stmt::While { cond, body }
+            | Stmt::DoWhile { cond, body } => {
+                scan_expr(cond, seen);
+                scan_statements(body, seen);
+            }
+            Stmt::IfElse {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                scan_expr(cond, seen);
+                scan_statements(then_body, seen);
+                scan_statements(else_body, seen);
+            }
+            Stmt::For {
+                init,
+                cond,
+                update,
+                body,
+            } => {
+                scan_statements(std::slice::from_ref(init), seen);
+                scan_expr(cond, seen);
+                scan_statements(std::slice::from_ref(update), seen);
+                scan_statements(body, seen);
+            }
+            Stmt::ForEach {
+                var,
+                collection,
+                body,
+            }
+            | Stmt::ForIn {
+                var,
+                collection,
+                body,
+            } => {
+                scan_expr(var, seen);
+                scan_expr(collection, seen);
+                scan_statements(body, seen);
+            }
+            Stmt::With { object, body } => {
+                scan_expr(object, seen);
+                scan_statements(body, seen);
+            }
+            Stmt::Try { body, catches } => {
+                scan_statements(body, seen);
+                for clause in catches {
+                    scan_statements(&clause.body, seen);
+                }
+            }
+            Stmt::Switch { selector, .. } => scan_expr(selector, seen),
+            Stmt::StructuredSwitch { selector, cases } => {
+                scan_expr(selector, seen);
+                for case in cases {
+                    for label in &case.labels {
+                        if let CaseLabel::Expr(value) = label {
+                            scan_expr(value, seen);
+                        }
+                    }
+                    scan_statements(&case.body, seen);
+                }
+            }
+            Stmt::Jump { .. }
+            | Stmt::Label(_)
+            | Stmt::Comment(_)
+            | Stmt::Break
+            | Stmt::Continue => {}
+        }
+    }
 }
 
 struct Cfg {
@@ -331,7 +500,14 @@ fn precondition(lifted: &LiftedBody) -> String {
         return classify_residue(&lifted.statements);
     }
     if lifted.opaque_operands > 0 {
-        return "surviving merge operand".to_owned();
+        let mut seen: OperandKinds = OperandKinds::default();
+        scan_statements(&lifted.statements, &mut seen);
+        return match (seen.phi, seen.opaque) {
+            (true, true) => "surviving merge operand beside a fabricated operand".to_owned(),
+            (true, false) => "surviving merge operand".to_owned(),
+            (false, true) => "fabricated operand from an underflowed operand stack".to_owned(),
+            (false, false) => "opaque operand with no surviving expression".to_owned(),
+        };
     }
     "unclassified".to_owned()
 }
@@ -585,6 +761,116 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
             "10_More_Bullets::zpp_nape.callbacks.ZPP_InteractionListener::cbtype_change",
             "10_More_Bullets::zpp_nape.callbacks.ZPP_OptionType::append_type",
             "10_More_Bullets::zpp_nape.geom.ZPP_Ray::aabbsect",
+        ],
+    },
+    RemainderGroup {
+        precondition: "fabricated operand from an underflowed operand stack",
+        must_stay_refused: false,
+        anonymous: 14,
+        members: &[
+            "BO_Neo_Rider::ZumspielAPI::_send_",
+            "BO_Neo_Rider::build_fla.MainTimeline::frame15",
+            "BO_Neo_Rider::com.zumspiel.ZAPI::addToStage",
+            "BO_Neo_Rider::mochi.as3.MochiAd::_parseOptions",
+            "BO_Neo_Rider::mochi.as3.MochiAd::adShowing",
+            "BO_Neo_Rider::mochi.as3.MochiAd::createEmptyMovieClip",
+            "BO_Neo_Rider::mochi.as3.MochiAd::unload",
+            "BO_Neo_Rider::mochi.as3.MochiEventDispatcher::removeEventListener",
+            "BO_Neo_Rider::mochi.as3.MochiEvents::setNotifications",
+            "BO_Neo_Rider::mochi.as3.MochiEvents::trigger",
+            "BO_Neo_Rider::mochi.as3.MochiInventory::getConsumableBag",
+            "BO_Neo_Rider::mochi.as3.MochiInventory::newItems",
+            "BO_Neo_Rider::mochi.as3.MochiInventory::setProperty",
+            "BO_Neo_Rider::mochi.as3.MochiInventory::sync",
+            "BO_Neo_Rider::mochi.as3.MochiServices::clickMovie",
+            "BO_Neo_Rider::mochi.as3.MochiServices::init",
+            "BO_Neo_Rider::mochi.as3.MochiServices::send",
+            "BO_Neo_Rider::mochi.as3.MochiServices::setContainer",
+            "BO_Neo_Rider::mochi.as3.MochiServices::urlOptions",
+            "BO_Neo_Rider::mochi.as3.MochiSync::setProperty",
+            "BO_Neo_Rider::mochi.as3.MochiUserData::deserialize",
+            "BO_Neo_Rider::mochi.as3.MochiUserData::request",
+            "BO_Neo_Rider::mochi.as3.MochiUserData::serialize",
+            "BO_Neo_Rider::sandy.bounds.BBox::addInternalPoint",
+            "BO_Neo_Rider::sandy.bounds.BBox::addInternalPointXYZ",
+            "BO_Neo_Rider::sandy.bounds.BBox::clone",
+            "BO_Neo_Rider::sandy.bounds.BBox::copy",
+            "BO_Neo_Rider::sandy.bounds.BBox::getEdges",
+            "BO_Neo_Rider::sandy.bounds.BSphere::copy",
+            "BO_Neo_Rider::sandy.core.Scene3D::set root",
+            "BO_Neo_Rider::sandy.core.data.BSPNode::makeLazyBSP",
+            "BO_Neo_Rider::sandy.core.data.Matrix4::deserialize",
+            "BO_Neo_Rider::sandy.core.data.Matrix4::transform",
+            "BO_Neo_Rider::sandy.core.data.Matrix4::transform3x3",
+            "BO_Neo_Rider::sandy.core.data.Point3D::deserialize",
+            "BO_Neo_Rider::sandy.core.data.Polygon::__update",
+            "BO_Neo_Rider::sandy.core.data.Polygon::_onInteraction",
+            "BO_Neo_Rider::sandy.core.data.Pool::Pool",
+            "BO_Neo_Rider::sandy.core.data.PrimitiveFace::set appearance",
+            "BO_Neo_Rider::sandy.core.data.Vertex::clone",
+            "BO_Neo_Rider::sandy.core.data.Vertex::getCameraPoint3D",
+            "BO_Neo_Rider::sandy.core.data.Vertex::getPoint3D",
+            "BO_Neo_Rider::sandy.core.interaction.TextLink::_init",
+            "BO_Neo_Rider::sandy.core.interaction.TextLink::getTextLinks",
+            "BO_Neo_Rider::sandy.core.light.Light3D::setDirection",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::lookAt",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveForward",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveHorizontally",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveSideways",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveUpwards",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::set matrix",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::setPosition",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::translate",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::update",
+            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::updateTransform",
+            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::Camera3D",
+            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::projectVertex",
+            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::setPerspectiveProjection",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::clone",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::generateVertexNormals",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceNormal",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceUVCoordsIds",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceVertexIds",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setUVCoords",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setVertex",
+            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setVertexNormal",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::addChild",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set appearance",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableBackFaceCulling",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableClipping",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableEvents",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableInteractivity",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set scene",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set useSingleContainer",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::Shape3D",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::__destroyPolygons",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::__generatePolygons",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::_onInteraction",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set appearance",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set enableInteractivity",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set geometryCenter",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set scene",
+            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::soundCompleteHandler",
+            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::updateChannelRef",
+            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::updateSoundTransform",
+            "BO_Neo_Rider::sandy.core.scenegraph.Sprite2D::display",
+            "BO_Neo_Rider::sandy.core.scenegraph.Sprite2D::set content",
+            "BO_Neo_Rider::sandy.materials.Appearance::dispose",
+            "BO_Neo_Rider::sandy.materials.BitmapMaterial::renderRec",
+            "BO_Neo_Rider::sandy.materials.BitmapMaterial::renderTriangle",
+            "BO_Neo_Rider::sandy.materials.BitmapMaterial::set texture",
+            "BO_Neo_Rider::sandy.materials.BitmapMaterial::setTiling",
+            "BO_Neo_Rider::sandy.materials.BitmapMaterial::setTransparency",
+            "BO_Neo_Rider::sandy.materials.Material::init",
+            "BO_Neo_Rider::sandy.math.FastMath::initialize",
+            "BO_Neo_Rider::sandy.math.PlaneMath::createFromNormalAndPoint",
+            "BO_Neo_Rider::sandy.math.PlaneMath::normalizePlane",
+            "BO_Neo_Rider::sandy.math.Point3DMath::normalize",
+            "BO_Neo_Rider::sandy.primitive.Box::_generateFaces",
+            "BO_Neo_Rider::sandy.view.Frustum::Frustum",
+            "BO_Neo_Rider::sandy.view.Frustum::clipLineFrontPlane",
+            "BO_Neo_Rider::sandy.view.Frustum::clipPolygon",
+            "BO_Neo_Rider::sandy.view.Frustum::computePlanes",
         ],
     },
     RemainderGroup {
@@ -857,149 +1143,44 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
     RemainderGroup {
         precondition: "surviving merge operand",
         must_stay_refused: false,
-        anonymous: 29,
+        anonymous: 3,
         members: &[
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSet::compatible",
-            "10_More_Bullets::zpp_nape.callbacks.ZPP_CbSetPair::__validate",
-            "10_More_Bullets::zpp_nape.phys.ZPP_Interactor::int_callback",
             "ATV_Cross_Canada::Playtomic._-P8::_-7z",
             "ATV_Cross_Canada::Playtomic._-P8::_-Ft",
             "ATV_Cross_Canada::_-E3.TweenMax::TweenMax",
             "ATV_Cross_Canada::_-Fw._-4::onInitTween",
-            "ATV_Cross_Canada::_-Fw._-Pt::onInitTween",
-            "ATV_Cross_Canada::_-J1._-4h::keyDown",
-            "ATV_Cross_Canada::_-J1._-4h::keyUp",
             "ATV_Cross_Canada::_-Nh._-7W::update",
-            "ATV_Cross_Canada::_-P._-IL::_-Gl",
-            "ATV_Cross_Canada::engine.comp.CompPoint2::CompPoint2",
-            "BO_Awesome_Ranger::Equations::easeOutElastic",
             "BO_Awesome_Ranger::Input::_-35",
             "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-08",
             "BO_Awesome_Ranger::bodies.Sign::updatePosition",
+            "BO_Neo_Rider::mochi.as3.MochiServices::connectWait",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::removeChild",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::set visible",
+            "BO_Neo_Rider::sandy.core.scenegraph.Node::update",
+            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set enableEvents",
+            "BO_Neo_Rider::sandy.core.scenegraph.TransformGroup::updateBoundingVolumes",
+        ],
+    },
+    RemainderGroup {
+        precondition: "surviving merge operand beside a fabricated operand",
+        must_stay_refused: false,
+        anonymous: 12,
+        members: &[
             "BO_Neo_Rider::Retry::frame1",
-            "BO_Neo_Rider::ZumspielAPI::_send_",
             "BO_Neo_Rider::build_fla.MainTimeline::citySet",
             "BO_Neo_Rider::build_fla.MainTimeline::frame1",
             "BO_Neo_Rider::build_fla.MainTimeline::frame10",
-            "BO_Neo_Rider::build_fla.MainTimeline::frame15",
             "BO_Neo_Rider::build_fla.MainTimeline::objPieces",
-            "BO_Neo_Rider::com.zumspiel.ZAPI::addToStage",
-            "BO_Neo_Rider::mochi.as3.MochiAd::_parseOptions",
-            "BO_Neo_Rider::mochi.as3.MochiAd::adShowing",
-            "BO_Neo_Rider::mochi.as3.MochiAd::createEmptyMovieClip",
             "BO_Neo_Rider::mochi.as3.MochiAd::showClickAwayAd",
             "BO_Neo_Rider::mochi.as3.MochiAd::showInterLevelAd",
             "BO_Neo_Rider::mochi.as3.MochiAd::showPreGameAd",
-            "BO_Neo_Rider::mochi.as3.MochiAd::unload",
-            "BO_Neo_Rider::mochi.as3.MochiEventDispatcher::removeEventListener",
-            "BO_Neo_Rider::mochi.as3.MochiEvents::setNotifications",
-            "BO_Neo_Rider::mochi.as3.MochiEvents::trigger",
-            "BO_Neo_Rider::mochi.as3.MochiInventory::getConsumableBag",
-            "BO_Neo_Rider::mochi.as3.MochiInventory::newItems",
-            "BO_Neo_Rider::mochi.as3.MochiInventory::setProperty",
-            "BO_Neo_Rider::mochi.as3.MochiInventory::sync",
             "BO_Neo_Rider::mochi.as3.MochiServices::addLinkEvent",
-            "BO_Neo_Rider::mochi.as3.MochiServices::clickMovie",
             "BO_Neo_Rider::mochi.as3.MochiServices::connect",
-            "BO_Neo_Rider::mochi.as3.MochiServices::connectWait",
-            "BO_Neo_Rider::mochi.as3.MochiServices::init",
             "BO_Neo_Rider::mochi.as3.MochiServices::initComChannels",
             "BO_Neo_Rider::mochi.as3.MochiServices::loadCommunicator",
-            "BO_Neo_Rider::mochi.as3.MochiServices::send",
-            "BO_Neo_Rider::mochi.as3.MochiServices::setContainer",
-            "BO_Neo_Rider::mochi.as3.MochiServices::urlOptions",
-            "BO_Neo_Rider::mochi.as3.MochiSync::setProperty",
-            "BO_Neo_Rider::mochi.as3.MochiUserData::deserialize",
-            "BO_Neo_Rider::mochi.as3.MochiUserData::request",
-            "BO_Neo_Rider::mochi.as3.MochiUserData::serialize",
-            "BO_Neo_Rider::sandy.bounds.BBox::addInternalPoint",
-            "BO_Neo_Rider::sandy.bounds.BBox::addInternalPointXYZ",
-            "BO_Neo_Rider::sandy.bounds.BBox::clone",
-            "BO_Neo_Rider::sandy.bounds.BBox::copy",
-            "BO_Neo_Rider::sandy.bounds.BBox::getEdges",
-            "BO_Neo_Rider::sandy.bounds.BSphere::copy",
             "BO_Neo_Rider::sandy.core.Scene3D::render",
-            "BO_Neo_Rider::sandy.core.Scene3D::set root",
-            "BO_Neo_Rider::sandy.core.data.BSPNode::makeLazyBSP",
-            "BO_Neo_Rider::sandy.core.data.Matrix4::deserialize",
-            "BO_Neo_Rider::sandy.core.data.Matrix4::transform",
-            "BO_Neo_Rider::sandy.core.data.Matrix4::transform3x3",
-            "BO_Neo_Rider::sandy.core.data.Point3D::deserialize",
-            "BO_Neo_Rider::sandy.core.data.Polygon::__update",
-            "BO_Neo_Rider::sandy.core.data.Polygon::_onInteraction",
-            "BO_Neo_Rider::sandy.core.data.Pool::Pool",
-            "BO_Neo_Rider::sandy.core.data.PrimitiveFace::set appearance",
-            "BO_Neo_Rider::sandy.core.data.Vertex::clone",
-            "BO_Neo_Rider::sandy.core.data.Vertex::getCameraPoint3D",
-            "BO_Neo_Rider::sandy.core.data.Vertex::getPoint3D",
-            "BO_Neo_Rider::sandy.core.interaction.TextLink::_init",
-            "BO_Neo_Rider::sandy.core.interaction.TextLink::getTextLinks",
-            "BO_Neo_Rider::sandy.core.light.Light3D::setDirection",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::lookAt",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveForward",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveHorizontally",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveSideways",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::moveUpwards",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::set matrix",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::setPosition",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::translate",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::update",
-            "BO_Neo_Rider::sandy.core.scenegraph.ATransformable::updateTransform",
-            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::Camera3D",
             "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::projectArray",
-            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::projectVertex",
-            "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::setPerspectiveProjection",
             "BO_Neo_Rider::sandy.core.scenegraph.Camera3D::update",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::clone",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::generateVertexNormals",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceNormal",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceUVCoordsIds",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setFaceVertexIds",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setUVCoords",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setVertex",
-            "BO_Neo_Rider::sandy.core.scenegraph.Geometry3D::setVertexNormal",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::addChild",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::removeChild",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set appearance",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableBackFaceCulling",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableClipping",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableEvents",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set enableInteractivity",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set scene",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set useSingleContainer",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::set visible",
-            "BO_Neo_Rider::sandy.core.scenegraph.Node::update",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::Shape3D",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::__destroyPolygons",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::__generatePolygons",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::_onInteraction",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set appearance",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set enableEvents",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set enableInteractivity",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set geometryCenter",
-            "BO_Neo_Rider::sandy.core.scenegraph.Shape3D::set scene",
-            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::soundCompleteHandler",
-            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::updateChannelRef",
-            "BO_Neo_Rider::sandy.core.scenegraph.Sound3D::updateSoundTransform",
-            "BO_Neo_Rider::sandy.core.scenegraph.Sprite2D::display",
-            "BO_Neo_Rider::sandy.core.scenegraph.Sprite2D::set content",
-            "BO_Neo_Rider::sandy.core.scenegraph.TransformGroup::updateBoundingVolumes",
-            "BO_Neo_Rider::sandy.materials.Appearance::dispose",
-            "BO_Neo_Rider::sandy.materials.BitmapMaterial::renderRec",
-            "BO_Neo_Rider::sandy.materials.BitmapMaterial::renderTriangle",
-            "BO_Neo_Rider::sandy.materials.BitmapMaterial::set texture",
-            "BO_Neo_Rider::sandy.materials.BitmapMaterial::setTiling",
-            "BO_Neo_Rider::sandy.materials.BitmapMaterial::setTransparency",
-            "BO_Neo_Rider::sandy.materials.Material::init",
-            "BO_Neo_Rider::sandy.math.FastMath::initialize",
-            "BO_Neo_Rider::sandy.math.PlaneMath::createFromNormalAndPoint",
-            "BO_Neo_Rider::sandy.math.PlaneMath::normalizePlane",
-            "BO_Neo_Rider::sandy.math.Point3DMath::normalize",
-            "BO_Neo_Rider::sandy.primitive.Box::_generateFaces",
-            "BO_Neo_Rider::sandy.view.Frustum::Frustum",
-            "BO_Neo_Rider::sandy.view.Frustum::clipLineFrontPlane",
-            "BO_Neo_Rider::sandy.view.Frustum::clipPolygon",
-            "BO_Neo_Rider::sandy.view.Frustum::computePlanes",
         ],
     },
     RemainderGroup {
@@ -1711,7 +1892,7 @@ fn the_corpus_remainder_holds_its_pinned_membership() {
     );
     assert_eq!(files, 19, "the pinned membership names bodies in 19 files");
     assert_eq!(census.bodies, 17917);
-    assert_eq!(census.recovered, 16857);
+    assert_eq!(census.recovered, 16866);
     compare(&census, CORPUS_REMAINDER, "corpus");
 }
 
@@ -1729,7 +1910,7 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     eprintln!("AS3 corpus remainder: {required}/{total} are refusals the item requires");
-    assert_eq!(total, 1060);
+    assert_eq!(total, 1051);
     assert_eq!(
         required, 453,
         "a body counted here is one FEAT-028 names as a required refusal: a merge whose incoming \
