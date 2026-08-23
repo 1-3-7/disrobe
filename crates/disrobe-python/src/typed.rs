@@ -1485,6 +1485,11 @@ mod native_aot_accessor_tests {
     #[test]
     fn boundary_and_name_accessors_read_the_report_rather_than_returning_zero() {
         let data: Json = sret_report_json();
+        assert_eq!(
+            field_str(&data, "runtime_label").as_deref(),
+            Some("Net9"),
+            "managed_abi_sret_net9_x86_64.build.txt records SDK 9.0.316 and ILCompiler 9.0.18"
+        );
         assert!(
             array_len(&data, "recovered_names") > 0,
             "the fixture carries recovered names"

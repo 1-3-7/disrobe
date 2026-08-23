@@ -1059,7 +1059,7 @@ tools but never shell out to them. Counts are informational only.
 import disrobe
 from disrobe import (
     DotnetPe, DotnetMetadata, DotnetDetection,
-    DotnetAnalysis, DotnetDecompilation, DotnetDecoders, BackendList,
+    DotnetAnalysis, DotnetDecompilation, DotnetDecoders, DotnetNativeAot, BackendList,
 )
 
 with open("Sample.dll", "rb") as fh:
@@ -1095,6 +1095,9 @@ methods_failed: int | None = decompilation.methods_failed
 decoders: DotnetDecoders = disrobe.dotnet_recover_decoders(pe_bytes)
 pure_decoders_found: int | None = decoders.pure_decoders_found
 constants_recovered: int = decoders.constants_recovered
+
+with open("HelloAppAot.exe", "rb") as fh:
+    image_bytes: bytes = fh.read()
 
 native_aot: DotnetNativeAot = disrobe.dotnet_native_aot(image_bytes)
 runtime_label: str | None = native_aot.runtime_label
