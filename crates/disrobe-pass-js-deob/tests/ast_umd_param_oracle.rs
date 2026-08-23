@@ -144,6 +144,40 @@ fn guarded_umd_arrow_factory_recovers_amd_dependency_names() {
 }
 
 #[test]
+fn independent_umd_factories_reuse_the_preferred_dependency_name() {
+    let source: &str = r#"(function(root, factory) {
+    if (typeof define === "function" && define.amd) {
+        define(["./math-utils"], factory);
+    } else {
+        factory(root.mathUtils);
+    }
+}(__root, function(a) {
+    print(a.sum(2, 3));
+}));
+(function(root, factory) {
+    if (typeof define === "function" && define.amd) {
+        define(["./math-utils"], factory);
+    } else {
+        factory(root.mathUtils);
+    }
+}(__root, function(b) {
+    print(b.sum(4, 5));
+}));"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.amd_parameters_renamed, 2, "source:\n{recovered}");
+    assert_eq!(
+        recovered.matches("function(mathUtils)").count(),
+        2,
+        "independent factory scopes may share the preferred name:\n{recovered}"
+    );
+    assert!(
+        !recovered.contains("mathUtils_1"),
+        "a suffix is only needed for a collision in the same factory scope:\n{recovered}"
+    );
+    assert_runtime_parity(source, &recovered);
+}
+
+#[test]
 fn guarded_commonjs_factory_recovers_required_dependency_names() {
     let source: &str = r#"(function(factory) {
     if (typeof exports === "object" && typeof module !== "undefined") {

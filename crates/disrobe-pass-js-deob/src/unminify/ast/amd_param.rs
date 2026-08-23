@@ -52,8 +52,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         scopes,
         nodes,
     };
-    let mut reserved: IndexSet<String> = collect_reserved_names(&semantic);
-    let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
+    let root_reserved: IndexSet<String> = collect_reserved_names(&semantic);
     let mut edits: Vec<Edit> = Vec::new();
     let mut stats: AmdParamStats = AmdParamStats::default();
 
@@ -64,6 +63,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         let Some(factory): Option<AmdFactory<'_>> = amd_factory(call, symbols) else {
             continue;
         };
+        let mut reserved: IndexSet<String> = root_reserved.clone();
+        let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
         for (parameter, dependency) in factory.parameters.items.iter().zip(&factory.dependencies) {
             let specifier: &str = dependency.as_str();
             if is_amd_runtime_dependency(specifier) || specifier.contains('!') {
