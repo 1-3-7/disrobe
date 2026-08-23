@@ -69,6 +69,36 @@ fn nested_str(data: &Json, outer: &str, inner: &str) -> Option<String> {
 }
 
 #[inline]
+fn attribution_list<'a>(data: &'a Json, key: &str) -> &'a [Json] {
+    const EMPTY: &[Json] = &[];
+    field(data, "metadata_attribution")
+        .and_then(|attribution: &Json| field(attribution, key))
+        .and_then(Json::as_array)
+        .map_or(EMPTY, Vec::as_slice)
+}
+
+#[inline]
+fn recovered_bodies_from(data: &Json, signature_source: &str) -> usize {
+    attribution_list(data, "methods")
+        .iter()
+        .filter(|method: &&Json| {
+            field(method, "body").is_some_and(|body: &Json| {
+                field_str(body, "status").as_deref() == Some("recovered")
+                    && field_str(body, "signature_source").as_deref() == Some(signature_source)
+            })
+        })
+        .count()
+}
+
+#[inline]
+fn methods_carrying(data: &Json, key: &str) -> usize {
+    attribution_list(data, "methods")
+        .iter()
+        .filter(|method: &&Json| field(method, key).is_some())
+        .count()
+}
+
+#[inline]
 fn nested_array_len(data: &Json, outer: &str, inner: &str) -> usize {
     field(data, outer).map_or(0, |v: &Json| array_len(v, inner))
 }
@@ -898,6 +928,30 @@ typed_report!(
 );
 
 typed_report!(
+    DotnetNativeAot,
+    "DotnetNativeAot",
+    "NativeAOT recovery for a .NET image: runtime label, recovered names and types, and per-method \
+     boundaries, entrypoints and bodies. `managed_signature_count` counts bodies whose prototype was \
+     reattached from the managed signature; `register_signature_count` counts those left with \
+     lifter-typed registers because reattachment abstained.",
+    llm,
+    accessors {
+        is_native_aot -> bool : |d| field_bool(d, "is_native_aot"),
+        runtime_label -> Option<String> : |d| field_str(d, "runtime_label"),
+        recovered_symbol_count -> usize : |d| object_len(d, "recovered_symbols"),
+        recovered_name_count -> usize : |d| array_len(d, "recovered_names"),
+        eager_class_constructors -> Option<u64> : |d| field_u64(d, "eager_class_constructors"),
+        type_count -> usize : |d| attribution_list(d, "types").len(),
+        method_count -> usize : |d| attribution_list(d, "methods").len(),
+        methods_with_entrypoint -> usize : |d| methods_carrying(d, "entrypoint_rva"),
+        methods_with_code_range -> usize : |d| methods_carrying(d, "code_range"),
+        methods_with_body -> usize : |d| methods_carrying(d, "body"),
+        managed_signature_count -> usize : |d| recovered_bodies_from(d, "managed"),
+        register_signature_count -> usize : |d| recovered_bodies_from(d, "registers"),
+    }
+);
+
+typed_report!(
     WasmAnalysis,
     "WasmAnalysis",
     "WebAssembly module summary: import/export tables, section counts, code size, and DWARF presence.",
@@ -1316,6 +1370,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DotnetAnalysis>()?;
     m.add_class::<DotnetDecompilation>()?;
     m.add_class::<DotnetDecoders>()?;
+    m.add_class::<DotnetNativeAot>()?;
     m.add_class::<WasmAnalysis>()?;
     m.add_class::<WasmDetection>()?;
     m.add_class::<JsDetection>()?;
@@ -1346,4 +1401,114 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PicklePolyglot>()?;
     m.add_class::<PickleMlReport>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod native_aot_accessor_tests {
+    use disrobe_pass_dotnet::AotReport;
+    use disrobe_pass_dotnet::aot::detect as detect_native_aot;
+    use pyo3::PyResult;
+    use serde_json::Value as Json;
+
+    use super::{
+        array_len, attribution_list, field_bool, field_str, methods_carrying,
+        recovered_bodies_from, to_json,
+    };
+
+    const SRET_IMAGE: &[u8] = include_bytes!(
+        "../../disrobe-pass-dotnet/tests/fixtures/native_aot/managed_abi_sret_net9_x86_64.exe"
+    );
+
+    const AUTHORED_METHODS: [&str; 7] = [
+        "Split", "Spread", "Quarter", "Narrow", "Widen", "Label", "Doubled",
+    ];
+
+    const AUTHORED_STRUCT_RETURN_METHOD: &str = "Split";
+
+    fn report_json(image: &[u8]) -> Json {
+        let report: AotReport = detect_native_aot(image);
+        let serialized: PyResult<Json> = to_json(&report);
+        assert!(
+            serialized.is_ok(),
+            "the NativeAOT report must serialize for the typed accessors to read it"
+        );
+        serialized.unwrap_or_default()
+    }
+
+    fn sret_report_json() -> Json {
+        report_json(SRET_IMAGE)
+    }
+
+    #[test]
+    fn the_binding_sees_every_method_the_fixture_source_declares() {
+        let data: Json = sret_report_json();
+        assert!(
+            field_bool(&data, "is_native_aot"),
+            "the committed fixture is a NativeAOT image"
+        );
+        let names: Vec<String> = attribution_list(&data, "methods")
+            .iter()
+            .filter_map(|method: &Json| field_str(method, "name"))
+            .collect();
+        for authored in AUTHORED_METHODS {
+            assert!(
+                names.iter().any(|name: &String| name == authored),
+                "{authored} is declared in managed_abi_sret_net9_x86_64.cs but the typed accessor \
+                 does not see it; visible names: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_provenance_counts_partition_the_recovered_bodies() {
+        let data: Json = sret_report_json();
+        let managed: usize = recovered_bodies_from(&data, "managed");
+        let registers: usize = recovered_bodies_from(&data, "registers");
+        let with_body: usize = methods_carrying(&data, "body");
+        assert!(
+            managed > 0,
+            "managed signature reattachment must reach the python binding, saw 0 of {with_body} \
+             bodies"
+        );
+        assert!(
+            registers > 0,
+            "{AUTHORED_STRUCT_RETURN_METHOD} returns a struct by hidden pointer, so at least one \
+             body must keep register-typed provenance; saw 0"
+        );
+        assert!(
+            managed + registers <= with_body,
+            "provenance counts ({managed} managed, {registers} registers) cannot exceed the \
+             {with_body} methods carrying a body"
+        );
+    }
+
+    #[test]
+    fn boundary_and_name_accessors_read_the_report_rather_than_returning_zero() {
+        let data: Json = sret_report_json();
+        assert!(
+            array_len(&data, "recovered_names") > 0,
+            "the fixture carries recovered names"
+        );
+        assert!(
+            !attribution_list(&data, "types").is_empty(),
+            "the fixture declares six structs and one class, so the type list is not empty"
+        );
+        assert!(
+            methods_carrying(&data, "code_range") > 0,
+            "method boundaries are recovered for this fixture"
+        );
+        assert!(
+            methods_carrying(&data, "entrypoint_rva") > 0,
+            "invoke-map entrypoints are recovered for this fixture"
+        );
+    }
+
+    #[test]
+    fn the_accessors_report_nothing_for_an_image_that_is_not_native_aot() {
+        let data: Json = report_json(b"MZ not a real image");
+        assert!(!field_bool(&data, "is_native_aot"));
+        assert_eq!(attribution_list(&data, "methods").len(), 0);
+        assert_eq!(recovered_bodies_from(&data, "managed"), 0);
+        assert_eq!(methods_carrying(&data, "body"), 0);
+    }
 }

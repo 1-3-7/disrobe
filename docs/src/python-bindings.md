@@ -196,6 +196,7 @@ bundle: LlmBundle = {
 | | `dotnet_analyze(pe_bytes)` | `DotnetAnalysis` |
 | | `dotnet_decompile(pe_bytes)` | `DotnetDecompilation` |
 | | `dotnet_recover_decoders(pe_bytes)` | `DotnetDecoders` |
+| | `dotnet_native_aot(image_bytes)` | `DotnetNativeAot` |
 | | `dotnet_backends()` | `BackendList` |
 | WebAssembly | `wasm_analyze(wasm_bytes)` | `WasmAnalysis` |
 | | `wasm_detect(wasm_bytes)` | `WasmDetection` |
@@ -1095,9 +1096,30 @@ decoders: DotnetDecoders = disrobe.dotnet_recover_decoders(pe_bytes)
 pure_decoders_found: int | None = decoders.pure_decoders_found
 constants_recovered: int = decoders.constants_recovered
 
+native_aot: DotnetNativeAot = disrobe.dotnet_native_aot(image_bytes)
+runtime_label: str | None = native_aot.runtime_label
+method_count: int = native_aot.method_count
+methods_with_code_range: int = native_aot.methods_with_code_range
+managed_signature_count: int = native_aot.managed_signature_count
+register_signature_count: int = native_aot.register_signature_count
+
 backend_list: BackendList = disrobe.dotnet_backends()
 available_count: int = backend_list.available_count
 ```
+
+`dotnet_native_aot` reads an ahead-of-time compiled .NET image rather than a
+managed assembly, so it accepts PE, ELF and Mach-O input. It never raises on a
+file that is not a NativeAOT image: `is_native_aot` is then false and every
+count is zero.
+
+`managed_signature_count` and `register_signature_count` partition the method
+bodies disrobe recovered. A body counts as managed when its prototype was
+reattached from the image's own managed signature. It counts as registers when
+reattachment abstained and the body kept the types the machine-code lifter
+inferred from register use, which happens for generics, varargs, a hidden
+struct return, and the other cases the pass declines rather than guesses. The
+two counts separate a prototype disrobe sourced from metadata from one it could
+only infer, so read them as a pair.
 
 ### .NET report classes
 
@@ -1109,6 +1131,7 @@ available_count: int = backend_list.available_count
 | `DotnetAnalysis` | `pe_bitness: str \| None`, `clr_runtime_version: str \| None`, `native_aot: bool`, `primary_protector: str \| None`, `opcode_spec_coverage_pct: int \| None`, `llm` |
 | `DotnetDecompilation` | `module_name: str \| None`, `methods_decompiled: int \| None`, `methods_bodyless: int \| None`, `methods_failed: int \| None`, `llm` |
 | `DotnetDecoders` | `pure_decoders_found: int \| None`, `constants_recovered: int`, `llm` |
+| `DotnetNativeAot` | `is_native_aot: bool`, `runtime_label: str \| None`, `recovered_symbol_count: int`, `recovered_name_count: int`, `eager_class_constructors: int \| None`, `type_count: int`, `method_count: int`, `methods_with_entrypoint: int`, `methods_with_code_range: int`, `methods_with_body: int`, `managed_signature_count: int`, `register_signature_count: int`, `llm` |
 
 ## WebAssembly
 

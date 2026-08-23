@@ -1,5 +1,6 @@
+use disrobe_pass_dotnet::aot::detect as detect_native_aot;
 use disrobe_pass_dotnet::{
-    Backend, ClrHeader, DecompiledAssembly, DetectionReport, MetadataRoot, PeImage,
+    AotReport, Backend, ClrHeader, DecompiledAssembly, DetectionReport, MetadataRoot, PeImage,
     StaticDecryptReport, analyze as analyze_pass, decompile_assembly, detect_all, parse,
     parse_clr_header, parse_metadata_root, recover_static_decoders,
 };
@@ -12,7 +13,7 @@ use crate::err::map;
 use crate::llm::null_bundled_value;
 use crate::typed::{
     BackendList, DotnetAnalysis, DotnetDecoders, DotnetDecompilation, DotnetDetection,
-    DotnetMetadata, DotnetPe,
+    DotnetMetadata, DotnetNativeAot, DotnetPe,
 };
 
 #[pyfunction]
@@ -73,6 +74,13 @@ fn dotnet_recover_decoders(pe_bytes: &[u8]) -> PyResult<DotnetDecoders> {
 }
 
 #[pyfunction]
+#[pyo3(text_signature = "(image_bytes)")]
+fn dotnet_native_aot(image_bytes: &[u8]) -> PyResult<DotnetNativeAot> {
+    let report: AotReport = detect_native_aot(image_bytes);
+    Ok(DotnetNativeAot::from_value(null_bundled_value(&report)?))
+}
+
+#[pyfunction]
 #[pyo3(text_signature = "()")]
 fn dotnet_backends() -> PyResult<BackendList> {
     let backends: [Backend; 4] = [
@@ -106,6 +114,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dotnet_analyze, m)?)?;
     m.add_function(wrap_pyfunction!(dotnet_decompile, m)?)?;
     m.add_function(wrap_pyfunction!(dotnet_recover_decoders, m)?)?;
+    m.add_function(wrap_pyfunction!(dotnet_native_aot, m)?)?;
     m.add_function(wrap_pyfunction!(dotnet_backends, m)?)?;
     Ok(())
 }
