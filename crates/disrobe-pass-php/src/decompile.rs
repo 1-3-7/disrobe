@@ -1189,6 +1189,7 @@ enum Stmt {
         subject: String,
         key: Option<String>,
         value: String,
+        by_reference: bool,
         body: Vec<Self>,
     },
     Switch {
@@ -1306,11 +1307,17 @@ impl Stmt {
                 subject,
                 key,
                 value,
+                by_reference,
                 body,
             } => {
+                let bound: String = if *by_reference {
+                    format!("&{value}")
+                } else {
+                    value.clone()
+                };
                 let header: String = key.as_ref().map_or_else(
-                    || format!("foreach ({subject} as {value}) {{"),
-                    |k: &String| format!("foreach ({subject} as {k} => {value}) {{"),
+                    || format!("foreach ({subject} as {bound}) {{"),
+                    |k: &String| format!("foreach ({subject} as {k} => {bound}) {{"),
                 );
                 emitter.line(indent, &header);
                 for stmt in body {
@@ -3264,11 +3271,14 @@ impl<'a> Lifter<'a> {
         let subject: Expr = self.operand_expr(reset.op1_type, reset.op1)?;
         let fetch_idx: u32 = i + 1;
         let fetch: Op = self.ops.get(fetch_idx as usize)?.clone();
-        if fetch.opcode != op::FE_FETCH_R && fetch.opcode != op::FE_FETCH_RW {
-            return None;
-        }
+        let by_reference: bool = match (reset.opcode, fetch.opcode) {
+            (op::FE_RESET_R, op::FE_FETCH_R) => false,
+            (op::FE_RESET_RW, op::FE_FETCH_RW) => true,
+            _ => return None,
+        };
         let value: String = match fetch.op2_type {
             OperandType::Cv => format!("${}", self.cv(fetch.op2)),
+            _ if by_reference => return None,
             _ => "$value".to_owned(),
         };
         let mut value_start: u32 = fetch_idx + 1;
@@ -3309,6 +3319,7 @@ impl<'a> Lifter<'a> {
                 subject: subject.text,
                 key,
                 value,
+                by_reference,
                 body,
             }],
             next,
@@ -3560,14 +3571,8 @@ impl<'a> Lifter<'a> {
                 });
                 None
             }
-            o if o == op::INIT_ARRAY => {
-                self.fold_array_init(op);
-                None
-            }
-            o if o == op::ADD_ARRAY_ELEMENT => {
-                self.fold_array_append(op);
-                None
-            }
+            o if o == op::INIT_ARRAY => self.fold_array_init(idx, op),
+            o if o == op::ADD_ARRAY_ELEMENT => self.fold_array_append(idx, op),
             o if o == op::ECHO => {
                 let arg: Expr = self.operand_expr(op.op1_type, op.op1)?;
                 Some(format!("echo {};", arg.text))
@@ -3940,10 +3945,25 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn fold_array_init(&mut self, op: &Op) {
+    fn array_element(&self, op: &Op) -> Option<String> {
+        let value: Expr = self.operand_expr(op.op1_type, op.op1)?;
+        if op.op2_type == OperandType::Unused {
+            return Some(value.text);
+        }
+        let key: Expr = self.operand_expr(op.op2_type, op.op2)?;
+        Some(format!("{} => {}", key.text, value.text))
+    }
+
+    fn fold_array_init(&mut self, idx: u32, op: &Op) -> Option<String> {
+        if op.op1_type == OperandType::Unused && op.op2_type != OperandType::Unused {
+            return Some(self.refuse(idx, op.opcode, REASON_ARRAY_SHAPE));
+        }
         let mut parts: Vec<String> = Vec::new();
-        if let Some(first) = self.operand_expr(op.op1_type, op.op1) {
-            parts.push(first.text);
+        if op.op1_type != OperandType::Unused {
+            let Some(first): Option<String> = self.array_element(op) else {
+                return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+            };
+            parts.push(first);
         }
         let text: String = format!("[{}]", parts.join(", "));
         self.store_result(
@@ -3953,33 +3973,40 @@ impl<'a> Lifter<'a> {
                 prec: PREC_ATOM,
             },
         );
+        None
     }
 
-    fn fold_array_append(&mut self, op: &Op) {
-        let key: (OperandType, u32) = (op.result_type, op.result);
-        let existing: Option<Expr> = self.slots.get(&key).cloned();
-        let elem: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
-        if let (Some(arr), Some(e)) = (existing, elem) {
-            let inner: String = arr
-                .text
-                .strip_prefix('[')
-                .and_then(|s: &str| s.strip_suffix(']'))
-                .map(str::to_owned)
-                .unwrap_or(arr.text);
-            let joined: String = if inner.is_empty() {
-                e.text
-            } else {
-                format!("{inner}, {}", e.text)
-            };
-            self.writable_slots.remove(&key);
-            self.slots.insert(
-                key,
-                Expr {
-                    text: format!("[{joined}]"),
-                    prec: PREC_ATOM,
-                },
-            );
+    fn fold_array_append(&mut self, idx: u32, op: &Op) -> Option<String> {
+        if op.op1_type == OperandType::Unused {
+            return Some(self.refuse(idx, op.opcode, REASON_ARRAY_SHAPE));
         }
+        let slot: (OperandType, u32) = (op.result_type, op.result);
+        let Some(array): Option<Expr> = self.slots.get(&slot).cloned() else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let Some(element): Option<String> = self.array_element(op) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let inner: String = array
+            .text
+            .strip_prefix('[')
+            .and_then(|s: &str| s.strip_suffix(']'))
+            .map(str::to_owned)
+            .unwrap_or(array.text);
+        let joined: String = if inner.is_empty() {
+            element
+        } else {
+            format!("{inner}, {element}")
+        };
+        self.writable_slots.remove(&slot);
+        self.slots.insert(
+            slot,
+            Expr {
+                text: format!("[{joined}]"),
+                prec: PREC_ATOM,
+            },
+        );
+        None
     }
 
     fn finish_call(&mut self, idx: u32, op: &Op) -> Option<String> {
@@ -4161,6 +4188,8 @@ const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
+const REASON_ARRAY_SHAPE: &str =
+    "an array element carries a key with no value, so this is not a php 8 array construction";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
 const REASON_ITERATION: &str =
     "the foreach reset, fetch and back edge do not form a php 8 iteration";
