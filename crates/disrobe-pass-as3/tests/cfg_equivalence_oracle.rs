@@ -1103,15 +1103,26 @@ fn exception_handler_values_reconcile_at_a_forward_merge() {
         lift_body_raw(&abc, &distinct_body, None).expect("raw distinct handler merge lift");
     let distinct: LiftedBody =
         lift_body(&abc, &distinct_body, None).expect("distinct handler merge lift");
-    assert!(
-        distinct.statements.iter().any(|statement: &Stmt| matches!(
-            statement,
+    let merged: Expr = distinct
+        .statements
+        .iter()
+        .find_map(|statement: &Stmt| match statement {
             Stmt::Assign {
                 target: Expr::Local(2),
-                value: Expr::Phi { .. },
-            }
-        )),
+                value,
+            } => Some(value.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the merge must reach local 2: {distinct:#?}"));
+    assert!(
+        !matches!(merged, Expr::IntLit(_)),
         "distinct normal and handler values must not select one predecessor: {distinct:#?}"
+    );
+    assert_eq!(
+        common::merge_definitions(&distinct.statements, &merged),
+        vec![Expr::IntLit(7), Expr::IntLit(9)],
+        "the normal path and the handler must each write the merged operand once, so the value \
+         read after the join is never a name one of those paths left unwritten: {distinct:#?}"
     );
     assert!(
         distinct
@@ -2021,28 +2032,29 @@ fn two_typed_handlers_over_one_range_recover_as_two_catch_clauses() {
 }
 
 #[test]
-fn a_handler_whose_layout_disagrees_with_the_table_keeps_one_clause() {
+fn a_handler_whose_layout_disagrees_with_the_table_keeps_the_branch_graph() {
     let abc: AbcFile = typed_handler_abc();
     let mut body: MethodBody = two_typed_handlers_body();
     body.exceptions.swap(0, 1);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("reordered handler raw lift");
     let lifted: LiftedBody = lift_body(&abc, &body, None).expect("reordered handler lift");
     let tries: Vec<&Stmt> = lifted
         .statements
         .iter()
         .filter(|statement: &&Stmt| matches!(statement, Stmt::Try { .. }))
         .collect();
-    assert_eq!(tries.len(), 1, "{lifted:#?}");
-    let Stmt::Try { catches, .. } = tries[0] else {
-        panic!("{lifted:#?}");
-    };
-    assert_eq!(
-        catches.len(),
-        1,
+    assert!(
+        tries.is_empty(),
         "when the table order and the code layout disagree the pairing is not provable, so the \
-         recovery must keep one clause rather than guess which handler owns which body. This \
-         guard is also what keeps every clause slice non-empty: folding an out-of-order \
-         handler table would build a slice whose start is past its end, so a malformed or \
-         hostile exception table would panic here rather than mis-recover: {lifted:#?}"
+         recovery must keep the branch graph rather than guess which handler owns which body. \
+         Folding an out-of-order handler table would place one handler body in the span between \
+         the guarded range and the clause the table names, and that span is not carried into any \
+         clause, so the body would be deleted from the output: {lifted:#?}"
+    );
+    assert_eq!(
+        classify(&raw, &lifted.statements),
+        Equivalence::Equivalent,
+        "refusing to fold must keep every statement of both handler bodies: {lifted:#?}"
     );
 }
 

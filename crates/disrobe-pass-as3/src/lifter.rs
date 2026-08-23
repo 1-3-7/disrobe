@@ -840,6 +840,12 @@ struct BranchMark {
     cond: Expr,
 }
 
+#[derive(Debug, Clone)]
+struct IncomingStack {
+    sites: Vec<usize>,
+    values: Vec<Expr>,
+}
+
 struct Lifter<'a> {
     abc: &'a AbcFile,
     stack: Vec<Expr>,
@@ -854,7 +860,8 @@ struct Lifter<'a> {
     short_circuits: Vec<ShortCircuit>,
     branch_marks: Vec<BranchMark>,
     hoisted_temporaries: u32,
-    incoming_stacks: BTreeMap<usize, Vec<Vec<Expr>>>,
+    pending_merge_definitions: Vec<(usize, Stmt)>,
+    incoming_stacks: BTreeMap<usize, Vec<IncomingStack>>,
     incoming_scopes: BTreeMap<usize, Vec<Vec<ScopeEntry>>>,
     untracked_stack_entries: BTreeSet<usize>,
     untracked_scope_entries: BTreeSet<usize>,
@@ -884,19 +891,21 @@ impl Lifter<'_> {
             self.incoming_stacks.remove(&target);
             return;
         }
-        if self
-            .incoming_stacks
-            .get(&target)
-            .is_some_and(|entries: &Vec<Vec<Expr>>| {
-                entries.iter().any(|entry: &Vec<Expr>| entry == &self.stack)
-            })
+        let site: usize = self.statements.len();
+        if let Some(entries) = self.incoming_stacks.get_mut(&target)
+            && let Some(existing) = entries
+                .iter_mut()
+                .find(|entry: &&mut IncomingStack| entry.values == self.stack)
         {
+            if existing.sites.len() < MAX_TRACKED_PREDECESSORS && !existing.sites.contains(&site) {
+                existing.sites.push(site);
+            }
             return;
         }
         if self
             .incoming_stacks
             .get(&target)
-            .is_some_and(|entries: &Vec<Vec<Expr>>| entries.len() == MAX_TRACKED_PREDECESSORS)
+            .is_some_and(|entries: &Vec<IncomingStack>| entries.len() == MAX_TRACKED_PREDECESSORS)
         {
             self.untracked_stack_entries.insert(target);
             self.incoming_stacks.remove(&target);
@@ -919,7 +928,10 @@ impl Lifter<'_> {
         self.incoming_stacks
             .entry(target)
             .or_default()
-            .push(self.stack.clone());
+            .push(IncomingStack {
+                sites: vec![site],
+                values: self.stack.clone(),
+            });
     }
 
     fn record_scope_edge(&mut self, target: usize) {
@@ -1013,6 +1025,20 @@ impl Lifter<'_> {
             .retain(|s: &ShortCircuit| s.branch_index < index);
         self.branch_marks
             .retain(|m: &BranchMark| m.stmt_index < index);
+        for entries in self.incoming_stacks.values_mut() {
+            for entry in entries.iter_mut() {
+                for site in &mut entry.sites {
+                    if *site > index {
+                        *site -= 1;
+                    }
+                }
+            }
+        }
+        for (site, _) in &mut self.pending_merge_definitions {
+            if *site > index {
+                *site -= 1;
+            }
+        }
     }
 
     fn short_circuit_resolves(&self, pending: &ShortCircuit) -> bool {
@@ -1193,6 +1219,149 @@ impl Lifter<'_> {
         self.stack = seeded;
     }
 
+    fn label_site(&self, offset: usize) -> usize {
+        let mut index: usize = self.statements.len();
+        while index > 0 {
+            match &self.statements[index - 1] {
+                Stmt::Label(label) if *label == offset => return index - 1,
+                Stmt::Label(_) | Stmt::Comment(_) => index -= 1,
+                _ => break,
+            }
+        }
+        self.statements.len()
+    }
+
+    fn site_is_reachable(&self, site: usize) -> bool {
+        !site
+            .checked_sub(1)
+            .and_then(|previous: usize| self.statements.get(previous))
+            .is_some_and(|statement: &Stmt| {
+                matches!(
+                    statement,
+                    Stmt::Jump { .. } | Stmt::Return(_) | Stmt::Throw(_)
+                )
+            })
+    }
+
+    fn merge_tracked_values(
+        &mut self,
+        offset: usize,
+        height: usize,
+        observed: &[IncomingStack],
+    ) -> Vec<Expr> {
+        let mut merged: Vec<Expr> = Vec::with_capacity(height);
+        for slot in 0..height {
+            let Some(first): Option<&Expr> = observed[0].values.get(slot) else {
+                merged.push(Expr::Phi {
+                    block: offset,
+                    slot,
+                });
+                continue;
+            };
+            if observed
+                .iter()
+                .all(|entry: &IncomingStack| entry.values.get(slot) == Some(first))
+            {
+                merged.push(first.clone());
+                continue;
+            }
+            let definition_count: usize = observed
+                .iter()
+                .fold(0usize, |total: usize, entry: &IncomingStack| {
+                    total.saturating_add(entry.sites.len())
+                });
+            let relocatable: bool = observed.iter().all(|entry: &IncomingStack| {
+                let Some(value): Option<&Expr> = entry.values.get(slot) else {
+                    return false;
+                };
+                if !expr_is_effect_free(value) {
+                    return false;
+                }
+                let restatements: usize = observed
+                    .iter()
+                    .filter(|other: &&IncomingStack| other.values.get(slot) == Some(value))
+                    .fold(0usize, |total: usize, other: &IncomingStack| {
+                        total.saturating_add(other.sites.len())
+                    });
+                restatements <= 1 || merge_value_is_reproducible(value)
+            }) && self
+                .pending_merge_definitions
+                .len()
+                .saturating_add(definition_count)
+                <= MAX_MERGE_DEFINITIONS;
+            if !relocatable {
+                merged.push(Expr::Phi {
+                    block: offset,
+                    slot,
+                });
+                continue;
+            }
+            let target: Expr = Expr::Name(format!("_temp{}", self.hoisted_temporaries));
+            self.hoisted_temporaries = self.hoisted_temporaries.saturating_add(1);
+            for entry in observed {
+                let Some(value): Option<&Expr> = entry.values.get(slot) else {
+                    continue;
+                };
+                for site in &entry.sites {
+                    if !self.site_is_reachable(*site) {
+                        continue;
+                    }
+                    self.pending_merge_definitions.push((
+                        *site,
+                        Stmt::Assign {
+                            target: target.clone(),
+                            value: value.clone(),
+                        },
+                    ));
+                }
+            }
+            merged.push(target);
+        }
+        merged
+    }
+
+    fn apply_pending_merge_definitions(&mut self) {
+        if self.pending_merge_definitions.is_empty() {
+            return;
+        }
+        let mut pending: Vec<(usize, Stmt)> = std::mem::take(&mut self.pending_merge_definitions);
+        pending.sort_by_key(|(site, _): &(usize, Stmt)| *site);
+        let previous: Vec<Stmt> = std::mem::take(&mut self.statements);
+        let mut merged: Vec<Stmt> = Vec::with_capacity(previous.len() + pending.len());
+        let mut shifts: Vec<usize> = Vec::with_capacity(previous.len() + 1);
+        let mut queued: std::vec::IntoIter<(usize, Stmt)> = pending.into_iter();
+        let mut next: Option<(usize, Stmt)> = queued.next();
+        for (index, statement) in previous.into_iter().enumerate() {
+            while next
+                .as_ref()
+                .is_some_and(|(site, _): &(usize, Stmt)| *site <= index)
+            {
+                if let Some((_, definition)) = next.take() {
+                    merged.push(definition);
+                }
+                next = queued.next();
+            }
+            shifts.push(merged.len());
+            merged.push(statement);
+        }
+        while let Some((_, definition)) = next.take() {
+            merged.push(definition);
+            next = queued.next();
+        }
+        shifts.push(merged.len());
+        for region in &mut self.with_regions {
+            region.open_stmt = shifts
+                .get(region.open_stmt)
+                .copied()
+                .unwrap_or(region.open_stmt);
+            region.close_stmt = shifts
+                .get(region.close_stmt)
+                .copied()
+                .unwrap_or(region.close_stmt);
+        }
+        self.statements = merged;
+    }
+
     fn record_scope_refusal(&mut self, reason: &'static str) {
         self.opaque_operands = self.opaque_operands.saturating_add(1);
         self.statements.push(Stmt::Comment(reason.to_owned()));
@@ -1306,16 +1475,20 @@ impl Lifter<'_> {
                 self.statements
                     .push(Stmt::Comment(STACK_CONFLICT_MARKER.to_owned()));
             }
-            let entries: Vec<Vec<Expr>> = self.incoming_stacks.remove(&offset).unwrap_or_default();
+            let entries: Vec<IncomingStack> =
+                self.incoming_stacks.remove(&offset).unwrap_or_default();
             let is_merge: bool = stack_analysis.switch_entries.contains(&offset)
                 || stack_analysis.value_joins.contains(&offset);
-            let mut observed: Vec<Vec<Expr>> = entries;
+            let mut observed: Vec<IncomingStack> = entries;
             if !stack_analysis.disconnected_entries.contains(&offset) {
-                observed.push(self.stack.clone());
+                observed.push(IncomingStack {
+                    sites: vec![self.label_site(offset)],
+                    values: self.stack.clone(),
+                });
             }
             let heights_disagree: bool = observed
                 .iter()
-                .any(|entry: &Vec<Expr>| entry.len() != height);
+                .any(|entry: &IncomingStack| entry.values.len() != height);
             if is_merge
                 && !resolved_value
                 && !self.stack_tracking_exhausted
@@ -1329,40 +1502,15 @@ impl Lifter<'_> {
                 self.reconcile_entry_height(offset, height, is_exc_target, true);
                 return;
             }
-            let tracked_values: Option<Vec<Expr>> = if resolved_value
-                || self.stack_tracking_exhausted
-                || untracked_entry
-                || !stack_analysis.forward_entries.contains(&offset)
-                || !is_merge
-            {
-                None
-            } else {
-                let entries: Vec<Vec<Expr>> = observed;
-                if entries.is_empty() || heights_disagree {
-                    None
-                } else {
-                    Some(
-                        (0..height)
-                            .map(|slot: usize| {
-                                let first: &Expr = &entries[0][slot];
-                                if entries
-                                    .iter()
-                                    .all(|entry: &Vec<Expr>| &entry[slot] == first)
-                                {
-                                    first.clone()
-                                } else {
-                                    Expr::Phi {
-                                        block: offset,
-                                        slot,
-                                    }
-                                }
-                            })
-                            .collect(),
-                    )
-                }
-            };
-            if let Some(values) = tracked_values {
-                self.stack = values;
+            let values_are_tracked: bool = !resolved_value
+                && !self.stack_tracking_exhausted
+                && !untracked_entry
+                && stack_analysis.forward_entries.contains(&offset)
+                && is_merge
+                && !observed.is_empty()
+                && !heights_disagree;
+            if values_are_tracked {
+                self.stack = self.merge_tracked_values(offset, height, &observed);
                 return;
             }
             let replace_values: bool = !resolved_value && is_merge;
@@ -1638,6 +1786,7 @@ fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSe
 }
 
 const STACK_SENTINEL_DEPTH: usize = 256;
+const MAX_MERGE_DEFINITIONS: usize = 4096;
 const MAX_TERNARY_FOLDS: usize = 64;
 const MAX_NEGATION_DEPTH: usize = 32;
 const MAX_OR_GUARD_TESTS: usize = 64;
@@ -1945,6 +2094,7 @@ fn block_entry_heights(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
@@ -3692,6 +3842,14 @@ fn structure_try(stmts: Vec<Stmt>, regions: &[RegionInfo], depth: usize) -> Vec<
         }
         _ => None,
     };
+    if !gap.iter().all(|statement: &Stmt| {
+        matches!(
+            statement,
+            Stmt::Jump { .. } | Stmt::Label(_) | Stmt::Comment(_)
+        )
+    }) {
+        return stmts;
+    }
     let try_body_slice: &[Stmt] = match try_inner.last() {
         Some(Stmt::Jump { .. }) => &try_inner[..try_inner.len() - 1],
         _ => try_inner,
@@ -3997,6 +4155,23 @@ fn forward_dispatch_selector(cond: &Expr) -> Option<(Expr, Expr)> {
         return None;
     }
     Some(((**lhs).clone(), (**rhs).clone()))
+}
+
+fn merge_value_is_reproducible(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::This
+            | Expr::Local(_)
+            | Expr::Param(_)
+            | Expr::IntLit(_)
+            | Expr::UintLit(_)
+            | Expr::DoubleLit(_)
+            | Expr::StringLit(_)
+            | Expr::BoolLit(_)
+            | Expr::Null
+            | Expr::Undefined
+            | Expr::NaN
+    )
 }
 
 fn forward_dispatch_operand_is_stable(expression: &Expr) -> bool {
@@ -6695,6 +6870,7 @@ fn lift_raw(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
@@ -6722,6 +6898,7 @@ fn lift_raw(
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
     }
+    lifter.apply_pending_merge_definitions();
     let dropped_opcodes: Vec<u8> = lifter.dropped_opcodes.clone();
     let opaque_operands: usize = lifter.opaque_operands;
     Ok((lifter.statements, dropped_opcodes, opaque_operands))
@@ -6794,6 +6971,7 @@ pub fn lift_body(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        pending_merge_definitions: Vec::new(),
         incoming_stacks: BTreeMap::new(),
         incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
@@ -6821,6 +6999,7 @@ pub fn lift_body(
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
     }
+    lifter.apply_pending_merge_definitions();
     let regions: Vec<RegionInfo> = resolve_regions(&lifter, &body.exceptions);
     let dropped_opcodes: Vec<u8> = lifter.dropped_opcodes;
     let lift_opaque: usize = lifter.opaque_operands;
@@ -8452,6 +8631,43 @@ mod tests {
         ]
     }
 
+    fn merge_definitions(stmts: &[Stmt], merged: &Expr) -> Vec<Expr> {
+        let mut found: Vec<Expr> = Vec::new();
+        for statement in stmts {
+            match statement {
+                Stmt::Assign { target, value } if target == merged => found.push(value.clone()),
+                Stmt::IfBlock { body, .. }
+                | Stmt::While { body, .. }
+                | Stmt::DoWhile { body, .. }
+                | Stmt::ForEach { body, .. }
+                | Stmt::ForIn { body, .. }
+                | Stmt::With { body, .. }
+                | Stmt::For { body, .. } => found.extend(merge_definitions(body, merged)),
+                Stmt::IfElse {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    found.extend(merge_definitions(then_body, merged));
+                    found.extend(merge_definitions(else_body, merged));
+                }
+                Stmt::Try { body, catches } => {
+                    found.extend(merge_definitions(body, merged));
+                    for clause in catches {
+                        found.extend(merge_definitions(&clause.body, merged));
+                    }
+                }
+                Stmt::StructuredSwitch { cases, .. } => {
+                    for case in cases {
+                        found.extend(merge_definitions(&case.body, merged));
+                    }
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+
     fn branch_join_return(lifted: &LiftedBody) -> Expr {
         lifted
             .statements
@@ -8468,11 +8684,18 @@ mod tests {
         let abc: AbcFile = bare_abc();
         let body: MethodBody = body_with_code(branch_join_body(0x02));
         let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
-        assert_eq!(
-            branch_join_return(&lifted),
-            Expr::Phi { block: 19, slot: 0 },
+        let merged: Expr = branch_join_return(&lifted);
+        assert!(
+            !matches!(merged, Expr::IntLit(_)),
             "a two-way branch join carrying different operands must merge them, not keep the \
              linearly last predecessor: {:?}",
+            lifted.statements
+        );
+        assert_eq!(
+            merge_definitions(&lifted.statements, &merged),
+            vec![Expr::IntLit(1), Expr::IntLit(2)],
+            "the merged operand must be written once on every incoming path, in layout order, \
+             so the recovered body never reads a name the program never writes: {:?}",
             lifted.statements
         );
         assert!(
@@ -8482,8 +8705,8 @@ mod tests {
             )),
             "predecessors that agree on height must not raise a height refusal"
         );
-        assert_eq!(lifted.opaque_operands, 1);
-        assert!(!lifted.structurally_recovered);
+        assert_eq!(lifted.opaque_operands, 0);
+        assert!(lifted.structurally_recovered);
     }
 
     #[test]
@@ -8568,7 +8791,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_join_with_distinct_equal_height_values_uses_a_phi() {
+    fn switch_join_with_distinct_equal_height_values_writes_one_temporary_per_case() {
         let code: Vec<u8> = vec![
             0x24, 0x00, 0x1B, 0x17, 0x00, 0x00, 0x01, 0x0B, 0x00, 0x00, 0x11, 0x00, 0x00, 0x24,
             0x0A, 0x10, 0x08, 0x00, 0x00, 0x24, 0x14, 0x10, 0x02, 0x00, 0x00, 0x24, 0x1E, 0x48,
@@ -8584,13 +8807,22 @@ mod tests {
                 _ => None,
             })
             .expect("switch merge returns a value");
-        assert_eq!(
-            returned,
-            &Expr::Phi { block: 27, slot: 0 },
-            "three distinct case values must merge instead of selecting the last linear case"
+        let returned: Expr = returned.clone();
+        assert!(
+            !matches!(returned, Expr::IntLit(_)),
+            "three distinct case values must merge instead of selecting the last linear case: \
+             {:?}",
+            lifted.statements
         );
-        assert_eq!(lifted.opaque_operands, 1);
-        assert!(!lifted.structurally_recovered);
+        assert_eq!(
+            merge_definitions(&lifted.statements, &returned),
+            vec![Expr::IntLit(10), Expr::IntLit(20), Expr::IntLit(30)],
+            "each case must write the merged operand once, in case-layout order, so no case \
+             reaches the join reading a name it never wrote: {:?}",
+            lifted.statements
+        );
+        assert_eq!(lifted.opaque_operands, 0);
+        assert!(lifted.structurally_recovered);
     }
 
     #[test]
@@ -8846,6 +9078,7 @@ mod tests {
             short_circuits: Vec::new(),
             branch_marks: Vec::new(),
             hoisted_temporaries: 0,
+            pending_merge_definitions: Vec::new(),
             incoming_stacks: BTreeMap::new(),
             incoming_scopes: BTreeMap::new(),
             untracked_stack_entries: BTreeSet::new(),

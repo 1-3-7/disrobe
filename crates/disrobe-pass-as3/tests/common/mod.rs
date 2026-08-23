@@ -388,3 +388,55 @@ pub(crate) fn require_corpus_fixture(gate: &str, root: &std::path::Path, name: &
     );
     true
 }
+
+pub(crate) fn as3_corpus_root() -> std::path::PathBuf {
+    if let Ok(over) = std::env::var("DR_AS3_CORPUS") {
+        return std::path::PathBuf::from(over);
+    }
+    let manifest: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .expect("crates parent")
+        .parent()
+        .expect("workspace root")
+        .join("corpus")
+        .join("flash")
+        .join("swf")
+}
+
+pub(crate) fn merge_definitions(stmts: &[Stmt], merged: &Expr) -> Vec<Expr> {
+    let mut found: Vec<Expr> = Vec::new();
+    for statement in stmts {
+        match statement {
+            Stmt::Assign { target, value } if target == merged => found.push(value.clone()),
+            Stmt::IfBlock { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::With { body, .. }
+            | Stmt::For { body, .. } => found.extend(merge_definitions(body, merged)),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => {
+                found.extend(merge_definitions(then_body, merged));
+                found.extend(merge_definitions(else_body, merged));
+            }
+            Stmt::Try { body, catches } => {
+                found.extend(merge_definitions(body, merged));
+                for clause in catches {
+                    found.extend(merge_definitions(&clause.body, merged));
+                }
+            }
+            Stmt::StructuredSwitch { cases, .. } => {
+                for case in cases {
+                    found.extend(merge_definitions(&case.body, merged));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
