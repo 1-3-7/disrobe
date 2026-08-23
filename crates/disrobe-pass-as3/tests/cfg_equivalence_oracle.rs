@@ -1397,6 +1397,71 @@ fn inverted_loose_forward_dispatch_preserves_comparisons_and_edges() {
 }
 
 #[test]
+fn backward_entry_into_loose_forward_dispatch_is_explicitly_refused() {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x14]);
+    let first_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_test: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x01, 0xD1, 0x14]);
+    let second_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0B, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let default_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x28, 0xD6]);
+    let backward_entry: usize = code.len();
+    code.extend_from_slice(&[0x27, 0x11]);
+    let backward_entry_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, first_miss_operand, second_test);
+    patch_branch_target(&mut code, first_break_operand, backward_entry);
+    patch_branch_target(&mut code, second_miss_operand, default_case);
+    patch_branch_target(&mut code, second_break_operand, backward_entry);
+    patch_branch_target(&mut code, backward_entry_operand, second_test);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw backward-entry lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("backward-entry lift");
+
+    assert!(
+        lifted.statements.iter().any(|statement: &Stmt| {
+            matches!(statement, Stmt::Comment(reason) if reason == "switch dispatch has a mid-region entry")
+        }),
+        "a backward predecessor into the second comparison must expose the refusal: {lifted:#?}"
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::IfElse { .. }))
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
 fn dense_forward_if_dispatch_preserves_shared_and_fallthrough_edges() {
     let mut code: Vec<u8> = Vec::new();
     let mut case_operands: Vec<usize> = Vec::new();

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
-use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
+use disrobe_pass_as3::abc::{self, ConstantPool, ExceptionInfo, MethodBody, MethodInfo};
 use disrobe_pass_as3::lifter::{
     CaseLabel, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
 };
@@ -353,6 +353,17 @@ fn bare_abc() -> AbcFile {
     }
 }
 
+fn patch_branch_target(code: &mut [u8], operand: usize, target: usize) {
+    let after_operand: usize = operand.saturating_add(3);
+    let relative: i32 = i32::try_from(target)
+        .and_then(|target: i32| {
+            i32::try_from(after_operand).map(|after_operand: i32| target - after_operand)
+        })
+        .expect("fixture branch must fit s24");
+    let encoded: [u8; 4] = relative.to_le_bytes();
+    code[operand..operand + 3].copy_from_slice(&encoded[..3]);
+}
+
 #[test]
 fn an_encoded_merge_writes_its_temporary_on_every_incoming_path() {
     let shapes: [(&str, Vec<u8>, usize); 2] = [
@@ -406,6 +417,165 @@ fn an_encoded_merge_writes_its_temporary_on_every_incoming_path() {
              {:?}",
             lifted.statements
         );
+    }
+}
+
+#[test]
+fn an_encoded_null_coalescing_merge_preserves_null_and_falsy_values() {
+    let mut code: Vec<u8> = vec![0xD1, 0x2A, 0x20, 0x14];
+    let present_operand: usize = code.len();
+    code.extend_from_slice(&[0x00, 0x00, 0x00, 0x29, 0xD2]);
+    let merge: usize = code.len();
+    code.push(0x48);
+    let after_present: usize = present_operand.saturating_add(3);
+    let relative: i32 = i32::try_from(merge)
+        .and_then(|target: i32| i32::try_from(after_present).map(|after: i32| target - after))
+        .expect("fixture branch must fit s24");
+    let encoded: [u8; 4] = relative.to_le_bytes();
+    code[present_operand..present_operand + 3].copy_from_slice(&encoded[..3]);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = merge_body(code);
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("null-coalescing merge must lift");
+    let mut written: BTreeSet<String> = BTreeSet::new();
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    collect_names(&lifted.statements, &mut written, &mut read);
+
+    assert_eq!(read.len(), 1, "the join must carry one value: {lifted:#?}");
+    assert_eq!(read.difference(&written).count(), 0, "{lifted:#?}");
+    let name: &String = read.iter().next().expect("one merged operand");
+    assert_eq!(
+        common::merge_definitions(&lifted.statements, &Expr::Name(name.clone())),
+        vec![Expr::Local(1), Expr::Local(2)],
+        "the present value and fallback must each define the join once in bytecode order: \
+         {lifted:#?}"
+    );
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+
+    for (value, fallback, expected) in [
+        (common::Value::Null, 7i64, 7i64),
+        (common::Value::Int(3), 7i64, 3i64),
+        (common::Value::Int(0), 7i64, 0i64),
+    ] {
+        let observed: common::Value = common::evaluate(
+            &lifted.statements,
+            "null coalescing",
+            &[(1, value), (2, common::Value::Int(fallback))],
+        );
+        assert_eq!(observed, common::Value::Int(expected), "{lifted:#?}");
+    }
+}
+
+fn encoded_ternary_chain(levels: usize) -> Vec<u8> {
+    let mut code: Vec<u8> = Vec::with_capacity(levels.saturating_mul(12));
+    let mut join_operands: Vec<usize> = Vec::with_capacity(levels);
+    for level in 0..levels {
+        code.extend_from_slice(&[0xD1, 0x12]);
+        let next_operand: usize = code.len();
+        code.extend_from_slice(&[0x00, 0x00, 0x00, 0x24]);
+        code.push(u8::try_from(level.saturating_add(1)).expect("bounded branch value"));
+        code.push(0x10);
+        let join_operand: usize = code.len();
+        code.extend_from_slice(&[0x00, 0x00, 0x00]);
+        join_operands.push(join_operand);
+        let next_test: usize = code.len();
+        patch_branch_target(&mut code, next_operand, next_test);
+    }
+    code.extend_from_slice(&[0x24, 0x00]);
+    let join: usize = code.len();
+    code.push(0x48);
+    for operand in join_operands {
+        patch_branch_target(&mut code, operand, join);
+    }
+    code
+}
+
+#[test]
+fn ternary_folding_stops_at_its_encoded_input_ceiling() {
+    const WITHIN_CEILING: usize = 64;
+    const BEYOND_CEILING: usize = WITHIN_CEILING.saturating_add(1);
+
+    let abc: AbcFile = bare_abc();
+    let within_body: MethodBody = merge_body(encoded_ternary_chain(WITHIN_CEILING));
+    let within: LiftedBody =
+        lift_body(&abc, &within_body, None).expect("ternary chain at ceiling must lift");
+    assert!(within.fully_structured, "{within:#?}");
+    assert!(within.structurally_recovered, "{within:#?}");
+    assert_eq!(within.opaque_operands, 0, "{within:#?}");
+    for (selector, expected) in [(false, 0i64), (true, 1i64)] {
+        let observed: common::Value = common::evaluate(
+            &within.statements,
+            "ternary chain at ceiling",
+            &[(1, common::Value::Bool(selector))],
+        );
+        assert_eq!(observed, common::Value::Int(expected), "{within:#?}");
+    }
+
+    let beyond_body: MethodBody = merge_body(encoded_ternary_chain(BEYOND_CEILING));
+    let beyond: LiftedBody =
+        lift_body(&abc, &beyond_body, None).expect("ternary chain beyond ceiling must lift");
+
+    assert!(beyond.reached_terminator, "{beyond:#?}");
+    assert!(!beyond.fully_structured, "{beyond:#?}");
+    assert!(!beyond.structurally_recovered, "{beyond:#?}");
+    assert_eq!(beyond.opaque_operands, 2, "{beyond:#?}");
+    assert!(
+        beyond
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::If { .. })),
+        "the fold beyond the fixed ceiling must remain explicit control flow: {beyond:#?}"
+    );
+    assert!(
+        beyond.statements.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Comment(reason) if reason == "unreconciled stack height"
+        )),
+        "the bounded refusal must name the unresolved join: {beyond:#?}"
+    );
+}
+
+#[test]
+fn an_encoded_merge_inside_an_exception_range_keeps_both_normal_values() {
+    let code: Vec<u8> = vec![
+        0xD1, 0x11, 0x06, 0x00, 0x00, 0x24, 0x01, 0x10, 0x07, 0x00, 0x00, 0x29, 0x24, 0x02, 0x10,
+        0x00, 0x00, 0x00, 0x48, 0x29, 0x24, 0x09, 0x48,
+    ];
+    let mut body: MethodBody = merge_body(code);
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 19,
+        target: 19,
+        exc_type: 0,
+        var_name: 0,
+    });
+    let abc: AbcFile = bare_abc();
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("protected merge must lift");
+    let mut written: BTreeSet<String> = BTreeSet::new();
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    collect_names(&lifted.statements, &mut written, &mut read);
+
+    assert_eq!(
+        read.len(),
+        1,
+        "the protected join must carry one value: {lifted:#?}"
+    );
+    assert_eq!(read.difference(&written).count(), 0, "{lifted:#?}");
+    let name: &String = read.iter().next().expect("one protected merge operand");
+    assert_eq!(
+        common::merge_definitions(&lifted.statements, &Expr::Name(name.clone())),
+        vec![Expr::IntLit(1), Expr::IntLit(2)],
+        "both normal paths must define the protected join once: {lifted:#?}"
+    );
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+
+    for (selector, expected) in [(false, 1i64), (true, 2i64)] {
+        let observed: common::Value = common::evaluate(
+            &lifted.statements,
+            "protected merge",
+            &[(1, common::Value::Bool(selector))],
+        );
+        assert_eq!(observed, common::Value::Int(expected), "{lifted:#?}");
     }
 }
 
