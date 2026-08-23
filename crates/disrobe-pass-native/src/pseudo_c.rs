@@ -1973,7 +1973,7 @@ pub fn recover_vectorized_reduction(
     base: u64,
     abi: Abi,
 ) -> Result<LeafRecovery> {
-    require_x86_abi(abi)?;
+    validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
     crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi)
 }
 
@@ -2003,8 +2003,7 @@ fn recover_leaf_function_in_object_with_tail_proofs(
     calls: &[ResolvedCall],
     proven_integer64_tail_targets: &BTreeSet<u64>,
 ) -> Result<LeafRecovery> {
-    reject_declared_boundary_trap(machine_code, base)?;
-    require_x86_abi(abi)?;
+    validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
         return Ok(recovery);
     }
@@ -3551,6 +3550,7 @@ fn recover_leaf_function_calls_impl(
     calls: &[ResolvedCall],
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
+    validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
     let empty: EmptyObjectCallFacts = EmptyObjectCallFacts::default();
     recover_leaf_function_calls_with_tail_proofs(
         machine_code,
@@ -3574,7 +3574,6 @@ fn recover_leaf_function_calls_with_tail_proofs(
     object_facts: ObjectCallFacts<'_>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
-    reject_declared_boundary_trap(machine_code, base)?;
     let LeafItems {
         insns,
         mut items,
@@ -3689,7 +3688,8 @@ fn recover_leaf_function_calls_with_tail_proofs(
     })
 }
 
-fn reject_declared_boundary_trap(machine_code: &[u8], boundary: u64) -> Result<()> {
+fn validate_declared_x86_leaf_boundary(machine_code: &[u8], boundary: u64, abi: Abi) -> Result<()> {
+    require_x86_abi(abi)?;
     let Some(&observed): Option<&u8> = machine_code.first() else {
         return Ok(());
     };
@@ -4184,7 +4184,7 @@ pub fn recover_leaf_function_switch_const_abi(
     tables: &[JumpTable],
     consts: &[FpConstant],
 ) -> Result<LeafRecovery> {
-    require_x86_abi(abi)?;
+    validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }

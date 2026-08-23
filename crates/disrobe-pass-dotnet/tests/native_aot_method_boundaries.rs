@@ -342,6 +342,16 @@ fn unsupported_native_body_is_a_per_method_auto_refusal() -> Result<(), &'static
         .as_str()
         .ok_or("per-method body refusal reason is absent")?;
     assert!(reason.contains("DR-DOTNET-0039"), "{reason}");
+    let boundary: u64 = pe
+        .image_base
+        .checked_add(u64::from(start_rva))
+        .ok_or("compiler method boundary virtual address overflowed")?;
+    assert!(reason.contains("DR-NATIVE-0029"), "{reason}");
+    assert!(reason.contains("trap byte 0xCC"), "{reason}");
+    assert!(
+        reason.contains(&format!("declared function boundary 0x{boundary:016X}")),
+        "{reason}"
+    );
     Ok(())
 }
 

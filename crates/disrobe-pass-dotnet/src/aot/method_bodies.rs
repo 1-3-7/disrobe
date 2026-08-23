@@ -1,4 +1,6 @@
-use disrobe_pass_native::{LeafRecovery, PseudoAbi, recover_leaf_function_abi};
+use disrobe_pass_native::{
+    Error as NativeError, LeafRecovery, PseudoAbi, recover_leaf_function_abi,
+};
 
 use super::managed_abi;
 use super::{
@@ -25,6 +27,17 @@ fn refused(range: AotCodeRange, reason: &'static str) -> AotMethodBody {
     AotMethodBody::Refused {
         reason: format!("DR-DOTNET-0039: RVA 0x{:X}: {reason}", range.start_rva),
     }
+}
+
+fn refused_native_boundary(range: AotCodeRange, error: &NativeError) -> AotMethodBody {
+    let reason: String = format!("DR-DOTNET-0039: RVA 0x{:X}: {error}", range.start_rva);
+    if reason.len() > MAX_REFUSAL_BYTES_PER_METHOD {
+        return refused(
+            range,
+            "native pseudo-C lifter refused the instruction stream",
+        );
+    }
+    AotMethodBody::Refused { reason }
 }
 
 struct BodyBudget {
@@ -183,6 +196,9 @@ fn recover_body(
     };
     match recover_leaf_function_abi(bytes, base, PseudoAbi::MsX64) {
         Ok(recovery) => Ok(BodyOutcome::Lifted(Box::new(recovery))),
+        Err(error @ NativeError::DeclaredFunctionBoundaryTrap { .. }) => {
+            Ok(BodyOutcome::Refused(refused_native_boundary(range, &error)))
+        }
         Err(_error) => Ok(BodyOutcome::Refused(refused(
             range,
             "native pseudo-C lifter refused the instruction stream",
