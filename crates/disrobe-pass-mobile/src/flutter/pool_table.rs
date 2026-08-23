@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::aot_lift::escape_dart_string;
 use super::cid_table::predefined_name;
 use super::dart_graph::{
-    DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph, DartPoolSlot,
+    DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph, DartPoolResetKind,
+    DartPoolSlot,
 };
 use super::dart_graph_inventory::DartPinnedInventory;
 use super::dart_graph_layout::{DartClusterBodyKind, DartPinnedLayout};
@@ -59,6 +60,14 @@ const SYMBOL_CLASS_NAME: &str = "Symbol";
 
 const SYMBOL_LIBRARY_URI: &str = "dart:_internal";
 
+const BOOTSTRAP_NATIVE_STUB_TOKEN: &str = "stub@callBootstrapNative";
+
+const SWITCHABLE_CALL_MISS_STUB_TOKEN: &str = "stub@switchableCallMiss";
+
+const LINK_NATIVE_CALL_STUB_TOKEN: &str = "stub@linkNativeCall";
+
+const RESET_TO_ZERO_VALUE: i64 = 0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DartPoolLiteralKind {
@@ -72,8 +81,39 @@ pub enum DartPoolLiteralKind {
     Symbol,
     RawImmediate,
     NativeFunction,
+    StubEntry,
+    LoadResetZero,
     Unresolved,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DartPoolUnresolvedReason {
+    SlotOutOfRange,
+    ObjectOutOfRange,
+    ClusterBodyUnmodelled,
+    DeclaredNameMissing,
+    ImmediateMissing,
+    TextMissing,
+    TextTooLong,
+    TypeParameter,
+    RecordType,
+    TypeClassIdMissing,
+    TypeClassAmbiguous,
+    TypeArgumentsMalformed,
+    TypeFlagsMissing,
+    DepthExceeded,
+    NodeBudgetExhausted,
+    Cyclic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartPoolUnresolvedSlots {
+    pub reason: DartPoolUnresolvedReason,
+    pub slots: usize,
+}
+
+type Rendered = std::result::Result<String, DartPoolUnresolvedReason>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DartPoolObjectKind {
@@ -209,7 +249,13 @@ impl DartPoolTable {
             }
             Some(DartPoolSlot::NativeFunction) => DartPoolLiteralKind::NativeFunction,
             Some(DartPoolSlot::Object(reference)) => self.object_kind(*reference),
-            Some(DartPoolSlot::Unmodelled) | None => DartPoolLiteralKind::Unresolved,
+            Some(DartPoolSlot::ResetAtLoad(DartPoolResetKind::Zero)) => {
+                DartPoolLiteralKind::LoadResetZero
+            }
+            Some(DartPoolSlot::ResetAtLoad(
+                DartPoolResetKind::BootstrapNativeStub | DartPoolResetKind::SwitchableCallMissEntry,
+            )) => DartPoolLiteralKind::StubEntry,
+            None => DartPoolLiteralKind::Unresolved,
         }
     }
 
@@ -221,14 +267,62 @@ impl DartPoolTable {
 
     #[must_use]
     pub fn render_slot(&self, index: usize, float: bool) -> Option<String> {
-        match self.slots.get(index)? {
-            DartPoolSlot::Immediate(raw) => Some(render_immediate(*raw, float)),
+        self.resolve_slot(index, float).ok()
+    }
+
+    #[must_use]
+    pub fn unresolved_reason_at_offset(
+        &self,
+        byte_offset: u64,
+        float: bool,
+    ) -> Option<DartPoolUnresolvedReason> {
+        let Some(index): Option<usize> = self.slot_index(byte_offset) else {
+            return Some(DartPoolUnresolvedReason::SlotOutOfRange);
+        };
+        self.resolve_slot(index, float).err()
+    }
+
+    #[must_use]
+    pub fn unresolved_slots(&self) -> Vec<DartPoolUnresolvedSlots> {
+        let mut tally: BTreeMap<DartPoolUnresolvedReason, usize> = BTreeMap::new();
+        for index in 0..self.slots.len() {
+            if let Err(reason) = self.resolve_slot(index, false) {
+                *tally.entry(reason).or_insert(0) += 1;
+            }
+        }
+        tally
+            .into_iter()
+            .map(
+                |(reason, slots): (DartPoolUnresolvedReason, usize)| DartPoolUnresolvedSlots {
+                    reason,
+                    slots,
+                },
+            )
+            .collect::<Vec<DartPoolUnresolvedSlots>>()
+    }
+
+    fn resolve_slot(&self, index: usize, float: bool) -> Rendered {
+        let slot: &DartPoolSlot = self
+            .slots
+            .get(index)
+            .ok_or(DartPoolUnresolvedReason::SlotOutOfRange)?;
+        match slot {
+            DartPoolSlot::Immediate(raw) => Ok(render_immediate(*raw, float)),
             DartPoolSlot::Object(reference) => {
                 let mut path: BTreeSet<u32> = BTreeSet::new();
                 let mut budget: usize = MAX_LITERAL_NODES;
                 self.render_object(*reference, 0, &mut path, &mut budget)
             }
-            DartPoolSlot::NativeFunction | DartPoolSlot::Unmodelled => None,
+            DartPoolSlot::NativeFunction => Ok(LINK_NATIVE_CALL_STUB_TOKEN.to_owned()),
+            DartPoolSlot::ResetAtLoad(DartPoolResetKind::BootstrapNativeStub) => {
+                Ok(BOOTSTRAP_NATIVE_STUB_TOKEN.to_owned())
+            }
+            DartPoolSlot::ResetAtLoad(DartPoolResetKind::SwitchableCallMissEntry) => {
+                Ok(SWITCHABLE_CALL_MISS_STUB_TOKEN.to_owned())
+            }
+            DartPoolSlot::ResetAtLoad(DartPoolResetKind::Zero) => {
+                Ok(render_immediate(RESET_TO_ZERO_VALUE, float))
+            }
         }
     }
 
@@ -264,12 +358,18 @@ impl DartPoolTable {
         depth: usize,
         path: &mut BTreeSet<u32>,
         budget: &mut usize,
-    ) -> Option<String> {
-        if depth > MAX_LITERAL_DEPTH || *budget == 0 || !path.insert(reference) {
-            return None;
+    ) -> Rendered {
+        if depth > MAX_LITERAL_DEPTH {
+            return Err(DartPoolUnresolvedReason::DepthExceeded);
+        }
+        if *budget == 0 {
+            return Err(DartPoolUnresolvedReason::NodeBudgetExhausted);
+        }
+        if !path.insert(reference) {
+            return Err(DartPoolUnresolvedReason::Cyclic);
         }
         *budget -= 1;
-        let rendered: Option<String> = self.render_visited(reference, depth, path, budget);
+        let rendered: Rendered = self.render_visited(reference, depth, path, budget);
         path.remove(&reference);
         rendered
     }
@@ -280,19 +380,26 @@ impl DartPoolTable {
         depth: usize,
         path: &mut BTreeSet<u32>,
         budget: &mut usize,
-    ) -> Option<String> {
-        let object: &DartPoolObject = self.object(reference)?;
+    ) -> Rendered {
+        let object: &DartPoolObject = self
+            .object(reference)
+            .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
         match object.kind {
             DartPoolObjectKind::Text => object
                 .text
                 .as_deref()
-                .map(|text: &str| render_string(text, object.text_is_escaped)),
-            DartPoolObjectKind::Mint => object.immediate.map(|value: i64| value.to_string()),
+                .map(|text: &str| render_string(text, object.text_is_escaped))
+                .ok_or(DartPoolUnresolvedReason::TextMissing),
+            DartPoolObjectKind::Mint => object
+                .immediate
+                .map(|value: i64| value.to_string())
+                .ok_or(DartPoolUnresolvedReason::ImmediateMissing),
             DartPoolObjectKind::Double => object
                 .immediate
-                .map(|bits: i64| render_double(f64::from_bits(bits as u64))),
+                .map(|bits: i64| render_double(f64::from_bits(bits as u64)))
+                .ok_or(DartPoolUnresolvedReason::ImmediateMissing),
             DartPoolObjectKind::List { immutable } => {
-                Some(self.render_list(object, immutable, depth, path, budget))
+                Ok(self.render_list(object, immutable, depth, path, budget))
             }
             DartPoolObjectKind::Class => {
                 self.declared_name(object, self.declarations.declarations.class.name_reference)
@@ -308,26 +415,35 @@ impl DartPoolTable {
                 self.declared_name(object, self.declarations.declarations.library.url_reference)
             }
             DartPoolObjectKind::Type => self.render_type(object, depth, path, budget),
-            DartPoolObjectKind::TypeParameter | DartPoolObjectKind::RecordType => None,
+            DartPoolObjectKind::TypeParameter => Err(DartPoolUnresolvedReason::TypeParameter),
+            DartPoolObjectKind::RecordType => Err(DartPoolUnresolvedReason::RecordType),
             DartPoolObjectKind::TypeArguments => {
                 self.render_type_arguments(object, depth, path, budget)
             }
             DartPoolObjectKind::Symbol => self.render_symbol(object),
-            DartPoolObjectKind::Opaque => None,
+            DartPoolObjectKind::Opaque => Err(DartPoolUnresolvedReason::ClusterBodyUnmodelled),
         }
     }
 
-    fn render_symbol(&self, object: &DartPoolObject) -> Option<String> {
-        let name_reference: u32 = *object.references.first()?;
-        let name: &DartPoolObject = self.object(name_reference)?;
+    fn render_symbol(&self, object: &DartPoolObject) -> Rendered {
+        let name_reference: u32 = *object
+            .references
+            .first()
+            .ok_or(DartPoolUnresolvedReason::TextMissing)?;
+        let name: &DartPoolObject = self
+            .object(name_reference)
+            .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
         if name.kind != DartPoolObjectKind::Text {
-            return None;
+            return Err(DartPoolUnresolvedReason::TextMissing);
         }
-        let text: &str = name.text.as_deref()?;
+        let text: &str = name
+            .text
+            .as_deref()
+            .ok_or(DartPoolUnresolvedReason::TextMissing)?;
         if text.chars().count() > MAX_LITERAL_CHARS {
-            return None;
+            return Err(DartPoolUnresolvedReason::TextTooLong);
         }
-        Some(format!(
+        Ok(format!(
             "Symbol({})",
             render_string(text, name.text_is_escaped)
         ))
@@ -339,20 +455,24 @@ impl DartPoolTable {
         depth: usize,
         path: &mut BTreeSet<u32>,
         budget: &mut usize,
-    ) -> Option<String> {
-        let class_id: i32 = object.class_id?;
+    ) -> Rendered {
+        let class_id: i32 = object
+            .class_id
+            .ok_or(DartPoolUnresolvedReason::TypeClassIdMissing)?;
         let mut matched: bool = false;
         let mut declared: Option<String> = None;
         for candidate in &self.objects {
             if candidate.kind == DartPoolObjectKind::Class && candidate.class_id == Some(class_id) {
                 if matched {
-                    return None;
+                    return Err(DartPoolUnresolvedReason::TypeClassAmbiguous);
                 }
                 matched = true;
-                declared = self.declared_name(
-                    candidate,
-                    self.declarations.declarations.class.name_reference,
-                );
+                declared = self
+                    .declared_name(
+                        candidate,
+                        self.declarations.declarations.class.name_reference,
+                    )
+                    .ok();
             }
         }
         let named: Option<String> = if matched {
@@ -365,16 +485,23 @@ impl DartPoolTable {
         };
         let mut rendered: String =
             named.unwrap_or_else(|| format!("{UNNAMED_CLASS_PREFIX}{class_id}"));
-        let arguments: u32 = *object.references.get(2)?;
+        let arguments: u32 = *object
+            .references
+            .get(2)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
         if !self.is_null_object(arguments) {
-            let arguments_object: &DartPoolObject = self.object(arguments)?;
+            let arguments_object: &DartPoolObject = self
+                .object(arguments)
+                .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
             if arguments_object.kind != DartPoolObjectKind::TypeArguments {
-                return None;
+                return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
             }
             rendered.push_str(&self.render_object(arguments, depth + 1, path, budget)?);
         }
-        object.type_flags?;
-        Some(rendered)
+        if object.type_flags.is_none() {
+            return Err(DartPoolUnresolvedReason::TypeFlagsMissing);
+        }
+        Ok(rendered)
     }
 
     fn render_type_arguments(
@@ -383,15 +510,20 @@ impl DartPoolTable {
         depth: usize,
         path: &mut BTreeSet<u32>,
         budget: &mut usize,
-    ) -> Option<String> {
-        let elements: &[u32] = object.references.get(1..)?;
+    ) -> Rendered {
+        let elements: &[u32] = object
+            .references
+            .get(1..)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
         if elements.is_empty() {
-            return None;
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
         }
         let shown: usize = elements.len().min(MAX_LIST_ELEMENTS);
         let mut rendered: Vec<String> = Vec::with_capacity(shown);
         for (position, element) in elements.iter().enumerate().take(shown) {
-            let value: &DartPoolObject = self.object(*element)?;
+            let value: &DartPoolObject = self
+                .object(*element)
+                .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
             match value.kind {
                 DartPoolObjectKind::Type => {
                     rendered.push(self.render_object(*element, depth + 1, path, budget)?);
@@ -402,13 +534,13 @@ impl DartPoolTable {
                 DartPoolObjectKind::RecordType => {
                     rendered.push(String::from(RECORD_TYPE_TOKEN));
                 }
-                _ => return None,
+                _ => return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed),
             }
         }
         if elements.len() > shown {
             rendered.push(ELISION.to_owned());
         }
-        Some(format!("<{}>", rendered.join(", ")))
+        Ok(format!("<{}>", rendered.join(", ")))
     }
 
     fn is_null_object(&self, reference: u32) -> bool {
@@ -427,13 +559,21 @@ impl DartPoolTable {
             })
     }
 
-    fn declared_name(&self, object: &DartPoolObject, slot: usize) -> Option<String> {
-        let reference: u32 = *object.references.get(slot)?;
-        let named: &DartPoolObject = self.object(reference)?;
+    fn declared_name(&self, object: &DartPoolObject, slot: usize) -> Rendered {
+        let reference: u32 = *object
+            .references
+            .get(slot)
+            .ok_or(DartPoolUnresolvedReason::DeclaredNameMissing)?;
+        let named: &DartPoolObject = self
+            .object(reference)
+            .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
         if named.kind != DartPoolObjectKind::Text || named.text_is_escaped {
-            return None;
+            return Err(DartPoolUnresolvedReason::DeclaredNameMissing);
         }
-        named.text.clone()
+        named
+            .text
+            .clone()
+            .ok_or(DartPoolUnresolvedReason::DeclaredNameMissing)
     }
 
     fn render_list(
@@ -452,7 +592,7 @@ impl DartPoolTable {
         for element in elements {
             rendered.push(
                 self.render_object(*element, depth + 1, path, budget)
-                    .unwrap_or_else(|| UNRESOLVED_TOKEN.to_owned()),
+                    .unwrap_or_else(|_: DartPoolUnresolvedReason| UNRESOLVED_TOKEN.to_owned()),
             );
         }
         if object.references.len() > elements.len() {
@@ -1078,16 +1218,119 @@ mod tests {
     }
 
     #[test]
-    fn native_function_and_unmodelled_slots_do_not_render() {
+    fn load_reset_slots_render_the_value_the_deserializer_assigns_them() {
         let pool: DartPoolTable = table(
-            vec![DartPoolSlot::NativeFunction, DartPoolSlot::Unmodelled],
+            vec![
+                DartPoolSlot::NativeFunction,
+                DartPoolSlot::ResetAtLoad(DartPoolResetKind::BootstrapNativeStub),
+                DartPoolSlot::ResetAtLoad(DartPoolResetKind::SwitchableCallMissEntry),
+                DartPoolSlot::ResetAtLoad(DartPoolResetKind::Zero),
+            ],
             Vec::new(),
         );
-        assert_eq!(pool.render_slot(0, false), None);
-        assert_eq!(pool.render_slot(1, false), None);
         assert_eq!(
-            pool.kind_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            pool.render_slot(0, false).as_deref(),
+            Some(LINK_NATIVE_CALL_STUB_TOKEN),
+            "ObjectPoolDeserializationCluster::ReadFill initializes a kNativeFunction entry with NativeEntry::LinkNativeCallEntry()"
+        );
+        assert_eq!(
+            pool.render_slot(1, false).as_deref(),
+            Some(BOOTSTRAP_NATIVE_STUB_TOKEN),
+            "PostLoad sets a kResetToBootstrapNative entry to StubCode::CallBootstrapNative()"
+        );
+        assert_eq!(
+            pool.render_slot(2, false).as_deref(),
+            Some(SWITCHABLE_CALL_MISS_STUB_TOKEN),
+            "PostLoad sets a kResetToSwitchableCallMissEntryPoint entry to StubCode::SwitchableCallMiss().MonomorphicEntryPoint()"
+        );
+        assert_eq!(
+            pool.render_slot(3, false).as_deref(),
+            Some("0"),
+            "ReadFill sets a kSetToZero entry to raw_value_ = 0 and PostLoad leaves it alone"
+        );
+        assert_eq!(
+            pool.render_slot(3, true).as_deref(),
+            Some("0.0"),
+            "the same zero read through a floating-point load form is the double zero"
+        );
+        assert_eq!(
+            pool.kind_at_offset(pool_offset_of_slot(0), false),
             DartPoolLiteralKind::NativeFunction
+        );
+        assert_eq!(
+            pool.kind_at_offset(pool_offset_of_slot(1), false),
+            DartPoolLiteralKind::StubEntry
+        );
+        assert_eq!(
+            pool.kind_at_offset(pool_offset_of_slot(2), false),
+            DartPoolLiteralKind::StubEntry
+        );
+        assert_eq!(
+            pool.kind_at_offset(pool_offset_of_slot(3), false),
+            DartPoolLiteralKind::LoadResetZero
+        );
+        assert!(
+            pool.unresolved_slots().is_empty(),
+            "every load-reset slot has a deserializer-defined value, so none of them is unresolved"
+        );
+    }
+
+    #[test]
+    fn every_unresolved_slot_names_why_it_did_not_resolve() {
+        let mut type_parameter: DartPoolObject = opaque_object(Vec::new(), 7);
+        type_parameter.kind = DartPoolObjectKind::TypeParameter;
+        let pool: DartPoolTable = table(
+            vec![
+                DartPoolSlot::Object(64),
+                DartPoolSlot::Object(1),
+                DartPoolSlot::Object(2),
+                DartPoolSlot::Object(3),
+            ],
+            vec![
+                opaque_object(Vec::new(), 5),
+                opaque_object(Vec::new(), 5),
+                type_parameter,
+                list_object(vec![3]),
+            ],
+        );
+        assert_eq!(
+            pool.unresolved_reason_at_offset(pool_offset_of_slot(0), false),
+            Some(DartPoolUnresolvedReason::ObjectOutOfRange)
+        );
+        assert_eq!(
+            pool.unresolved_reason_at_offset(pool_offset_of_slot(1), false),
+            Some(DartPoolUnresolvedReason::ClusterBodyUnmodelled)
+        );
+        assert_eq!(
+            pool.unresolved_reason_at_offset(pool_offset_of_slot(2), false),
+            Some(DartPoolUnresolvedReason::TypeParameter)
+        );
+        assert_eq!(
+            pool.render_slot(3, false).as_deref(),
+            Some("[?]"),
+            "a list element that points back at its own list stops at the cycle instead of recursing"
+        );
+        assert_eq!(
+            pool.unresolved_reason_at_offset(pool_offset_of_slot(4), false),
+            Some(DartPoolUnresolvedReason::SlotOutOfRange)
+        );
+        assert_eq!(
+            pool.unresolved_slots(),
+            vec![
+                DartPoolUnresolvedSlots {
+                    reason: DartPoolUnresolvedReason::ObjectOutOfRange,
+                    slots: 1,
+                },
+                DartPoolUnresolvedSlots {
+                    reason: DartPoolUnresolvedReason::ClusterBodyUnmodelled,
+                    slots: 1,
+                },
+                DartPoolUnresolvedSlots {
+                    reason: DartPoolUnresolvedReason::TypeParameter,
+                    slots: 1,
+                },
+            ],
+            "the survey names every unresolved slot's reason instead of reporting one total"
         );
     }
 

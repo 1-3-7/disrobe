@@ -11,12 +11,22 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
     AotLiftReport, DART_POOL_ELEMENT_BASE_BYTES, DartGraphLimits, DartKernel, DartLiftedFunction,
-    DartPoolLiteralKind, DartPoolTable, DartPoolTableStats, dart_isolate_data_bytes,
-    dart_vm_data_bytes, lift_libapp_aot, parse_dart_kernel,
+    DartPoolLiteralKind, DartPoolTable, DartPoolTableStats, DartPoolUnresolvedReason,
+    DartPoolUnresolvedSlots, dart_isolate_data_bytes, dart_vm_data_bytes, lift_libapp_aot,
+    parse_dart_kernel,
 };
 use sha2::{Digest as _, Sha256};
 
 const RECORDED_OPAQUE_BASELINE: usize = 25_833;
+
+const RECORDED_RESOLVED_POOL_SLOTS: usize = 2_501;
+
+const EXPECTED_UNRESOLVED_REASONS: [&str; 4] = [
+    "ClusterBodyUnmodelled",
+    "DepthExceeded",
+    "TypeArgumentsMalformed",
+    "TypeParameter",
+];
 
 const COMMITTED_SAMPLES: [&str; 4] = [
     "disrobe_sample/libapp_arm64.so",
@@ -213,6 +223,8 @@ fn pool_literal_kinds_are_typed_from_the_deserialized_cluster() {
         "Type",
         "TypeArguments",
         "RawImmediate",
+        "NativeFunction",
+        "StubEntry",
     ] {
         assert!(
             tally.get(observed).copied().unwrap_or(0) > 0,
@@ -220,7 +232,7 @@ fn pool_literal_kinds_are_typed_from_the_deserialized_cluster() {
         );
     }
     eprintln!(
-        "pool literal kinds NOT observed in this corpus and therefore not claimed: null, true, false and Smi never reach a pool slot in this build (null and the booleans arrive through the null register and its +0x20/+0x30 offsets, Smis are inline immediates); Symbol slots deserialize but keep no readable value and stay Unresolved"
+        "pool literal kinds NOT observed in this sample and therefore not claimed here: null, true, false and Smi never reach a pool slot in this build (null and the booleans arrive through the null register and its +0x20/+0x30 offsets, Smis are inline immediates); this sample declares no Symbol, which is graded instead on the fixture that carries one"
     );
 
     let unresolved: usize = tally.get("Unresolved").copied().unwrap_or(0);
@@ -621,4 +633,228 @@ fn compressed_pointer_receiver_survives_the_registered_mobile_pass() {
     let rejected: String = mobile_pass_body(mutated, "WarehouseLedger.countBackordered");
     assert!(rejected.contains("Iterable.where(?, v0)"));
     assert!(!rejected.contains("Iterable.where(arg0.field@0x7, v0)"));
+}
+
+const fn slot_offset(slot: usize) -> u64 {
+    DART_POOL_ELEMENT_BASE_BYTES + (slot as u64) * 8
+}
+
+#[test]
+fn load_reset_pool_slots_render_the_value_the_snapshot_deserializer_assigns_them() {
+    let table: DartPoolTable = primary_pool();
+    let mut stub_slots: BTreeMap<String, usize> = BTreeMap::new();
+    let mut stub_kind_slots: usize = 0;
+    let mut native_function_slots: usize = 0;
+    let mut stub_rendered_outside_a_reset_slot: Vec<usize> = Vec::new();
+
+    for slot in 0..table.slot_count() {
+        let kind: DartPoolLiteralKind = table.kind_at_offset(slot_offset(slot), false);
+        let rendered: Option<String> = table.render_slot(slot, false);
+        let is_stub_token: bool = rendered
+            .as_deref()
+            .is_some_and(|text: &str| text.starts_with("stub@"));
+        match kind {
+            DartPoolLiteralKind::StubEntry => {
+                stub_kind_slots += 1;
+                let text: String = rendered
+                    .clone()
+                    .expect("a stub-entry slot must render the stub the deserializer installs");
+                *stub_slots.entry(text).or_default() += 1;
+            }
+            DartPoolLiteralKind::NativeFunction => {
+                native_function_slots += 1;
+                assert_eq!(
+                    rendered.as_deref(),
+                    Some("stub@linkNativeCall"),
+                    "ObjectPoolDeserializationCluster::ReadFill initializes a kNativeFunction entry with NativeEntry::LinkNativeCallEntry()"
+                );
+            }
+            _ => {
+                if is_stub_token {
+                    stub_rendered_outside_a_reset_slot.push(slot);
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "load-reset pool slots on the real sample: stub_entry_slots={stub_kind_slots} native_function_slots={native_function_slots} rendered={stub_slots:?}"
+    );
+    assert!(
+        stub_rendered_outside_a_reset_slot.is_empty(),
+        "a stub token may only come from a slot the snapshot marks reset-at-load, got slots {stub_rendered_outside_a_reset_slot:?}"
+    );
+    assert!(
+        stub_kind_slots > 0,
+        "the real sample must carry at least one reset-at-load stub slot"
+    );
+    for token in stub_slots.keys() {
+        assert!(
+            token == "stub@callBootstrapNative" || token == "stub@switchableCallMiss",
+            "SnapshotBehavior carries exactly two reset-to-stub values, got {token}"
+        );
+    }
+}
+
+#[test]
+fn set_to_zero_pool_slots_carry_the_zero_the_deserializer_writes() {
+    let mut per_sample: Vec<(String, usize)> = Vec::new();
+    for sample in COMMITTED_SAMPLES {
+        let table: DartPoolTable = pool(sample);
+        let mut reset_zero_slots: usize = 0;
+        for slot in 0..table.slot_count() {
+            if table.kind_at_offset(slot_offset(slot), false) != DartPoolLiteralKind::LoadResetZero
+            {
+                continue;
+            }
+            reset_zero_slots += 1;
+            assert_eq!(
+                table.render_slot(slot, false).as_deref(),
+                Some("0"),
+                "ReadFill writes raw_value_ = 0 for a kSetToZero entry and PostLoad leaves it alone"
+            );
+            assert_eq!(
+                table.render_slot(slot, true).as_deref(),
+                Some("0.0"),
+                "the same raw zero read through a floating-point load form is the double zero"
+            );
+        }
+        per_sample.push((sample.to_owned(), reset_zero_slots));
+    }
+    eprintln!("kSetToZero pool slots per committed real Dart sample: {per_sample:?}");
+    assert!(
+        per_sample
+            .iter()
+            .any(|(_, slots): &(String, usize)| *slots > 0),
+        "at least one committed sample must carry a kSetToZero entry for this rendering to be claimed against real Dart bytes, got {per_sample:?}"
+    );
+}
+
+#[test]
+fn every_pool_slot_either_renders_or_names_why_it_did_not() {
+    let mut totals: BTreeMap<String, usize> = BTreeMap::new();
+    let mut unresolved_total: usize = 0;
+    let mut resolved_total: usize = 0;
+
+    for sample in COMMITTED_SAMPLES {
+        let report: AotLiftReport =
+            lift_libapp_aot(&read_sample(sample)).expect("lift committed Dart sample");
+        let stats: DartPoolTableStats = report
+            .pool_slots
+            .expect("every committed sample must carry object-pool slot statistics");
+        let unresolved: usize = report
+            .pool_unresolved
+            .iter()
+            .map(|entry: &DartPoolUnresolvedSlots| entry.slots)
+            .sum::<usize>();
+        eprintln!(
+            "{sample}: slots={} resolved={} unresolved={unresolved} by reason={:?}",
+            stats.slots, stats.literals, report.pool_unresolved
+        );
+        assert_eq!(
+            stats.literals + unresolved,
+            stats.slots,
+            "{sample}: a slot must either render a value or name one reason it did not, never neither and never both"
+        );
+        for entry in &report.pool_unresolved {
+            assert!(
+                entry.slots > 0,
+                "{sample}: a named reason with no slots behind it must not be reported"
+            );
+            *totals.entry(format!("{:?}", entry.reason)).or_default() += entry.slots;
+        }
+        unresolved_total += unresolved;
+        resolved_total += stats.literals;
+    }
+
+    eprintln!(
+        "unresolved object-pool slots across the committed real Dart samples: {unresolved_total} unresolved against {resolved_total} resolved, by reason {totals:?}"
+    );
+    assert_eq!(
+        totals.keys().cloned().collect::<BTreeSet<String>>(),
+        EXPECTED_UNRESOLVED_REASONS
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<String>>(),
+        "the reasons a real Dart pool slot stays unresolved are pinned by name, so a new reason or a vanished one is attributable rather than a shift in one total"
+    );
+}
+
+#[test]
+fn resolved_pool_slots_rise_above_the_recorded_baseline() {
+    let report: AotLiftReport = primary_report();
+    let stats: DartPoolTableStats = report
+        .pool_slots
+        .expect("the pinned sample must carry object-pool slot statistics");
+    eprintln!(
+        "resolved object-pool slots on the primary sample: baseline {RECORDED_RESOLVED_POOL_SLOTS} -> {} of {}",
+        stats.literals, stats.slots
+    );
+    assert!(
+        stats.literals > RECORDED_RESOLVED_POOL_SLOTS,
+        "reading the snapshot behavior of every pool entry must resolve more slots than the recorded baseline of {RECORDED_RESOLVED_POOL_SLOTS}, got {}",
+        stats.literals
+    );
+}
+
+#[test]
+fn a_call_site_load_disrobe_cannot_tie_to_a_pool_value_names_its_reason() {
+    let report: AotLiftReport = primary_report();
+    let table: DartPoolTable = primary_pool();
+    let mut unresolved_loads: usize = 0;
+    let mut resolved_loads: usize = 0;
+    let mut named_reasons: BTreeMap<String, usize> = BTreeMap::new();
+
+    for function in &report.functions {
+        if !function.is_structured() {
+            continue;
+        }
+        let dart: String = function
+            .best_pseudo_dart()
+            .replace("selector@pool[", "selector@dispatch[");
+        for reference in &function.pool_refs {
+            let Ok(slot): Result<usize, _> = usize::try_from(reference.slot_index) else {
+                continue;
+            };
+            let reason: Option<DartPoolUnresolvedReason> =
+                table.unresolved_reason_at_offset(slot_offset(slot), false);
+            match (&reference.resolved_content, reason) {
+                (Some(_), Some(named)) => panic!(
+                    "slot {slot} reports the value {:?} and the refusal {named:?} at the same time",
+                    reference.resolved_content
+                ),
+                (None, None) => panic!(
+                    "slot {slot} resolves to no value and names no reason, which is the silent case this gate exists to forbid"
+                ),
+                (Some(_), None) => {
+                    resolved_loads += 1;
+                    assert!(
+                        !dart.contains(&format!("pool[{slot}]")),
+                        "slot {slot} resolves, so no body may still render it as the unresolved placeholder"
+                    );
+                }
+                (None, Some(named)) => {
+                    unresolved_loads += 1;
+                    *named_reasons.entry(format!("{named:?}")).or_default() += 1;
+                    assert_eq!(
+                        table.render_slot(slot, false),
+                        None,
+                        "slot {slot} names the reason {named:?} and must therefore render no value at all"
+                    );
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "call-site pool loads on the real sample: {resolved_loads} carry a value, {unresolved_loads} name a reason instead, reasons {named_reasons:?}"
+    );
+    assert!(
+        resolved_loads > 0,
+        "the real sample must resolve at least one call-site pool load"
+    );
+    assert!(
+        unresolved_loads > 0,
+        "the real sample must exercise at least one call-site pool load that stays unresolved"
+    );
 }

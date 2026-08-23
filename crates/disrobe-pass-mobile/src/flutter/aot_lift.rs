@@ -10,7 +10,9 @@ use super::cid_table::matches_version;
 use super::dart_graph::DartGraphLimits;
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::object_pool::{DartPoolLiteral, resolve_pool_literals};
-use super::pool_table::{DartPoolTable, DartPoolTableStats, pool_slot_of_offset};
+use super::pool_table::{
+    DartPoolTable, DartPoolTableStats, DartPoolUnresolvedSlots, pool_slot_of_offset,
+};
 use super::structured::{DartCallArgumentCounts, DartStructuredBody};
 use crate::debug::{dbg_kv, dbg_section};
 use crate::error::Result;
@@ -304,6 +306,7 @@ pub struct AotLiftReport {
     pub pool_content_resolved: usize,
     pub pool_literals: Vec<DartPoolLiteral>,
     pub pool_slots: Option<DartPoolTableStats>,
+    pub pool_unresolved: Vec<DartPoolUnresolvedSlots>,
     pub call_sites_with_arguments: usize,
     pub call_sites_opaque: usize,
     pub lifted_statements: usize,
@@ -318,7 +321,7 @@ pub struct AotLiftReport {
 
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
-const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; slots holding a snapshot base object, a native-function entry or a body shape this layout does not model stay unresolved rather than fabricated";
+const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; a slot the snapshot marks as reset at load carries the value the deserializer assigns it, which is zero for a set-to-zero entry and a named runtime stub entry for a bootstrap-native, switchable-call-miss or lazy native-link entry; a slot whose body shape this layout does not model stays unresolved with a named reason rather than fabricated";
 
 const INLINE_DOUBLE_NOTE: &str = "double literals that gen_snapshot materializes with an inline fmov 8-bit immediate never reach the ObjectPool; they are decoded byte-exact from the AArch64 fmov encoding and attributed to the function that loads them";
 
@@ -631,6 +634,9 @@ pub fn lift_functions(
         pool_content_resolved,
         pool_literals,
         pool_slots: pool.map(DartPoolTable::stats),
+        pool_unresolved: pool
+            .map(DartPoolTable::unresolved_slots)
+            .unwrap_or_default(),
         call_sites_with_arguments: call_argument_counts.recovered_sites,
         call_sites_opaque: call_argument_counts.opaque_sites,
         lifted_statements: call_argument_counts.lifted_statements,

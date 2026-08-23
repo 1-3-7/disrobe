@@ -17,6 +17,26 @@ const MINT_CLASS_ID: i32 = 61;
 
 const MAX_POOL_SLOTS: usize = 1 << 21;
 
+const POOL_ENTRY_TYPE_MASK: u8 = 0x0f;
+
+const POOL_SNAPSHOT_BEHAVIOR_SHIFT: u8 = 5;
+
+const POOL_SNAPSHOT_BEHAVIOR_MASK: u8 = 0x07;
+
+const POOL_ENTRY_IMMEDIATE: u8 = 0;
+
+const POOL_ENTRY_TAGGED_OBJECT: u8 = 1;
+
+const POOL_ENTRY_NATIVE_FUNCTION: u8 = 2;
+
+const POOL_BEHAVIOR_SNAPSHOTABLE: u8 = 0;
+
+const POOL_BEHAVIOR_RESET_TO_BOOTSTRAP_NATIVE: u8 = 2;
+
+const POOL_BEHAVIOR_RESET_TO_SWITCHABLE_CALL_MISS: u8 = 3;
+
+const POOL_BEHAVIOR_SET_TO_ZERO: u8 = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DartGraphLimits {
     pub clusters: usize,
@@ -102,11 +122,18 @@ pub(super) enum DartGraphNodeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DartPoolResetKind {
+    BootstrapNativeStub,
+    SwitchableCallMissEntry,
+    Zero,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DartPoolSlot {
     Immediate(i64),
     Object(u32),
     NativeFunction,
-    Unmodelled,
+    ResetAtLoad(DartPoolResetKind),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1172,20 +1199,21 @@ impl DartGraphParser<'_> {
             let mut slots: Vec<DartPoolSlot> = Vec::with_capacity(expected.min(MAX_POOL_SLOTS));
             for _ in 0..expected {
                 let bits: u8 = self.cursor.read_u8("object pool entry bits")?;
-                let behavior: u8 = (bits >> 5) & 0x7;
-                let entry_type: u8 = bits & 0x0f;
+                let behavior: u8 =
+                    (bits >> POOL_SNAPSHOT_BEHAVIOR_SHIFT) & POOL_SNAPSHOT_BEHAVIOR_MASK;
+                let entry_type: u8 = bits & POOL_ENTRY_TYPE_MASK;
                 let slot: DartPoolSlot = match behavior {
-                    0 => match entry_type {
-                        0 => {
+                    POOL_BEHAVIOR_SNAPSHOTABLE => match entry_type {
+                        POOL_ENTRY_IMMEDIATE => {
                             let immediate: i64 = self.cursor.read_i64("object pool immediate")?;
                             DartPoolSlot::Immediate(immediate)
                         }
-                        1 => {
+                        POOL_ENTRY_TAGGED_OBJECT => {
                             let resolved: u32 = self.cursor.read_ref(self.object_count)?;
                             references.push(resolved);
                             DartPoolSlot::Object(resolved)
                         }
-                        2 => DartPoolSlot::NativeFunction,
+                        POOL_ENTRY_NATIVE_FUNCTION => DartPoolSlot::NativeFunction,
                         _ => {
                             return Err(Error::DartGraphInvalidObjectPoolEntry {
                                 index: cluster.index,
@@ -1194,7 +1222,13 @@ impl DartGraphParser<'_> {
                             });
                         }
                     },
-                    2..=4 => DartPoolSlot::Unmodelled,
+                    POOL_BEHAVIOR_RESET_TO_BOOTSTRAP_NATIVE => {
+                        DartPoolSlot::ResetAtLoad(DartPoolResetKind::BootstrapNativeStub)
+                    }
+                    POOL_BEHAVIOR_RESET_TO_SWITCHABLE_CALL_MISS => {
+                        DartPoolSlot::ResetAtLoad(DartPoolResetKind::SwitchableCallMissEntry)
+                    }
+                    POOL_BEHAVIOR_SET_TO_ZERO => DartPoolSlot::ResetAtLoad(DartPoolResetKind::Zero),
                     _ => {
                         return Err(Error::DartGraphInvalidObjectPoolEntry {
                             index: cluster.index,

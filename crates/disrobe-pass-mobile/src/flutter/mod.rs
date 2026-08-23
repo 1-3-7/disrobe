@@ -84,6 +84,7 @@ pub use object_pool::{
 };
 pub use pool_table::{
     DART_POOL_ELEMENT_BASE_BYTES, DartPoolLiteralKind, DartPoolTable, DartPoolTableStats,
+    DartPoolUnresolvedReason, DartPoolUnresolvedSlots,
 };
 pub use snapshot::{
     DartClassEntry, DartFunctionBoundary, DartMethodEntry, DartNameSource, DartRecoveredFunction,
