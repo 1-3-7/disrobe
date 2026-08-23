@@ -387,6 +387,27 @@ pub mod op {
     pub const FE_FREE: u8 = 213;
     pub const GENERATOR_CREATE: u8 = 214;
     pub const OP_DATA: u8 = 137;
+    pub const ASSIGN_STATIC_PROP: u8 = 25;
+    pub const ASSIGN_DIM_OP: u8 = 27;
+    pub const ASSIGN_OBJ_OP: u8 = 28;
+    pub const ASSIGN_STATIC_PROP_OP: u8 = 29;
+    pub const PRE_INC_STATIC_PROP: u8 = 38;
+    pub const PRE_DEC_STATIC_PROP: u8 = 39;
+    pub const POST_INC_STATIC_PROP: u8 = 40;
+    pub const POST_DEC_STATIC_PROP: u8 = 41;
+    pub const SEND_REF: u8 = 67;
+    pub const FETCH_DIM_W: u8 = 84;
+    pub const FETCH_OBJ_W: u8 = 85;
+    pub const FETCH_DIM_RW: u8 = 87;
+    pub const FETCH_OBJ_RW: u8 = 88;
+    pub const PRE_INC_OBJ: u8 = 132;
+    pub const PRE_DEC_OBJ: u8 = 133;
+    pub const POST_INC_OBJ: u8 = 134;
+    pub const POST_DEC_OBJ: u8 = 135;
+    pub const FETCH_STATIC_PROP_R: u8 = 173;
+    pub const FETCH_STATIC_PROP_W: u8 = 174;
+    pub const FETCH_STATIC_PROP_RW: u8 = 175;
+    pub const FETCH_CLASS_CONSTANT: u8 = 181;
 }
 
 #[must_use]
@@ -416,12 +437,20 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         22 => "ZEND_ASSIGN",
         23 => "ZEND_ASSIGN_DIM",
         24 => "ZEND_ASSIGN_OBJ",
+        25 => "ZEND_ASSIGN_STATIC_PROP",
         26 => "ZEND_ASSIGN_OP",
+        27 => "ZEND_ASSIGN_DIM_OP",
+        28 => "ZEND_ASSIGN_OBJ_OP",
+        29 => "ZEND_ASSIGN_STATIC_PROP_OP",
         31 => "ZEND_QM_ASSIGN",
         34 => "ZEND_PRE_INC",
         35 => "ZEND_PRE_DEC",
         36 => "ZEND_POST_INC",
         37 => "ZEND_POST_DEC",
+        38 => "ZEND_PRE_INC_STATIC_PROP",
+        39 => "ZEND_PRE_DEC_STATIC_PROP",
+        40 => "ZEND_POST_INC_STATIC_PROP",
+        41 => "ZEND_POST_DEC_STATIC_PROP",
         42 => "ZEND_JMP",
         43 => "ZEND_JMPZ",
         44 => "ZEND_JMPNZ",
@@ -441,6 +470,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         64 => "ZEND_RECV_INIT",
         65 => "ZEND_SEND_VAL",
         66 => "ZEND_SEND_VAR_EX",
+        67 => "ZEND_SEND_REF",
         68 => "ZEND_NEW",
         69 => "ZEND_INIT_NS_FCALL_BY_NAME",
         70 => "ZEND_FREE",
@@ -455,7 +485,11 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         81 => "ZEND_FETCH_DIM_R",
         82 => "ZEND_FETCH_OBJ_R",
         83 => "ZEND_FETCH_W",
+        84 => "ZEND_FETCH_DIM_W",
+        85 => "ZEND_FETCH_OBJ_W",
         86 => "ZEND_FETCH_RW",
+        87 => "ZEND_FETCH_DIM_RW",
+        88 => "ZEND_FETCH_OBJ_RW",
         99 => "ZEND_FETCH_CONSTANT",
         107 => "ZEND_CATCH",
         108 => "ZEND_THROW",
@@ -473,6 +507,14 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         129 => "ZEND_DO_ICALL",
         130 => "ZEND_DO_UCALL",
         131 => "ZEND_DO_FCALL_BY_NAME",
+        132 => "ZEND_PRE_INC_OBJ",
+        133 => "ZEND_PRE_DEC_OBJ",
+        134 => "ZEND_POST_INC_OBJ",
+        135 => "ZEND_POST_DEC_OBJ",
+        173 => "ZEND_FETCH_STATIC_PROP_R",
+        174 => "ZEND_FETCH_STATIC_PROP_W",
+        175 => "ZEND_FETCH_STATIC_PROP_RW",
+        181 => "ZEND_FETCH_CLASS_CONSTANT",
         136 => "ZEND_ECHO",
         138 => "ZEND_INSTANCEOF",
         141 => "ZEND_DECLARE_FUNCTION",
@@ -1020,21 +1062,54 @@ impl SkeletonEmitter {
                 }
             }
             OpArrayKind::Method => {
-                let class: &str = node.class_name.as_deref().unwrap_or("UnknownClass");
-                self.line(indent, &format!("class {class}"));
-                self.line(indent, "{");
-                let sig: String = Self::method_signature(node);
-                self.line(indent + 1, &sig);
-                self.line(indent + 1, "{");
-                self.emit_body(node, indent + 2);
-                self.line(indent + 1, "}");
-                self.line(indent, "}");
+                self.emit_class(&[node], indent);
             }
         }
     }
 
+    fn emit_class(&mut self, methods: &[&OpArray], indent: usize) {
+        let class: &str = methods
+            .first()
+            .and_then(|method: &&OpArray| method.class_name.as_deref())
+            .unwrap_or("UnknownClass");
+        self.line(indent, &format!("class {class}"));
+        self.line(indent, "{");
+        for (position, method) in methods.iter().enumerate() {
+            if position > 0 {
+                self.out.push('\n');
+            }
+            let sig: String = Self::method_signature(method);
+            self.line(indent + 1, &sig);
+            self.line(indent + 1, "{");
+            self.emit_body(method, indent + 2);
+            self.line(indent + 1, "}");
+        }
+        self.line(indent, "}");
+    }
+
     fn emit_children_first(&mut self, node: &OpArray, indent: usize) {
+        let mut classes: Vec<(&str, Vec<&OpArray>)> = Vec::new();
         for child in &node.children {
+            if child.kind != OpArrayKind::Method {
+                continue;
+            }
+            let class: &str = child.class_name.as_deref().unwrap_or("UnknownClass");
+            match classes
+                .iter_mut()
+                .find(|(name, _): &&mut (&str, Vec<&OpArray>)| *name == class)
+            {
+                Some((_, methods)) => methods.push(child),
+                None => classes.push((class, vec![child])),
+            }
+        }
+        for (_, methods) in &classes {
+            self.emit_class(methods, indent);
+            self.out.push('\n');
+        }
+        for child in &node.children {
+            if child.kind == OpArrayKind::Method {
+                continue;
+            }
             self.emit_oparray(child, indent);
             self.out.push('\n');
         }
@@ -3570,6 +3645,83 @@ impl<'a> Lifter<'a> {
                 });
                 None
             }
+            o if o == op::FETCH_CLASS_CONSTANT => {
+                let Some(text): Option<String> = self.class_constant_access(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                self.store_result(op, Expr::atom(text));
+                None
+            }
+            o if o == op::FETCH_STATIC_PROP_R
+                || o == op::FETCH_STATIC_PROP_W
+                || o == op::FETCH_STATIC_PROP_RW =>
+            {
+                let Some(text): Option<String> = self.static_property(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                self.store_result(op, Expr::atom(text));
+                None
+            }
+            o if o == op::FETCH_OBJ_W || o == op::FETCH_OBJ_RW => {
+                let text: String = self.property_access(op);
+                self.store_result(op, Expr::atom(text));
+                self.mark_writable(idx, op);
+                None
+            }
+            o if o == op::FETCH_DIM_W || o == op::FETCH_DIM_RW => {
+                let Some(text): Option<String> = self.dimension_access(op) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                self.store_result(op, Expr::atom(text));
+                self.mark_writable(idx, op);
+                None
+            }
+            o if o == op::ASSIGN_STATIC_PROP => {
+                let Some(target): Option<String> = self.static_property(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                let Some(value): Option<Expr> = self.op_data_value(idx) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                if op.result_type != OperandType::Unused {
+                    self.store_result(op, Expr::atom(target.clone()));
+                }
+                Some(format!("{target} = {};", value.text))
+            }
+            o if o == op::ASSIGN_STATIC_PROP_OP => {
+                let Some(target): Option<String> = self.static_property(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                Some(self.compound_member_assign(idx, op, target))
+            }
+            o if o == op::ASSIGN_OBJ_OP => {
+                let target: String = self.property_access(op);
+                Some(self.compound_member_assign(idx, op, target))
+            }
+            o if o == op::ASSIGN_DIM_OP => {
+                let Some(target): Option<String> = self.dimension_access(op) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                Some(self.compound_member_assign(idx, op, target))
+            }
+            o if o == op::PRE_INC_OBJ
+                || o == op::PRE_DEC_OBJ
+                || o == op::POST_INC_OBJ
+                || o == op::POST_DEC_OBJ =>
+            {
+                let target: String = self.property_access(op);
+                Some(self.step_member(idx, op, target))
+            }
+            o if o == op::PRE_INC_STATIC_PROP
+                || o == op::PRE_DEC_STATIC_PROP
+                || o == op::POST_INC_STATIC_PROP
+                || o == op::POST_DEC_STATIC_PROP =>
+            {
+                let Some(target): Option<String> = self.static_property(op) else {
+                    return Some(self.refuse(idx, o, REASON_CLASS_REFERENCE));
+                };
+                Some(self.step_member(idx, op, target))
+            }
             o if o == op::INIT_ARRAY => self.fold_array_init(idx, op),
             o if o == op::ADD_ARRAY_ELEMENT => self.fold_array_append(idx, op),
             o if o == op::ECHO => {
@@ -3724,6 +3876,85 @@ impl<'a> Lifter<'a> {
                 |e: Expr| format!("{base}->{{{}}}", e.text),
             ),
         }
+    }
+
+    fn mark_writable(&mut self, idx: u32, op: &Op) {
+        if op.result_type == OperandType::Var {
+            self.writable_slots.insert((op.result_type, op.result), idx);
+        }
+    }
+
+    fn static_property(&self, op: &Op) -> Option<String> {
+        let name: String = self.literal_string(op.op1_type, op.op1)?;
+        let class: String = self.literal_string(op.op2_type, op.op2)?;
+        if !is_valid_php_ident(&name) {
+            return None;
+        }
+        Some(format!("{}::${name}", class_reference(&class)))
+    }
+
+    fn class_constant_access(&self, op: &Op) -> Option<String> {
+        let class: String = self.literal_string(op.op1_type, op.op1)?;
+        let name: String = self.literal_string(op.op2_type, op.op2)?;
+        if !is_valid_php_ident(&name) {
+            return None;
+        }
+        Some(format!("{}::{name}", class_reference(&class)))
+    }
+
+    fn dimension_access(&self, op: &Op) -> Option<String> {
+        let base: Expr = self.operand_expr(op.op1_type, op.op1)?;
+        if op.op2_type == OperandType::Unused {
+            return Some(format!("{}[]", base.wrapped(PREC_CALL)));
+        }
+        let index: Expr = self.operand_expr(op.op2_type, op.op2)?;
+        Some(format!("{}[{}]", base.wrapped(PREC_CALL), index.text))
+    }
+
+    fn op_data_value(&self, idx: u32) -> Option<Expr> {
+        let data: Op = self
+            .ops
+            .get(idx as usize + 1)
+            .filter(|next: &&Op| next.opcode == op::OP_DATA)?
+            .clone();
+        self.operand_expr(data.op1_type, data.op1)
+    }
+
+    fn compound_member_assign(&mut self, idx: u32, op: &Op, target: String) -> String {
+        let symbol: &'static str = assign_op_symbol(op.extended_value);
+        if symbol == "?" {
+            return self.refuse(idx, op.opcode, REASON_COMPOUND_OPERATOR);
+        }
+        let Some(value): Option<Expr> = self.op_data_value(idx) else {
+            return self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND);
+        };
+        if op.result_type != OperandType::Unused {
+            self.store_result(op, Expr::atom(target.clone()));
+        }
+        format!("{target} {symbol}= {};", value.text)
+    }
+
+    fn step_member(&mut self, idx: u32, op: &Op, target: String) -> String {
+        let prefix: bool = matches!(
+            op.opcode,
+            op::PRE_INC_OBJ | op::PRE_DEC_OBJ | op::PRE_INC_STATIC_PROP | op::PRE_DEC_STATIC_PROP
+        );
+        let up: bool = matches!(
+            op.opcode,
+            op::PRE_INC_OBJ | op::POST_INC_OBJ | op::PRE_INC_STATIC_PROP | op::POST_INC_STATIC_PROP
+        );
+        let symbol: &str = if up { "++" } else { "--" };
+        let rendered: String = if prefix {
+            format!("{symbol}{target}")
+        } else {
+            format!("{target}{symbol}")
+        };
+        if op.result_type == OperandType::Unused {
+            return format!("{rendered};");
+        }
+        let spill: String = self.reserve_spill("step", idx);
+        self.store_result(op, Expr::atom(format!("${spill}")));
+        format!("${spill} = {rendered};")
     }
 
     fn literal_string(&self, ty: OperandType, value: u32) -> Option<String> {
@@ -4187,6 +4418,10 @@ const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
+const REASON_CLASS_REFERENCE: &str =
+    "the class reference on this member access is not carried in this op array";
+const REASON_COMPOUND_OPERATOR: &str =
+    "the compound assignment operator is not a php 8 binary operator";
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
@@ -4269,6 +4504,17 @@ const fn is_inc_dec(opcode: u8) -> bool {
 }
 
 #[must_use]
+fn class_reference(name: &str) -> String {
+    let unqualified: &str = name.trim_start_matches('\\');
+    if unqualified
+        .split('\\')
+        .all(|segment: &str| is_valid_php_ident(segment))
+    {
+        return unqualified.to_owned();
+    }
+    name.to_owned()
+}
+
 fn constant_reference(name: &str) -> String {
     let unqualified: &str = name.trim_start_matches('\\');
     if !unqualified.is_empty()
@@ -4363,7 +4609,7 @@ const fn is_rope_intermediate(opcode: u8) -> bool {
 const fn is_send(opcode: u8) -> bool {
     matches!(
         opcode,
-        op::SEND_VAL | op::SEND_VAL_EX | op::SEND_VAR | op::SEND_VAR_EX
+        op::SEND_VAL | op::SEND_VAL_EX | op::SEND_VAR | op::SEND_VAR_EX | op::SEND_REF
     )
 }
 

@@ -24,8 +24,8 @@
 mod php_toolchain;
 
 use disrobe_pass_php::{
-    Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, decompile_oparray,
-    opcode_name, parse_oparray,
+    Decompilation, Error, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray, UnrecoveredOp,
+    decompile_oparray, opcode_name, parse_oparray,
 };
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,15 +35,17 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 13] = [
+const PINNED_SAMPLES: [&str; 15] = [
     "arithmetic",
     "closures",
     "control_flow",
     "do_while",
+    "dynamic_members",
     "functions",
     "generators",
     "keyed_foreach",
     "match_optimized",
+    "members",
     "objects",
     "switch_linear",
     "switch_optimized",
@@ -51,10 +53,11 @@ const PINNED_SAMPLES: [&str; 13] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 11] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 12] = [
     "arithmetic",
     "control_flow",
     "do_while",
+    "dynamic_members",
     "functions",
     "generators",
     "keyed_foreach",
@@ -65,15 +68,17 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 11] = [
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 13] = [
+const OPCODE_NAMING_SAMPLES: [&str; 15] = [
     "arithmetic",
     "closures",
     "control_flow",
     "do_while",
+    "dynamic_members",
     "functions",
     "generators",
     "keyed_foreach",
     "match_optimized",
+    "members",
     "objects",
     "switch_linear",
     "switch_optimized",
@@ -428,7 +433,7 @@ fn every_committed_oparray_sample_is_pinned_by_name() {
     let not_behavioral: Vec<&String> = pinned.difference(&behavioral).collect();
     assert_eq!(
         not_behavioral,
-        vec!["closures", "versioned"],
+        vec!["closures", "members", "versioned"],
         "every pinned sample except `closures`, which grades anonymous closure opcode blocks, and \
          `versioned`, which carries the schema-version cases, must have a behavioral roundtrip; \
          these do not: {not_behavioral:?}"
@@ -499,6 +504,92 @@ fn php_84_optimized_switch_oparray_roundtrips_behaviorally() {
 #[test]
 fn php_84_optimized_match_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("match_optimized");
+}
+
+#[test]
+fn dynamic_members_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("dynamic_members");
+}
+
+const MEMBERS_STATIC_STATEMENTS: [&str; 8] = [
+    "Ledger::$total += $by;",
+    "++Ledger::$total;",
+    "--Ledger::$total;",
+    "return self::$total;",
+    "Ledger::$tag = $suffix;",
+    "Ledger::$tag .= '!';",
+    "return static::$tag;",
+    "$this->bag[$key] += 10;",
+];
+
+#[test]
+fn members_recovers_every_static_member_form_and_refuses_only_its_class_declaration() {
+    let graded: &str = "the php 8.4 static property, class constant and member step recovery";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let src: PathBuf = required_sample("members");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_members_recover")
+            .expect("create the member recovery scratch directory");
+    let dzoa: PathBuf = scratch.path().join("members.dzoa");
+    if let Err(diag) = emit_dzoa(&php, &dll, &src, &dzoa) {
+        unmeasured(
+            &PHP_OPCACHE,
+            graded,
+            &format!("this php and opcache build emits no op_array dump for members\n{diag}"),
+        );
+        return;
+    }
+    let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read the member op array");
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse the member op array");
+    let first: Decompilation = decompile_oparray(&parsed);
+    let second: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(
+        first.php_skeleton, second.php_skeleton,
+        "members recovered two different sources from one op array"
+    );
+    let source: &str = &first.php_skeleton;
+    let refused: Vec<&str> = first
+        .unrecovered
+        .iter()
+        .map(|entry: &UnrecoveredOp| entry.mnemonic.as_str())
+        .collect();
+    assert_eq!(
+        refused,
+        vec!["ZEND_DECLARE_CLASS_DELAYED"],
+        "members is pinned to refuse exactly the class declaration this container does not carry; \
+         every member access in it must recover\n--- recovered ---\n{source}"
+    );
+    let mut lost: Vec<&str> = Vec::new();
+    let mut restored: usize = 0;
+    for statement in MEMBERS_STATIC_STATEMENTS {
+        if source.contains(statement) {
+            restored += 1;
+        } else {
+            lost.push(statement);
+        }
+    }
+    assert!(
+        lost.is_empty(),
+        "{restored}/{} static member statements recovered; these did not: {lost:?}\n--- recovered \
+         ---\n{source}",
+        MEMBERS_STATIC_STATEMENTS.len()
+    );
+    assert!(
+        !source.contains("Ledger::total"),
+        "a static property must keep its sigil, or the recovered source reads a class constant \
+         instead\n--- recovered ---\n{source}"
+    );
+    assert_eq!(
+        source.matches("class Ledger").count(),
+        1,
+        "php fatals on a duplicate class declaration, so every method must land in one class \
+         block\n--- recovered ---\n{source}"
+    );
 }
 
 #[test]

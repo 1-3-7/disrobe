@@ -137,6 +137,45 @@ const OPMAP = [
     'GENERATOR_CREATE' => 214,
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
+    'ASSIGN_STATIC_PROP' => 25,
+    'ASSIGN_DIM_OP' => 27,
+    'ASSIGN_OBJ_OP' => 28,
+    'ASSIGN_STATIC_PROP_OP' => 29,
+    'PRE_INC_STATIC_PROP' => 38,
+    'PRE_DEC_STATIC_PROP' => 39,
+    'POST_INC_STATIC_PROP' => 40,
+    'POST_DEC_STATIC_PROP' => 41,
+    'SEND_REF' => 67,
+    'FETCH_DIM_W' => 84,
+    'FETCH_OBJ_W' => 85,
+    'FETCH_DIM_RW' => 87,
+    'FETCH_OBJ_RW' => 88,
+    'PRE_INC_OBJ' => 132,
+    'PRE_DEC_OBJ' => 133,
+    'POST_INC_OBJ' => 134,
+    'POST_DEC_OBJ' => 135,
+    'FETCH_STATIC_PROP_R' => 173,
+    'FETCH_STATIC_PROP_W' => 174,
+    'FETCH_STATIC_PROP_RW' => 175,
+    'FETCH_CLASS_CONSTANT' => 181,
+];
+
+const COMPOUND_ASSIGN_MNEMONICS = [
+    'ASSIGN_OP',
+    'ASSIGN_DIM_OP',
+    'ASSIGN_OBJ_OP',
+    'ASSIGN_STATIC_PROP_OP',
+];
+
+const CLASS_REFERENCE_FLAGS = [
+    '(self)' => 'self',
+    '(static)' => 'static',
+    '(parent)' => 'parent',
+];
+
+const DISCARDED_MEMBER_FLAGS = [
+    '(exception)',
+    '(dim write)',
 ];
 
 const CAST_TYPE_MAP = [
@@ -780,6 +819,50 @@ function parse_dump(string $text): array
             }
             $op = build_op($mnemonic, $resultTok, $tokens, $current['oa'], $addr + 1);
             $op->ext = $table[$fm[1]];
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        $isMemberAccess = isset(OPMAP[$mnemonic]) && (
+            str_starts_with($mnemonic, 'FETCH_STATIC_PROP_')
+            || str_starts_with($mnemonic, 'FETCH_OBJ_')
+            || str_starts_with($mnemonic, 'FETCH_DIM_')
+            || $mnemonic === 'FETCH_CLASS_CONSTANT'
+            || $mnemonic === 'ASSIGN_STATIC_PROP'
+            || in_array($mnemonic, COMPOUND_ASSIGN_MNEMONICS, true)
+            || preg_match('/^(PRE|POST)_(INC|DEC)_(OBJ|STATIC_PROP)$/', $mnemonic) === 1
+        );
+        if ($isMemberAccess) {
+            $ext = null;
+            $operands = [];
+            foreach ($tokens as $tok) {
+                $flag = trim($tok);
+                if (in_array($flag, DISCARDED_MEMBER_FLAGS, true)) {
+                    continue;
+                }
+                if (isset(CLASS_REFERENCE_FLAGS[$flag])) {
+                    $operands[] = 'string("' . CLASS_REFERENCE_FLAGS[$flag] . '")';
+                    continue;
+                }
+                if (in_array($mnemonic, COMPOUND_ASSIGN_MNEMONICS, true)
+                    && preg_match('/^\(([A-Z_]+)\)$/', $flag, $fm)
+                ) {
+                    if (!isset(ASSIGN_OP_MAP[$fm[1]])) {
+                        fail("$mnemonic at line $addr uses unmapped compound operator '{$fm[1]}'");
+                    }
+                    $ext = ASSIGN_OP_MAP[$fm[1]];
+                    continue;
+                }
+                $operands[] = $tok;
+            }
+            if (in_array($mnemonic, COMPOUND_ASSIGN_MNEMONICS, true) && $ext === null) {
+                fail("$mnemonic at line $addr carries no parenthesized compound operator");
+            }
+            $op = build_op($mnemonic, $resultTok, $operands, $current['oa'], $addr + 1);
+            if ($ext !== null) {
+                $op->ext = $ext;
+            }
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
             continue;
