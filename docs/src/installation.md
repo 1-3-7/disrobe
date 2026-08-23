@@ -73,7 +73,7 @@ cargo build -p disrobe-cli --release --no-default-features
 cargo build-slim
 ```
 
-Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain. Dropping them also drops large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. On a Windows release build that trims the binary from about 75 MB to 49 MB, roughly a third smaller; the exact figure varies by platform and toolchain. The `wasm` subcommand still parses in a slim binary. If you run it, it reports why the pass is missing:
+Slim drops the optional language and format passes (JavaScript / TypeScript, WebAssembly, JVM / Android, .NET, Go, Lua, PHP, Ruby, BEAM, Swift, AS3, and more) and the multi-stage `auto` chain. It also drops every network and asynchronous surface: the HTTP server, the gRPC endpoint, the MCP companion, the `prowl` harvester, and the HTTP client that `install-deps` uses to download a third-party tool. A slim binary links none of `tokio`, `axum`, `tonic`, `tower-http`, `tokio-util`, `tokio-stream`, `reqwest`, `hyper`, `rustls`, `rmcp` or `keyring`, which a committed CI gate enforces by reading the dependency tree, so the binary cannot open a socket at all. Dropping the passes also drops large dependency trees such as the embedded JavaScript engine and the WebAssembly toolchain. On a Windows release build that trims the binary from about 75 MB to 49 MB, roughly a third smaller; the exact figure varies by platform and toolchain. The `wasm` subcommand still parses in a slim binary. If you run it, it reports why the pass is missing:
 
 ```text
 $ disrobe wasm decompile app.wasm
