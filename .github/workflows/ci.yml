@@ -966,6 +966,8 @@ jobs:
         run: cargo clippy -p disrobe-cli --no-default-features --all-targets -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
       - name: the graceful-bail seam fires when a pass is compiled out
         run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
+      - name: the network and async surfaces bail when they are compiled out
+        run: cargo test -p disrobe-cli --no-default-features --test slim_network_bail -- --nocapture
       - name: build the slim release binary
         run: cargo build -p disrobe-cli --release --no-default-features --bin disrobe
       - name: the wasm decompiler tree is absent from the slim binary
