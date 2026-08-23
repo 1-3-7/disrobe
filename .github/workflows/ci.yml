@@ -899,7 +899,7 @@ jobs:
           printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.3"
+          php-version: "8.4"
           extensions: opcache
           tools: none
           coverage: none

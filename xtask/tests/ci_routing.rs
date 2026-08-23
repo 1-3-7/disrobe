@@ -345,7 +345,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             .get("with")
             .and_then(|value: &Value| value.get("php-version"))
             .and_then(Value::as_str),
-        Some("8.3")
+        Some("8.4")
     );
     assert_eq!(
         php_setup
