@@ -893,6 +893,15 @@ mod tests {
         0xc3,
     ];
 
+    const JUNK_PADDED_ARITHMETIC_SHIFT_HANDLER: [u8; 77] = [
+        0x41, 0x53, 0x4d, 0x31, 0xdb, 0x90, 0x4c, 0x8b, 0x47, 0x08, 0x49, 0xff, 0xc3, 0x4c, 0x8b,
+        0x4f, 0x10, 0x90, 0x90, 0x41, 0x8b, 0x09, 0x49, 0x81, 0xc3, 0x34, 0x12, 0x00, 0x00, 0x49,
+        0x8b, 0x44, 0xc8, 0xf8, 0x49, 0xc1, 0xc3, 0x07, 0x49, 0x8b, 0x54, 0xc8, 0xf0, 0x48, 0x83,
+        0xe0, 0x3f, 0x49, 0xf7, 0xd3, 0x49, 0x89, 0xca, 0x48, 0x89, 0xc1, 0x48, 0xd3, 0xfa, 0x90,
+        0x4b, 0x89, 0x54, 0xd0, 0xf0, 0x4d, 0x31, 0xdb, 0x41, 0xff, 0xca, 0x45, 0x89, 0x11, 0x41,
+        0x5b, 0xc3,
+    ];
+
     fn structure_for(body: &[u8]) -> VmStructure {
         VmStructure {
             bitness: Bitness::Bits64,
@@ -960,6 +969,35 @@ mod tests {
         assert_ne!(
             arithmetic, logical,
             "two handlers whose behaviour differs must not collapse to one summary"
+        );
+    }
+
+    #[test]
+    fn a_junk_padded_body_summarizes_the_same_as_the_body_it_pads() {
+        assert!(
+            JUNK_PADDED_ARITHMETIC_SHIFT_HANDLER.len() > ARITHMETIC_SHIFT_HANDLER.len(),
+            "the padded body must actually carry more instructions"
+        );
+        assert!(
+            !JUNK_PADDED_ARITHMETIC_SHIFT_HANDLER
+                .windows(ARITHMETIC_SHIFT_HANDLER.len())
+                .any(|window: &[u8]| window == ARITHMETIC_SHIFT_HANDLER),
+            "the padding must be interleaved rather than wrapped around an untouched copy, or a \
+             byte comparison could recognise this without understanding it"
+        );
+
+        let plain: HandlerSemantics = summarize(&ARITHMETIC_SHIFT_HANDLER);
+        let padded: HandlerSemantics = summarize(&JUNK_PADDED_ARITHMETIC_SHIFT_HANDLER);
+
+        assert_eq!(
+            padded.micro_op,
+            MicroOp::Binary { op: BinKind::Sar },
+            "the padded body computes an arithmetic shift and must summarize as one"
+        );
+        assert_eq!(
+            plain, padded,
+            "two bodies with the same behaviour must collapse to one summary, or the lifter \
+             cannot dispatch on summary equality"
         );
     }
 
