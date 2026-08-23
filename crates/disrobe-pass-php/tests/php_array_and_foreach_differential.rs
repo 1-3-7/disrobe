@@ -266,6 +266,40 @@ fn a_reset_and_fetch_pair_that_disagree_on_binding_mode_is_refused_rather_than_g
 }
 
 #[test]
+fn a_foreach_whose_value_target_is_not_a_compiled_variable_is_refused_rather_than_named() {
+    let wire: Vec<u8> = required_fixture(&format!("oparray_foreach/{SAMPLE}.dzoa"));
+    let mut parsed: OpArray = parse_oparray(&wire).expect("the tracked op array must parse");
+    let target: &mut OpArray = parsed
+        .children
+        .iter_mut()
+        .find(|child: &&mut OpArray| child.name.as_deref() == Some("sum_only"))
+        .expect("the tracked sample declares sum_only");
+    let fetch: &mut disrobe_pass_php::Op = target
+        .ops
+        .iter_mut()
+        .find(|op: &&mut disrobe_pass_php::Op| op.opcode == 78)
+        .expect("sum_only iterates by value");
+    fetch.op2_type = disrobe_pass_php::OperandType::TmpVar;
+    let recovered: Decompilation = decompile_oparray(&parsed);
+    assert!(
+        recovered
+            .unrecovered
+            .iter()
+            .any(|entry: &disrobe_pass_php::UnrecoveredOp| entry.mnemonic == "ZEND_FE_RESET_R"),
+        "a foreach whose value target is not a compiled variable cannot be named from data flow \
+         and must be refused, got {:?}\n--- recovered ---\n{}",
+        recovered.unrecovered,
+        recovered.php_skeleton
+    );
+    assert!(
+        !recovered.php_skeleton.contains(" as $value)"),
+        "a refused iteration must not invent the name $value for its target\n--- recovered \
+         ---\n{}",
+        recovered.php_skeleton
+    );
+}
+
+#[test]
 fn an_array_element_whose_value_operand_is_absent_is_refused_rather_than_built_without_it() {
     let wire: Vec<u8> = required_fixture(&format!("oparray_foreach/{SAMPLE}.dzoa"));
     for (mnemonic, opcode) in [

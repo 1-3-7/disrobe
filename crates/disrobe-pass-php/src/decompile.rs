@@ -3278,8 +3278,7 @@ impl<'a> Lifter<'a> {
         };
         let value: String = match fetch.op2_type {
             OperandType::Cv => format!("${}", self.cv(fetch.op2)),
-            _ if by_reference => return None,
-            _ => "$value".to_owned(),
+            _ => return None,
         };
         let mut value_start: u32 = fetch_idx + 1;
         let key: Option<String> =
