@@ -103,7 +103,7 @@ fn fingerprint_one(
 }
 
 fn probe_vectors() -> Vec<ProbeVector> {
-    let bases: [([i64; NUM_PROBE_REGS], [i64; STACK_INIT_DEPTH], u8, u32); 8] = [
+    let bases: [([i64; NUM_PROBE_REGS], [i64; STACK_INIT_DEPTH], u8, u32); 9] = [
         (
             [3, 5, 7, 11, 13, 17, 19, 23],
             [101, 103, 107, 109, 113, 127, 40, 137],
@@ -151,6 +151,12 @@ fn probe_vectors() -> Vec<ProbeVector> {
             [-2, -4, -6, -8, -10, -12, 0, 50],
             7,
             0x0004_0507,
+        ),
+        (
+            [-7, 21, -35, 49, -63, 77, -91, 105],
+            [-9, 18, -27, 36, -45, 54, -100, 3],
+            2,
+            0x0005_0602,
         ),
     ];
     bases
@@ -510,6 +516,7 @@ fn detect_binary(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<B
         BinKind::Div,
         BinKind::Rem,
     ];
+    let mut matched: Option<BinKind> = None;
     for kind in kinds {
         let mut all: bool = true;
         for (v, o) in vectors.iter().zip(outcomes.iter()) {
@@ -523,10 +530,13 @@ fn detect_binary(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<B
             }
         }
         if all {
-            return Some(kind);
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(kind);
         }
     }
-    None
+    matched
 }
 
 fn detect_compare(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<CmpKind> {
@@ -538,6 +548,7 @@ fn detect_compare(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<
         CmpKind::Gt,
         CmpKind::Ge,
     ];
+    let mut matched: Option<CmpKind> = None;
     for kind in kinds {
         let mut all: bool = true;
         let mut saw_true: bool = false;
@@ -558,14 +569,18 @@ fn detect_compare(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<
             }
         }
         if all && saw_true && saw_false {
-            return Some(kind);
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(kind);
         }
     }
-    None
+    matched
 }
 
 fn detect_unary(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<UnKind> {
     let kinds: [UnKind; 2] = [UnKind::Neg, UnKind::Not];
+    let mut matched: Option<UnKind> = None;
     for kind in kinds {
         let mut all: bool = true;
         for (v, o) in vectors.iter().zip(outcomes.iter()) {
@@ -579,10 +594,13 @@ fn detect_unary(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<Un
             }
         }
         if all {
-            return Some(kind);
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(kind);
         }
     }
-    None
+    matched
 }
 
 fn detect_push_imm(vectors: &[ProbeVector], outcomes: &[ProbeOutcome]) -> Option<(VmOperand, u8)> {
@@ -723,6 +741,151 @@ mod tests {
         assert_eq!(BinKind::Add.apply(3, 4), 7);
         assert_eq!(BinKind::Sub.apply(10, 3), 7);
         assert_eq!(BinKind::Xor.apply(0b1010, 0b0110), 0b1100);
+    }
+
+    const BIN_KINDS: [BinKind; 11] = [
+        BinKind::Add,
+        BinKind::Sub,
+        BinKind::Mul,
+        BinKind::And,
+        BinKind::Or,
+        BinKind::Xor,
+        BinKind::Shl,
+        BinKind::Shr,
+        BinKind::Sar,
+        BinKind::Div,
+        BinKind::Rem,
+    ];
+
+    const CMP_KINDS: [CmpKind; 6] = [
+        CmpKind::Eq,
+        CmpKind::Ne,
+        CmpKind::Lt,
+        CmpKind::Le,
+        CmpKind::Gt,
+        CmpKind::Ge,
+    ];
+
+    const UN_KINDS: [UnKind; 2] = [UnKind::Neg, UnKind::Not];
+
+    #[test]
+    fn every_pair_of_binary_kinds_disagrees_on_some_probe() {
+        let vectors: Vec<ProbeVector> = probe_vectors();
+        let mut collisions: Vec<String> = Vec::new();
+        for (left_index, left) in BIN_KINDS.iter().enumerate() {
+            for right in BIN_KINDS.iter().skip(left_index + 1) {
+                let separated: bool = vectors.iter().any(|v: &ProbeVector| {
+                    let (a, b): (i64, i64) = input_top_two(v);
+                    left.apply(a, b) != right.apply(a, b)
+                });
+                if !separated {
+                    collisions.push(format!("{left:?} and {right:?}"));
+                }
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "these binary kinds agree on every probe, so the first one listed in detect_binary \
+             would be reported for a handler that is really the other: {collisions:?}"
+        );
+    }
+
+    #[test]
+    fn every_pair_of_compare_kinds_disagrees_on_some_probe() {
+        let vectors: Vec<ProbeVector> = probe_vectors();
+        let mut collisions: Vec<String> = Vec::new();
+        for (left_index, left) in CMP_KINDS.iter().enumerate() {
+            for right in CMP_KINDS.iter().skip(left_index + 1) {
+                let separated: bool = vectors.iter().any(|v: &ProbeVector| {
+                    let (a, b): (i64, i64) = input_top_two(v);
+                    left.apply(a, b) != right.apply(a, b)
+                });
+                if !separated {
+                    collisions.push(format!("{left:?} and {right:?}"));
+                }
+            }
+        }
+        assert!(collisions.is_empty(), "{collisions:?}");
+    }
+
+    #[test]
+    fn every_pair_of_unary_kinds_disagrees_on_some_probe() {
+        let vectors: Vec<ProbeVector> = probe_vectors();
+        let mut collisions: Vec<String> = Vec::new();
+        for (left_index, left) in UN_KINDS.iter().enumerate() {
+            for right in UN_KINDS.iter().skip(left_index + 1) {
+                let separated: bool = vectors.iter().any(|v: &ProbeVector| {
+                    let operand: i64 = v.stack[STACK_INIT_DEPTH - 1];
+                    left.apply(operand) != right.apply(operand)
+                });
+                if !separated {
+                    collisions.push(format!("{left:?} and {right:?}"));
+                }
+            }
+        }
+        assert!(collisions.is_empty(), "{collisions:?}");
+    }
+
+    fn probe_with_top_two(a: i64, b: i64) -> ProbeVector {
+        let mut stack: [i64; STACK_INIT_DEPTH] = [0; STACK_INIT_DEPTH];
+        stack[STACK_INIT_DEPTH - 2] = a;
+        stack[STACK_INIT_DEPTH - 1] = b;
+        ProbeVector {
+            regs: [0; NUM_PROBE_REGS],
+            stack,
+            reg_index: 0,
+            operand_imm: 0,
+            branch_target: 0,
+        }
+    }
+
+    fn outcome_consuming_one(result: i64) -> ProbeOutcome {
+        let depth: usize = STACK_INIT_DEPTH - 1;
+        let mut stack_after: Vec<i64> = vec![0; depth];
+        stack_after[depth - 1] = result;
+        ProbeOutcome {
+            regs_after: vec![0; NUM_PROBE_REGS],
+            stack_after,
+            sp_after: depth as i64,
+            pc_after: 0,
+            halted: true,
+        }
+    }
+
+    #[test]
+    fn two_binary_kinds_that_both_match_abstain_instead_of_taking_the_first() {
+        let vectors: Vec<ProbeVector> = vec![probe_with_top_two(40, 3), probe_with_top_two(88, 1)];
+        let outcomes: Vec<ProbeOutcome> = vectors
+            .iter()
+            .map(|v: &ProbeVector| {
+                let (a, b): (i64, i64) = input_top_two(v);
+                outcome_consuming_one(BinKind::Sar.apply(a, b))
+            })
+            .collect();
+        assert_eq!(
+            BinKind::Shr.apply(40, 3),
+            BinKind::Sar.apply(40, 3),
+            "this case only tests ambiguity if the two kinds really do agree here"
+        );
+        assert_eq!(
+            detect_binary(&vectors, &outcomes),
+            None,
+            "a logical and an arithmetic right shift both explain these probes, so the handler \
+             must stay unclassified rather than be reported as whichever kind is listed first"
+        );
+    }
+
+    #[test]
+    fn a_probe_drives_an_arithmetic_right_shift_of_a_negative_value() {
+        let vectors: Vec<ProbeVector> = probe_vectors();
+        assert!(
+            vectors.iter().any(|v: &ProbeVector| {
+                let (a, b): (i64, i64) = input_top_two(v);
+                a < 0 && b & 0x3F != 0
+            }),
+            "without a negative left operand shifted by a nonzero amount, a logical and an \
+             arithmetic right shift produce the same value on every probe"
+        );
     }
 
     #[test]
