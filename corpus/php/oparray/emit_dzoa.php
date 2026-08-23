@@ -293,7 +293,9 @@ function fail(string $msg): never
 function parse_operand(string $tok, ParsedOpArray $oa): array
 {
     $tok = trim($tok);
-    if ($tok === '' || $tok === 'NEXT' || $tok === 'THIS') {
+    if ($tok === '' || $tok === 'NEXT' || $tok === 'THIS'
+        || $tok === '(unqualified-in-namespace)'
+    ) {
         return [OT_UNUSED, 0];
     }
     if (preg_match('/^CV(\d+)(?:\(\$([^)]*)\))?/', $tok, $m)) {
@@ -539,10 +541,12 @@ function build_op(string $mnemonic, array $resultTok, array $operands, ParsedOpA
     $parsed = [];
     foreach ($operands as $tok) {
         $slot = parse_operand($tok, $oa);
-        if ($slot[0] === null && preg_match('/^\(.*\)$/', trim($tok))) {
+        if ($slot[0] === null && preg_match('/^\d+$/', trim($tok)) !== 1) {
             fail(
-                "unhandled operand flag '" . trim($tok) . "' on $mnemonic (line $line); DZOA would "
-                . 'drop it and shift every operand after it, so handle the flag or restrict the sample'
+                "unhandled operand token '" . trim($tok) . "' on $mnemonic (line $line); DZOA would "
+                . 'drop it and shift every operand after it. Encode it, or discard it explicitly '
+                . 'where another operand already carries its meaning. A bare number is the only '
+                . 'token deferred to the jump-target pass'
             );
         }
         $parsed[] = $slot;
@@ -784,7 +788,12 @@ function parse_dump(string $text): array
             continue;
         }
 
-        $tokens = tokenize_operands($rest);
+        $tokens = array_values(array_filter(
+            tokenize_operands($rest),
+            static function (string $token): bool {
+                return preg_match('/^loop-end\(/', trim($token)) !== 1;
+            }
+        ));
 
         if ($mnemonic === 'SWITCH_LONG' || $mnemonic === 'SWITCH_STRING' || $mnemonic === 'MATCH') {
             $op = build_switch_op($mnemonic, $tokens, $current['oa'], $addr);

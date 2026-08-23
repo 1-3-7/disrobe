@@ -887,6 +887,84 @@ fn a_sample_with_nothing_unverifiable_carries_no_limitation() {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenDisposition {
+    Deferred,
+    Discarded,
+    Failed,
+}
+
+const OPERAND_TOKEN_SHAPES: [(&str, &str, TokenDisposition, &str); 4] = [
+    (
+        "a bare number",
+        "<?php $n = 0; while ($n < 3) { $n = $n + 1; } echo $n, \"\\n\";\n",
+        TokenDisposition::Deferred,
+        "a jump target, an argument count or a closure index; the jump-target pass resolves it",
+    ),
+    (
+        "loop-end(+N)",
+        "<?php $rows = [1, 2]; $cols = [3, 4]; $t = 0; foreach ($rows as $r) { foreach ($cols \
+         as $c) { if ($c === 4) { continue 2; } $t = $t + $c; } } echo $t, \"\\n\";\n",
+        TokenDisposition::Discarded,
+        "a live-range annotation on the iterator a multi-level loop exit frees; it names no \
+         operand",
+    ),
+    (
+        "(unqualified-in-namespace)",
+        "<?php namespace A\\B; echo PHP_EOL;\n",
+        TokenDisposition::Discarded,
+        "a constant fetch mode; the name is carried by the literal, and the token holds the op1 \
+         slot so the name stays in op2",
+    ),
+    (
+        "(ref)",
+        "<?php $b = 1; $a = [&$b]; echo count($a), \"\\n\";\n",
+        TokenDisposition::Failed,
+        "a by-reference array element; nothing else in the stream carries it",
+    ),
+];
+
+#[test]
+fn every_operand_token_shape_the_emitter_sees_is_parsed_deferred_discarded_or_failed() {
+    let graded: &str = "the op_array emitter's disposition of every operand token shape it sees";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_token_shapes")
+            .expect("create the token shape scratch directory");
+
+    for (index, (shape, source, disposition, reason)) in OPERAND_TOKEN_SHAPES.iter().enumerate() {
+        let staged: PathBuf = scratch.path().join(format!("shape{index}.php"));
+        write_opcache_source(&staged, source.as_bytes()).expect("stage the token shape source");
+        let produced: PathBuf = scratch.path().join(format!("shape{index}.dzoa"));
+        let outcome: Result<(), String> = emit_dzoa(&php, &dll, &staged, &produced);
+        match disposition {
+            TokenDisposition::Deferred | TokenDisposition::Discarded => {
+                outcome.unwrap_or_else(|diagnosis: String| {
+                    panic!(
+                        "`{shape}` is classified as {disposition:?} because {reason}, so a source \
+                         carrying it must still emit. It did not: {diagnosis}"
+                    )
+                });
+            }
+            TokenDisposition::Failed => {
+                let diagnosis: String = outcome.err().unwrap_or_else(|| {
+                    panic!(
+                        "`{shape}` is classified as Failed because {reason}, so a source carrying \
+                         it must be refused rather than encoded with the token dropped and every \
+                         operand after it shifted"
+                    )
+                });
+                assert!(
+                    diagnosis.contains(shape),
+                    "a refused token must name itself so the next author knows what to handle; \
+                     `{shape}` reported: {diagnosis}"
+                );
+            }
+        }
+    }
+}
+
 const UNHANDLED_FLAG_SOURCE: &str =
     "<?php\n$b = 1;\n$c = 2;\n$byref = [&$b, 'k' => &$c];\n$b = 9;\necho $byref[0], \"\\n\";\n";
 
