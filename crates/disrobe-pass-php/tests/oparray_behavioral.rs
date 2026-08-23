@@ -909,12 +909,8 @@ fn members_recovers_every_static_member_form_and_refuses_only_its_class_declarat
 #[test]
 fn optimized_switch_emitter_refuses_schemas_without_table_payloads() {
     let graded: &str = "the PHP 8.4 optimized switch DZOA schema boundary";
-    let Some(php): Option<PathBuf> = find_php(graded) else {
-        return;
-    };
-    let Some(dll): Option<String> = find_opcache(&php, graded) else {
-        return;
-    };
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
     let source: PathBuf = required_sample("switch_optimized");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_switch_schema")
@@ -923,10 +919,13 @@ fn optimized_switch_emitter_refuses_schemas_without_table_payloads() {
         let output: PathBuf = scratch.path().join(format!("switch-v{version}.dzoa"));
         let error: String = emit_dzoa_versioned(&php, &dll, &source, &output, Some(version), None)
             .expect_err("schemas without typed switch literals must be refused");
-        if error.contains("no opcache configuration produced") {
-            unmeasured(&PHP_OPCACHE, graded, &error);
-            return;
-        }
+        assert!(
+            !error.contains("no opcache configuration produced"),
+            "{graded} is proven only by the emitter refusing schema version {version} for the \
+             stated reason. This run failed for a different reason, so it checked no refusal at \
+             all and must not report success. Missing prerequisite: an opcache build that honours \
+             opt_debug_level, beside the php binary or at DZOA_OPCACHE_DLL.\n{error}"
+        );
         assert!(
             error.contains(&format!(
                 "DZOA schema version {version} cannot encode SWITCH_"
