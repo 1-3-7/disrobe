@@ -27,7 +27,7 @@ const UNKNOWN_PACKAGE: &str = "verification-command-unknown-package";
 const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-binfmt", &["chain"]),
     ("disrobe-capabilities", &["yaml_rules"]),
-    ("disrobe-cli", &["!wasm"]),
+    ("disrobe-cli", &["!(prowl & net-fetch & server)", "!wasm"]),
     ("disrobe-core", &["chain"]),
     ("disrobe-irsummary", &["llm-metadata"]),
     ("disrobe-mba", &["smt-solver"]),
@@ -59,23 +59,29 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-webview", &["chain"]),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Polarity {
-    Enabled,
-    Disabled,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Requirement {
-    feature: String,
-    polarity: Polarity,
+enum Requirement {
+    Enabled(String),
+    Disabled(String),
+    NotAll(Vec<String>),
 }
 
 impl Requirement {
     fn label(&self) -> String {
-        match self.polarity {
-            Polarity::Enabled => self.feature.clone(),
-            Polarity::Disabled => format!("!{}", self.feature),
+        match self {
+            Self::Enabled(feature) => feature.clone(),
+            Self::Disabled(feature) => format!("!{feature}"),
+            Self::NotAll(features) => format!("!({})", features.join(" & ")),
+        }
+    }
+
+    fn holds(&self, selection: &Selection) -> bool {
+        match self {
+            Self::Enabled(feature) => selection.enables(feature),
+            Self::Disabled(feature) => !selection.enables(feature),
+            Self::NotAll(features) => !features
+                .iter()
+                .all(|feature: &String| selection.enables(feature)),
         }
     }
 }
@@ -97,10 +103,7 @@ impl Selection {
     fn satisfies(&self, requirements: &[Requirement]) -> bool {
         requirements
             .iter()
-            .all(|requirement: &Requirement| match requirement.polarity {
-                Polarity::Enabled => self.enables(&requirement.feature),
-                Polarity::Disabled => !self.enables(&requirement.feature),
-            })
+            .all(|requirement: &Requirement| requirement.holds(self))
     }
 }
 
@@ -136,11 +139,7 @@ impl CrateFacts {
                 continue;
             }
             for requirement in &file.requirements {
-                let met: bool = match requirement.polarity {
-                    Polarity::Enabled => self.default_selection.enables(&requirement.feature),
-                    Polarity::Disabled => !self.default_selection.enables(&requirement.feature),
-                };
-                if !met {
+                if !requirement.holds(&self.default_selection) {
                     out.insert(requirement.label());
                 }
             }
@@ -565,16 +564,21 @@ fn parse_cfg_predicate(body: &str, whence: &str) -> Result<Vec<Requirement>> {
         .strip_prefix("not(")
         .and_then(|rest: &str| rest.strip_suffix(')'))
     {
-        let feature: String = parse_feature_equality(inner.trim()).ok_or_else(|| {
+        let trimmed: &str = inner.trim();
+        if let Some(features) = parse_feature_group(trimmed, "all(") {
+            return Ok(vec![Requirement::NotAll(features?)]);
+        }
+        if let Some(features) = parse_feature_group(trimmed, "any(") {
+            return Ok(features?.into_iter().map(Requirement::Disabled).collect());
+        }
+        let feature: String = parse_feature_equality(trimmed).ok_or_else(|| {
             eyre!(
-                "{whence} carries `#![cfg(not({inner}))]`, which is not the plain \
-                 `not(feature = \"...\")` shape this sweep parses"
+                "{whence} carries `#![cfg(not({inner}))]`, which is not one of the \
+                 `not(feature = \"...\")`, `not(all(feature = ..., ...))` or \
+                 `not(any(feature = ..., ...))` shapes this sweep parses"
             )
         })?;
-        return Ok(vec![Requirement {
-            feature,
-            polarity: Polarity::Disabled,
-        }]);
+        return Ok(vec![Requirement::Disabled(feature)]);
     }
     if let Some(inner) = body
         .strip_prefix("all(")
@@ -595,25 +599,41 @@ fn parse_cfg_predicate(body: &str, whence: &str) -> Result<Vec<Requirement>> {
                      `feature = \"...\"` shape this sweep parses"
                 )
             })?;
-            out.push(Requirement {
-                feature,
-                polarity: Polarity::Enabled,
-            });
+            out.push(Requirement::Enabled(feature));
         }
         return Ok(out);
     }
     let feature: String = parse_feature_equality(body).ok_or_else(|| {
         eyre!(
             "{whence} carries `#![cfg({body})]`, which mentions a feature but is not one of the \
-             `feature = \"...\"`, `all(feature = ..., ...)` or `not(feature = \"...\")` shapes \
-             this sweep parses; teach the parser the new shape rather than leaving the file \
-             unaudited"
+             `feature = \"...\"`, `all(feature = ..., ...)`, `not(feature = \"...\")`, \
+             `not(all(...))` or `not(any(...))` shapes this sweep parses; teach the parser the \
+             new shape rather than leaving the file unaudited"
         )
     })?;
-    Ok(vec![Requirement {
-        feature,
-        polarity: Polarity::Enabled,
-    }])
+    Ok(vec![Requirement::Enabled(feature)])
+}
+
+fn parse_feature_group(body: &str, opener: &str) -> Option<Result<Vec<String>>> {
+    let inner: &str = body.strip_prefix(opener)?.strip_suffix(')')?;
+    let mut features: Vec<String> = Vec::new();
+    for item in inner.split(',') {
+        let trimmed: &str = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(feature) = parse_feature_equality(trimmed) else {
+            return Some(Err(eyre!(
+                "`{opener}...)` term `{trimmed}` is not the plain `feature = \"...\"` shape this \
+                 sweep parses"
+            )));
+        };
+        features.push(feature);
+    }
+    if features.is_empty() {
+        return None;
+    }
+    Some(Ok(features))
 }
 
 fn parse_feature_equality(term: &str) -> Option<String> {
@@ -894,10 +914,7 @@ mod tests {
         GatedFile {
             relative: "src/chain_detector.rs".to_owned(),
             target: TestTarget::Unit,
-            requirements: vec![Requirement {
-                feature: "chain".to_owned(),
-                polarity: Polarity::Enabled,
-            }],
+            requirements: vec![Requirement::Enabled("chain".to_owned())],
             tests,
         }
     }
@@ -993,10 +1010,7 @@ mod tests {
         let gated: GatedFile = GatedFile {
             relative: "tests/chain_recovery_real.rs".to_owned(),
             target: TestTarget::Integration("chain_recovery_real".to_owned()),
-            requirements: vec![Requirement {
-                feature: "chain".to_owned(),
-                polarity: Polarity::Enabled,
-            }],
+            requirements: vec![Requirement::Enabled("chain".to_owned())],
             tests: 5,
         };
         let facts: CrateFacts = crate_facts(&[("default", &[]), ("chain", &[])], vec![gated]);
@@ -1014,10 +1028,7 @@ mod tests {
         let gated: GatedFile = GatedFile {
             relative: "tests/slim_bail.rs".to_owned(),
             target: TestTarget::Integration("slim_bail".to_owned()),
-            requirements: vec![Requirement {
-                feature: "wasm".to_owned(),
-                polarity: Polarity::Disabled,
-            }],
+            requirements: vec![Requirement::Disabled("wasm".to_owned())],
             tests: 2,
         };
         let facts: CrateFacts = crate_facts(&[("default", &["wasm"]), ("wasm", &[])], vec![gated]);
@@ -1052,12 +1063,64 @@ mod tests {
         let text: &str = "#![allow(clippy::panic)]\n#![cfg(feature = \"chain\")]\n\nfn a() {}\n";
         let requirements: Vec<Requirement> =
             file_requirements(text, "probe.rs")?.ok_or_else(|| eyre!("expected a feature gate"))?;
+        assert_eq!(requirements, vec![Requirement::Enabled("chain".to_owned())]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_negated_conjunction_is_read_as_one_requirement_rather_than_three() -> Result<()> {
+        let text: &str = "#![cfg(not(all(feature = \"prowl\", feature = \"net-fetch\", \
+                          feature = \"server\")))]\nfn a() {}\n";
+        let requirements: Vec<Requirement> =
+            file_requirements(text, "probe.rs")?.ok_or_else(|| eyre!("expected a feature gate"))?;
         assert_eq!(
             requirements,
-            vec![Requirement {
-                feature: "chain".to_owned(),
-                polarity: Polarity::Enabled
-            }]
+            vec![Requirement::NotAll(vec![
+                "prowl".to_owned(),
+                "net-fetch".to_owned(),
+                "server".to_owned(),
+            ])]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_negated_conjunction_holds_unless_every_named_feature_is_enabled() {
+        let requirement: Requirement = Requirement::NotAll(vec![
+            "prowl".to_owned(),
+            "net-fetch".to_owned(),
+            "server".to_owned(),
+        ]);
+        let named = |features: &[&str]| -> Selection {
+            Selection::Named(features.iter().map(|f: &&str| (*f).to_owned()).collect())
+        };
+        assert!(
+            !requirement.holds(&named(&["prowl", "net-fetch", "server"])),
+            "all three enabled compiles the file away"
+        );
+        assert!(
+            requirement.holds(&named(&["prowl", "net-fetch"])),
+            "one missing feature is enough for the file to compile"
+        );
+        assert!(requirement.holds(&named(&[])), "the slim build compiles it");
+        assert!(
+            !requirement.holds(&Selection::All),
+            "--all-features compiles the file away"
+        );
+        assert_eq!(requirement.label(), "!(prowl & net-fetch & server)");
+    }
+
+    #[test]
+    fn a_negated_disjunction_becomes_one_disabled_requirement_per_feature() -> Result<()> {
+        let text: &str = "#![cfg(not(any(feature = \"a\", feature = \"b\")))]\nfn a() {}\n";
+        let requirements: Vec<Requirement> =
+            file_requirements(text, "probe.rs")?.ok_or_else(|| eyre!("expected a feature gate"))?;
+        assert_eq!(
+            requirements,
+            vec![
+                Requirement::Disabled("a".to_owned()),
+                Requirement::Disabled("b".to_owned()),
+            ]
         );
         Ok(())
     }
