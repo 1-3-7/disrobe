@@ -110,7 +110,10 @@ fn declared_managed_signature(method: &str) -> Result<(bool, String, Vec<String>
     Ok((has_this, return_type.to_owned(), parameters))
 }
 
-fn declared_layout(struct_name: &str) -> Result<(Vec<(String, String)>, usize), &'static str> {
+type DeclaredField = (String, String);
+type DeclaredLayout = (Vec<DeclaredField>, usize);
+
+fn declared_layout(struct_name: &str) -> Result<DeclaredLayout, &'static str> {
     let stated: &str = build_line(format!("{struct_name} declared layout: ").as_str())?;
     let mut entries: Vec<&str> = stated.split(',').map(str::trim).collect();
     let size_entry: &str = entries.pop().ok_or("the declared layout states no size")?;
