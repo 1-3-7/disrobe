@@ -49,6 +49,8 @@ struct FigureClaim {
 
 const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs";
 const PICKLE_ROUNDTRIP_GATE: &str = "crates/disrobe-pass-pickle/tests/roundtrip.rs";
+const JVM_RECOMPILE_GATE: &str = "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs";
+const PYTHON_BINDINGS_DOC: &str = "docs/src/python-bindings.md";
 const PACKER_BYTE_GATE: &str = "crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs";
 const EAZVM_GATE: &str = "crates/disrobe-pass-dotnet/tests/real_eazvm.rs";
 const PY_ARBITRARY_GATE: &str =
@@ -69,7 +71,12 @@ const WHITEPAPER_DOC: &str = "docs/src/architecture/whitepaper.md";
 const CONTENT_SPAN: &str = "the content span that counts `.rsrc`, not the older whole-image span \
                             measured over `.text`, `.rdata` and `.data` only";
 
-const CLAIMS: [FloorClaim; 18] = [
+const CLAIMS: [FloorClaim; 19] = [
+    FloorClaim {
+        constant: "FLOOR_PERCENT",
+        source: PICKLE_ROUNDTRIP_GATE,
+        sites: &[(README_DOC, "re-execute equal, floor {}% `[CI]`")],
+    },
     FloorClaim {
         constant: "CLEAN_BASELINE_INSTRUCTIONS",
         source: EAZVM_GATE,
@@ -165,11 +172,18 @@ const CLAIMS: [FloorClaim; 18] = [
     },
     FloorClaim {
         constant: "PER_METHOD_JAVAC_OK_FLOOR",
-        source: "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs",
-        sites: &[(
-            "docs/src/architecture/whitepaper.md",
-            "sets `PER_METHOD_JAVAC_OK_FLOOR = {}`",
-        )],
+        source: JVM_RECOMPILE_GATE,
+        sites: &[
+            (
+                "docs/src/architecture/whitepaper.md",
+                "sets `PER_METHOD_JAVAC_OK_FLOOR = {}`",
+            ),
+            (README_DOC, "methods recompile error-free, floor {} `[CI]`"),
+            (
+                PYTHON_BINDINGS_DOC,
+                "recompile error-free under javac (CI floor {} of",
+            ),
+        ],
     },
     FloorClaim {
         constant: "IL_EQUIVALENCE_FLOOR",
