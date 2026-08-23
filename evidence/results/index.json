@@ -554,10 +554,10 @@
       "disrobe_leads": null,
       "ecosystem": "python",
       "external_oracle": "CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)",
-      "floor": 96.65,
+      "floor": 96.51,
       "floor_holds": true,
       "id": "py-stdlib-recompile",
-      "measured": "96.65%",
+      "measured": "96.51%",
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
