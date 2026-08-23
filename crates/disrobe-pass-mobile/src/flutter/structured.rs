@@ -880,13 +880,17 @@ fn emit_stmt(
 }
 
 fn return_expression_text(value: &HirExpr) -> Option<String> {
-    let text: &str = match value {
-        HirExpr::Const { text } | HirExpr::Unknown { text } => text,
-        HirExpr::Var { name } => name,
-        HirExpr::Mem { cell } => cell,
+    let text: String = match value {
+        HirExpr::Const { value } => value.render(),
+        HirExpr::Unknown { text } => text.clone(),
+        HirExpr::Var { name } => name.clone(),
+        HirExpr::Mem { cell, width } => match width {
+            Some(bits) => format!("{cell}:u{bits}"),
+            None => cell.clone(),
+        },
         HirExpr::Unary { .. } | HirExpr::Binary { .. } | HirExpr::Call { .. } => return None,
     };
-    (!text.is_empty()).then(|| text.to_owned())
+    (!text.is_empty()).then_some(text)
 }
 
 fn first_condition_test(expression: &HirCondExpr) -> Option<&HirCondTest> {
