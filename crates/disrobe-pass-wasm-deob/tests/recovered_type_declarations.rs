@@ -34,6 +34,24 @@ const TRACKED_STRUCT: &str = r#"
     f64.load offset=16))
 "#;
 
+const TRACKED_STRUCT_EXPLICIT_NAME: &str = r#"
+(module
+  (memory 1 1 shared)
+  (func (export "read_record") (param $p0 i32) (result f64)
+    local.get $p0
+    i32.load
+    drop
+    local.get $p0
+    i32.const 4
+    i32.add
+    f32.load offset=4
+    drop
+    local.get $p0
+    f64.load offset=16))
+"#;
+
+const REAL_RUSTC_ALPHA: &[u8] = include_bytes!("fixtures/fingerprint/alpha_v196.wasm");
+
 fn bytes(wat_source: &str) -> Vec<u8> {
     wat::parse_str(wat_source).expect("tracked fixture parses")
 }
@@ -42,6 +60,15 @@ fn lift(wat_source: &str, target: LiftTarget) -> String {
     let lifted: LiftResult = try_lift_function_from_module(&bytes(wat_source), 0, target)
         .expect("tracked fixture lifts");
     lifted.pseudo_source
+}
+
+fn real_rustc_pointer_lift(target: LiftTarget) -> String {
+    try_lift_functions_from_module(REAL_RUSTC_ALPHA, target)
+        .expect("tracked rustc fixture lifts")
+        .into_iter()
+        .find(|lifted: &LiftResult| lifted.pseudo_source.contains("fnv1a_hash"))
+        .expect("tracked rustc fixture retains the fnv1a_hash function")
+        .pseudo_source
 }
 
 fn tool(name: &str) -> Option<PathBuf> {
@@ -106,6 +133,159 @@ fn tracked_fixture_emits_exact_sparse_float_aware_declarations() {
     assert!(typescript.starts_with(
         "export interface DisrobeStructFunction0Param0 {\n    readonly field_0: number;\n    readonly field_8: number;\n    readonly field_16: number;\n}\n\n"
     ));
+}
+
+#[test]
+fn recovered_memory_roles_name_unnamed_parameters_in_every_source_target() {
+    let rust: String = lift(TRACKED_STRUCT, LiftTarget::Rust);
+    let c: String = lift(TRACKED_STRUCT, LiftTarget::C);
+    let typescript: String = lift(TRACKED_STRUCT, LiftTarget::TypeScript);
+    let typescript_module: TypeScriptModuleLift =
+        try_lift_typescript_module(&bytes(TRACKED_STRUCT)).expect("tracked fixture module lifts");
+
+    assert!(rust.contains("record_address: i32"), "{rust}");
+    assert!(rust.contains("wasm_load_i32(record_address, 0)"), "{rust}");
+    assert!(c.contains("int32_t record_address"), "{c}");
+    assert!(c.contains("wasm_load_i32(record_address, 0)"), "{c}");
+    assert!(
+        typescript.contains("record_address: number"),
+        "{typescript}"
+    );
+    assert!(
+        typescript.contains("wasmLoadI32(record_address, 0)"),
+        "{typescript}"
+    );
+    assert!(
+        typescript_module.source.contains("record_address: number"),
+        "{}",
+        typescript_module.source
+    );
+    assert!(
+        typescript_module
+            .source
+            .contains("wasmLoadI32(record_address, 0)"),
+        "{}",
+        typescript_module.source
+    );
+}
+
+#[test]
+fn real_rustc_byte_pointer_receives_the_bytes_address_fallback() {
+    let rust: String = real_rustc_pointer_lift(LiftTarget::Rust);
+    let c: String = real_rustc_pointer_lift(LiftTarget::C);
+    let typescript: String = real_rustc_pointer_lift(LiftTarget::TypeScript);
+
+    assert!(rust.contains("bytes_address: i32"), "{rust}");
+    assert!(rust.contains("bytes_address"), "{rust}");
+    assert!(c.contains("int32_t bytes_address"), "{c}");
+    assert!(c.contains("bytes_address"), "{c}");
+    assert!(typescript.contains("bytes_address: number"), "{typescript}");
+    assert!(typescript.contains("bytes_address"), "{typescript}");
+    assert!(!rust.contains("p0"), "{rust}");
+    assert!(!c.contains("p0"), "{c}");
+    assert!(!typescript.contains("p0"), "{typescript}");
+}
+
+#[test]
+fn recovered_roles_cover_scalar_and_non_byte_array_parameters() {
+    let scalar: &str = "(module (memory 1) (func (param i32) (result f64) local.get 0 f64.load))";
+    let array: &str = "(module (memory 1) (func (param i32) (result f32) local.get 0 f32.load local.get 0 f32.load offset=4 f32.add))";
+
+    let scalar_rust: String = lift(scalar, LiftTarget::Rust);
+    let array_rust: String = lift(array, LiftTarget::Rust);
+    assert!(scalar_rust.contains("value_address: i32"), "{scalar_rust}");
+    assert!(array_rust.contains("items_address: i32"), "{array_rust}");
+}
+
+#[test]
+fn explicit_parameter_names_take_priority_over_recovered_roles() {
+    let explicitly_named: &str = &TRACKED_STRUCT_EXPLICIT_NAME.replace("$p0", "$source");
+    let rust: String = lift(explicitly_named, LiftTarget::Rust);
+    let c: String = lift(explicitly_named, LiftTarget::C);
+    let typescript: String = lift(explicitly_named, LiftTarget::TypeScript);
+    let typescript_module: TypeScriptModuleLift =
+        try_lift_typescript_module(&bytes(explicitly_named)).expect("named module lifts");
+
+    assert!(rust.contains("source: i32"), "{rust}");
+    assert!(rust.contains("wasm_load_i32(source, 0)"), "{rust}");
+    assert!(c.contains("int32_t source"), "{c}");
+    assert!(typescript.contains("source: number"), "{typescript}");
+    assert!(!rust.contains("record_address: i32"), "{rust}");
+    assert!(
+        typescript_module.source.contains("record_address: number"),
+        "{}",
+        typescript_module.source
+    );
+    assert!(
+        !typescript_module.source.contains("source: number"),
+        "{}",
+        typescript_module.source
+    );
+}
+
+#[test]
+fn non_entry_block_parameters_cannot_name_function_parameters() {
+    let module: &str = "(module (memory 1) (type (func (param i32) (result i32))) (func (param i32) (result i32) i32.const 0 block (type 0) i32.load end))";
+    let rust: String = lift(module, LiftTarget::Rust);
+
+    assert!(rust.contains("p0: i32"), "{rust}");
+    assert!(!rust.contains("value_address: i32"), "{rust}");
+}
+
+#[test]
+fn duplicate_recovered_roles_are_disambiguated_deterministically() {
+    let module: &str = "(module (memory 1) (func (param i32 i32) (result i32) local.get 0 i32.load drop local.get 1 f32.load drop i32.const 0))";
+    let first: String = lift(module, LiftTarget::Rust);
+    let second: String = lift(module, LiftTarget::Rust);
+
+    assert_eq!(first, second);
+    assert!(first.contains("value_address: i32"), "{first}");
+    assert!(first.contains("value_address_1: i32"), "{first}");
+    assert!(first.contains("wasm_load_i32(value_address, 0)"), "{first}");
+    assert!(
+        first.contains("wasm_load_f32(value_address_1, 0)"),
+        "{first}"
+    );
+}
+
+#[test]
+fn recovered_parameter_renaming_is_capture_free_alpha_normalization() {
+    let inferred: String = lift(TRACKED_STRUCT, LiftTarget::Rust);
+    let explicit: String = lift(TRACKED_STRUCT_EXPLICIT_NAME, LiftTarget::Rust);
+
+    assert!(inferred.contains("record_address: i32"), "{inferred}");
+    assert_eq!(inferred.replace("record_address", "p0"), explicit);
+}
+
+#[test]
+fn rust_and_c_compilers_accept_the_renamed_parameter_and_every_use() {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wasm_parameter_names")
+            .expect("create parameter-name grade directory");
+    let directory: &Path = scratch.path();
+    let rust_source: String = format!(
+        "{}\n{}",
+        rust_runtime_prelude(),
+        lift(TRACKED_STRUCT, LiftTarget::Rust)
+    );
+    let c_source: String = format!(
+        "{}\n{}",
+        c_runtime_prelude(),
+        lift(TRACKED_STRUCT, LiftTarget::C)
+    );
+
+    let rust_output: Output = compile_rust(&rust_source, directory, "renamed_parameter");
+    let c_output: Output = compile_c(&c_source, directory, "renamed_parameter");
+    assert!(
+        rust_output.status.success(),
+        "rustc rejected the renamed parameter: {}",
+        String::from_utf8_lossy(&rust_output.stderr)
+    );
+    assert!(
+        c_output.status.success(),
+        "the C compiler rejected the renamed parameter: {}",
+        String::from_utf8_lossy(&c_output.stderr)
+    );
 }
 
 #[test]
@@ -194,7 +374,10 @@ fn conflicting_overlapping_high_and_memory64_evidence_names_the_exact_refusal() 
     assert!(lift(conflicting, LiftTarget::Rust).starts_with("// DR-WASMDEOB-TYPES-0007:"));
     assert!(lift(overlapping, LiftTarget::Rust).starts_with("// DR-WASMDEOB-TYPES-0008:"));
     assert!(lift(high_offsets, LiftTarget::Rust).starts_with("// DR-WASMDEOB-TYPES-0005:"));
-    assert!(lift(memory64, LiftTarget::Rust).starts_with("// DR-WASMDEOB-TYPES-0002:"));
+    let memory64_lift: String = lift(memory64, LiftTarget::Rust);
+    assert!(memory64_lift.starts_with("// DR-WASMDEOB-TYPES-0002:"));
+    assert!(memory64_lift.contains("p0: i64"), "{memory64_lift}");
+    assert!(!memory64_lift.contains("value_address"), "{memory64_lift}");
 }
 
 #[test]

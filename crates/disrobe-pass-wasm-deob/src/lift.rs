@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::Serialize;
 use wasmparser::{ExternalKind, FunctionBody, Parser, Payload, ValType, Validator, WasmFeatures};
 
@@ -5,7 +7,8 @@ use crate::error::{AtomicMemoryRefusal, Error, Result};
 use crate::signature::{FunctionSig, ModuleSignatures, extract_signatures};
 use crate::ssa::{CallSignatures, OpKind, SsaFunction, UnOp, build_ssa_with_calls};
 use crate::types::{
-    NamedField, NamedType, RecoveredStorageType, TypeRecoveryRefusal, synthesize_named_types,
+    BaseOrigin, NamedField, NamedType, RecoveredStorageType, RecoveredType, TypeRecoveryRefusal,
+    synthesize_named_types,
 };
 
 const MAX_TYPESCRIPT_MODULE_FUNCTIONS: usize = 4096;
@@ -101,6 +104,57 @@ pub fn lift_function_body(
     }
 }
 
+struct RecoveredTypeSurface {
+    declarations: String,
+    parameter_names: Vec<(usize, &'static str)>,
+}
+
+impl RecoveredTypeSurface {
+    const fn empty() -> Self {
+        Self {
+            declarations: String::new(),
+            parameter_names: Vec::new(),
+        }
+    }
+
+    fn refusal(refusal: TypeRecoveryRefusal) -> Self {
+        Self {
+            declarations: render_recovered_type_refusal(refusal),
+            parameter_names: Vec::new(),
+        }
+    }
+
+    fn enrich_signature<'a>(&self, signature: &'a FunctionSig) -> Cow<'a, FunctionSig> {
+        let mut enriched: Option<FunctionSig> = None;
+        for (parameter_index, recovered_name) in &self.parameter_names {
+            if *parameter_index >= signature.params.len() {
+                continue;
+            }
+            if signature
+                .local_names
+                .get(*parameter_index)
+                .is_some_and(Option::is_some)
+            {
+                continue;
+            }
+            let enriched: &mut FunctionSig = enriched.get_or_insert_with(|| signature.clone());
+            let required_len: usize = parameter_index.saturating_add(1);
+            if enriched.local_names.len() < required_len {
+                enriched.local_names.resize(required_len, None);
+            }
+            let Some(name): Option<&mut Option<String>> =
+                enriched.local_names.get_mut(*parameter_index)
+            else {
+                continue;
+            };
+            if name.is_none() {
+                *name = Some((*recovered_name).to_owned());
+            }
+        }
+        enriched.map_or_else(|| Cow::Borrowed(signature), Cow::Owned)
+    }
+}
+
 struct PreparedModuleLift {
     signatures: ModuleSignatures,
     callees: CalleeNames,
@@ -140,62 +194,96 @@ impl PreparedModuleLift {
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
-        let mut lifted: LiftResult = try_lift_function_body(&body, sig, &self.callees, target)?;
-        let declarations: String =
-            self.recovered_type_declarations(bytes, &body, sig, defined_function_index, target);
-        if !declarations.is_empty() {
-            lifted.pseudo_source = format!("{declarations}\n{}", lifted.pseudo_source);
+        let recovered: RecoveredTypeSurface =
+            self.recovered_type_surface(bytes, &body, sig, defined_function_index, target);
+        let enriched_signature: Cow<'_, FunctionSig> = recovered.enrich_signature(sig);
+        let mut lifted: LiftResult =
+            try_lift_function_body(&body, enriched_signature.as_ref(), &self.callees, target)?;
+        if !recovered.declarations.is_empty() {
+            lifted.pseudo_source = format!("{}\n{}", recovered.declarations, lifted.pseudo_source);
         }
         Ok(lifted)
     }
 
-    fn recovered_type_declarations(
+    fn recovered_type_surface(
         &self,
         bytes: &[u8],
         body: &FunctionBody<'_>,
         sig: &FunctionSig,
         defined_function_index: usize,
         target: LiftTarget,
-    ) -> String {
+    ) -> RecoveredTypeSurface {
         if target == LiftTarget::Wat {
-            return String::new();
+            return RecoveredTypeSurface::empty();
         }
         if !has_recoverable_memory_access(body) {
-            return String::new();
+            return RecoveredTypeSurface::empty();
         }
         match crate::memory64::scan_memories(bytes) {
             Ok(report) if report.uses_memory64 => {
-                return render_recovered_type_refusal(TypeRecoveryRefusal::Memory64);
+                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::Memory64);
             }
             Ok(_) => {}
             Err(_) => {
-                return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
             }
         }
         let Ok(cfg): Result<crate::cfg::FunctionCfg> = crate::cfg::build_function_cfg(body) else {
-            return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
         };
         let call_signatures: CallSignatures =
             CallSignatures::new(self.signatures.call_signatures());
         let Ok(ssa): Result<SsaFunction> =
             build_ssa_with_calls(&cfg, body, &sig.params, &call_signatures)
         else {
-            return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+            return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
         };
         let recovered: crate::types::RecoveredTypes = match crate::recover_types_full(bytes, &ssa) {
             Ok(recovered) => recovered,
             Err(crate::RecoveredTypesError::Memory(refusal)) => {
-                return render_recovered_type_refusal(refusal);
+                return RecoveredTypeSurface::refusal(refusal);
             }
             Err(crate::RecoveredTypesError::Gc(_)) => {
-                return render_recovered_type_refusal(TypeRecoveryRefusal::UnsupportedSsa);
+                return RecoveredTypeSurface::refusal(TypeRecoveryRefusal::UnsupportedSsa);
             }
         };
         let named: Vec<NamedType> = synthesize_named_types(&recovered.memory_aggregates);
-        match render_recovered_type_declarations(&named, defined_function_index, target) {
-            Ok(declarations) => declarations,
-            Err(refusal) => render_recovered_type_refusal(refusal),
+        let declarations: String =
+            match render_recovered_type_declarations(&named, defined_function_index, target) {
+                Ok(declarations) => declarations,
+                Err(refusal) => return RecoveredTypeSurface::refusal(refusal),
+            };
+        let parameter_names: Vec<(usize, &'static str)> = recovered
+            .memory_aggregates
+            .iter()
+            .filter_map(|(origin, recovered_type): &(BaseOrigin, RecoveredType)| {
+                let BaseOrigin::Param(parameter_index) = origin else {
+                    return None;
+                };
+                let parameter_index: usize = usize::try_from(*parameter_index).ok()?;
+                if parameter_index >= sig.params.len() {
+                    return None;
+                }
+                Some((parameter_index, recovered_parameter_role(recovered_type)))
+            })
+            .collect();
+        RecoveredTypeSurface {
+            declarations,
+            parameter_names,
         }
+    }
+}
+
+const fn recovered_parameter_role(recovered_type: &RecoveredType) -> &'static str {
+    match recovered_type {
+        RecoveredType::Struct { .. } => "record_address",
+        RecoveredType::Array { elem_size: 1, .. }
+        | RecoveredType::TypedArray {
+            elem: RecoveredStorageType::I8,
+            ..
+        } => "bytes_address",
+        RecoveredType::Array { .. } | RecoveredType::TypedArray { .. } => "items_address",
+        RecoveredType::Scalar(_) | RecoveredType::StorageScalar(_) => "value_address",
     }
 }
 
@@ -509,15 +597,21 @@ pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> 
             .module_ctx()
             .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
         let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
-        recovered_declarations.push_str(&prepared.recovered_type_declarations(
+        let recovered: RecoveredTypeSurface = prepared.recovered_type_surface(
             bytes,
             &body,
             signature,
             defined_function_index,
             LiftTarget::TypeScript,
-        ));
+        );
+        recovered_declarations.push_str(&recovered.declarations);
+        let enriched_signature: Cow<'_, FunctionSig> = recovered.enrich_signature(signature);
         let (pseudo_source, blocks_emitted, function_coverage): (String, usize, LiftCoverage) =
-            crate::structured::lift_body_structured_typescript_module(&body, signature, &callees)?;
+            crate::structured::lift_body_structured_typescript_module(
+                &body,
+                enriched_signature.as_ref(),
+                &callees,
+            )?;
         let lifted: LiftResult = LiftResult {
             target: LiftTarget::TypeScript,
             pseudo_source,
@@ -1158,3 +1252,32 @@ pub(crate) const fn rust_unop_fn_name(op: UnOp) -> &'static str {
 
 const RUST_PRELUDE: &str = include_str!("prelude/rust.rs.txt");
 const TS_PRELUDE: &str = include_str!("prelude/typescript.ts.txt");
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use wasmparser::ValType;
+
+    use super::{FunctionSig, RecoveredTypeSurface};
+
+    #[test]
+    fn out_of_range_recovered_parameter_origin_cannot_extend_or_rename_the_signature() {
+        let signature: FunctionSig = FunctionSig {
+            name: "bounded".to_owned(),
+            params: vec![ValType::I32],
+            results: Vec::new(),
+            exported: false,
+            imported: false,
+            local_names: Vec::new(),
+        };
+        let surface: RecoveredTypeSurface = RecoveredTypeSurface {
+            declarations: String::new(),
+            parameter_names: vec![(usize::MAX, "value_address")],
+        };
+
+        let enriched: Cow<'_, FunctionSig> = surface.enrich_signature(&signature);
+        assert!(matches!(enriched, Cow::Borrowed(_)));
+        assert!(enriched.local_names.is_empty());
+    }
+}
