@@ -674,9 +674,9 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
 
   py-band-gate:
-    name: py band gate (3.10)
+    name: py band gate (3.10, 3.12, 3.13)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
       - name: free disk space
@@ -693,6 +693,10 @@ jobs:
           enable-cache: true
       - name: provision cpython 3.10.20 (the release the 3.10 band bar names)
         run: uv python install 3.10.20
+      - name: provision cpython 3.12.13 (the release the 3.12 band bar names)
+        run: uv python install 3.12.13
+      - name: provision cpython 3.13.14 (the release the 3.13 band bar names)
+        run: uv python install 3.13.14
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: export PYO3_PYTHON
@@ -704,6 +708,14 @@ jobs:
         env:
           DISROBE_REQUIRE_PY_310: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
+      - name: per-code-object recompile-equivalence floor (>= 95.49% on the 3.12 band)
+        env:
+          DISROBE_REQUIRE_PY_312: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
+      - name: per-code-object recompile-equivalence floor (>= 95.82% on the 3.13 band)
+        env:
+          DISROBE_REQUIRE_PY_313: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
 
   execution-differentials:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
