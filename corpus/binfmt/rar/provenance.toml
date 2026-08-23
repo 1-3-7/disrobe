@@ -10,6 +10,8 @@ preparation = "Upstream stores each archive uuencoded as a .rar.uu file. Each fi
 independent_reference = "7-Zip 25.01 (C:/Program Files/7-Zip/7z.exe)"
 independent_reference_method = "7z x extracted every member; the recorded member_sha256 and member CRC-32 are 7-Zip output, not disrobe output. 7-Zip also reports the same CRC-32 the archive header declares."
 algorithm_reference = "The RAR 2.9/3.x filter architecture was implemented from libarchive's BSD-2-Clause archive_read_support_format_rar.c at the same commit, which identifies filter programs by exact length and CRC-32 and runs native transforms instead of a RARVM interpreter. No UnRAR source was copied into this repository."
+itanium_reference = "libarchive implements five of the six canonical filter programs and omits Itanium. The Itanium fingerprint (length 120, CRC-32 0x3769893f) and its bundle transform were taken from github.com/nwaples/rardecode filters.go, BSD licensed, function itaniumFilterV3, retrieved 2026-08-23."
+uncovered_fingerprints = "Four of the six canonical fingerprints have no positive artifact in this corpus: plain x86 e8 (53, 0xad576887), Itanium (120, 0x3769893f), RGB (149, 0x1c2c5dc8) and audio (216, 0xbc85e701). No RAR3 archive carrying them was found in any permissively licensed corpus, and producing one needs a RAR 3.x capable archiver, which 7-Zip is not. Their transforms are graded by known-answer tests over hand-built blocks, not by end-to-end extraction. Do not read a green disrobe-binfmt suite as evidence that those four fingerprints decode a real archive."
 
 [[artifacts]]
 path = "filter-e8-rar3.rar"
@@ -54,3 +56,14 @@ member = "lowdist-reset.bin"
 member_size_bytes = 64
 member_sha256 = "353d5f7a0789034186922e5834f666f36fa1f98e18f53fb4140b336ba090a923"
 member_crc32 = "0x6ff838dc"
+
+[[artifacts]]
+path = "hostile-filter-staticdata-rar3.rar"
+upstream_path = "test_read_format_rar_unbound_staticdata.rar.uu"
+sha256 = "8b1c1c2e19c9d84d7a7a9b30c36dcea09323c14164a747fc05b8cb1c3ca2cd9a"
+size_bytes = 125
+exercises = "A real hostile archive whose LZ-carried filter record defines a canonical delta program and then invokes it with a zero channel count. disrobe refuses it by name and publishes no member bytes. Removing the zero-channel guard makes disrobe publish four zero bytes for this member, and the declared CRC-32 does not catch that, so the guard is the only thing standing between this archive and a wrong recovered file."
+member = "poc_b76.txt"
+member_size_bytes = 4
+member_recovered = false
+independent_verdict = "7-Zip 26.02 refuses the same member: `7z t` reports `ERROR: Data Error : poc_b76.txt`."

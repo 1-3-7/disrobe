@@ -262,6 +262,49 @@ fn rar3_filter_member_reaches_disk_through_container_extraction() {
 }
 
 #[test]
+fn a_real_archive_whose_filter_record_names_zero_channels_is_refused_by_name() {
+    let bytes: Vec<u8> = fixture("hostile-filter-staticdata-rar3.rar");
+    assert_eq!(detect_container(&bytes), Some(ContainerKind::Rar));
+    let entry: RarEntry = only_member(&bytes, "hostile-filter-staticdata-rar3.rar");
+    assert_eq!(entry.name, "poc_b76.txt");
+    assert_eq!(entry.compression_version, 29);
+    let error: String = rar_entry_bytes(&bytes, &entry, 512 * 1024 * 1024)
+        .expect_err("a delta record naming zero channels must be refused")
+        .to_string();
+    assert!(
+        error.contains("delta filter refused") && error.contains("channel count 0"),
+        "the refusal must name the filter and the channel count it rejected: {error}"
+    );
+}
+
+#[test]
+fn the_refused_filter_archive_publishes_no_member_bytes() {
+    let bytes: Vec<u8> = fixture("hostile-filter-staticdata-rar3.rar");
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("hostile-filter-staticdata");
+    let out: PathBuf = scratch.path().to_path_buf();
+    let outcome: Result<ExtractionResult, disrobe_binfmt::Error> =
+        extract_to(ContainerKind::Rar, &bytes, &out);
+    match outcome {
+        Ok(result) => {
+            assert!(
+                !result.integrity_violations.is_empty(),
+                "a member disrobe could not decode must be reported, not silently dropped"
+            );
+            assert!(
+                !out.join("poc_b76.txt").exists(),
+                "no member file may be written for a refused decode"
+            );
+        }
+        Err(_error) => {
+            assert!(
+                !out.join("poc_b76.txt").exists(),
+                "no member file may be written for a refused decode"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_flipped_byte_in_a_stored_member_is_refused_by_its_declared_crc() {
     let mut bytes: Vec<u8> = fixture("store-rar4.rar");
     let archive: RarArchive = parse_rar(&bytes).expect("parse store-rar4");

@@ -363,7 +363,7 @@ pub(crate) struct BlockProfile {
     pub(crate) lz_to_ppm: u32,
     pub(crate) ppm_to_lz: u32,
     pub(crate) filter_invocations: usize,
-    pub(crate) filter_kinds: [usize; 5],
+    pub(crate) filter_kinds: [usize; 6],
 }
 
 struct Member<'a> {
@@ -896,7 +896,7 @@ mod tests {
         let profile: BlockProfile = profile_of("filter-e8-rar3.rar", "bsdcat.exe");
         assert_eq!(
             profile.filter_kinds,
-            [6, 0, 1, 0, 0],
+            [6, 0, 1, 0, 0, 0],
             "bsdcat.exe carries six delta invocations and one x86 e8/e9 invocation: {profile:?}"
         );
         assert_eq!(

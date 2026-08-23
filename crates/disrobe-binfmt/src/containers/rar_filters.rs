@@ -13,6 +13,17 @@ const MAX_RECORD_LENGTH: usize = 0xffff;
 const E8_ADDRESS_SPACE: u32 = 0x0100_0000;
 const FILTER_WORK_PER_BYTE: u64 = 8;
 const FILTER_WORK_BASE: u64 = 4 * 1024 * 1024;
+const ITANIUM_BUNDLE_SIZE: usize = 16;
+const ITANIUM_BUNDLE_SPAN: usize = 21;
+const ITANIUM_SLOT_STRIDE: usize = 41;
+const ITANIUM_IMMEDIATE_OFFSET: usize = 18;
+const ITANIUM_OPCODE_OFFSET: usize = 24;
+const ITANIUM_BRANCH_OPCODE: u32 = 5;
+const ITANIUM_IMMEDIATE_BITS: u32 = 20;
+const ITANIUM_OPCODE_BITS: u32 = 4;
+const ITANIUM_TEMPLATE_MASK: u8 = 0x1f;
+const ITANIUM_TEMPLATE_BASE: usize = 0x10;
+const ITANIUM_SLOT_MASKS: [u8; 16] = [4, 4, 6, 6, 0, 0, 7, 7, 4, 4, 0, 0, 4, 4, 0, 0];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardFilter {
@@ -21,6 +32,7 @@ pub(crate) enum StandardFilter {
     E8E9,
     Rgb,
     Audio,
+    Itanium,
 }
 
 impl StandardFilter {
@@ -31,6 +43,7 @@ impl StandardFilter {
             Self::E8E9 => 2,
             Self::Rgb => 3,
             Self::Audio => 4,
+            Self::Itanium => 5,
         }
     }
 
@@ -41,14 +54,16 @@ impl StandardFilter {
             Self::E8E9 => "x86 e8/e9",
             Self::Rgb => "rgb",
             Self::Audio => "audio",
+            Self::Itanium => "itanium",
         }
     }
 }
 
-const FINGERPRINTS: [(u64, StandardFilter); 5] = [
+const FINGERPRINTS: [(u64, StandardFilter); 6] = [
     (0x0000_001d_0e06_077d, StandardFilter::Delta),
     (0x0000_0035_ad57_6887, StandardFilter::E8),
     (0x0000_0039_3cd7_e57e, StandardFilter::E8E9),
+    (0x0000_0078_3769_893f, StandardFilter::Itanium),
     (0x0000_0095_1c2c_5dc8, StandardFilter::Rgb),
     (0x0000_00d8_bc85_e701, StandardFilter::Audio),
 ];
@@ -145,8 +160,8 @@ impl FilterSet {
         self.pending.len()
     }
 
-    pub(crate) fn invocation_counts(&self) -> [usize; 5] {
-        let mut counts: [usize; 5] = [0usize; 5];
+    pub(crate) fn invocation_counts(&self) -> [usize; 6] {
+        let mut counts: [usize; 6] = [0usize; 6];
         for invocation in &self.pending {
             counts[invocation.filter.slot()] += 1;
         }
@@ -389,7 +404,7 @@ fn compile(code: &[u8]) -> Result<FilterProgram> {
         .find(|&&(candidate, _): &&(u64, StandardFilter)| candidate == fingerprint)
     else {
         return Err(Error::Decompression(format!(
-            "rar 2.9/3.x member carries filter program {fingerprint:#014x} ({} bytes), which is not one of the canonical delta, x86 e8, x86 e8/e9, rgb and audio transforms; disrobe identifies filter programs by exact length and crc32 and does not execute rarvm bytecode",
+            "rar 2.9/3.x member carries filter program {fingerprint:#014x} ({} bytes), which is not one of the canonical delta, x86 e8, x86 e8/e9, itanium, rgb and audio transforms; disrobe identifies filter programs by exact length and crc32 and does not execute rarvm bytecode",
             code.len()
         )));
     };
@@ -425,6 +440,7 @@ fn execute(
             invocation.registers[1],
         ),
         StandardFilter::Audio => filter_audio(memory, length, invocation.registers[0]),
+        StandardFilter::Itanium => filter_itanium(memory, length, file_offset),
     }?;
     Ok((address, length as usize))
 }
@@ -472,6 +488,91 @@ fn filter_e8(memory: &mut [u8], length: u32, file_offset: u32, e9_also: bool) ->
             index += 4;
         }
         index += 1;
+    }
+    Ok(0)
+}
+
+fn itanium_field(memory: &[u8], position: usize, count: u32) -> Result<u32> {
+    let byte: usize = position / 8;
+    let raw: [u8; 4] = memory
+        .get(byte..byte + 4)
+        .and_then(|window: &[u8]| <[u8; 4]>::try_from(window).ok())
+        .ok_or_else(|| {
+            refuse(
+                StandardFilter::Itanium,
+                "instruction field runs past the filter block",
+            )
+        })?;
+    Ok((u32::from_le_bytes(raw) >> (position % 8)) & (u32::MAX >> (32 - count)))
+}
+
+fn itanium_set_field(memory: &mut [u8], position: usize, count: u32, value: u32) -> Result<()> {
+    let byte: usize = position / 8;
+    let shift: u32 = (position % 8) as u32;
+    let mask: u32 = (u32::MAX >> (32 - count)) << shift;
+    let window: &mut [u8] = memory.get_mut(byte..byte + 4).ok_or_else(|| {
+        refuse(
+            StandardFilter::Itanium,
+            "instruction field runs past the filter block",
+        )
+    })?;
+    let raw: [u8; 4] =
+        <[u8; 4]>::try_from(&*window).map_err(|_e: std::array::TryFromSliceError| {
+            refuse(
+                StandardFilter::Itanium,
+                "instruction field runs past the filter block",
+            )
+        })?;
+    let updated: u32 = (u32::from_le_bytes(raw) & !mask) | ((value << shift) & mask);
+    window.copy_from_slice(&updated.to_le_bytes());
+    Ok(())
+}
+
+fn filter_itanium(memory: &mut [u8], length: u32, file_offset: u32) -> Result<usize> {
+    let len: usize = length as usize;
+    if len > PROGRAM_WORK_SIZE {
+        return Err(refuse(
+            StandardFilter::Itanium,
+            &format!("block length {len} exceeds {PROGRAM_WORK_SIZE}"),
+        ));
+    }
+    let block: &mut [u8] = memory.get_mut(..len).ok_or_else(|| {
+        refuse(
+            StandardFilter::Itanium,
+            "block length exceeds the filter memory",
+        )
+    })?;
+    let mut bundle_offset: u32 = file_offset >> 4;
+    let mut cursor: usize = 0;
+    while len.saturating_sub(cursor) > ITANIUM_BUNDLE_SPAN {
+        let template: usize = usize::from(block[cursor] & ITANIUM_TEMPLATE_MASK);
+        if let Some(mask) = template
+            .checked_sub(ITANIUM_TEMPLATE_BASE)
+            .and_then(|index: usize| ITANIUM_SLOT_MASKS.get(index).copied())
+            .filter(|selected: &u8| *selected != 0)
+        {
+            for slot in 0usize..3 {
+                if mask & (1u8 << slot) == 0 {
+                    continue;
+                }
+                let position: usize =
+                    cursor * 8 + slot * ITANIUM_SLOT_STRIDE + ITANIUM_IMMEDIATE_OFFSET;
+                let opcode: u32 =
+                    itanium_field(block, position + ITANIUM_OPCODE_OFFSET, ITANIUM_OPCODE_BITS)?;
+                if opcode != ITANIUM_BRANCH_OPCODE {
+                    continue;
+                }
+                let immediate: u32 = itanium_field(block, position, ITANIUM_IMMEDIATE_BITS)?;
+                itanium_set_field(
+                    block,
+                    position,
+                    ITANIUM_IMMEDIATE_BITS,
+                    immediate.wrapping_sub(bundle_offset),
+                )?;
+            }
+        }
+        bundle_offset = bundle_offset.wrapping_add(1);
+        cursor += ITANIUM_BUNDLE_SIZE;
     }
     Ok(0)
 }
@@ -671,8 +772,163 @@ mod tests {
         assert_eq!(program(StandardFilter::Delta), (29, 0x0e06_077d));
         assert_eq!(program(StandardFilter::E8), (53, 0xad57_6887));
         assert_eq!(program(StandardFilter::E8E9), (57, 0x3cd7_e57e));
+        assert_eq!(program(StandardFilter::Itanium), (120, 0x3769_893f));
         assert_eq!(program(StandardFilter::Rgb), (149, 0x1c2c_5dc8));
         assert_eq!(program(StandardFilter::Audio), (216, 0xbc85_e701));
+    }
+
+    #[test]
+    fn every_canonical_fingerprint_maps_to_exactly_one_transform() {
+        let mut seen: Vec<u64> = FINGERPRINTS
+            .iter()
+            .map(|&(fingerprint, _): &(u64, StandardFilter)| fingerprint)
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), FINGERPRINTS.len());
+        let mut slots: Vec<usize> = FINGERPRINTS
+            .iter()
+            .map(|&(_, filter): &(u64, StandardFilter)| filter.slot())
+            .collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    const ITANIUM_BUNDLE_BEFORE: [u8; 32] = [
+        0x16, 0x00, 0x14, 0x8d, 0x04, 0x14, 0x00, 0xf0, 0xe6, 0x55, 0x18, 0x00, 0x20, 0x00, 0x00,
+        0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    const ITANIUM_BUNDLE_AFTER: [u8; 32] = [
+        0x16, 0x00, 0x08, 0x8d, 0x04, 0x14, 0x00, 0xf0, 0xe6, 0x55, 0x18, 0x00, 0xf0, 0xff, 0xff,
+        0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    fn itanium_memory(block: &[u8]) -> Vec<u8> {
+        let mut memory: Vec<u8> = vec![0u8; VM_MEMORY_SIZE];
+        memory[..block.len()].copy_from_slice(block);
+        memory
+    }
+
+    #[test]
+    fn itanium_subtracts_the_bundle_offset_from_branch_slots_the_template_marks() {
+        let mut memory: Vec<u8> = itanium_memory(&ITANIUM_BUNDLE_BEFORE);
+        assert_eq!(filter_itanium(&mut memory, 32, 0x30).unwrap(), 0);
+        assert_eq!(
+            &memory[..32],
+            &ITANIUM_BUNDLE_AFTER,
+            "template 0x16 marks all three slots; only the two whose 4 bit opcode is 5 move"
+        );
+        assert_eq!(
+            itanium_field(&memory, 18, 20).unwrap(),
+            0x0001_2342,
+            "slot 0 carries opcode 5, so its 20 bit immediate loses the bundle offset 3"
+        );
+        assert_eq!(
+            itanium_field(&memory, 59, 20).unwrap(),
+            0x000a_bcde,
+            "slot 1 carries opcode 3, so its immediate must be left alone"
+        );
+        assert_eq!(
+            itanium_field(&memory, 100, 20).unwrap(),
+            0x000f_ffff,
+            "slot 2 subtracts 3 from 2 and wraps inside 20 bits rather than borrowing outward"
+        );
+    }
+
+    #[test]
+    fn itanium_leaves_a_template_outside_the_marked_range_untouched() {
+        let mut block: [u8; 32] = ITANIUM_BUNDLE_BEFORE;
+        block[0] = 0x14;
+        let mut memory: Vec<u8> = itanium_memory(&block);
+        assert_eq!(filter_itanium(&mut memory, 32, 0x30).unwrap(), 0);
+        assert_eq!(
+            &memory[..32],
+            &block,
+            "template index 4 has an empty slot mask, so no instruction field may move"
+        );
+    }
+
+    #[test]
+    fn itanium_leaves_a_block_too_short_for_one_bundle_untouched() {
+        let mut memory: Vec<u8> = itanium_memory(&ITANIUM_BUNDLE_BEFORE);
+        assert_eq!(filter_itanium(&mut memory, 22, 0x30).unwrap(), 0);
+        assert_ne!(
+            &memory[..32],
+            &ITANIUM_BUNDLE_BEFORE,
+            "22 bytes is one byte past the span, so the first bundle is still rewritten"
+        );
+
+        let mut short: Vec<u8> = itanium_memory(&ITANIUM_BUNDLE_BEFORE);
+        assert_eq!(filter_itanium(&mut short, 21, 0x30).unwrap(), 0);
+        assert_eq!(
+            &short[..32],
+            &ITANIUM_BUNDLE_BEFORE,
+            "21 bytes cannot hold a full bundle plus its trailing opcode field"
+        );
+    }
+
+    #[test]
+    fn random_blocks_never_panic_the_itanium_transform() {
+        let mut state: u64 = 0x4954_414e_4955_4d21;
+        let mut next = move || -> u64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let boundaries: [u32; 6] = [0, 1, 16, 21, 22, 4_096];
+        let mut memory: Vec<u8> = vec![0u8; VM_MEMORY_SIZE];
+        for round in 0..20_000u32 {
+            let len: u32 = if round % 4 == 0 {
+                boundaries[(next() % boundaries.len() as u64) as usize]
+            } else {
+                (next() % 8_192) as u32
+            };
+            for slot in memory.iter_mut().take(len as usize) {
+                *slot = (next() >> 24) as u8;
+            }
+            let file_offset: u32 = (next() >> 16) as u32;
+            assert_eq!(
+                filter_itanium(&mut memory, len, file_offset).unwrap(),
+                0,
+                "a block of {len} bytes at offset {file_offset} must transform in place"
+            );
+        }
+    }
+
+    #[test]
+    fn itanium_refuses_a_block_larger_than_the_filter_work_area() {
+        let mut memory: Vec<u8> = vec![0u8; VM_MEMORY_SIZE];
+        let error: Error = filter_itanium(&mut memory, 0x0003_ffff, 0).unwrap_err();
+        assert!(
+            error.to_string().contains("itanium") && error.to_string().contains("block length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn itanium_advances_the_bundle_offset_once_per_bundle() {
+        let mut block: Vec<u8> = Vec::new();
+        for _ in 0..3 {
+            block.extend_from_slice(&ITANIUM_BUNDLE_BEFORE[..16]);
+        }
+        block.extend_from_slice(&[0u8; 16]);
+        let mut memory: Vec<u8> = itanium_memory(&block);
+        assert_eq!(
+            filter_itanium(&mut memory, block.len() as u32, 0).unwrap(),
+            0
+        );
+        for bundle in 0u32..3 {
+            let base: usize = bundle as usize * ITANIUM_BUNDLE_SIZE * 8;
+            assert_eq!(
+                itanium_field(&memory, base + 18, 20).unwrap(),
+                0x0001_2345u32.wrapping_sub(bundle) & 0x000f_ffff,
+                "bundle {bundle} must subtract its own index, not the first bundle's"
+            );
+        }
     }
 
     #[test]
