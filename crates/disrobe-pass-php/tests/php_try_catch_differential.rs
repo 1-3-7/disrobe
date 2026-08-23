@@ -205,10 +205,17 @@ fn a_try_region_whose_shape_is_not_php_8_is_refused_rather_than_emitted_as_goto_
         recovered.unrecovered,
         recovered.php_skeleton
     );
+    let classify_body: &str = recovered
+        .php_skeleton
+        .split("function classify(")
+        .nth(1)
+        .and_then(|rest: &str| rest.split("\nfunction ").next())
+        .expect("the recovered source declares classify");
     assert!(
-        !recovered.php_skeleton.contains("goto "),
-        "a refused try region must not render as goto soup\n--- recovered ---\n{}",
-        recovered.php_skeleton
+        !classify_body.contains("try {"),
+        "a try_catch row that does not describe a php 8 region must not have a try header \
+         invented for it; the jumps inside it may only be reproduced as the jumps they are\n--- \
+         recovered classify ---\n{classify_body}"
     );
 }
 

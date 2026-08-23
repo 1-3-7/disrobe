@@ -61,7 +61,7 @@ const PINNED_SAMPLES: [&str; 23] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 19] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 20] = [
     "arithmetic",
     "closure_bodies",
     "control_flow",
@@ -70,6 +70,7 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 19] = [
     "functions",
     "generators",
     "goto_forward",
+    "goto_shapes",
     "interpolation",
     "keyed_foreach",
     "match_optimized",
@@ -456,7 +457,7 @@ fn every_committed_oparray_sample_is_pinned_by_name() {
     let not_behavioral: Vec<&String> = pinned.difference(&behavioral).collect();
     assert_eq!(
         not_behavioral,
-        vec!["closures", "goto_shapes", "members", "versioned"],
+        vec!["closures", "members", "versioned"],
         "every pinned sample except `closures`, which grades anonymous closure opcode blocks, \
          `goto_shapes`, whose jumps the structurer refuses by name, `members`, whose user class \
          declaration and static methods are not carried in this container, and `versioned`, \
@@ -571,40 +572,74 @@ fn interpolation_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("interpolation");
 }
 
-const GOTO_REFUSED_CONTAINERS: [&str; 2] = ["out_of_loop", "backward"];
+#[test]
+fn goto_shapes_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("goto_shapes");
+}
+
+const GOTO_RECOVERED_SITES: [(&str, &str); 2] = [("out_of_loop", "goto "), ("backward", "goto ")];
 
 #[test]
-fn a_goto_the_structurer_cannot_shape_is_refused_by_name_and_never_silently_restructured() {
-    let graded: &str = "the php 8.4 goto shapes the structurer refuses";
+fn a_jump_the_structurer_cannot_shape_recovers_as_the_goto_the_source_had() {
+    let graded: &str = "the php 8.4 goto shapes the structurer cannot fold";
     let php: PathBuf = required_php(graded);
     let dll: String = required_opcache(&php, graded);
     let recovered: Decompilation = recover_sample(&php, &dll, "goto_shapes");
-    let refused: Vec<(&str, &str)> = recovered
-        .unrecovered
-        .iter()
-        .map(|entry: &UnrecoveredOp| (entry.container.as_str(), entry.mnemonic.as_str()))
-        .collect();
-    let expected: Vec<(&str, &str)> = GOTO_REFUSED_CONTAINERS
-        .iter()
-        .map(|container: &&str| (*container, "ZEND_JMP"))
-        .collect();
-    assert_eq!(
-        refused, expected,
-        "goto_shapes is pinned to refuse exactly one jump in each of {GOTO_REFUSED_CONTAINERS:?} \
-         and nothing else; a jump that starts structuring, or one that stops, must move this pin \
-         deliberately\n--- recovered ---\n{}",
-        recovered.php_skeleton
+    let source: &str = &recovered.php_skeleton;
+    assert!(
+        recovered.unrecovered.is_empty(),
+        "a jump the structurer cannot fold is recovered as the goto the source had, not refused; \
+         these were refused: {:?}\n--- recovered ---\n{source}",
+        recovered.unrecovered
     );
-    for reason in recovered
-        .unrecovered
-        .iter()
-        .map(|entry: &UnrecoveredOp| entry.reason.as_str())
-    {
-        assert_eq!(
-            reason, "this jump matched no structured control-flow shape",
-            "a refused jump must say why it was refused"
+    let gotos: usize = source.matches("goto ").count();
+    assert_eq!(
+        gotos,
+        GOTO_RECOVERED_SITES.len(),
+        "goto_shapes writes exactly {} gotos the structurer cannot fold, so the recovery must \
+         emit that many and no more\n--- recovered ---\n{source}",
+        GOTO_RECOVERED_SITES.len()
+    );
+    for line in source.lines() {
+        let trimmed: &str = line.trim();
+        let Some(label) = trimmed.strip_suffix(':') else {
+            continue;
+        };
+        if !label.starts_with("disrobe_label_") {
+            continue;
+        }
+        assert!(
+            source.contains(&format!("goto {label};")),
+            "a label may only be placed where a jump targets it; `{label}` is unreferenced\n--- \
+             recovered ---\n{source}"
         );
     }
+    for target in source.match_indices("goto ") {
+        let rest: &str = &source[target.0 + "goto ".len()..];
+        let Some(name) = rest.split(';').next() else {
+            continue;
+        };
+        assert!(
+            source.contains(&format!("{name}:")),
+            "every goto must land on a label that was placed; `{name}` has none\n--- recovered \
+             ---\n{source}"
+        );
+    }
+}
+
+#[test]
+fn a_goto_that_already_structures_does_not_regress_into_a_jump() {
+    let graded: &str = "the php 8.4 forward goto shapes that already structure";
+    let php: PathBuf = required_php(graded);
+    let dll: String = required_opcache(&php, graded);
+    let recovered: Decompilation = recover_sample(&php, &dll, "goto_forward");
+    assert!(
+        !recovered.php_skeleton.contains("goto "),
+        "a forward goto at the same nesting level compiles to the same opcodes as an if/else and \
+         must keep recovering as one; emitting a goto here is the soup this capability \
+         forbids\n--- recovered ---\n{}",
+        recovered.php_skeleton
+    );
 }
 
 #[test]

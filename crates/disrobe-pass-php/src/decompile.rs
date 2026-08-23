@@ -1329,6 +1329,7 @@ enum Stmt {
         by_reference: bool,
         body: Vec<Self>,
     },
+    Label(String),
     Closure {
         prefix: String,
         signature: String,
@@ -1468,6 +1469,7 @@ impl Stmt {
                 }
                 emitter.line(indent, "}");
             }
+            Self::Label(label) => emitter.line(indent, &format!("{label}:")),
             Self::Closure {
                 prefix,
                 signature,
@@ -1524,6 +1526,8 @@ struct LiftSnapshot {
     writable_slots: BTreeMap<(OperandType, u32), u32>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
+    goto_targets: BTreeSet<u32>,
+    placed_labels: BTreeSet<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -1592,6 +1596,9 @@ struct Lifter<'a> {
     limited: BTreeSet<u32>,
     nullsafe_link: Option<(OperandType, u32)>,
     children: &'a [OpArray],
+    goto_targets: BTreeSet<u32>,
+    placed_labels: BTreeSet<u32>,
+    emit_gotos: bool,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
     breakables: Vec<BreakableFrame>,
@@ -1668,6 +1675,9 @@ impl<'a> Lifter<'a> {
             limited: BTreeSet::new(),
             nullsafe_link: None,
             children,
+            goto_targets: BTreeSet::new(),
+            placed_labels: BTreeSet::new(),
+            emit_gotos: false,
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
             breakables: Vec::new(),
@@ -1692,7 +1702,37 @@ impl<'a> Lifter<'a> {
     fn lift(&mut self) -> Vec<Stmt> {
         let len: u32 = self.ops.len() as u32;
         self.record_opaque_literals(len);
-        self.lift_range(0, len, 0)
+        let structured: Vec<Stmt> = self.lift_range(0, len, 0);
+        if self.goto_targets.is_empty() {
+            return structured;
+        }
+        let targets: BTreeSet<u32> = std::mem::take(&mut self.goto_targets);
+        let mut second: Lifter<'a> = Lifter::new(
+            self.ops,
+            self.literals,
+            self.var_names,
+            self.try_catch,
+            self.children,
+        );
+        second.goto_targets.clone_from(&targets);
+        second.emit_gotos = true;
+        second.record_opaque_literals(len);
+        let relabelled: Vec<Stmt> = second.lift_range(0, len, 0);
+        let placed: BTreeSet<u32> = std::mem::take(&mut second.placed_labels);
+        self.refused = std::mem::take(&mut second.refused);
+        self.unrecovered = std::mem::take(&mut second.unrecovered);
+        self.limitations = std::mem::take(&mut second.limitations);
+        self.limited = std::mem::take(&mut second.limited);
+        if placed == targets {
+            return relabelled;
+        }
+        let unplaced: Option<u32> = targets.difference(&placed).copied().next();
+        let marker: String = self.refuse(unplaced.unwrap_or_default(), op::JMP, REASON_GOTO_TARGET);
+        vec![Stmt::Line(marker)]
+    }
+
+    fn goto_label(target: u32) -> String {
+        format!("disrobe_label_{target}")
     }
 
     fn record_opaque_literals(&mut self, len: u32) {
@@ -1740,6 +1780,10 @@ impl<'a> Lifter<'a> {
                 out.extend(stmt);
                 i = next;
                 continue;
+            }
+            if self.emit_gotos && self.goto_targets.contains(&i) {
+                self.placed_labels.insert(i);
+                out.push(Stmt::Label(Self::goto_label(i)));
             }
             let marker: Option<String> = self.opaque_literal_marker(i);
             let lifted: Option<String> = self.eval_op(i);
@@ -2662,6 +2706,8 @@ impl<'a> Lifter<'a> {
             writable_slots: self.writable_slots.clone(),
             refused: self.refused.clone(),
             unrecovered: self.unrecovered.clone(),
+            goto_targets: self.goto_targets.clone(),
+            placed_labels: self.placed_labels.clone(),
         }
     }
 
@@ -2673,6 +2719,8 @@ impl<'a> Lifter<'a> {
         self.writable_slots = snapshot.writable_slots;
         self.refused = snapshot.refused;
         self.unrecovered = snapshot.unrecovered;
+        self.goto_targets = snapshot.goto_targets;
+        self.placed_labels = snapshot.placed_labels;
     }
 
     fn evaluate_switch_label_op(
@@ -3446,7 +3494,7 @@ impl<'a> Lifter<'a> {
             },
             depth,
         );
-        let refused_as_while: usize = self.unrecovered.len() - snapshot.unrecovered.len();
+        let refused_as_while: usize = self.refused.len() - snapshot.refused.len();
         if let Some(step_start) = self.for_step_start(&unexplained, body_start, cond_block)
             && let Some(statements) = self.relift_for(
                 snapshot,
@@ -3535,7 +3583,7 @@ impl<'a> Lifter<'a> {
         let work: usize = (cond_block - body_start) as usize;
         self.relift_work = loop_relift_charge(self.relift_work, work)?;
         let restored: LiftSnapshot = self.lift_snapshot();
-        let baseline: usize = snapshot.unrecovered.len();
+        let baseline: usize = snapshot.refused.len();
         self.restore_lift_snapshot(snapshot);
         let (body, unexplained): (Vec<Stmt>, BTreeSet<u32>) = self.lift_breakable_body(
             BreakableFrame {
@@ -3551,12 +3599,13 @@ impl<'a> Lifter<'a> {
         let step_stmts: Vec<Stmt> = self.lift_range(step_start, cond_block, depth + 1);
         let step: Option<Vec<String>> = step_stmts
             .iter()
+            .filter(|stmt: &&Stmt| !matches!(stmt, Stmt::Label(_)))
             .map(|stmt: &Stmt| match stmt {
                 Stmt::Line(text) => Some(text.trim_end_matches(';').to_owned()),
                 _ => None,
             })
             .collect();
-        let refused_as_for: usize = self.unrecovered.len() - baseline;
+        let refused_as_for: usize = self.refused.len() - baseline;
         match step {
             Some(step)
                 if !step.is_empty()
@@ -3999,6 +4048,18 @@ impl<'a> Lifter<'a> {
                     )),
                 });
                 None
+            }
+            o if o == op::JMP => {
+                let target: u32 = op.op1;
+                if target as usize >= self.ops.len() {
+                    return Some(self.refuse(idx, o, REASON_JUMP));
+                }
+                if !self.emit_gotos {
+                    self.goto_targets.insert(target);
+                    return Some(self.refuse(idx, o, REASON_JUMP));
+                }
+                self.refused.insert(idx);
+                Some(format!("goto {};", Self::goto_label(target)))
             }
             o if o == op::FETCH_CLASS_CONSTANT => {
                 let Some(text): Option<String> = self.class_constant_access(op) else {
@@ -4828,6 +4889,8 @@ const LIMITATION_OPAQUE_ARRAY_LITERAL: &str = "the constant array literal's elem
 const REASON_ARRAY_SHAPE: &str =
     "an array element carries a key with no value, so this is not a php 8 array construction";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
+const REASON_GOTO_TARGET: &str = "a jump targets a position no label can be placed at, so this whole function is \
+     rejected rather than recovered around it";
 const REASON_ITERATION: &str =
     "the foreach reset, fetch and back edge do not form a php 8 iteration";
 const REASON_ROPE: &str =
@@ -5520,8 +5583,9 @@ mod oparray_bounds_tests {
             "a step one wider than the cap must not reconstruct a for header\n{rejected}"
         );
         assert!(
-            rejected.contains("unrecovered ZEND_JMP"),
-            "the continue edge the refused for header cannot explain must be marked\n{rejected}"
+            rejected.contains("goto disrobe_label_"),
+            "the continue edge the refused for header cannot explain must still be reproduced as \
+             the jump it is\n{rejected}"
         );
     }
 
@@ -5530,12 +5594,13 @@ mod oparray_bounds_tests {
         let source: String = lift_source(&bottom_tested_loop(0, 2, 2));
         assert!(
             !source.contains("for (; "),
-            "hoisting the tail into a for step would leave both jumps to the condition \
-             unexplained, which is worse than the while reading it replaces\n{source}"
+            "hoisting the tail into a for step would leave both jumps to the condition              unstructured, which is worse than the while reading it replaces
+{source}"
         );
         assert!(
             source.contains("while ("),
-            "the loop must keep the reading that explains the most jumps\n{source}"
+            "the loop must keep the reading that explains the most jumps
+{source}"
         );
         assert_eq!(
             source
@@ -5543,12 +5608,14 @@ mod oparray_bounds_tests {
                 .filter(|line: &&str| line.trim() == "continue;")
                 .count(),
             2,
-            "both jumps to the condition are while continues\n{source}"
+            "both jumps to the condition are while continues
+{source}"
         );
         assert_eq!(
-            source.matches("unrecovered ZEND_JMP").count(),
+            source.matches("goto disrobe_label_").count(),
             1,
-            "only the jump to the tail stays unexplained under the while reading\n{source}"
+            "only the jump to the tail stays unstructured under the while reading, and it is              reproduced as the goto it is rather than marked and left out of the body
+{source}"
         );
     }
 

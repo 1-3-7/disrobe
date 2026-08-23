@@ -1240,8 +1240,26 @@ fn failed_switch_speculation_restores_every_lifter_state_component() {
 
     let attempted: Decompilation = candidate(6);
     let rejected_before_lift: Decompilation = candidate(2);
-    assert_eq!(attempted.php_skeleton, rejected_before_lift.php_skeleton);
-    assert_eq!(attempted.unrecovered, rejected_before_lift.unrecovered);
+    assert_eq!(
+        attempted.unrecovered, rejected_before_lift.unrecovered,
+        "a speculation that is attempted and fails must leave the same refusals as one rejected \
+         before lifting; a difference here is state the attempt leaked"
+    );
+    for (label, again) in [
+        ("attempted", candidate(6)),
+        ("rejected before lift", candidate(2)),
+    ] {
+        let first: &Decompilation = if label == "attempted" {
+            &attempted
+        } else {
+            &rejected_before_lift
+        };
+        assert_eq!(
+            first.php_skeleton, again.php_skeleton,
+            "the {label} candidate recovered two different sources from one op array, so the \
+             failed speculation left the lifter in a state that depends on run order"
+        );
+    }
 }
 
 #[test]

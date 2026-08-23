@@ -1,5 +1,10 @@
 <?php
 
+function build_list(int $seed): array
+{
+    return [$seed, $seed + 1, $seed + 2, $seed + 3];
+}
+
 function out_of_loop(array $rows): string
 {
     $out = '';
@@ -30,6 +35,7 @@ function backward(int $limit): string
     return $out;
 }
 
-echo out_of_loop([1, 2, 3, 4]), "\n";
-echo out_of_loop([1, 2]), "\n";
+echo out_of_loop(build_list(1)), "\n";
+echo out_of_loop(build_list(5)), "\n";
 echo backward(3), "\n";
+echo backward(1), "\n";

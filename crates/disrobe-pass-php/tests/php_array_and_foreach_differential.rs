@@ -259,8 +259,10 @@ fn a_reset_and_fetch_pair_that_disagree_on_binding_mode_is_refused_rather_than_g
         recovered.php_skeleton
     );
     assert!(
-        !recovered.php_skeleton.contains("goto "),
-        "a refused iteration must not render as goto soup\n--- recovered ---\n{}",
+        !recovered.php_skeleton.contains("foreach ($rows as &$row)"),
+        "a reset and fetch that disagree are not an iteration, so no foreach header may be \
+         invented for them; the back edge may only be reproduced as the jump it is\n--- recovered \
+         ---\n{}",
         recovered.php_skeleton
     );
 }
