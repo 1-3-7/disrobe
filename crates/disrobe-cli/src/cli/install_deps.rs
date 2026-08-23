@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "net-fetch")]
 use std::time::Duration;
 
 use clap::Subcommand;
@@ -11,15 +12,19 @@ use super::output::{OutputFormat, emit};
 
 const GHIDRA_RELEASES_API: &str =
     "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest";
+#[cfg(feature = "net-fetch")]
 const USER_AGENT: &str = concat!("disrobe-cli/", env!("CARGO_PKG_VERSION"));
+#[cfg(feature = "net-fetch")]
 const MAX_GHIDRA_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_GHIDRA_ARCHIVE_ENTRIES: usize = 200_000;
 const MAX_GHIDRA_ENTRY_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_GHIDRA_TOTAL_UNCOMPRESSED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(any(feature = "net-fetch", test))]
 const DOWNLOAD_PREALLOC_FALLBACK: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 struct InstallLimits {
+    #[cfg(feature = "net-fetch")]
     download_bytes: u64,
     archive_entries: usize,
     entry_uncompressed_bytes: u64,
@@ -30,6 +35,7 @@ impl InstallLimits {
     #[must_use]
     const fn ghidra() -> Self {
         Self {
+            #[cfg(feature = "net-fetch")]
             download_bytes: MAX_GHIDRA_DOWNLOAD_BYTES,
             archive_entries: MAX_GHIDRA_ARCHIVE_ENTRIES,
             entry_uncompressed_bytes: MAX_GHIDRA_ENTRY_UNCOMPRESSED_BYTES,
@@ -195,6 +201,7 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
+#[cfg(feature = "net-fetch")]
 fn fetch_latest_ghidra_release() -> miette::Result<ReleaseInfo> {
     let client: reqwest::blocking::Client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
@@ -216,6 +223,16 @@ fn fetch_latest_ghidra_release() -> miette::Result<ReleaseInfo> {
         .map_err(|e| miette::miette!("DR-CLI-0257: parse release json: {e}"))
 }
 
+#[cfg(not(feature = "net-fetch"))]
+fn fetch_latest_ghidra_release() -> miette::Result<ReleaseInfo> {
+    Err(miette::miette!(
+        "DR-CLI-0328: this binary was built without the `net-fetch` feature, so it carries no HTTP \
+         client and cannot query {GHIDRA_RELEASES_API}. rebuild with `--features net-fetch`, or use \
+         the default build which enables it, or install ghidra yourself and put its support/ \
+         directory on PATH"
+    ))
+}
+
 fn pick_ghidra_zip_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
     assets
         .iter()
@@ -226,6 +243,7 @@ fn pick_ghidra_zip_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
         .cloned()
 }
 
+#[cfg(feature = "net-fetch")]
 #[expect(
     clippy::duration_suboptimal_units,
     reason = "from_mins is unstable (duration_constructors, rust#120301); from_secs is the stable form"
@@ -255,6 +273,16 @@ fn download_with_progress(url: &str) -> miette::Result<Vec<u8>> {
     )
 }
 
+#[cfg(not(feature = "net-fetch"))]
+fn download_with_progress(url: &str) -> miette::Result<Vec<u8>> {
+    Err(miette::miette!(
+        "DR-CLI-0329: this binary was built without the `net-fetch` feature, so it carries no HTTP \
+         client and cannot download {url}. rebuild with `--features net-fetch`, or use the default \
+         build which enables it, or fetch the archive yourself"
+    ))
+}
+
+#[cfg(any(feature = "net-fetch", test))]
 fn read_response_bounded<R: std::io::Read>(
     reader: &mut R,
     declared_len: Option<u64>,
@@ -546,6 +574,7 @@ mod tests {
         let dest_scratch: disrobe_core::scratch::ScratchDir = temp_install_dir("total-cap");
         let dest: PathBuf = dest_scratch.path().to_path_buf();
         let limits: InstallLimits = InstallLimits {
+            #[cfg(feature = "net-fetch")]
             download_bytes: 1024,
             archive_entries: 8,
             entry_uncompressed_bytes: 16,

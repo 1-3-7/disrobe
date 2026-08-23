@@ -82,7 +82,9 @@ use cli::pickle::{self, PickleCmd};
 #[cfg(feature = "plugin")]
 use cli::plugin::{self, PluginCmd};
 use cli::progress_ui;
-use cli::prowl::{self, ProwlArgs, ProwlFormat};
+use cli::prowl::ProwlFormat;
+#[cfg(feature = "prowl")]
+use cli::prowl::{self, ProwlArgs};
 use cli::py::{self, PyCmd};
 use cli::pyarmor::{self, PyarmorCmd};
 use cli::pyfreeze::{self, PyfreezeCmd};
@@ -961,7 +963,6 @@ enum Cmd {
         action: GuardCmd,
     },
     #[command(about = "run disrobe as an HTTP daemon, gRPC server, or LSP-over-stdio")]
-    #[cfg_attr(not(feature = "server"), command(hide = true))]
     Serve {
         #[arg(long, default_value = "127.0.0.1:7373", help = "HTTP bind address")]
         bind: String,
@@ -1749,6 +1750,7 @@ fn main() -> miette::Result<()> {
             redact || eff.redact,
             fmt,
         ),
+        #[cfg(feature = "prowl")]
         Cmd::Prowl {
             targets,
             targets_file,
@@ -1813,6 +1815,12 @@ fn main() -> miette::Result<()> {
                 )
             }
         }
+        #[cfg(not(feature = "prowl"))]
+        Cmd::Prowl { .. } => Err(miette::miette!(
+            "DR-CLI-0327: this binary was built without the `prowl` feature, so it carries no \
+             archive and threat-intel harvester and no keyring for provider credentials. \
+             rebuild with `--features prowl`, or use the default build which enables it"
+        )),
         Cmd::Strings {
             path,
             min_len,

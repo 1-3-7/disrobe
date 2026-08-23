@@ -11,14 +11,8 @@ use disrobe_prowl::{
     prowl_env, redact, targets_from_disrobe_report,
 };
 
+use super::ProwlFormat;
 use crate::cli::output::OutputFormat;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub(crate) enum ProwlFormat {
-    #[default]
-    Text,
-    Json,
-}
 
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ProwlArgs {
