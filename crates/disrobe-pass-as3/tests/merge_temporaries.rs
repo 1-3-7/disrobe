@@ -699,6 +699,206 @@ fn a_recovered_merge_computes_what_the_bytecode_computes() {
     }
 }
 
+fn expr_reads_slot(expression: &Expr, slot: u32) -> bool {
+    let mut found: bool = false;
+    walk_expr(expression, &mut |inner: &Expr| {
+        if matches!(inner, Expr::Local(index) | Expr::Param(index) if *index == slot) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn expr_reads_property(expression: &Expr, property: &str) -> bool {
+    let mut found: bool = false;
+    walk_expr(expression, &mut |inner: &Expr| match inner {
+        Expr::Get { property: name, .. } | Expr::Descendants { property: name, .. }
+            if name == property =>
+        {
+            found = true;
+        }
+        Expr::Name(name) | Expr::Lex(name) if name == property => found = true,
+        _ => {}
+    });
+    found
+}
+
+fn expr_reads_an_element(expression: &Expr) -> bool {
+    let mut found: bool = false;
+    walk_expr(expression, &mut |inner: &Expr| {
+        if matches!(inner, Expr::Index { .. }) {
+            found = true;
+        }
+    });
+    found
+}
+
+fn walk_expr(expression: &Expr, visit: &mut impl FnMut(&Expr)) {
+    visit(expression);
+    match expression {
+        Expr::Unary { operand, .. }
+        | Expr::Update { operand, .. }
+        | Expr::Coerce { operand, .. }
+        | Expr::Typeof(operand)
+        | Expr::Get {
+            object: operand, ..
+        }
+        | Expr::Delete {
+            object: operand, ..
+        }
+        | Expr::Descendants {
+            object: operand, ..
+        } => walk_expr(operand, visit),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index {
+            object: lhs,
+            index: rhs,
+        } => {
+            walk_expr(lhs, visit);
+            walk_expr(rhs, visit);
+        }
+        Expr::IsType { operand, ty } | Expr::AsType { operand, ty } => {
+            walk_expr(operand, visit);
+            walk_expr(ty, visit);
+        }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            walk_expr(cond, visit);
+            walk_expr(then_value, visit);
+            walk_expr(else_value, visit);
+        }
+        Expr::Call { callee, args, .. } | Expr::Construct { callee, args, .. } => {
+            walk_expr(callee, visit);
+            for argument in args {
+                walk_expr(argument, visit);
+            }
+        }
+        Expr::New { ty: base, args } | Expr::Applied { base, args } => {
+            walk_expr(base, visit);
+            for argument in args {
+                walk_expr(argument, visit);
+            }
+        }
+        Expr::Array(items) => {
+            for item in items {
+                walk_expr(item, visit);
+            }
+        }
+        Expr::Object(pairs) => {
+            for (key, value) in pairs {
+                walk_expr(key, visit);
+                walk_expr(value, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn clobbers(statement: &Stmt, value: &Expr) -> bool {
+    match statement {
+        Stmt::Assign {
+            target: Expr::Local(slot) | Expr::Param(slot),
+            ..
+        } => expr_reads_slot(value, *slot),
+        Stmt::AssignProperty { property, .. } => expr_reads_property(value, property),
+        Stmt::AssignIndex { .. } => expr_reads_an_element(value),
+        _ => false,
+    }
+}
+
+#[test]
+fn nothing_between_a_merge_write_and_its_block_head_changes_what_it_reads() {
+    let dir: PathBuf = common::as3_corpus_root();
+    if !common::require_corpus("as3 merge read window", &dir) {
+        return;
+    }
+    let mut writes: usize = 0;
+    let mut with_a_gap: usize = 0;
+    let mut effectful_with_a_gap: usize = 0;
+    let mut clobbered: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read corpus") {
+        let path: PathBuf = entry.expect("dir entry").path();
+        if path.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) != Some("swf") {
+            continue;
+        }
+        let label: String = path.file_stem().map_or_else(
+            || "?".to_owned(),
+            |name: &std::ffi::OsStr| name.to_string_lossy().into_owned(),
+        );
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read swf");
+        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
+            continue;
+        };
+        for blob in parsed.collect_do_abc() {
+            let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
+                continue;
+            };
+            for (index, body) in abc.method_bodies.iter().enumerate() {
+                let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
+                let Ok(raw): Result<Vec<Stmt>, _> = lift_body_raw(&abc, body, info) else {
+                    continue;
+                };
+                for (position, statement) in raw.iter().enumerate() {
+                    let Stmt::Assign {
+                        target: Expr::Name(name),
+                        value,
+                    } = statement
+                    else {
+                        continue;
+                    };
+                    if !is_merge_temporary(name) {
+                        continue;
+                    }
+                    writes += 1;
+                    let mut scan: usize = position;
+                    let mut gap: usize = 0;
+                    while scan > 0 {
+                        let previous: &Stmt = &raw[scan - 1];
+                        if matches!(
+                            previous,
+                            Stmt::Label(_)
+                                | Stmt::Jump { .. }
+                                | Stmt::If { .. }
+                                | Stmt::Switch { .. }
+                        ) {
+                            break;
+                        }
+                        if !matches!(previous, Stmt::Comment(_))
+                            && !matches!(previous, Stmt::Assign { target: Expr::Name(sibling), .. } if is_merge_temporary(sibling))
+                        {
+                            gap += 1;
+                            if clobbers(previous, value) {
+                                clobbered.push(format!("{label}#{index}:{name}"));
+                            }
+                        }
+                        scan -= 1;
+                    }
+                    if gap > 0 {
+                        with_a_gap += 1;
+                        if !value_is_a_leaf(value) {
+                            effectful_with_a_gap += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "AS3 merge read window: writes={writes} with_statements_before_them={with_a_gap} of_those_non_leaf={effectful_with_a_gap} clobbered={}",
+        clobbered.len()
+    );
+    assert!(writes >= 100, "the window must be exercised, got {writes}");
+    assert!(
+        clobbered.is_empty(),
+        "a merge value reads state that a statement earlier in its own block assigns, so writing \
+         it at the edge evaluates it against state the original push never saw. This is the data \
+         hazard a control-flow comparison cannot see. Offenders: {clobbered:?}"
+    );
+}
+
 #[test]
 fn the_gate_reports_a_temporary_that_no_path_writes() {
     let stmts: Vec<Stmt> = vec![

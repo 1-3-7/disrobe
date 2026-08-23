@@ -1145,13 +1145,18 @@ const CORPUS_REMAINDER: &[RemainderGroup] = &[
         must_stay_refused: false,
         anonymous: 3,
         members: &[
+            "10_More_Bullets::zpp_nape.geom.ZPP_Triangular::delaunay",
             "ATV_Cross_Canada::Playtomic._-P8::_-7z",
             "ATV_Cross_Canada::Playtomic._-P8::_-Ft",
+            "ATV_Cross_Canada::_-98._-3A::contains",
             "ATV_Cross_Canada::_-E3.TweenMax::TweenMax",
             "ATV_Cross_Canada::_-Fw._-4::onInitTween",
             "ATV_Cross_Canada::_-Nh._-7W::update",
             "BO_Awesome_Ranger::Input::_-35",
+            "BO_Awesome_Ranger::alternativa.engine3d.containers.ConflictContainer::draw",
+            "BO_Awesome_Ranger::alternativa.engine3d.core.Object3DContainer::draw",
             "BO_Awesome_Ranger::alternativa.engine3d.loaders.Parser3DS::_-08",
+            "BO_Awesome_Ranger::alternativa.engine3d.objects.Sprite3D::draw",
             "BO_Awesome_Ranger::bodies.Sign::updatePosition",
             "BO_Neo_Rider::mochi.as3.MochiServices::connectWait",
             "BO_Neo_Rider::sandy.core.scenegraph.Node::removeChild",
@@ -1892,7 +1897,7 @@ fn the_corpus_remainder_holds_its_pinned_membership() {
     );
     assert_eq!(files, 19, "the pinned membership names bodies in 19 files");
     assert_eq!(census.bodies, 17917);
-    assert_eq!(census.recovered, 16866);
+    assert_eq!(census.recovered, 16861);
     compare(&census, CORPUS_REMAINDER, "corpus");
 }
 
@@ -1910,7 +1915,7 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
             running + group.members.len() + group.anonymous
         });
     eprintln!("AS3 corpus remainder: {required}/{total} are refusals the item requires");
-    assert_eq!(total, 1051);
+    assert_eq!(total, 1056);
     assert_eq!(
         required, 453,
         "a body counted here is one FEAT-028 names as a required refusal: a merge whose incoming \

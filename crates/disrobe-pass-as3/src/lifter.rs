@@ -779,6 +779,53 @@ enum WrittenLocation<'a> {
     Element,
 }
 
+fn expr_reads_slot(e: &Expr, slot: u32) -> bool {
+    match e {
+        Expr::Local(index) | Expr::Param(index) => *index == slot,
+        Expr::Unary { operand, .. }
+        | Expr::Update { operand, .. }
+        | Expr::Coerce { operand, .. }
+        | Expr::Typeof(operand)
+        | Expr::Get {
+            object: operand, ..
+        }
+        | Expr::Delete {
+            object: operand, ..
+        }
+        | Expr::Descendants {
+            object: operand, ..
+        } => expr_reads_slot(operand, slot),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index {
+            object: lhs,
+            index: rhs,
+        } => expr_reads_slot(lhs, slot) || expr_reads_slot(rhs, slot),
+        Expr::IsType { operand, ty } | Expr::AsType { operand, ty } => {
+            expr_reads_slot(operand, slot) || expr_reads_slot(ty, slot)
+        }
+        Expr::Ternary {
+            cond,
+            then_value,
+            else_value,
+        } => {
+            expr_reads_slot(cond, slot)
+                || expr_reads_slot(then_value, slot)
+                || expr_reads_slot(else_value, slot)
+        }
+        Expr::Call { callee, args, .. } | Expr::Construct { callee, args, .. } => {
+            expr_reads_slot(callee, slot) || args.iter().any(|a: &Expr| expr_reads_slot(a, slot))
+        }
+        Expr::New { ty: base, args } | Expr::Applied { base, args } => {
+            expr_reads_slot(base, slot) || args.iter().any(|a: &Expr| expr_reads_slot(a, slot))
+        }
+        Expr::Array(items) => items.iter().any(|i: &Expr| expr_reads_slot(i, slot)),
+        Expr::Object(pairs) => pairs
+            .iter()
+            .any(|(k, v): &(Expr, Expr)| expr_reads_slot(k, slot) || expr_reads_slot(v, slot)),
+        _ => false,
+    }
+}
+
 fn expr_reads_location(e: &Expr, written: WrittenLocation<'_>) -> bool {
     match e {
         Expr::Get { object, property }
@@ -1232,6 +1279,41 @@ impl Lifter<'_> {
         self.statements.len()
     }
 
+    fn merge_value_survives_to(&self, site: usize, value: &Expr) -> bool {
+        const MAX_CLOBBER_SCAN: usize = 1024;
+        let mut scan: usize = site.min(self.statements.len());
+        let mut budget: usize = MAX_CLOBBER_SCAN;
+        while scan > 0 {
+            if budget == 0 {
+                return false;
+            }
+            budget -= 1;
+            let previous: &Stmt = &self.statements[scan - 1];
+            match previous {
+                Stmt::Label(_) | Stmt::Jump { .. } | Stmt::If { .. } | Stmt::Switch { .. } => {
+                    return true;
+                }
+                Stmt::Assign {
+                    target: Expr::Local(slot) | Expr::Param(slot),
+                    ..
+                } if expr_reads_slot(value, *slot) => return false,
+                Stmt::AssignProperty { property, .. }
+                    if expr_reads_location(value, WrittenLocation::Property(property)) =>
+                {
+                    return false;
+                }
+                Stmt::AssignIndex { .. }
+                    if expr_reads_location(value, WrittenLocation::Element) =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+            scan -= 1;
+        }
+        true
+    }
+
     fn site_is_reachable(&self, site: usize) -> bool {
         !site
             .checked_sub(1)
@@ -1282,6 +1364,11 @@ impl Lifter<'_> {
                     .fold(0usize, |total: usize, other: &IncomingStack| {
                         total.saturating_add(other.sites.len())
                     });
+                if !entry.sites.iter().all(|site: &usize| {
+                    !self.site_is_reachable(*site) || self.merge_value_survives_to(*site, value)
+                }) {
+                    return false;
+                }
                 if restatements > 1 {
                     return merge_value_is_reproducible(value);
                 }
