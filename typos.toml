@@ -131,6 +131,7 @@ dGhpc2lzYXZlcnlsb25nc2VjcmV0a2V5d2l0aGhpZ2hlbnRyb3B5MTIzNDU2Nzg5 = "dGhpc2lzYXZl
 [files]
 extend-exclude = [
     "corpus/**",
+    "crates/*/corpus/**",
     "crates/*/tests/corpus/**",
     "fuzz/corpus/**",
     "docs/book/book/**",
