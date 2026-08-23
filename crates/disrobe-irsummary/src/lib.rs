@@ -23,6 +23,6 @@ pub use llm::{IrSummaryEmitter, METADATA_CAPABILITY};
 pub use llvmir::{
     LlvmEmitError, LlvmModule, emit_llvm_function, emit_optimized_llvm_function, llvm_int_ty,
 };
-pub use symexec::{BranchFact, Location, NirSummary, summarize_function};
+pub use symexec::{BranchFact, Location, NirSummary, OPERAND_ORDER_COVERAGE, summarize_function};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

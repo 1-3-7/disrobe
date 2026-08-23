@@ -110,6 +110,54 @@ impl Frontend {
     }
 }
 
+pub const OPERAND_ORDER_COVERAGE: &str = "symexec reads a mov-family instruction as destination-first, which is Intel order. It refuses when the source language has no operand order established by a graded test, and it refuses when the producer's reads_memory and writes_memory flags contradict that reading. Those flags are the only witness available here, and a register-to-register instruction sets neither, so operands reversed between two registers are not covered and would still be read destination-first. Closing that needs the producer to record which operand is the destination rather than relying on position.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperandOrder {
+    DestinationFirst,
+    Unestablished,
+}
+
+impl OperandOrder {
+    const fn of(lang: SourceLang) -> Self {
+        match lang {
+            SourceLang::NativeX86 => Self::DestinationFirst,
+            SourceLang::Unknown
+            | SourceLang::NativeArm
+            | SourceLang::NativeMips
+            | SourceLang::Dalvik
+            | SourceLang::Wasm
+            | SourceLang::Jvm
+            | SourceLang::Cil
+            | SourceLang::Avm2
+            | SourceLang::Yarv
+            | SourceLang::Lua
+            | SourceLang::Beam
+            | SourceLang::Python => Self::Unestablished,
+        }
+    }
+}
+
+fn addresses_memory(operand: &str) -> bool {
+    operand.contains('[')
+}
+
+fn memory_flags_contradict_destination_first(insn: &NirInstr, dest: &str, src: &str) -> bool {
+    if insn.writes_memory && !addresses_memory(dest) && addresses_memory(src) {
+        return true;
+    }
+    insn.reads_memory && !insn.writes_memory && !addresses_memory(src) && addresses_memory(dest)
+}
+
+fn destination_first_holds(insn: &NirInstr, dest: &str) -> bool {
+    if OperandOrder::of(insn.source.lang) != OperandOrder::DestinationFirst {
+        return false;
+    }
+    insn.operands
+        .get(1)
+        .is_none_or(|src: &String| !memory_flags_contradict_destination_first(insn, dest, src))
+}
+
 #[derive(Debug, Clone)]
 struct Region {
     blocks: Vec<Block>,
@@ -660,6 +708,9 @@ fn apply_nop(state: &mut State, insn: &NirInstr, seeds: &mut BTreeMap<String, u3
     ) {
         let dest: &str = insn.operands.first()?;
         let src: &str = insn.operands.get(1)?;
+        if !destination_first_holds(insn, dest) {
+            return None;
+        }
         let dest_loc: Location = location_of(dest)?;
         let value: Expr = if matches!(mnemonic.as_str(), "lea") {
             Expr::var(state.fresh())
@@ -694,6 +745,9 @@ fn apply_const(state: &mut State, insn: &NirInstr, mode: Frontend) -> Option<()>
     }
     let dest: &str = first;
     let src: &str = insn.operands.get(1)?;
+    if !destination_first_holds(insn, dest) {
+        return None;
+    }
     let dest_loc: Location = location_of(dest)?;
     let value: u64 = parse_immediate(src)?;
     state.write(dest_loc, Expr::konst(value));
@@ -709,6 +763,9 @@ fn apply_binop(
 ) -> Option<()> {
     if mode == Frontend::Register {
         let dest: &str = insn.operands.first()?;
+        if !destination_first_holds(insn, dest) {
+            return None;
+        }
         let dest_loc: Location = location_of(dest)?;
         let left: Expr = read_location(state, &dest_loc, seeds);
         let value: Expr = match insn.operands.get(1) {
@@ -734,6 +791,9 @@ fn apply_load(state: &mut State, insn: &NirInstr, mode: Frontend) -> Option<()> 
     if mode == Frontend::Register {
         let dest: &str = insn.operands.first()?;
         let src: &str = insn.operands.get(1)?;
+        if !destination_first_holds(insn, dest) {
+            return None;
+        }
         let dest_loc: Location = location_of(dest)?;
         let cell: Location = location_of(src)?;
         let value: Expr = match &cell {
@@ -1199,6 +1259,89 @@ mod tests {
             ],
         );
         assert!(summarize_function(&function).is_none());
+    }
+
+    fn flagged(
+        address: u64,
+        mnemonic: &str,
+        operands: &[&str],
+        lang: SourceLang,
+        reads_memory: bool,
+        writes_memory: bool,
+    ) -> NirInstr {
+        NirInstr {
+            address,
+            op: NirOp::Nop,
+            mnemonic: mnemonic.to_owned(),
+            operands: operands.iter().map(|s: &&str| (*s).to_owned()).collect(),
+            reads_memory,
+            writes_memory,
+            byte_width: false,
+            source: SourceRef::new(lang, address),
+        }
+    }
+
+    #[test]
+    fn a_mov_whose_memory_flags_contradict_destination_first_is_refused() {
+        let lang: SourceLang = SourceLang::NativeX86;
+        let function: NirFunction = function(
+            lang,
+            vec![
+                flagged(0, "mov", &["eax", "[rbx]"], lang, false, true),
+                instr(1, NirOp::Return, "ret", &[], lang),
+            ],
+        );
+        assert!(
+            summarize_function(&function).is_none(),
+            "writes_memory names memory as the destination while operand order names eax, and \
+             symexec must refuse rather than pick one"
+        );
+    }
+
+    #[test]
+    fn a_mov_whose_memory_flags_agree_with_destination_first_still_summarizes() {
+        let lang: SourceLang = SourceLang::NativeX86;
+        let function: NirFunction = function(
+            lang,
+            vec![
+                flagged(0, "mov", &["[rbx]", "eax"], lang, false, true),
+                instr(1, NirOp::Return, "ret", &[], lang),
+            ],
+        );
+        assert!(
+            summarize_function(&function).is_some(),
+            "a memory destination in operand zero agrees with destination-first and must still \
+             summarize"
+        );
+    }
+
+    #[test]
+    fn a_register_language_with_no_established_operand_order_refuses_a_mov() {
+        let lang: SourceLang = SourceLang::NativeArm;
+        let function: NirFunction = function(
+            lang,
+            vec![
+                instr(0, NirOp::Nop, "mov", &["r0", "r1"], lang),
+                instr(1, NirOp::Return, "ret", &[], lang),
+            ],
+        );
+        assert!(
+            summarize_function(&function).is_none(),
+            "no graded test establishes arm operand order, so symexec must refuse rather than \
+             assume intel"
+        );
+    }
+
+    #[test]
+    fn the_published_coverage_note_states_the_case_it_does_not_cover() {
+        assert!(
+            OPERAND_ORDER_COVERAGE.contains("register-to-register"),
+            "the note must name the case that has no witness"
+        );
+        assert!(
+            OPERAND_ORDER_COVERAGE.contains("not covered"),
+            "the note must not read as a closed hole"
+        );
     }
 
     #[test]
