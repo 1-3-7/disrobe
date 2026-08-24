@@ -360,7 +360,9 @@ fn every_truncation_of_a_real_cabinet_refuses_without_panicking() {
 
 #[cfg(feature = "chain")]
 mod chain {
-    use super::{SYS1, USER1, fixture, manifest_rows};
+    use std::collections::BTreeMap;
+
+    use super::{SYS1, SYS1_MANIFEST, USER1, fixture, hex_sha256, manifest_rows};
     use disrobe_core::chain::{
         ChildArtifact, DetectContext, DetectVerdict, Detector as _, Pass as _,
     };
@@ -406,17 +408,28 @@ mod chain {
     }
 
     #[test]
-    fn chain_children_carry_the_recovered_bytes_of_the_system_cabinet() {
+    fn chain_feature_carries_each_system_cabinet_member_with_its_reference_digest() {
         let bytes: Vec<u8> = fixture(SYS1);
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = disrobe_binfmt::chain_detector::CONTAINER_PASS
             .extract_children(&artifact)
             .expect("installshield children");
-        assert_eq!(children.len(), 7);
-        let total: usize = children
+        let expected: BTreeMap<String, String> = manifest_rows(SYS1_MANIFEST)
+            .into_iter()
+            .filter(|row| row.disposition == "recovered")
+            .map(|row| (row.path, row.sha256))
+            .collect();
+        assert_eq!(
+            expected.len(),
+            7,
+            "the tracked reference must grade seven members"
+        );
+        let actual: BTreeMap<String, String> = children
             .iter()
-            .map(|child: &ChildArtifact| child.bytes.len())
-            .sum();
-        assert_eq!(total, 1_006_350);
+            .map(|child: &ChildArtifact| {
+                (child.handle.relative_path.clone(), hex_sha256(&child.bytes))
+            })
+            .collect();
+        assert_eq!(actual, expected);
     }
 }

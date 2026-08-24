@@ -12,8 +12,10 @@ use std::process::{Command, Output, Stdio};
 
 use sha2::{Digest, Sha256};
 
-const CABINET: &str = "binfmt/installshield/wireplay-user1.cab";
-const INVENTORY: &str = "binfmt/installshield/wireplay-user1.cab.tsv";
+const USER1_CABINET: &str = "binfmt/installshield/wireplay-user1.cab";
+const USER1_INVENTORY: &str = "binfmt/installshield/wireplay-user1.cab.tsv";
+const SYS1_CABINET: &str = "binfmt/installshield/wireplay-sys1.cab";
+const SYS1_INVENTORY: &str = "binfmt/installshield/wireplay-sys1.cab.tsv";
 const RECOVERED: &str = "recovered";
 const EXTRACTED_DIR: &str = "extracted";
 const MIN_RECOVERED_MEMBERS: usize = 2;
@@ -29,8 +31,8 @@ fn corpus_path(relative: &str) -> PathBuf {
     workspace_root().join("corpus").join(relative)
 }
 
-fn reference_digests() -> BTreeMap<String, String> {
-    let path: PathBuf = corpus_path(INVENTORY);
+fn reference_digests(inventory: &str) -> BTreeMap<String, String> {
+    let path: PathBuf = corpus_path(inventory);
     assert!(
         path.is_file(),
         "this gate grades disrobe auto against the tracked unshield-derived inventory at {}; \
@@ -88,8 +90,8 @@ fn collect_recovered_artifact_digests(dir: &Path, found: &mut BTreeMap<String, S
     }
 }
 
-fn run_auto(jobs: usize) -> BTreeMap<String, String> {
-    let archive: PathBuf = corpus_path(CABINET);
+fn run_auto(cabinet: &str, jobs: usize) -> (BTreeMap<String, String>, serde_json::Value) {
+    let archive: PathBuf = corpus_path(cabinet);
     assert!(
         archive.is_file(),
         "this gate requires the tracked cabinet at {}",
@@ -123,14 +125,14 @@ fn run_auto(jobs: usize) -> BTreeMap<String, String> {
     );
     let mut found: BTreeMap<String, String> = BTreeMap::new();
     collect_recovered_artifact_digests(&extracted, &mut found);
-    found
+    let chain_bytes: Vec<u8> =
+        std::fs::read(output.path().join("chain.json")).expect("read chain.json");
+    let chain: serde_json::Value = serde_json::from_slice(&chain_bytes).expect("parse chain.json");
+    (found, chain)
 }
 
-#[test]
-fn auto_recovers_every_installshield_member_the_reference_inventory_names() {
-    let wanted: BTreeMap<String, String> = reference_digests();
-    let found: BTreeMap<String, String> = run_auto(1);
-    for (member, digest) in &wanted {
+fn assert_reference_digests(found: &BTreeMap<String, String>, wanted: &BTreeMap<String, String>) {
+    for (member, digest) in wanted {
         let actual: Option<&String> = found.get(member);
         assert!(
             actual.is_some(),
@@ -147,9 +149,16 @@ fn auto_recovers_every_installshield_member_the_reference_inventory_names() {
 }
 
 #[test]
+fn auto_recovers_every_installshield_member_the_reference_inventory_names() {
+    let wanted: BTreeMap<String, String> = reference_digests(USER1_INVENTORY);
+    let (found, _): (BTreeMap<String, String>, serde_json::Value) = run_auto(USER1_CABINET, 1);
+    assert_reference_digests(&found, &wanted);
+}
+
+#[test]
 fn auto_installshield_recovery_does_not_depend_on_the_worker_count() {
-    let serial: BTreeMap<String, String> = run_auto(1);
-    let parallel: BTreeMap<String, String> = run_auto(4);
+    let (serial, _): (BTreeMap<String, String>, serde_json::Value) = run_auto(USER1_CABINET, 1);
+    let (parallel, _): (BTreeMap<String, String>, serde_json::Value) = run_auto(USER1_CABINET, 4);
     assert!(
         !serial.is_empty(),
         "the worker-count comparison graded nothing, so it could not have caught a difference"
@@ -157,5 +166,26 @@ fn auto_installshield_recovery_does_not_depend_on_the_worker_count() {
     assert_eq!(
         serial, parallel,
         "recovered InstallShield artifacts must be byte-identical at --jobs 1 and --jobs 4"
+    );
+}
+
+#[test]
+fn auto_refeeds_recovered_installshield_executables_to_native_recovery() {
+    let wanted: BTreeMap<String, String> = reference_digests(SYS1_INVENTORY);
+    let (found, chain): (BTreeMap<String, String>, serde_json::Value) = run_auto(SYS1_CABINET, 1);
+    assert_reference_digests(&found, &wanted);
+    let passes: Vec<&str> = chain["nodes"]
+        .as_array()
+        .expect("chain nodes")
+        .iter()
+        .filter_map(|node: &serde_json::Value| node["pass"].as_str())
+        .collect();
+    assert!(
+        passes.contains(&"binfmt.container"),
+        "InstallShield must enter the container pass: {passes:?}"
+    );
+    assert!(
+        passes.contains(&"native.image-classify"),
+        "recovered InstallShield executables must be re-fed to native recovery: {passes:?}"
     );
 }
