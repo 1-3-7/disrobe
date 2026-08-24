@@ -2,7 +2,8 @@ use indexmap::{IndexMap, IndexSet};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrayExpression, BinaryOperator, BindingPatternKind, CallExpression, Expression,
-    FormalParameters, Function, FunctionBody, LogicalOperator, Statement, UnaryOperator,
+    FormalParameters, Function, FunctionBody, LogicalOperator, ObjectExpression,
+    ObjectPropertyKind, PropertyKey, PropertyKind, Statement, UnaryOperator,
 };
 use oxc_ast::{AstKind, Visit};
 use oxc_parser::Parser;
@@ -55,6 +56,59 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
     let root_reserved: IndexSet<String> = collect_reserved_names(&semantic);
     let mut edits: Vec<Edit> = Vec::new();
     let mut stats: AmdParamStats = AmdParamStats::default();
+
+    for node in nodes.iter() {
+        let AstKind::ObjectExpression(registry) = node.kind() else {
+            continue;
+        };
+        for factory in browserify_factories(registry) {
+            let mut reserved: IndexSet<String> = root_reserved.clone();
+            let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
+            for (parameter, preferred) in factory
+                .params
+                .items
+                .iter()
+                .zip(["require", "module", "exports"])
+            {
+                let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                    continue;
+                };
+                let local_name: &str = binding.name.as_str();
+                if !is_minified_local(local_name) || local_name == preferred {
+                    continue;
+                }
+                let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
+                    continue;
+                };
+                let owner_scope: ScopeId = symbols.get_scope_id(symbol_id);
+                let Some(new_name): Option<String> = choose_name(
+                    &safety,
+                    symbol_id,
+                    owner_scope,
+                    local_name,
+                    preferred,
+                    &reserved,
+                    &mut next_suffixes,
+                ) else {
+                    continue;
+                };
+                let mut candidate_edits: Vec<Edit> = vec![Edit {
+                    start: binding.span.start as usize,
+                    end: binding.span.end as usize,
+                    replacement: new_name.clone(),
+                }];
+                push_reference_edits(symbols, nodes, symbol_id, &new_name, &mut candidate_edits);
+                if candidate_edits
+                    .iter()
+                    .any(|edit: &Edit| edit_overlaps_comments(edit, &parsed.program.comments))
+                {
+                    continue;
+                }
+                reserved.insert(new_name);
+                edits.extend(candidate_edits);
+            }
+        }
+    }
 
     for node in nodes.iter() {
         let AstKind::CallExpression(call) = node.kind() else {
@@ -125,6 +179,81 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         return (RuleOutcome::empty(), AmdParamStats::default());
     }
     (RuleOutcome { edits }, stats)
+}
+
+fn browserify_factories<'a>(registry: &'a ObjectExpression<'a>) -> Vec<&'a Function<'a>> {
+    let mut factories: Vec<&Function<'_>> = Vec::new();
+    for property in &registry.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            return Vec::new();
+        };
+        if property.kind != PropertyKind::Init
+            || property.computed
+            || property.method
+            || property.shorthand
+            || !matches!(property.key, PropertyKey::NumericLiteral(_))
+        {
+            return Vec::new();
+        }
+        let Expression::ArrayExpression(tuple) = property.value.get_inner_expression() else {
+            continue;
+        };
+        let [factory, dependencies] = tuple.elements.as_slice() else {
+            continue;
+        };
+        let Some(Expression::FunctionExpression(factory)) = factory.as_expression() else {
+            continue;
+        };
+        let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
+            continue;
+        };
+        let Some(dependency_expression): Option<&Expression<'_>> = dependencies.as_expression()
+        else {
+            continue;
+        };
+        if factory.r#async
+            || factory.generator
+            || factory.type_parameters.is_some()
+            || factory.params.rest.is_some()
+            || factory.params.items.len() != 3
+            || factory.params.items.iter().any(|parameter| {
+                !matches!(
+                    parameter.pattern.kind,
+                    BindingPatternKind::BindingIdentifier(_)
+                )
+            })
+            || body_has_dynamic_scope(body)
+            || !browserify_dependency_map(dependency_expression)
+        {
+            continue;
+        }
+        factories.push(factory);
+    }
+    factories
+}
+
+fn browserify_dependency_map(expression: &Expression<'_>) -> bool {
+    let Expression::ObjectExpression(dependencies) = expression.get_inner_expression() else {
+        return false;
+    };
+    !dependencies.properties.is_empty()
+        && dependencies.properties.iter().all(|property| {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                return false;
+            };
+            property.kind == PropertyKind::Init
+                && !property.computed
+                && !property.method
+                && !property.shorthand
+                && matches!(
+                    &property.key,
+                    PropertyKey::StringLiteral(_) | PropertyKey::StaticIdentifier(_)
+                )
+                && matches!(
+                    property.value.get_inner_expression(),
+                    Expression::NumericLiteral(_)
+                )
+        })
 }
 
 struct AmdFactory<'a> {
