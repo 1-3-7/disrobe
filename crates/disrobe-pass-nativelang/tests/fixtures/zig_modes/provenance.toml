@@ -30,6 +30,18 @@ graded_functions = [
 abstaining_functions = ["dr_rotl"]
 
 [[artifacts]]
+path = "arith_releasefast_aarch64_linux.elf"
+sha256 = "a30ebce8d7b78d55985ac88bd397f0da7f99bb53cadcd57c9ac9613862b6cdda"
+build_mode = "ReleaseFast"
+target = "aarch64-linux-gnu"
+container = "elf"
+build_command = "zig build-exe arith.zig -OReleaseFast -target aarch64-linux-gnu -femit-bin=arith_releasefast_aarch64_linux.elf"
+safety_checks = false
+present_markers = ["compiler_rt", "mem.Allocator.", "start.posixCallMainAndExit"]
+graded_functions = ["dr_mix"]
+role = "the AArch64 automatic body-routing grade"
+
+[[artifacts]]
 path = "arith_releasefast_x86_64_windows.exe"
 sha256 = "52b9602c561698a4d9153b4ca3b92e70f57ea3d5534a932da850d7d5a6e4ebeb"
 build_mode = "ReleaseFast"

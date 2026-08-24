@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction as NativeRecoveredFunction, RecoveredProgram,
-    UnrecoveredFunction, recover_program,
+    UnrecoveredFunction, recover_aarch64_program, recover_program,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ const MAX_GATE_TOKENS: usize = 1 << 20;
 pub enum BodyAbi {
     MsX64,
     SysV,
+    Aapcs64,
 }
 
 impl BodyAbi {
@@ -34,6 +35,7 @@ impl BodyAbi {
         match self {
             Self::MsX64 => PseudoAbi::MsX64,
             Self::SysV => PseudoAbi::SysV,
+            Self::Aapcs64 => PseudoAbi::Aapcs64,
         }
     }
 }
@@ -288,7 +290,10 @@ pub(crate) fn recover_bodies_within(
     debug::dbg_kv("body-attempts", || {
         format!("{} functions carving {carved_bytes} bytes", program.len())
     });
-    let program_result: RecoveredProgram = recover_program(image.raw, &program, abi.to_native());
+    let program_result: RecoveredProgram = match abi {
+        BodyAbi::Aapcs64 => recover_aarch64_program(image.raw),
+        BodyAbi::MsX64 | BodyAbi::SysV => recover_program(image.raw, &program, abi.to_native()),
+    };
     let recovered_by_address: BTreeMap<u64, &NativeRecoveredFunction> = program_result
         .recovered
         .iter()
@@ -304,7 +309,8 @@ pub(crate) fn recover_bodies_within(
     let mut retained_source_bytes: u64 = 0;
     for slot in pending {
         let status: BodyStatus = if let Some(found) = recovered_by_address.get(&slot.start) {
-            body_status(found, &mut retained_source_bytes, source_budget)
+            let named: NativeRecoveredFunction = with_emitted_name(found, &slot.emitted_name);
+            body_status(&named, &mut retained_source_bytes, source_budget)
         } else if let Some(missed) = rejected_by_address.get(&slot.start) {
             BodyStatus::Rejected {
                 reason: BodyRejection::Decompiler(missed.reason.clone()),
@@ -376,6 +382,29 @@ pub(crate) fn recover_bodies_within(
     }
 }
 
+fn with_emitted_name(
+    found: &NativeRecoveredFunction,
+    emitted_name: &str,
+) -> NativeRecoveredFunction {
+    if found.name == emitted_name {
+        return found.clone();
+    }
+    let mut named: NativeRecoveredFunction = found.clone();
+    named.source =
+        found
+            .source
+            .replacen(&format!("{}(", found.name), &format!("{emitted_name}("), 1);
+    named.rust_source = found.rust_source.as_deref().map(|source: &str| {
+        source.replacen(
+            &format!("pub fn {}(", found.name),
+            &format!("pub fn {emitted_name}("),
+            1,
+        )
+    });
+    emitted_name.clone_into(&mut named.name);
+    named
+}
+
 struct PendingBody {
     name: String,
     emitted_name: String,
@@ -433,7 +462,11 @@ const fn body_abi(image: &NativeImage<'_>) -> Option<BodyAbi> {
             ImageKind::Pe => Some(BodyAbi::MsX64),
             ImageKind::Elf | ImageKind::MachO => Some(BodyAbi::SysV),
         },
-        CodeArch::X86 | CodeArch::Aarch64 | CodeArch::Other => None,
+        CodeArch::Aarch64 => match image.kind {
+            ImageKind::Elf | ImageKind::MachO => Some(BodyAbi::Aapcs64),
+            ImageKind::Pe => None,
+        },
+        CodeArch::X86 | CodeArch::Other => None,
     }
 }
 
