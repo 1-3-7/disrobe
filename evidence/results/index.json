@@ -7,16 +7,16 @@
       "comparison_basis": "no comparison: at least one declared leg has a side the compiler never type-checked",
       "competitors": [
         {
-          "clean": 56,
+          "clean": 57,
           "emitted": 163,
           "is_disrobe": true,
           "leg": "dex",
           "metric": "recompile-clean emitted methods (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "56 clean / 163 emitted (34.4%)",
+          "result": "57 clean / 163 emitted (35.0%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 34.355828220858896,
+          "value": 34.969325153374236,
           "version": "n/a (in-process)"
         },
         {
@@ -67,7 +67,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 56 / 163 (34.4%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
+      "measured": "Android DEX: `disrobe` 57 / 163 (35.0%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -83,10 +83,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 56,
+            "clean": 57,
             "emitted": 163,
             "name": "disrobe (in-house Dalvik, DEX input)",
-            "value": 34.355828220858896,
+            "value": 34.969325153374236,
             "version": "n/a (in-process)"
           },
           "id": "dex",
