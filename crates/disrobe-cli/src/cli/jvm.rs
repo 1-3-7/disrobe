@@ -239,7 +239,16 @@ fn read_in_house_dex_input(path: &Path) -> miette::Result<Vec<u8>> {
 }
 
 fn dex2jar_staging_dir(out_dir: &Path) -> miette::Result<PathBuf> {
-    let parent: &Path = out_dir.parent().unwrap_or_else(|| Path::new("."));
+    let parent: &Path = out_dir
+        .parent()
+        .filter(|path: &&Path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0492: cannot create DEX-to-JAR output parent {} before staging: {error}",
+            parent.display()
+        )
+    })?;
     let stem: &OsStr = out_dir.file_name().unwrap_or_else(|| OsStr::new("dex2jar"));
     for attempt in 0..32_u32 {
         let candidate: PathBuf = parent.join(format!(
@@ -431,7 +440,7 @@ mod dex2jar_tests {
 
     use disrobe_pass_jvm::validate_dex2jar_entries;
 
-    use super::{finalize_dex2jar_staging, write_dex2jar_staging_file};
+    use super::{dex2jar_staging_dir, finalize_dex2jar_staging, write_dex2jar_staging_file};
 
     #[test]
     fn dex2jar_path_validation_rejects_escaping_and_normalized_paths() {
@@ -469,6 +478,16 @@ mod dex2jar_tests {
             std::fs::read(path).expect("preserved staged file"),
             b"first"
         );
+    }
+
+    #[test]
+    fn dex2jar_staging_creates_a_missing_output_parent() {
+        let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary directory");
+        let output: PathBuf = directory.path().join("missing").join("result");
+        let staging: PathBuf = dex2jar_staging_dir(&output).expect("sibling staging directory");
+        assert_eq!(staging.parent(), output.parent());
+        assert!(output.parent().is_some_and(std::path::Path::is_dir));
+        assert!(staging.is_dir());
     }
 
     #[test]

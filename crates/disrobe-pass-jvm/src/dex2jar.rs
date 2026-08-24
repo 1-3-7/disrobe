@@ -12,12 +12,10 @@ use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
 use std::mem::size_of;
 
-use serde::{Deserialize, Serialize};
-use unicode_normalization::UnicodeNormalization;
-
 use crate::dalvik_to_jvm::{EmittedCode, emit_branch_method_code, emit_method_code};
 use crate::dex::{CodeItem, DexFile, parse_code_items};
 use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
 
 const ACC_INTERFACE: u16 = 0x0200;
 const ACC_ABSTRACT: u16 = 0x0400;
@@ -274,6 +272,7 @@ fn preparse_string_lengths(header: &crate::dex::DexHeader, bytes: &[u8]) -> Resu
             actual: usize::MAX,
             limit: bytes.len().saturating_mul(8),
         })?;
+    let mut scanned: BTreeMap<usize, usize> = BTreeMap::new();
     for index in 0..count {
         let entry: usize = preparse_table_entry(bytes, header.string_ids_off, index, 4)
             .ok_or_else(|| malformed("parsed DEX", "string identifier table is truncated"))?;
@@ -282,12 +281,18 @@ fn preparse_string_lengths(header: &crate::dex::DexHeader, bytes: &[u8]) -> Resu
                 .ok_or_else(|| malformed("parsed DEX", "string identifier is truncated"))?,
         )
         .unwrap_or(usize::MAX);
-        let (_, start): (u32, usize) = crate::dex::read_uleb128(bytes, data_offset)
-            .map_err(|_| malformed("parsed DEX", "string data is truncated"))?;
-        let raw_length: usize = bytes
-            .get(start..)
-            .and_then(|tail: &[u8]| tail.iter().position(|byte: &u8| *byte == 0))
-            .ok_or_else(|| malformed("parsed DEX", "string data is not terminated"))?;
+        let raw_length: usize = if let Some(length) = scanned.get(&data_offset) {
+            *length
+        } else {
+            let (_, start): (u32, usize) = crate::dex::read_uleb128(bytes, data_offset)
+                .map_err(|_| malformed("parsed DEX", "string data is truncated"))?;
+            let length: usize = bytes
+                .get(start..)
+                .and_then(|tail: &[u8]| tail.iter().position(|byte: &u8| *byte == 0))
+                .ok_or_else(|| malformed("parsed DEX", "string data is not terminated"))?;
+            scanned.insert(data_offset, length);
+            length
+        };
         lengths.push(raw_length);
     }
     Ok(lengths)
@@ -408,6 +413,58 @@ fn preparse_amplified_allocation(header: &crate::dex::DexHeader, bytes: &[u8]) -
             .and_then(|total: usize| {
                 total.checked_add(prototype.parameter_count.checked_mul(size_of::<String>())?)
             })
+            .unwrap_or(usize::MAX);
+    }
+    let class_count: usize = usize::try_from(header.class_defs_size).unwrap_or(usize::MAX);
+    for index in 0..class_count {
+        let entry: usize = preparse_table_entry(bytes, header.class_defs_off, index, 32)
+            .ok_or_else(|| malformed("parsed DEX", "class definition table is truncated"))?;
+        let class_index: usize = read_u32(bytes, entry).unwrap_or(u32::MAX) as usize;
+        let superclass_index: u32 = read_u32(bytes, entry + 8).unwrap_or(u32::MAX);
+        let class_bytes: usize = *type_lengths
+            .get(class_index)
+            .ok_or_else(|| malformed("parsed DEX", "class type index is out of range"))?;
+        allocation = allocation.saturating_add(class_bytes);
+        if superclass_index != crate::dex::DEX_NO_INDEX {
+            let superclass_bytes: usize = *type_lengths
+                .get(superclass_index as usize)
+                .ok_or_else(|| malformed("parsed DEX", "superclass type index is out of range"))?;
+            allocation = allocation
+                .checked_add(class_bytes)
+                .and_then(|total: usize| total.checked_add(superclass_bytes))
+                .unwrap_or(usize::MAX);
+        }
+    }
+    let field_count: usize = usize::try_from(header.field_ids_size).unwrap_or(usize::MAX);
+    for index in 0..field_count {
+        let entry: usize = preparse_table_entry(bytes, header.field_ids_off, index, 8)
+            .ok_or_else(|| malformed("parsed DEX", "field identifier table is truncated"))?;
+        let class_index: usize = usize::from(
+            bytes
+                .get(entry..entry + 2)
+                .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]]))
+                .ok_or_else(|| malformed("parsed DEX", "field identifier is truncated"))?,
+        );
+        let type_index: usize = usize::from(
+            bytes
+                .get(entry + 2..entry + 4)
+                .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]]))
+                .ok_or_else(|| malformed("parsed DEX", "field identifier is truncated"))?,
+        );
+        let name_index: usize = read_u32(bytes, entry + 4).unwrap_or(u32::MAX) as usize;
+        let class_bytes: usize = *type_lengths
+            .get(class_index)
+            .ok_or_else(|| malformed("parsed DEX", "field class index is out of range"))?;
+        let type_bytes: usize = *type_lengths
+            .get(type_index)
+            .ok_or_else(|| malformed("parsed DEX", "field type index is out of range"))?;
+        let name_bytes: usize = *string_lengths
+            .get(name_index)
+            .ok_or_else(|| malformed("parsed DEX", "field name index is out of range"))?;
+        allocation = allocation
+            .checked_add(class_bytes)
+            .and_then(|total: usize| total.checked_add(type_bytes))
+            .and_then(|total: usize| total.checked_add(name_bytes))
             .unwrap_or(usize::MAX);
     }
     let method_count: usize = usize::try_from(header.method_ids_size).unwrap_or(usize::MAX);
@@ -1324,6 +1381,7 @@ struct BuiltBody {
     exception_table: Vec<u8>,
     exception_count: u16,
     recovered: bool,
+    refusal: Option<&'static str>,
 }
 
 fn build_real_or_stub_body(
@@ -1346,6 +1404,7 @@ fn build_real_or_stub_body(
                 exception_table: emitted.exception_table,
                 exception_count: emitted.exception_count,
                 recovered: true,
+                refusal: None,
             };
         }
     }
@@ -1359,6 +1418,11 @@ fn build_real_or_stub_body(
         exception_table: Vec::new(),
         exception_count: 0,
         recovered: false,
+        refusal: Some(if code_item.is_some() {
+            "DR-JVM-0093: linear and control-flow JVM emitters refused the decoded body"
+        } else {
+            "DR-JVM-0093: DEX code parser produced no body for a method requiring code"
+        }),
     }
 }
 
@@ -1369,7 +1433,7 @@ fn build_method_attr(
     is_interface: bool,
     code_item: Option<&CodeItem>,
     max_class_bytes: usize,
-) -> Result<(Vec<u8>, bool, bool)> {
+) -> Result<(Vec<u8>, bool, Option<&'static str>)> {
     let needs_code: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) == 0
         && !(is_interface && method.access_flags & ACC_STATIC == 0);
     let mut out: Vec<u8> = Vec::new();
@@ -1389,11 +1453,11 @@ fn build_method_attr(
         max_class_bytes,
     )?;
     let mut recovered: bool = false;
-    let mut stubbed: bool = false;
+    let mut refusal: Option<&'static str> = None;
     if needs_code {
         let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item);
         recovered = body.recovered;
-        stubbed = !body.recovered;
+        refusal = body.refusal;
         let code_attr_name: u16 = cp.utf8("Code");
         let mut code_attr: Vec<u8> = Vec::new();
         append_class_bytes(
@@ -1432,12 +1496,12 @@ fn build_method_attr(
         append_class_bytes(&mut out, &0u16.to_be_bytes(), max_class_bytes)?;
     }
     let _ = descriptor_return_is_void;
-    Ok((out, recovered, stubbed))
+    Ok((out, recovered, refusal))
 }
 
-fn method_local_slots(method: &TranslatedMethod) -> u16 {
+fn method_parameter_slots(method: &TranslatedMethod) -> usize {
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
-    let mut slots: u16 = u16::from(!is_static);
+    let mut slots: usize = usize::from(!is_static);
     let inner: &str = method
         .descriptor
         .split_once('(')
@@ -1453,7 +1517,7 @@ fn method_local_slots(method: &TranslatedMethod) -> u16 {
                     i += 1;
                 }
                 i += 1;
-                slots += 1;
+                slots = slots.saturating_add(1);
             }
             b'[' => {
                 i += 1;
@@ -1466,29 +1530,36 @@ fn method_local_slots(method: &TranslatedMethod) -> u16 {
                     }
                 }
                 i += 1;
-                slots += 1;
+                slots = slots.saturating_add(1);
             }
             b'J' | b'D' => {
                 i += 1;
-                slots += 2;
+                slots = slots.saturating_add(2);
             }
             _ => {
                 i += 1;
-                slots += 1;
+                slots = slots.saturating_add(1);
             }
         }
     }
-    slots.max(1)
+    slots
+}
+
+fn method_local_slots(method: &TranslatedMethod) -> u16 {
+    u16::try_from(method_parameter_slots(method))
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 type MethodKey = (String, String);
+type StubbedMethod = (String, &'static str);
 
 fn write_class_file(
     dex: &DexFile,
     class: &TranslatedClass,
     code_items: &BTreeMap<MethodKey, CodeItem>,
     max_class_bytes: usize,
-) -> Result<(Vec<u8>, usize, usize, Vec<String>)> {
+) -> Result<(Vec<u8>, usize, usize, Vec<StubbedMethod>)> {
     if class.fields.len() > usize::from(u16::MAX) {
         return Err(malformed(
             &class.internal_name,
@@ -1505,6 +1576,16 @@ fn write_class_file(
         return Err(malformed(
             &class.internal_name,
             "interface count exceeds classfile limit",
+        ));
+    }
+    if class
+        .methods
+        .iter()
+        .any(|method: &TranslatedMethod| method_parameter_slots(method) > 255)
+    {
+        return Err(malformed(
+            &class.internal_name,
+            "method parameter slots exceed JVM limit",
         ));
     }
     let mut cp: ConstantPool = ConstantPool::with_limit(max_class_bytes);
@@ -1566,11 +1647,11 @@ fn write_class_file(
     )?;
     let mut recovered: usize = 0;
     let mut stubbed: usize = 0;
-    let mut stubbed_methods: Vec<String> = Vec::new();
+    let mut stubbed_methods: Vec<StubbedMethod> = Vec::new();
     for method in &class.methods {
         let key: MethodKey = (method.name.clone(), method.descriptor.clone());
         let code_item: Option<&CodeItem> = code_items.get(&key);
-        let (attr, real, stub): (Vec<u8>, bool, bool) = build_method_attr(
+        let (attr, real, refusal): (Vec<u8>, bool, Option<&'static str>) = build_method_attr(
             dex,
             &mut cp,
             method,
@@ -1581,9 +1662,9 @@ fn write_class_file(
         if real {
             recovered += 1;
         }
-        if stub {
+        if let Some(reason) = refusal {
             stubbed += 1;
-            stubbed_methods.push(format!("{}{}", method.name, method.descriptor));
+            stubbed_methods.push((format!("{}{}", method.name, method.descriptor), reason));
         }
         append_class_bytes(&mut method_section, &attr, max_class_bytes)?;
     }
@@ -1660,25 +1741,26 @@ pub fn translate_with_limits(
     let code_report: crate::dex::CodeItemsReport = parse_code_items(dex, dex_bytes);
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
-    let mut diagnostics: Vec<Dex2JarDiagnostic> = Vec::new();
+    let mut diagnostics: BTreeMap<(String, Option<String>), String> = BTreeMap::new();
     for method in code_report.methods() {
         if let crate::dex::DexCodeState::Refused(error) = &method.state {
-            diagnostics.push(Dex2JarDiagnostic {
-                class: dex_type_to_internal(&method.class),
-                method: Some(format!(
-                    "{}{}",
-                    method.method_name, method.method_descriptor
-                )),
-                reason: error.to_string(),
-            });
+            diagnostics.insert(
+                (
+                    dex_type_to_internal(&method.class),
+                    Some(format!(
+                        "{}{}",
+                        method.method_name, method.method_descriptor
+                    )),
+                ),
+                error.to_string(),
+            );
         }
     }
     if let Some(tail) = code_report.unrecovered_tail() {
-        diagnostics.push(Dex2JarDiagnostic {
-            class: dex_type_to_internal(&tail.class),
-            method: None,
-            reason: tail.error.to_string(),
-        });
+        diagnostics.insert(
+            (dex_type_to_internal(&tail.class), None),
+            tail.error.to_string(),
+        );
     }
     let code_by_class: BTreeMap<String, BTreeMap<MethodKey, CodeItem>> =
         code_items_by_class(code_report.into_partial_decoded());
@@ -1704,18 +1786,15 @@ pub fn translate_with_limits(
             Vec<u8>,
             usize,
             usize,
-            Vec<String>,
+            Vec<StubbedMethod>,
         ) = write_class_file(dex, class, code_items, remaining)?;
         bodies_recovered += recovered;
         stubbed_body_count += stubbed;
         if !stubbed_methods.is_empty() {
-            for method in stubbed_methods {
-                diagnostics.push(Dex2JarDiagnostic {
-                    class: class.internal_name.clone(),
-                    method: Some(method),
-                    reason: "DR-JVM-0093: method body not recovered: JVM emitter refusal"
-                        .to_owned(),
-                });
+            for (method, reason) in stubbed_methods {
+                diagnostics
+                    .entry((class.internal_name.clone(), Some(method)))
+                    .or_insert_with(|| reason.to_owned());
             }
         }
         let path: String = format!("{}.class", class.internal_name);
@@ -1740,6 +1819,16 @@ pub fn translate_with_limits(
         class_bytes_total = next;
         jar_entries.insert(path, class_bytes);
     }
+    let diagnostics: Vec<Dex2JarDiagnostic> = diagnostics
+        .into_iter()
+        .map(
+            |((class, method), reason): ((String, Option<String>), String)| Dex2JarDiagnostic {
+                class,
+                method,
+                reason,
+            },
+        )
+        .collect();
     Ok(Dex2JarResult {
         classes,
         jar_entries,
@@ -1825,19 +1914,12 @@ pub fn validate_dex2jar_entries(entries: &BTreeMap<String, Vec<u8>>) -> Result<(
         if !seen_part || !raw.ends_with(".class") {
             return Err(Error::UnsafeDex2JarPath(raw.clone()));
         }
-        let key: String = raw.nfkc().flat_map(portable_case_fold).collect();
+        let key: String = raw.to_ascii_lowercase();
         if portable.insert(key, raw).is_some() {
             return Err(Error::UnsafeDex2JarPath(raw.clone()));
         }
     }
     Ok(())
-}
-
-fn portable_case_fold(character: char) -> std::vec::IntoIter<char> {
-    match character {
-        '\u{03A3}' | '\u{03C2}' => vec!['\u{03C3}'].into_iter(),
-        _ => character.to_lowercase().collect::<Vec<char>>().into_iter(),
-    }
 }
 
 fn portable_component(part: &str) -> bool {
@@ -1849,17 +1931,17 @@ fn portable_component(part: &str) -> bool {
     {
         return false;
     }
-    if part.chars().any(|character: char| {
-        character.is_control()
-            || matches!(character, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
-    }) {
+    if !part
+        .bytes()
+        .all(|byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'-' | b'.'))
+    {
         return false;
     }
     let base_part: &str = part.split_once('.').map_or(part, |(before, _)| before);
     if base_part.ends_with(['.', ' ']) {
         return false;
     }
-    let base: String = base_part.nfkc().flat_map(char::to_uppercase).collect();
+    let base: String = base_part.to_ascii_uppercase();
     !matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
         && !(base.len() == 4
             && (base.starts_with("COM") || base.starts_with("LPT"))
@@ -2058,7 +2140,9 @@ fn classify_stub(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
+    use crate::dex_builder::{
+        ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef,
+    };
 
     #[test]
     fn dex_type_to_internal_strips_l_and_semicolon() {
@@ -2121,15 +2205,18 @@ mod tests {
         assert_eq!(result.decode_error_count, 1);
         assert_eq!(result.bodies_recovered, 0);
         assert_eq!(result.stubbed_body_count, 1);
-        assert!(
-            result
-                .diagnostics
-                .iter()
-                .any(|diagnostic: &Dex2JarDiagnostic| {
-                    diagnostic.method.as_deref() == Some("body()V")
-                        && diagnostic.reason
-                            == "DR-JVM-0093: method body not recovered: JVM emitter refusal"
-                })
+        let diagnostics: Vec<&Dex2JarDiagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic: &&Dex2JarDiagnostic| {
+                diagnostic.class == "com/disrobe/Invalid"
+                    && diagnostic.method.as_deref() == Some("body()V")
+            })
+            .collect();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].reason,
+            "DR-JVM-0025: malformed bytecode at offset 260: truncated DEX instruction"
         );
     }
 
@@ -2478,6 +2565,76 @@ mod tests {
     }
 
     #[test]
+    fn preparse_accounts_for_field_class_and_superclass_string_clones() {
+        let class_name: String = format!("L{};", "c".repeat(512));
+        let super_name: String = format!("L{};", "s".repeat(512));
+        let field_name: String = "f".repeat(512);
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: class_name.clone(),
+            super_class: super_name.clone(),
+            access_flags: 0x0001,
+            static_fields: vec![EncodedField {
+                field: FieldRef {
+                    class: class_name.clone(),
+                    type_desc: "I".to_owned(),
+                    name: field_name.clone(),
+                },
+                access_flags: 0x0001,
+            }],
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: Vec::new(),
+        });
+        let bytes: Vec<u8> = builder.build();
+        let header: crate::dex::DexHeader = crate::dex::parse_header(&bytes).expect("header");
+        let allocation: usize = preparse_amplified_allocation(&header, &bytes).expect("estimate");
+        let dex: DexFile = crate::dex::parse(&bytes).expect("parsed fixture");
+        let base_strings: usize = dex.strings.iter().map(String::len).sum::<usize>()
+            + dex.type_names.iter().map(String::len).sum::<usize>();
+        let required_clones: usize = class_name.len()
+            + class_name.len()
+            + super_name.len()
+            + class_name.len()
+            + "I".len()
+            + field_name.len();
+        assert!(allocation >= base_strings + required_clones);
+    }
+
+    #[test]
+    fn class_emission_rejects_parameter_slots_above_255_before_stub_emission() {
+        let bytes: Vec<u8> = DexBuilder::new().build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        for descriptor in [
+            format!("({})V", "I".repeat(255)),
+            format!("({})V", "J".repeat(128)),
+        ] {
+            let class: TranslatedClass = TranslatedClass {
+                internal_name: "TooManyParameters".to_owned(),
+                super_name: "java/lang/Object".to_owned(),
+                interfaces: Vec::new(),
+                access_flags: 0x0001,
+                fields: Vec::new(),
+                methods: vec![TranslatedMethod {
+                    name: "body".to_owned(),
+                    descriptor,
+                    access_flags: 0x0001,
+                    has_code: false,
+                }],
+            };
+            let error: Error = write_class_file(&dex, &class, &BTreeMap::new(), usize::MAX)
+                .expect_err("JVM parameter-slot limit");
+            assert!(matches!(
+                error,
+                Error::MalformedDex2JarClass {
+                    reason: "method parameter slots exceed JVM limit",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn constant_pool_utf8_uses_jvm_modified_utf8() {
         let mut pool: ConstantPool = ConstantPool::default();
         assert_eq!(pool.utf8("\0\u{1F600}"), 1);
@@ -2555,6 +2712,8 @@ mod tests {
             "a/name?.class",
             "a/tail .class",
             "a/tail..class",
+            "a/\u{03A3}.class",
+            "a/\u{212A}.class",
         ] {
             let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
             entries.insert(path.to_owned(), vec![0]);
@@ -2562,11 +2721,7 @@ mod tests {
         }
         let mut collisions: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         collisions.insert("a/K.class".to_owned(), vec![0]);
-        collisions.insert("a/\u{212A}.class".to_owned(), vec![0]);
+        collisions.insert("a/k.class".to_owned(), vec![0]);
         assert!(validate_dex2jar_entries(&collisions).is_err());
-        let mut sigma: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        sigma.insert("a/\u{03A3}.class".to_owned(), vec![0]);
-        sigma.insert("a/\u{03C2}.class".to_owned(), vec![0]);
-        assert!(validate_dex2jar_entries(&sigma).is_err());
     }
 }
