@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 
 use common::band::find_interpreter;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
+use disrobe_pass_py_decompile::decompile_pyc;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
@@ -255,6 +256,58 @@ fn special_lookup_leak(recovered: &str) -> Option<String> {
         .into_iter()
         .find(|name: &&str| recovered.contains(*name))
         .map(str::to_owned)
+}
+
+#[test]
+fn public_decompile_keeps_the_module_and_names_the_nested_with_refusal() {
+    let interpreter: PathBuf = find_interpreter("3.14").expect(
+        "CPython 3.14 is required to exercise LOAD_SPECIAL through the public decompile caller",
+    );
+    let case: &WithCase = CASES
+        .iter()
+        .find(|case: &&WithCase| case.label == "mixed_nest")
+        .expect("the mixed nested with fixture is the LOAD_SPECIAL refusal probe");
+    let scratch: PathBuf = PathBuf::from("../../target/py-with-public-refusal");
+    fs::create_dir_all(&scratch).expect("scratch");
+    let source_path: PathBuf = scratch.join("mixed-nest.py");
+    let pyc_path: PathBuf = scratch.join("mixed-nest.pyc");
+    fs::write(&source_path, case.source).expect("write fixture");
+    compile_source(&interpreter, &source_path, &pyc_path).expect("compile fixture");
+
+    let bytes: Vec<u8> = fs::read(&pyc_path).expect("read fixture");
+    let recovered = decompile_pyc(&bytes).expect("the public caller reads the compiled fixture");
+
+    assert!(
+        recovered.recovered_directly,
+        "the nested failure must remain a function-level refusal, not a module fallback: {:?}",
+        recovered.fallback_reason
+    );
+    assert!(
+        recovered.fallback_reason.is_none(),
+        "the public caller reported a module refusal instead of retaining the surrounding source"
+    );
+    assert!(
+        recovered.source.contains("async def f(a, b):"),
+        "the surrounding function disappeared from the public output:\n{}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("decompile-error:"),
+        "the nested function must carry a function-level refusal:\n{}",
+        recovered.source
+    );
+    assert!(
+        recovered
+            .source
+            .contains("the with-exit lookup reached linear expression recovery"),
+        "the function-level refusal must name the unresolved with-exit role:\n{}",
+        recovered.source
+    );
+    assert!(
+        !recovered.source.contains(MARKER_PREFIX),
+        "the public output must not carry an internal marker:\n{}",
+        recovered.source
+    );
 }
 
 #[test]

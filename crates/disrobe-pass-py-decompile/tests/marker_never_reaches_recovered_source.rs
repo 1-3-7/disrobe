@@ -4,10 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use disrobe_pass_py_decompile::emit::{authentic_markers, find_leaked_marker};
+use disrobe_pass_py_decompile::emit::{authentic_literal_markers, find_leaked_marker};
 use disrobe_pass_py_decompile::{DecompileError, NativeDecompile, decompile_pyc};
+use disrobe_py_marshal::{CodeEra, CodeObject, Object};
 
 const MARKER_PREFIX: &str = "__DR_";
+const BYTE_MARKER_SCAN_CAP: usize = 1 << 20;
 const REFUSAL_SENTINEL: &str = "reconstruction placeholder";
 const MIN_GRADED_FILES: usize = 270;
 const MAX_FIXTURE_BYTES: u64 = 8 * 1024 * 1024;
@@ -243,27 +245,177 @@ fn a_placeholder_in_emitted_text_is_reported_with_its_name_and_line() {
 }
 
 #[test]
-fn a_placeholder_the_original_program_declared_is_not_treated_as_a_leak() {
+fn an_authored_marker_spelling_inside_a_literal_is_not_treated_as_a_leak() {
     let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
     let authentic: BTreeSet<String> = BTreeSet::from([authored.clone()]);
-    let source: String = format!("{authored} = 1\nprint({authored})\n");
+    let source: String = format!("note = '{authored}'\nprint(note)\n");
 
     assert!(
         find_leaked_marker(&source, &authentic).is_none(),
-        "a name the original program itself defined must not be mistaken for a reconstruction \
-         placeholder, or disrobe refuses a body it recovered correctly"
+        "literal content from the original program must not be treated as an internal placeholder"
     );
-
-    let different: String = format!("{MARKER_PREFIX}NULL__");
-    let other: String = format!("{different} = 1\n");
-    let found = find_leaked_marker(&other, &authentic).expect(
-        "authenticating one name must not authenticate every other placeholder in the source",
-    );
-    assert_eq!(found.stem, "NULL");
 }
 
 #[test]
-fn no_tracked_fixture_declares_a_name_shaped_like_a_placeholder() {
+fn an_authored_marker_literal_does_not_whitelist_a_reconstructed_identifier() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let authentic: BTreeSet<String> = BTreeSet::from([authored.clone()]);
+    let source: String = format!("note = '{authored}'\nresult = {authored}\n");
+    let found = find_leaked_marker(&source, &authentic).expect(
+        "an authentic literal must not let the same spelling pass as an emitted identifier",
+    );
+    assert_eq!(found.stem, "CHAIN_VALUE");
+    assert_eq!(found.line, 2);
+}
+
+#[test]
+fn a_marker_in_a_comment_is_never_authenticated() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let authentic: BTreeSet<String> = BTreeSet::from([authored.clone()]);
+    let source: String = format!("# {authored}\nvalue = 1\n");
+    let found = find_leaked_marker(&source, &authentic)
+        .expect("comments have no bytecode provenance and must not carry an internal marker");
+
+    assert_eq!(found.stem, "CHAIN_VALUE");
+    assert_eq!(found.line, 1);
+}
+
+#[test]
+fn an_authored_byte_literal_does_not_whitelist_a_reconstructed_identifier() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+    code.consts
+        .push(Object::Bytes(authored.as_bytes().to_vec()));
+    let authentic: BTreeSet<String> = authentic_literal_markers(&code);
+    let literal: String = format!("value = b'{authored}'\n");
+
+    assert!(
+        find_leaked_marker(&literal, &authentic).is_none(),
+        "marker text from an authored byte literal must survive emitted byte-literal syntax"
+    );
+
+    let collision: String = format!("value = b'{authored}'\nresult = {authored}\n");
+    let found = find_leaked_marker(&collision, &authentic).expect(
+        "an authored byte literal must not authorize the same spelling as an emitted identifier",
+    );
+    assert_eq!(found.stem, "CHAIN_VALUE");
+    assert_eq!(found.line, 2);
+}
+
+#[test]
+fn a_byte_marker_ending_at_the_budget_cap_is_authenticated_before_a_delimiter() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let padding: String = "x".repeat(BYTE_MARKER_SCAN_CAP.saturating_sub(authored.len()));
+    let mut value: Vec<u8> = padding.into_bytes();
+    value.extend_from_slice(authored.as_bytes());
+    value.push(b'!');
+    let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+    code.consts.push(Object::Bytes(value));
+    let authentic: BTreeSet<String> = authentic_literal_markers(&code);
+    let literal: String = format!("value = b'{authored}!'\n");
+
+    assert!(
+        find_leaked_marker(&literal, &authentic).is_none(),
+        "a delimiter immediately after the scan cap completes the authored byte marker"
+    );
+
+    let collision: String = format!("value = b'{authored}!'\nresult = {authored}\n");
+    let found = find_leaked_marker(&collision, &authentic)
+        .expect("a byte marker ending at the scan cap must not authorize an emitted identifier");
+    assert_eq!(found.stem, "CHAIN_VALUE");
+    assert_eq!(found.line, 2);
+}
+
+#[test]
+fn a_byte_marker_split_across_the_budget_cap_remains_unauthenticated() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let padding: String = "x".repeat(BYTE_MARKER_SCAN_CAP.saturating_sub(authored.len()));
+    let mut value: Vec<u8> = padding.into_bytes();
+    value.extend_from_slice(authored.as_bytes());
+    value.push(b'A');
+    let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
+    code.consts.push(Object::Bytes(value));
+    let authentic: BTreeSet<String> = authentic_literal_markers(&code);
+    let emitted: String = format!("{authored}A");
+    let literal: String = format!("value = b'{emitted}'\n");
+    let found = find_leaked_marker(&literal, &authentic)
+        .expect("a marker token split by the scan cap must remain a refusal");
+
+    assert_eq!(found.stem, "CHAIN_VALUE__A");
+    assert_eq!(found.line, 1);
+}
+
+#[test]
+fn formatted_literal_segments_do_not_authorize_interpolations_or_format_specs() {
+    let authored: String = format!("{MARKER_PREFIX}CHAIN_VALUE__");
+    let authentic: BTreeSet<String> = BTreeSet::from([authored.clone()]);
+    let cases: Vec<(&str, String, bool)> = vec![
+        ("f-literal", format!("value = f'{authored}'\n"), false),
+        ("t-literal", format!("value = t'{authored}'\n"), false),
+        (
+            "f-interpolation",
+            format!("value = f'{{{authored}}}'\n"),
+            true,
+        ),
+        (
+            "t-interpolation",
+            format!("value = t'{{{authored}}}'\n"),
+            true,
+        ),
+        (
+            "f-format-spec",
+            format!("value = f'{{1:{{{authored}}}}}'\n"),
+            true,
+        ),
+        (
+            "t-format-spec",
+            format!("value = t'{{1:{{{authored}}}}}'\n"),
+            true,
+        ),
+        (
+            "nested-f-literal",
+            format!("value = f\"{{f'{authored}'}}\"\n"),
+            false,
+        ),
+        (
+            "nested-t-literal",
+            format!("value = t\"{{t'{authored}'}}\"\n"),
+            false,
+        ),
+        (
+            "nested-f-interpolation",
+            format!("value = f\"{{f'{{{authored}}}'}}\"\n"),
+            true,
+        ),
+        (
+            "nested-t-interpolation",
+            format!("value = t\"{{t'{{{authored}}}'}}\"\n"),
+            true,
+        ),
+        (
+            "nested-f-format-spec",
+            format!("value = f\"{{f'{{1:{{{authored}}}}}'}}\"\n"),
+            true,
+        ),
+        (
+            "nested-t-format-spec",
+            format!("value = t\"{{t'{{1:{{{authored}}}}}'}}\"\n"),
+            true,
+        ),
+    ];
+
+    for (label, source, should_leak) in cases {
+        let found = find_leaked_marker(&source, &authentic);
+        assert_eq!(
+            found.is_some(),
+            should_leak,
+            "{label} classified marker spelling by text instead of its formatted-string role:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn no_tracked_fixture_contains_an_authentic_marker_literal() {
     let root: PathBuf = corpus_root();
     let mut files: Vec<PathBuf> = Vec::new();
     collect_pyc(&root, 0, &mut files);
@@ -278,7 +430,7 @@ fn no_tracked_fixture_declares_a_name_shaped_like_a_placeholder() {
             continue;
         };
         read = read.saturating_add(1);
-        let declared: BTreeSet<String> = authentic_markers(&decompiled.code);
+        let declared: BTreeSet<String> = authentic_literal_markers(&decompiled.code);
         if !declared.is_empty() {
             declaring.insert(relative(path, &root), declared);
         }
@@ -292,8 +444,8 @@ fn no_tracked_fixture_declares_a_name_shaped_like_a_placeholder() {
     );
     assert!(
         declaring.is_empty(),
-        "{} tracked fixture(s) declare a name shaped like a reconstruction placeholder, so the \
-         raw-substring grade in this file would read their own source as a leak:\n  {}",
+        "{} tracked fixture(s) contain a literal shaped like a reconstruction placeholder, so the \
+         marker guard must classify it by emitted role rather than spelling alone:\n  {}",
         declaring.len(),
         declaring
             .iter()

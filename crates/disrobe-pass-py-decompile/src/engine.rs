@@ -12,7 +12,8 @@ use crate::ast::{AstBuilder, AstModule, DefaultAstBuilder};
 use crate::bytecode::version::PyVersion as DecompileVersion;
 use crate::codegen::{DefaultEmitter, module_has_unicode_literals};
 use crate::emit::{
-    EmitOutput, EmitPipeline, LeakedMarker, authentic_markers, carries_a_marker, find_leaked_marker,
+    EmitOutput, EmitPipeline, LeakedMarker, authentic_literal_markers, carries_a_marker,
+    find_leaked_marker,
 };
 use crate::error::{DecompileError, Result};
 use crate::frame_tree::{FrameTree, builder_for};
@@ -238,7 +239,7 @@ pub fn build_real_source(
         });
     }
     let leaked: Option<LeakedMarker> = if carries_a_marker(&out.source) {
-        find_leaked_marker(&out.source, &authentic_markers(code))
+        find_leaked_marker(&out.source, &authentic_literal_markers(code))
     } else {
         None
     };

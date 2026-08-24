@@ -18,7 +18,9 @@ pub use formatter::{
     provenance_header, pyversion_label,
 };
 pub use llm_json::{LlmJsonBundle, SCHEMA_ID as LLM_JSON_SCHEMA_ID, build_llm_sidecar};
-pub use marker_guard::{LeakedMarker, authentic_markers, carries_a_marker, find_leaked_marker};
+pub use marker_guard::{
+    LeakedMarker, authentic_literal_markers, carries_a_marker, find_leaked_marker,
+};
 pub use source::{SourceOpts, render_source, render_source_with};
 
 pub struct EmitPipeline {
