@@ -34,7 +34,7 @@
             "measured_by": "arbitrary_recompile_equivalence_gate"
           },
           "detail": "6067 / 6286 code objects; CI floor 96.51%, pinned at the truncation of the figure this corpus measures rather than a round number beneath it, so the gate has no slack to absorb a regression; a curated subset that runs higher than the full stdlib",
-          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs (OBJECT_PCT_FLOOR 96.51); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.51 (6067 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)"
+          "source": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs (OBJECT_PCT_FLOOR 96.51); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.51 (6067 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5"
         }
       ]
     },

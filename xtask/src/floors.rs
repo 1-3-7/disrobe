@@ -64,6 +64,7 @@ const README_DOC: &str = "README.md";
 const CATALOG_DOC: &str = "docs/src/catalog.md";
 const NATIVE_DOC: &str = "docs/src/languages/native.md";
 const DOTNET_DOC: &str = "docs/src/languages/dotnet.md";
+const INTRODUCTION_DOC: &str = "docs/src/introduction.md";
 const SHELL_DOC: &str = "docs/src/languages/shell.md";
 const RUBY_DOC: &str = "docs/src/languages/ruby.md";
 const WHITEPAPER_DOC: &str = "docs/src/architecture/whitepaper.md";
@@ -94,8 +95,12 @@ const CLAIMS: [FloorClaim; 19] = [
         sites: &[
             (README_DOC, "{} of 200 modules whole"),
             (
+                INTRODUCTION_DOC,
+                "pass: {} of 200 modules on the pinned corpus",
+            ),
+            (
                 README_DOC,
-                "whole-module figure of {} of 200 modules (61.0%)",
+                "whole-module figure of {} of 200 modules (61.5%)",
             ),
             (
                 README_DOC,
@@ -103,7 +108,7 @@ const CLAIMS: [FloorClaim; 19] = [
             ),
             (
                 WHITEPAPER_DOC,
-                "equivalent, is {} of the 200 modules in the pinned corpus, 61.0%",
+                "equivalent, is {} of the 200 modules in the pinned corpus, 61.5%",
             ),
         ],
     },
@@ -114,7 +119,7 @@ const CLAIMS: [FloorClaim; 19] = [
             (README_DOC, "of 200 modules ({}%)"),
             (
                 WHITEPAPER_DOC,
-                "is 122 of the 200 modules in the pinned corpus, {}%",
+                "is 123 of the 200 modules in the pinned corpus, {}%",
             ),
             (WHITEPAPER_DOC, "rate and the {}% per-module rate"),
             (WHITEPAPER_DOC, "96.51% and the {}% figures"),
@@ -124,10 +129,10 @@ const CLAIMS: [FloorClaim; 19] = [
         constant: "PINNED_MODULE_COUNT",
         source: PY_ARBITRARY_GATE,
         sites: &[
-            (README_DOC, "122 of {} modules whole"),
+            (README_DOC, "123 of {} modules whole"),
             (
                 WHITEPAPER_DOC,
-                "is 122 of the {} modules in the pinned corpus",
+                "is 123 of the {} modules in the pinned corpus",
             ),
             (WHITEPAPER_DOC, "over the {}-module pinned corpus"),
         ],

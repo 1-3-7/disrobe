@@ -28,8 +28,8 @@ const BAND_CPYTHON: &str = CPYTHON_314.release;
 const GRADED: &str = "the published pinned-corpus per-code-object figure";
 
 const OBJECT_PCT_FLOOR: f64 = 96.51;
-const MODULES_EXACT_FLOOR: u64 = 122;
-const MODULES_EXACT_PCT_FLOOR: f64 = 61.0;
+const MODULES_EXACT_FLOOR: u64 = 123;
+const MODULES_EXACT_PCT_FLOOR: f64 = 61.5;
 const PINNED_MODULE_COUNT: u64 = 200;
 
 const PINNED_BAR_LABEL: &str = "200-module pinned corpus";

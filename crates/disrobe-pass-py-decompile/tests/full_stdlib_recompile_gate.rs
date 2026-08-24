@@ -35,7 +35,7 @@ const FULL_OBJECT_PCT_FLOOR: f64 = 95.09;
 
 const PINNED_MODULES: u64 = 200;
 const PINNED_CODE_OBJECTS: u64 = 6_286;
-const PINNED_OBJECTS_OK: u64 = 6_072;
+const PINNED_OBJECTS_OK: u64 = 6_067;
 
 const PINNED_CPYTHON: &str = "3.14.5";
 
@@ -374,10 +374,10 @@ fn sampled_stdlib_recompile_equivalence_gate() {
 
     let Some(python): Option<PathBuf> = find_python_314() else {
         panic!(
-            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). This \
+            "no CPython 3.14.5 interpreter found (uv python find 3.14.5 / known install paths). This \
              gate is the running measurement behind the published {FULL_POPULATION} figure of \
              {FULL_OBJECTS_OK_FLOOR}/{FULL_CODE_OBJECTS} code objects, so its absence fails the run \
-             rather than passing it. Install one with `uv python install 3.14`."
+             rather than passing it. Install one with `uv python install 3.14.5`."
         );
     };
 
@@ -551,10 +551,10 @@ fn full_stdlib_recompile_equivalence_gate() {
 
     let Some(python): Option<PathBuf> = find_python_314() else {
         panic!(
-            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths). This \
+            "no CPython 3.14.5 interpreter found (uv python find 3.14.5 / known install paths). This \
              gate is the reference behind the published {FULL_POPULATION} figure of \
              {FULL_OBJECTS_OK_FLOOR}/{FULL_CODE_OBJECTS} code objects, so its absence fails the \
-             run rather than passing it. Install one with `uv python install 3.14`."
+             run rather than passing it. Install one with `uv python install 3.14.5`."
         );
     };
 

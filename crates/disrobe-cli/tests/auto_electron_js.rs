@@ -144,14 +144,13 @@ fn auto_electron_asar_unpack_then_js_deob_recovers_identifier() {
         String::from_utf8_lossy(&asar_proc.stderr)
     );
     let asar_json: String = read_chain_json(&asar_out);
+    let binfmt_route: bool = asar_json.contains("\"pass\": \"binfmt.container\"")
+        && asar_json.contains("\"format_tag_in\": \"asar\"");
+    let webview_route: bool = asar_json.contains("\"pass\": \"webview.carve\"")
+        && asar_json.contains("\"format_tag_in\": \"electron-asar\"");
     assert!(
-        asar_json.contains("\"pass\": \"binfmt.container\""),
-        "chain.json must show the container unpack pass; got prefix: {prefix}",
-        prefix = &asar_json[..asar_json.len().min(700)]
-    );
-    assert!(
-        asar_json.contains("\"format_tag_in\": \"asar\""),
-        "chain.json must classify the input as an asar container; got prefix: {prefix}",
+        binfmt_route || webview_route,
+        "chain.json must show the registered extractor that owns the asar input; got prefix: {prefix}",
         prefix = &asar_json[..asar_json.len().min(700)]
     );
 

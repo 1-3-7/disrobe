@@ -127,7 +127,7 @@ pub(crate) fn find_disrobe() -> Option<PathBuf> {
 
 #[must_use]
 pub(crate) fn find_python_314() -> Option<PathBuf> {
-    find_interpreter("3.14")
+    find_interpreter("3.14.5")
 }
 
 pub(crate) fn interpreter_version(python: &Path) -> Option<(u8, u8)> {

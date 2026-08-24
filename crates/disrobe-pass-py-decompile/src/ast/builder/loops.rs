@@ -909,6 +909,10 @@ pub(super) fn exprs_equal_ignoring_lines(a: &Expr, b: &Expr) -> bool {
     sa == sb
 }
 
+pub(super) fn active_loop_exit_tail_range() -> Option<(usize, usize)> {
+    super::loop_exit_tail_range()
+}
+
 fn guard_opens_with_branch(
     stream: &DecodedStream,
     after_guard: usize,
@@ -2883,6 +2887,7 @@ fn loop_shared_exit_return(
     region: &LoopRegion,
     hi: usize,
 ) -> Option<Expr> {
+    let hi: usize = hi.min(stream.ops.len());
     let tail_start: usize = if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
@@ -2903,6 +2908,7 @@ fn loop_exit_tail_range(
     region: &LoopRegion,
     hi: usize,
 ) -> Option<(usize, usize)> {
+    let hi: usize = hi.min(stream.ops.len());
     if region.infinite {
         return None;
     }
@@ -2911,6 +2917,7 @@ fn loop_exit_tail_range(
 }
 
 fn loop_tail_start(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> usize {
+    let hi: usize = hi.min(stream.ops.len());
     if let Some(end_idx) = legacy_loop_orelse_end(stream, region, hi) {
         return skip_loop_epilogue(stream, end_idx.min(hi), hi);
     }
@@ -2920,7 +2927,7 @@ fn loop_tail_start(stream: &DecodedStream, region: &LoopRegion, hi: usize) -> us
     {
         return skip_loop_epilogue(stream, break_target, hi);
     }
-    let after_exit: usize = region.exit.max(region.back_edge + 1);
+    let after_exit: usize = region.exit.max(region.back_edge.saturating_add(1));
     skip_loop_epilogue(stream, after_exit.min(hi), hi)
 }
 
@@ -2930,6 +2937,7 @@ fn loop_orelse(
     region: &LoopRegion,
     hi: usize,
 ) -> Result<Vec<Stmt>> {
+    let hi: usize = hi.min(stream.ops.len());
     if let Some(else_end) = legacy_loop_orelse_end(stream, region, hi) {
         let else_start: usize = skip_loop_epilogue(stream, region.exit.min(hi), hi);
         if else_end > else_start {
@@ -3665,7 +3673,7 @@ fn redundant_entry_guard_start(
 mod for_target_bounds {
     use super::super::DecodedStream;
     use super::super::try_with::{LoopKind, LoopRegion};
-    use super::{find_for_loop, find_loop, recover_for_target};
+    use super::{find_for_loop, find_loop, loop_tail_start, recover_for_target};
     use crate::ast::node::Expr;
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
@@ -3754,6 +3762,21 @@ mod for_target_bounds {
         let stream: DecodedStream = stream_from(vec![CanonicalOp::ForIter(u32::MAX)]);
         let recovered: Option<LoopRegion> = find_loop(&stream, 0, stream.ops.len());
         assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn loop_tail_start_saturates_an_untrusted_back_edge() {
+        let stream: DecodedStream = stream_from(vec![CanonicalOp::Nop]);
+        let region: LoopRegion = LoopRegion {
+            kind: LoopKind::For,
+            header: 0,
+            body_start: 0,
+            body_end: 0,
+            back_edge: usize::MAX,
+            exit: 0,
+            infinite: false,
+        };
+        assert_eq!(loop_tail_start(&stream, &region, 1), 1);
     }
 
     #[test]

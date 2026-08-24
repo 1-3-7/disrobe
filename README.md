@@ -43,7 +43,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 
 | Ecosystem | Tier | Headline measured figure | Oracle | Guide |
 |---|---|---|---|---|
-| Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.51%<!-- /m --> per code object, 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
+| Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.51%<!-- /m --> per code object, 123 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
 | Python pickle | Recover | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
@@ -94,7 +94,7 @@ Each `[CI]` number links to a committed corpus or fixture, a runnable reproduce 
 
 ### Strong
 
-Read the first three Python rows together. A module counts as recovered only when every one of its code objects recompiles to equivalent bytecode. A module typically holds dozens of code objects, so a small per-object miss rate compounds into a large per-module one. To know whether a whole readable module comes back, use the whole-module figure of 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules (61.0%), not the per-object 96.51%. That gap is the center of the evaluation rather than a footnote, and the [whitepaper](docs/src/architecture/whitepaper.md) works through it.
+Read the first three Python rows together. A module counts as recovered only when every one of its code objects recompiles to equivalent bytecode. A module typically holds dozens of code objects, so a small per-object miss rate compounds into a large per-module one. To know whether a whole readable module comes back, use the whole-module figure of 123 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules (61.5%), not the per-object 96.51%. That gap is the center of the evaluation rather than a footnote, and the [whitepaper](docs/src/architecture/whitepaper.md) works through it.
 
 The Oracle column names the independent reference in a few words. What that reference is and how it can reject a wrong answer is in the cited test and in the linked guide.
 
@@ -102,7 +102,7 @@ The Oracle column names the independent reference in a few words. What that refe
 |---|---|---|---|
 | Python `.pyc`, full 3.14 stdlib | <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per code object `[local]` | recompile-equivalence, over a population CI does not run | `crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py` |
 | Python `.pyc`, pinned 200-module corpus | <!-- m:py_stdlib_pinned_pct -->96.51%<!-- /m --> per object, floor 96.51% `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
-| Python `.pyc`, whole-module exact | 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules recompile whole, floor 122 `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
+| Python `.pyc`, whole-module exact | 123 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules recompile whole, floor 123 `[CI]` | recompile-equivalence | `crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs` |
 | Python legacy 1.0-3.7 | <!-- m:py_legacy_count -->150 of 191<!-- /m --> gate-verified `[CI]` | recompile or token match | `crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs` |
 | Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
 | Pickle reconstruction roundtrip | 470 / 470 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |

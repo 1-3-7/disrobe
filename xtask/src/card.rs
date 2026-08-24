@@ -475,7 +475,7 @@ mod tests {
 
         assert!(rendered.contains("15 ecosystems"));
         assert!(rendered.contains("101 declared in-tree extractors"));
-        assert!(rendered.contains("35 exercised by committed inputs"));
+        assert!(rendered.contains("41 exercised by committed inputs"));
         assert!(rendered.contains("with deterministic output ordering."));
         assert!(!rendered.contains("20+ ecosystems"));
         assert!(!rendered.contains("compiled software, deterministically."));

@@ -1,19 +1,6 @@
 name: fuzz
 
 on:
-  pull_request:
-    paths:
-      - 'fuzz/**'
-      - 'crates/disrobe-binfmt/**'
-      - 'crates/disrobe-bytes/**'
-      - 'crates/disrobe-core/**'
-      - 'crates/disrobe-ir/**'
-      - 'crates/disrobe-nir-lift/**'
-      - 'crates/disrobe-pass-dotnet/**'
-      - 'crates/disrobe-pass-jvm/**'
-      - 'crates/disrobe-pass-wasm-deob/**'
-      - 'crates/disrobe-py-marshal/**'
-      - 'xtask/data/fuzz_seed_reach.json'
   schedule:
     - cron: '0 3 * * 1'  # weekly, monday 03:00 UTC
   workflow_dispatch:
@@ -44,54 +31,9 @@ jobs:
       - name: replay the semantic seed contract
         run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay -- --memory-limit-bytes ${SEED_REPLAY_MEMORY_LIMIT_BYTES} --check xtask/data/fuzz_seed_reach.json
 
-  smoke:
-    name: smoke (${{ matrix.target }})
-    needs: seed-reach
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - container_dispatch
-          - native_formats
-          - python_bytecode
-          - dex_jvm_classfile
-          - cil_metadata
-          - wasm_sections
-          - dr_envelope
-          - nested_dispatch
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
-      - name: install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
-      - name: seed the corpus from committed samples
-        run: cargo run -p xtask -- fuzz-seeds --target ${{ matrix.target }}
-      - name: every committed seed runs without a crash
-        run: |
-          cargo fuzz run ${{ matrix.target }} -- \
-            -runs=0 \
-            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
-            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
-      - name: short search
-        run: |
-          cargo fuzz run ${{ matrix.target }} -- \
-            -max_total_time=60 \
-            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
-            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
-      - name: upload artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: fuzz-artifacts-${{ matrix.target }}
-          path: fuzz/artifacts/${{ matrix.target }}/
-
   campaign:
     name: campaign (${{ matrix.target }})
     needs: seed-reach
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

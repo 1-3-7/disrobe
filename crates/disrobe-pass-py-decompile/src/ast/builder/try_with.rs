@@ -5,7 +5,7 @@ use super::exprs::{
 };
 use super::function_meta::load_const;
 use super::loops::{
-    exprs_equal_ignoring_lines, find_for_with_cold_handler, find_loop,
+    active_loop_exit_tail_range, exprs_equal_ignoring_lines, find_for_with_cold_handler, find_loop,
     for_cold_handler_exit_epilogue, is_walrus_store_shape, loop_header_owns_test, non_empty,
     try_enclosed_by_loop,
 };
@@ -5048,16 +5048,15 @@ fn strip_shared_exit_return(
     handlers: Vec<ExceptHandler>,
     construct_tail: &[Stmt],
 ) -> Vec<ExceptHandler> {
-    let [tail]: &[Stmt] = construct_tail else {
+    let [tail @ Stmt::Return(_)]: &[Stmt] = construct_tail else {
         return handlers;
     };
-    let tail_repr: String = format!("{tail:?}");
     handlers
         .into_iter()
         .map(|mut h: ExceptHandler| {
             if h.body
                 .last()
-                .is_some_and(|s: &Stmt| format!("{s:?}") == tail_repr)
+                .is_some_and(|s: &Stmt| return_stmts_equal_ignoring_lines(s, tail))
             {
                 h.body.pop();
                 h.body = non_empty(h.body);
@@ -5065,6 +5064,42 @@ fn strip_shared_exit_return(
             h
         })
         .collect()
+}
+
+fn return_stmts_equal_ignoring_lines(a: &Stmt, b: &Stmt) -> bool {
+    match (a, b) {
+        (Stmt::Return(Some(a)), Stmt::Return(Some(b))) => exprs_equal_ignoring_lines(a, b),
+        (Stmt::Return(None), Stmt::Return(None)) => true,
+        _ => false,
+    }
+}
+
+fn strip_shared_exit_return_with_loop_ownership(
+    handlers: Vec<ExceptHandler>,
+    construct_tail: &[Stmt],
+    candidate_range: Option<(usize, usize)>,
+) -> Vec<ExceptHandler> {
+    if loop_owns_shared_exit_tail(candidate_range) {
+        strip_shared_exit_return(handlers, construct_tail)
+    } else {
+        handlers
+    }
+}
+
+fn loop_owns_shared_exit_tail(candidate_range: Option<(usize, usize)>) -> bool {
+    loop_frame_owns_shared_exit_tail(
+        loop_frame_depth(),
+        active_loop_exit_tail_range(),
+        candidate_range,
+    )
+}
+
+fn loop_frame_owns_shared_exit_tail(
+    frame_depth: usize,
+    loop_tail: Option<(usize, usize)>,
+    candidate_range: Option<(usize, usize)>,
+) -> bool {
+    frame_depth == 0 || loop_tail.is_some_and(|tail: (usize, usize)| candidate_range == Some(tail))
 }
 
 fn handler_pop_except_idx(
@@ -5988,11 +6023,16 @@ fn structure_pre311_try_except(
         Some((s, e)) => structure_stmts(code, stream, s, e)?,
         None => Vec::new(),
     };
-    if let Some((else_start, _)) = else_region
+    if let Some((else_start, else_end)) = else_region
         && let Some(shared) = shared_construct_exit_return(&orelse, &handlers)
+        && loop_owns_shared_exit_tail(Some((else_start, else_end)))
     {
         orelse.clear();
-        handlers = strip_shared_exit_return(handlers, &shared);
+        handlers = strip_shared_exit_return_with_loop_ownership(
+            handlers,
+            &shared,
+            Some((else_start, else_end)),
+        );
         consumed = else_start;
     }
     Ok((
@@ -9623,9 +9663,10 @@ mod with_region_bounds {
     use super::super::DecodedStream;
     use super::{
         SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
-        single_residual, special_method_name,
+        loop_frame_owns_shared_exit_tail, shared_construct_exit_return, single_residual,
+        special_method_name, strip_shared_exit_return,
     };
-    use crate::ast::node::{ConstValue, Expr};
+    use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt};
     use crate::bytecode::flow::ExceptionTableEntry;
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
@@ -9691,6 +9732,130 @@ mod with_region_bounds {
         assert_eq!(single_residual(Vec::new()), None);
         assert_eq!(single_residual(vec![first.clone()]), Some(first));
         assert_eq!(single_residual(vec![second.clone(), second]), None);
+    }
+
+    fn named_return(name: &str, line: u32) -> Stmt {
+        Stmt::Return(Some(Expr::Name {
+            id: name.to_owned(),
+            ctx: ExprCtx::Load,
+            line: Some(line),
+        }))
+    }
+
+    #[test]
+    fn shared_exit_return_rejects_a_different_expression() {
+        let exit: Stmt = named_return("first", 11);
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("second", 11)],
+            line: Some(11),
+        }];
+        assert_eq!(
+            shared_construct_exit_return(std::slice::from_ref(&exit), &handlers),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_exit_strip_ignores_return_expression_line_metadata() {
+        let handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("value", 29)],
+            line: Some(23),
+        };
+        let tail: Stmt = named_return("value", 11);
+        let stripped: Vec<ExceptHandler> =
+            strip_shared_exit_return(vec![handler], std::slice::from_ref(&tail));
+        assert_eq!(stripped[0].body, vec![Stmt::Pass]);
+    }
+
+    #[test]
+    fn loop_exit_ownership_requires_a_claim_when_a_loop_frame_is_active() {
+        assert!(loop_frame_owns_shared_exit_tail(0, None, None));
+        assert!(!loop_frame_owns_shared_exit_tail(1, None, None));
+        assert!(loop_frame_owns_shared_exit_tail(
+            1,
+            Some((7, 11)),
+            Some((7, 11))
+        ));
+        assert!(!loop_frame_owns_shared_exit_tail(
+            1,
+            Some((7, 11)),
+            Some((8, 11))
+        ));
+    }
+
+    #[test]
+    fn shared_exit_strip_accepts_only_a_single_return() {
+        let non_return_tails: Vec<Stmt> = vec![
+            Stmt::Raise {
+                exc: None,
+                cause: None,
+                line: Some(7),
+            },
+            Stmt::Break,
+            Stmt::Continue,
+            Stmt::Expr(Expr::Name {
+                id: "value".to_owned(),
+                ctx: ExprCtx::Load,
+                line: Some(7),
+            }),
+        ];
+
+        for tail in non_return_tails {
+            let handler: ExceptHandler = ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![tail.clone()],
+                line: None,
+            };
+            let unchanged: Vec<ExceptHandler> =
+                strip_shared_exit_return(vec![handler.clone()], std::slice::from_ref(&tail));
+            assert_eq!(unchanged, vec![handler]);
+        }
+
+        let return_none: Stmt = Stmt::Return(None);
+        let multi_statement_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![return_none.clone()],
+            line: None,
+        };
+        let unchanged_multi: Vec<ExceptHandler> = strip_shared_exit_return(
+            vec![multi_statement_handler.clone()],
+            &[return_none.clone(), Stmt::Pass],
+        );
+        assert_eq!(unchanged_multi, vec![multi_statement_handler]);
+
+        let none_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![return_none.clone()],
+            line: None,
+        };
+        let stripped_none: Vec<ExceptHandler> =
+            strip_shared_exit_return(vec![none_handler], std::slice::from_ref(&return_none));
+        assert_eq!(stripped_none[0].body, vec![Stmt::Pass]);
+
+        let yielding_expression: Expr = Expr::Yield(Some(Box::new(Expr::Name {
+            id: "value".to_owned(),
+            ctx: ExprCtx::Load,
+            line: Some(7),
+        })));
+        let yielding_return: Stmt = Stmt::Return(Some(yielding_expression));
+        let yielding_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![yielding_return.clone()],
+            line: None,
+        };
+        let stripped_yielding: Vec<ExceptHandler> = strip_shared_exit_return(
+            vec![yielding_handler],
+            std::slice::from_ref(&yielding_return),
+        );
+        assert_eq!(stripped_yielding[0].body, vec![Stmt::Pass]);
     }
 
     #[test]

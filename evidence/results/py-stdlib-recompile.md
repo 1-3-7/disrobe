@@ -9,4 +9,4 @@
 - evidence basis: CPython 3.14 (recompile the recovered source, compare emitted bytecode per code object)
 - reproduce: `cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate`
 - floor: 96.51 (holds)
-- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs (OBJECT_PCT_FLOOR 96.51); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.51 (6067 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5 (a pure-or if-guard whose short-circuit exits reach an inlined terminator reassembles into a single if a or b: body, and a loop after a with recurses through the statement structurer instead of collapsing to a tuple assignment)
+- gate source: crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs (OBJECT_PCT_FLOOR 96.51); harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over the 200-module pinned corpus; measured live 96.51 (6067 of 6286 code objects, 200 of 200 modules) on CPython 3.14.5
