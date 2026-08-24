@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::dalvik::DalvikInsn;
 use crate::dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg_from_code_item};
 use crate::dalvik_lift::{
-    LiftOutcome, MethodContext, PendingResult, RegisterFile, lift_insn, render_branch_condition,
-    seed_block_registers,
+    LiftOutcome, MethodContext, MethodIdentity, PendingResult, RegisterFile, lift_insn,
+    render_branch_condition, seed_block_registers,
 };
 use crate::decompile_struct::{
     BasicBlock, BlockId, Cfg, Dominators, EdgeKind, NaturalLoop, Region, Structurer, SwitchKey,
@@ -940,6 +940,7 @@ fn render_method(
         dex,
         item,
         is_static,
+        is_constructor,
         method_descriptor,
         recovered_default.is_some_and(
             |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
@@ -1096,6 +1097,7 @@ fn lift_method(
     dex: &DexFile,
     item: &CodeItem,
     is_static: bool,
+    is_constructor: bool,
     method_descriptor: &str,
     inline_temporaries: bool,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
@@ -1123,10 +1125,14 @@ fn lift_method(
 
     let ctx: MethodContext<'_> = MethodContext::new(
         dex,
+        MethodIdentity {
+            declaring_class: &item.class,
+            descriptor: method_descriptor,
+            is_static,
+            is_constructor,
+        },
         item.registers_size,
         item.ins_size,
-        method_descriptor,
-        is_static,
         inline_temporaries,
         desugar,
         inlined_helpers,
@@ -1543,7 +1549,7 @@ fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, lev
         if insn.is_conditional_branch() || insn.is_unconditional_goto() || insn.is_switch() {
             continue;
         }
-        emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
+        emit_insn(state, &mut file, insn, &mut pending, out, level);
     }
     materialize_pending(state, &file, bid, out, level);
 }
@@ -1565,9 +1571,9 @@ fn render_head_condition(
     let mut pending: Option<PendingResult> = None;
     for insn in &state.insns[start..body_end] {
         if already {
-            let _ = lift_insn(state.ctx, &mut file, insn, &mut pending);
+            let _ = lift_insn_tracked(state, &mut file, insn, &mut pending);
         } else {
-            emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
+            emit_insn(state, &mut file, insn, &mut pending, out, level);
         }
     }
     if !already {
@@ -1594,9 +1600,9 @@ fn render_switch_subject(
     let mut pending: Option<PendingResult> = None;
     for insn in &state.insns[start..body_end] {
         if already {
-            let _ = lift_insn(state.ctx, &mut file, insn, &mut pending);
+            let _ = lift_insn_tracked(state, &mut file, insn, &mut pending);
         } else {
-            emit_insn(state.ctx, &mut file, insn, &mut pending, out, level);
+            emit_insn(state, &mut file, insn, &mut pending, out, level);
         }
     }
     if !already {
@@ -1609,8 +1615,25 @@ fn render_switch_subject(
         .unwrap_or_else(|| "var0".to_string())
 }
 
+fn lift_insn_tracked(
+    state: &mut RenderState<'_>,
+    file: &mut RegisterFile,
+    insn: &DalvikInsn,
+    pending: &mut Option<PendingResult>,
+) -> LiftOutcome {
+    let outcome: LiftOutcome = lift_insn(state.ctx, file, insn, pending);
+    record_lift_outcome(&mut state.fully_lifted, &outcome);
+    outcome
+}
+
+const fn record_lift_outcome(fully_lifted: &mut bool, outcome: &LiftOutcome) {
+    if matches!(outcome, LiftOutcome::Unlifted) {
+        *fully_lifted = false;
+    }
+}
+
 fn emit_insn(
-    ctx: &MethodContext<'_>,
+    state: &mut RenderState<'_>,
     file: &mut RegisterFile,
     insn: &DalvikInsn,
     pending: &mut Option<PendingResult>,
@@ -1618,7 +1641,7 @@ fn emit_insn(
     level: usize,
 ) {
     let pad: String = indent_string(level);
-    match lift_insn(ctx, file, insn, pending) {
+    match lift_insn_tracked(state, file, insn, pending) {
         LiftOutcome::Statement(s) => {
             let _ = writeln!(out, "{pad}{s};");
         }
@@ -1627,7 +1650,7 @@ fn emit_insn(
                 let _ = writeln!(out, "{pad}{statement};");
             }
         }
-        LiftOutcome::None => {}
+        LiftOutcome::None | LiftOutcome::Unlifted => {}
     }
 }
 
@@ -1696,6 +1719,13 @@ mod tests {
     fn decompiled() -> DecompiledDex {
         let dex: DexFile = crate::dex::parse(EDGECASES_DEX).expect("parse edgecases.dex");
         decompile_dex(&dex, EDGECASES_DEX)
+    }
+
+    #[test]
+    fn unlifted_constructor_instruction_makes_the_method_partial() {
+        let mut fully_lifted: bool = true;
+        record_lift_outcome(&mut fully_lifted, &LiftOutcome::Unlifted);
+        assert!(!fully_lifted);
     }
 
     #[test]

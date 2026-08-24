@@ -5,12 +5,22 @@ use crate::decompile::{Expr, MAX_DUP_EXPR_NODES, expr_node_count_capped};
 use crate::descriptor::{self, MethodDescriptor};
 use crate::dex::{DexFile, FieldId, MethodId};
 
+#[derive(Clone, Copy)]
+pub(crate) struct MethodIdentity<'a> {
+    pub(crate) declaring_class: &'a str,
+    pub(crate) descriptor: &'a str,
+    pub(crate) is_static: bool,
+    pub(crate) is_constructor: bool,
+}
+
 pub(crate) struct MethodContext<'a> {
     pub(crate) dex: &'a DexFile,
+    pub(crate) declaring_class: &'a str,
     pub(crate) desugar: crate::dalvik_desugar::DesugarView<'a>,
     pub(crate) registers_size: u16,
     pub(crate) ins_size: u16,
     pub(crate) is_static: bool,
+    pub(crate) is_constructor: bool,
     pub(crate) inline_temporaries: bool,
     pub(crate) param_regs: BTreeMap<u16, String>,
     pub(crate) this_reg: Option<u16>,
@@ -21,20 +31,19 @@ pub(crate) struct MethodContext<'a> {
 impl<'a> MethodContext<'a> {
     pub(crate) fn new(
         dex: &'a DexFile,
+        identity: MethodIdentity<'a>,
         registers_size: u16,
         ins_size: u16,
-        descriptor: &str,
-        is_static: bool,
         inline_temporaries: bool,
         desugar: crate::dalvik_desugar::DesugarView<'a>,
         inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
     ) -> Self {
-        let parsed: Option<MethodDescriptor> = descriptor::parse_method(descriptor);
+        let parsed: Option<MethodDescriptor> = descriptor::parse_method(identity.descriptor);
         let first_param_reg: u16 = registers_size.saturating_sub(ins_size);
         let mut param_regs: BTreeMap<u16, String> = BTreeMap::new();
         let mut this_reg: Option<u16> = None;
         let mut cursor: u16 = first_param_reg;
-        if !is_static {
+        if !identity.is_static {
             this_reg = Some(cursor);
             cursor = cursor.saturating_add(1);
         }
@@ -47,10 +56,12 @@ impl<'a> MethodContext<'a> {
         }
         Self {
             dex,
+            declaring_class: identity.declaring_class,
             desugar,
             registers_size,
             ins_size,
-            is_static,
+            is_static: identity.is_static,
+            is_constructor: identity.is_constructor,
             inline_temporaries,
             param_regs,
             this_reg,
@@ -144,11 +155,20 @@ pub(crate) enum LiftOutcome {
     Statement(String),
     Statements(Vec<String>),
     None,
+    Unlifted,
 }
 
 pub(crate) struct PendingResult {
     expr: Expr,
     materialized_in: Option<u16>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum DirectInitTarget {
+    Allocate,
+    This,
+    Super,
+    Invalid,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -239,6 +259,7 @@ pub(crate) fn lift_insn(
             LiftOutcome::Statements(statements)
         }
         (Some(side_effect), LiftOutcome::None) => LiftOutcome::Statement(side_effect),
+        (_, LiftOutcome::Unlifted) => LiftOutcome::Unlifted,
         (None, outcome) => outcome,
     }
 }
@@ -637,7 +658,16 @@ fn invoke(
             .map(Expr::render)
             .collect::<Vec<String>>()
             .join(", ");
-        if let Some(Expr::New(ty)) = &receiver {
+        let target: DirectInitTarget = direct_init_target(
+            ctx.is_constructor,
+            ctx.declaring_class,
+            &method.class,
+            receiver.as_ref(),
+        );
+        if matches!(target, DirectInitTarget::Allocate) {
+            let Some(Expr::New(ty)): Option<&Expr> = receiver.as_ref() else {
+                return LiftOutcome::None;
+            };
             let reference: Option<String> =
                 ctx.desugar.functionals.recovered(&method.class).and_then(
                     |recovered: &crate::dalvik_desugar::RecoveredFunctional| {
@@ -655,7 +685,7 @@ fn invoke(
             }
             return LiftOutcome::None;
         }
-        return LiftOutcome::Statement(format!("super({joined})"));
+        return direct_init_outcome(target, joined);
     }
 
     let call: Expr = Expr::Invoke {
@@ -681,6 +711,34 @@ fn invoke(
         materialized_in,
     });
     LiftOutcome::None
+}
+
+fn direct_init_target(
+    is_constructor: bool,
+    declaring_class: &str,
+    target_class: &str,
+    receiver: Option<&Expr>,
+) -> DirectInitTarget {
+    match receiver {
+        Some(Expr::New(_)) => DirectInitTarget::Allocate,
+        Some(Expr::This) if is_constructor => {
+            if declaring_class == target_class {
+                DirectInitTarget::This
+            } else {
+                DirectInitTarget::Super
+            }
+        }
+        _ => DirectInitTarget::Invalid,
+    }
+}
+
+fn direct_init_outcome(target: DirectInitTarget, joined: String) -> LiftOutcome {
+    match target {
+        DirectInitTarget::This => LiftOutcome::Statement(format!("this({joined})")),
+        DirectInitTarget::Super => LiftOutcome::Statement(format!("super({joined})")),
+        DirectInitTarget::Allocate => LiftOutcome::None,
+        DirectInitTarget::Invalid => LiftOutcome::Unlifted,
+    }
 }
 
 fn render_functional(
@@ -801,10 +859,14 @@ fn inline_helper_body(
     }
     let mut nested: MethodContext<'_> = MethodContext::new(
         ctx.dex,
+        MethodIdentity {
+            declaring_class: ctx.declaring_class,
+            descriptor: &body.descriptor,
+            is_static: body.is_static,
+            is_constructor: false,
+        },
         body.registers_size,
         body.ins_size,
-        &body.descriptor,
-        body.is_static,
         true,
         ctx.desugar,
         reached,
@@ -888,6 +950,7 @@ fn inline_helper_body(
         }
         match lift_insn(&nested, &mut file, insn, &mut pending) {
             LiftOutcome::None => {}
+            LiftOutcome::Unlifted => return None,
             LiftOutcome::Statement(_) | LiftOutcome::Statements(_) if readable_pending => {}
             LiftOutcome::Statement(_) | LiftOutcome::Statements(_) => return None,
         }
@@ -1267,11 +1330,12 @@ const fn comparez_op(op: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        core_projection_matches_invoke, lambda_parameter_names, render_method_reference,
-        returns_receiver,
+        DirectInitTarget, LiftOutcome, core_projection_matches_invoke, direct_init_outcome,
+        direct_init_target, lambda_parameter_names, render_method_reference, returns_receiver,
     };
     use crate::dalvik_core_library::{CoreInvokeShape, CoreLibraryRecovery, CoreMethodProjection};
     use crate::dalvik_desugar::{MethodRefKind, RecoveredMethodRef};
+    use crate::decompile::Expr;
     use crate::dex::{MethodId, ProtoId};
 
     fn method(class: &str, name: &str, returns: &str) -> MethodId {
@@ -1319,6 +1383,44 @@ mod tests {
         assert!(returns_receiver(&append));
         assert!(!returns_receiver(&concat));
         assert!(!returns_receiver(&builder_factory));
+    }
+
+    #[test]
+    fn direct_init_target_requires_a_constructor_for_this_delegation() {
+        assert_eq!(
+            direct_init_target(true, "LProbe;", "LProbe;", Some(&Expr::This)),
+            DirectInitTarget::This
+        );
+        assert_eq!(
+            direct_init_target(false, "LProbe;", "LProbe;", Some(&Expr::This)),
+            DirectInitTarget::Invalid
+        );
+        assert!(matches!(
+            direct_init_outcome(DirectInitTarget::Invalid, String::new()),
+            LiftOutcome::Unlifted
+        ));
+        assert_eq!(
+            direct_init_target(true, "LProbe;", "LBase;", Some(&Expr::This)),
+            DirectInitTarget::Super
+        );
+        assert_eq!(
+            direct_init_target(
+                true,
+                "LProbe;",
+                "LProbe;",
+                Some(&Expr::New("Probe".to_string()))
+            ),
+            DirectInitTarget::Allocate
+        );
+        assert_eq!(
+            direct_init_target(
+                true,
+                "LProbe;",
+                "LBase;",
+                Some(&Expr::Local("not_this".to_string()))
+            ),
+            DirectInitTarget::Invalid
+        );
     }
 
     #[test]

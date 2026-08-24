@@ -1,0 +1,23 @@
+schema = "disrobe.jvm.d8-constructor-delegate/v1"
+source = "ConstructorDelegateProbe.java"
+source_sha256 = "7484dc50536840091d14bea194e1a34808becf5e1f870e1e2780a74696db24cf"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes ConstructorDelegateProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[[artifact]]
+path = "ConstructorDelegateProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/fixtures/constructor/ConstructorDelegateProbe.class classes/fixtures/constructor/InputPair.class"
+sha256 = "a9d3f100af5da051ce970b429339fcac3b122c6b76380fcdaeac0eb27e2b7f76"
+bytes = 1100
