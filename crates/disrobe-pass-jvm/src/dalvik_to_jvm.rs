@@ -8,13 +8,11 @@ use crate::dex2jar::ConstantPool;
 const MAX_METHOD_INSNS: usize = 8192;
 const MAX_CODE_BYTES: usize = 60_000;
 
-#[cfg(any(test, feature = "lifter-diag"))]
 thread_local! {
     pub(crate) static LAST_BAIL_OP: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
     pub(crate) static LAST_BAIL_KIND: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 #[inline]
 pub(crate) fn record_bail_kind(kind: &'static str) {
     LAST_BAIL_KIND.with(|c: &std::cell::Cell<&'static str>| {
@@ -24,13 +22,11 @@ pub(crate) fn record_bail_kind(kind: &'static str) {
     });
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 #[inline]
 pub(crate) fn take_bail_kind() -> &'static str {
     LAST_BAIL_KIND.with(|c: &std::cell::Cell<&'static str>| c.get())
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 #[inline]
 pub(crate) fn record_bail_op(op: u8) {
     LAST_BAIL_OP.with(|c: &std::cell::Cell<i32>| {
@@ -40,14 +36,12 @@ pub(crate) fn record_bail_op(op: u8) {
     });
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 #[inline]
 pub(crate) fn reset_bail_op() {
     LAST_BAIL_OP.with(|c: &std::cell::Cell<i32>| c.set(-1));
     LAST_BAIL_KIND.with(|c: &std::cell::Cell<&'static str>| c.set(""));
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 #[inline]
 pub(crate) fn take_bail_op() -> i32 {
     LAST_BAIL_OP.with(|c: &std::cell::Cell<i32>| c.get())
@@ -58,7 +52,6 @@ pub(crate) fn diag_is_synthetic_class(descriptor: &str) -> bool {
     is_synthetic_class(descriptor)
 }
 
-#[cfg(any(test, feature = "lifter-diag"))]
 pub(crate) fn diag_has_width_conflict(dex: &DexFile, item: &CodeItem, is_static: bool) -> bool {
     let insns: Vec<DalvikInsn> = decode_method(&item.insns);
     let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor)
@@ -196,7 +189,6 @@ fn dedup_frames_by_offset(frames: Vec<StackMapFrame>) -> Option<Vec<StackMapFram
         match out.last() {
             Some(prev) if prev.0 == frame.0 => {
                 if prev.1 != frame.1 || prev.2 != frame.2 {
-                    #[cfg(any(test, feature = "lifter-diag"))]
                     record_bail_kind("frame-offset-conflict");
                     return None;
                 }
@@ -276,18 +268,17 @@ pub(crate) fn emit_method_code(
     let const_float_pcs: BTreeSet<u32> = narrow_const_float_pcs(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
     if has_width_conflict(dex, &insns, &parsed, item, is_static) {
+        record_bail_kind("width-conflict");
         return None;
     }
     let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
     let Some(param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("param-slot-limit");
         return None;
     };
     let Some(max_locals): Option<u16> =
         class_file_max_locals(first_param_reg, param_local_slots, LINEAR_LOCAL_HEADROOM, 1)
     else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("max-locals-limit");
         return None;
     };
@@ -329,7 +320,6 @@ pub(crate) fn emit_method_code(
     emitter.seed_parameter_types(&parsed, is_static);
     for insn in &insns {
         if emitter.code.len() > MAX_CODE_BYTES {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("code-length-limit");
             return None;
         }
@@ -337,7 +327,6 @@ pub(crate) fn emit_method_code(
             return None;
         }
         emitter.translate(insn, &parsed);
-        #[cfg(any(test, feature = "lifter-diag"))]
         if emitter.bailed {
             record_bail_op(insn.op);
         }
@@ -358,12 +347,10 @@ pub(crate) fn emit_method_code(
         return None;
     }
     if emitter.cp.overflowed() {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("constant-pool-limit");
         return None;
     }
     let Some(max_stack): Option<u16> = class_file_max_stack(emitter.max_stack) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("max-stack-limit");
         return None;
     };
@@ -463,7 +450,6 @@ pub(crate) fn emit_branch_method_code(
     let base_first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
     let Some(base_param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static)
     else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("param-slot-limit");
         return None;
     };
@@ -473,7 +459,6 @@ pub(crate) fn emit_branch_method_code(
         BRANCH_LOCAL_HEADROOM,
         1,
     ) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("max-locals-limit");
         return None;
     };
@@ -614,7 +599,6 @@ pub(crate) fn emit_branch_method_code(
 
     let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
     let Some(param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("param-slot-limit");
         return None;
     };
@@ -624,7 +608,6 @@ pub(crate) fn emit_branch_method_code(
         BRANCH_LOCAL_HEADROOM,
         split_max_locals.max(1),
     ) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("max-locals-limit");
         return None;
     };
@@ -686,7 +669,6 @@ pub(crate) fn emit_branch_method_code(
     }
     for insn in &insns {
         if emitter.code.len() > MAX_CODE_BYTES {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("code-length-limit");
             return None;
         }
@@ -695,7 +677,6 @@ pub(crate) fn emit_branch_method_code(
         }
         emitter.translate(insn, &parsed);
         emitter.apply_post_array_elem(insn.pc);
-        #[cfg(any(test, feature = "lifter-diag"))]
         if emitter.bailed {
             record_bail_op(insn.op);
         }
@@ -721,12 +702,10 @@ pub(crate) fn emit_branch_method_code(
     };
 
     if emitter.cp.overflowed() {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("constant-pool-limit");
         return None;
     }
     let Some(max_stack): Option<u16> = class_file_max_stack(emitter.max_stack) else {
-        #[cfg(any(test, feature = "lifter-diag"))]
         record_bail_kind("max-stack-limit");
         return None;
     };
@@ -1954,7 +1933,6 @@ impl Emitter<'_> {
             if let Some(slots) = cfg.block_entry_slots.get(&insn.pc) {
                 self.reg_type = slots.clone();
             } else {
-                #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("leader-no-entry-slots");
                 self.bail();
                 return;
@@ -2035,7 +2013,6 @@ impl Emitter<'_> {
             let b_ref: bool = matches!(self.reg_slot(b), Slot::Ref);
             if a_ref || b_ref {
                 if !matches!(op, 0x32 | 0x33) {
-                    #[cfg(any(test, feature = "lifter-diag"))]
                     record_bail_kind("ref-ordered-cmp");
                     self.bail();
                     return;
@@ -2061,7 +2038,6 @@ impl Emitter<'_> {
                 matches!(self.reg_slot(a), Slot::Ref) && !self.const_zero.contains(&a);
             if a_ref {
                 if !matches!(op, 0x38 | 0x39) {
-                    #[cfg(any(test, feature = "lifter-diag"))]
                     record_bail_kind("ref-ordered-cmpz");
                     self.bail();
                     return;
@@ -2308,7 +2284,6 @@ impl Emitter<'_> {
             }
         }
         let Ok(entry_count): Result<u16, _> = u16::try_from(entries.len()) else {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("exception-table-limit");
             return None;
         };
@@ -2412,7 +2387,6 @@ impl Emitter<'_> {
         let jvm_off: BTreeMap<u32, usize> = cfg.jvm_offset_of_pc.clone();
 
         let Ok(frame_count): Result<u16, _> = u16::try_from(frames.len()) else {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("stackmap-frame-count-limit");
             return None;
         };
@@ -2421,19 +2395,16 @@ impl Emitter<'_> {
         let mut prev: Option<usize> = None;
         for (offset, locals, stack) in &frames {
             let Some(delta): Option<usize> = frame_delta(prev, *offset) else {
-                #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("stackmap-frame-order");
                 return None;
             };
             let Ok(delta16): Result<u16, _> = u16::try_from(delta) else {
-                #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("stackmap-frame-delta-limit");
                 return None;
             };
             body.push(255);
             body.extend_from_slice(&delta16.to_be_bytes());
             let Ok(local_count): Result<u16, _> = u16::try_from(locals.len()) else {
-                #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("stackmap-local-count-limit");
                 return None;
             };
@@ -2454,7 +2425,6 @@ impl Emitter<'_> {
         }
 
         let Ok(body_len): Result<u32, _> = u32::try_from(body.len()) else {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("stackmap-attribute-limit");
             return None;
         };
@@ -2483,12 +2453,10 @@ impl Emitter<'_> {
             RegType::UninitializedThis => out.push(6),
             RegType::Uninitialized(new_pc) => {
                 let Some(&offset): Option<&usize> = jvm_off.get(new_pc) else {
-                    #[cfg(any(test, feature = "lifter-diag"))]
                     record_bail_kind("uninitialized-offset-unmapped");
                     return None;
                 };
                 let Ok(offset16): Result<u16, _> = u16::try_from(offset) else {
-                    #[cfg(any(test, feature = "lifter-diag"))]
                     record_bail_kind("uninitialized-offset-limit");
                     return None;
                 };
@@ -2507,7 +2475,6 @@ impl Emitter<'_> {
     fn local_index(&mut self, reg: u16) -> Option<u16> {
         if let Some(&local) = self.virtual_local.get(&reg) {
             if local >= self.max_locals {
-                #[cfg(any(test, feature = "lifter-diag"))]
                 record_bail_kind("local-slot-oob");
                 self.bail();
                 return None;
@@ -2515,7 +2482,6 @@ impl Emitter<'_> {
             return Some(local);
         }
         if reg >= self.registers_size {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("local-reg-oob");
             self.bail();
             return None;
@@ -2526,7 +2492,6 @@ impl Emitter<'_> {
             self.param_local_slots.saturating_add(reg)
         };
         if local >= self.max_locals {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("local-slot-oob");
             self.bail();
             return None;
@@ -2536,25 +2501,21 @@ impl Emitter<'_> {
 
     fn emit_load(&mut self, reg: u16) {
         if self.poisoned_regs.contains(&reg) {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("poisoned-load");
             self.bail();
             return;
         }
         if self.pending_new.contains_key(&reg) {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("pending-new-load");
             self.bail();
             return;
         }
         if self.eager_new_active.contains_key(&reg) {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("eager-new-load");
             self.bail();
             return;
         }
         if self.materialize_active.contains_key(&reg) {
-            #[cfg(any(test, feature = "lifter-diag"))]
             record_bail_kind("materialize-new-load");
             self.bail();
             return;

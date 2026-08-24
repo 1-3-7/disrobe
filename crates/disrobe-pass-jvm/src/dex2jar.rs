@@ -12,7 +12,10 @@ use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
 use std::mem::size_of;
 
-use crate::dalvik_to_jvm::{EmittedCode, emit_branch_method_code, emit_method_code};
+use crate::dalvik_to_jvm::{
+    EmittedCode, diag_has_width_conflict, emit_branch_method_code, emit_method_code, reset_bail_op,
+    take_bail_kind, take_bail_op,
+};
 use crate::dex::{CodeItem, DexFile, parse_code_items};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -264,6 +267,14 @@ fn preparse_table_entry(bytes: &[u8], base: u32, index: usize, width: usize) -> 
 
 fn preparse_string_lengths(header: &crate::dex::DexHeader, bytes: &[u8]) -> Result<Vec<usize>> {
     let count: usize = usize::try_from(header.string_ids_size).unwrap_or(usize::MAX);
+    let mut locations: Vec<(usize, usize, usize)> = Vec::new();
+    locations
+        .try_reserve_exact(count)
+        .map_err(|_| Error::Dex2JarLimit {
+            kind: "DEX parse allocation",
+            actual: usize::MAX,
+            limit: bytes.len().saturating_mul(8),
+        })?;
     let mut lengths: Vec<usize> = Vec::new();
     lengths
         .try_reserve_exact(count)
@@ -272,7 +283,7 @@ fn preparse_string_lengths(header: &crate::dex::DexHeader, bytes: &[u8]) -> Resu
             actual: usize::MAX,
             limit: bytes.len().saturating_mul(8),
         })?;
-    let mut scanned: BTreeMap<usize, usize> = BTreeMap::new();
+    lengths.resize(count, 0);
     for index in 0..count {
         let entry: usize = preparse_table_entry(bytes, header.string_ids_off, index, 4)
             .ok_or_else(|| malformed("parsed DEX", "string identifier table is truncated"))?;
@@ -281,19 +292,31 @@ fn preparse_string_lengths(header: &crate::dex::DexHeader, bytes: &[u8]) -> Resu
                 .ok_or_else(|| malformed("parsed DEX", "string identifier is truncated"))?,
         )
         .unwrap_or(usize::MAX);
-        let raw_length: usize = if let Some(length) = scanned.get(&data_offset) {
-            *length
-        } else {
-            let (_, start): (u32, usize) = crate::dex::read_uleb128(bytes, data_offset)
-                .map_err(|_| malformed("parsed DEX", "string data is truncated"))?;
-            let length: usize = bytes
-                .get(start..)
-                .and_then(|tail: &[u8]| tail.iter().position(|byte: &u8| *byte == 0))
-                .ok_or_else(|| malformed("parsed DEX", "string data is not terminated"))?;
-            scanned.insert(data_offset, length);
-            length
-        };
-        lengths.push(raw_length);
+        let (_, start): (u32, usize) = crate::dex::read_uleb128(bytes, data_offset)
+            .map_err(|_| malformed("parsed DEX", "string data is truncated"))?;
+        locations.push((data_offset, start, index));
+    }
+    locations.sort_unstable_by_key(|(data_offset, _, _)| *data_offset);
+    let mut previous: Option<(usize, usize, usize)> = None;
+    for (data_offset, start, index) in locations {
+        if let Some((previous_offset, previous_end, previous_length)) = previous {
+            if data_offset == previous_offset {
+                lengths[index] = previous_length;
+                continue;
+            }
+            if data_offset <= previous_end {
+                return Err(malformed("parsed DEX", "string data ranges overlap"));
+            }
+        }
+        let raw_length: usize = bytes
+            .get(start..)
+            .and_then(|tail: &[u8]| tail.iter().position(|byte: &u8| *byte == 0))
+            .ok_or_else(|| malformed("parsed DEX", "string data is not terminated"))?;
+        let end: usize = start
+            .checked_add(raw_length)
+            .ok_or_else(|| malformed("parsed DEX", "string data range overflows"))?;
+        lengths[index] = raw_length;
+        previous = Some((data_offset, end, raw_length));
     }
     Ok(lengths)
 }
@@ -1381,7 +1404,24 @@ struct BuiltBody {
     exception_table: Vec<u8>,
     exception_count: u16,
     recovered: bool,
-    refusal: Option<&'static str>,
+    refusal: Option<String>,
+}
+
+fn recorded_emitter_refusal(emitter: &str) -> Option<String> {
+    let kind: &str = take_bail_kind();
+    if !kind.is_empty() {
+        return Some(format!(
+            "DR-JVM-0093: {emitter} JVM emitter refusal: {kind}"
+        ));
+    }
+    let opcode: i32 = take_bail_op();
+    if opcode >= 0 {
+        return Some(format!(
+            "DR-JVM-0093: {emitter} JVM emitter refused opcode {:#04x}",
+            opcode as u8
+        ));
+    }
+    None
 }
 
 fn build_real_or_stub_body(
@@ -1392,8 +1432,24 @@ fn build_real_or_stub_body(
 ) -> BuiltBody {
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     if let Some(item) = code_item {
-        let emitted: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static)
-            .or_else(|| emit_branch_method_code(dex, cp, item, is_static));
+        reset_bail_op();
+        let linear: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static);
+        if let Some(emitted) = linear {
+            return BuiltBody {
+                code: emitted.bytes,
+                max_stack: emitted.max_stack,
+                max_locals: emitted.max_locals,
+                sub_attrs: emitted.attributes,
+                sub_attr_count: emitted.attribute_count,
+                exception_table: emitted.exception_table,
+                exception_count: emitted.exception_count,
+                recovered: true,
+                refusal: None,
+            };
+        }
+        let linear_refusal: Option<String> = recorded_emitter_refusal("linear");
+        reset_bail_op();
+        let emitted: Option<EmittedCode> = emit_branch_method_code(dex, cp, item, is_static);
         if let Some(emitted) = emitted {
             return BuiltBody {
                 code: emitted.bytes,
@@ -1407,6 +1463,28 @@ fn build_real_or_stub_body(
                 refusal: None,
             };
         }
+        let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
+        let refusal: String = recorded_emitter_refusal("control-flow")
+            .or(linear_refusal)
+            .or_else(|| {
+                diag_has_width_conflict(dex, item, is_static)
+                    .then(|| "DR-JVM-0093: JVM emitter refusal: width-conflict".to_owned())
+            })
+            .unwrap_or_else(|| {
+                "DR-JVM-0093: JVM emitters refused the decoded body without a recorded cause"
+                    .to_owned()
+            });
+        return BuiltBody {
+            code,
+            max_stack,
+            max_locals: method_local_slots(method),
+            sub_attrs: Vec::new(),
+            sub_attr_count: 0,
+            exception_table: Vec::new(),
+            exception_count: 0,
+            recovered: false,
+            refusal: Some(refusal),
+        };
     }
     let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
     BuiltBody {
@@ -1418,11 +1496,9 @@ fn build_real_or_stub_body(
         exception_table: Vec::new(),
         exception_count: 0,
         recovered: false,
-        refusal: Some(if code_item.is_some() {
-            "DR-JVM-0093: linear and control-flow JVM emitters refused the decoded body"
-        } else {
-            "DR-JVM-0093: DEX code parser produced no body for a method requiring code"
-        }),
+        refusal: Some(
+            "DR-JVM-0093: DEX code parser produced no body for a method requiring code".to_owned(),
+        ),
     }
 }
 
@@ -1433,7 +1509,7 @@ fn build_method_attr(
     is_interface: bool,
     code_item: Option<&CodeItem>,
     max_class_bytes: usize,
-) -> Result<(Vec<u8>, bool, Option<&'static str>)> {
+) -> Result<(Vec<u8>, bool, Option<String>)> {
     let needs_code: bool = method.access_flags & (ACC_ABSTRACT | ACC_NATIVE) == 0
         && !(is_interface && method.access_flags & ACC_STATIC == 0);
     let mut out: Vec<u8> = Vec::new();
@@ -1453,7 +1529,7 @@ fn build_method_attr(
         max_class_bytes,
     )?;
     let mut recovered: bool = false;
-    let mut refusal: Option<&'static str> = None;
+    let mut refusal: Option<String> = None;
     if needs_code {
         let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item);
         recovered = body.recovered;
@@ -1552,7 +1628,7 @@ fn method_local_slots(method: &TranslatedMethod) -> u16 {
 }
 
 type MethodKey = (String, String);
-type StubbedMethod = (String, &'static str);
+type StubbedMethod = (String, String);
 
 fn write_class_file(
     dex: &DexFile,
@@ -1651,7 +1727,7 @@ fn write_class_file(
     for method in &class.methods {
         let key: MethodKey = (method.name.clone(), method.descriptor.clone());
         let code_item: Option<&CodeItem> = code_items.get(&key);
-        let (attr, real, refusal): (Vec<u8>, bool, Option<&'static str>) = build_method_attr(
+        let (attr, real, refusal): (Vec<u8>, bool, Option<String>) = build_method_attr(
             dex,
             &mut cp,
             method,
@@ -1794,7 +1870,7 @@ pub fn translate_with_limits(
             for (method, reason) in stubbed_methods {
                 diagnostics
                     .entry((class.internal_name.clone(), Some(method)))
-                    .or_insert_with(|| reason.to_owned());
+                    .or_insert(reason);
             }
         }
         let path: String = format!("{}.class", class.internal_name);
@@ -2599,6 +2675,112 @@ mod tests {
             + "I".len()
             + field_name.len();
         assert!(allocation >= base_strings + required_clones);
+    }
+
+    #[test]
+    fn preparse_rejects_distinct_string_offsets_with_overlapping_tails() {
+        let long_string: String = "a".repeat(4096);
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.intern_string(&long_string);
+        builder.intern_string("b");
+        let mut bytes: Vec<u8> = builder.build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        let long_index: usize = dex
+            .strings
+            .iter()
+            .position(|value: &String| value == &long_string)
+            .expect("long string index");
+        let other_index: usize = usize::from(long_index == 0);
+        let header: crate::dex::DexHeader = dex.header;
+        let table: usize = header.string_ids_off as usize;
+        let long_offset: u32 = read_u32(&bytes, table + long_index * 4).expect("string offset");
+        bytes[table + other_index * 4..table + other_index * 4 + 4]
+            .copy_from_slice(&(long_offset + 1).to_le_bytes());
+
+        let error: Error =
+            preparse_string_lengths(&header, &bytes).expect_err("overlapping string data ranges");
+        assert!(matches!(
+            error,
+            Error::MalformedDex2JarClass {
+                reason: "string data ranges overlap",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn translation_reports_the_final_emitter_refusal_once_per_method() {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lcom/disrobe/EmitterRefusals;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x0001,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: vec![
+                EncodedMethod {
+                    tries: Vec::new(),
+                    method: MethodRef {
+                        class: "Lcom/disrobe/EmitterRefusals;".to_owned(),
+                        proto: ProtoRef {
+                            return_type: "V".to_owned(),
+                            params: vec![
+                                "Ljava/lang/Object;".to_owned(),
+                                "Ljava/lang/Object;".to_owned(),
+                            ],
+                        },
+                        name: "ordered".to_owned(),
+                    },
+                    access_flags: u32::from(ACC_STATIC),
+                    is_direct: true,
+                    registers_size: 2,
+                    ins_size: 2,
+                    outs_size: 0,
+                    insns: vec![0x1034, 0x0002, 0x000E],
+                    relocations: Vec::new(),
+                },
+                EncodedMethod {
+                    tries: Vec::new(),
+                    method: MethodRef {
+                        class: "Lcom/disrobe/EmitterRefusals;".to_owned(),
+                        proto: ProtoRef {
+                            return_type: "V".to_owned(),
+                            params: Vec::new(),
+                        },
+                        name: "locals".to_owned(),
+                    },
+                    access_flags: u32::from(ACC_STATIC),
+                    is_direct: true,
+                    registers_size: u16::MAX,
+                    ins_size: 0,
+                    outs_size: 0,
+                    insns: vec![0x0128, 0x000E],
+                    relocations: Vec::new(),
+                },
+            ],
+            virtual_methods: Vec::new(),
+        });
+        let bytes: Vec<u8> = builder.build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        let result: Dex2JarResult = translate(&dex, &bytes).expect("translation with stubs");
+        let method_diagnostics: Vec<&Dex2JarDiagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic: &&Dex2JarDiagnostic| diagnostic.method.is_some())
+            .collect();
+
+        assert_eq!(result.stubbed_body_count, 2);
+        assert_eq!(method_diagnostics.len(), 2);
+        assert!(method_diagnostics.iter().any(|diagnostic| {
+            diagnostic.method.as_deref() == Some("ordered(Ljava/lang/Object;Ljava/lang/Object;)V")
+                && diagnostic.reason
+                    == "DR-JVM-0093: control-flow JVM emitter refusal: ref-ordered-cmp"
+        }));
+        assert!(method_diagnostics.iter().any(|diagnostic| {
+            diagnostic.method.as_deref() == Some("locals()V")
+                && diagnostic.reason
+                    == "DR-JVM-0093: control-flow JVM emitter refusal: max-locals-limit"
+        }));
     }
 
     #[test]
