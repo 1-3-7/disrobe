@@ -1429,13 +1429,13 @@ fn build_real_or_stub_body(
     cp: &mut ConstantPool,
     method: &TranslatedMethod,
     code_item: Option<&CodeItem>,
-) -> BuiltBody {
+) -> Result<BuiltBody> {
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
     if let Some(item) = code_item {
         reset_bail_op();
         let linear: Option<EmittedCode> = emit_method_code(dex, cp, item, is_static);
         if let Some(emitted) = linear {
-            return BuiltBody {
+            return Ok(BuiltBody {
                 code: emitted.bytes,
                 max_stack: emitted.max_stack,
                 max_locals: emitted.max_locals,
@@ -1445,13 +1445,13 @@ fn build_real_or_stub_body(
                 exception_count: emitted.exception_count,
                 recovered: true,
                 refusal: None,
-            };
+            });
         }
         let linear_refusal: Option<String> = recorded_emitter_refusal("linear");
         reset_bail_op();
         let emitted: Option<EmittedCode> = emit_branch_method_code(dex, cp, item, is_static);
         if let Some(emitted) = emitted {
-            return BuiltBody {
+            return Ok(BuiltBody {
                 code: emitted.bytes,
                 max_stack: emitted.max_stack,
                 max_locals: emitted.max_locals,
@@ -1461,7 +1461,7 @@ fn build_real_or_stub_body(
                 exception_count: emitted.exception_count,
                 recovered: true,
                 refusal: None,
-            };
+            });
         }
         let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
         let refusal: String = recorded_emitter_refusal("control-flow")
@@ -1470,11 +1470,8 @@ fn build_real_or_stub_body(
                 diag_has_width_conflict(dex, item, is_static)
                     .then(|| "DR-JVM-0093: JVM emitter refusal: width-conflict".to_owned())
             })
-            .unwrap_or_else(|| {
-                "DR-JVM-0093: JVM emitters refused the decoded body without a recorded cause"
-                    .to_owned()
-            });
-        return BuiltBody {
+            .ok_or_else(|| malformed(&method.name, "JVM emitter refusal cause was not recorded"))?;
+        return Ok(BuiltBody {
             code,
             max_stack,
             max_locals: method_local_slots(method),
@@ -1484,10 +1481,10 @@ fn build_real_or_stub_body(
             exception_count: 0,
             recovered: false,
             refusal: Some(refusal),
-        };
+        });
     }
     let (code, max_stack): (Vec<u8>, u16) = stub_code(cp);
-    BuiltBody {
+    Ok(BuiltBody {
         code,
         max_stack,
         max_locals: method_local_slots(method),
@@ -1499,7 +1496,7 @@ fn build_real_or_stub_body(
         refusal: Some(
             "DR-JVM-0093: DEX code parser produced no body for a method requiring code".to_owned(),
         ),
-    }
+    })
 }
 
 fn build_method_attr(
@@ -1531,7 +1528,7 @@ fn build_method_attr(
     let mut recovered: bool = false;
     let mut refusal: Option<String> = None;
     if needs_code {
-        let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item);
+        let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item)?;
         recovered = body.recovered;
         refusal = body.refusal;
         let code_attr_name: u16 = cp.utf8("Code");
@@ -2781,6 +2778,54 @@ mod tests {
                 && diagnostic.reason
                     == "DR-JVM-0093: control-flow JVM emitter refusal: max-locals-limit"
         }));
+    }
+
+    #[test]
+    fn stub_bodies_preserve_early_emitter_refusals_without_a_generic_fallback() {
+        let bytes: Vec<u8> = DexBuilder::new().build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        for (descriptor, insns, refusal) in [
+            (
+                "()V",
+                Vec::new(),
+                "DR-JVM-0093: control-flow JVM emitter refusal: empty-instruction-stream",
+            ),
+            (
+                "()V",
+                vec![0x0000; usize::from(u16::MAX) + 1],
+                "DR-JVM-0093: control-flow JVM emitter refusal: instruction-count-limit",
+            ),
+            (
+                "invalid",
+                vec![0x000E],
+                "DR-JVM-0093: control-flow JVM emitter refusal: no-control-flow",
+            ),
+        ] {
+            let method: TranslatedMethod = TranslatedMethod {
+                name: "body".to_owned(),
+                descriptor: descriptor.to_owned(),
+                access_flags: ACC_STATIC,
+                has_code: true,
+            };
+            let item: CodeItem = CodeItem {
+                method_name: method.name.clone(),
+                method_descriptor: method.descriptor.clone(),
+                class: "Lcom/disrobe/EmitterRefusals;".to_owned(),
+                is_direct: true,
+                registers_size: 0,
+                ins_size: 0,
+                outs_size: 0,
+                insns,
+                tries: Vec::new(),
+                param_names: Vec::new(),
+            };
+            let mut cp: ConstantPool = ConstantPool::default();
+            let body: BuiltBody =
+                build_real_or_stub_body(&dex, &mut cp, &method, Some(&item)).expect("stub body");
+
+            assert!(!body.recovered);
+            assert_eq!(body.refusal.as_deref(), Some(refusal));
+        }
     }
 
     #[test]

@@ -245,17 +245,25 @@ pub(crate) fn emit_method_code(
     item: &CodeItem,
     is_static: bool,
 ) -> Option<EmittedCode> {
-    if item.insns.is_empty() || item.insns.len() > MAX_METHOD_INSNS {
+    if item.insns.is_empty() {
+        record_bail_kind("empty-instruction-stream");
+        return None;
+    }
+    if item.insns.len() > MAX_METHOD_INSNS {
+        record_bail_kind("instruction-count-limit");
         return None;
     }
     if !item.tries.is_empty() {
+        record_bail_kind("linear-try-regions");
         return None;
     }
     let mut insns: Vec<DalvikInsn> = decode_method(&item.insns);
     if insns.is_empty() {
+        record_bail_kind("instruction-decode-empty");
         return None;
     }
     if insns.iter().any(|i: &DalvikInsn| i.op == 0x0D) {
+        record_bail_kind("move-exception-requires-control-flow");
         return None;
     }
     let terminator: Option<usize> = insns
@@ -264,7 +272,11 @@ pub(crate) fn emit_method_code(
     if let Some(end) = terminator {
         insns.truncate(end + 1);
     }
-    let parsed: MethodDescriptor = descriptor::parse_method(&item.method_descriptor)?;
+    let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor)
+    else {
+        record_bail_kind("invalid-method-descriptor");
+        return None;
+    };
     let const_float_pcs: BTreeSet<u32> = narrow_const_float_pcs(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
     if has_width_conflict(dex, &insns, &parsed, item, is_static) {
@@ -324,6 +336,7 @@ pub(crate) fn emit_method_code(
             return None;
         }
         if emitter.bailed {
+            record_bail_kind("emitter-state-bailed");
             return None;
         }
         emitter.translate(insn, &parsed);
@@ -339,11 +352,20 @@ pub(crate) fn emit_method_code(
             });
         }
     }
-    if emitter.bailed
-        || !emitter.pending_new.is_empty()
-        || !emitter.eager_new_active.is_empty()
-        || !emitter.materialize_active.is_empty()
-    {
+    if emitter.bailed {
+        record_bail_kind("emitter-state-bailed");
+        return None;
+    }
+    if !emitter.pending_new.is_empty() {
+        record_bail_kind("pending-new-state");
+        return None;
+    }
+    if !emitter.eager_new_active.is_empty() {
+        record_bail_kind("eager-new-state");
+        return None;
+    }
+    if !emitter.materialize_active.is_empty() {
+        record_bail_kind("materialize-new-state");
         return None;
     }
     if emitter.cp.overflowed() {
@@ -389,28 +411,44 @@ pub(crate) fn emit_branch_method_code(
     item: &CodeItem,
     is_static: bool,
 ) -> Option<EmittedCode> {
-    if item.insns.is_empty() || item.insns.len() > MAX_BRANCH_INSNS {
+    if item.insns.is_empty() {
+        record_bail_kind("empty-instruction-stream");
+        return None;
+    }
+    if item.insns.len() > MAX_BRANCH_INSNS {
+        record_bail_kind("instruction-count-limit");
         return None;
     }
     let insns: Vec<DalvikInsn> = decode_method(&item.insns);
     if insns.is_empty() {
+        record_bail_kind("instruction-decode-empty");
         return None;
     }
     let has_branch: bool = insns.iter().any(|i: &DalvikInsn| {
         i.is_conditional_branch() || i.is_unconditional_goto() || i.is_switch()
     }) || !item.tries.is_empty();
     if !has_branch {
+        record_bail_kind("no-control-flow");
         return None;
     }
     if item.method_name == "<init>" && !init_this_call_is_trackable(dex, item, &insns) {
+        record_bail_kind("constructor-init-untrackable");
         return None;
     }
-    let tries: Vec<TryRegion> = build_try_regions(item, &insns)?;
+    let Some(tries): Option<Vec<TryRegion>> = build_try_regions(item, &insns) else {
+        record_bail_kind("try-region-build");
+        return None;
+    };
     if !tries.is_empty() && !move_exceptions_are_handler_entries(&insns, &tries) {
+        record_bail_kind("move-exception-handler-entry");
         return None;
     }
-    let switch_payloads: BTreeMap<u32, crate::dalvik::SwitchPayload> =
-        parse_switch_payloads(&insns, &item.insns)?;
+    let Some(switch_payloads): Option<BTreeMap<u32, crate::dalvik::SwitchPayload>> =
+        parse_switch_payloads(&insns, &item.insns)
+    else {
+        record_bail_kind("switch-payload-parse");
+        return None;
+    };
     let switch_targets: BTreeMap<u32, Vec<u32>> = switch_target_map(&insns, &switch_payloads);
     let shared_handler_pcs: BTreeSet<u32> = if tries.is_empty() {
         BTreeSet::new()
@@ -422,11 +460,13 @@ pub(crate) fn emit_branch_method_code(
             .iter()
             .any(|i: &DalvikInsn| i.pc == *hpc && i.op == 0x0D)
     }) {
+        record_bail_kind("shared-handler-move-exception");
         return None;
     }
     if insns.iter().any(|i: &DalvikInsn| i.op == 0x22)
         && !new_instance_pairs_are_trackable(dex, &insns)
     {
+        record_bail_kind("new-instance-pair-untrackable");
         return None;
     }
     let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
@@ -438,7 +478,11 @@ pub(crate) fn emit_branch_method_code(
         || switch_targets
             .values()
             .any(|ts: &Vec<u32>| ts.contains(&entry_pc));
-    let parsed: MethodDescriptor = descriptor::parse_method(&item.method_descriptor)?;
+    let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor)
+    else {
+        record_bail_kind("invalid-method-descriptor");
+        return None;
+    };
 
     let handler_edges: BTreeMap<u32, Vec<u32>> = try_handler_edges(&insns, &tries);
     let move_exception_type: BTreeMap<u32, String> = move_exception_types(&insns, &tries);
@@ -514,8 +558,12 @@ pub(crate) fn emit_branch_method_code(
         class_internal: &item.class,
         materialize_new_pcs: &materialize_new_pcs,
     };
-    let states: crate::dalvik_typestate::TypeStates =
-        crate::dalvik_typestate::analyze(dex, &insns, &parsed, &shape, &edges)?;
+    let Some(states): Option<crate::dalvik_typestate::TypeStates> =
+        crate::dalvik_typestate::analyze(dex, &insns, &parsed, &shape, &edges)
+    else {
+        record_bail_kind("typestate-analysis");
+        return None;
+    };
 
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
@@ -673,6 +721,7 @@ pub(crate) fn emit_branch_method_code(
             return None;
         }
         if emitter.bailed {
+            record_bail_kind("emitter-state-bailed");
             return None;
         }
         emitter.translate(insn, &parsed);
@@ -681,20 +730,43 @@ pub(crate) fn emit_branch_method_code(
             record_bail_op(insn.op);
         }
     }
-    if emitter.bailed
-        || !emitter.pending_new.is_empty()
-        || !emitter.eager_new_active.is_empty()
-        || !emitter.materialize_active.is_empty()
-    {
+    if emitter.bailed {
+        record_bail_kind("emitter-state-bailed");
+        return None;
+    }
+    if !emitter.pending_new.is_empty() {
+        record_bail_kind("pending-new-state");
+        return None;
+    }
+    if !emitter.eager_new_active.is_empty() {
+        record_bail_kind("eager-new-state");
+        return None;
+    }
+    if !emitter.materialize_active.is_empty() {
+        record_bail_kind("materialize-new-state");
         return None;
     }
     emitter.emit_handler_dispatch_stubs(&shared_handler_pcs);
     if emitter.bailed {
+        record_bail_kind("handler-dispatch-stub");
         return None;
     }
-    emitter.resolve_branches()?;
-    let (exception_table, exception_count): (Vec<u8>, u16) = emitter.build_exception_table()?;
-    let attr: Vec<u8> = emitter.build_stack_map_table(first_param_reg, param_local_slots)?;
+    if emitter.resolve_branches().is_none() {
+        record_bail_kind("branch-resolution");
+        return None;
+    }
+    let Some((exception_table, exception_count)): Option<(Vec<u8>, u16)> =
+        emitter.build_exception_table()
+    else {
+        record_bail_kind("exception-table-build");
+        return None;
+    };
+    let Some(attr): Option<Vec<u8>> =
+        emitter.build_stack_map_table(first_param_reg, param_local_slots)
+    else {
+        record_bail_kind("stackmap-table-build");
+        return None;
+    };
     let (attributes, attribute_count): (Vec<u8>, u16) = if attr.is_empty() {
         (Vec::new(), 0)
     } else {
@@ -5107,6 +5179,41 @@ mod tests {
             "the branch lifter emitted a method whose max_locals cannot be represented"
         );
         assert_eq!(take_bail_kind(), "max-locals-limit");
+    }
+
+    #[test]
+    fn every_early_lifter_refusal_records_a_stable_reason() {
+        let dex: DexFile = empty_dex();
+        let mut cp: ConstantPool = ConstantPool::default();
+
+        for emit in [
+            emit_method_code
+                as fn(&DexFile, &mut ConstantPool, &CodeItem, bool) -> Option<EmittedCode>,
+            emit_branch_method_code,
+        ] {
+            reset_bail_op();
+            assert!(emit(&dex, &mut cp, &locals_item(0, Vec::new()), true).is_none());
+            assert_eq!(take_bail_kind(), "empty-instruction-stream");
+        }
+
+        reset_bail_op();
+        let linear_limit: CodeItem =
+            locals_item(0, vec![0x0000; MAX_METHOD_INSNS.saturating_add(1)]);
+        assert!(emit_method_code(&dex, &mut cp, &linear_limit, true).is_none());
+        assert_eq!(take_bail_kind(), "instruction-count-limit");
+
+        reset_bail_op();
+        let branch_limit: CodeItem =
+            locals_item(0, vec![0x0000; MAX_BRANCH_INSNS.saturating_add(1)]);
+        assert!(emit_branch_method_code(&dex, &mut cp, &branch_limit, true).is_none());
+        assert_eq!(take_bail_kind(), "instruction-count-limit");
+
+        reset_bail_op();
+        assert!(
+            emit_branch_method_code(&dex, &mut cp, &locals_item(0, straight_line_return()), true,)
+                .is_none()
+        );
+        assert_eq!(take_bail_kind(), "no-control-flow");
     }
 
     #[test]

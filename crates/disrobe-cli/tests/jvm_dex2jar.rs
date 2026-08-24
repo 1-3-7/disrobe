@@ -196,7 +196,7 @@ fn jvm_dex2jar_writes_the_in_house_translation_without_an_external_backend() {
     assert_eq!(partial_methods.len(), direct.stubbed_body_count);
     assert_eq!(
         partial_methods[0].reason,
-        "DR-JVM-0093: JVM emitter refusal: width-conflict"
+        "DR-JVM-0093: control-flow JVM emitter refusal: instruction-count-limit"
     );
     let direct_jar: Vec<u8> = assemble_jar(&direct).expect("direct in-house jar assembly");
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-dex2jar");
