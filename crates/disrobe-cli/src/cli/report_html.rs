@@ -533,6 +533,56 @@ fn render_artifacts(report: &SingleReport, out: &mut String) {
     out.push_str("</tbody></table></div></section>");
 }
 
+fn render_capabilities(report: &SingleReport, out: &mut String) {
+    let count: Option<String> = report
+        .capabilities
+        .report
+        .as_ref()
+        .filter(|_| report.capabilities.available)
+        .map(|capabilities| capabilities.matched_rules.to_string());
+    section_open(out, ICON_SHIELD, "Capabilities", count);
+    let Some(capabilities) = report
+        .capabilities
+        .report
+        .as_ref()
+        .filter(|_| report.capabilities.available)
+    else {
+        let reason: &str = report
+            .capabilities
+            .reason
+            .as_deref()
+            .unwrap_or("no capability report was produced");
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<div class=\"panel\"><div class=\"empty\">{}</div></div></section>",
+            html_escape(reason)
+        );
+        return;
+    };
+    if capabilities.capabilities.is_empty() {
+        out.push_str(
+            "<div class=\"panel\"><div class=\"empty\">no capabilities matched</div></div></section>",
+        );
+        return;
+    }
+    out.push_str(
+        "<div class=\"panel\"><table><thead><tr><th class=\"r\">address</th><th>rule</th>\
+<th>scope</th><th>description</th></tr></thead><tbody>",
+    );
+    for capability in &capabilities.capabilities {
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<tr><td class=\"r num\">{:#x}</td><td><span class=\"mono\">{}</span></td>\
+<td>{}</td><td>{}</td></tr>",
+            capability.address,
+            html_escape(&capability.rule),
+            html_escape(capability.scope.label()),
+            html_escape(&capability.description)
+        );
+    }
+    out.push_str("</tbody></table></div></section>");
+}
+
 fn render_ioc(ioc_report: &IocReport, out: &mut String) {
     section_open(
         out,
@@ -804,6 +854,7 @@ pub(crate) fn render_single_html(report: &SingleReport, enrichment: &Enrichment)
     render_stage_table(report, &mut out);
     render_tier_histogram(report, &mut out);
     render_walls(report, &mut out);
+    render_capabilities(report, &mut out);
     render_artifacts(report, &mut out);
     render_evidence(report, &mut out);
     render_reproduction(report, &mut out);
@@ -937,9 +988,42 @@ pub(crate) fn render_batch_html(report: &BatchReport) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use disrobe_capabilities::{
+        CapabilitiesReport, CapabilityMatch, Evidence as CapabilityEvidence, Scope,
+    };
     use disrobe_core::behavior::{Category, Evidence};
 
-    use super::super::report::StageView;
+    use super::super::report::{CapabilitySection, StageView};
+
+    fn populated_capabilities() -> CapabilitySection {
+        CapabilitySection {
+            available: true,
+            report: Some(CapabilitiesReport {
+                schema: disrobe_capabilities::CAPABILITIES_SCHEMA,
+                uri: Some("app.pyc".to_owned()),
+                byte_len: 128,
+                matched_rules: 1,
+                attack: vec!["T1059".to_owned()],
+                mbc: vec!["B0001".to_owned()],
+                capabilities: vec![CapabilityMatch {
+                    rule: "execution/shell".to_owned(),
+                    namespace: "execution".to_owned(),
+                    scope: Scope::File,
+                    function: None,
+                    function_address: None,
+                    address: 0x40,
+                    attack: vec!["T1059".to_owned()],
+                    mbc: vec!["B0001".to_owned()],
+                    description: "launches a shell".to_owned(),
+                    evidence: vec![CapabilityEvidence {
+                        feature: "api:ShellExecuteW".to_owned(),
+                        address: 0x40,
+                    }],
+                }],
+            }),
+            reason: None,
+        }
+    }
 
     fn sample_single() -> SingleReport {
         SingleReport {
@@ -981,6 +1065,7 @@ mod tests {
                 artifact_blake3: "abcd1234".to_owned(),
                 artifact_size: 128,
             }],
+            capabilities: populated_capabilities(),
             failures: Vec::new(),
             evidence: vec![EvidenceItem {
                 role: EvidenceRole::AnalysisTarget,
@@ -1035,6 +1120,8 @@ mod tests {
         assert!(html.contains("Input identity"));
         assert!(html.contains("Chain topology"));
         assert!(html.contains("Recovery-tier distribution"));
+        assert!(html.contains("Capabilities"));
+        assert!(html.contains("execution/shell"));
         assert!(html.contains("<svg"));
     }
 
@@ -1151,6 +1238,36 @@ mod tests {
         let a: String = render_single_html(&report, &Enrichment::default());
         let b: String = render_single_html(&report, &Enrichment::default());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn html_keeps_an_empty_capability_report_distinct_from_an_unavailable_one() {
+        let mut report: SingleReport = sample_single();
+        report
+            .capabilities
+            .report
+            .as_mut()
+            .expect("report")
+            .capabilities = Vec::new();
+        report
+            .capabilities
+            .report
+            .as_mut()
+            .expect("report")
+            .matched_rules = 0;
+        let empty: String = render_single_html(&report, &Enrichment::default());
+        assert!(empty.contains("no capabilities matched"), "got: {empty}");
+
+        report.capabilities = CapabilitySection {
+            available: false,
+            report: None,
+            reason: Some("target is unavailable".to_owned()),
+        };
+        let unavailable: String = render_single_html(&report, &Enrichment::default());
+        assert!(
+            unavailable.contains("target is unavailable"),
+            "got: {unavailable}"
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use disrobe_capabilities::CapabilitiesReport;
 use disrobe_core::Redactor;
 use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc, VerdictDoc};
 use disrobe_core::recovery::ConfidenceTier;
@@ -173,11 +174,52 @@ pub(crate) struct SingleReport {
     pub(crate) tiers: TierTotals,
     pub(crate) stages: Vec<StageView>,
     pub(crate) walls: Vec<WallView>,
+    pub(crate) capabilities: CapabilitySection,
     pub(crate) failures: Vec<FailureView>,
     pub(crate) evidence: Vec<EvidenceItem>,
     pub(crate) reproduction: Reproduction,
     pub(crate) artifacts: Vec<String>,
     pub(crate) notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CapabilitySection {
+    pub(crate) available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) report: Option<CapabilitiesReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+}
+
+pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
+    let Some(path) = input.path.as_deref() else {
+        return CapabilitySection {
+            available: false,
+            report: None,
+            reason: Some("the chain document records no analysis target path".to_string()),
+        };
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return CapabilitySection {
+            available: false,
+            report: None,
+            reason: Some(format!(
+                "the analysis target `{path}` is not readable from this working directory"
+            )),
+        };
+    };
+    match super::capabilities::build_report(&bytes, path, Path::new(path)) {
+        Ok(report) => CapabilitySection {
+            available: true,
+            report: Some(report),
+            reason: None,
+        },
+        Err(error) => CapabilitySection {
+            available: false,
+            report: None,
+            reason: Some(error.to_string()),
+        },
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -748,18 +790,20 @@ fn build_single(
             recovery.histogram.skeleton
         ));
     }
+    let input: InputIdentity = InputIdentity {
+        path: doc.input.path.clone(),
+        size: doc.input.size,
+        blake3: doc.input.blake3.clone(),
+        detected: doc.input.detected.clone(),
+        final_format: doc.final_format.clone(),
+    };
+    let capabilities = capabilities_section(&input);
     SingleReport {
         kind: "single",
         schema: RECOVERY_REPORT_SCHEMA.to_string(),
         tool_version: doc.tool_version.clone(),
         source_dir: source_dir.map(|p: &Path| p.display().to_string()),
-        input: InputIdentity {
-            path: doc.input.path.clone(),
-            size: doc.input.size,
-            blake3: doc.input.blake3.clone(),
-            detected: doc.input.detected.clone(),
-            final_format: doc.final_format.clone(),
-        },
+        input,
         topology: format!("{:?}", doc.topology),
         verdict: format!("{:?}", doc.verdict),
         total_ms: recovery.total_ms,
@@ -773,6 +817,7 @@ fn build_single(
         },
         stages,
         walls,
+        capabilities,
         failures,
         evidence,
         reproduction,
@@ -1009,6 +1054,7 @@ fn render_text_single(r: &SingleReport, out: &mut String) {
             );
         }
     }
+    render_text_capabilities(&r.capabilities, out);
     if !r.failures.is_empty() {
         let _ = writeln!(out, "  failures:");
         for f in &r.failures {
@@ -1049,6 +1095,46 @@ fn render_text_single(r: &SingleReport, out: &mut String) {
     }
     for note in &r.notes {
         let _ = writeln!(out, "  note:        {note}");
+    }
+}
+
+fn render_text_capabilities(section: &CapabilitySection, out: &mut String) {
+    let _ = writeln!(out, "  capabilities:");
+    let Some(report) = section.report.as_ref().filter(|_| section.available) else {
+        let _ = writeln!(
+            out,
+            "    unavailable: {}",
+            section
+                .reason
+                .as_deref()
+                .unwrap_or("no capability report was produced")
+        );
+        return;
+    };
+    let _ = writeln!(
+        out,
+        "    {} rule(s) matched over {} bytes",
+        report.matched_rules, report.byte_len
+    );
+    if !report.attack.is_empty() {
+        let _ = writeln!(out, "    ATT&CK: {}", report.attack.join(", "));
+    }
+    if !report.mbc.is_empty() {
+        let _ = writeln!(out, "    MBC:    {}", report.mbc.join(", "));
+    }
+    if report.capabilities.is_empty() {
+        let _ = writeln!(out, "    no capabilities matched");
+        return;
+    }
+    for capability in &report.capabilities {
+        let _ = writeln!(
+            out,
+            "    {:#018x} {} [{}] {}",
+            capability.address,
+            capability.rule,
+            capability.scope.label(),
+            capability.description
+        );
     }
 }
 
@@ -1146,6 +1232,7 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
             );
         }
     }
+    render_markdown_capabilities(&r.capabilities, out);
     if !r.failures.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "## Failures");
@@ -1210,6 +1297,53 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
         for note in &r.notes {
             let _ = writeln!(out, "- {note}");
         }
+    }
+}
+
+fn render_markdown_capabilities(section: &CapabilitySection, out: &mut String) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Capabilities");
+    let _ = writeln!(out);
+    let Some(report) = section.report.as_ref().filter(|_| section.available) else {
+        let _ = writeln!(
+            out,
+            "Unavailable: {}",
+            section
+                .reason
+                .as_deref()
+                .unwrap_or("no capability report was produced")
+        );
+        return;
+    };
+    let _ = writeln!(
+        out,
+        "{} rule(s) matched over {} bytes.",
+        report.matched_rules, report.byte_len
+    );
+    if !report.attack.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "ATT&CK: {}", report.attack.join(", "));
+    }
+    if !report.mbc.is_empty() {
+        let _ = writeln!(out, "MBC: {}", report.mbc.join(", "));
+    }
+    if report.capabilities.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "No capabilities matched.");
+        return;
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "| address | rule | scope | description |");
+    let _ = writeln!(out, "|---:|---|---|---|");
+    for capability in &report.capabilities {
+        let _ = writeln!(
+            out,
+            "| `{:#x}` | `{}` | {} | {} |",
+            capability.address,
+            capability.rule,
+            capability.scope.label(),
+            capability.description
+        );
     }
 }
 
@@ -1406,6 +1540,7 @@ pub(crate) fn batch_report_for_test() -> BatchReport {
 )]
 mod tests {
     use super::*;
+    use disrobe_capabilities::{CapabilityMatch, Evidence, Scope};
     use disrobe_core::scratch::ScratchDir;
 
     fn tmp_dir(stem: &str) -> ScratchDir {
@@ -1590,6 +1725,36 @@ mod tests {
         }
     }
 
+    fn populated_capabilities() -> CapabilitySection {
+        CapabilitySection {
+            available: true,
+            report: Some(CapabilitiesReport {
+                schema: disrobe_capabilities::CAPABILITIES_SCHEMA,
+                uri: Some("app.pyc".to_owned()),
+                byte_len: 128,
+                matched_rules: 1,
+                attack: vec!["T1059".to_owned()],
+                mbc: vec!["B0001".to_owned()],
+                capabilities: vec![CapabilityMatch {
+                    rule: "execution/shell".to_owned(),
+                    namespace: "execution".to_owned(),
+                    scope: Scope::File,
+                    function: None,
+                    function_address: None,
+                    address: 0x40,
+                    attack: vec!["T1059".to_owned()],
+                    mbc: vec!["B0001".to_owned()],
+                    description: "launches a shell".to_owned(),
+                    evidence: vec![Evidence {
+                        feature: "api:ShellExecuteW".to_owned(),
+                        address: 0x40,
+                    }],
+                }],
+            }),
+            reason: None,
+        }
+    }
+
     #[test]
     fn a_repeated_pass_name_in_a_tree_attributes_each_stage_to_its_own_node() {
         let (_scratch, dir): (ScratchDir, PathBuf) =
@@ -1753,6 +1918,8 @@ mod tests {
         assert!(buf.contains("py.decompile"), "got: {buf}");
         assert!(buf.contains("blake3:"), "got: {buf}");
         assert!(buf.contains("app.py"), "artifact inventory missing: {buf}");
+        assert!(buf.contains("capabilities:"), "got: {buf}");
+        assert!(buf.contains("unavailable:"), "got: {buf}");
     }
 
     #[test]
@@ -1767,6 +1934,7 @@ mod tests {
         assert!(buf.starts_with("# disrobe report"), "got: {buf}");
         assert!(buf.contains("## Stages"), "got: {buf}");
         assert!(buf.contains("| `py.decompile` |"), "got: {buf}");
+        assert!(buf.contains("## Capabilities"), "got: {buf}");
     }
 
     #[test]
@@ -1779,6 +1947,53 @@ mod tests {
         assert_eq!(
             value["stages"][0]["pass"],
             serde_json::json!("py.decompile")
+        );
+        assert_eq!(value["capabilities"]["available"], serde_json::json!(false));
+        assert!(value["capabilities"]["reason"].is_string());
+    }
+
+    #[test]
+    fn all_primary_report_renderers_preserve_a_populated_capability_section() {
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("capability-renderers");
+        let mut report: Box<SingleReport> = single_of(&dir);
+        report.capabilities = populated_capabilities();
+
+        let json: serde_json::Value = serde_json::to_value(&report).expect("serialize json");
+        assert_eq!(json["capabilities"]["available"], serde_json::json!(true));
+        assert_eq!(
+            json["capabilities"]["report"]["capabilities"][0]["rule"],
+            serde_json::json!("execution/shell")
+        );
+
+        let mut text: String = String::new();
+        render_text_single(&report, &mut text);
+        assert!(text.contains("execution/shell"), "got: {text}");
+
+        let mut markdown: String = String::new();
+        render_markdown_single(&report, &mut markdown);
+        assert!(markdown.contains("execution/shell"), "got: {markdown}");
+    }
+
+    #[test]
+    fn capability_section_without_a_target_is_typed_and_byte_deterministic() {
+        let input: InputIdentity = InputIdentity {
+            path: None,
+            size: 0,
+            blake3: String::new(),
+            detected: Vec::new(),
+            final_format: None,
+        };
+        let first: CapabilitySection = capabilities_section(&input);
+        let second: CapabilitySection = capabilities_section(&input);
+        assert!(!first.available);
+        assert!(first.report.is_none());
+        assert_eq!(
+            first.reason.as_deref(),
+            Some("the chain document records no analysis target path")
+        );
+        assert_eq!(
+            serde_json::to_vec(&first).expect("serialize first"),
+            serde_json::to_vec(&second).expect("serialize second")
         );
     }
 

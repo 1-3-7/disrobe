@@ -773,23 +773,22 @@ fn standards_block(generated: &Generated, unmapped: &[String]) -> Value {
 }
 
 fn capabilities_block(report: &SingleReport) -> Value {
-    let Some(path): Option<&String> = report.input.path.as_ref() else {
-        return json!({
+    match (
+        report.capabilities.available,
+        report.capabilities.report.as_ref(),
+        report.capabilities.reason.as_deref(),
+    ) {
+        (true, Some(capabilities), _) => json!({
+            "available": true,
+            "report": capabilities,
+        }),
+        (_, _, Some(reason)) => json!({
             "available": false,
-            "reason": "the chain document records no analysis target path",
-        });
-    };
-    let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
-        return json!({
+            "reason": reason,
+        }),
+        _ => json!({
             "available": false,
-            "reason": format!("the analysis target `{path}` is not readable from this working directory"),
-        });
-    };
-    match super::capabilities::build_report(&bytes, path, Path::new(path)) {
-        Ok(capabilities) => json!({ "available": true, "report": capabilities }),
-        Err(error) => json!({
-            "available": false,
-            "reason": format!("{error}"),
+            "reason": "no capability report was produced",
         }),
     }
 }
