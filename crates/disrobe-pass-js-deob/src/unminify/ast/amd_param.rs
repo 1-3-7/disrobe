@@ -111,13 +111,10 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         for factory in webpack_factories(registry, nodes, symbols) {
             let mut reserved: IndexSet<String> = root_reserved.clone();
             let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
-            for (role_index, (parameter, preferred)) in factory
-                .params
-                .items
-                .iter()
-                .zip(["module", "exports", "require"])
-                .enumerate()
-            {
+            let Some(roles): Option<[&str; 3]> = webpack_factory_roles(factory, symbols) else {
+                continue;
+            };
+            for (parameter, preferred) in factory.params.items.iter().zip(roles) {
                 let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
                     continue;
                 };
@@ -128,7 +125,9 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
                 let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
                     continue;
                 };
-                if role_index < 2 && symbols.get_resolved_reference_ids(symbol_id).is_empty() {
+                if preferred != "require"
+                    && symbols.get_resolved_reference_ids(symbol_id).is_empty()
+                {
                     continue;
                 }
                 let owner_scope: ScopeId = symbols.get_scope_id(symbol_id);
@@ -356,7 +355,6 @@ fn webpack_factories<'a>(
                 )
             })
             || body_has_dynamic_scope(body)
-            || !factory_uses_runtime_lookup(factory, symbols)
         {
             continue;
         }
@@ -479,71 +477,121 @@ fn is_webpack_bootstrap_call(
     if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
         return false;
     }
-    let Some(first): Option<&Expression<'_>> = call.arguments[0].as_expression() else {
-        return false;
-    };
-    let Expression::Identifier(module) = first.get_inner_expression() else {
-        return false;
-    };
-    let Some(module_reference): Option<ReferenceId> = module.reference_id.get() else {
-        return false;
-    };
-    let Some(module_symbol): Option<SymbolId> = symbols.get_reference(module_reference).symbol_id()
+    let Some(arguments): Option<[&Expression<'_>; 3]> = call
+        .arguments
+        .iter()
+        .map(Argument::as_expression)
+        .collect::<Option<Vec<&Expression<'_>>>>()
+        .and_then(|values: Vec<&Expression<'_>>| values.try_into().ok())
     else {
         return false;
     };
-    let Some(second): Option<&Expression<'_>> = call.arguments[1].as_expression() else {
-        return false;
-    };
-    let Expression::StaticMemberExpression(exports) = second.get_inner_expression() else {
-        return false;
-    };
-    if exports.optional || exports.property.name.as_str() != "exports" {
-        return false;
-    }
-    let Expression::Identifier(exports_module) = exports.object.get_inner_expression() else {
-        return false;
-    };
-    let Some(exports_module_reference): Option<ReferenceId> = exports_module.reference_id.get()
-    else {
-        return false;
-    };
-    if symbols.get_reference(exports_module_reference).symbol_id() != Some(module_symbol) {
+    let require_indices: Vec<usize> = arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let Expression::Identifier(require) = argument.get_inner_expression() else {
+                return None;
+            };
+            unresolved_identifier_is(require, "__webpack_require__", symbols).then_some(index)
+        })
+        .collect();
+    if require_indices.len() != 1 {
         return false;
     }
-    let Some(third): Option<&Expression<'_>> = call.arguments[2].as_expression() else {
-        return false;
-    };
-    let Expression::Identifier(require) = third.get_inner_expression() else {
-        return false;
-    };
-    unresolved_identifier_is(require, "__webpack_require__", symbols)
+    for (module_index, argument) in arguments.iter().enumerate() {
+        let Expression::Identifier(module) = argument.get_inner_expression() else {
+            continue;
+        };
+        let Some(module_reference): Option<ReferenceId> = module.reference_id.get() else {
+            continue;
+        };
+        let Some(module_symbol): Option<SymbolId> =
+            symbols.get_reference(module_reference).symbol_id()
+        else {
+            continue;
+        };
+        for (exports_index, candidate) in arguments.iter().enumerate() {
+            let Expression::StaticMemberExpression(exports) = candidate.get_inner_expression()
+            else {
+                continue;
+            };
+            if exports.optional || exports.property.name.as_str() != "exports" {
+                continue;
+            }
+            let Expression::Identifier(exports_module) = exports.object.get_inner_expression()
+            else {
+                continue;
+            };
+            let Some(exports_module_reference): Option<ReferenceId> =
+                exports_module.reference_id.get()
+            else {
+                continue;
+            };
+            let require_index: usize = require_indices[0];
+            if symbols.get_reference(exports_module_reference).symbol_id() == Some(module_symbol)
+                && module_index != exports_index
+                && module_index != require_index
+                && exports_index != require_index
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
-fn factory_uses_runtime_lookup(factory: &Function<'_>, symbols: &SymbolTable) -> bool {
-    let Some(BindingPatternKind::BindingIdentifier(binding)) = factory
+fn webpack_factory_roles(
+    factory: &Function<'_>,
+    symbols: &SymbolTable,
+) -> Option<[&'static str; 3]> {
+    let parameter_symbols: [SymbolId; 3] = factory
         .params
         .items
-        .get(2)
-        .map(|parameter| &parameter.pattern.kind)
-    else {
-        return false;
-    };
-    let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
-        return false;
-    };
-    let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
-        return false;
-    };
-    let mut calls: FactoryCallProbe<'_> = FactoryCallProbe {
-        factory_symbol: symbol_id,
+        .iter()
+        .map(|parameter| {
+            let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                return None;
+            };
+            binding.symbol_id.get()
+        })
+        .collect::<Option<Vec<SymbolId>>>()?
+        .try_into()
+        .ok()?;
+    let body: &FunctionBody<'_> = factory.body.as_deref()?;
+    let mut probe: WebpackRoleProbe<'_> = WebpackRoleProbe {
+        parameter_symbols,
         symbols,
-        found: false,
+        called: [false; 3],
+        exports_member: [false; 3],
+        other_member: [false; 3],
     };
     for statement in &body.statements {
-        calls.visit_statement(statement);
+        probe.visit_statement(statement);
     }
-    calls.found
+    let require_index: usize = unique_true_index(probe.called)?;
+    let module_index: usize = unique_true_index(probe.exports_member)?;
+    let exports_index: usize = unique_true_index(probe.other_member)?;
+    if require_index == module_index
+        || require_index == exports_index
+        || module_index == exports_index
+    {
+        return None;
+    }
+    let mut roles: [&'static str; 3] = [""; 3];
+    roles[require_index] = "require";
+    roles[module_index] = "module";
+    roles[exports_index] = "exports";
+    Some(roles)
+}
+
+fn unique_true_index(values: [bool; 3]) -> Option<usize> {
+    let mut indices = values
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, matched)| matched.then_some(index));
+    let index: usize = indices.next()?;
+    indices.next().is_none().then_some(index)
 }
 
 struct AmdFactory<'a> {
@@ -1163,6 +1211,63 @@ struct FactoryCallProbe<'s> {
     factory_symbol: SymbolId,
     symbols: &'s SymbolTable,
     found: bool,
+}
+
+struct WebpackRoleProbe<'s> {
+    parameter_symbols: [SymbolId; 3],
+    symbols: &'s SymbolTable,
+    called: [bool; 3],
+    exports_member: [bool; 3],
+    other_member: [bool; 3],
+}
+
+impl WebpackRoleProbe<'_> {
+    fn parameter_index(&self, identifier: &oxc_ast::ast::IdentifierReference<'_>) -> Option<usize> {
+        let reference_id: ReferenceId = identifier.reference_id.get()?;
+        let symbol_id: SymbolId = self.symbols.get_reference(reference_id).symbol_id()?;
+        self.parameter_symbols
+            .iter()
+            .position(|candidate: &SymbolId| *candidate == symbol_id)
+    }
+}
+
+impl<'a> Visit<'a> for WebpackRoleProbe<'_> {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if !call.optional
+            && call.type_parameters.is_none()
+            && let Expression::Identifier(callee) = &call.callee
+            && let Some(index) = self.parameter_index(callee)
+        {
+            self.called[index] = true;
+        }
+        visit_call_children(self, call);
+    }
+
+    fn visit_static_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::StaticMemberExpression<'a>,
+    ) {
+        if !member.optional
+            && let Expression::Identifier(object) = member.object.get_inner_expression()
+            && let Some(index) = self.parameter_index(object)
+        {
+            if member.property.name.as_str() == "exports" {
+                self.exports_member[index] = true;
+            } else {
+                self.other_member[index] = true;
+            }
+        }
+        self.visit_expression(&member.object);
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        _arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+    }
 }
 
 impl<'a> Visit<'a> for FactoryCallProbe<'_> {

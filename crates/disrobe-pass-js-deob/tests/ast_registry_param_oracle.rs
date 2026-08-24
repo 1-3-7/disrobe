@@ -130,6 +130,41 @@ fn webpack_registry_factory_recovers_runtime_parameter_names() {
 }
 
 #[test]
+fn webpack_registry_factory_recovers_roles_in_nonstandard_parameter_order() {
+    let fixtures: [(&str, &str); 2] = [
+        (
+            r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){var d=a("./math-utils");b.exports=d.sum(6,7);c.answer=b.exports;print(c.answer);}};bundle[1](__webpack_require__,runtimeModule,runtimeModule.exports);"#,
+            "function(require,module,exports)",
+        ),
+        (
+            r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){var d=b("./math-utils");c.exports=d.sum(6,7);a.answer=c.exports;print(a.answer);}};bundle[1](runtimeModule.exports,__webpack_require__,runtimeModule);"#,
+            "function(exports,require,module)",
+        ),
+    ];
+    for (source, signature) in fixtures {
+        let (first, _stats) = unminify_ast(source);
+        let (second, _) = unminify_ast(source);
+        assert_eq!(first, second, "role recovery must be byte-identical");
+        assert!(
+            first.contains(signature),
+            "semantic role evidence must override parameter position:\n{first}"
+        );
+        assert_runtime_parity(source, &first);
+    }
+}
+
+#[test]
+fn webpack_registry_factory_abstains_when_role_evidence_is_ambiguous() {
+    let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=b("./math-utils");b.cache=1;c.answer=a.exports;print(c.answer.sum(2,3));}};bundle[1](runtimeModule,__webpack_require__,runtimeModule.exports);"#;
+    let (recovered, _stats) = unminify_ast(source);
+    assert!(
+        recovered.contains("function(a,b,c)"),
+        "ambiguous export-object evidence must leave the factory unchanged:\n{recovered}"
+    );
+    assert_runtime_parity(source, &recovered);
+}
+
+#[test]
 fn webpack_chunk_registration_factory_recovers_runtime_parameter_names() {
     let source: &str = r#"var runtimeModule={exports:{}};globalThis.webpackChunkexample=[];globalThis.webpackChunkexample.push([[101],{7:function(a,b,c){var d=c("./math-utils");a.exports=d.sum(8,9);b.answer=a.exports;print(b.answer);}}]);globalThis.webpackChunkexample[0][1][7](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
     let (first, _stats) = unminify_ast(source);
