@@ -19,6 +19,8 @@ use disrobe_pass_native::{
     render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
 
+#[cfg(feature = "chain")]
+use super::backend_export::{BackendExportTarget, SupplementalOutput};
 use super::emit::{EmitKind, EmitSpec};
 
 #[derive(Subcommand, Debug)]
@@ -375,6 +377,19 @@ fn write_flutter_symbol_export(
     layout: &LibAppLayout,
     target: FlutterExportTarget,
 ) -> miette::Result<PathBuf> {
+    let format: ExportFormat = target.into_pass();
+    let rendered: String = render_flutter_symbol_export(input, layout, format)?;
+    let sidecar_path: PathBuf = out_path.with_extension(format.sidecar_extension());
+    std::fs::write(&sidecar_path, rendered.as_bytes())
+        .map_err(|error| miette::miette!("DR-CLI-0756: cannot write symbol export: {error}"))?;
+    Ok(sidecar_path)
+}
+
+pub(crate) fn render_flutter_symbol_export(
+    input: &Path,
+    layout: &LibAppLayout,
+    format: ExportFormat,
+) -> miette::Result<String> {
     let mut symbols: Vec<RecoveredSymbol> = layout
         .function_symbols
         .iter()
@@ -400,7 +415,6 @@ fn write_flutter_symbol_export(
     symbols.dedup_by(|left: &mut RecoveredSymbol, right: &mut RecoveredSymbol| {
         left.address == right.address && left.name == right.name
     });
-    let format: ExportFormat = target.into_pass();
     let symbol_map: SymbolMap = SymbolMap {
         schema: SYMBOL_MAP_SCHEMA,
         source: input.display().to_string(),
@@ -410,18 +424,24 @@ fn write_flutter_symbol_export(
         symbol_count: symbols.len(),
         symbols,
     };
-    let rendered: String = match format {
+    match format {
         ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map)
-            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}")),
         ExportFormat::Ida => render_idapython(&symbol_map)
-            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}")),
         ExportFormat::Json => render_symbol_map_json(&symbol_map)
-            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
-    };
-    let sidecar_path: PathBuf = out_path.with_extension(format.sidecar_extension());
-    std::fs::write(&sidecar_path, rendered.as_bytes())
-        .map_err(|error| miette::miette!("DR-CLI-0756: cannot write symbol export: {error}"))?;
-    Ok(sidecar_path)
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}")),
+    }
+}
+
+#[cfg(feature = "chain")]
+pub(crate) fn prepare_flutter_symbol_export(
+    input: &Path,
+    layout: &LibAppLayout,
+    target: BackendExportTarget,
+) -> miette::Result<SupplementalOutput> {
+    let rendered: String = render_flutter_symbol_export(input, layout, target.format())?;
+    SupplementalOutput::new(target.flutter_auto_path(), rendered.into_bytes())
 }
 
 fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {

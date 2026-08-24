@@ -41,10 +41,10 @@ pub(crate) fn run(
         backend_export,
         i_have_authorization,
     } = options;
-    #[cfg(not(feature = "jvm"))]
+    #[cfg(not(any(feature = "jvm", feature = "flutter")))]
     if backend_export.is_some() {
         return Err(miette::miette!(
-            "DR-CLI-0441: this binary was built without the `jvm` feature, so it cannot emit a requested Dalvik symbol export"
+            "DR-CLI-0441: this binary was built without the `jvm` and `flutter` features, so it cannot emit a requested symbol export"
         ));
     }
     let emit_spec: EmitSpec = EmitSpec::parse(&emit_kinds)?;

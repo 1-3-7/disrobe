@@ -889,7 +889,7 @@ enum Cmd {
         #[arg(
             long,
             value_enum,
-            help = "emit a direct-root DEX symbol map under <out>/exports/dalvik for Ghidra, IDA, or JSON"
+            help = "emit a direct-root Flutter or DEX symbol map under <out>/exports for Ghidra, IDA, or JSON"
         )]
         format: Option<BackendExportTarget>,
         #[arg(long, help = "report what would happen without writing any output")]

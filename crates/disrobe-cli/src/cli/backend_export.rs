@@ -1,7 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use clap::ValueEnum;
-#[cfg(feature = "jvm")]
+#[cfg(any(feature = "jvm", feature = "flutter"))]
 use disrobe_pass_native::backend_export::ExportFormat;
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,7 +12,7 @@ pub(crate) enum BackendExportTarget {
 }
 
 impl BackendExportTarget {
-    #[cfg(feature = "jvm")]
+    #[cfg(any(feature = "jvm", feature = "flutter"))]
     pub(crate) const fn format(self) -> ExportFormat {
         match self {
             Self::Ghidra => ExportFormat::Ghidra,
@@ -38,6 +38,16 @@ impl BackendExportTarget {
         };
         PathBuf::from("exports").join("dalvik").join(filename)
     }
+
+    #[cfg(feature = "flutter")]
+    pub(crate) fn flutter_auto_path(self) -> PathBuf {
+        let filename: &str = match self {
+            Self::Ghidra => "symbols.ghidra.java",
+            Self::Ida => "symbols.ida.py",
+            Self::Json => "symbols.json",
+        };
+        PathBuf::from("exports").join("flutter").join(filename)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,7 +57,7 @@ pub(crate) struct SupplementalOutput {
 }
 
 impl SupplementalOutput {
-    #[cfg(feature = "jvm")]
+    #[cfg(any(feature = "jvm", feature = "flutter"))]
     pub(crate) fn new(relative_path: PathBuf, bytes: Vec<u8>) -> miette::Result<Self> {
         validate_relative_path(&relative_path)?;
         Ok(Self {

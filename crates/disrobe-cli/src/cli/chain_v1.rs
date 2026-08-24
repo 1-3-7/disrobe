@@ -417,6 +417,51 @@ fn direct_root_dalvik_node(plan: &ChainPlan, input_hash: [u8; 32]) -> Option<&No
     })
 }
 
+#[cfg(feature = "flutter")]
+fn direct_root_flutter_node(plan: &ChainPlan, input_hash: [u8; 32]) -> Option<&Node> {
+    plan.nodes.iter().find(|node: &&Node| {
+        node.parent_id == Some(plan.root_id)
+            && node.pass_id.as_deref() == Some("mobile.classify")
+            && node.format_tag_in.as_deref() == Some("flutter-aot")
+            && node.input_blake3 == input_hash
+            && matches!(
+                node.output_kind.as_ref(),
+                Some(OutputKind::Mixed { children }) if children.is_empty()
+            )
+            && matches!(node.verdict, Verdict::FanOut { count: 0 })
+    })
+}
+
+#[cfg(feature = "flutter")]
+fn prepare_flutter_symbol_export(
+    plan: &ChainPlan,
+    input: &[u8],
+    input_path: &Path,
+    target: Option<BackendExportTarget>,
+) -> miette::Result<Option<SupplementalOutput>> {
+    let Some(target): Option<BackendExportTarget> = target else {
+        return Ok(None);
+    };
+    let input_hash: [u8; 32] = blake3_hash(input);
+    if direct_root_flutter_node(plan, input_hash).is_none() {
+        return Ok(None);
+    }
+    let layout: disrobe_pass_mobile::LibAppLayout = disrobe_pass_mobile::parse_libapp_so(input)
+        .map_err(|error| miette::miette!("DR-CLI-0445: requested Flutter symbol export cannot parse the classified root libapp.so: {error}"))?;
+    super::flutter::prepare_flutter_symbol_export(input_path, &layout, target).map(Some)
+}
+
+#[cfg(not(feature = "flutter"))]
+fn prepare_flutter_symbol_export(
+    _plan: &ChainPlan,
+    _input: &[u8],
+    _input_path: &Path,
+    target: Option<BackendExportTarget>,
+) -> miette::Result<Option<SupplementalOutput>> {
+    let _ = target;
+    Ok(None)
+}
+
 #[cfg(feature = "jvm")]
 fn prepare_dalvik_symbol_export(
     plan: &ChainPlan,
@@ -524,7 +569,13 @@ pub(crate) fn run_with_disk(
         return Err(error);
     }
     let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
-        prepare_dalvik_symbol_export(&plan, &seed_for_scan, &input, backend_export)?
+        let flutter_output: Option<SupplementalOutput> =
+            prepare_flutter_symbol_export(&plan, &seed_for_scan, &input, backend_export)?;
+        if flutter_output.is_some() {
+            flutter_output
+        } else {
+            prepare_dalvik_symbol_export(&plan, &seed_for_scan, &input, backend_export)?
+        }
     } else {
         None
     };
@@ -662,6 +713,16 @@ pub(crate) fn run_with_disk(
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
     let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
     let chain_path_str: String = redacted_text(chain_path.display().to_string(), redact)?;
+    let supplemental_label: Option<&str> =
+        supplemental_output
+            .as_ref()
+            .map(|output: &SupplementalOutput| {
+                if output.relative_path().starts_with("exports/flutter") {
+                    "Flutter"
+                } else {
+                    "Dalvik"
+                }
+            });
     let supplemental_path_str: Option<String> = supplemental_output
         .as_ref()
         .map(|output: &SupplementalOutput| write_supplemental_output(&out_dir, output))
@@ -673,8 +734,8 @@ pub(crate) fn run_with_disk(
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
         println!("report.json written: {forensic_path_str}");
-        if let Some(path) = supplemental_path_str.as_ref() {
-            println!("Dalvik symbol export written: {path}");
+        if let (Some(label), Some(path)) = (supplemental_label, supplemental_path_str.as_ref()) {
+            println!("{label} symbol export written: {path}");
         }
         if let Some(path) = delphi_path_str.as_ref() {
             println!("delphi.json written: {path}");
@@ -872,12 +933,22 @@ pub(crate) fn run_chain_to_dir(
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
-    let supplemental_output: Option<SupplementalOutput> = prepare_dalvik_symbol_export(
+    let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
         &plan,
         &seed_for_scan,
         Path::new(input_label),
         backend_export,
     )?;
+    let supplemental_output: Option<SupplementalOutput> = if flutter_output.is_some() {
+        flutter_output
+    } else {
+        prepare_dalvik_symbol_export(
+            &plan,
+            &seed_for_scan,
+            Path::new(input_label),
+            backend_export,
+        )?
+    };
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
     let anti: AntiAnalysisReport = scan_anti_analysis(&seed_for_scan, Some(input_label), &evidence);
     let doc: ChainDocument = ChainDocument::from_plan(
