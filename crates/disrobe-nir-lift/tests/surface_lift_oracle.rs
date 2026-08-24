@@ -68,6 +68,9 @@ fn names(result: &QueryResult) -> Vec<String> {
             out.sort();
             out
         }
+        QueryResult::ConcreteImplementors(_) | QueryResult::Unsupported { .. } => {
+            panic!("unexpected query result")
+        }
     }
 }
 
