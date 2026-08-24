@@ -52,7 +52,7 @@ Each file of a batch run leaves its own `report.json` in its own per-file output
 - `text`: an aligned human report for the terminal.
 - `markdown`: a report with tables, ready to paste into an issue or PR.
 - `json`: the machine-readable `disrobe.report/v1` document.
-- `html`: a single self-contained HTML file (printed to stdout; redirect to a `.html`). CSS is inlined from the shared docs theme token file, with no JavaScript and no external/CDN reference, so it renders offline when double-clicked. Sections include input identity, a chain-topology flow, per-stage verdicts with generated recovery bars, a generated tier histogram, walls and failures, recovered artifacts, the evidence table, the reproduction steps, and, when the input is still readable, defanged IOC plus behavior / MITRE ATT&CK tables. Every interpolated value is HTML-escaped, and the renderer uses no clock or randomness, so identical report data produces byte-stable HTML.
+- `html`: a single self-contained HTML file (printed to stdout; redirect to a `.html`). CSS is inlined from the shared docs theme token file, with no JavaScript and no external/CDN reference, so it renders offline when double-clicked. Sections include input identity, a chain-topology flow, per-stage verdicts with generated recovery bars, a generated tier histogram, walls and failures, capabilities, recovered artifacts, the evidence table, the reproduction steps, and, when the input is still readable, defanged IOC plus behavior / MITRE ATT&CK tables. Every interpolated value is HTML-escaped, and the renderer uses no clock or randomness, so identical report data produces byte-stable HTML.
 - `sarif`: a SARIF 2.1.0 log printed to stdout. See [SARIF output](#sarif-output).
 
 ### Single-run report contents
@@ -63,6 +63,7 @@ Each file of a batch run leaves its own `report.json` in its own per-file output
 - Tier histogram: exact / semantic / partial / skeleton counts.
 - Per-stage table: index, pass id, confidence, score, duration.
 - Walls: every layer that stopped short, with the input it lacks.
+- Capabilities: ATT&CK- and MBC-tagged rule matches with addresses and evidence scope. Text, JSON, markdown, HTML, and SARIF consume the same result.
 - Failures: every layer that returned an error, with its message.
 - Recovered-artifact inventory: the union of artifact names produced by the stages.
 - Evidence: one cited entry per artifact the report read, with its digest and byte range.
@@ -172,7 +173,7 @@ The `standards` block records SARIF 2.1.0, STIX 2.1, MAEC 5.0, and CycloneDX 1.5
 
 ### What the enriched blocks need
 
-The STIX, MAEC, capability, and indicator blocks read the original analysis target. The report opens it at the path `chain.json` recorded, resolved against the working directory. If the chain document records no path, or the sample has moved, or you run the command from another directory, each affected block reports `available: false` and names the reason. The rest of the report still renders.
+The STIX, MAEC, capability, and indicator blocks read the original analysis target. The report opens it at the path `chain.json` recorded, resolved against the working directory. Capability analysis is limited to 256 MiB and verifies the bytes against the recorded BLAKE3 before attaching results. If the chain document records no path, the sample has moved or changed, the target exceeds the limit, or you run the command from another directory, the affected block reports `available: false` and names the reason. The rest of the report still renders.
 
 ## Determinism
 
