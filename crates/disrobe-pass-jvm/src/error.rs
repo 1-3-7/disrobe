@@ -114,6 +114,12 @@ pub enum Error {
         limit: usize,
     },
 
+    #[error("DR-JVM-0096: malformed DEX-to-JAR {class}: {reason}")]
+    MalformedDex2JarClass { class: String, reason: &'static str },
+
+    #[error("DR-JVM-0097: unsafe DEX-to-JAR class path: {0}")]
+    UnsafeDex2JarPath(String),
+
     #[error("DR-JVM-0095: duplicate DEX-to-JAR class path: {0}")]
     DuplicateDex2JarPath(String),
 

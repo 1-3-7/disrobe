@@ -37,6 +37,7 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 | Command | Purpose |
 |---|---|
 | `disrobe jvm decompile <class\|jar\|dex\|apk>` | Run the in-house classfile, jar, DEX, or APK recovery path and optionally invoke an installed backend selected by `--backend auto\|cfr\|vineflower\|procyon\|jd\|krakatau\|jadx\|dex2-jar`. `auto` chooses an applicable installed backend when one is available. Jar, DEX, and APK inputs emit in-house source by default; classfiles require `--emit source`. For a standalone DEX, `--format ghidra\|ida\|json` also writes its class, method, and field identifiers through the shared symbol exporter. The script formats find each original owner, member name, and descriptor in the loaded DEX database before applying the replacement name. IDAPython class renames require IDA 9.4 or later; method and field renames use older DEX record APIs. |
+| `disrobe jvm dex2-jar <dex>` | Translate a standalone DEX to deterministic `.class` files and `classes.jar` with Disrobe's in-house translator. This command does not invoke `d2j-dex2jar`; `disrobe jvm decompile <dex> --backend dex2-jar` remains the separate external-backend route. |
 | `disrobe jvm extract <jar\|apk>` | Extract container + dump classfile inventory. |
 | `disrobe jvm backends` | Report JVM/Android backends on PATH. |
 | `disrobe jvm retrace` | Retrace an obfuscated stack frame back to class/method/line through a ProGuard/R8 `mapping.txt` (`--mapping`, `--class`, `--method`, `--line`). |

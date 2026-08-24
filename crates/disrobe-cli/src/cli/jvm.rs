@@ -1,8 +1,8 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
@@ -10,17 +10,17 @@ use clap::{Subcommand, ValueEnum};
 use disrobe_pass_jvm::{
     AabExtract, AarExtract, AndroidBackend, ApkExtract, ApksExtract, AppliedNames,
     BackendCapability, BackendInvocation, CLASS_MAGIC, ClassFile, DEX_MAGIC_PREFIX,
-    DecompiledClass, DecompiledDex, DexFile, DexStringRecovery, FieldId, FingerprintReport,
-    Instruction, JarEntry, JarExtract, JniPrototype, JniSurfaceReport, JvmBackend,
-    LibrarySignatureSet, MethodId, NativeMethod, OatEmbeddedDex, Operands, PeelStatus, PeeledClass,
-    ProguardMapping, ProtectorPeelReport, ResolvedNative, RetracedFrame,
-    analyze_jni_native_methods, apply_proguard_mapping, assemble_jar, decompile_class,
+    DecompiledClass, DecompiledDex, Dex2JarLimits, DexFile, DexStringRecovery, FieldId,
+    FingerprintReport, Instruction, JarEntry, JarExtract, JniPrototype, JniSurfaceReport,
+    JvmBackend, LibrarySignatureSet, MethodId, NativeMethod, OatEmbeddedDex, Operands, PeelStatus,
+    PeeledClass, ProguardMapping, ProtectorPeelReport, ResolvedNative, RetracedFrame,
+    analyze_jni_native_methods, apply_proguard_mapping, assemble_jar_with_limit, decompile_class,
     decompile_dex, detect_available, detect_protector_family, disassemble, emit_jni_prototypes,
     extract_aab, extract_aar, extract_apk, extract_apks, extract_jar, extract_native_methods,
     extract_oat_dex, fingerprint_library_symbols, invoke_android, invoke_jvm,
-    native_methods_from_class, parse_classfile, parse_code_attribute, parse_dex, parse_dex_header,
+    native_methods_from_class, parse_classfile, parse_code_attribute, parse_dex,
     parse_proguard_mapping, peel_and_decompile_classfile, recover_dex_reflection_strings,
-    translate_dex_bytes,
+    translate_dex_bytes_with_limits, validate_dex2jar_entries,
 };
 use disrobe_pass_native::backend_export::{
     DalvikSymbolKey, ExportFormat, ExportSymbol, SYMBOL_EXPORT_SCHEMA, SymbolClass, SymbolExport,
@@ -238,70 +238,80 @@ fn read_in_house_dex_input(path: &Path) -> miette::Result<Vec<u8>> {
     }
 }
 
-fn validated_dex2jar_entries(
-    entries: &BTreeMap<String, Vec<u8>>,
-) -> miette::Result<Vec<(&str, &Vec<u8>)>> {
-    if entries.len() > MAX_IN_HOUSE_DEX_CLASSES {
-        return Err(miette::miette!(
-            "DR-CLI-0485: in-house DEX translation produced {} class files, exceeding the {}-class output limit",
-            entries.len(),
-            MAX_IN_HOUSE_DEX_CLASSES
+fn dex2jar_staging_dir(out_dir: &Path) -> miette::Result<PathBuf> {
+    let parent: &Path = out_dir.parent().unwrap_or_else(|| Path::new("."));
+    let stem: &OsStr = out_dir.file_name().unwrap_or_else(|| OsStr::new("dex2jar"));
+    for attempt in 0..32_u32 {
+        let candidate: PathBuf = parent.join(format!(
+            ".{}-dex2jar-{}-{attempt}",
+            stem.to_string_lossy(),
+            std::process::id()
         ));
-    }
-    let mut total: usize = 0;
-    let mut normalized: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut validated: Vec<(&str, &Vec<u8>)> = Vec::with_capacity(entries.len());
-    for (raw, bytes) in entries {
-        let path: &Path = Path::new(raw);
-        let mut components: Vec<&str> = Vec::new();
-        for component in path.components() {
-            let Component::Normal(part) = component else {
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
                 return Err(miette::miette!(
-                    "DR-CLI-0486: unsafe translated class path {raw:?}"
-                ));
-            };
-            let part: &str = part.to_str().ok_or_else(|| {
-                miette::miette!("DR-CLI-0486: non-UTF-8 translated class path {raw:?}")
-            })?;
-            let base: String = part
-                .split('.')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_uppercase();
-            let reserved: bool = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
-                || (base.len() == 4
-                    && (base.starts_with("COM") || base.starts_with("LPT"))
-                    && matches!(base.as_bytes()[3], b'1'..=b'9'));
-            if part.contains(':') || part.ends_with('.') || part.ends_with(' ') || reserved {
-                return Err(miette::miette!(
-                    "DR-CLI-0486: unsafe translated class path {raw:?}"
+                    "DR-CLI-0492: cannot create DEX-to-JAR staging directory: {error}"
                 ));
             }
-            components.push(part);
         }
-        let canonical: String = components.join("/");
-        if canonical != *raw
-            || !Path::new(&canonical)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("class"))
-            || !normalized.insert(canonical)
-        {
-            return Err(miette::miette!(
-                "DR-CLI-0486: unsafe or duplicate translated class path {raw:?}"
-            ));
-        }
-        total = total.checked_add(bytes.len()).ok_or_else(|| {
-            miette::miette!("DR-CLI-0487: in-house DEX class output size overflow")
-        })?;
-        if total > MAX_IN_HOUSE_DEX_OUTPUT_BYTES {
-            return Err(miette::miette!(
-                "DR-CLI-0488: in-house DEX class output would reach {total} bytes, exceeding the {}-byte output limit",
-                MAX_IN_HOUSE_DEX_OUTPUT_BYTES
-            ));
-        }
-        validated.push((raw, bytes));
     }
-    Ok(validated)
+    Err(miette::miette!(
+        "DR-CLI-0492: cannot allocate a DEX-to-JAR staging directory"
+    ))
+}
+
+fn remove_dex2jar_staging(path: &Path) -> miette::Result<()> {
+    std::fs::remove_dir_all(path).map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0497: cannot remove DEX-to-JAR staging directory {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn write_dex2jar_staging_file(path: &Path, bytes: &[u8]) -> miette::Result<()> {
+    let mut file: std::fs::File = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            miette::miette!(
+                "DR-CLI-0494: cannot exclusively create staged DEX-to-JAR file {}: {error}",
+                path.display()
+            )
+        })?;
+    file.write_all(bytes).map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0494: cannot write staged DEX-to-JAR file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn finalize_dex2jar_staging(staging: &Path, out_dir: &Path) -> miette::Result<()> {
+    let destination_exists: bool = out_dir.try_exists().map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0496: cannot check DEX-to-JAR destination {} before finalizing staging directory {}: {error}",
+            out_dir.display(),
+            staging.display()
+        )
+    })?;
+    if destination_exists {
+        return Err(miette::miette!(
+            "DR-CLI-0484: DEX-to-JAR output directory appeared before finalization: {}; staging directory: {}",
+            out_dir.display(),
+            staging.display()
+        ));
+    }
+    std::fs::rename(staging, out_dir).map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0496: cannot finalize DEX-to-JAR staging directory {} as {}: {error}",
+            staging.display(),
+            out_dir.display()
+        )
+    })
 }
 
 fn dex2jar(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
@@ -329,20 +339,17 @@ fn dex2jar(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
             out_dir.display()
         ));
     }
-    let header = parse_dex_header(&bytes)
-        .map_err(|e| miette::miette!("DR-CLI-0485: DEX header parse: {e}"))?;
-    let declared_classes: usize = usize::try_from(header.class_defs_size)
-        .map_err(|_| miette::miette!("DR-CLI-0485: DEX class count is out of range"))?;
-    if declared_classes > MAX_IN_HOUSE_DEX_CLASSES {
-        return Err(miette::miette!(
-            "DR-CLI-0485: DEX declares {declared_classes} classes, exceeding the {}-class output limit",
-            MAX_IN_HOUSE_DEX_CLASSES
-        ));
-    }
-    let translated = translate_dex_bytes(&bytes)
+    let limits: Dex2JarLimits = Dex2JarLimits {
+        input_bytes: MAX_IN_HOUSE_DEX_INPUT_BYTES,
+        classes: MAX_IN_HOUSE_DEX_CLASSES,
+        class_bytes: MAX_IN_HOUSE_DEX_OUTPUT_BYTES,
+        jar_bytes: MAX_IN_HOUSE_DEX_OUTPUT_BYTES,
+    };
+    let translated = translate_dex_bytes_with_limits(&bytes, limits)
         .map_err(|e| miette::miette!("DR-CLI-0489: in-house DEX translation: {e}"))?;
-    let entries: Vec<(&str, &Vec<u8>)> = validated_dex2jar_entries(&translated.jar_entries)?;
-    let jar: Vec<u8> = assemble_jar(&translated)
+    validate_dex2jar_entries(&translated.jar_entries)
+        .map_err(|e| miette::miette!("DR-CLI-0486: in-house class path validation: {e}"))?;
+    let jar: Vec<u8> = assemble_jar_with_limit(&translated, MAX_IN_HOUSE_DEX_OUTPUT_BYTES)
         .map_err(|e| miette::miette!("DR-CLI-0490: in-house JAR assembly: {e}"))?;
     if jar.len() > MAX_IN_HOUSE_DEX_OUTPUT_BYTES {
         return Err(miette::miette!(
@@ -351,26 +358,40 @@ fn dex2jar(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
             MAX_IN_HOUSE_DEX_OUTPUT_BYTES
         ));
     }
-    std::fs::create_dir_all(&out_dir).map_err(|e| {
-        miette::miette!("DR-CLI-0492: cannot create DEX-to-JAR output directory: {e}")
-    })?;
-    for (path, class_bytes) in entries {
-        let target: PathBuf = out_dir.join(path);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                miette::miette!("DR-CLI-0493: cannot create class output directory: {e}")
-            })?;
+    let staging: PathBuf = dex2jar_staging_dir(&out_dir)?;
+    let write_result: miette::Result<()> = (|| {
+        for (path, class_bytes) in &translated.jar_entries {
+            let target: PathBuf = staging.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    miette::miette!("DR-CLI-0493: cannot create class output directory: {error}")
+                })?;
+            }
+            write_dex2jar_staging_file(&target, class_bytes)?;
         }
-        std::fs::write(&target, class_bytes).map_err(|e| {
-            miette::miette!("DR-CLI-0494: cannot write translated class {}: {e}", path)
-        })?;
+        write_dex2jar_staging_file(&staging.join("classes.jar"), &jar)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        if let Err(cleanup) = remove_dex2jar_staging(&staging) {
+            return Err(miette::miette!("{error}; {cleanup}"));
+        }
+        return Err(error);
+    }
+    if let Err(error) = finalize_dex2jar_staging(&staging, &out_dir) {
+        if let Err(cleanup) = remove_dex2jar_staging(&staging) {
+            return Err(miette::miette!(
+                "DR-CLI-0496: cannot finalize DEX-to-JAR output: {error}; {cleanup}"
+            ));
+        }
+        return Err(miette::miette!(
+            "DR-CLI-0496: cannot finalize DEX-to-JAR output: {error}"
+        ));
     }
     let jar_path: PathBuf = out_dir.join("classes.jar");
-    std::fs::write(&jar_path, jar)
-        .map_err(|e| miette::miette!("DR-CLI-0495: cannot write translated JAR: {e}"))?;
     println!(
         "jvm dex2jar: {}",
-        if translated.code_scan_complete {
+        if translated.code_scan_complete && translated.stubbed_body_count == 0 {
             "OK"
         } else {
             "PARTIAL"
@@ -390,16 +411,27 @@ fn dex2jar(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         },
         translated.decode_error_count
     );
+    for diagnostic in &translated.diagnostics {
+        let identity: String = diagnostic.method.as_ref().map_or_else(
+            || diagnostic.class.clone(),
+            |method: &String| format!("{}.{}", diagnostic.class, method),
+        );
+        println!("  partial:      {identity}: {}", diagnostic.reason);
+    }
     println!("  jar:          {}", jar_path.display());
     println!("  out dir:      {}", out_dir.display());
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod dex2jar_tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
-    use super::validated_dex2jar_entries;
+    use disrobe_pass_jvm::validate_dex2jar_entries;
+
+    use super::{finalize_dex2jar_staging, write_dex2jar_staging_file};
 
     #[test]
     fn dex2jar_path_validation_rejects_escaping_and_normalized_paths() {
@@ -421,8 +453,37 @@ mod dex2jar_tests {
         ] {
             let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
             entries.insert(path.to_owned(), vec![0xCA, 0xFE, 0xBA, 0xBE]);
-            assert!(validated_dex2jar_entries(&entries).is_err(), "{path}");
+            assert!(validate_dex2jar_entries(&entries).is_err(), "{path}");
         }
+    }
+
+    #[test]
+    fn dex2jar_staging_files_are_created_exclusively() {
+        let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary directory");
+        let path: PathBuf = directory.path().join("A.class");
+        write_dex2jar_staging_file(&path, b"first").expect("first exclusive create");
+        let error: miette::Report = write_dex2jar_staging_file(&path, b"second")
+            .expect_err("second exclusive create must fail");
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert_eq!(
+            std::fs::read(path).expect("preserved staged file"),
+            b"first"
+        );
+    }
+
+    #[test]
+    fn dex2jar_finalization_rechecks_the_destination() {
+        let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary directory");
+        let staging: PathBuf = directory.path().join("staging");
+        let output: PathBuf = directory.path().join("output");
+        std::fs::create_dir(&staging).expect("staging directory");
+        std::fs::create_dir(&output).expect("racing output directory");
+        let error: miette::Report = finalize_dex2jar_staging(&staging, &output)
+            .expect_err("existing destination must be refused");
+        assert!(error.to_string().contains("DR-CLI-0484"));
+        assert!(error.to_string().contains(&staging.display().to_string()));
+        assert!(staging.is_dir());
+        assert!(output.is_dir());
     }
 }
 

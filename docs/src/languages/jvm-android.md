@@ -19,6 +19,8 @@
 ```sh
 disrobe jvm decompile App.class --emit source --out src/          # write the in-house Java source
 disrobe jvm decompile app.jar --backend vineflower --out src/
+disrobe jvm dex2-jar classes.dex --out classes/  # in-house .class tree + classes.jar
+disrobe jvm decompile classes.dex --backend dex2-jar --out external/  # installed d2j-dex2jar
 disrobe jvm decompile app.apk --backend jadx --out src/
 disrobe jvm decompile classes.dex --backend jadx --out src/
 disrobe jvm decompile classes.dex --format ghidra --out recovered/
@@ -34,7 +36,9 @@ disrobe auto app.apk --out recovered/         # recursively process recognized p
 disrobe auto classes.dex --format json --out recovered/
 ```
 
-Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik source by default and invoke an Android backend only when `--backend jadx` or `--backend dex2jar` is selected. `.jar` writes in-house per-class source by default, and `--backend auto` also invokes the first available JVM backend. `.class` uses `--backend auto` for the first available JVM backend; add `--emit source` to write the in-house source. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
+Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik source by default and invoke an Android backend only when `--backend jadx` or `--backend dex2-jar` is selected. `.jar` writes in-house per-class source by default, and `--backend auto` also invokes the first available JVM backend. `.class` uses `--backend auto` for the first available JVM backend; add `--emit source` to write the in-house source. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
+
+`disrobe jvm dex2-jar` is the in-house DEX-to-class translator. It writes a deterministic class tree and `classes.jar` without an external executable. `disrobe jvm decompile <dex> --backend dex2-jar` is different: it invokes an installed `d2j-dex2jar` backend and keeps that backend's contract and output separate from the in-house translator.
 
 For a standalone DEX, `jvm decompile --format ghidra|ida|json` writes descriptor-keyed class, method, and field entries beside the normal output. `auto` accepts the same formats when the original input itself reaches a successful `jvm.classify` node and writes the sidecar under `exports/dalvik/`. It does not reuse a DEX extracted from an APK or another container. Each entry keeps the original owner, original member name, descriptor, and replacement as separate values. When the current recovery path has not changed a name, the original and replacement stay identical. The Ghidra and IDAPython scripts resolve the original logical identity in the loaded DEX database before renaming the database object; they do not assign virtual addresses to Dalvik identifiers. IDAPython class renames require IDA 9.4 or later because that release introduced the loader's persistent DEX type-rename store. Method and field renames use the older DEX record APIs.
 

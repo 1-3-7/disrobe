@@ -28,6 +28,7 @@ zip = { workspace = true }
 sha2 = { workspace = true }
 object = { workspace = true }
 encoding_rs = "0.8"
+unicode-normalization = { workspace = true }
 disrobe-llm-metadata = { workspace = true, optional = true }
 
 [features]

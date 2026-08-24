@@ -205,11 +205,13 @@ fn jvm_dex2jar_writes_the_in_house_translation_without_an_external_backend() {
         "in-house DEX-to-JAR CLI failed: {}",
         run.stderr
     );
+    assert!(run.stdout.contains("jvm dex2jar: PARTIAL"));
     assert!(run.stdout.contains("370 total, 354 recovered, 1 stubbed"));
     assert!(
         run.stdout
             .contains("code scan:    complete (0 decode error(s))")
     );
+    assert!(run.stdout.contains("  partial:      "));
 
     let cli_jar: Vec<u8> = std::fs::read(out.join("classes.jar")).expect("CLI jar output");
     assert_eq!(

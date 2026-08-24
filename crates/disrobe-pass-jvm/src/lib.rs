@@ -185,9 +185,10 @@ pub use dex::{
     parse_code_items, parse_header as parse_dex_header, parse_multi_dex,
 };
 pub use dex2jar::{
-    Dex2JarLimits, Dex2JarResult, TranslatedClass, TranslatedField, TranslatedMethod, assemble_jar,
-    assemble_jar_with_limit, build_class_model, translate as translate_dex_to_jar,
-    translate_dex_bytes, translate_with_limits,
+    Dex2JarDiagnostic, Dex2JarLimits, Dex2JarResult, TranslatedClass, TranslatedField,
+    TranslatedMethod, assemble_jar, assemble_jar_with_limit, build_class_model,
+    translate as translate_dex_to_jar, translate_dex_bytes, translate_dex_bytes_with_limits,
+    translate_with_limits, validate_dex2jar_entries,
 };
 pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};
