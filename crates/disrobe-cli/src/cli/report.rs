@@ -1,6 +1,8 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::needless_pass_by_value)]
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_capabilities::CapabilitiesReport;
@@ -199,14 +201,15 @@ pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
             reason: Some("the chain document records no analysis target path".to_string()),
         };
     };
-    let Ok(bytes) = std::fs::read(path) else {
-        return CapabilitySection {
-            available: false,
-            report: None,
-            reason: Some(format!(
-                "the analysis target `{path}` is not readable from this working directory"
-            )),
-        };
+    let bytes: Vec<u8> = match read_capability_input(path) {
+        Ok(bytes) => bytes,
+        Err(reason) => {
+            return CapabilitySection {
+                available: false,
+                report: None,
+                reason: Some(reason),
+            };
+        }
     };
     match super::capabilities::build_report(&bytes, path, Path::new(path)) {
         Ok(report) => CapabilitySection {
@@ -220,6 +223,73 @@ pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
             reason: Some(error.to_string()),
         },
     }
+}
+
+fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
+    let file: File = File::open(path).map_err(|_| {
+        format!("the analysis target `{path}` is not readable from this working directory")
+    })?;
+    let metadata: std::fs::Metadata = file.metadata().map_err(|_| {
+        format!("the analysis target `{path}` is not readable from this working directory")
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "the analysis target `{path}` is not a regular file"
+        ));
+    }
+    if metadata.len() > MAX_REPORT_CAPABILITY_INPUT_BYTES {
+        return Err(format!(
+            "the analysis target `{path}` exceeds the {MAX_REPORT_CAPABILITY_INPUT_BYTES}-byte report capability input limit"
+        ));
+    }
+    let capacity: usize = usize::try_from(metadata.len()).map_err(|_| {
+        format!("the analysis target `{path}` size cannot be represented in memory")
+    })?;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.try_reserve_exact(capacity).map_err(|_| {
+        format!("the analysis target `{path}` could not reserve {capacity} bytes for capabilities")
+    })?;
+    let mut reader: File = file;
+    let mut chunk: [u8; 64 * 1024] = [0; 64 * 1024];
+    loop {
+        let observed: u64 = u64::try_from(bytes.len())
+            .map_err(|_| "report capability input length cannot be represented".to_string())?;
+        if observed == MAX_REPORT_CAPABILITY_INPUT_BYTES {
+            let mut extra: [u8; 1] = [0; 1];
+            let read: usize = reader.read(&mut extra).map_err(|_| {
+                format!("the analysis target `{path}` is not readable from this working directory")
+            })?;
+            if read > 0 {
+                return Err(format!(
+                    "the analysis target `{path}` exceeds the {MAX_REPORT_CAPABILITY_INPUT_BYTES}-byte report capability input limit"
+                ));
+            }
+            break;
+        }
+        let remaining: usize = usize::try_from(MAX_REPORT_CAPABILITY_INPUT_BYTES - observed)
+            .map_err(|_| {
+                "report capability input remaining length cannot be represented".to_string()
+            })?;
+        let read_len: usize = remaining.min(chunk.len());
+        let read: usize = reader.read(&mut chunk[..read_len]).map_err(|_| {
+            format!("the analysis target `{path}` is not readable from this working directory")
+        })?;
+        if read == 0 {
+            break;
+        }
+        bytes.try_reserve_exact(read).map_err(|_| {
+            format!("the analysis target `{path}` could not reserve {read} bytes for capabilities")
+        })?;
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    let observed: u64 = u64::try_from(bytes.len())
+        .map_err(|_| "report capability input length cannot be represented".to_string())?;
+    if observed != metadata.len() {
+        return Err(format!(
+            "the analysis target `{path}` changed while reading"
+        ));
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Serialize)]
@@ -256,6 +326,7 @@ pub(crate) struct BatchReport {
 }
 
 const RECOVERY_REPORT_SCHEMA: &str = "disrobe.report/v1";
+const MAX_REPORT_CAPABILITY_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
 pub(crate) fn tier_label(score: f64) -> &'static str {
     if score >= 0.99 {
@@ -1994,6 +2065,33 @@ mod tests {
         assert_eq!(
             serde_json::to_vec(&first).expect("serialize first"),
             serde_json::to_vec(&second).expect("serialize second")
+        );
+    }
+
+    #[test]
+    fn capability_section_rejects_a_sparse_target_over_its_read_cap() {
+        let scratch: ScratchDir = tmp_dir("capability-over-cap");
+        let path: PathBuf = scratch.path().join("oversized.bin");
+        let file: std::fs::File = std::fs::File::create(&path).expect("create sparse target");
+        file.set_len(MAX_REPORT_CAPABILITY_INPUT_BYTES + 1)
+            .expect("extend sparse target");
+        let input: InputIdentity = InputIdentity {
+            path: Some(path.display().to_string()),
+            size: MAX_REPORT_CAPABILITY_INPUT_BYTES + 1,
+            blake3: String::new(),
+            detected: Vec::new(),
+            final_format: None,
+        };
+
+        let section: CapabilitySection = capabilities_section(&input);
+        assert!(!section.available);
+        assert!(section.report.is_none());
+        assert!(
+            section
+                .reason
+                .as_deref()
+                .is_some_and(|reason: &str| reason.contains("report capability input limit")),
+            "{section:?}"
         );
     }
 
