@@ -310,6 +310,20 @@ const HANDLER_TERMINATES_IN_LOOP: &str = concat!(
     "    return seen\n",
 );
 
+const PRE311_WHILE_TRY_BREAK_AND_CONTINUE: &str = concat!(
+    "def drain(active, take, sink):\n",
+    "    while active():\n",
+    "        try:\n",
+    "            value = take()\n",
+    "        except ValueError:\n",
+    "            sink.error()\n",
+    "            continue\n",
+    "        if value is None:\n",
+    "            break\n",
+    "        sink(value)\n",
+    "    return sink\n",
+);
+
 const ALIASES: &[&str] = &["3.8", "3.9", "3.10", "3.11"];
 const PRE311_ALIASES: &[&str] = &["3.8", "3.9", "3.10"];
 const LEGACY_BLOCK_ALIASES: &[&str] = &["3.8", "3.9"];
@@ -600,5 +614,15 @@ fn handler_that_terminates_does_not_become_a_continue() {
         HANDLER_TERMINATES_IN_LOOP,
         "handler-terminates",
         CONTINUE_FLIP_ALIASES,
+    );
+}
+
+#[test]
+fn pre311_while_try_preserves_handler_continue_and_body_break() {
+    assert_recompiles_equivalent(
+        "py-pre311-while-try-break-continue",
+        PRE311_WHILE_TRY_BREAK_AND_CONTINUE,
+        "pre311 while try break continue",
+        &["3.10"],
     );
 }

@@ -434,7 +434,7 @@ fn back_edge_inside_exc_handler_cold_block(
     back_edge: usize,
 ) -> bool {
     if stream.is_pre_311() {
-        return false;
+        return pre311_back_edge_inside_try_handler(stream, header, back_edge);
     }
     let Some(handler_start): Option<usize> = (header + 1..=back_edge)
         .rev()
@@ -455,6 +455,32 @@ fn back_edge_inside_exc_handler_cold_block(
                 .index_for_offset(e.start)
                 .is_some_and(|try_start: usize| try_start < header)
         })
+}
+
+#[must_use]
+fn pre311_back_edge_inside_try_handler(
+    stream: &DecodedStream,
+    header: usize,
+    back_edge: usize,
+) -> bool {
+    stream.exception_table.iter().any(|entry| {
+        let Some(try_start): Option<usize> = stream.index_for_offset(entry.start) else {
+            return false;
+        };
+        let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+            return false;
+        };
+        try_start > header
+            && handler_start <= back_edge
+            && matches!(
+                stream.ops.get(handler_start),
+                Some(CanonicalOp::Dup | CanonicalOp::Pop)
+            )
+            && !(handler_start..=back_edge).any(|idx: usize| {
+                matches!(stream.ops[idx], CanonicalOp::Reraise(_))
+                    || stream.pre311_end_finally_idx.contains(&idx)
+            })
+    })
 }
 
 fn back_edge_reenters_for_iter(stream: &DecodedStream, header: usize, back_edge: usize) -> bool {
@@ -2471,7 +2497,7 @@ pub(super) fn structure_loop(
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, head_end)?;
     let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, region, hi);
     push_loop_frame(LoopFrame {
-        header: region.header,
+        header: pre311_handler_continue_target(stream, region),
         exit: region.exit,
         exit_return,
         exit_tail_range: loop_exit_tail_range(stream, region, hi),
@@ -2578,6 +2604,23 @@ pub(super) fn structure_loop(
         out.extend(structure_stmts(code, stream, tail_start, hi)?);
     }
     Ok(out)
+}
+
+#[must_use]
+fn pre311_handler_continue_target(stream: &DecodedStream, region: &LoopRegion) -> usize {
+    if !stream.is_pre_311() {
+        return region.header;
+    }
+    (region.body_start..region.back_edge)
+        .find_map(|jump: usize| {
+            if !is_back_edge(&stream.ops[jump]) {
+                return None;
+            }
+            let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])?;
+            (target < region.header && pre311_back_edge_inside_try_handler(stream, target, jump))
+                .then_some(target)
+        })
+        .unwrap_or(region.header)
 }
 
 pub(super) fn structure_for_loop_with_iter(
