@@ -14,7 +14,7 @@ use object::{
 };
 
 use crate::debug::{dbg_kv, dbg_section};
-use crate::elf::{ElfDynamicReport, SegmentMapping, SymbolType, analyze};
+use crate::elf::{ElfDynamicReport, RelocSource, SegmentMapping, SymbolType, analyze};
 
 type EhSlice<'a> = EndianSlice<'a, LittleEndian>;
 
@@ -30,6 +30,7 @@ pub(super) enum SeedOrigin {
     FiniArray,
     DynamicInit,
     RelocationPointer,
+    ElfPlt,
     DataPointer,
     MachFunctionStarts,
     MachCompactUnwind,
@@ -50,6 +51,7 @@ impl SeedOrigin {
             Self::FiniArray => "fini-array",
             Self::DynamicInit => "dt-init",
             Self::RelocationPointer => "relocation",
+            Self::ElfPlt => "elf-plt",
             Self::DataPointer => "data-pointer",
             Self::MachFunctionStarts => "macho-function-starts",
             Self::MachCompactUnwind => "macho-compact-unwind",
@@ -98,6 +100,14 @@ const MIN_POINTER_RUN: usize = 2;
 const R_AARCH64_RELATIVE: u32 = 1027;
 
 const R_AARCH64_IRELATIVE: u32 = 1032;
+
+const R_AARCH64_JUMP_SLOT: u32 = 1026;
+
+const AARCH64_PLT_ENTRY_BYTES: u64 = 16;
+
+const MAX_AARCH64_PLT_ENTRIES: usize = 1 << 16;
+
+const _: () = assert!(MAX_AARCH64_PLT_ENTRIES < MAX_SEEDS);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompactUnwindError {
@@ -569,6 +579,122 @@ fn collect_dynamic(report: &ElfDynamicReport, view: &ImageView<'_>, seeds: &mut 
             seeds.admit(addend, SeedOrigin::RelocationPointer);
         }
     }
+}
+
+fn collect_elf_plt_entries(report: &ElfDynamicReport, view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
+        return;
+    };
+    let Some(plt): Option<object::Section<'_, '_>> =
+        parsed.sections().find(|section: &object::Section<'_, '_>| {
+            section.name().is_ok_and(|name: &str| name == ".plt")
+        })
+    else {
+        return;
+    };
+    let Ok(data): core::result::Result<&[u8], object::Error> = plt.data() else {
+        return;
+    };
+    if !canonical_plt0(data) {
+        return;
+    }
+    let mut relocations: BTreeMap<u64, &crate::elf::Relocation> = BTreeMap::new();
+    for relocation in report
+        .relocations
+        .iter()
+        .filter(|relocation: &&crate::elf::Relocation| relocation.source == RelocSource::JmpRel)
+    {
+        if relocation.r_type != R_AARCH64_JUMP_SLOT || !valid_dynamic_symbol(report, relocation) {
+            continue;
+        }
+        relocations.entry(relocation.offset).or_insert(relocation);
+    }
+    for entry_index in 0..MAX_AARCH64_PLT_ENTRIES {
+        let Some(offset): Option<usize> = entry_index
+            .checked_mul(16)
+            .and_then(|relative: usize| 32_usize.checked_add(relative))
+        else {
+            break;
+        };
+        let Some(end): Option<usize> = offset.checked_add(16) else {
+            break;
+        };
+        let Some(stub): Option<&[u8]> = data.get(offset..end) else {
+            break;
+        };
+        let Ok(offset_u64): core::result::Result<u64, core::num::TryFromIntError> =
+            u64::try_from(offset)
+        else {
+            break;
+        };
+        let Some(address): Option<u64> = plt.address().checked_add(offset_u64) else {
+            break;
+        };
+        let Some(slot): Option<u64> = canonical_plt_stub_slot(address, stub) else {
+            break;
+        };
+        if relocations.contains_key(&slot)
+            && view.is_candidate(address)
+            && view.contains_executable_extent(address, AARCH64_PLT_ENTRY_BYTES)
+        {
+            seeds.admit(address, SeedOrigin::ElfPlt);
+        }
+    }
+}
+
+fn valid_dynamic_symbol(report: &ElfDynamicReport, relocation: &crate::elf::Relocation) -> bool {
+    let Ok(index): core::result::Result<usize, core::num::TryFromIntError> =
+        usize::try_from(relocation.symbol_index)
+    else {
+        return false;
+    };
+    report
+        .symbols
+        .get(index)
+        .is_some_and(|symbol: &crate::elf::DynamicSymbol| !symbol.name.is_empty())
+}
+
+fn canonical_plt0(data: &[u8]) -> bool {
+    let Some(first): Option<u32> = read_word(data, 0) else {
+        return false;
+    };
+    let Some(adrp): Option<u32> = read_word(data, 4) else {
+        return false;
+    };
+    let Some(ldr): Option<u32> = read_word(data, 8) else {
+        return false;
+    };
+    let Some(add): Option<u32> = read_word(data, 12) else {
+        return false;
+    };
+    let Some(branch): Option<u32> = read_word(data, 16) else {
+        return false;
+    };
+    first & 0xFFC0_7FFF == 0xA980_7BF0 && canonical_plt_stub_words(adrp, ldr, add, branch)
+}
+
+fn canonical_plt_stub_slot(address: u64, bytes: &[u8]) -> Option<u64> {
+    let words: [u32; 4] = [
+        read_word(bytes, 0)?,
+        read_word(bytes, 4)?,
+        read_word(bytes, 8)?,
+        read_word(bytes, 12)?,
+    ];
+    if !canonical_plt_stub_words(words[0], words[1], words[2], words[3]) {
+        return None;
+    }
+    let immediate: u64 =
+        u64::from((words[0] >> 29) & 3) | (u64::from((words[0] >> 5) & 0x7FFFF) << 2);
+    let pages: i64 = (i64::try_from(immediate).ok()? << 43) >> 43;
+    let page: u64 = (address & !0xFFF).checked_add_signed(pages.checked_mul(4096)?)?;
+    page.checked_add(u64::from((words[1] >> 10) & 0xFFF).checked_mul(8)?)
+}
+
+const fn canonical_plt_stub_words(adrp: u32, ldr: u32, add: u32, branch: u32) -> bool {
+    adrp & 0x9F00_001F == 0x9000_0010
+        && ldr & 0xFFC0_03FF == 0xF940_0211
+        && add & 0xFF00_03FF == 0x9100_0210
+        && branch == 0xD61F_0220
 }
 
 fn collect_initializer_tables(
@@ -1605,6 +1731,7 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
     collect_exports(native, &view, &mut seeds);
     if let Some(parsed) = report.as_ref() {
         collect_dynamic(parsed, &view, &mut seeds);
+        collect_elf_plt_entries(parsed, &view, &mut seeds);
     }
     if view.has_linked_addresses() {
         collect_initializer_tables(&view, &mut seeds, MAX_POINTER_SLOTS, None);
@@ -1629,10 +1756,12 @@ fn report_seeds(seeds: &SeedSet) {
 mod tests {
     use super::{
         CompactUnwindError, CompactUnwindOutcome, ExecutableRange, FileSectionReads, ImageView,
-        MAX_PE_TLS_CALLBACKS, MAX_SEEDS, MAX_UNWIND_ENTRIES, PE_ARM64_PDATA_RECORD_BYTES,
-        PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES, SeedOrigin, SeedSet, collect,
-        collect_initializer_tables, decode_macho_compact_unwind, decode_macho_function_starts,
-        decode_pe_arm64_pdata, decode_pe_arm64_tls_callbacks, is_boundary_word, is_prologue_word,
+        MAX_AARCH64_PLT_ENTRIES, MAX_PE_TLS_CALLBACKS, MAX_SEEDS, MAX_UNWIND_ENTRIES,
+        PE_ARM64_PDATA_RECORD_BYTES, PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES, R_AARCH64_JUMP_SLOT,
+        SeedOrigin, SeedSet, canonical_plt_stub_slot, canonical_plt0, collect,
+        collect_elf_plt_entries, collect_initializer_tables, decode_macho_compact_unwind,
+        decode_macho_function_starts, decode_pe_arm64_pdata, decode_pe_arm64_tls_callbacks,
+        is_boundary_word, is_prologue_word,
     };
 
     use std::collections::{BTreeMap, BTreeSet};
@@ -1642,6 +1771,11 @@ mod tests {
     use object::{
         Architecture, BinaryFormat, Endianness, Object as _, ObjectSection as _, ObjectSymbol as _,
         SectionFlags, SectionKind, SymbolKind as ObjSymbolKind, write::Object as WriteObject,
+    };
+
+    use crate::elf::{
+        DynamicSymbol, ElfClass, ElfData, ElfDynamicReport, RelocSource, Relocation, SymbolBind,
+        SymbolType,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -1874,6 +2008,273 @@ mod tests {
                 first, second,
                 "{}: seed collection must repeat byte for byte",
                 fixture.stripped
+            );
+        }
+    }
+
+    const ELF_PLT0_WORDS: [u32; 8] = [
+        0xA9BF_7BF0,
+        0x9000_0010,
+        0xF940_0E11,
+        0x9100_6210,
+        0xD61F_0220,
+        0xD503_201F,
+        0xD503_201F,
+        0xD503_201F,
+    ];
+
+    const ELF_PLT_STUB_18: [u32; 4] = [0x9000_0010, 0xF940_0E11, 0x9100_6210, 0xD61F_0220];
+
+    const ELF_PLT_STUB_20: [u32; 4] = [0x9000_0010, 0xF940_1211, 0x9100_8210, 0xD61F_0220];
+
+    const ELF_PLT_STUB_28: [u32; 4] = [0x9000_0010, 0xF940_1611, 0x9100_A210, 0xD61F_0220];
+
+    fn words_bytes(words: &[u32]) -> Vec<u8> {
+        words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect()
+    }
+
+    fn elf_plt_section(stubs: &[[u32; 4]]) -> Vec<u8> {
+        let mut data: Vec<u8> = words_bytes(&ELF_PLT0_WORDS);
+        for stub in stubs {
+            data.extend_from_slice(&words_bytes(stub));
+        }
+        data
+    }
+
+    fn elf_plt_object(data: &[u8]) -> Vec<u8> {
+        let mut object: WriteObject<'_> =
+            WriteObject::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
+        let plt: object::write::SectionId =
+            object.add_section(Vec::new(), b".plt".to_vec(), SectionKind::Text);
+        let _: u64 = object.append_section_data(plt, data, 16);
+        object.write().expect("the ELF PLT fixture must serialize")
+    }
+
+    fn elf_plt_symbol(name: &str) -> DynamicSymbol {
+        DynamicSymbol {
+            name: name.to_owned(),
+            value: 0,
+            size: 0,
+            bind: SymbolBind::Global,
+            sym_type: SymbolType::Func,
+            defined: false,
+        }
+    }
+
+    fn elf_plt_relocation(
+        offset: u64,
+        r_type: u32,
+        symbol_index: u32,
+        source: RelocSource,
+    ) -> Relocation {
+        Relocation {
+            offset,
+            r_type,
+            symbol_index,
+            addend: 0,
+            symbol_name: None,
+            source,
+        }
+    }
+
+    fn elf_plt_report(
+        symbols: Vec<DynamicSymbol>,
+        relocations: Vec<Relocation>,
+    ) -> ElfDynamicReport {
+        ElfDynamicReport {
+            class: ElfClass::Elf64,
+            data: ElfData::Little,
+            entry: 0,
+            segments: Vec::new(),
+            interpreter: None,
+            needed: Vec::new(),
+            soname: None,
+            rpath: None,
+            runpath: None,
+            init: None,
+            fini: None,
+            init_array: Vec::new(),
+            fini_array: Vec::new(),
+            dynamic_entry_count: 0,
+            symbol_count_source: None,
+            symbols,
+            relocations,
+            notes: Vec::new(),
+        }
+    }
+
+    fn collect_elf_plt_fixture(
+        bytes: &[u8],
+        report: &ElfDynamicReport,
+        executable_end: Option<u64>,
+    ) -> SeedSet {
+        let mut view: ImageView<'_> = ImageView::new(bytes, Some(report));
+        if let Some(end) = executable_end {
+            view.executable = vec![ExecutableRange { start: 0, end }];
+        }
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_elf_plt_entries(report, &view, &mut seeds);
+        seeds
+    }
+
+    #[test]
+    fn elf_plt_structural_decoders_reject_corruption_truncation_and_overflow() {
+        let plt0: Vec<u8> = words_bytes(&ELF_PLT0_WORDS);
+        assert!(canonical_plt0(&plt0));
+        for length in [0_usize, 4, 8, 12, 16] {
+            assert!(!canonical_plt0(&plt0[..length]), "length {length}");
+        }
+        let mut corrupted_plt0: Vec<u8> = plt0;
+        corrupted_plt0[16..20].copy_from_slice(&0xD503_201F_u32.to_le_bytes());
+        assert!(!canonical_plt0(&corrupted_plt0));
+
+        let stub: Vec<u8> = words_bytes(&ELF_PLT_STUB_18);
+        assert_eq!(canonical_plt_stub_slot(0x20, &stub), Some(0x18));
+        for length in [0_usize, 4, 8, 12] {
+            assert_eq!(
+                canonical_plt_stub_slot(0x20, &stub[..length]),
+                None,
+                "length {length}"
+            );
+        }
+        let mut corrupted_stub: Vec<u8> = stub;
+        corrupted_stub[12..16].copy_from_slice(&0xD503_201F_u32.to_le_bytes());
+        assert_eq!(canonical_plt_stub_slot(0x20, &corrupted_stub), None);
+
+        let overflowing_stub: Vec<u8> =
+            words_bytes(&[0xB000_0010, 0xF940_0E11, 0x9100_6210, 0xD61F_0220]);
+        assert_eq!(canonical_plt_stub_slot(u64::MAX, &overflowing_stub), None);
+    }
+
+    #[test]
+    fn elf_plt_collection_tags_origins_and_preserves_only_valid_stub_prefixes() {
+        let report: ElfDynamicReport = elf_plt_report(
+            vec![elf_plt_symbol("alpha"), elf_plt_symbol("beta")],
+            vec![
+                elf_plt_relocation(0x18, R_AARCH64_JUMP_SLOT, 0, RelocSource::JmpRel),
+                elf_plt_relocation(0x20, R_AARCH64_JUMP_SLOT, 1, RelocSource::JmpRel),
+            ],
+        );
+        let complete: Vec<u8> =
+            elf_plt_object(&elf_plt_section(&[ELF_PLT_STUB_18, ELF_PLT_STUB_20]));
+        let seeds: SeedSet = collect_elf_plt_fixture(&complete, &report, None);
+        assert_eq!(seeds.addresses(), vec![0x20, 0x30]);
+        for address in [0x20_u64, 0x30] {
+            assert_eq!(
+                seeds.origins_of(address),
+                BTreeSet::from([SeedOrigin::ElfPlt]),
+                "address {address:#x}"
+            );
+        }
+
+        let mut corrupt_data: Vec<u8> = elf_plt_section(&[ELF_PLT_STUB_18, ELF_PLT_STUB_20]);
+        corrupt_data[60..64].copy_from_slice(&0xD503_201F_u32.to_le_bytes());
+        let corrupt: Vec<u8> = elf_plt_object(&corrupt_data);
+        assert_eq!(
+            collect_elf_plt_fixture(&corrupt, &report, None).addresses(),
+            vec![0x20]
+        );
+
+        let mut truncated_data: Vec<u8> = elf_plt_section(&[ELF_PLT_STUB_18, ELF_PLT_STUB_20]);
+        truncated_data.truncate(56);
+        let truncated: Vec<u8> = elf_plt_object(&truncated_data);
+        assert_eq!(
+            collect_elf_plt_fixture(&truncated, &report, None).addresses(),
+            vec![0x20]
+        );
+
+        assert_eq!(
+            collect_elf_plt_fixture(&complete, &report, Some(0x38)).addresses(),
+            vec![0x20]
+        );
+    }
+
+    #[test]
+    fn elf_plt_collection_rejects_invalid_symbols_and_non_jump_slots() {
+        let one_stub: Vec<u8> = elf_plt_object(&elf_plt_section(&[ELF_PLT_STUB_18]));
+        for report in [
+            elf_plt_report(
+                vec![elf_plt_symbol("alpha")],
+                vec![elf_plt_relocation(
+                    0x18,
+                    R_AARCH64_JUMP_SLOT,
+                    1,
+                    RelocSource::JmpRel,
+                )],
+            ),
+            elf_plt_report(
+                vec![elf_plt_symbol("")],
+                vec![elf_plt_relocation(
+                    0x18,
+                    R_AARCH64_JUMP_SLOT,
+                    0,
+                    RelocSource::JmpRel,
+                )],
+            ),
+        ] {
+            assert!(
+                collect_elf_plt_fixture(&one_stub, &report, None)
+                    .addresses()
+                    .is_empty()
+            );
+        }
+
+        let mixed: Vec<u8> = elf_plt_object(&elf_plt_section(&[
+            ELF_PLT_STUB_18,
+            ELF_PLT_STUB_20,
+            ELF_PLT_STUB_28,
+        ]));
+        let report: ElfDynamicReport = elf_plt_report(
+            vec![elf_plt_symbol("alpha")],
+            vec![
+                elf_plt_relocation(0x18, R_AARCH64_JUMP_SLOT, 0, RelocSource::JmpRel),
+                elf_plt_relocation(0x20, 1027, 0, RelocSource::JmpRel),
+                elf_plt_relocation(0x28, R_AARCH64_JUMP_SLOT, 0, RelocSource::Rela),
+            ],
+        );
+        let seeds: SeedSet = collect_elf_plt_fixture(&mixed, &report, None);
+        assert_eq!(seeds.addresses(), vec![0x20]);
+        assert_eq!(seeds.origins_of(0x20), BTreeSet::from([SeedOrigin::ElfPlt]));
+    }
+
+    #[test]
+    fn elf_plt_scan_stops_at_its_entry_limit() {
+        for (stub_count, expected_count) in [
+            (MAX_AARCH64_PLT_ENTRIES, MAX_AARCH64_PLT_ENTRIES),
+            (MAX_AARCH64_PLT_ENTRIES + 1, MAX_AARCH64_PLT_ENTRIES),
+        ] {
+            let stubs: Vec<[u32; 4]> = vec![ELF_PLT_STUB_18; stub_count];
+            let bytes: Vec<u8> = elf_plt_object(&elf_plt_section(&stubs));
+            let section_bytes: usize = 32 + stub_count * 16;
+            let page_count: usize = section_bytes.div_ceil(4096);
+            let relocations: Vec<Relocation> = (0..page_count)
+                .map(|page: usize| {
+                    let page_address: u64 =
+                        u64::try_from(page).expect("the test page index fits u64") * 4096;
+                    elf_plt_relocation(
+                        page_address + 0x18,
+                        R_AARCH64_JUMP_SLOT,
+                        0,
+                        RelocSource::JmpRel,
+                    )
+                })
+                .collect();
+            let report: ElfDynamicReport =
+                elf_plt_report(vec![elf_plt_symbol("alpha")], relocations);
+
+            let seeds: SeedSet = collect_elf_plt_fixture(&bytes, &report, None);
+
+            assert_eq!(seeds.addresses().len(), expected_count, "{stub_count}");
+            assert_eq!(
+                seeds.addresses().last().copied(),
+                Some(
+                    0x20 + (u64::try_from(expected_count).expect("the test count fits u64") - 1)
+                        * 16
+                ),
+                "{stub_count}"
             );
         }
     }

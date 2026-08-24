@@ -1,7 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_ir::payload::{DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_pass_native::build_disasm_payload;
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
@@ -33,6 +38,19 @@ const PRECISION_FLOOR_PERMILLE: u64 = 1000;
 const STATIC_REFERENCE_STARTS: usize = 27;
 
 const SHARED_REFERENCE_STARTS: usize = 25;
+
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+
+const TOOL_CAPTURE_LIMIT: usize = 1 << 20;
+
+const ELF_PLT_SOURCE: &str = r#"
+extern long external_alpha(long);
+extern long external_beta(long);
+
+__attribute__((noinline, visibility("hidden"))) long plt_caller(long value) {
+    return external_alpha(value) + external_beta(value + 1);
+}
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Tally {
@@ -103,6 +121,117 @@ fn recovered_starts(stripped: &[u8]) -> BTreeSet<u64> {
         })
         .map(|symbol: &DisasmSymbol| symbol.address)
         .collect()
+}
+
+fn stripped_aarch64_plt_image() -> Vec<u8> {
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary directory");
+    let source: PathBuf = directory.path().join("plt.c");
+    let output: PathBuf = directory.path().join("plt.so");
+    fs::write(&source, ELF_PLT_SOURCE).expect("write fixture source");
+    let arguments: Vec<OsString> = vec![
+        OsString::from("--target=aarch64-unknown-linux-gnu"),
+        OsString::from("-O1"),
+        OsString::from("-fPIC"),
+        OsString::from("-fuse-ld=lld"),
+        OsString::from("-nostdlib"),
+        OsString::from("-shared"),
+        OsString::from("-Wl,--strip-all"),
+        OsString::from("-o"),
+        output.as_os_str().to_os_string(),
+        source.as_os_str().to_os_string(),
+    ];
+    let compiled: CapturedOutput = run_captured(
+        Path::new("clang"),
+        &arguments,
+        TOOL_TIMEOUT,
+        TOOL_CAPTURE_LIMIT,
+    )
+    .expect("start the AArch64 PLT fixture compiler")
+    .expect("the AArch64 PLT fixture compiler exceeded its timeout");
+    assert_eq!(
+        compiled.exit_code,
+        Some(0),
+        "clang failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    fs::read(output).expect("read linked fixture")
+}
+
+fn aarch64_plt_starts(bytes: &[u8]) -> BTreeSet<u64> {
+    let file: object::File<'_> = object::File::parse(bytes).expect("parse linked fixture");
+    let plt: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            section.name().is_ok_and(|name: &str| name == ".plt")
+        })
+        .expect("linked fixture must contain .plt");
+    let plt_end: u64 = plt.address().checked_add(plt.size()).expect("PLT extent");
+    let text: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            section.name().is_ok_and(|name: &str| name == ".text")
+        })
+        .expect("linked fixture must contain .text");
+    text.data()
+        .expect("text data")
+        .chunks_exact(4)
+        .enumerate()
+        .filter_map(|(index, word): (usize, &[u8])| {
+            let word: [u8; 4] = word.try_into().ok()?;
+            let instruction: u32 = u32::from_le_bytes(word);
+            if instruction & 0xFC00_0000 != 0x9400_0000 {
+                return None;
+            }
+            let offset: u64 = u64::try_from(index).ok()?.checked_mul(4)?;
+            let site: u64 = text.address().checked_add(offset)?;
+            let immediate: i64 = ((i64::from(instruction & 0x03FF_FFFF)) << 38) >> 36;
+            let target: u64 = site.checked_add_signed(immediate)?;
+            (target >= plt.address() && target < plt_end).then_some(target)
+        })
+        .collect()
+}
+
+fn erase_got_plt_contents(bytes: &mut [u8]) {
+    let file: object::File<'_> = object::File::parse(&*bytes).expect("parse linked fixture");
+    let section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            section.name().is_ok_and(|name: &str| name == ".got.plt")
+        })
+        .expect("linked fixture must contain .got.plt");
+    let (offset, size): (u64, u64) = section.file_range().expect(".got.plt has file range");
+    let start: usize = usize::try_from(offset).expect(".got.plt offset fits usize");
+    let length: usize = usize::try_from(size).expect(".got.plt size fits usize");
+    let end: usize = start
+        .checked_add(length)
+        .expect(".got.plt extent fits usize");
+    bytes
+        .get_mut(start..end)
+        .expect(".got.plt range lies inside linked fixture")
+        .fill(0);
+}
+
+fn erase_section_contents(bytes: &mut [u8], name: &str) {
+    let file: object::File<'_> = object::File::parse(&*bytes).expect("parse linked fixture");
+    let section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            section
+                .name()
+                .is_ok_and(|candidate: &str| candidate == name)
+        })
+        .expect("linked fixture must contain requested section");
+    let (offset, size): (u64, u64) = section.file_range().expect("section has file range");
+    let start: usize = usize::try_from(offset).expect("section offset fits usize");
+    let length: usize = usize::try_from(size).expect("section size fits usize");
+    let end: usize = start
+        .checked_add(length)
+        .expect("section extent fits usize");
+    bytes
+        .get_mut(start..end)
+        .expect("section range lies inside linked fixture")
+        .fill(0);
 }
 
 fn grade(
@@ -252,4 +381,39 @@ fn discovery_repeats_byte_for_byte() {
         let second: BTreeSet<u64> = recovered_starts(stripped);
         assert_eq!(first, second, "discovery must repeat exactly");
     }
+}
+
+#[test]
+fn stripped_elf_jump_slots_seed_each_aarch64_plt_entry() {
+    let mut image: Vec<u8> = stripped_aarch64_plt_image();
+    let expected: BTreeSet<u64> = aarch64_plt_starts(&image);
+    assert_eq!(
+        expected.len(),
+        2,
+        "the caller must have two direct PLT calls"
+    );
+    erase_got_plt_contents(&mut image);
+    erase_section_contents(&mut image, ".eh_frame");
+    let recovered: BTreeSet<u64> = recovered_starts(&image);
+    let file: object::File<'_> = object::File::parse(&*image).expect("parse stripped fixture");
+    let plt: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            section.name().is_ok_and(|name: &str| name == ".plt")
+        })
+        .expect("PLT section");
+    let plt_end: u64 = plt.address().checked_add(plt.size()).expect("PLT extent");
+    let recovered_plt: BTreeSet<u64> = recovered
+        .iter()
+        .copied()
+        .filter(|address: &u64| *address >= plt.address() && *address < plt_end)
+        .collect();
+    assert_eq!(
+        recovered_plt, expected,
+        "only called PLT stubs may be discovered; PLT0 and trailing bytes are not starts"
+    );
+    assert!(
+        expected.is_subset(&recovered),
+        "every .rela.plt JUMP_SLOT must seed its corresponding PLT entry; expected {expected:?}, recovered {recovered:?}"
+    );
 }
