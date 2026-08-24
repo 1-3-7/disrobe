@@ -5737,6 +5737,12 @@ fn render_switch_subject(
     level: usize,
 ) -> String {
     let (start, end): (usize, usize) = block_insn_range(ctx, head);
+    let end: usize = end
+        .saturating_sub(ctx.finally_tail_trims.get(&head).copied().unwrap_or(0))
+        .max(start);
+    let start: usize = start
+        .saturating_add(ctx.finally_inline_skips.get(&head).copied().unwrap_or(0))
+        .min(end);
     if start == end {
         return "expr".to_string();
     }

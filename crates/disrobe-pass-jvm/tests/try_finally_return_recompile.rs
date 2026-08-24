@@ -550,6 +550,37 @@ const FINALLY_IF_SRC: &str = "public class FinallyIf {\n\
     }\n\
 }\n";
 
+const FINALLY_LOOKUP_SWITCH_SRC: &str = "public class FinallyLookupSwitch {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a * 2;\n\
+        } finally {\n\
+            switch (a) {\n\
+                case 0: CTR += 1; break;\n\
+                case 100: CTR += 10; break;\n\
+                default: CTR -= 1;\n\
+            }\n\
+        }\n\
+    }\n\
+}\n";
+
+const FINALLY_TABLE_SWITCH_SRC: &str = "public class FinallyTableSwitch {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a * 2;\n\
+        } finally {\n\
+            switch (a) {\n\
+                case 0: CTR += 1; break;\n\
+                case 1: CTR += 10; break;\n\
+                case 2: CTR += 100; break;\n\
+                default: CTR -= 1;\n\
+            }\n\
+        }\n\
+    }\n\
+}\n";
+
 #[test]
 fn finally_if_else_recompiles_to_equivalent_bytecode() {
     let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
@@ -613,6 +644,65 @@ fn finally_if_else_recompiles_to_equivalent_bytecode() {
         original_code, recovered_code,
         "recompiled finally-if bytecode differs from the original:\n{}",
         decompiled.source
+    );
+}
+
+#[test]
+fn finally_with_a_lookup_switch_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyLookupSwitch", FINALLY_LOOKUP_SWITCH_SRC);
+    assert!(
+        recompiled.original_javap.contains("lookupswitch"),
+        "the sparse-switch recovery fixture did not compile to lookupswitch:\n{}",
+        recompiled.original_javap
+    );
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(body.contains("switch ("), "finally switch missing:\n{body}");
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled finally-switch bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_with_a_table_switch_remains_a_named_refusal() {
+    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_table_switch").expect("scratch");
+    let directory: PathBuf = scratch.path().join("orig");
+    std::fs::create_dir_all(&directory).expect("fixture directory");
+    let source_path: PathBuf = directory.join("FinallyTableSwitch.java");
+    std::fs::write(&source_path, FINALLY_TABLE_SWITCH_SRC).expect("fixture source");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&directory)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let original_javap: String = javap_code(&javap, &directory, "FinallyTableSwitch");
+    assert!(
+        original_javap.contains("tableswitch"),
+        "the dense-switch boundary fixture did not compile to tableswitch:\n{original_javap}"
+    );
+    let class_bytes: Vec<u8> =
+        std::fs::read(directory.join("FinallyTableSwitch.class")).expect("fixture class");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let decompiled: DecompiledClass = decompile_class(&class_file);
+    let body: String = method_body(&decompiled.source, " run(").expect("recovered run method");
+    assert!(
+        body.contains("not recovered:"),
+        "a tableswitch finally crossed the lookup-switch recovery boundary:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "a tableswitch finally became a Throwable catch:\n{body}"
     );
 }
 

@@ -1053,6 +1053,10 @@ impl<'a> Structurer<'a> {
         self.insns.get(idx + 1).map(|ins: &Instruction| ins.pc)
     }
 
+    fn relative_target(pc: u32, offset: i32) -> Option<u32> {
+        u32::try_from(i64::from(pc) + i64::from(offset)).ok()
+    }
+
     fn finally_copy_match(
         &mut self,
         body: &[Instruction],
@@ -1114,37 +1118,69 @@ impl<'a> Structurer<'a> {
             if a.opcode != b.opcode {
                 return None;
             }
-            let (Operands::Branch(_), Operands::Branch(_)) = (&a.operands, &b.operands) else {
+            let targets: Option<Vec<(u32, u32)>> = match (&a.operands, &b.operands) {
+                (Operands::Branch(_), Operands::Branch(_)) => {
+                    Some(vec![(branch_target(a)?, branch_target(b)?)])
+                }
+                (
+                    Operands::LookupSwitch {
+                        default: body_default,
+                        pairs: body_pairs,
+                    },
+                    Operands::LookupSwitch {
+                        default: copy_default,
+                        pairs: copy_pairs,
+                    },
+                ) if body_pairs.len() == copy_pairs.len()
+                    && body_pairs
+                        .iter()
+                        .zip(copy_pairs)
+                        .all(|((body_key, _), (copy_key, _))| body_key == copy_key) =>
+                {
+                    let capacity: usize = body_pairs.len().checked_add(1)?;
+                    let mut targets: Vec<(u32, u32)> = Vec::with_capacity(capacity);
+                    targets.push((
+                        Self::relative_target(a.pc, *body_default)?,
+                        Self::relative_target(b.pc, *copy_default)?,
+                    ));
+                    for ((_, body_offset), (_, copy_offset)) in body_pairs.iter().zip(copy_pairs) {
+                        targets.push((
+                            Self::relative_target(a.pc, *body_offset)?,
+                            Self::relative_target(b.pc, *copy_offset)?,
+                        ));
+                    }
+                    Some(targets)
+                }
+                _ => None,
+            };
+            let Some(targets): Option<Vec<(u32, u32)>> = targets else {
                 if a.operands != b.operands {
                     return None;
                 }
                 continue;
             };
-            let (Some(a_target), Some(b_target)): (Option<u32>, Option<u32>) =
-                (branch_target(a), branch_target(b))
-            else {
-                return None;
-            };
-            let a_index: Option<usize> = identity.body_position(a_target);
-            let b_index: Option<usize> = identity.copy_position(b_target);
-            if a_index == Some(body.len()) {
-                if b_index.is_some_and(|index: usize| index < copy.len())
-                    || identity
-                        .body_position(b_target)
-                        .is_some_and(|index: usize| index < body.len())
-                {
-                    return None;
+            for (a_target, b_target) in targets {
+                let a_index: Option<usize> = identity.body_position(a_target);
+                let b_index: Option<usize> = identity.copy_position(b_target);
+                if a_index == Some(body.len()) {
+                    if b_index.is_some_and(|index: usize| index < copy.len())
+                        || identity
+                            .body_position(b_target)
+                            .is_some_and(|index: usize| index < body.len())
+                    {
+                        return None;
+                    }
+                    match exit_pc {
+                        Some(previous) if previous != b_target => return None,
+                        _ => exit_pc = Some(b_target),
+                    }
+                    continue;
                 }
-                match exit_pc {
-                    Some(previous) if previous != b_target => return None,
-                    _ => exit_pc = Some(b_target),
+                match (a_index, b_index) {
+                    (Some(a_idx), Some(b_idx)) if a_idx == b_idx => {}
+                    (None, None) if a_target == b_target => {}
+                    _ => return None,
                 }
-                continue;
-            }
-            match (a_index, b_index) {
-                (Some(a_idx), Some(b_idx)) if a_idx == b_idx => {}
-                (None, None) if a_target == b_target => {}
-                _ => return None,
             }
         }
         Some(FinallyCopyMatch {
@@ -1173,7 +1209,7 @@ impl<'a> Structurer<'a> {
             .iter()
             .enumerate()
             .any(|(index, ins): (usize, &Instruction)| {
-                matches!(ins.opcode, 0xA8..=0xB1 | 0xC9)
+                matches!(ins.opcode, 0xA8..=0xAA | 0xAC..=0xB1 | 0xC9)
                     || (ins.opcode == 0xBF
                         && index
                             .checked_sub(1)
@@ -1989,7 +2025,7 @@ impl<'a> Structurer<'a> {
                         .finally_body_instructions(&chain)
                         .is_some_and(|body: Vec<Instruction>| {
                             body.iter().any(|instruction: &Instruction| {
-                                matches!(instruction.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
+                                matches!(instruction.opcode, 0x99..=0xA7 | 0xAB | 0xC6..=0xC8)
                             })
                         });
                     let multi_folds: Option<Vec<(BlockId, BlockId, u16)>> =
