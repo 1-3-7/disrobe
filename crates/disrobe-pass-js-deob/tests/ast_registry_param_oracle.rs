@@ -155,13 +155,33 @@ fn webpack_registry_factory_recovers_roles_in_nonstandard_parameter_order() {
 
 #[test]
 fn webpack_registry_factory_abstains_when_role_evidence_is_ambiguous() {
-    let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=b("./math-utils");b.cache=1;c.answer=a.exports;print(c.answer.sum(2,3));}};bundle[1](runtimeModule,__webpack_require__,runtimeModule.exports);"#;
+    let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=c("./math-utils");b.answer=a.exports;print(b.answer.sum(2,3));}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);if(globalThis.__never){bundle[1](__webpack_require__,runtimeModule,runtimeModule.exports);}"#;
     let (recovered, _stats) = unminify_ast(source);
     assert!(
         recovered.contains("function(a,b,c)"),
-        "ambiguous export-object evidence must leave the factory unchanged:\n{recovered}"
+        "conflicting bootstrap-role evidence must leave the factory unchanged:\n{recovered}"
     );
     assert_runtime_parity(source, &recovered);
+}
+
+#[test]
+fn webpack_registry_factory_requires_a_matching_bootstrap_call_and_role_use() {
+    let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=c("./math-utils").sum(2,3);b.answer=a.exports;print(b.answer);},2:function(d,e,f){d.exports=f("./math-utils").sum(4,5);e.answer=d.exports;}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (recovered, _stats) = unminify_ast(source);
+    assert!(recovered.contains("1:function(module,exports,require)"));
+    assert!(
+        recovered.contains("2:function(d,e,f)"),
+        "an uninvoked sibling factory must not inherit another module's runtime proof:\n{recovered}"
+    );
+    assert_runtime_parity(source, &recovered);
+
+    let unrelated_property: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=c("./math-utils").sum(2,3);a.cache=1;print(a.exports);}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (unchanged, _) = unminify_ast(unrelated_property);
+    assert!(
+        unchanged.contains("function(a,b,c)"),
+        "an unrelated object property must not stand in for exports-role evidence:\n{unchanged}"
+    );
+    assert_runtime_parity(unrelated_property, &unchanged);
 }
 
 #[test]

@@ -108,13 +108,11 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
                 edits.extend(candidate_edits);
             }
         }
-        for factory in webpack_factories(registry, nodes, symbols) {
+        for selected in webpack_factories(registry, nodes, symbols) {
+            let factory: &Function<'_> = selected.factory;
             let mut reserved: IndexSet<String> = root_reserved.clone();
             let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
-            let Some(roles): Option<[&str; 3]> = webpack_factory_roles(factory, symbols) else {
-                continue;
-            };
-            for (parameter, preferred) in factory.params.items.iter().zip(roles) {
+            for (parameter, preferred) in factory.params.items.iter().zip(selected.roles) {
                 let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
                     continue;
                 };
@@ -310,29 +308,24 @@ fn webpack_factories<'a>(
     registry: &'a ObjectExpression<'a>,
     nodes: &AstNodes<'a>,
     symbols: &SymbolTable,
-) -> Vec<&'a Function<'a>> {
-    let direct_bootstrap: bool =
-        webpack_registry_symbol(registry, nodes).is_some_and(|registry_symbol: SymbolId| {
-            nodes.iter().any(|node: &oxc_semantic::AstNode<'a>| {
-                let AstKind::CallExpression(call) = node.kind() else {
-                    return false;
-                };
-                is_webpack_bootstrap_call(call, registry_symbol, symbols)
-            })
-        });
-    if !direct_bootstrap && !is_webpack_chunk_registration(registry, nodes, symbols) {
+) -> Vec<WebpackFactory<'a>> {
+    let registry_symbol: Option<SymbolId> = webpack_registry_symbol(registry, nodes);
+    let chunk_registration: bool = is_webpack_chunk_registration(registry, nodes, symbols);
+    if registry_symbol.is_none() && !chunk_registration {
         return Vec::new();
     }
-    let mut factories: Vec<&Function<'_>> = Vec::new();
+    let mut factories: Vec<WebpackFactory<'_>> = Vec::new();
     for property in &registry.properties {
         let ObjectPropertyKind::ObjectProperty(property) = property else {
+            return Vec::new();
+        };
+        let PropertyKey::NumericLiteral(module_id) = &property.key else {
             return Vec::new();
         };
         if property.kind != PropertyKind::Init
             || property.computed
             || property.method
             || property.shorthand
-            || !matches!(property.key, PropertyKey::NumericLiteral(_))
         {
             return Vec::new();
         }
@@ -358,7 +351,26 @@ fn webpack_factories<'a>(
         {
             continue;
         }
-        factories.push(factory);
+        let roles: Option<[&'static str; 3]> = registry_symbol.map_or_else(
+            || chunk_registration.then_some(["module", "exports", "require"]),
+            |symbol_id: SymbolId| {
+                let mut matches = nodes.iter().filter_map(|node: &oxc_semantic::AstNode<'a>| {
+                    let AstKind::CallExpression(call) = node.kind() else {
+                        return None;
+                    };
+                    webpack_bootstrap_roles(call, symbol_id, module_id.value, symbols)
+                });
+                let first: Option<[&'static str; 3]> = matches.next();
+                matches.next().is_none().then_some(first).flatten()
+            },
+        );
+        let Some(roles) = roles else {
+            continue;
+        };
+        if !webpack_factory_has_role_evidence(factory, roles, symbols) {
+            continue;
+        }
+        factories.push(WebpackFactory { factory, roles });
     }
     factories
 }
@@ -449,43 +461,36 @@ fn webpack_registry_symbol(
     })
 }
 
-fn is_webpack_bootstrap_call(
+fn webpack_bootstrap_roles(
     call: &CallExpression<'_>,
     registry_symbol: SymbolId,
+    module_id: f64,
     symbols: &SymbolTable,
-) -> bool {
+) -> Option<[&'static str; 3]> {
     if call.optional || call.type_parameters.is_some() || call.arguments.len() != 3 {
-        return false;
+        return None;
     }
     let Expression::ComputedMemberExpression(member) = call.callee.get_inner_expression() else {
-        return false;
+        return None;
     };
     if member.optional
-        || !matches!(
-            member.expression.get_inner_expression(),
-            Expression::NumericLiteral(_)
-        )
+        || !matches!(member.expression.get_inner_expression(), Expression::NumericLiteral(literal) if literal.value.to_bits() == module_id.to_bits())
     {
-        return false;
+        return None;
     }
     let Expression::Identifier(registry) = member.object.get_inner_expression() else {
-        return false;
+        return None;
     };
-    let Some(registry_reference): Option<ReferenceId> = registry.reference_id.get() else {
-        return false;
-    };
+    let registry_reference: ReferenceId = registry.reference_id.get()?;
     if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
-        return false;
+        return None;
     }
-    let Some(arguments): Option<[&Expression<'_>; 3]> = call
+    let arguments: [&Expression<'_>; 3] = call
         .arguments
         .iter()
         .map(Argument::as_expression)
         .collect::<Option<Vec<&Expression<'_>>>>()
-        .and_then(|values: Vec<&Expression<'_>>| values.try_into().ok())
-    else {
-        return false;
-    };
+        .and_then(|values: Vec<&Expression<'_>>| values.try_into().ok())?;
     let require_indices: Vec<usize> = arguments
         .iter()
         .enumerate()
@@ -497,7 +502,7 @@ fn is_webpack_bootstrap_call(
         })
         .collect();
     if require_indices.len() != 1 {
-        return false;
+        return None;
     }
     for (module_index, argument) in arguments.iter().enumerate() {
         let Expression::Identifier(module) = argument.get_inner_expression() else {
@@ -534,18 +539,23 @@ fn is_webpack_bootstrap_call(
                 && module_index != require_index
                 && exports_index != require_index
             {
-                return true;
+                let mut roles: [&'static str; 3] = [""; 3];
+                roles[module_index] = "module";
+                roles[exports_index] = "exports";
+                roles[require_index] = "require";
+                return Some(roles);
             }
         }
     }
-    false
+    None
 }
 
-fn webpack_factory_roles(
+fn webpack_factory_has_role_evidence(
     factory: &Function<'_>,
+    roles: [&str; 3],
     symbols: &SymbolTable,
-) -> Option<[&'static str; 3]> {
-    let parameter_symbols: [SymbolId; 3] = factory
+) -> bool {
+    let parameter_symbols: Option<[SymbolId; 3]> = factory
         .params
         .items
         .iter()
@@ -555,10 +565,14 @@ fn webpack_factory_roles(
             };
             binding.symbol_id.get()
         })
-        .collect::<Option<Vec<SymbolId>>>()?
-        .try_into()
-        .ok()?;
-    let body: &FunctionBody<'_> = factory.body.as_deref()?;
+        .collect::<Option<Vec<SymbolId>>>()
+        .and_then(|values: Vec<SymbolId>| values.try_into().ok());
+    let Some(parameter_symbols) = parameter_symbols else {
+        return false;
+    };
+    let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
+        return false;
+    };
     let mut probe: WebpackRoleProbe<'_> = WebpackRoleProbe {
         parameter_symbols,
         symbols,
@@ -569,29 +583,20 @@ fn webpack_factory_roles(
     for statement in &body.statements {
         probe.visit_statement(statement);
     }
-    let require_index: usize = unique_true_index(probe.called)?;
-    let module_index: usize = unique_true_index(probe.exports_member)?;
-    let exports_index: usize = unique_true_index(probe.other_member)?;
-    if require_index == module_index
-        || require_index == exports_index
-        || module_index == exports_index
-    {
-        return None;
-    }
-    let mut roles: [&'static str; 3] = [""; 3];
-    roles[require_index] = "require";
-    roles[module_index] = "module";
-    roles[exports_index] = "exports";
-    Some(roles)
+    roles
+        .iter()
+        .enumerate()
+        .all(|(index, role): (usize, &&str)| match *role {
+            "module" => probe.exports_member[index],
+            "exports" => probe.other_member[index],
+            "require" => probe.called[index],
+            _ => false,
+        })
 }
 
-fn unique_true_index(values: [bool; 3]) -> Option<usize> {
-    let mut indices = values
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, matched)| matched.then_some(index));
-    let index: usize = indices.next()?;
-    indices.next().is_none().then_some(index)
+struct WebpackFactory<'a> {
+    factory: &'a Function<'a>,
+    roles: [&'static str; 3],
 }
 
 struct AmdFactory<'a> {
