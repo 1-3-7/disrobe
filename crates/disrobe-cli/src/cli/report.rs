@@ -259,7 +259,7 @@ fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
         format!("the analysis target `{path}` could not reserve {capacity} bytes for capabilities")
     })?;
     let mut reader: File = file;
-    let mut chunk: [u8; 64 * 1024] = [0; 64 * 1024];
+    let mut chunk: Box<[u8]> = vec![0; 64 * 1024].into_boxed_slice();
     loop {
         let observed: u64 = u64::try_from(bytes.len())
             .map_err(|_| "report capability input length cannot be represented".to_string())?;
