@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use disrobe_core::behavior::{self, BehaviorReport, Category, CategoryFinding};
-use disrobe_core::ioc::{self, IocReport};
+use disrobe_core::ioc;
 
-use super::report::{BatchReport, InputIdentity, SingleReport, tier_label};
+use super::report::{BatchReport, IndicatorSection, InputIdentity, SingleReport, tier_label};
 #[cfg(test)]
 use super::report::{EvidenceItem, EvidenceRole, HashSource, Reproduction, WallKind, WallView};
 
@@ -13,7 +13,6 @@ const SHARED_THEME_TOKENS: &str = include_str!("../../../../docs/theme/tokens.cs
 
 #[derive(Debug, Default)]
 pub(crate) struct Enrichment {
-    pub(crate) ioc: Option<IocReport>,
     pub(crate) behavior: Option<BehaviorReport>,
 }
 
@@ -51,19 +50,10 @@ fn native_import_tokens(bytes: &[u8]) -> Vec<String> {
 }
 
 #[must_use]
-pub(crate) fn enrich_single(report: &SingleReport) -> Enrichment {
-    let Some(path): Option<&String> = report.input.path.as_ref() else {
-        return Enrichment::default();
-    };
-    let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(path) else {
-        return Enrichment::default();
-    };
-    let imports: Vec<String> = native_import_tokens(&bytes);
-    let import_refs: Vec<&str> = imports.iter().map(String::as_str).collect();
-    let ioc_report: IocReport = ioc::report_with_extra(&bytes, Some(path), &import_refs);
-    let behavior_report: BehaviorReport = behavior::analyze_with_uri(&bytes, &imports, Some(path));
+pub(crate) fn enrich_bytes(bytes: &[u8], path: &str) -> Enrichment {
+    let imports: Vec<String> = native_import_tokens(bytes);
+    let behavior_report: BehaviorReport = behavior::analyze_with_uri(bytes, &imports, Some(path));
     Enrichment {
-        ioc: Some(ioc_report),
         behavior: Some(behavior_report),
     }
 }
@@ -583,13 +573,31 @@ fn render_capabilities(report: &SingleReport, out: &mut String) {
     out.push_str("</tbody></table></div></section>");
 }
 
-fn render_ioc(ioc_report: &IocReport, out: &mut String) {
-    section_open(
-        out,
-        ICON_NETWORK,
-        "Indicators of compromise",
-        Some(ioc_report.total.to_string()),
-    );
+fn render_indicators(section: &IndicatorSection, out: &mut String) {
+    let total: Option<String> = section
+        .bundle
+        .as_ref()
+        .filter(|_| section.available)
+        .map(|bundle| bundle.total.to_string());
+    section_open(out, ICON_NETWORK, "Indicators of compromise", total);
+    if !section.available {
+        let reason: &str = section
+            .reason
+            .as_deref()
+            .unwrap_or("no indicator bundle was produced");
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<div class=\"panel\"><div class=\"empty\">{}</div></div></section>",
+            html_escape(reason)
+        );
+        return;
+    }
+    let Some(ioc_report) = section.report.as_ref() else {
+        out.push_str(
+            "<div class=\"panel\"><div class=\"empty\">indicator detail unavailable</div></div></section>",
+        );
+        return;
+    };
     if ioc_report.indicators.is_empty() {
         out.push_str(
             "<div class=\"panel\"><div class=\"empty\">no indicators found</div></div></section>",
@@ -855,13 +863,11 @@ pub(crate) fn render_single_html(report: &SingleReport, enrichment: &Enrichment)
     render_tier_histogram(report, &mut out);
     render_walls(report, &mut out);
     render_capabilities(report, &mut out);
+    render_indicators(&report.indicators, &mut out);
     render_artifacts(report, &mut out);
     render_evidence(report, &mut out);
     render_reproduction(report, &mut out);
 
-    if let Some(ioc_report) = enrichment.ioc.as_ref() {
-        render_ioc(ioc_report, &mut out);
-    }
     if let Some(behavior_report) = enrichment.behavior.as_ref() {
         render_behavior(behavior_report, &mut out);
     }
@@ -993,7 +999,7 @@ mod tests {
     };
     use disrobe_core::behavior::{Category, Evidence};
 
-    use super::super::report::{CapabilitySection, StageView};
+    use super::super::report::{CapabilitySection, IndicatorSection, StageView};
 
     fn populated_capabilities() -> CapabilitySection {
         CapabilitySection {
@@ -1022,6 +1028,17 @@ mod tests {
                 }],
             }),
             reason: None,
+        }
+    }
+
+    fn indicators(bytes: &[u8]) -> IndicatorSection {
+        let (report, bundle) =
+            super::super::indicators::analyze_target(bytes, "app.pyc").expect("analyze indicators");
+        IndicatorSection {
+            available: true,
+            bundle: Some(bundle),
+            reason: None,
+            report: Some(report),
         }
     }
 
@@ -1066,6 +1083,8 @@ mod tests {
                 artifact_size: 128,
             }],
             capabilities: populated_capabilities(),
+            indicators: indicators(b"no matches here"),
+            enrichment: Enrichment::default(),
             failures: Vec::new(),
             evidence: vec![EvidenceItem {
                 role: EvidenceRole::AnalysisTarget,
@@ -1272,15 +1291,11 @@ mod tests {
 
     #[test]
     fn enrichment_renders_ioc_and_behavior() {
-        let report: SingleReport = sample_single();
-        let ioc_report: IocReport = ioc::report(
-            b"reach http://c2.evil.example/ and 8.8.8.8",
-            Some("app.pyc"),
-        );
+        let mut report: SingleReport = sample_single();
+        report.indicators = indicators(b"reach http://c2.evil.example/ and 8.8.8.8");
         let behavior_report: BehaviorReport =
             behavior::analyze(b"connect to host", &["ws2_32.dll!connect".to_owned()]);
         let enrichment: Enrichment = Enrichment {
-            ioc: Some(ioc_report),
             behavior: Some(behavior_report),
         };
         let html: String = render_single_html(&report, &enrichment);

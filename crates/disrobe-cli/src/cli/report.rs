@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use disrobe_capabilities::CapabilitiesReport;
 use disrobe_core::Redactor;
 use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc, VerdictDoc};
+use disrobe_core::interop::IndicatorBundle;
+use disrobe_core::ioc::IocReport;
 use disrobe_core::recovery::ConfidenceTier;
 use serde::Serialize;
 
@@ -177,6 +179,9 @@ pub(crate) struct SingleReport {
     pub(crate) stages: Vec<StageView>,
     pub(crate) walls: Vec<WallView>,
     pub(crate) capabilities: CapabilitySection,
+    pub(crate) indicators: IndicatorSection,
+    #[serde(skip)]
+    pub(crate) enrichment: super::report_html::Enrichment,
     pub(crate) failures: Vec<FailureView>,
     pub(crate) evidence: Vec<EvidenceItem>,
     pub(crate) reproduction: Reproduction,
@@ -193,34 +198,67 @@ pub(crate) struct CapabilitySection {
     pub(crate) reason: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct IndicatorSection {
+    pub(crate) available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bundle: Option<IndicatorBundle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+    #[serde(skip)]
+    pub(crate) report: Option<IocReport>,
+}
+
+#[cfg(test)]
 pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
-    let Some(path) = input.path.as_deref() else {
-        return CapabilitySection {
-            available: false,
-            report: None,
-            reason: Some("the chain document records no analysis target path".to_string()),
-        };
-    };
-    let bytes: Vec<u8> = match read_capability_input(path) {
-        Ok(bytes) => bytes,
-        Err(reason) => {
-            return CapabilitySection {
-                available: false,
-                report: None,
-                reason: Some(reason),
-            };
-        }
-    };
-    if blake3::hash(&bytes).to_hex().as_str() != input.blake3 {
-        return CapabilitySection {
-            available: false,
-            report: None,
-            reason: Some(
-                "the analysis target no longer matches the chain document blake3".to_string(),
-            ),
-        };
+    match verified_analysis_input(input) {
+        Ok((path, bytes)) => capabilities_from_bytes(path, &bytes),
+        Err(reason) => unavailable_capabilities(reason),
     }
-    match super::capabilities::build_report(&bytes, path, Path::new(path)) {
+}
+
+#[cfg(test)]
+pub(crate) fn indicators_section(input: &InputIdentity) -> IndicatorSection {
+    match verified_analysis_input(input) {
+        Ok((path, bytes)) => indicators_from_bytes(path, &bytes),
+        Err(reason) => unavailable_indicators(reason),
+    }
+}
+
+fn analysis_sections(
+    input: &InputIdentity,
+) -> (
+    CapabilitySection,
+    IndicatorSection,
+    super::report_html::Enrichment,
+) {
+    match verified_analysis_input(input) {
+        Ok((path, bytes)) => (
+            capabilities_from_bytes(path, &bytes),
+            indicators_from_bytes(path, &bytes),
+            super::report_html::enrich_bytes(&bytes, path),
+        ),
+        Err(reason) => (
+            unavailable_capabilities(reason.clone()),
+            unavailable_indicators(reason),
+            super::report_html::Enrichment::default(),
+        ),
+    }
+}
+
+fn verified_analysis_input(input: &InputIdentity) -> Result<(&str, Vec<u8>), String> {
+    let Some(path) = input.path.as_deref() else {
+        return Err("the chain document records no analysis target path".to_string());
+    };
+    let bytes: Vec<u8> = read_analysis_input(path)?;
+    if blake3::hash(&bytes).to_hex().as_str() != input.blake3 {
+        return Err("the analysis target no longer matches the chain document blake3".to_string());
+    }
+    Ok((path, bytes))
+}
+
+fn capabilities_from_bytes(path: &str, bytes: &[u8]) -> CapabilitySection {
+    match super::capabilities::build_report(bytes, path, Path::new(path)) {
         Ok(report) => CapabilitySection {
             available: true,
             report: Some(report),
@@ -234,7 +272,36 @@ pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
     }
 }
 
-fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
+fn indicators_from_bytes(path: &str, bytes: &[u8]) -> IndicatorSection {
+    match super::indicators::analyze_target(bytes, path) {
+        Ok((report, bundle)) => IndicatorSection {
+            available: true,
+            bundle: Some(bundle),
+            reason: None,
+            report: Some(report),
+        },
+        Err(reason) => unavailable_indicators(reason),
+    }
+}
+
+const fn unavailable_capabilities(reason: String) -> CapabilitySection {
+    CapabilitySection {
+        available: false,
+        report: None,
+        reason: Some(reason),
+    }
+}
+
+const fn unavailable_indicators(reason: String) -> IndicatorSection {
+    IndicatorSection {
+        available: false,
+        bundle: None,
+        reason: Some(reason),
+        report: None,
+    }
+}
+
+fn read_analysis_input(path: &str) -> Result<Vec<u8>, String> {
     let file: File = File::open(path).map_err(|_| {
         format!("the analysis target `{path}` is not readable from this working directory")
     })?;
@@ -246,9 +313,9 @@ fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
             "the analysis target `{path}` is not a regular file"
         ));
     }
-    if metadata.len() > MAX_REPORT_CAPABILITY_INPUT_BYTES {
+    if metadata.len() > MAX_REPORT_ANALYSIS_INPUT_BYTES {
         return Err(format!(
-            "the analysis target `{path}` exceeds the {MAX_REPORT_CAPABILITY_INPUT_BYTES}-byte report capability input limit"
+            "the analysis target `{path}` exceeds the {MAX_REPORT_ANALYSIS_INPUT_BYTES}-byte report analysis input limit"
         ));
     }
     let capacity: usize = usize::try_from(metadata.len()).map_err(|_| {
@@ -256,28 +323,30 @@ fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
     })?;
     let mut bytes: Vec<u8> = Vec::new();
     bytes.try_reserve_exact(capacity).map_err(|_| {
-        format!("the analysis target `{path}` could not reserve {capacity} bytes for capabilities")
+        format!(
+            "the analysis target `{path}` could not reserve {capacity} bytes for report analysis"
+        )
     })?;
     let mut reader: File = file;
     let mut chunk: Box<[u8]> = vec![0; 64 * 1024].into_boxed_slice();
     loop {
         let observed: u64 = u64::try_from(bytes.len())
-            .map_err(|_| "report capability input length cannot be represented".to_string())?;
-        if observed == MAX_REPORT_CAPABILITY_INPUT_BYTES {
+            .map_err(|_| "report analysis input length cannot be represented".to_string())?;
+        if observed == MAX_REPORT_ANALYSIS_INPUT_BYTES {
             let mut extra: [u8; 1] = [0; 1];
             let read: usize = reader.read(&mut extra).map_err(|_| {
                 format!("the analysis target `{path}` is not readable from this working directory")
             })?;
             if read > 0 {
                 return Err(format!(
-                    "the analysis target `{path}` exceeds the {MAX_REPORT_CAPABILITY_INPUT_BYTES}-byte report capability input limit"
+                    "the analysis target `{path}` exceeds the {MAX_REPORT_ANALYSIS_INPUT_BYTES}-byte report analysis input limit"
                 ));
             }
             break;
         }
-        let remaining: usize = usize::try_from(MAX_REPORT_CAPABILITY_INPUT_BYTES - observed)
+        let remaining: usize = usize::try_from(MAX_REPORT_ANALYSIS_INPUT_BYTES - observed)
             .map_err(|_| {
-                "report capability input remaining length cannot be represented".to_string()
+                "report analysis input remaining length cannot be represented".to_string()
             })?;
         let read_len: usize = remaining.min(chunk.len());
         let read: usize = reader.read(&mut chunk[..read_len]).map_err(|_| {
@@ -287,12 +356,14 @@ fn read_capability_input(path: &str) -> Result<Vec<u8>, String> {
             break;
         }
         bytes.try_reserve_exact(read).map_err(|_| {
-            format!("the analysis target `{path}` could not reserve {read} bytes for capabilities")
+            format!(
+                "the analysis target `{path}` could not reserve {read} bytes for report analysis"
+            )
         })?;
         bytes.extend_from_slice(&chunk[..read]);
     }
     let observed: u64 = u64::try_from(bytes.len())
-        .map_err(|_| "report capability input length cannot be represented".to_string())?;
+        .map_err(|_| "report analysis input length cannot be represented".to_string())?;
     if observed != metadata.len() {
         return Err(format!(
             "the analysis target `{path}` changed while reading"
@@ -335,7 +406,7 @@ pub(crate) struct BatchReport {
 }
 
 const RECOVERY_REPORT_SCHEMA: &str = "disrobe.report/v1";
-const MAX_REPORT_CAPABILITY_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_REPORT_ANALYSIS_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
 pub(crate) fn tier_label(score: f64) -> &'static str {
     if score >= 0.99 {
@@ -877,7 +948,11 @@ fn build_single(
         detected: doc.input.detected.clone(),
         final_format: doc.final_format.clone(),
     };
-    let capabilities = capabilities_section(&input);
+    let (capabilities, indicators, enrichment): (
+        CapabilitySection,
+        IndicatorSection,
+        super::report_html::Enrichment,
+    ) = analysis_sections(&input);
     SingleReport {
         kind: "single",
         schema: RECOVERY_REPORT_SCHEMA.to_string(),
@@ -898,6 +973,8 @@ fn build_single(
         stages,
         walls,
         capabilities,
+        indicators,
+        enrichment,
         failures,
         evidence,
         reproduction,
@@ -1135,6 +1212,7 @@ fn render_text_single(r: &SingleReport, out: &mut String) {
         }
     }
     render_text_capabilities(&r.capabilities, out);
+    render_text_indicators(&r.indicators, out);
     if !r.failures.is_empty() {
         let _ = writeln!(out, "  failures:");
         for f in &r.failures {
@@ -1214,6 +1292,36 @@ fn render_text_capabilities(section: &CapabilitySection, out: &mut String) {
             capability.rule,
             capability.scope.label(),
             capability.description
+        );
+    }
+}
+
+fn render_text_indicators(section: &IndicatorSection, out: &mut String) {
+    let _ = writeln!(out, "  indicators:");
+    let Some(bundle) = section.bundle.as_ref().filter(|_| section.available) else {
+        let _ = writeln!(
+            out,
+            "    unavailable: {}",
+            section
+                .reason
+                .as_deref()
+                .unwrap_or("no indicator bundle was produced")
+        );
+        return;
+    };
+    let _ = writeln!(out, "    {} indicator(s)", bundle.total);
+    if bundle.indicators.is_empty() {
+        let _ = writeln!(out, "    no indicators found");
+        return;
+    }
+    for indicator in &bundle.indicators {
+        let _ = writeln!(
+            out,
+            "    {} {} [{}] {}",
+            indicator.class.label(),
+            indicator.value,
+            indicator.sources.join(","),
+            indicator.kinds.join(",")
         );
     }
 }
@@ -1313,6 +1421,7 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
         }
     }
     render_markdown_capabilities(&r.capabilities, out);
+    render_markdown_indicators(&r.indicators, out);
     if !r.failures.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "## Failures");
@@ -1427,6 +1536,47 @@ fn render_markdown_capabilities(section: &CapabilitySection, out: &mut String) {
     }
 }
 
+fn render_markdown_indicators(section: &IndicatorSection, out: &mut String) {
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Indicators");
+    let _ = writeln!(out);
+    let Some(bundle) = section.bundle.as_ref().filter(|_| section.available) else {
+        let _ = writeln!(
+            out,
+            "Unavailable: {}",
+            section
+                .reason
+                .as_deref()
+                .unwrap_or("no indicator bundle was produced")
+        );
+        return;
+    };
+    if bundle.indicators.is_empty() {
+        let _ = writeln!(out, "No indicators found.");
+        return;
+    }
+    let _ = writeln!(out, "| class | value | sources | kinds |");
+    let _ = writeln!(out, "|---|---|---|---|");
+    for indicator in &bundle.indicators {
+        let value: String = markdown_table_cell(&indicator.value);
+        let _ = writeln!(
+            out,
+            "| {} | `{}` | {} | {} |",
+            indicator.class.label(),
+            value,
+            indicator.sources.join(", "),
+            indicator.kinds.join(", ")
+        );
+    }
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('`', "\\`")
+}
+
 fn render_markdown_batch(r: &BatchReport, out: &mut String) {
     let _ = writeln!(out, "# disrobe report (batch)");
     let _ = writeln!(out);
@@ -1525,9 +1675,7 @@ pub(crate) fn run(
         ReportFormat::Html => {
             let html: String = match &document {
                 ReportDocument::Single(s) => {
-                    let enrichment: super::report_html::Enrichment =
-                        super::report_html::enrich_single(s);
-                    super::report_html::render_single_html(s, &enrichment)
+                    super::report_html::render_single_html(s, &s.enrichment)
                 }
                 ReportDocument::Batch(b) => super::report_html::render_batch_html(b),
             };
@@ -1835,6 +1983,22 @@ mod tests {
         }
     }
 
+    fn indicator_input(stem: &str, bytes: &[u8]) -> (ScratchDir, InputIdentity) {
+        let scratch: ScratchDir = tmp_dir(stem);
+        let path: PathBuf = scratch.path().join("target.bin");
+        std::fs::write(&path, bytes).expect("write indicator target");
+        (
+            scratch,
+            InputIdentity {
+                path: Some(path.display().to_string()),
+                size: bytes.len() as u64,
+                blake3: blake3::hash(bytes).to_hex().to_string(),
+                detected: Vec::new(),
+                final_format: None,
+            },
+        )
+    }
+
     #[test]
     fn a_repeated_pass_name_in_a_tree_attributes_each_stage_to_its_own_node() {
         let (_scratch, dir): (ScratchDir, PathBuf) =
@@ -2055,6 +2219,161 @@ mod tests {
     }
 
     #[test]
+    fn a_populated_indicator_section_reaches_every_report_renderer() {
+        let (_target, input): (ScratchDir, InputIdentity) = indicator_input(
+            "indicator-renderers",
+            b"contact https://indicator.example/path for details",
+        );
+        let section: IndicatorSection = indicators_section(&input);
+        assert!(section.available, "{section:?}");
+        assert!(
+            section.bundle.as_ref().is_some_and(|bundle| bundle
+                .indicators
+                .iter()
+                .any(|indicator| { indicator.value == "https://indicator.example/path" })),
+            "{section:?}"
+        );
+
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("indicator-renderers");
+        let mut report: Box<SingleReport> = single_of(&dir);
+        report.input = input;
+        report.indicators = section;
+
+        let json: serde_json::Value = serde_json::to_value(&report).expect("serialize json");
+        assert_eq!(json["indicators"]["available"], serde_json::json!(true));
+        assert_eq!(
+            json["indicators"]["bundle"]["indicators"][0]["value"],
+            serde_json::json!("https://indicator.example/path")
+        );
+
+        let mut text: String = String::new();
+        render_text_single(&report, &mut text);
+        assert!(
+            text.contains("https://indicator.example/path"),
+            "got: {text}"
+        );
+
+        let mut markdown: String = String::new();
+        render_markdown_single(&report, &mut markdown);
+        assert!(
+            markdown.contains("https://indicator.example/path"),
+            "got: {markdown}"
+        );
+
+        let html: String = super::super::report_html::render_single_html(
+            &report,
+            &super::super::report_html::Enrichment::default(),
+        );
+        assert!(html.contains("Indicators of compromise"), "got: {html}");
+        assert!(html.contains("indicator[.]example"), "got: {html}");
+
+        let document: ReportDocument = ReportDocument::Single(report);
+        let sarif: serde_json::Value = serde_json::from_str(
+            &super::super::report_forensic::render_sarif(&document).expect("render sarif"),
+        )
+        .expect("parse sarif");
+        assert_eq!(
+            sarif["runs"][0]["properties"]["indicators"]["available"],
+            serde_json::json!(true)
+        );
+        assert!(
+            sarif["runs"][0]["results"]
+                .as_array()
+                .is_some_and(|results| results.iter().any(|result| {
+                    result["ruleId"] == serde_json::json!("disrobe.indicator")
+                        && result["properties"]["value"]
+                            == serde_json::json!("https://indicator.example/path")
+                })),
+            "{sarif}"
+        );
+    }
+
+    #[test]
+    fn a_valid_target_without_matches_has_an_available_empty_indicator_section() {
+        let (_target, input): (ScratchDir, InputIdentity) =
+            indicator_input("indicator-empty", b"\0\x01\x02");
+        let section: IndicatorSection = indicators_section(&input);
+        assert!(section.available, "{section:?}");
+        assert_eq!(section.bundle.as_ref().map(|bundle| bundle.total), Some(0));
+        assert!(section.reason.is_none());
+    }
+
+    #[test]
+    fn indicator_markdown_escapes_table_and_code_delimiters() {
+        let (_target, input): (ScratchDir, InputIdentity) = indicator_input(
+            "indicator-markdown-delimiters",
+            b"https://indicator.example/path|branch`name",
+        );
+        let section: IndicatorSection = indicators_section(&input);
+        let mut markdown: String = String::new();
+        render_markdown_indicators(&section, &mut markdown);
+        assert!(
+            markdown.contains("https://indicator.example/path\\|branch\\`name"),
+            "got: {markdown}"
+        );
+    }
+
+    #[test]
+    fn repeated_indicator_sections_over_the_same_target_are_byte_identical() {
+        let (_target, input): (ScratchDir, InputIdentity) = indicator_input(
+            "indicator-repeat",
+            b"contact https://repeat.example/path for details",
+        );
+        let first: IndicatorSection = indicators_section(&input);
+        let second: IndicatorSection = indicators_section(&input);
+        assert!(first.available);
+        assert_eq!(
+            serde_json::to_vec(&first).expect("serialize first"),
+            serde_json::to_vec(&second).expect("serialize second")
+        );
+    }
+
+    #[test]
+    fn indicator_section_rejects_a_target_that_no_longer_matches_its_recorded_hash() {
+        let scratch: ScratchDir = tmp_dir("indicator-replaced-target");
+        let path: PathBuf = scratch.path().join("target.bin");
+        std::fs::write(&path, b"new").expect("write replacement target");
+        let input: InputIdentity = InputIdentity {
+            path: Some(path.display().to_string()),
+            size: 3,
+            blake3: blake3::hash(b"old").to_hex().to_string(),
+            detected: Vec::new(),
+            final_format: None,
+        };
+
+        let section: IndicatorSection = indicators_section(&input);
+        assert!(!section.available);
+        assert!(section.bundle.is_none());
+        assert_eq!(
+            section.reason.as_deref(),
+            Some("the analysis target no longer matches the chain document blake3")
+        );
+    }
+
+    #[test]
+    fn an_unavailable_indicator_section_is_typed_and_byte_deterministic() {
+        let input: InputIdentity = InputIdentity {
+            path: None,
+            size: 0,
+            blake3: String::new(),
+            detected: Vec::new(),
+            final_format: None,
+        };
+        let first: IndicatorSection = indicators_section(&input);
+        let second: IndicatorSection = indicators_section(&input);
+        assert!(!first.available);
+        assert!(first.bundle.is_none());
+        assert_eq!(
+            first.reason.as_deref(),
+            Some("the chain document records no analysis target path")
+        );
+        assert_eq!(
+            serde_json::to_vec(&first).expect("serialize first"),
+            serde_json::to_vec(&second).expect("serialize second")
+        );
+    }
+
+    #[test]
     fn capability_section_without_a_target_is_typed_and_byte_deterministic() {
         let input: InputIdentity = InputIdentity {
             path: None,
@@ -2082,11 +2401,11 @@ mod tests {
         let scratch: ScratchDir = tmp_dir("capability-over-cap");
         let path: PathBuf = scratch.path().join("oversized.bin");
         let file: std::fs::File = std::fs::File::create(&path).expect("create sparse target");
-        file.set_len(MAX_REPORT_CAPABILITY_INPUT_BYTES + 1)
+        file.set_len(MAX_REPORT_ANALYSIS_INPUT_BYTES + 1)
             .expect("extend sparse target");
         let input: InputIdentity = InputIdentity {
             path: Some(path.display().to_string()),
-            size: MAX_REPORT_CAPABILITY_INPUT_BYTES + 1,
+            size: MAX_REPORT_ANALYSIS_INPUT_BYTES + 1,
             blake3: String::new(),
             detected: Vec::new(),
             final_format: None,
@@ -2099,7 +2418,7 @@ mod tests {
             section
                 .reason
                 .as_deref()
-                .is_some_and(|reason: &str| reason.contains("report capability input limit")),
+                .is_some_and(|reason: &str| reason.contains("report analysis input limit")),
             "{section:?}"
         );
     }

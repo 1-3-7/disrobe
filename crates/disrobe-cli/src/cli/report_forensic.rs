@@ -3,9 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use disrobe_core::behavior::{BehaviorReport, CategoryFinding};
-use disrobe_core::interop::{
-    ArtifactSchema, IndicatorAggregator, IndicatorBundle, IndicatorClass, UnifiedIndicator,
-};
+use disrobe_core::interop::{IndicatorBundle, IndicatorClass, UnifiedIndicator};
 use disrobe_core::ioc::{Indicator as IocIndicator, IocReport};
 use serde_json::{Map, Value, json};
 
@@ -14,7 +12,6 @@ use super::report::{
     BatchReport, EvidenceItem, EvidenceRole, FailureView, HashSource, ReportDocument, SingleReport,
     WallView,
 };
-use super::report_html::{Enrichment, enrich_single};
 use super::sarif::{
     ArtifactLocation, ArtifactRole, Driver, Invocation, Location, Message,
     MultiformatMessageString, PhysicalLocation, Region, ReportingDescriptor, ResultKind, Run,
@@ -529,15 +526,6 @@ fn target_uri_of(report: &SingleReport) -> String {
         )
 }
 
-fn unified_indicators(ioc: Option<&IocReport>) -> Option<IndicatorBundle> {
-    let report: &IocReport = ioc?;
-    let encoded: String = serde_json::to_string(report).ok()?;
-    let mut aggregator: IndicatorAggregator = IndicatorAggregator::new();
-    let schema: Option<ArtifactSchema> = aggregator.ingest_json(&encoded);
-    schema?;
-    Some(aggregator.finish())
-}
-
 fn stix_bundle(
     report: &SingleReport,
     generated: &Generated,
@@ -794,7 +782,7 @@ fn capabilities_block(report: &SingleReport) -> Value {
 }
 
 fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Generated) -> Run {
-    let enrichment: Enrichment = enrich_single(report);
+    let enrichment: &super::report_html::Enrichment = &report.enrichment;
     let artifacts: ArtifactTable = ArtifactTable::from_evidence(&report.evidence);
     let target_uri: String = target_uri_of(report);
     let mut used: BTreeSet<&'static str> = BTreeSet::new();
@@ -816,7 +804,8 @@ fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Gene
         used.insert(RULE_EVIDENCE);
         results.extend(evidence_results(report, &artifacts));
     }
-    if let Some(ioc) = enrichment.ioc.as_ref()
+    if let Some(ioc) = report.indicators.report.as_ref()
+        && report.indicators.available
         && !ioc.indicators.is_empty()
     {
         used.insert(RULE_INDICATOR);
@@ -829,26 +818,20 @@ fn single_run(document: &ReportDocument, report: &SingleReport, generated: &Gene
         results.extend(behavior_results(behavior, &target_uri, &artifacts));
     }
 
-    let indicators: Option<IndicatorBundle> = unified_indicators(enrichment.ioc.as_ref());
-    let (bundle, unmapped): (Value, Vec<String>) = stix_bundle(
-        report,
-        generated,
-        indicators.as_ref(),
-        enrichment.behavior.as_ref(),
-    );
+    let indicators: Option<&IndicatorBundle> = report
+        .indicators
+        .bundle
+        .as_ref()
+        .filter(|_| report.indicators.available);
+    let (bundle, unmapped): (Value, Vec<String>) =
+        stix_bundle(report, generated, indicators, enrichment.behavior.as_ref());
     let properties: Value = json!({
         "generated_at": generated.at,
         "disrobe": document,
         "stix": { "available": true, "bundle": bundle },
         "maec": maec_package(report, enrichment.behavior.as_ref(), generated),
         "capabilities": capabilities_block(report),
-        "indicators": indicators.as_ref().map_or_else(
-            || json!({
-                "available": false,
-                "reason": "the analysis target was not readable, so no indicators were aggregated",
-            }),
-            |bundle: &IndicatorBundle| json!({ "available": true, "bundle": bundle }),
-        ),
+        "indicators": report.indicators,
         "reproduction": report.reproduction,
         "standards": standards_block(generated, &unmapped),
     });
