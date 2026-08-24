@@ -2650,6 +2650,7 @@ impl Emitter<'_> {
         };
         self.emit_local_op(index, fast, family);
         self.adjust_stack(-slot.width());
+        self.pending_new.remove(&reg);
         self.set_reg(reg, slot);
         self.const_zero.remove(&reg);
         self.poisoned_regs.remove(&reg);
@@ -2991,6 +2992,16 @@ impl Emitter<'_> {
             return;
         };
         let owner: String = internal_of(&ty);
+        if self
+            .pending_new
+            .get(&dest)
+            .is_some_and(|(pending_owner, _): &(String, u32)| *pending_owner != owner)
+        {
+            record_bail_kind("pending-new-owner-conflict");
+            self.bail();
+            return;
+        }
+        self.pending_new.remove(&dest);
         if self.eager_new_pcs.contains(&insn.pc) {
             let class_idx: u16 = self.cp.class_const(&owner);
             self.push(0xBB);

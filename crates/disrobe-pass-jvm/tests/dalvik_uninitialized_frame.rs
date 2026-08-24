@@ -37,6 +37,28 @@ fn foo_init() -> MethodRef {
     }
 }
 
+fn sample_init() -> MethodRef {
+    MethodRef {
+        class: "LSample;".to_owned(),
+        proto: ProtoRef {
+            return_type: "V".to_owned(),
+            params: Vec::new(),
+        },
+        name: "<init>".to_owned(),
+    }
+}
+
+fn integer_init() -> MethodRef {
+    MethodRef {
+        class: "Ljava/lang/Integer;".to_owned(),
+        proto: ProtoRef {
+            return_type: "V".to_owned(),
+            params: vec!["I".to_owned()],
+        },
+        name: "<init>".to_owned(),
+    }
+}
+
 fn make_dex() -> Vec<u8> {
     let mut foo_init_units: Vec<u16> = Vec::new();
     let mut foo_init_relocs: Vec<Reloc> = Vec::new();
@@ -778,7 +800,11 @@ fn foo_class_with_last() -> ClassDef {
     }
 }
 
-fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
+fn make_twonews_dex_with_shape(
+    alias_op: u8,
+    second_owner: &str,
+    init_method: MethodRef,
+) -> Vec<u8> {
     let mut sample_init_units: Vec<u16> = Vec::new();
     let mut sample_init_relocs: Vec<Reloc> = Vec::new();
     sample_init_units.extend(insn::fmt35c_one(0x70, 0, 0));
@@ -789,14 +815,7 @@ fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
     sample_init_units.extend(insn::fmt10x(0x0E));
     let sample_ctor: EncodedMethod = EncodedMethod {
         tries: Vec::new(),
-        method: MethodRef {
-            class: "LSample;".to_owned(),
-            proto: ProtoRef {
-                return_type: "V".to_owned(),
-                params: Vec::new(),
-            },
-            name: "<init>".to_owned(),
-        },
+        method: sample_init(),
         access_flags: 0x1,
         is_direct: true,
         registers_size: 1,
@@ -822,7 +841,7 @@ fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
     units.extend(insn::fmt21c(0x22, 0, 0));
     relocs.push(Reloc::TypeIndex {
         unit: new_b + 1,
-        descriptor: "LFoo;".to_owned(),
+        descriptor: second_owner.to_owned(),
     });
     units.extend(insn::fmt11n(0x12, 1, 2));
     units.extend(insn::fmt12x(alias_op, 2, 0));
@@ -830,7 +849,7 @@ fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
     units.extend(insn::fmt35c_two(0x70, 2, 1, 0));
     relocs.push(Reloc::MethodIndex {
         unit: invoke_pos + 1,
-        method: foo_init(),
+        method: init_method,
     });
     units.extend(insn::fmt11x(0x11, 2));
 
@@ -853,6 +872,42 @@ fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
         relocations: relocs,
     };
 
+    let mut overwrite_units: Vec<u16> = Vec::new();
+    let mut overwrite_relocs: Vec<Reloc> = Vec::new();
+    let overwrite_new: usize = overwrite_units.len();
+    overwrite_units.extend(insn::fmt21c(0x22, 0, 0));
+    overwrite_relocs.push(Reloc::TypeIndex {
+        unit: overwrite_new + 1,
+        descriptor: "LSample;".to_owned(),
+    });
+    overwrite_units.extend(insn::fmt12x(0x07, 1, 0));
+    overwrite_units.extend(insn::fmt11n(0x12, 0, 7));
+    let overwrite_init: usize = overwrite_units.len();
+    overwrite_units.extend(insn::fmt35c_one(0x70, 1, 0));
+    overwrite_relocs.push(Reloc::MethodIndex {
+        unit: overwrite_init + 1,
+        method: sample_init(),
+    });
+    overwrite_units.extend(insn::fmt11x(0x0F, 0));
+    let overwrite: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "I".to_owned(),
+                params: Vec::new(),
+            },
+            name: "overwrite".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 1,
+        insns: overwrite_units,
+        relocations: overwrite_relocs,
+    };
+
     let mut builder: DexBuilder = DexBuilder::new();
     builder.add_class(foo_class_with_last());
     builder.add_class(ClassDef {
@@ -861,14 +916,14 @@ fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
         access_flags: 0x1,
         static_fields: Vec::new(),
         static_values: Vec::new(),
-        direct_methods: vec![sample_ctor, make2],
+        direct_methods: vec![sample_ctor, make2, overwrite],
         virtual_methods: Vec::new(),
     });
     builder.build()
 }
 
 fn make_twonews_dex() -> Vec<u8> {
-    make_twonews_dex_with_alias_op(0x07)
+    make_twonews_dex_with_shape(0x07, "LFoo;", foo_init())
 }
 
 fn translate_twonews() -> Dex2JarResult {
@@ -985,8 +1040,9 @@ fn nondominated_merge_new_recovers_instead_of_stub() {
 
 #[test]
 fn non_object_move_of_pending_allocation_stays_stubbed() {
-    let result: Dex2JarResult = translate_dex_bytes(&make_twonews_dex_with_alias_op(0x01))
-        .expect("translate malformed pending-new move dex");
+    let result: Dex2JarResult =
+        translate_dex_bytes(&make_twonews_dex_with_shape(0x01, "LFoo;", foo_init()))
+            .expect("translate malformed pending-new move dex");
     let sample: &Vec<u8> = result
         .jar_entries
         .get("Sample.class")
@@ -995,6 +1051,26 @@ fn non_object_move_of_pending_allocation_stays_stubbed() {
     assert!(
         class_names_contain(&cf, "java/lang/UnsupportedOperationException"),
         "an integer move cannot alias an uninitialized reference; the method must fail closed"
+    );
+}
+
+#[test]
+fn different_owner_cannot_replace_pending_allocation() {
+    let result: Dex2JarResult = translate_dex_bytes(&make_twonews_dex_with_shape(
+        0x07,
+        "Ljava/lang/Integer;",
+        integer_init(),
+    ))
+    .expect("translate conflicting pending-new owners");
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.method.as_deref() == Some("make2(Z)LFoo;"))
+        .expect("make2 refusal diagnostic");
+    assert!(
+        diagnostic.reason.contains("pending-new-owner-conflict"),
+        "different pending allocation owners must produce the stable conflict refusal, got {}",
+        diagnostic.reason
     );
 }
 
@@ -1009,23 +1085,19 @@ public class Probe {
         int at = foo.getField("last").getInt(null);
         Object f = m.invoke(null, false);
         int af = foo.getField("last").getInt(null);
+        int overwritten = (Integer)c.getMethod("overwrite").invoke(null);
         System.out.println(
             "verify_ok=1 " + t.getClass().getName() + " " + at + " "
-            + f.getClass().getName() + " " + af);
+            + f.getClass().getName() + " " + af + " " + overwritten);
     }
 }
 "#;
 
 #[test]
 fn nondominated_merge_verifies_and_wrong_frame_is_rejected() {
-    let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP twonews -Xverify:all gate: java not on PATH");
-        return;
-    };
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP twonews -Xverify:all gate: javac not on PATH");
-        return;
-    };
+    let java: PathBuf = find_on_path("java").expect("java must be on PATH for the verifier gate");
+    let javac: PathBuf =
+        find_on_path("javac").expect("javac must be on PATH for the verifier gate");
 
     let result: Dex2JarResult = translate_twonews();
     let sample: Vec<u8> = result
@@ -1076,10 +1148,10 @@ fn nondominated_merge_verifies_and_wrong_frame_is_rejected() {
         String::from_utf8_lossy(&ok.stderr).trim()
     );
     assert!(
-        ok.status.success() && ok_out.contains("verify_ok=1") && ok_out.contains("Foo 1 Foo 2"),
+        ok.status.success() && ok_out.contains("verify_ok=1") && ok_out.contains("Foo 1 Foo 2 7"),
         "the recovered Sample.class must pass -Xverify:all and construct a Foo on both arms with \
          the branch-selected constructor argument (1 on the true arm, 2 on the false arm), \
-         proving the two-predecessor merge collapses to one correct allocation"
+         while the integer overwrite survives initialization through its remaining alias"
     );
 
     let cf: ClassFile = parse_classfile(&sample).expect("parse twonews Sample.class");
