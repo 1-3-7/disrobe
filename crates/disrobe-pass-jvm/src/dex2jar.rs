@@ -9,7 +9,7 @@
 )]
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +69,70 @@ pub struct Dex2JarResult {
     pub code_scan_complete: bool,
     #[serde(default)]
     pub decode_error_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dex2JarLimits {
+    pub classes: usize,
+    pub class_bytes: usize,
+    pub jar_bytes: usize,
+}
+
+impl Default for Dex2JarLimits {
+    fn default() -> Self {
+        Self {
+            classes: 65_536,
+            class_bytes: 128 * 1024 * 1024,
+            jar_bytes: 128 * 1024 * 1024,
+        }
+    }
+}
+
+struct LimitedWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    position: u64,
+    logical_len: u64,
+    overflowed: bool,
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let byte_count: u64 = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let next: u64 = self.position.saturating_add(byte_count);
+        let limit: u64 = u64::try_from(self.limit).unwrap_or(u64::MAX);
+        let retained_start: usize = usize::try_from(self.position.min(limit)).unwrap_or(self.limit);
+        let retained_end: usize = usize::try_from(next.min(limit)).unwrap_or(self.limit);
+        if retained_end > retained_start {
+            if retained_end > self.bytes.len() {
+                self.bytes.resize(retained_end, 0);
+            }
+            self.bytes[retained_start..retained_end]
+                .copy_from_slice(&bytes[..retained_end - retained_start]);
+        }
+        self.overflowed |= next > limit;
+        self.position = next;
+        self.logical_len = self.logical_len.max(next);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for LimitedWriter {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let base: i128 = match from {
+            SeekFrom::Start(n) => i128::from(n),
+            SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
+            SeekFrom::End(n) => i128::from(self.logical_len) + i128::from(n),
+        };
+        let next: u64 = u64::try_from(base).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "DEX-to-JAR seek overflow")
+        })?;
+        self.position = next;
+        Ok(next)
+    }
 }
 
 #[inline]
@@ -690,7 +754,23 @@ fn code_items_by_class(items: Vec<CodeItem>) -> BTreeMap<String, BTreeMap<Method
     out
 }
 
-pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
+pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Result<Dex2JarResult> {
+    translate_with_limits(dex, dex_bytes, Dex2JarLimits::default())
+}
+
+pub fn translate_with_limits(
+    dex: &DexFile,
+    dex_bytes: &[u8],
+    limits: Dex2JarLimits,
+) -> Result<Dex2JarResult> {
+    let declared: usize = usize::try_from(dex.header.class_defs_size).unwrap_or(usize::MAX);
+    if declared > limits.classes {
+        return Err(Error::Dex2JarLimit {
+            kind: "class count",
+            actual: declared,
+            limit: limits.classes,
+        });
+    }
     let classes: Vec<TranslatedClass> = build_class_model(dex, dex_bytes);
     let code_report: crate::dex::CodeItemsReport = parse_code_items(dex, dex_bytes);
     let code_scan_complete: bool = code_report.is_fully_decoded();
@@ -702,7 +782,15 @@ pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
     let mut method_total: usize = 0;
     let mut bodies_recovered: usize = 0;
     let mut stubbed_body_count: usize = 0;
+    let mut class_bytes_total: usize = 0;
     for class in &classes {
+        if jar_entries.len() >= limits.classes {
+            return Err(Error::Dex2JarLimit {
+                kind: "class count",
+                actual: jar_entries.len().saturating_add(1),
+                limit: limits.classes,
+            });
+        }
         method_total += class.methods.len();
         let code_items: &BTreeMap<MethodKey, CodeItem> =
             code_by_class.get(&class.internal_name).unwrap_or(&empty);
@@ -710,9 +798,29 @@ pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
             write_class_file(dex, class, code_items);
         bodies_recovered += recovered;
         stubbed_body_count += stubbed;
-        jar_entries.insert(format!("{}.class", class.internal_name), class_bytes);
+        let path: String = format!("{}.class", class.internal_name);
+        if jar_entries.contains_key(&path) {
+            return Err(Error::DuplicateDex2JarPath(path));
+        }
+        let next: usize =
+            class_bytes_total
+                .checked_add(class_bytes.len())
+                .ok_or(Error::Dex2JarLimit {
+                    kind: "class bytes",
+                    actual: usize::MAX,
+                    limit: limits.class_bytes,
+                })?;
+        if next > limits.class_bytes {
+            return Err(Error::Dex2JarLimit {
+                kind: "class bytes",
+                actual: next,
+                limit: limits.class_bytes,
+            });
+        }
+        class_bytes_total = next;
+        jar_entries.insert(path, class_bytes);
     }
-    Dex2JarResult {
+    Ok(Dex2JarResult {
         classes,
         jar_entries,
         method_total,
@@ -720,33 +828,49 @@ pub fn translate(dex: &DexFile, dex_bytes: &[u8]) -> Dex2JarResult {
         stubbed_body_count,
         code_scan_complete,
         decode_error_count,
-    }
+    })
 }
 
 pub fn assemble_jar(result: &Dex2JarResult) -> Result<Vec<u8>> {
+    assemble_jar_with_limit(result, Dex2JarLimits::default().jar_bytes)
+}
+
+pub fn assemble_jar_with_limit(result: &Dex2JarResult, max_jar_bytes: usize) -> Result<Vec<u8>> {
     use zip::write::SimpleFileOptions;
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let cursor: std::io::Cursor<&mut Vec<u8>> = std::io::Cursor::new(&mut buf);
-        let mut zip: zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>> = zip::ZipWriter::new(cursor);
-        let opts: SimpleFileOptions =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-        zip.start_file("META-INF/MANIFEST.MF", opts)
-            .map_err(|e| Error::Zip(e.to_string()))?;
-        zip.write_all(b"Manifest-Version: 1.0\r\nCreated-By: disrobe dex2jar\r\n\r\n")?;
-        for (name, data) in &result.jar_entries {
-            zip.start_file(name.as_str(), opts)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(data)?;
-        }
-        zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
+    let writer = LimitedWriter {
+        bytes: Vec::new(),
+        limit: max_jar_bytes,
+        position: 0,
+        logical_len: 0,
+        overflowed: false,
+    };
+    let mut zip: zip::ZipWriter<LimitedWriter> = zip::ZipWriter::new(writer);
+    let opts: SimpleFileOptions =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("META-INF/MANIFEST.MF", opts)
+        .map_err(|error| Error::Zip(error.to_string()))?;
+    zip.write_all(b"Manifest-Version: 1.0\r\nCreated-By: disrobe dex2jar\r\n\r\n")?;
+    for (name, data) in &result.jar_entries {
+        zip.start_file(name.as_str(), opts)
+            .map_err(|error| Error::Zip(error.to_string()))?;
+        zip.write_all(data)?;
     }
-    Ok(buf)
+    let writer: LimitedWriter = zip
+        .finish()
+        .map_err(|error| Error::Zip(error.to_string()))?;
+    if writer.overflowed {
+        return Err(Error::Dex2JarLimit {
+            kind: "JAR bytes",
+            actual: usize::try_from(writer.logical_len).unwrap_or(usize::MAX),
+            limit: max_jar_bytes,
+        });
+    }
+    Ok(writer.bytes)
 }
 
 pub fn translate_dex_bytes(dex_bytes: &[u8]) -> Result<Dex2JarResult> {
     let dex: DexFile = crate::dex::parse(dex_bytes)?;
-    Ok(translate(&dex, dex_bytes))
+    translate(&dex, dex_bytes)
 }
 
 #[cfg(any(test, feature = "lifter-diag"))]
@@ -998,11 +1122,105 @@ mod tests {
         });
         let bytes: Vec<u8> = builder.build();
         let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
-        let result: Dex2JarResult = translate(&dex, &bytes);
+        let result: Dex2JarResult = translate(&dex, &bytes).expect("translate");
 
         assert!(!result.code_scan_complete);
         assert_eq!(result.decode_error_count, 1);
         assert_eq!(result.bodies_recovered, 0);
         assert_eq!(result.stubbed_body_count, 1);
+    }
+
+    #[test]
+    fn translation_limits_fail_with_typed_errors_before_output_is_materialized() {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lcom/disrobe/Limited;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x0001,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: Vec::new(),
+        });
+        let bytes: Vec<u8> = builder.build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        let count = translate_with_limits(
+            &dex,
+            &bytes,
+            Dex2JarLimits {
+                classes: 0,
+                class_bytes: 1,
+                jar_bytes: 1,
+            },
+        )
+        .expect_err("class count limit");
+        assert!(matches!(
+            count,
+            Error::Dex2JarLimit {
+                kind: "class count",
+                ..
+            }
+        ));
+        let bytes_limit = translate_with_limits(
+            &dex,
+            &bytes,
+            Dex2JarLimits {
+                classes: 1,
+                class_bytes: 1,
+                jar_bytes: 1,
+            },
+        )
+        .expect_err("class byte limit");
+        assert!(matches!(
+            bytes_limit,
+            Error::Dex2JarLimit {
+                kind: "class bytes",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn duplicate_internal_class_paths_fail_before_map_insertion() {
+        let mut builder: DexBuilder = DexBuilder::new();
+        for _ in 0..2 {
+            builder.add_class(ClassDef {
+                class: "Lcom/disrobe/Duplicate;".to_owned(),
+                super_class: "Ljava/lang/Object;".to_owned(),
+                access_flags: 0x0001,
+                static_fields: Vec::new(),
+                static_values: Vec::new(),
+                direct_methods: Vec::new(),
+                virtual_methods: Vec::new(),
+            });
+        }
+        let bytes: Vec<u8> = builder.build();
+        let dex: DexFile = crate::dex::parse(&bytes).expect("built dex");
+        let error: Error = translate(&dex, &bytes).expect_err("duplicate class path");
+        assert!(matches!(
+            error,
+            Error::DuplicateDex2JarPath(path) if path == "com/disrobe/Duplicate.class"
+        ));
+    }
+
+    #[test]
+    fn bounded_jar_assembly_refuses_a_tiny_limit() {
+        let result = Dex2JarResult {
+            classes: Vec::new(),
+            jar_entries: BTreeMap::new(),
+            method_total: 0,
+            bodies_recovered: 0,
+            stubbed_body_count: 0,
+            code_scan_complete: true,
+            decode_error_count: 0,
+        };
+        let error = assemble_jar_with_limit(&result, 1).expect_err("JAR limit");
+        assert!(matches!(
+            error,
+            Error::Dex2JarLimit {
+                kind: "JAR bytes",
+                ..
+            }
+        ));
     }
 }

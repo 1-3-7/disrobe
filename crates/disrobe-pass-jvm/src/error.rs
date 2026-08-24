@@ -107,6 +107,16 @@ pub enum Error {
     #[error("DR-JVM-0025: malformed bytecode at offset {offset}: {reason}")]
     BadBytecode { offset: usize, reason: &'static str },
 
+    #[error("DR-JVM-0094: DEX-to-JAR output limit exceeded: {kind} ({actual} > {limit})")]
+    Dex2JarLimit {
+        kind: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+
+    #[error("DR-JVM-0095: duplicate DEX-to-JAR class path: {0}")]
+    DuplicateDex2JarPath(String),
+
     #[error("DR-JVM-0093: method body not recovered: {reason}")]
     UnrecoveredRegion { reason: &'static str },
 

@@ -1,7 +1,8 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
@@ -13,12 +14,13 @@ use disrobe_pass_jvm::{
     Instruction, JarEntry, JarExtract, JniPrototype, JniSurfaceReport, JvmBackend,
     LibrarySignatureSet, MethodId, NativeMethod, OatEmbeddedDex, Operands, PeelStatus, PeeledClass,
     ProguardMapping, ProtectorPeelReport, ResolvedNative, RetracedFrame,
-    analyze_jni_native_methods, apply_proguard_mapping, decompile_class, decompile_dex,
-    detect_available, detect_protector_family, disassemble, emit_jni_prototypes, extract_aab,
-    extract_aar, extract_apk, extract_apks, extract_jar, extract_native_methods, extract_oat_dex,
-    fingerprint_library_symbols, invoke_android, invoke_jvm, native_methods_from_class,
-    parse_classfile, parse_code_attribute, parse_dex, parse_proguard_mapping,
-    peel_and_decompile_classfile, recover_dex_reflection_strings,
+    analyze_jni_native_methods, apply_proguard_mapping, assemble_jar, decompile_class,
+    decompile_dex, detect_available, detect_protector_family, disassemble, emit_jni_prototypes,
+    extract_aab, extract_aar, extract_apk, extract_apks, extract_jar, extract_native_methods,
+    extract_oat_dex, fingerprint_library_symbols, invoke_android, invoke_jvm,
+    native_methods_from_class, parse_classfile, parse_code_attribute, parse_dex, parse_dex_header,
+    parse_proguard_mapping, peel_and_decompile_classfile, recover_dex_reflection_strings,
+    translate_dex_bytes,
 };
 use disrobe_pass_native::backend_export::{
     DalvikSymbolKey, ExportFormat, ExportSymbol, SYMBOL_EXPORT_SCHEMA, SymbolClass, SymbolExport,
@@ -87,6 +89,15 @@ pub(crate) enum JvmCmd {
             long,
             help = "output directory (default: ./out/<stem>-jvm-extract)"
         )]
+        out: Option<PathBuf>,
+    },
+    #[command(
+        about = "translate a standalone .dex into deterministic .class files and classes.jar in-house"
+    )]
+    Dex2Jar {
+        #[arg(help = "input standalone .dex file")]
+        input: PathBuf,
+        #[arg(short, long, help = "output directory (default: ./out/<stem>-dex2jar)")]
         out: Option<PathBuf>,
     },
     #[command(about = "report available JVM / Android backends discovered on PATH")]
@@ -180,6 +191,7 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             peel,
         }),
         JvmCmd::Extract { input, out } => extract(input, out),
+        JvmCmd::Dex2Jar { input, out } => dex2jar(input, out),
         JvmCmd::Backends => backends(),
         JvmCmd::Retrace {
             mapping,
@@ -193,6 +205,224 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             native,
             json,
         } => jni_link(input, native, json),
+    }
+}
+
+const MAX_IN_HOUSE_DEX_CLASSES: usize = 65_536;
+const MAX_IN_HOUSE_DEX_INPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_IN_HOUSE_DEX_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
+
+fn read_in_house_dex_input(path: &Path) -> miette::Result<Vec<u8>> {
+    let mut file: std::fs::File = std::fs::File::open(path)
+        .map_err(|e| miette::miette!("DR-CLI-0480: cannot read DEX input: {e}"))?;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut buffer: Box<[u8]> = vec![0; 64 * 1024].into_boxed_slice();
+    loop {
+        let read: usize = file
+            .read(&mut buffer)
+            .map_err(|e| miette::miette!("DR-CLI-0480: cannot read DEX input: {e}"))?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        let next: usize = bytes
+            .len()
+            .checked_add(read)
+            .ok_or_else(|| miette::miette!("DR-CLI-0481: DEX input size overflow"))?;
+        if next > MAX_IN_HOUSE_DEX_INPUT_BYTES {
+            return Err(miette::miette!(
+                "DR-CLI-0482: DEX input exceeds the {}-byte input limit",
+                MAX_IN_HOUSE_DEX_INPUT_BYTES
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn validated_dex2jar_entries(
+    entries: &BTreeMap<String, Vec<u8>>,
+) -> miette::Result<Vec<(&str, &Vec<u8>)>> {
+    if entries.len() > MAX_IN_HOUSE_DEX_CLASSES {
+        return Err(miette::miette!(
+            "DR-CLI-0485: in-house DEX translation produced {} class files, exceeding the {}-class output limit",
+            entries.len(),
+            MAX_IN_HOUSE_DEX_CLASSES
+        ));
+    }
+    let mut total: usize = 0;
+    let mut normalized: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut validated: Vec<(&str, &Vec<u8>)> = Vec::with_capacity(entries.len());
+    for (raw, bytes) in entries {
+        let path: &Path = Path::new(raw);
+        let mut components: Vec<&str> = Vec::new();
+        for component in path.components() {
+            let Component::Normal(part) = component else {
+                return Err(miette::miette!(
+                    "DR-CLI-0486: unsafe translated class path {raw:?}"
+                ));
+            };
+            let part: &str = part.to_str().ok_or_else(|| {
+                miette::miette!("DR-CLI-0486: non-UTF-8 translated class path {raw:?}")
+            })?;
+            let base: String = part
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            let reserved: bool = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
+                || (base.len() == 4
+                    && (base.starts_with("COM") || base.starts_with("LPT"))
+                    && matches!(base.as_bytes()[3], b'1'..=b'9'));
+            if part.contains(':') || part.ends_with('.') || part.ends_with(' ') || reserved {
+                return Err(miette::miette!(
+                    "DR-CLI-0486: unsafe translated class path {raw:?}"
+                ));
+            }
+            components.push(part);
+        }
+        let canonical: String = components.join("/");
+        if canonical != *raw
+            || !Path::new(&canonical)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("class"))
+            || !normalized.insert(canonical)
+        {
+            return Err(miette::miette!(
+                "DR-CLI-0486: unsafe or duplicate translated class path {raw:?}"
+            ));
+        }
+        total = total.checked_add(bytes.len()).ok_or_else(|| {
+            miette::miette!("DR-CLI-0487: in-house DEX class output size overflow")
+        })?;
+        if total > MAX_IN_HOUSE_DEX_OUTPUT_BYTES {
+            return Err(miette::miette!(
+                "DR-CLI-0488: in-house DEX class output would reach {total} bytes, exceeding the {}-byte output limit",
+                MAX_IN_HOUSE_DEX_OUTPUT_BYTES
+            ));
+        }
+        validated.push((raw, bytes));
+    }
+    Ok(validated)
+}
+
+fn dex2jar(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = read_in_house_dex_input(&input)?;
+    if !matches!(classify(&bytes, &input), ClassformatKind::Dex) {
+        return Err(miette::miette!(
+            "DR-CLI-0483: dex2jar requires a standalone DEX input"
+        ));
+    }
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dex2jar")
+        .to_owned();
+    let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dex2jar")));
+    if globals::current().dry_run {
+        println!("jvm dex2jar: DRY-RUN");
+        println!("  input:        {}", input.display());
+        println!("  out dir:      {}", out_dir.display());
+        return Ok(());
+    }
+    if out_dir.exists() {
+        return Err(miette::miette!(
+            "DR-CLI-0484: DEX-to-JAR output directory already exists: {}",
+            out_dir.display()
+        ));
+    }
+    let header = parse_dex_header(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0485: DEX header parse: {e}"))?;
+    let declared_classes: usize = usize::try_from(header.class_defs_size)
+        .map_err(|_| miette::miette!("DR-CLI-0485: DEX class count is out of range"))?;
+    if declared_classes > MAX_IN_HOUSE_DEX_CLASSES {
+        return Err(miette::miette!(
+            "DR-CLI-0485: DEX declares {declared_classes} classes, exceeding the {}-class output limit",
+            MAX_IN_HOUSE_DEX_CLASSES
+        ));
+    }
+    let translated = translate_dex_bytes(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0489: in-house DEX translation: {e}"))?;
+    let entries: Vec<(&str, &Vec<u8>)> = validated_dex2jar_entries(&translated.jar_entries)?;
+    let jar: Vec<u8> = assemble_jar(&translated)
+        .map_err(|e| miette::miette!("DR-CLI-0490: in-house JAR assembly: {e}"))?;
+    if jar.len() > MAX_IN_HOUSE_DEX_OUTPUT_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0491: in-house JAR output reached {} bytes, exceeding the {}-byte output limit",
+            jar.len(),
+            MAX_IN_HOUSE_DEX_OUTPUT_BYTES
+        ));
+    }
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        miette::miette!("DR-CLI-0492: cannot create DEX-to-JAR output directory: {e}")
+    })?;
+    for (path, class_bytes) in entries {
+        let target: PathBuf = out_dir.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                miette::miette!("DR-CLI-0493: cannot create class output directory: {e}")
+            })?;
+        }
+        std::fs::write(&target, class_bytes).map_err(|e| {
+            miette::miette!("DR-CLI-0494: cannot write translated class {}: {e}", path)
+        })?;
+    }
+    let jar_path: PathBuf = out_dir.join("classes.jar");
+    std::fs::write(&jar_path, jar)
+        .map_err(|e| miette::miette!("DR-CLI-0495: cannot write translated JAR: {e}"))?;
+    println!(
+        "jvm dex2jar: {}",
+        if translated.code_scan_complete {
+            "OK"
+        } else {
+            "PARTIAL"
+        }
+    );
+    println!("  classes:      {}", translated.jar_entries.len());
+    println!(
+        "  methods:      {} total, {} recovered, {} stubbed",
+        translated.method_total, translated.bodies_recovered, translated.stubbed_body_count
+    );
+    println!(
+        "  code scan:    {} ({} decode error(s))",
+        if translated.code_scan_complete {
+            "complete"
+        } else {
+            "partial"
+        },
+        translated.decode_error_count
+    );
+    println!("  jar:          {}", jar_path.display());
+    println!("  out dir:      {}", out_dir.display());
+    Ok(())
+}
+
+#[cfg(test)]
+mod dex2jar_tests {
+    use std::collections::BTreeMap;
+
+    use super::validated_dex2jar_entries;
+
+    #[test]
+    fn dex2jar_path_validation_rejects_escaping_and_normalized_paths() {
+        for path in [
+            "../Escape.class",
+            "a//B.class",
+            "a/../B.class",
+            "C:/B.class",
+            "CON.class",
+            "PRN.class",
+            "AUX.class",
+            "NUL.class",
+            "CLOCK$.class",
+            "COM1.class",
+            "LPT9.class",
+            "name:stream.class",
+            "tail .class",
+            "tail..class",
+        ] {
+            let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+            entries.insert(path.to_owned(), vec![0xCA, 0xFE, 0xBA, 0xBE]);
+            assert!(validated_dex2jar_entries(&entries).is_err(), "{path}");
+        }
     }
 }
 
