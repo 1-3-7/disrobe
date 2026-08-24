@@ -31,11 +31,13 @@ abstaining_functions = ["dr_rotl"]
 
 [[artifacts]]
 path = "arith_releasefast_aarch64_linux.elf"
-sha256 = "a30ebce8d7b78d55985ac88bd397f0da7f99bb53cadcd57c9ac9613862b6cdda"
+sha256 = "c0741c7e61475763ca7c5c96fb82376976715b67f9af421ebe562a09d1cdfc4b"
 build_mode = "ReleaseFast"
 target = "aarch64-linux-gnu"
 container = "elf"
 build_command = "zig build-exe arith.zig -OReleaseFast -target aarch64-linux-gnu -femit-bin=arith_releasefast_aarch64_linux.elf"
+post_build_command = "llvm-objcopy --strip-debug arith_releasefast_aarch64_linux.elf"
+post_build_reason = "the zig 0.16.0 debug sections record the absolute path of the compiler installation; removing them keeps the symbol table the carver reads and drops the build host path"
 safety_checks = false
 present_markers = ["compiler_rt", "mem.Allocator.", "start.posixCallMainAndExit"]
 graded_functions = ["dr_mix"]
