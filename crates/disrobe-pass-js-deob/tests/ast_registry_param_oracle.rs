@@ -13,7 +13,7 @@ const NODE_CAPTURE: usize = 1usize << 18;
 
 fn harness(program: &str, tail: &str) -> String {
     format!(
-        r#"var __out=[];var print=function(value){{__out.push(String(value));}};var __modules={{2:{{sum:function(left,right){{return left+right;}}}}}};var __require=function(id){{return __modules[id==="./math-utils"?2:id];}};{program}{tail}"#,
+        r#"var __out=[];var print=function(value){{__out.push(String(value));}};var __modules={{2:{{sum:function(left,right){{return left+right;}}}}}};var __require=function(id){{return __modules[id==="./math-utils"?2:id];}};var __webpack_require__=__require;{program}{tail}"#,
     )
 }
 
@@ -89,6 +89,44 @@ fn browserify_registry_recovers_each_static_factory() {
         "each proven factory in one registry must recover independently:\n{recovered}"
     );
     assert_runtime_parity(source, &recovered);
+}
+
+#[test]
+fn webpack_registry_factory_recovers_runtime_parameter_names() {
+    let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){var d=c("./math-utils");a.exports=d.sum(6,7);b.answer=a.exports;print(b.answer);}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (first, _stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+    assert_eq!(first, second, "registry recovery must be byte-identical");
+    assert!(
+        first.contains("function(module,exports,require)"),
+        "the bounded Webpack factory must expose its runtime parameter roles:\n{first}"
+    );
+    assert!(
+        first.contains("require(\"./math-utils\")"),
+        "resolved runtime lookups must follow the recovered require binding:\n{first}"
+    );
+    assert_runtime_parity(source, &first);
+
+    let collision: &str = r#"const module=1;var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=c("./math-utils").sum(module,4);b.answer=a.exports;print(b.answer);}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (collision_recovered, _) = unminify_ast(collision);
+    assert!(
+        collision_recovered.contains("function(module_1,exports,require)"),
+        "runtime parameter recovery must not capture an outer module binding:\n{collision_recovered}"
+    );
+    assert_runtime_parity(collision, &collision_recovered);
+
+    let near_misses: [&str; 3] = [
+        r#"var runtimeModule={exports:{}};var callbacks={1:function(a,b,c){a.exports=c("./math-utils");b.answer=a.exports;}};callbacks[1](runtimeModule,runtimeModule.exports,callback);"#,
+        r#"var bundle={entry:function(a,b,c){var d=c("./math-utils");print(d.sum(6,7));}};bundle.entry({}, {}, __webpack_require__);"#,
+        r#"var bundle={1:function(a,b,c){with({}){print(c("./math-utils").sum(6,7));}}};bundle[1]({}, {}, __require);"#,
+    ];
+    for near_miss in near_misses {
+        let (recovered, _) = unminify_ast(near_miss);
+        assert!(
+            !recovered.contains("module,exports,require"),
+            "unproven Webpack factories must remain untouched:\n{recovered}"
+        );
+    }
 }
 
 #[test]

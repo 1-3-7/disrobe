@@ -10,7 +10,7 @@ use oxc_parser::Parser;
 use oxc_semantic::{
     AstNodes, ReferenceId, ScopeId, ScopeTree, Semantic, SemanticBuilder, SymbolId, SymbolTable,
 };
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 
 use super::import_rename::push_reference_edits;
 use super::rename_scope::{
@@ -80,6 +80,57 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
                 let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
                     continue;
                 };
+                let owner_scope: ScopeId = symbols.get_scope_id(symbol_id);
+                let Some(new_name): Option<String> = choose_name(
+                    &safety,
+                    symbol_id,
+                    owner_scope,
+                    local_name,
+                    preferred,
+                    &reserved,
+                    &mut next_suffixes,
+                ) else {
+                    continue;
+                };
+                let mut candidate_edits: Vec<Edit> = vec![Edit {
+                    start: binding.span.start as usize,
+                    end: binding.span.end as usize,
+                    replacement: new_name.clone(),
+                }];
+                push_reference_edits(symbols, nodes, symbol_id, &new_name, &mut candidate_edits);
+                if candidate_edits
+                    .iter()
+                    .any(|edit: &Edit| edit_overlaps_comments(edit, &parsed.program.comments))
+                {
+                    continue;
+                }
+                reserved.insert(new_name);
+                edits.extend(candidate_edits);
+            }
+        }
+        for factory in webpack_factories(registry, nodes, symbols) {
+            let mut reserved: IndexSet<String> = root_reserved.clone();
+            let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
+            for (role_index, (parameter, preferred)) in factory
+                .params
+                .items
+                .iter()
+                .zip(["module", "exports", "require"])
+                .enumerate()
+            {
+                let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                    continue;
+                };
+                let local_name: &str = binding.name.as_str();
+                if !is_minified_local(local_name) || local_name == preferred {
+                    continue;
+                }
+                let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
+                    continue;
+                };
+                if role_index < 2 && symbols.get_resolved_reference_ids(symbol_id).is_empty() {
+                    continue;
+                }
                 let owner_scope: ScopeId = symbols.get_scope_id(symbol_id);
                 let Some(new_name): Option<String> = choose_name(
                     &safety,
@@ -254,6 +305,176 @@ fn browserify_dependency_map(expression: &Expression<'_>) -> bool {
                     Expression::NumericLiteral(_)
                 )
         })
+}
+
+fn webpack_factories<'a>(
+    registry: &'a ObjectExpression<'a>,
+    nodes: &AstNodes<'a>,
+    symbols: &SymbolTable,
+) -> Vec<&'a Function<'a>> {
+    let Some(registry_symbol): Option<SymbolId> = webpack_registry_symbol(registry, nodes) else {
+        return Vec::new();
+    };
+    if !nodes.iter().any(|node: &oxc_semantic::AstNode<'a>| {
+        let AstKind::CallExpression(call) = node.kind() else {
+            return false;
+        };
+        is_webpack_bootstrap_call(call, registry_symbol, symbols)
+    }) {
+        return Vec::new();
+    }
+    let mut factories: Vec<&Function<'_>> = Vec::new();
+    for property in &registry.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            return Vec::new();
+        };
+        if property.kind != PropertyKind::Init
+            || property.computed
+            || property.method
+            || property.shorthand
+            || !matches!(property.key, PropertyKey::NumericLiteral(_))
+        {
+            return Vec::new();
+        }
+        let Expression::FunctionExpression(factory) = property.value.get_inner_expression() else {
+            return Vec::new();
+        };
+        let factory: &Function<'_> = factory.as_ref();
+        let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
+            return Vec::new();
+        };
+        if factory.r#async
+            || factory.generator
+            || factory.type_parameters.is_some()
+            || factory.params.rest.is_some()
+            || factory.params.items.len() != 3
+            || factory.params.items.iter().any(|parameter| {
+                !matches!(
+                    parameter.pattern.kind,
+                    BindingPatternKind::BindingIdentifier(_)
+                )
+            })
+            || body_has_dynamic_scope(body)
+            || !factory_uses_runtime_lookup(factory, symbols)
+        {
+            continue;
+        }
+        factories.push(factory);
+    }
+    factories
+}
+
+fn webpack_registry_symbol(
+    registry: &ObjectExpression<'_>,
+    nodes: &AstNodes<'_>,
+) -> Option<SymbolId> {
+    nodes.iter().find_map(|node: &oxc_semantic::AstNode<'_>| {
+        let AstKind::VariableDeclarator(declarator) = node.kind() else {
+            return None;
+        };
+        let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+            return None;
+        };
+        let init: &Expression<'_> = declarator.init.as_ref()?;
+        (init.get_inner_expression().span() == registry.span)
+            .then(|| binding.symbol_id.get())
+            .flatten()
+    })
+}
+
+fn is_webpack_bootstrap_call(
+    call: &CallExpression<'_>,
+    registry_symbol: SymbolId,
+    symbols: &SymbolTable,
+) -> bool {
+    if call.optional || call.type_parameters.is_some() || call.arguments.len() != 3 {
+        return false;
+    }
+    let Expression::ComputedMemberExpression(member) = call.callee.get_inner_expression() else {
+        return false;
+    };
+    if member.optional
+        || !matches!(
+            member.expression.get_inner_expression(),
+            Expression::NumericLiteral(_)
+        )
+    {
+        return false;
+    }
+    let Expression::Identifier(registry) = member.object.get_inner_expression() else {
+        return false;
+    };
+    let Some(registry_reference): Option<ReferenceId> = registry.reference_id.get() else {
+        return false;
+    };
+    if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
+        return false;
+    }
+    let Some(first): Option<&Expression<'_>> = call.arguments[0].as_expression() else {
+        return false;
+    };
+    let Expression::Identifier(module) = first.get_inner_expression() else {
+        return false;
+    };
+    let Some(module_reference): Option<ReferenceId> = module.reference_id.get() else {
+        return false;
+    };
+    let Some(module_symbol): Option<SymbolId> = symbols.get_reference(module_reference).symbol_id()
+    else {
+        return false;
+    };
+    let Some(second): Option<&Expression<'_>> = call.arguments[1].as_expression() else {
+        return false;
+    };
+    let Expression::StaticMemberExpression(exports) = second.get_inner_expression() else {
+        return false;
+    };
+    if exports.optional || exports.property.name.as_str() != "exports" {
+        return false;
+    }
+    let Expression::Identifier(exports_module) = exports.object.get_inner_expression() else {
+        return false;
+    };
+    let Some(exports_module_reference): Option<ReferenceId> = exports_module.reference_id.get()
+    else {
+        return false;
+    };
+    if symbols.get_reference(exports_module_reference).symbol_id() != Some(module_symbol) {
+        return false;
+    }
+    let Some(third): Option<&Expression<'_>> = call.arguments[2].as_expression() else {
+        return false;
+    };
+    let Expression::Identifier(require) = third.get_inner_expression() else {
+        return false;
+    };
+    unresolved_identifier_is(require, "__webpack_require__", symbols)
+}
+
+fn factory_uses_runtime_lookup(factory: &Function<'_>, symbols: &SymbolTable) -> bool {
+    let Some(BindingPatternKind::BindingIdentifier(binding)) = factory
+        .params
+        .items
+        .get(2)
+        .map(|parameter| &parameter.pattern.kind)
+    else {
+        return false;
+    };
+    let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
+        return false;
+    };
+    let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
+        return false;
+    };
+    let mut calls: FactoryCallProbe<'_> = FactoryCallProbe {
+        factory_symbol: symbol_id,
+        symbols,
+        found: false,
+    };
+    for statement in &body.statements {
+        calls.visit_statement(statement);
+    }
+    calls.found
 }
 
 struct AmdFactory<'a> {
