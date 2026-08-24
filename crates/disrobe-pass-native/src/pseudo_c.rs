@@ -12,14 +12,16 @@ use disrobe_emit::rust::{
     parse_expr, path_expr, ptr_type, render_expr as render_rust_expr, signed_int,
     type_path as rtype_path, unary as runary, unsafe_block, var as rvar,
 };
+use iced_x86::{InstructionInfoFactory, OpAccess, Register};
 use indexmap::{IndexMap, IndexSet};
 
-use crate::arch::{Arch, DisasmInsn, disassemble};
+use crate::arch::{Arch, DisasmInsn, decode_one_x86, disassemble};
 use crate::error::{Error, Result};
 use crate::flow_facts::{
-    DirectTrap, NoreturnLibraryFunction, NoreturnParameter, noreturn_library_function,
-    x86_direct_trap,
+    DirectTrap, NoreturnImportEvidence, NoreturnLibraryFunction, NoreturnParameter,
+    noreturn_import_evidence, x86_direct_trap,
 };
+use crate::plt_resolve::{resolve_elf_plt_imports, resolve_pe_iat_imports};
 use crate::structuring;
 
 #[allow(clippy::redundant_pub_crate)]
@@ -2226,13 +2228,14 @@ fn unique_bound_text_section<'data, 'file>(
     Ok(code_section)
 }
 
-type NoreturnCallSites = BTreeMap<u64, &'static NoreturnLibraryFunction>;
+type NoreturnCallSites = BTreeMap<u64, NoreturnImportEvidence>;
 
 #[derive(Debug, Default)]
 struct ObjectTransferFacts {
     noreturn_exit_sites: NoreturnCallSites,
     relocated_branch_sites: BTreeSet<u64>,
     relocated_branch_targets: BTreeMap<u64, u64>,
+    stack_guard_sequence_sites: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2307,6 +2310,26 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
     if transfers.is_empty() {
         return facts;
     }
+    let resolved_imports: BTreeMap<u64, NoreturnImportEvidence> = resolve_elf_plt_imports(object)
+        .into_iter()
+        .chain(resolve_pe_iat_imports(object))
+        .filter_map(|import| {
+            noreturn_import_evidence(&import.name)
+                .map(|evidence: NoreturnImportEvidence| (import.stub_address, evidence))
+        })
+        .collect();
+    for transfer in &transfers {
+        let Some(target): Option<u64> = parse_branch_target(&transfer.operands) else {
+            continue;
+        };
+        let Some(evidence): Option<NoreturnImportEvidence> = resolved_imports.get(&target).copied()
+        else {
+            continue;
+        };
+        if leaves_unconditionally(transfer) {
+            facts.noreturn_exit_sites.insert(transfer.address, evidence);
+        }
+    }
     let Ok(file): core::result::Result<object::File<'_>, object::Error> =
         object::File::parse(object)
     else {
@@ -2326,6 +2349,24 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         else {
             continue;
         };
+        let object::RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+            continue;
+        };
+        let Ok(symbol): core::result::Result<object::Symbol<'_, '_>, object::Error> =
+            file.symbol_by_index(symbol_index)
+        else {
+            continue;
+        };
+        let name: Option<&str> = symbol.name().ok();
+        if matches!(
+            name,
+            Some("__stack_chk_guard" | ".refptr.__stack_chk_guard")
+        ) && let Some(load) = insns.iter().find(|candidate: &&DisasmInsn| {
+            direct_transfer_displacement_field(candidate)
+                .is_some_and(|(start, end): (u64, u64)| span.exactly(start, end))
+        }) {
+            facts.stack_guard_sequence_sites.insert(load.address);
+        }
         let Some(insn): Option<&&DisasmInsn> = transfers.iter().find(|insn: &&&DisasmInsn| {
             direct_transfer_displacement_field(insn)
                 .is_some_and(|(start, end): (u64, u64)| span.exactly(start, end))
@@ -2335,14 +2376,6 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         if insn.mnemonic != "call" {
             facts.relocated_branch_sites.insert(insn.address);
         }
-        let object::RelocationTarget::Symbol(symbol_index) = relocation.target() else {
-            continue;
-        };
-        let Ok(symbol): core::result::Result<object::Symbol<'_, '_>, object::Error> =
-            file.symbol_by_index(symbol_index)
-        else {
-            continue;
-        };
         if !symbol.is_undefined() {
             let section_limit: Option<u64> = section_address.checked_add(code_section.size());
             if insn.mnemonic != "call"
@@ -2357,10 +2390,10 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
             }
             continue;
         }
-        let Ok(name): core::result::Result<&str, object::Error> = symbol.name() else {
+        let Some(name): Option<&str> = name else {
             continue;
         };
-        let exit: Option<&'static NoreturnLibraryFunction> = noreturn_library_function(name);
+        let exit: Option<NoreturnImportEvidence> = noreturn_import_evidence(name);
         if let Some(entry) = exit
             && leaves_unconditionally(insn)
         {
@@ -2368,7 +2401,241 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
             facts.relocated_branch_sites.remove(&insn.address);
         }
     }
+    facts.stack_guard_sequence_sites = stack_guard_sequence_sites(
+        insns,
+        &facts.stack_guard_sequence_sites,
+        &facts.noreturn_exit_sites,
+    );
     facts
+}
+
+fn stack_guard_sequence_sites(
+    insns: &[DisasmInsn],
+    relocation_load_sites: &BTreeSet<u64>,
+    noreturn_exit_sites: &NoreturnCallSites,
+) -> BTreeSet<u64> {
+    let mut sequence_sites: BTreeSet<u64> = BTreeSet::new();
+    for pair in insns.iter().enumerate() {
+        let (prologue_index, prologue): (usize, &DisasmInsn) = pair;
+        if !relocation_load_sites.contains(&prologue.address) {
+            continue;
+        }
+        let Some(guard_pointer): Option<RegRef> = mov_register_destination(prologue) else {
+            continue;
+        };
+        let Some((guard_value, guard_memory)): Option<(RegRef, MemRef)> =
+            insns.get(prologue_index + 1).and_then(mov_reg_mem)
+        else {
+            continue;
+        };
+        if guard_memory.base != Some(guard_pointer.reg)
+            || guard_memory.index.is_some()
+            || guard_memory.disp != 0
+        {
+            continue;
+        }
+        let Some((saved_guard, saved_value)): Option<(MemRef, RegRef)> =
+            insns.get(prologue_index + 2).and_then(mov_mem_reg)
+        else {
+            continue;
+        };
+        if saved_value != guard_value {
+            continue;
+        }
+        let mut check: Option<(usize, RegRef)> = None;
+        for (index, candidate) in insns.iter().enumerate().skip(prologue_index + 3) {
+            let candidate_move: Option<(RegRef, MemRef)> = mov_reg_mem(candidate);
+            if let Some((register, memory)) = candidate_move
+                && memory == saved_guard
+            {
+                check = Some((index, register));
+                break;
+            }
+            if !stack_guard_intervening_instruction_is_safe(candidate, guard_pointer, saved_guard) {
+                break;
+            }
+        }
+        let Some((check_index, check_register)): Option<(usize, RegRef)> = check else {
+            continue;
+        };
+        let Some(compare): Option<&DisasmInsn> = insns.get(check_index + 1) else {
+            continue;
+        };
+        if !stack_guard_compare(compare, check_register, guard_pointer) {
+            continue;
+        }
+        let Some(branch): Option<&DisasmInsn> = insns.get(check_index + 2) else {
+            continue;
+        };
+        if !branch.mnemonic.starts_with('j') || branch.mnemonic == "jmp" {
+            continue;
+        }
+        let Some(failure_target): Option<u64> = parse_branch_target(&branch.operands) else {
+            continue;
+        };
+        let Some(failure): Option<&DisasmInsn> = insns
+            .iter()
+            .find(|candidate: &&DisasmInsn| candidate.address == failure_target)
+        else {
+            continue;
+        };
+        let Some(failure_evidence): Option<&NoreturnImportEvidence> =
+            noreturn_exit_sites.get(&failure.address)
+        else {
+            continue;
+        };
+        if failure_evidence.function().name != "__stack_chk_fail" {
+            continue;
+        }
+        sequence_sites.extend([
+            prologue.address,
+            insns[prologue_index + 1].address,
+            insns[prologue_index + 2].address,
+            insns[check_index].address,
+            compare.address,
+            branch.address,
+            failure.address,
+        ]);
+    }
+    sequence_sites
+}
+
+fn mov_reg_mem(insn: &DisasmInsn) -> Option<(RegRef, MemRef)> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (left, right): (&str, &str) = insn.operands.split_once(',')?;
+    let register: RegRef = parse_reg(left.trim())?;
+    let memory: MemRef = parse_memory_operand(right.trim(), register.width)?;
+    Some((register, memory))
+}
+
+fn mov_register_destination(insn: &DisasmInsn) -> Option<RegRef> {
+    (insn.mnemonic == "mov").then_some(())?;
+    let (left, _): (&str, &str) = insn.operands.split_once(',')?;
+    parse_reg(left.trim())
+}
+
+fn mov_mem_reg(insn: &DisasmInsn) -> Option<(MemRef, RegRef)> {
+    if insn.mnemonic != "mov" {
+        return None;
+    }
+    let (left, right): (&str, &str) = insn.operands.split_once(',')?;
+    let register: RegRef = parse_reg(right.trim())?;
+    let memory: MemRef = parse_memory_operand(left.trim(), register.width)?;
+    Some((memory, register))
+}
+
+fn stack_guard_compare(insn: &DisasmInsn, check_register: RegRef, guard_pointer: RegRef) -> bool {
+    if !matches!(insn.mnemonic.as_str(), "sub" | "xor") {
+        return false;
+    }
+    let Some((left, right)): Option<(&str, &str)> = insn.operands.split_once(',') else {
+        return false;
+    };
+    let Some(left_register): Option<RegRef> = parse_reg(left.trim()) else {
+        return false;
+    };
+    let Some(right_memory): Option<MemRef> =
+        parse_memory_operand(right.trim(), left_register.width)
+    else {
+        return false;
+    };
+    left_register == check_register
+        && right_memory.base == Some(guard_pointer.reg)
+        && right_memory.index.is_none()
+        && right_memory.disp == 0
+}
+
+fn stack_guard_intervening_instruction_is_safe(
+    insn: &DisasmInsn,
+    guard_pointer: RegRef,
+    saved_guard: MemRef,
+) -> bool {
+    !is_direct_transfer(insn)
+        && insn.mnemonic != "ret"
+        && !instruction_writes_register(insn, guard_pointer.reg)
+        && !instruction_writes_memory(insn, saved_guard)
+}
+
+fn instruction_writes_register(insn: &DisasmInsn, register: Reg) -> bool {
+    let Some(decoded) = decode_one_x86(64, insn.address, &insn.bytes) else {
+        return true;
+    };
+    let Some(target): Option<Register> = iced_register(register) else {
+        return true;
+    };
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    factory.info(&decoded).used_registers().iter().any(|used| {
+        used.register().full_register() == target && instruction_access_writes(used.access())
+    })
+}
+
+fn instruction_writes_memory(insn: &DisasmInsn, memory: MemRef) -> bool {
+    let Some(decoded) = decode_one_x86(64, insn.address, &insn.bytes) else {
+        return true;
+    };
+    let Some(base): Option<Register> = memory.base.and_then(iced_register) else {
+        return true;
+    };
+    let saved_size: i64 = i64::from(memory.width.bits() / 8);
+    let Some(saved_end): Option<i64> = memory.disp.checked_add(saved_size) else {
+        return true;
+    };
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    for used in factory.info(&decoded).used_memory() {
+        if !instruction_access_writes(used.access()) {
+            continue;
+        }
+        if used.base().full_register() != base || used.index() != Register::None {
+            return true;
+        }
+        let write_start: i64 = i64::from_ne_bytes(used.displacement().to_ne_bytes());
+        let Some(write_size): Option<i64> = i64::try_from(used.memory_size().size()).ok() else {
+            return true;
+        };
+        let Some(write_end): Option<i64> = write_start.checked_add(write_size) else {
+            return true;
+        };
+        if write_size == 0 || write_start < saved_end && memory.disp < write_end {
+            return true;
+        }
+    }
+    false
+}
+
+const fn instruction_access_writes(access: OpAccess) -> bool {
+    matches!(
+        access,
+        OpAccess::Write | OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite
+    )
+}
+
+const fn iced_register(register: Reg) -> Option<Register> {
+    match register {
+        Reg::Rax => Some(Register::RAX),
+        Reg::Rbx => Some(Register::RBX),
+        Reg::Rcx => Some(Register::RCX),
+        Reg::Rdx => Some(Register::RDX),
+        Reg::Rsi => Some(Register::RSI),
+        Reg::Rdi => Some(Register::RDI),
+        Reg::Rbp => Some(Register::RBP),
+        Reg::Rsp => Some(Register::RSP),
+        Reg::R8 => Some(Register::R8),
+        Reg::R9 => Some(Register::R9),
+        Reg::R10 => Some(Register::R10),
+        Reg::R11 => Some(Register::R11),
+        Reg::R12 => Some(Register::R12),
+        Reg::R13 => Some(Register::R13),
+        Reg::R14 => Some(Register::R14),
+        Reg::R15 => Some(Register::R15),
+        _ => None,
+    }
+}
+
+fn parse_memory_operand(operand: &str, width: Width) -> Option<MemRef> {
+    let normalized: String = operand.replace(" ptr", "");
+    parse_mem_access(&normalized, Some(width))
 }
 
 pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Option<usize> {
@@ -3015,6 +3282,13 @@ fn build_leaf_items(
         {
             continue;
         }
+        if object_facts
+            .transfers
+            .stack_guard_sequence_sites
+            .contains(&insn.address)
+        {
+            continue;
+        }
         if packed_mode
             && let Some(stmt) = lift_packed(
                 &insn.mnemonic,
@@ -3091,6 +3365,7 @@ fn build_leaf_items(
                 .noreturn_exit_sites
                 .get(&insn.address)
                 .copied()
+                .map(NoreturnImportEvidence::function)
         {
             flags = None;
             dividend_high = None;
@@ -24996,6 +25271,97 @@ fn lowest_item_address(items: &[Item]) -> u64 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_guard_sequence_refuses_pointer_slot_and_control_flow_interference() {
+        let guard_pointer: RegRef = RegRef {
+            reg: Reg::Rdx,
+            width: Width::W64,
+        };
+        let saved_guard: MemRef = MemRef {
+            base: Some(Reg::Rbp),
+            index: None,
+            disp: -8,
+            width: Width::W64,
+        };
+        let benign: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: vec![0x48, 0x83, 0xc0, 0x01],
+            mnemonic: "add".to_owned(),
+            operands: "rax,1".to_owned(),
+        };
+        let implicit_pointer_write: DisasmInsn = DisasmInsn {
+            address: 1,
+            bytes: vec![0x48, 0xf7, 0xe1],
+            mnemonic: "mul".to_owned(),
+            operands: "rcx".to_owned(),
+        };
+        let secondary_pointer_write: DisasmInsn = DisasmInsn {
+            address: 2,
+            bytes: vec![0x48, 0x87, 0xd0],
+            mnemonic: "xchg".to_owned(),
+            operands: "rax,rdx".to_owned(),
+        };
+        let slot_write: DisasmInsn = DisasmInsn {
+            address: 3,
+            bytes: vec![0x88, 0x45, 0xf8],
+            mnemonic: "mov".to_owned(),
+            operands: "byte ptr [rbp-8],al".to_owned(),
+        };
+        let preceding_slot_overlap: DisasmInsn = DisasmInsn {
+            address: 4,
+            bytes: vec![0xc7, 0x45, 0xf6, 0, 0, 0, 0],
+            mnemonic: "mov".to_owned(),
+            operands: "dword ptr [rbp-0Ah],0".to_owned(),
+        };
+        let indexed_slot_alias: DisasmInsn = DisasmInsn {
+            address: 5,
+            bytes: vec![0x88, 0x44, 0x0d, 0x00],
+            mnemonic: "mov".to_owned(),
+            operands: "byte ptr [rbp+rcx],al".to_owned(),
+        };
+        let branch: DisasmInsn = DisasmInsn {
+            address: 6,
+            bytes: vec![0x75, 0x00],
+            mnemonic: "jne".to_owned(),
+            operands: "0000000000000005h".to_owned(),
+        };
+        assert!(stack_guard_intervening_instruction_is_safe(
+            &benign,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &implicit_pointer_write,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &secondary_pointer_write,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &slot_write,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &preceding_slot_overlap,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &indexed_slot_alias,
+            guard_pointer,
+            saved_guard
+        ));
+        assert!(!stack_guard_intervening_instruction_is_safe(
+            &branch,
+            guard_pointer,
+            saved_guard
+        ));
+    }
 
     fn condition_snapshot(var: u32) -> Node {
         Node::CondSnapshot {

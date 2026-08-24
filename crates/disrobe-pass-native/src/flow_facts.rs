@@ -12,6 +12,7 @@ use disrobe_ir::payload::InsnFlow;
 use iced_x86::{Code, FlowControl, Instruction, OpKind};
 
 use crate::arch::{Arch as DisasmArch, capstone_for, decode_one_x86};
+use crate::desync::is_noreturn_import_name;
 use crate::error::{Error, Result};
 use crate::pseudo_c::aarch64::{
     Aarch64DirectTransfer, aarch64_direct_transfer, aarch64_is_exception_entry,
@@ -70,7 +71,20 @@ pub(crate) struct NoreturnLibraryFunction {
     pub(crate) parameters: &'static [NoreturnParameter],
 }
 
-const NORETURN_LIBRARY_FUNCTIONS: &[NoreturnLibraryFunction] = &[
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoreturnImportEvidence {
+    Relocation(&'static NoreturnLibraryFunction),
+}
+
+impl NoreturnImportEvidence {
+    pub(crate) const fn function(self) -> &'static NoreturnLibraryFunction {
+        match self {
+            Self::Relocation(function) => function,
+        }
+    }
+}
+
+const NORETURN_LIBRARY_PROTOTYPES: &[NoreturnLibraryFunction] = &[
     NoreturnLibraryFunction {
         name: "abort",
         parameters: &[],
@@ -146,19 +160,23 @@ const NORETURN_LIBRARY_FUNCTIONS: &[NoreturnLibraryFunction] = &[
     },
 ];
 
-pub(crate) fn noreturn_library_function(symbol: &str) -> Option<&'static NoreturnLibraryFunction> {
-    let exact: Option<&'static NoreturnLibraryFunction> = NORETURN_LIBRARY_FUNCTIONS
+pub(crate) fn noreturn_import_evidence(symbol: &str) -> Option<NoreturnImportEvidence> {
+    if !is_noreturn_import_name(symbol) {
+        return None;
+    }
+    let exact: Option<&'static NoreturnLibraryFunction> = NORETURN_LIBRARY_PROTOTYPES
         .iter()
         .find(|entry: &&NoreturnLibraryFunction| entry.name == symbol);
     if exact.is_some() {
-        return exact;
+        return exact.map(NoreturnImportEvidence::Relocation);
     }
     let undecorated: &str = symbol
         .strip_prefix("__imp_")
         .or_else(|| symbol.strip_prefix('_'))?;
-    NORETURN_LIBRARY_FUNCTIONS
+    NORETURN_LIBRARY_PROTOTYPES
         .iter()
         .find(|entry: &&NoreturnLibraryFunction| entry.name == undecorated)
+        .map(NoreturnImportEvidence::Relocation)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -851,32 +869,47 @@ mod tests {
 
     #[test]
     fn noreturn_library_lookup_distinguishes_the_posix_underscore_names() {
-        let exit_entry: &NoreturnLibraryFunction =
-            noreturn_library_function("exit").expect("exit is a declared non-returning function");
-        let underscore_exit: &NoreturnLibraryFunction =
-            noreturn_library_function("_exit").expect("_exit is a declared non-returning function");
+        let exit_entry: &NoreturnLibraryFunction = noreturn_import_evidence("exit")
+            .expect("exit is a declared non-returning import")
+            .function();
+        let underscore_exit: &NoreturnLibraryFunction = noreturn_import_evidence("_exit")
+            .expect("_exit is a declared non-returning import")
+            .function();
         assert_eq!(exit_entry.name, "exit");
         assert_eq!(underscore_exit.name, "_exit");
-        let capital_exit: &NoreturnLibraryFunction =
-            noreturn_library_function("_Exit").expect("_Exit is a declared non-returning function");
+        let capital_exit: &NoreturnLibraryFunction = noreturn_import_evidence("_Exit")
+            .expect("_Exit is a declared non-returning import")
+            .function();
         assert_eq!(capital_exit.name, "_Exit");
         assert_eq!(
-            noreturn_library_function("abort").map(|entry: &NoreturnLibraryFunction| entry.name),
+            noreturn_import_evidence("abort")
+                .map(NoreturnImportEvidence::function)
+                .map(|entry: &NoreturnLibraryFunction| entry.name),
             Some("abort")
         );
         assert_eq!(
-            noreturn_library_function("_abort").map(|entry: &NoreturnLibraryFunction| entry.name),
+            noreturn_import_evidence("_abort")
+                .map(NoreturnImportEvidence::function)
+                .map(|entry: &NoreturnLibraryFunction| entry.name),
             Some("abort")
         );
         assert_eq!(
-            noreturn_library_function("__imp_exit")
+            noreturn_import_evidence("__imp_exit")
+                .map(NoreturnImportEvidence::function)
                 .map(|entry: &NoreturnLibraryFunction| entry.name),
             Some("exit")
         );
         assert_eq!(
-            noreturn_library_function("__imp__exit")
+            noreturn_import_evidence("__imp__exit")
+                .map(NoreturnImportEvidence::function)
                 .map(|entry: &NoreturnLibraryFunction| entry.name),
             Some("_exit")
+        );
+        assert_eq!(
+            noreturn_import_evidence("__imp___stack_chk_fail")
+                .map(NoreturnImportEvidence::function)
+                .map(|entry: &NoreturnLibraryFunction| entry.name),
+            Some("__stack_chk_fail")
         );
     }
 
@@ -892,7 +925,7 @@ mod tests {
             "_",
         ] {
             assert!(
-                noreturn_library_function(name).is_none(),
+                noreturn_import_evidence(name).is_none(),
                 "{name} must not be treated as a non-returning library exit"
             );
         }
@@ -900,7 +933,7 @@ mod tests {
 
     #[test]
     fn noreturn_library_prototypes_bind_every_declared_parameter() {
-        for entry in NORETURN_LIBRARY_FUNCTIONS {
+        for entry in NORETURN_LIBRARY_PROTOTYPES {
             assert!(
                 !entry.name.is_empty(),
                 "a declared non-returning function has no name"

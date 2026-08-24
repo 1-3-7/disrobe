@@ -19,7 +19,7 @@ use disrobe_pass_native::{
     ResolvedCall, disassemble, recover_leaf_function_abi, recover_leaf_function_in_object,
     recover_leaf_function_with_calls, recover_program as lib_recover_program,
 };
-use object::{Object as _, ObjectSection as _};
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 use common::{
     HOST_ABI, cc, clang, compile_object, compile_object_opt, function_code, gcc, link_and_run,
@@ -885,6 +885,170 @@ fn direct_instruction_trap_arm_recovers_as_a_guard() {
         stdout.contains("OK") && !stdout.contains("MISMATCH"),
         "non-trapping differential failed: {stdout}"
     );
+}
+
+#[test]
+fn imported_stack_failure_guard_recovers_through_the_whole_program_consumer() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!(
+            "skipping imported_stack_failure_guard_recovers_through_the_whole_program_consumer: this case requires x86-64 object recovery"
+        );
+        return;
+    }
+    let compilers: Vec<String> = [gcc(), clang()].into_iter().flatten().collect();
+    assert!(
+        !compilers.is_empty(),
+        "the stack-protector guard grade requires gcc or clang"
+    );
+    let program: WholeProgram = WholeProgram {
+        name: "stack_protected",
+        entry: "stack_protected",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["stack_protected"],
+        c_source: "__attribute__((noinline)) long long stack_protected(long long x){ volatile char buffer[32]; buffer[0] = (char)x; return (long long)buffer[0] + 1; }",
+    };
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-stack-guard");
+    let mut graded: usize = 0;
+    for compiler in compilers {
+        let object_path: PathBuf = scratch.path().join(format!("{compiler}_stack_guard.o"));
+        let flags: [&str; 4] = [
+            "-fstack-protector-strong",
+            "-mstack-protector-guard=global",
+            "-fno-omit-frame-pointer",
+            "-c",
+        ];
+        let object: Vec<u8> =
+            compile_object_opt(&compiler, "-O1", &flags, program.c_source, &object_path)
+                .unwrap_or_else(|| panic!("{compiler} must compile the stack-protector fixture"));
+        let file: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("stack-protected object parses");
+        let mut imported_stack_failure: bool = false;
+        for section in file.sections() {
+            for (_, relocation) in section.relocations() {
+                let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                    continue;
+                };
+                let symbol: object::Symbol<'_, '_> = file
+                    .symbol_by_index(index)
+                    .expect("relocation symbol resolves");
+                imported_stack_failure |= symbol.name().ok() == Some("__stack_chk_fail");
+            }
+        }
+        if !imported_stack_failure {
+            eprintln!(
+                "not grading {compiler}: the requested flags emitted no __stack_chk_fail import"
+            );
+            continue;
+        }
+        let recovered: RecoveredProgram = recover_program(&object, &program, HOST_ABI)
+            .unwrap_or_else(|| panic!("{compiler} stack-protector program must recover"));
+        assert!(
+            !recovered.tu.contains("__stack_chk_fail"),
+            "{}",
+            recovered.tu
+        );
+        assert!(!recovered.tu.contains("r_rdx"), "{}", recovered.tu);
+        assert_eq!(recovered.entry_params, 1, "{}", recovered.tu);
+        assert_eq!(
+            recovered.tu.matches("goto ").count(),
+            0,
+            "{compiler} imported failure side must collapse to a guard: {}",
+            recovered.tu
+        );
+        graded += 1;
+    }
+    assert!(
+        graded > 0,
+        "no available compiler emitted the imported stack-failure path this test grades"
+    );
+}
+
+#[test]
+fn imported_stack_guard_recompiles_without_leaking_guard_state_into_the_entry() {
+    if !cfg!(target_arch = "x86_64") {
+        eprintln!(
+            "skipping imported_stack_guard_recompiles_without_leaking_guard_state_into_the_entry: this case requires x86-64 object recovery"
+        );
+        return;
+    }
+    let compiler: String = gcc().expect("gcc is required for the imported stack-guard grade");
+    let program: WholeProgram = WholeProgram {
+        name: "stack_guard_state",
+        entry: "stack_guard_state",
+        entry_arity: 1,
+        loopy: false,
+        functions: &["stack_guard_state"],
+        c_source: "__attribute__((noinline)) long long stack_guard_state(long long x){ volatile char buffer[32]; buffer[0] = (char)x; return (long long)buffer[0] + 1; }",
+    };
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-stack-guard-state");
+    let object_path: PathBuf = scratch.path().join("stack_guard_state.o");
+    let flags: [&str; 4] = [
+        "-fstack-protector-strong",
+        "-mstack-protector-guard=global",
+        "-fno-omit-frame-pointer",
+        "-c",
+    ];
+    let object: Vec<u8> =
+        compile_object_opt(&compiler, "-O1", &flags, program.c_source, &object_path)
+            .expect("gcc must compile the stack-guard fixture");
+    let recovered: RecoveredProgram = recover_program(&object, &program, HOST_ABI)
+        .expect("the stack-protected entry must recover with the host ABI");
+    assert_eq!(
+        recovered.entry_params, 1,
+        "the stack guard must not become a recovered function input: {}",
+        recovered.tu
+    );
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <stdio.h>\nvolatile uint64_t __stack_chk_guard = 0x9e3779b97f4a7c15ULL;\n{}\nextern long long stack_guard_state(long long);\nint main(void){{ long long want = stack_guard_state(7); long long got = rec_stack_guard_state(7); if(want != got){{ printf(\"MISMATCH want=%lld got=%lld\\n\", want, got); return 1; }} printf(\"OK\\n\"); return 0; }}\n",
+        recovered.tu
+    );
+    let stdout: String = link_and_run(&compiler, &driver, &object, "stack_guard_state", 20);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "stack-guard recovery must preserve the normal result without an inferred guard input: {stdout}\n--- recovered ---\n{}",
+        recovered.tu
+    );
+}
+
+#[test]
+fn local_and_unresolved_stack_failure_lookalikes_stay_returning_calls() {
+    let compiler: String = gcc().expect("gcc is required for the imported-stack-failure grade");
+    let cases: [(&'static str, &'static str, &'static str); 2] = [
+        (
+            "local",
+            "__attribute__((noinline)) void __stack_chk_fail(void){ volatile int state = 0; (void)state; } __attribute__((noinline)) long long local_lookalike(long long x){ if (x < 0) __stack_chk_fail(); return x + 1; }",
+            "local_lookalike",
+        ),
+        (
+            "unresolved",
+            "extern void stack_failure_lookalike(void); __attribute__((noinline)) long long unresolved_lookalike(long long x){ if (x < 0) stack_failure_lookalike(); return x + 1; }",
+            "unresolved_lookalike",
+        ),
+    ];
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-stack-lookalike");
+    let flags: [&str; 2] = ["-fno-stack-protector", "-c"];
+    for (tag, source, entry) in cases {
+        let object_path: PathBuf = scratch.path().join(format!("{tag}.o"));
+        let object: Vec<u8> = compile_object_opt(&compiler, "-O1", &flags, source, &object_path)
+            .unwrap_or_else(|| panic!("{tag} fixture compiles"));
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, entry).unwrap_or_else(|| panic!("{tag} caller symbol"));
+        let recovered: LeafRecovery =
+            recover_leaf_function_in_object(&object, &code, base, HOST_ABI, &[]).unwrap_or_else(
+                |error| panic!("{tag} lookalike must recover as a returning call: {error}"),
+            );
+        assert!(
+            !recovered.source.contains("__stack_chk_fail();"),
+            "{tag} must not obtain imported no-return evidence: {}",
+            recovered.source
+        );
+        assert!(
+            recovered.source.contains("sub_"),
+            "{tag} must remain an unresolved or local direct call: {}",
+            recovered.source
+        );
+    }
 }
 
 #[test]
