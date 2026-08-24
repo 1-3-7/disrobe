@@ -61,6 +61,12 @@ struct DefUse {
     wide_def_high: bool,
 }
 
+struct WebLayout {
+    slots: BTreeMap<usize, SplitSlot>,
+    registers: BTreeMap<u16, BTreeSet<usize>>,
+    conflicted: BTreeSet<u16>,
+}
+
 #[derive(Debug)]
 pub(crate) struct SplitPlan {
     pub(crate) insns: Vec<DalvikInsn>,
@@ -121,6 +127,18 @@ pub(crate) fn plan_split(
     switch_targets: &BTreeMap<u32, Vec<u32>>,
     handler_edges: &BTreeMap<u32, Vec<u32>>,
 ) -> Option<SplitPlan> {
+    plan_split_candidate(dex, insns, shape, switch_targets, handler_edges, false)
+        .or_else(|| plan_split_candidate(dex, insns, shape, switch_targets, handler_edges, true))
+}
+
+fn plan_split_candidate(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    shape: &SplitShape<'_>,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    handler_edges: &BTreeMap<u32, Vec<u32>>,
+    close_two_address_webs: bool,
+) -> Option<SplitPlan> {
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, x)| (x.pc, i)).collect();
 
@@ -174,44 +192,47 @@ pub(crate) fn plan_split(
         }
     }
 
-    let mut web_slot: BTreeMap<usize, SplitSlot> = BTreeMap::new();
-    for (i, d) in defs.iter().enumerate() {
-        let root: usize = uf.find(i);
-        match web_slot.get(&root) {
-            Some(existing) if *existing != d.slot => {
-                let ref_mismatch: bool =
-                    (*existing == SplitSlot::Ref) != (d.slot == SplitSlot::Ref);
-                if existing.is_wide() != d.slot.is_wide() || ref_mismatch {
-                    return None;
+    let initial_layout: WebLayout = web_layout(&mut uf, &defs)?;
+    let initial_conflicted: BTreeSet<u16> = initial_layout.conflicted;
+    let (web_slot, reg_webs): (BTreeMap<usize, SplitSlot>, BTreeMap<u16, BTreeSet<usize>>) =
+        if close_two_address_webs {
+            let mut tied: BTreeSet<u16> = BTreeSet::new();
+            for (i, d) in du.iter().enumerate() {
+                let Some(position): Option<usize> = d.def_position else {
+                    continue;
+                };
+                if !d.use_positions.contains(&position) {
+                    continue;
+                }
+                let (Some(&def), Some(&reg)): (Option<&usize>, Option<&u16>) = (
+                    def_index.get(&i),
+                    insns
+                        .get(i)
+                        .and_then(|insn: &DalvikInsn| insn.regs.get(position)),
+                ) else {
+                    continue;
+                };
+                if !initial_conflicted.contains(&reg) {
+                    continue;
+                }
+                tied.insert(reg);
+                if let Some(reaching) = reach_in[i].get(&reg) {
+                    for site in reaching {
+                        if let Some(&other) = def_index.get(site) {
+                            uf.union(def, other);
+                        }
+                    }
                 }
             }
-            _ => {
-                web_slot.entry(root).or_insert(d.slot);
+            if !initial_conflicted.is_subset(&tied) {
+                return None;
             }
-        }
-    }
-
-    let mut reg_webs: BTreeMap<u16, BTreeSet<usize>> = BTreeMap::new();
-    for (i, d) in defs.iter().enumerate() {
-        reg_webs.entry(d.reg).or_default().insert(uf.find(i));
-    }
-
-    let conflicted: BTreeSet<u16> = reg_webs
-        .iter()
-        .filter(|(_, roots): &(&u16, &BTreeSet<usize>)| {
-            let mut has_ref: bool = false;
-            let mut has_nonref: bool = false;
-            for root in *roots {
-                match web_slot.get(root) {
-                    Some(SplitSlot::Ref) => has_ref = true,
-                    Some(_) => has_nonref = true,
-                    None => {}
-                }
-            }
-            has_ref && has_nonref
-        })
-        .map(|(&reg, _): (&u16, &BTreeSet<usize>)| reg)
-        .collect();
+            let merged_layout: WebLayout = web_layout(&mut uf, &defs)?;
+            (merged_layout.slots, merged_layout.registers)
+        } else {
+            (initial_layout.slots, initial_layout.registers)
+        };
+    let conflicted: BTreeSet<u16> = initial_conflicted;
 
     if conflicted.is_empty() {
         return None;
@@ -317,6 +338,53 @@ pub(crate) fn plan_split(
         insns: out_insns,
         virtual_local,
         max_locals: next_local.max(shape.base_max_locals),
+    })
+}
+
+fn web_layout(uf: &mut UnionFind, defs: &[Def]) -> Option<WebLayout> {
+    let mut web_slot: BTreeMap<usize, SplitSlot> = BTreeMap::new();
+    for (i, definition) in defs.iter().enumerate() {
+        let root: usize = uf.find(i);
+        match web_slot.get(&root) {
+            Some(existing) if *existing != definition.slot => {
+                let ref_mismatch: bool =
+                    (*existing == SplitSlot::Ref) != (definition.slot == SplitSlot::Ref);
+                if existing.is_wide() != definition.slot.is_wide() || ref_mismatch {
+                    return None;
+                }
+            }
+            _ => {
+                web_slot.entry(root).or_insert(definition.slot);
+            }
+        }
+    }
+    let mut reg_webs: BTreeMap<u16, BTreeSet<usize>> = BTreeMap::new();
+    for (i, definition) in defs.iter().enumerate() {
+        reg_webs
+            .entry(definition.reg)
+            .or_default()
+            .insert(uf.find(i));
+    }
+    let conflicted: BTreeSet<u16> = reg_webs
+        .iter()
+        .filter(|(_, roots): &(&u16, &BTreeSet<usize>)| {
+            let mut has_ref: bool = false;
+            let mut has_nonref: bool = false;
+            for root in *roots {
+                match web_slot.get(root) {
+                    Some(SplitSlot::Ref) => has_ref = true,
+                    Some(_) => has_nonref = true,
+                    None => {}
+                }
+            }
+            has_ref && has_nonref
+        })
+        .map(|(&reg, _): (&u16, &BTreeSet<usize>)| reg)
+        .collect();
+    Some(WebLayout {
+        slots: web_slot,
+        registers: reg_webs,
+        conflicted,
     })
 }
 
@@ -620,5 +688,112 @@ const fn arith_slot(op: u8) -> SplitSlot {
         0xA6..=0xAA => SplitSlot::Float,
         0xAB..=0xAF => SplitSlot::Double,
         _ => SplitSlot::Int,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::dalvik::{dalvik_format, opcode};
+    use crate::dex_builder::{ClassDef, DexBuilder};
+
+    fn empty_dex() -> DexFile {
+        let mut builder: DexBuilder = DexBuilder::new();
+        builder.add_class(ClassDef {
+            class: "Lp/Split;".to_owned(),
+            super_class: "Ljava/lang/Object;".to_owned(),
+            access_flags: 0x1,
+            static_fields: Vec::new(),
+            static_values: Vec::new(),
+            direct_methods: Vec::new(),
+            virtual_methods: Vec::new(),
+        });
+        crate::dex::parse(&builder.build()).expect("the split fixture dex parses")
+    }
+
+    fn insn(pc: u32, op: u8, regs: &[u16]) -> DalvikInsn {
+        let operation = opcode(op);
+        DalvikInsn {
+            pc,
+            op,
+            mnemonic: operation.mnemonic,
+            width: operation.units,
+            format: dalvik_format(op),
+            regs: regs.to_vec(),
+            literal: None,
+            index: None,
+            branch: None,
+            payload_off: None,
+        }
+    }
+
+    fn shape(parsed: &MethodDescriptor, registers_size: u16) -> SplitShape<'_> {
+        SplitShape {
+            registers_size,
+            ins_size: 0,
+            is_static: true,
+            first_param_reg: registers_size,
+            base_max_locals: registers_size.saturating_add(2),
+            parsed,
+        }
+    }
+
+    #[test]
+    fn two_address_definition_and_use_remain_in_one_split_web() {
+        let dex: DexFile = empty_dex();
+        let parsed: MethodDescriptor =
+            crate::descriptor::parse_method("()I").expect("valid descriptor");
+        let instructions: Vec<DalvikInsn> = vec![
+            insn(0, 0x1A, &[0]),
+            insn(1, 0x12, &[1]),
+            insn(2, 0x12, &[0]),
+            insn(3, 0xB0, &[0, 1]),
+            insn(4, 0x0F, &[0]),
+        ];
+
+        let plan: SplitPlan = plan_split(
+            &dex,
+            &instructions,
+            &shape(&parsed, 2),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("the shared two-address operand permits a sound split");
+
+        assert_eq!(plan.insns[3].regs, vec![0, 1]);
+        assert_ne!(plan.insns[0].regs[0], 0);
+        assert!(plan.virtual_local.contains_key(&plan.insns[0].regs[0]));
+    }
+
+    #[test]
+    fn two_address_retry_rejects_an_unrelated_partial_split() {
+        let dex: DexFile = empty_dex();
+        let parsed: MethodDescriptor =
+            crate::descriptor::parse_method("()I").expect("valid descriptor");
+        let instructions: Vec<DalvikInsn> = vec![
+            insn(0, 0x1A, &[0]),
+            insn(1, 0x71, &[0]),
+            insn(2, 0x12, &[0]),
+            insn(3, 0x71, &[0]),
+            insn(4, 0x1A, &[1]),
+            insn(5, 0x71, &[1]),
+            insn(6, 0x12, &[2]),
+            insn(7, 0x12, &[1]),
+            insn(8, 0xB0, &[1, 2]),
+            insn(9, 0x0F, &[1]),
+        ];
+
+        assert!(
+            plan_split(
+                &dex,
+                &instructions,
+                &shape(&parsed, 3),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .is_none(),
+            "repairing v1 must not unlock an unrelated split of v0"
+        );
     }
 }
