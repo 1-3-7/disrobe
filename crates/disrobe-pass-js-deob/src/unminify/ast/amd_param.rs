@@ -2,13 +2,14 @@ use indexmap::{IndexMap, IndexSet};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrayExpression, BinaryOperator, BindingPatternKind, CallExpression, Expression,
-    FormalParameters, Function, FunctionBody, LogicalOperator, ObjectExpression,
+    FormalParameters, Function, FunctionBody, FunctionType, LogicalOperator, ObjectExpression,
     ObjectPropertyKind, PropertyKey, PropertyKind, Statement, UnaryOperator,
 };
 use oxc_ast::{AstKind, Visit};
 use oxc_parser::Parser;
 use oxc_semantic::{
-    AstNodes, ReferenceId, ScopeId, ScopeTree, Semantic, SemanticBuilder, SymbolId, SymbolTable,
+    AstNodes, NodeId, ReferenceId, ScopeId, ScopeTree, Semantic, SemanticBuilder, SymbolId,
+    SymbolTable,
 };
 use oxc_span::{GetSpan, SourceType};
 
@@ -592,19 +593,110 @@ fn webpack_cycle_dispatcher_roles<'a>(
     if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
         return None;
     }
-    let dispatcher: &Function<'_> = nodes.ancestors(node.id()).find_map(|ancestor| {
-        let AstKind::Function(function) = ancestor.kind() else {
-            return None;
-        };
-        Some(function)
-    })?;
-    let dispatcher_body: &FunctionBody<'_> = dispatcher.body.as_deref()?;
-    if dispatcher.r#async
-        || dispatcher.generator
-        || dispatcher.type_parameters.is_some()
+    for ancestor in nodes.ancestors(node.id()) {
+        match ancestor.kind() {
+            AstKind::Function(dispatcher) => {
+                let dispatcher_body: &FunctionBody<'_> = dispatcher.body.as_deref()?;
+                let dispatcher_symbol: SymbolId = match dispatcher.r#type {
+                    FunctionType::FunctionDeclaration => dispatcher.id.as_ref()?.symbol_id.get()?,
+                    FunctionType::FunctionExpression => webpack_assigned_dispatcher_symbol(
+                        ancestor.id(),
+                        dispatcher.span,
+                        nodes,
+                        symbols,
+                    )?,
+                    FunctionType::TSDeclareFunction
+                    | FunctionType::TSEmptyBodyFunctionExpression => {
+                        return None;
+                    }
+                };
+                return webpack_cycle_dispatcher_roles_for(
+                    call,
+                    member,
+                    &WebpackDispatcher {
+                        params: dispatcher.params.as_ref(),
+                        body: dispatcher_body,
+                        is_async: dispatcher.r#async,
+                        is_generator: dispatcher.generator,
+                        has_type_parameters: dispatcher.type_parameters.is_some(),
+                        symbol: dispatcher_symbol,
+                    },
+                    symbols,
+                );
+            }
+            AstKind::ArrowFunctionExpression(dispatcher) => {
+                let dispatcher_symbol: SymbolId = webpack_assigned_dispatcher_symbol(
+                    ancestor.id(),
+                    dispatcher.span,
+                    nodes,
+                    symbols,
+                )?;
+                return webpack_cycle_dispatcher_roles_for(
+                    call,
+                    member,
+                    &WebpackDispatcher {
+                        params: dispatcher.params.as_ref(),
+                        body: dispatcher.body.as_ref(),
+                        is_async: dispatcher.r#async,
+                        is_generator: false,
+                        has_type_parameters: dispatcher.type_parameters.is_some(),
+                        symbol: dispatcher_symbol,
+                    },
+                    symbols,
+                );
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn webpack_assigned_dispatcher_symbol(
+    dispatcher_node: NodeId,
+    dispatcher_span: oxc_span::Span,
+    nodes: &AstNodes<'_>,
+    symbols: &SymbolTable,
+) -> Option<SymbolId> {
+    let declarator =
+        nodes
+            .ancestors(dispatcher_node)
+            .find_map(|ancestor| match ancestor.kind() {
+                AstKind::VariableDeclarator(declarator) => Some(declarator),
+                _ => None,
+            })?;
+    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+        return None;
+    };
+    let init: &Expression<'_> = declarator.init.as_ref()?;
+    if init.get_inner_expression().span() != dispatcher_span {
+        return None;
+    }
+    let symbol: SymbolId = binding.symbol_id.get()?;
+    (!symbols.symbol_is_mutated(symbol) && symbols.get_redeclarations(symbol).is_empty())
+        .then_some(symbol)
+}
+
+struct WebpackDispatcher<'a> {
+    params: &'a FormalParameters<'a>,
+    body: &'a FunctionBody<'a>,
+    is_async: bool,
+    is_generator: bool,
+    has_type_parameters: bool,
+    symbol: SymbolId,
+}
+
+fn webpack_cycle_dispatcher_roles_for(
+    call: &CallExpression<'_>,
+    member: &oxc_ast::ast::ComputedMemberExpression<'_>,
+    dispatcher: &WebpackDispatcher<'_>,
+    symbols: &SymbolTable,
+) -> Option<[&'static str; 3]> {
+    if dispatcher.is_async
+        || dispatcher.is_generator
+        || dispatcher.has_type_parameters
         || dispatcher.params.rest.is_some()
         || dispatcher.params.items.len() != 1
-        || body_has_dynamic_scope(dispatcher_body)
+        || body_has_dynamic_scope(dispatcher.body)
     {
         return None;
     }
@@ -621,7 +713,6 @@ fn webpack_cycle_dispatcher_roles<'a>(
     if symbols.get_reference(index_reference).symbol_id() != Some(index_symbol) {
         return None;
     }
-    let dispatcher_symbol: SymbolId = dispatcher.id.as_ref()?.symbol_id.get()?;
     let require_indices: Vec<usize> = call
         .arguments
         .iter()
@@ -632,7 +723,7 @@ fn webpack_cycle_dispatcher_roles<'a>(
                 return None;
             };
             let reference_id: ReferenceId = require.reference_id.get()?;
-            (symbols.get_reference(reference_id).symbol_id() == Some(dispatcher_symbol))
+            (symbols.get_reference(reference_id).symbol_id() == Some(dispatcher.symbol))
                 .then_some(index)
         })
         .collect();

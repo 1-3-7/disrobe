@@ -175,6 +175,45 @@ fn webpack_static_cycle_recovers_correlated_factory_roles() {
 }
 
 #[test]
+fn webpack_static_cycle_recovers_roles_from_immutable_assigned_dispatchers() {
+    let fixtures: [&str; 2] = [
+        r#"let unused;const module=99;var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other+":"+module);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};const dispatch=function(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,dispatch);return runtimeModule.exports;};dispatch(1);"#,
+        r#"const module=99;var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other+":"+module);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};const dispatch=(id)=>{if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,dispatch);return runtimeModule.exports;};dispatch(1);"#,
+    ];
+    for source in fixtures {
+        let (first, _stats) = unminify_ast(source);
+        let (second, _) = unminify_ast(source);
+        assert_eq!(
+            first, second,
+            "assigned dispatcher recovery must be byte-identical"
+        );
+        assert_eq!(
+            first.matches("function(module_1,exports,require)").count(),
+            2,
+            "both factories in the assigned-dispatcher cycle must recover without capturing the outer module binding:\n{first}"
+        );
+        assert_runtime_parity(source, &first);
+    }
+}
+
+#[test]
+fn webpack_assigned_cycle_dispatcher_abstains_without_one_immutable_binding() {
+    let sources: [&str; 3] = [
+        r#"var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};let dispatch=function(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,dispatch);return runtimeModule.exports;};dispatch=dispatch;dispatch(1);"#,
+        r#"var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};let dispatch;dispatch=function(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,dispatch);return runtimeModule.exports;};dispatch(1);"#,
+        r#"var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};(function(id){var runtimeModule={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;})(1);"#,
+    ];
+    for source in sources {
+        let (recovered, _stats) = unminify_ast(source);
+        assert!(
+            recovered.contains("1:function(a,b,c)") && recovered.contains("2:function(d,e,f)"),
+            "reassigned or unbound dispatchers must leave the cycle unchanged:\n{recovered}"
+        );
+        assert_runtime_parity(source, &recovered);
+    }
+}
+
+#[test]
 fn webpack_cycle_abstains_on_dynamic_edges_and_ambiguous_dispatchers() {
     let dynamic_edge: &str = r#"var bundle={1:function(a,b,c){var next=2;a.exports=b;b.name="one";b.other=c(next).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};function __webpack_require__(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;}__webpack_require__(1);"#;
     let ambiguous_dispatcher: &str = r#"var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};function __webpack_require__(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};if(globalThis.__never){bundle[id](__webpack_require__,runtimeModule,runtimeModule.exports);}bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;}__webpack_require__(1);"#;
