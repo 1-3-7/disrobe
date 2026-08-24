@@ -312,15 +312,16 @@ fn webpack_factories<'a>(
     nodes: &AstNodes<'a>,
     symbols: &SymbolTable,
 ) -> Vec<&'a Function<'a>> {
-    let Some(registry_symbol): Option<SymbolId> = webpack_registry_symbol(registry, nodes) else {
-        return Vec::new();
-    };
-    if !nodes.iter().any(|node: &oxc_semantic::AstNode<'a>| {
-        let AstKind::CallExpression(call) = node.kind() else {
-            return false;
-        };
-        is_webpack_bootstrap_call(call, registry_symbol, symbols)
-    }) {
+    let direct_bootstrap: bool =
+        webpack_registry_symbol(registry, nodes).is_some_and(|registry_symbol: SymbolId| {
+            nodes.iter().any(|node: &oxc_semantic::AstNode<'a>| {
+                let AstKind::CallExpression(call) = node.kind() else {
+                    return false;
+                };
+                is_webpack_bootstrap_call(call, registry_symbol, symbols)
+            })
+        });
+    if !direct_bootstrap && !is_webpack_chunk_registration(registry, nodes, symbols) {
         return Vec::new();
     }
     let mut factories: Vec<&Function<'_>> = Vec::new();
@@ -362,6 +363,74 @@ fn webpack_factories<'a>(
         factories.push(factory);
     }
     factories
+}
+
+fn is_webpack_chunk_registration(
+    registry: &ObjectExpression<'_>,
+    nodes: &AstNodes<'_>,
+    symbols: &SymbolTable,
+) -> bool {
+    nodes.iter().any(|node: &oxc_semantic::AstNode<'_>| {
+        let AstKind::CallExpression(call) = node.kind() else {
+            return false;
+        };
+        if call.optional || call.type_parameters.is_some() {
+            return false;
+        }
+        let [Argument::ArrayExpression(payload)] = call.arguments.as_slice() else {
+            return false;
+        };
+        let [chunk_ids, factory_map] = payload.elements.as_slice() else {
+            return false;
+        };
+        let Some(chunk_ids): Option<&Expression<'_>> = chunk_ids.as_expression() else {
+            return false;
+        };
+        let Some(factory_map): Option<&Expression<'_>> = factory_map.as_expression() else {
+            return false;
+        };
+        if factory_map.get_inner_expression().span() != registry.span
+            || !is_webpack_chunk_ids(chunk_ids)
+        {
+            return false;
+        }
+        let Expression::StaticMemberExpression(push) = call.callee.get_inner_expression() else {
+            return false;
+        };
+        !push.optional
+            && push.property.name.as_str() == "push"
+            && is_global_webpack_chunk(&push.object, symbols)
+    })
+}
+
+fn is_webpack_chunk_ids(expression: &Expression<'_>) -> bool {
+    let Expression::ArrayExpression(chunk_ids) = expression.get_inner_expression() else {
+        return false;
+    };
+    !chunk_ids.elements.is_empty()
+        && chunk_ids.elements.iter().all(|element| {
+            matches!(
+                element
+                    .as_expression()
+                    .map(Expression::get_inner_expression),
+                Some(Expression::NumericLiteral(_))
+            )
+        })
+}
+
+fn is_global_webpack_chunk(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    let Expression::StaticMemberExpression(chunk) = expression.get_inner_expression() else {
+        return false;
+    };
+    if chunk.optional || !chunk.property.name.as_str().starts_with("webpackChunk") {
+        return false;
+    }
+    let Expression::Identifier(global) = chunk.object.get_inner_expression() else {
+        return false;
+    };
+    ["globalThis", "self", "window"]
+        .into_iter()
+        .any(|name: &str| unresolved_identifier_is(global, name, symbols))
 }
 
 fn webpack_registry_symbol(

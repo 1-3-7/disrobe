@@ -130,6 +130,46 @@ fn webpack_registry_factory_recovers_runtime_parameter_names() {
 }
 
 #[test]
+fn webpack_chunk_registration_factory_recovers_runtime_parameter_names() {
+    let source: &str = r#"var runtimeModule={exports:{}};globalThis.webpackChunkexample=[];globalThis.webpackChunkexample.push([[101],{7:function(a,b,c){var d=c("./math-utils");a.exports=d.sum(8,9);b.answer=a.exports;print(b.answer);}}]);globalThis.webpackChunkexample[0][1][7](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (first, _stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+    assert_eq!(
+        first, second,
+        "chunk registration recovery must be byte-identical"
+    );
+    assert!(
+        first.contains("function(module,exports,require)"),
+        "the bounded Webpack chunk factory must expose its runtime parameter roles:\n{first}"
+    );
+    assert!(
+        first.contains("require(\"./math-utils\")"),
+        "resolved chunk runtime lookups must follow the recovered require binding:\n{first}"
+    );
+    assert_runtime_parity(source, &first);
+
+    let collision: &str = r#"const module=1;var runtimeModule={exports:{}};globalThis.webpackChunkexample=[];globalThis.webpackChunkexample.push([[101],{7:function(a,b,c){a.exports=c("./math-utils").sum(module,4);b.answer=a.exports;print(b.answer);}}]);globalThis.webpackChunkexample[0][1][7](runtimeModule,runtimeModule.exports,__webpack_require__);"#;
+    let (collision_recovered, _) = unminify_ast(collision);
+    assert!(
+        collision_recovered.contains("function(module_1,exports,require)"),
+        "chunk runtime parameter recovery must not capture an outer module binding:\n{collision_recovered}"
+    );
+    assert_runtime_parity(collision, &collision_recovered);
+
+    let near_misses: [&str; 2] = [
+        r#"var runtimeModule={exports:{}};var callbacks=[];callbacks.push([[101],{7:function(a,b,c){a.exports=c("./math-utils").sum(8,9);b.answer=a.exports;print(b.answer);}}]);callbacks[0][1][7](runtimeModule,runtimeModule.exports,__webpack_require__);"#,
+        r#"var runtimeModule={exports:{}};globalThis.webpackChunkexample=[];globalThis.webpackChunkexample.push([["entry"],{7:function(a,b,c){a.exports=c("./math-utils").sum(8,9);b.answer=a.exports;print(b.answer);}}]);globalThis.webpackChunkexample[0][1][7](runtimeModule,runtimeModule.exports,__webpack_require__);"#,
+    ];
+    for near_miss in near_misses {
+        let (recovered, _) = unminify_ast(near_miss);
+        assert!(
+            recovered.contains("function(a,b,c)"),
+            "only exact numeric Webpack chunk registrations may rename roles:\n{recovered}"
+        );
+    }
+}
+
+#[test]
 fn non_static_or_dynamic_registry_factories_abstain() {
     let sources: [&str; 2] = [
         r#"var bundle={1:[function(a,b,c){print(a("./math-utils").sum(2,3));},{"./math-utils":dependency}]};bundle[1][0](__require,{},{});"#,
