@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true }
+sha2 = { workspace = true }
 flate2 = { workspace = true }
 brotli-decompressor = "5.0.0"
 

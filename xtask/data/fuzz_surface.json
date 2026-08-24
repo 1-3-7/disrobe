@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1418,
-    "parse_shaped": 582,
+    "entry_points": 1420,
+    "parse_shaped": 583,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 651,
     "named_by_a_suite_recording_seed_reach": 127,
-    "named_by_neither": 734
+    "named_by_neither": 736
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -510,8 +510,8 @@
     },
     {
       "crate": "disrobe-pass-lua",
-      "entry_points": 55,
-      "parse_shaped": 26,
+      "entry_points": 57,
+      "parse_shaped": 27,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 47,
@@ -524,7 +524,9 @@
         "disrobe-pass-lua/src/obfuscator/string_decode.rs::looks_like_lua",
         "disrobe-pass-lua/src/obfuscator/string_decode.rs::xor_decode_fixed",
         "disrobe-pass-lua/src/obfuscator/string_decode.rs::xor_decode_repeating",
-        "disrobe-pass-lua/src/obfuscator/string_decode.rs::xor_decode_rolling"
+        "disrobe-pass-lua/src/obfuscator/string_decode.rs::xor_decode_rolling",
+        "disrobe-pass-lua/src/reader/luau.rs::import_opcode_map",
+        "disrobe-pass-lua/src/reader/luau.rs::read_with_opcode_map"
       ]
     },
     {

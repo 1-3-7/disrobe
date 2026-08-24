@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_lua::{
-    DecompiledChunk, DeobfOptions, DetectedFormat, ObfuscatorDetection, PeelResult, decompile_auto,
-    detect as detect_lua, ironbrew2, moonsec_v1, moonsec_v2, moonsec_v3, prometheus, read_auto,
-    slua, wearedevs,
+    DecompiledChunk, DeobfOptions, DetectedFormat, ObfuscatorDetection, PeelResult,
+    decompile::decompile_chunk, decompile_auto, detect as detect_lua, import_opcode_map, ironbrew2,
+    moonsec_v1, moonsec_v2, moonsec_v3, prometheus, read_auto, read_with_opcode_map, slua,
+    wearedevs,
 };
 
 use super::globals;
@@ -37,6 +38,18 @@ pub(crate) enum LuaCmd {
             help = "list the obfuscators/protectors disrobe can detect for this pass, then exit"
         )]
         list: bool,
+        #[arg(
+            long,
+            requires = "build_id",
+            help = "exact build-keyed Luau opcode map JSON"
+        )]
+        opcode_map: Option<PathBuf>,
+        #[arg(
+            long,
+            requires = "opcode_map",
+            help = "client build identifier bound to the opcode map"
+        )]
+        build_id: Option<String>,
     },
     #[command(
         about = "peel a Lua obfuscator wrapper (Prometheus, MoonSec v1/v2/v3, Ironbrew2, ...)"
@@ -68,6 +81,17 @@ pub(crate) enum LuaCmd {
         #[arg(help = "compiled Lua chunk")]
         input: PathBuf,
     },
+    #[command(about = "import an exact paired Luau opcode map without permutation completion")]
+    OpcodeMap {
+        #[arg(long, help = "canonical Luau bytecode compiled from the same source")]
+        canonical: PathBuf,
+        #[arg(long, help = "client Luau bytecode paired with the canonical chunk")]
+        client: PathBuf,
+        #[arg(long, help = "explicit client build identifier")]
+        build_id: String,
+        #[arg(long, help = "output JSON map path")]
+        out: PathBuf,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +113,9 @@ pub(crate) fn run(action: LuaCmd) -> miette::Result<()> {
             out,
             emit,
             list,
-        } => decompile(input, out, emit, list),
+            opcode_map,
+            build_id,
+        } => decompile(input, out, emit, list, opcode_map, build_id),
         LuaCmd::Deobfuscate {
             input,
             out,
@@ -97,6 +123,12 @@ pub(crate) fn run(action: LuaCmd) -> miette::Result<()> {
             i_have_authorization,
         } => deobfuscate(input, out, family, i_have_authorization),
         LuaCmd::Detect { input } => detect(input),
+        LuaCmd::OpcodeMap {
+            canonical,
+            client,
+            build_id,
+            out,
+        } => opcode_map(canonical, client, build_id, out),
     }
 }
 
@@ -105,6 +137,8 @@ fn decompile(
     out: Option<PathBuf>,
     emit_kinds: Vec<String>,
     list: bool,
+    opcode_map: Option<PathBuf>,
+    build_id: Option<String>,
 ) -> miette::Result<()> {
     if list {
         super::emit::print_obfuscator_catalog(
@@ -124,8 +158,26 @@ fn decompile(
     if matches!(format, DetectedFormat::Unknown) {
         return Err(miette::miette!("DR-CLI-0524: lua dialect not recognized"));
     }
-    let decompiled: DecompiledChunk =
-        decompile_auto(&bytes).map_err(|e| miette::miette!("DR-CLI-0522: lua decompile: {e}"))?;
+    let decompiled: DecompiledChunk = match (opcode_map, build_id) {
+        (Some(map_path), Some(map_build_id)) => {
+            let version: u8 = *bytes
+                .first()
+                .ok_or_else(|| miette::miette!("DR-CLI-0522: empty Luau input"))?;
+            let map = disrobe_pass_lua::OpcodeMap::load(&map_path, &map_build_id, version)
+                .map_err(|e| miette::miette!("DR-CLI-0522: load Lua opcode map: {e}"))?;
+            let chunk = read_with_opcode_map(&bytes, &map, &map_build_id)
+                .map_err(|e| miette::miette!("DR-CLI-0522: apply Lua opcode map: {e}"))?;
+            decompile_chunk(&chunk)
+                .map_err(|e| miette::miette!("DR-CLI-0522: lua decompile: {e}"))?
+        }
+        (None, None) => decompile_auto(&bytes)
+            .map_err(|e| miette::miette!("DR-CLI-0522: lua decompile: {e}"))?,
+        _ => {
+            return Err(miette::miette!(
+                "DR-CLI-0522: --opcode-map and --build-id must be supplied together"
+            ));
+        }
+    };
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -167,6 +219,32 @@ fn decompile(
     println!("  warnings:     {}", decompiled.warnings.len());
     println!("  wrote:        {}", out_path.display());
     println!("  manifest:     {}", manifest_path.display());
+    Ok(())
+}
+
+fn opcode_map(
+    canonical: PathBuf,
+    client: PathBuf,
+    build_id: String,
+    out: PathBuf,
+) -> miette::Result<()> {
+    let canonical_bytes: Vec<u8> = std::fs::read(&canonical)
+        .map_err(|error| miette::miette!("DR-CLI-0541: cannot read canonical input: {error}"))?;
+    let client_bytes: Vec<u8> = std::fs::read(&client)
+        .map_err(|error| miette::miette!("DR-CLI-0542: cannot read client input: {error}"))?;
+    let imported = import_opcode_map(&build_id, &canonical_bytes, &client_bytes)
+        .map_err(|error| miette::miette!("DR-CLI-0543: import Lua opcode map: {error}"))?;
+    imported
+        .map
+        .save(&out)
+        .map_err(|error| miette::miette!("DR-CLI-0544: persist Lua opcode map: {error}"))?;
+    println!("lua opcode-map: OK");
+    println!("  build:        {build_id}");
+    println!(
+        "  mapped/observed: {}/{}",
+        imported.mapped, imported.observed
+    );
+    println!("  wrote:        {}", out.display());
     Ok(())
 }
 

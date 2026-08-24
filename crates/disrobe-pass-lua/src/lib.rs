@@ -58,6 +58,7 @@ pub use provenance_header::{
     lua_decompiled_header, lua_deobfuscated_header, render_lua_decompiled_with_header,
     render_lua_deobfuscated_with_header,
 };
+pub use reader::luau::{OpcodeMap, OpcodeMapImport, import_opcode_map, read_with_opcode_map};
 pub use reader::{
     DetectedFormat, LUA_SIGNATURE, LUAC_DATA_TAIL, LUAJIT_SIGNATURE, LuaChunk, LuaConstant,
     LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, detect, read_auto,

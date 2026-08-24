@@ -103,4 +103,7 @@ pub enum Error {
 
     #[error("DR-LUA-0029: Prometheus Vmify recovery refused: {0}")]
     PrometheusVmifyRefused(String),
+
+    #[error("DR-LUA-0030: Luau opcode map refused: {0}")]
+    LuauOpcodeMap(String),
 }

@@ -23,7 +23,17 @@ disrobe lua detect script.luac
 disrobe lua deobfuscate obfuscated.lua --out clean.lua
 disrobe lua deobfuscate vmified.lua --family prometheus --out clean.lua
 disrobe lua deobfuscate dumped.lua --family moonsec-v3 --i-have-authorization
+disrobe lua opcode-map --canonical vanilla.luau --client client.luau --build-id 2026-08-24 --out 2026-08-24.json
+disrobe lua decompile client.luau --opcode-map 2026-08-24.json --build-id 2026-08-24 --out recovered.lua
 ```
+
+### Build-keyed Luau opcode maps
+
+`lua opcode-map` imports only observations proven by a supplied canonical/client pair. The pair must use the same supported bytecode version, have the same prototype tree and instruction counts, and retain every non-opcode and auxiliary instruction word. The map records the explicit client build identifier and bytecode version. `lua decompile --opcode-map` selects it only when both values match.
+
+The importer accepts a conflict-free bijection for the opcode bytes it observes. It does not infer the remaining permutation. A missing entry causes decompilation to refuse at the instruction location; an incompatible, stale, or malformed map is not substituted with another build's map.
+
+Opcode availability is validated against Luau's bytecode history at [`367f9d83`](https://github.com/luau-lang/luau/blob/367f9d83cc29804a6d5938ec85b6116d34d8743b/Common/include/Luau/Bytecode.h): version 3 adds `FORGPREP` and `JUMPXEQK*`, version 4 adds `IDIV`/`IDIVK`, version 5 adds `SUBRK`/`DIVRK`, version 6 adds `FASTCALL3`, version 9 adds userdata field access, version 10 adds `NEWCLASSMEMBER`, and version 11 adds `CALLFB`.
 
 `decompile` writes the recovered source (default `./out/<stem>.lua`) and a `manifest.json` recording the format, fidelity grade, and warnings. `detect` reports the dialect and header field summary (constant, proto, and code counts) without writing output. MoonSec v3 and IronBrew2 are commercial-tier wrappers; their peelers require the explicit `--i-have-authorization` flag.
 

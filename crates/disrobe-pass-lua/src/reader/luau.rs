@@ -3,11 +3,370 @@ use crate::error::{Error, Result};
 use crate::reader::common::{
     LuaChunk, LuaConstant, LuaDialect, LuaLocal, LuaProto, LuaUpvalueName, capped_u32,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 const LUAU_SUPPORTED_MIN: u8 = 1;
 const LUAU_SUPPORTED_MAX: u8 = 11;
+const MAX_OPCODE_MAP_BYTES: u64 = 64 << 10;
+const MAX_BUILD_ID_BYTES: usize = 128;
+const LUAU_DECLARED_OPCODE_MAX: u8 = 87;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpcodeMap {
+    build_id: String,
+    bytecode_version: u8,
+    client_to_canonical: BTreeMap<u8, u8>,
+    observed_client_opcodes: BTreeSet<u8>,
+    canonical_sha256: String,
+    client_sha256: String,
+}
+
+impl OpcodeMap {
+    #[must_use]
+    pub fn build_id(&self) -> &str {
+        &self.build_id
+    }
+
+    #[must_use]
+    pub const fn bytecode_version(&self) -> u8 {
+        self.bytecode_version
+    }
+
+    #[must_use]
+    pub fn canonical_opcode(&self, client_opcode: u8) -> Option<u8> {
+        self.client_to_canonical.get(&client_opcode).copied()
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let encoded: Vec<u8> = serde_json::to_vec_pretty(self)
+            .map_err(|error| Error::LuauOpcodeMap(format!("serialize map: {error}")))?;
+        std::fs::write(path, encoded)?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path, build_id: &str, bytecode_version: u8) -> Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > MAX_OPCODE_MAP_BYTES {
+            return Err(Error::LuauOpcodeMap(format!(
+                "map file exceeds {MAX_OPCODE_MAP_BYTES} byte limit"
+            )));
+        }
+        let encoded: Vec<u8> = std::fs::read(path)?;
+        let map: Self = serde_json::from_slice(&encoded)
+            .map_err(|error| Error::LuauOpcodeMap(format!("parse map: {error}")))?;
+        map.validate()?;
+        if map.build_id != build_id || map.bytecode_version != bytecode_version {
+            return Err(Error::LuauOpcodeMap(format!(
+                "map is for build {} version {}, not build {build_id} version {bytecode_version}",
+                map.build_id, map.bytecode_version
+            )));
+        }
+        Ok(map)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.build_id.trim().is_empty() || self.build_id.len() > MAX_BUILD_ID_BYTES {
+            return Err(Error::LuauOpcodeMap(
+                "map build identifier is empty or exceeds its limit".to_owned(),
+            ));
+        }
+        if !(LUAU_SUPPORTED_MIN..=LUAU_SUPPORTED_MAX).contains(&self.bytecode_version) {
+            return Err(Error::LuauOpcodeMap(
+                "map has an unsupported bytecode version".to_owned(),
+            ));
+        }
+        let keys: BTreeSet<u8> = self.client_to_canonical.keys().copied().collect();
+        if keys != self.observed_client_opcodes {
+            return Err(Error::LuauOpcodeMap(
+                "map observed opcode set does not match its entries".to_owned(),
+            ));
+        }
+        let mut canonical: BTreeSet<u8> = BTreeSet::new();
+        for value in self.client_to_canonical.values() {
+            if !canonical_opcode_is_legal(self.bytecode_version, *value)
+                || !canonical.insert(*value)
+            {
+                return Err(Error::LuauOpcodeMap(
+                    "map is not a legal canonical opcode bijection".to_owned(),
+                ));
+            }
+        }
+        if !is_sha256(&self.canonical_sha256) || !is_sha256(&self.client_sha256) {
+            return Err(Error::LuauOpcodeMap(
+                "map has invalid paired-bytecode SHA-256 provenance".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpcodeMapImport {
+    pub map: OpcodeMap,
+    pub mapped: usize,
+    pub observed: usize,
+}
+
+pub fn import_opcode_map(
+    build_id: &str,
+    canonical: &[u8],
+    client: &[u8],
+) -> Result<OpcodeMapImport> {
+    if build_id.trim().is_empty() || build_id.len() > MAX_BUILD_ID_BYTES {
+        return Err(Error::LuauOpcodeMap(
+            "a non-empty client build identifier is required".to_owned(),
+        ));
+    }
+    let (canonical_version, canonical_raw, canonical_main) = read_raw(canonical)?;
+    let (client_version, client_raw, client_main) = read_raw(client)?;
+    if canonical_version != client_version {
+        return Err(Error::LuauOpcodeMap(
+            "paired chunks have different bytecode versions".to_owned(),
+        ));
+    }
+    validate_raw_graph(&canonical_raw, canonical_main)?;
+    validate_raw_graph(&client_raw, client_main)?;
+    if canonical_main != client_main || canonical_raw.len() != client_raw.len() {
+        return Err(Error::LuauOpcodeMap(
+            "paired chunks have different serialized prototype graphs".to_owned(),
+        ));
+    }
+    let mut forward: BTreeMap<u8, u8> = BTreeMap::new();
+    let mut reverse: BTreeMap<u8, u8> = BTreeMap::new();
+    let mut observed: BTreeSet<u8> = BTreeSet::new();
+    for (canonical_proto, client_proto) in canonical_raw.iter().zip(client_raw.iter()) {
+        if canonical_proto.child_ids != client_proto.child_ids
+            || canonical_proto.proto.code.len() != client_proto.proto.code.len()
+        {
+            return Err(Error::LuauOpcodeMap(
+                "paired chunks have incompatible prototype layouts".to_owned(),
+            ));
+        }
+        let mut pc: usize = 0;
+        while pc < canonical_proto.proto.code.len() {
+            let canonical_word: u32 = canonical_proto.proto.code[pc];
+            let client_word: u32 = client_proto.proto.code[pc];
+            if canonical_word & !0xFF != client_word & !0xFF {
+                return Err(Error::LuauOpcodeMap(format!(
+                    "non-opcode bits differ at instruction {pc}"
+                )));
+            }
+            let canonical_opcode: u8 = canonical_word as u8;
+            if !canonical_opcode_is_legal(canonical_version, canonical_opcode) {
+                return Err(Error::LuauOpcodeMap(format!(
+                    "canonical opcode {canonical_opcode} is not supported for exact alignment"
+                )));
+            }
+            let client_opcode: u8 = client_word as u8;
+            if let Some(previous) = forward.insert(canonical_opcode, client_opcode)
+                && previous != client_opcode
+            {
+                return Err(Error::LuauOpcodeMap(format!(
+                    "canonical opcode {canonical_opcode} maps to both {previous} and {client_opcode}"
+                )));
+            }
+            if let Some(previous) = reverse.insert(client_opcode, canonical_opcode)
+                && previous != canonical_opcode
+            {
+                return Err(Error::LuauOpcodeMap(format!(
+                    "client opcode {client_opcode} maps to both {previous} and {canonical_opcode}"
+                )));
+            }
+            observed.insert(client_opcode);
+            let width: usize = crate::decompile::luau_lift::test_op_length(canonical_opcode);
+            let end: usize = pc.checked_add(width).ok_or_else(|| {
+                Error::LuauOpcodeMap("instruction width overflows paired code range".to_owned())
+            })?;
+            if end > canonical_proto.proto.code.len() {
+                return Err(Error::LuauOpcodeMap(format!(
+                    "truncated canonical instruction at {pc} requires {width} words"
+                )));
+            }
+            for aux_pc in pc + 1..end {
+                if canonical_proto.proto.code[aux_pc] != client_proto.proto.code[aux_pc] {
+                    return Err(Error::LuauOpcodeMap(format!(
+                        "auxiliary word differs at instruction {pc}, word {aux_pc}"
+                    )));
+                }
+            }
+            pc = end;
+        }
+    }
+    let observed_count: usize = observed.len();
+    Ok(OpcodeMapImport {
+        map: OpcodeMap {
+            build_id: build_id.to_owned(),
+            bytecode_version: canonical_version,
+            client_to_canonical: reverse,
+            observed_client_opcodes: observed,
+            canonical_sha256: sha256_hex(canonical),
+            client_sha256: sha256_hex(client),
+        },
+        mapped: forward.len(),
+        observed: observed_count,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+const fn canonical_opcode_is_legal(version: u8, opcode: u8) -> bool {
+    if opcode > LUAU_DECLARED_OPCODE_MAX {
+        return false;
+    }
+    match opcode {
+        60 => version >= 6,
+        71 | 72 => version >= 5,
+        59 | 61 => version < 3,
+        76..=80 => version >= 2,
+        81 | 82 => version >= 4,
+        83..=85 => version >= 9,
+        86 => version >= 10,
+        87 => version >= 11,
+        _ => true,
+    }
+}
+
+fn validate_raw_graph(raw: &[RawProto], main: usize) -> Result<()> {
+    if raw.len() > MAX_ASSEMBLED_NODES || main >= raw.len() {
+        return Err(Error::LuauOpcodeMap(
+            "serialized prototype population exceeds its limit".to_owned(),
+        ));
+    }
+    let mut seen: Vec<bool> = vec![false; raw.len()];
+    let mut active: Vec<bool> = vec![false; raw.len()];
+    validate_raw_node(main, raw, &mut seen, &mut active, 0)?;
+    if seen.iter().any(|value| !value) {
+        return Err(Error::LuauOpcodeMap(
+            "serialized prototype graph has orphan prototypes".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_raw_node(
+    index: usize,
+    raw: &[RawProto],
+    seen: &mut [bool],
+    active: &mut [bool],
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_PROTO_DEPTH {
+        return Err(Error::LuauOpcodeMap(
+            "serialized prototype graph exceeds depth limit".to_owned(),
+        ));
+    }
+    if active[index] {
+        return Err(Error::LuauOpcodeMap(
+            "serialized prototype graph has a cycle".to_owned(),
+        ));
+    }
+    if seen[index] {
+        return Err(Error::LuauOpcodeMap(
+            "serialized prototype graph has a shared child".to_owned(),
+        ));
+    }
+    seen[index] = true;
+    active[index] = true;
+    for child in &raw[index].child_ids {
+        let child = usize::try_from(*child).map_err(|_| {
+            Error::LuauOpcodeMap("serialized child prototype id is invalid".to_owned())
+        })?;
+        if child >= raw.len() {
+            return Err(Error::LuauOpcodeMap(
+                "serialized child prototype id is out of range".to_owned(),
+            ));
+        }
+        validate_raw_node(child, raw, seen, active, depth + 1)?;
+    }
+    active[index] = false;
+    Ok(())
+}
+
+pub fn read_with_opcode_map(bytes: &[u8], map: &OpcodeMap, build_id: &str) -> Result<LuaChunk> {
+    let mut chunk: LuaChunk = read(bytes)?;
+    if chunk.version_byte != map.bytecode_version || map.build_id != build_id {
+        return Err(Error::LuauOpcodeMap(
+            "map build or bytecode version does not match the requested input".to_owned(),
+        ));
+    }
+    map.validate()?;
+    apply_map(&mut chunk.main, map, "0")?;
+    Ok(chunk)
+}
+
+fn apply_map(proto: &mut LuaProto, map: &OpcodeMap, location: &str) -> Result<()> {
+    let mut pc: usize = 0;
+    while pc < proto.code.len() {
+        let client_opcode: u8 = proto.code[pc] as u8;
+        let Some(canonical_opcode) = map.canonical_opcode(client_opcode) else {
+            return Err(Error::LuauOpcodeMap(format!(
+                "incomplete map; first unaligned client byte {location}:{pc}=0x{client_opcode:02X}, {} words remain unaligned",
+                proto.code.len().saturating_sub(pc + 1)
+            )));
+        };
+        proto.code[pc] = (proto.code[pc] & !0xFF) | u32::from(canonical_opcode);
+        let width: usize = crate::decompile::luau_lift::test_op_length(canonical_opcode);
+        let end: usize = pc
+            .checked_add(width)
+            .ok_or_else(|| Error::LuauOpcodeMap("mapped instruction width overflow".to_owned()))?;
+        if end > proto.code.len() {
+            return Err(Error::LuauOpcodeMap(format!(
+                "mapped instruction {location}:{pc} requires {width} words, only {} remain",
+                proto.code.len().saturating_sub(pc)
+            )));
+        }
+        pc = end;
+    }
+    for (index, child) in proto.protos.iter_mut().enumerate() {
+        apply_map(child, map, &format!("{location}.{index}"))?;
+    }
+    Ok(())
+}
 
 pub fn read(bytes: &[u8]) -> Result<LuaChunk> {
+    let (version, raw_protos, main_idx) = read_raw(bytes)?;
+    let mut assembled: Vec<Option<AssembledProto>> = vec![None; raw_protos.len()];
+    let mut in_progress: Vec<bool> = vec![false; raw_protos.len()];
+    let mut budget: usize = MAX_ASSEMBLED_NODES;
+    let (main, _): (LuaProto, usize) = assemble_proto(
+        main_idx,
+        &raw_protos,
+        &mut assembled,
+        &mut in_progress,
+        &mut budget,
+        0,
+    );
+    Ok(LuaChunk {
+        dialect: LuaDialect::Luau,
+        version_byte: version,
+        format: 0,
+        little_endian: true,
+        size_of_int: 4,
+        size_of_size_t: 4,
+        size_of_instruction: 4,
+        size_of_lua_integer: 0,
+        size_of_lua_number: 8,
+        integral_number: false,
+        main,
+    })
+}
+
+fn read_raw(bytes: &[u8]) -> Result<(u8, Vec<RawProto>, usize)> {
     let mut c: ByteCursor<'_> = ByteCursor::new(bytes);
     let version: u8 = c.read_u8()?;
     if version == 0 {
@@ -53,30 +412,7 @@ pub fn read(bytes: &[u8]) -> Result<LuaChunk> {
             index: main_proto_id,
             count: raw_protos.len(),
         })?;
-    let mut assembled: Vec<Option<AssembledProto>> = vec![None; raw_protos.len()];
-    let mut in_progress: Vec<bool> = vec![false; raw_protos.len()];
-    let mut budget: usize = MAX_ASSEMBLED_NODES;
-    let (main, _): (LuaProto, usize) = assemble_proto(
-        main_idx,
-        &raw_protos,
-        &mut assembled,
-        &mut in_progress,
-        &mut budget,
-        0,
-    );
-    Ok(LuaChunk {
-        dialect: LuaDialect::Luau,
-        version_byte: version,
-        format: 0,
-        little_endian: true,
-        size_of_int: 4,
-        size_of_size_t: 4,
-        size_of_instruction: 4,
-        size_of_lua_integer: 0,
-        size_of_lua_number: 8,
-        integral_number: false,
-        main,
-    })
+    Ok((version, raw_protos, main_idx))
 }
 
 const MAX_ASSEMBLED_NODES: usize = 1 << 16;
