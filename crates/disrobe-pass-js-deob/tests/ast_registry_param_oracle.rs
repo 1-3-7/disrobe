@@ -154,6 +154,42 @@ fn webpack_registry_factory_recovers_roles_in_nonstandard_parameter_order() {
 }
 
 #[test]
+fn webpack_static_cycle_recovers_correlated_factory_roles() {
+    let source: &str = r#"const module=99;var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other+":"+module);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;},3:function(g,h,i){g.exports=h;h.name="tail";h.other=i(1).name;}};var cache={};function __webpack_require__(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;}__webpack_require__(1);"#;
+    let (first, _stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+
+    assert_eq!(first, second, "cyclic role recovery must be byte-identical");
+    assert_eq!(
+        first.matches("function(module_1,exports,require)").count(),
+        2,
+        "both factories in the statically correlated cycle must recover without capturing the outer module binding:\n{first}"
+    );
+    assert!(first.contains("require(2).name"));
+    assert!(first.contains("require(1).name"));
+    assert!(
+        first.contains("3:function(g,h,i)"),
+        "a one-way caller outside the strongly connected component must remain untouched:\n{first}"
+    );
+    assert_runtime_parity(source, &first);
+}
+
+#[test]
+fn webpack_cycle_abstains_on_dynamic_edges_and_ambiguous_dispatchers() {
+    let dynamic_edge: &str = r#"var bundle={1:function(a,b,c){var next=2;a.exports=b;b.name="one";b.other=c(next).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};function __webpack_require__(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;}__webpack_require__(1);"#;
+    let ambiguous_dispatcher: &str = r#"var bundle={1:function(a,b,c){a.exports=b;b.name="one";b.other=c(2).name;print(b.name+":"+b.other);},2:function(d,e,f){d.exports=e;e.name="two";e.other=f(1).name;}};var cache={};function __webpack_require__(id){if(cache[id])return cache[id].exports;var runtimeModule=cache[id]={exports:{}};if(globalThis.__never){bundle[id](__webpack_require__,runtimeModule,runtimeModule.exports);}bundle[id](runtimeModule,runtimeModule.exports,__webpack_require__);return runtimeModule.exports;}__webpack_require__(1);"#;
+
+    for source in [dynamic_edge, ambiguous_dispatcher] {
+        let (recovered, _stats) = unminify_ast(source);
+        assert!(
+            recovered.contains("1:function(a,b,c)") && recovered.contains("2:function(d,e,f)"),
+            "dynamic or ambiguous cycle evidence must leave every factory unchanged:\n{recovered}"
+        );
+        assert_runtime_parity(source, &recovered);
+    }
+}
+
+#[test]
 fn webpack_registry_factory_abstains_when_role_evidence_is_ambiguous() {
     let source: &str = r#"var runtimeModule={exports:{}};var bundle={1:function(a,b,c){a.exports=c("./math-utils");b.answer=a.exports;print(b.answer.sum(2,3));}};bundle[1](runtimeModule,runtimeModule.exports,__webpack_require__);if(globalThis.__never){bundle[1](__webpack_require__,runtimeModule,runtimeModule.exports);}"#;
     let (recovered, _stats) = unminify_ast(source);

@@ -314,7 +314,8 @@ fn webpack_factories<'a>(
     if registry_symbol.is_none() && !chunk_registration {
         return Vec::new();
     }
-    let mut factories: Vec<WebpackFactory<'_>> = Vec::new();
+    let mut candidates: Vec<WebpackFactoryCandidate<'_>> = Vec::new();
+    let mut module_indices: IndexMap<u64, usize> = IndexMap::new();
     for property in &registry.properties {
         let ObjectPropertyKind::ObjectProperty(property) = property else {
             return Vec::new();
@@ -351,26 +352,90 @@ fn webpack_factories<'a>(
         {
             continue;
         }
-        let roles: Option<[&'static str; 3]> = registry_symbol.map_or_else(
-            || chunk_registration.then_some(["module", "exports", "require"]),
-            |symbol_id: SymbolId| {
-                let mut matches = nodes.iter().filter_map(|node: &oxc_semantic::AstNode<'a>| {
-                    let AstKind::CallExpression(call) = node.kind() else {
-                        return None;
-                    };
-                    webpack_bootstrap_roles(call, symbol_id, module_id.value, symbols)
-                });
-                let first: Option<[&'static str; 3]> = matches.next();
-                matches.next().is_none().then_some(first).flatten()
-            },
-        );
+        let module_key: u64 = module_id.value.to_bits();
+        if module_indices
+            .insert(module_key, candidates.len())
+            .is_some()
+        {
+            return Vec::new();
+        }
+        candidates.push(WebpackFactoryCandidate {
+            module_key,
+            factory,
+        });
+    }
+
+    if registry_symbol.is_none() && chunk_registration {
+        return candidates
+            .into_iter()
+            .filter_map(|candidate: WebpackFactoryCandidate<'_>| {
+                let roles: [&'static str; 3] = ["module", "exports", "require"];
+                webpack_factory_has_role_evidence(candidate.factory, roles, symbols).then_some(
+                    WebpackFactory {
+                        factory: candidate.factory,
+                        roles,
+                    },
+                )
+            })
+            .collect();
+    }
+
+    let Some(registry_symbol) = registry_symbol else {
+        return Vec::new();
+    };
+    let mut exact_calls: IndexMap<u64, Vec<[&'static str; 3]>> = IndexMap::new();
+    let mut cycle_dispatchers: Vec<[&'static str; 3]> = Vec::new();
+    for node in nodes.iter() {
+        let AstKind::CallExpression(call) = node.kind() else {
+            continue;
+        };
+        if let Some((module_key, roles)) = webpack_bootstrap_roles(call, registry_symbol, symbols) {
+            exact_calls.entry(module_key).or_default().push(roles);
+        }
+        if let Some(roles) =
+            webpack_cycle_dispatcher_roles(node, call, registry_symbol, nodes, symbols)
+        {
+            cycle_dispatchers.push(roles);
+        }
+    }
+    let cycle_roles: Option<[&'static str; 3]> = match cycle_dispatchers.as_slice() {
+        [roles] => Some(*roles),
+        _ => None,
+    };
+    let cyclic_modules: IndexSet<u64> = if exact_calls.is_empty() {
+        cycle_roles.map_or_else(IndexSet::new, |roles| {
+            webpack_static_cycle_modules(&candidates, &module_indices, roles, symbols)
+        })
+    } else {
+        IndexSet::new()
+    };
+
+    let mut factories: Vec<WebpackFactory<'_>> = Vec::new();
+    for candidate in candidates {
+        let exact_roles: Option<[&'static str; 3]> = exact_calls
+            .get(&candidate.module_key)
+            .and_then(
+                |matches: &Vec<[&'static str; 3]>| match matches.as_slice() {
+                    [roles] => Some(*roles),
+                    _ => None,
+                },
+            );
+        let roles: Option<[&'static str; 3]> = exact_roles.or_else(|| {
+            cyclic_modules
+                .contains(&candidate.module_key)
+                .then_some(cycle_roles)
+                .flatten()
+        });
         let Some(roles) = roles else {
             continue;
         };
-        if !webpack_factory_has_role_evidence(factory, roles, symbols) {
+        if !webpack_factory_has_role_evidence(candidate.factory, roles, symbols) {
             continue;
         }
-        factories.push(WebpackFactory { factory, roles });
+        factories.push(WebpackFactory {
+            factory: candidate.factory,
+            roles,
+        });
     }
     factories
 }
@@ -464,7 +529,51 @@ fn webpack_registry_symbol(
 fn webpack_bootstrap_roles(
     call: &CallExpression<'_>,
     registry_symbol: SymbolId,
-    module_id: f64,
+    symbols: &SymbolTable,
+) -> Option<(u64, [&'static str; 3])> {
+    if call.optional || call.type_parameters.is_some() || call.arguments.len() != 3 {
+        return None;
+    }
+    let Expression::ComputedMemberExpression(member) = call.callee.get_inner_expression() else {
+        return None;
+    };
+    if member.optional {
+        return None;
+    }
+    let Expression::NumericLiteral(module_id) = member.expression.get_inner_expression() else {
+        return None;
+    };
+    let Expression::Identifier(registry) = member.object.get_inner_expression() else {
+        return None;
+    };
+    let registry_reference: ReferenceId = registry.reference_id.get()?;
+    if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
+        return None;
+    }
+    let require_indices: Vec<usize> = call
+        .arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let Expression::Identifier(require) = argument.as_expression()?.get_inner_expression()
+            else {
+                return None;
+            };
+            unresolved_identifier_is(require, "__webpack_require__", symbols).then_some(index)
+        })
+        .collect();
+    if require_indices.len() != 1 {
+        return None;
+    }
+    let roles: [&'static str; 3] = webpack_argument_roles(call, require_indices[0], symbols)?;
+    Some((module_id.value.to_bits(), roles))
+}
+
+fn webpack_cycle_dispatcher_roles<'a>(
+    node: &oxc_semantic::AstNode<'a>,
+    call: &CallExpression<'a>,
+    registry_symbol: SymbolId,
+    nodes: &AstNodes<'a>,
     symbols: &SymbolTable,
 ) -> Option<[&'static str; 3]> {
     if call.optional || call.type_parameters.is_some() || call.arguments.len() != 3 {
@@ -473,9 +582,7 @@ fn webpack_bootstrap_roles(
     let Expression::ComputedMemberExpression(member) = call.callee.get_inner_expression() else {
         return None;
     };
-    if member.optional
-        || !matches!(member.expression.get_inner_expression(), Expression::NumericLiteral(literal) if literal.value.to_bits() == module_id.to_bits())
-    {
+    if member.optional {
         return None;
     }
     let Expression::Identifier(registry) = member.object.get_inner_expression() else {
@@ -485,25 +592,67 @@ fn webpack_bootstrap_roles(
     if symbols.get_reference(registry_reference).symbol_id() != Some(registry_symbol) {
         return None;
     }
+    let dispatcher: &Function<'_> = nodes.ancestors(node.id()).find_map(|ancestor| {
+        let AstKind::Function(function) = ancestor.kind() else {
+            return None;
+        };
+        Some(function)
+    })?;
+    let dispatcher_body: &FunctionBody<'_> = dispatcher.body.as_deref()?;
+    if dispatcher.r#async
+        || dispatcher.generator
+        || dispatcher.type_parameters.is_some()
+        || dispatcher.params.rest.is_some()
+        || dispatcher.params.items.len() != 1
+        || body_has_dynamic_scope(dispatcher_body)
+    {
+        return None;
+    }
+    let BindingPatternKind::BindingIdentifier(index_binding) =
+        &dispatcher.params.items[0].pattern.kind
+    else {
+        return None;
+    };
+    let index_symbol: SymbolId = index_binding.symbol_id.get()?;
+    let Expression::Identifier(index) = member.expression.get_inner_expression() else {
+        return None;
+    };
+    let index_reference: ReferenceId = index.reference_id.get()?;
+    if symbols.get_reference(index_reference).symbol_id() != Some(index_symbol) {
+        return None;
+    }
+    let dispatcher_symbol: SymbolId = dispatcher.id.as_ref()?.symbol_id.get()?;
+    let require_indices: Vec<usize> = call
+        .arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let Expression::Identifier(require) = argument.as_expression()?.get_inner_expression()
+            else {
+                return None;
+            };
+            let reference_id: ReferenceId = require.reference_id.get()?;
+            (symbols.get_reference(reference_id).symbol_id() == Some(dispatcher_symbol))
+                .then_some(index)
+        })
+        .collect();
+    if require_indices.len() != 1 {
+        return None;
+    }
+    webpack_argument_roles(call, require_indices[0], symbols)
+}
+
+fn webpack_argument_roles(
+    call: &CallExpression<'_>,
+    require_index: usize,
+    symbols: &SymbolTable,
+) -> Option<[&'static str; 3]> {
     let arguments: [&Expression<'_>; 3] = call
         .arguments
         .iter()
         .map(Argument::as_expression)
         .collect::<Option<Vec<&Expression<'_>>>>()
         .and_then(|values: Vec<&Expression<'_>>| values.try_into().ok())?;
-    let require_indices: Vec<usize> = arguments
-        .iter()
-        .enumerate()
-        .filter_map(|(index, argument)| {
-            let Expression::Identifier(require) = argument.get_inner_expression() else {
-                return None;
-            };
-            unresolved_identifier_is(require, "__webpack_require__", symbols).then_some(index)
-        })
-        .collect();
-    if require_indices.len() != 1 {
-        return None;
-    }
     for (module_index, argument) in arguments.iter().enumerate() {
         let Expression::Identifier(module) = argument.get_inner_expression() else {
             continue;
@@ -533,7 +682,6 @@ fn webpack_bootstrap_roles(
             else {
                 continue;
             };
-            let require_index: usize = require_indices[0];
             if symbols.get_reference(exports_module_reference).symbol_id() == Some(module_symbol)
                 && module_index != exports_index
                 && module_index != require_index
@@ -548,6 +696,116 @@ fn webpack_bootstrap_roles(
         }
     }
     None
+}
+
+fn webpack_static_cycle_modules(
+    candidates: &[WebpackFactoryCandidate<'_>],
+    module_indices: &IndexMap<u64, usize>,
+    roles: [&str; 3],
+    symbols: &SymbolTable,
+) -> IndexSet<u64> {
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); candidates.len()];
+    for (index, candidate) in candidates.iter().enumerate() {
+        if !webpack_factory_has_role_evidence(candidate.factory, roles, symbols) {
+            continue;
+        }
+        let Some(targets): Option<IndexSet<u64>> =
+            webpack_static_require_targets(candidate.factory, roles, symbols)
+        else {
+            continue;
+        };
+        let mut target_indices: Vec<usize> = Vec::with_capacity(targets.len());
+        for target in targets {
+            let Some(target_index): Option<&usize> = module_indices.get(&target) else {
+                target_indices.clear();
+                break;
+            };
+            target_indices.push(*target_index);
+        }
+        edges[index] = target_indices;
+    }
+    cyclic_scc_indices(&edges)
+        .into_iter()
+        .map(|index: usize| candidates[index].module_key)
+        .collect()
+}
+
+fn webpack_static_require_targets(
+    factory: &Function<'_>,
+    roles: [&str; 3],
+    symbols: &SymbolTable,
+) -> Option<IndexSet<u64>> {
+    let require_index: usize = roles.iter().position(|role: &&str| *role == "require")?;
+    let BindingPatternKind::BindingIdentifier(require) =
+        &factory.params.items.get(require_index)?.pattern.kind
+    else {
+        return None;
+    };
+    let body: &FunctionBody<'_> = factory.body.as_deref()?;
+    let mut probe: WebpackCycleProbe<'_> = WebpackCycleProbe {
+        require_symbol: require.symbol_id.get()?,
+        symbols,
+        targets: IndexSet::new(),
+        invalid: false,
+    };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    (!probe.invalid && !probe.targets.is_empty()).then_some(probe.targets)
+}
+
+fn cyclic_scc_indices(edges: &[Vec<usize>]) -> IndexSet<usize> {
+    let mut seen: Vec<bool> = vec![false; edges.len()];
+    let mut finish_order: Vec<usize> = Vec::with_capacity(edges.len());
+    for root in 0..edges.len() {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
+        while let Some((node, next_edge)) = stack.last_mut() {
+            if let Some(target) = edges[*node].get(*next_edge).copied() {
+                *next_edge += 1;
+                if !seen[target] {
+                    seen[target] = true;
+                    stack.push((target, 0));
+                }
+            } else {
+                finish_order.push(*node);
+                stack.pop();
+            }
+        }
+    }
+
+    let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); edges.len()];
+    for (source, targets) in edges.iter().enumerate() {
+        for target in targets {
+            reverse[*target].push(source);
+        }
+    }
+    let mut assigned: Vec<bool> = vec![false; edges.len()];
+    let mut cyclic: IndexSet<usize> = IndexSet::new();
+    for root in finish_order.into_iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+        assigned[root] = true;
+        let mut component: Vec<usize> = Vec::new();
+        let mut stack: Vec<usize> = vec![root];
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for source in &reverse[node] {
+                if !assigned[*source] {
+                    assigned[*source] = true;
+                    stack.push(*source);
+                }
+            }
+        }
+        if component.len() > 1 || edges[root].contains(&root) {
+            cyclic.extend(component);
+        }
+    }
+    cyclic
 }
 
 fn webpack_factory_has_role_evidence(
@@ -597,6 +855,11 @@ fn webpack_factory_has_role_evidence(
 struct WebpackFactory<'a> {
     factory: &'a Function<'a>,
     roles: [&'static str; 3],
+}
+
+struct WebpackFactoryCandidate<'a> {
+    module_key: u64,
+    factory: &'a Function<'a>,
 }
 
 struct AmdFactory<'a> {
@@ -1226,6 +1489,13 @@ struct WebpackRoleProbe<'s> {
     other_member: [bool; 3],
 }
 
+struct WebpackCycleProbe<'s> {
+    require_symbol: SymbolId,
+    symbols: &'s SymbolTable,
+    targets: IndexSet<u64>,
+    invalid: bool,
+}
+
 impl WebpackRoleProbe<'_> {
     fn parameter_index(&self, identifier: &oxc_ast::ast::IdentifierReference<'_>) -> Option<usize> {
         let reference_id: ReferenceId = identifier.reference_id.get()?;
@@ -1263,6 +1533,48 @@ impl<'a> Visit<'a> for WebpackRoleProbe<'_> {
             }
         }
         self.visit_expression(&member.object);
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        _arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+    }
+}
+
+impl<'a> Visit<'a> for WebpackCycleProbe<'_> {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if let Expression::Identifier(callee) = &call.callee
+            && let Some(reference_id) = callee.reference_id.get()
+            && self.symbols.get_reference(reference_id).symbol_id() == Some(self.require_symbol)
+        {
+            let target: Option<u64> = if call.optional || call.type_parameters.is_some() {
+                None
+            } else {
+                let [argument] = call.arguments.as_slice() else {
+                    self.invalid = true;
+                    visit_call_children(self, call);
+                    return;
+                };
+                argument.as_expression().and_then(|expression| {
+                    let Expression::NumericLiteral(target) = expression.get_inner_expression()
+                    else {
+                        return None;
+                    };
+                    Some(target.value.to_bits())
+                })
+            };
+            let Some(target) = target else {
+                self.invalid = true;
+                visit_call_children(self, call);
+                return;
+            };
+            self.targets.insert(target);
+        }
+        visit_call_children(self, call);
     }
 
     fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
