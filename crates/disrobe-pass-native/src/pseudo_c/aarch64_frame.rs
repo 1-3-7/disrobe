@@ -558,6 +558,17 @@ fn is_entry_stub_frame_chain_termination(insn: &DisasmInsn) -> bool {
         })
 }
 
+fn is_frame_pair_restore(insn: &DisasmInsn) -> bool {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    insn.mnemonic == "ldp"
+        && operands.len() >= 3
+        && operands.first() == Some(&"x29")
+        && operands.get(1) == Some(&"x30")
+        && operands
+            .get(2)
+            .is_some_and(|memory: &&str| memory.trim().starts_with("[sp]"))
+}
+
 fn successors(
     insns: &[DisasmInsn],
     index: usize,
@@ -579,6 +590,9 @@ fn successors(
     if insn.mnemonic == "ret" {
         return Ok(Vec::new());
     }
+    if insn.mnemonic == "brk" {
+        return Ok(Vec::new());
+    }
     if insn.mnemonic == "b" {
         return Ok(vec![target(operands.first())?]);
     }
@@ -592,6 +606,18 @@ fn successors(
         return Ok(vec![target(operands.get(2))?, fallthrough?]);
     }
     if insn.mnemonic == "br" {
+        let preceding_frame_restore: bool = index
+            .checked_sub(1)
+            .and_then(|previous: usize| insns.get(previous))
+            .is_some_and(|previous: &DisasmInsn| {
+                previous.mnemonic == "ldp" && previous.operands.starts_with("x29, x30, [sp]")
+            });
+        if preceding_frame_restore {
+            return Err(reject_at(
+                insn,
+                "indirect tail-call epilogue has no recovered target set",
+            ));
+        }
         let dispatch: &SwitchDispatch = switches
             .get(&index)
             .ok_or_else(|| reject_at(insn, "indirect branch has no recovered target set"))?;
@@ -729,13 +755,21 @@ fn transfer(state: &StackState, facts: &Facts, insn: &DisasmInsn) -> Result<Stac
     }
     next.sp_to_entry = match facts.sp {
         SpEffect::Unchanged => state.sp_to_entry,
-        SpEffect::Delta(delta) => check_stack_offset(
-            state
+        SpEffect::Delta(delta) => {
+            let adjusted: i64 = state
                 .sp_to_entry
                 .checked_add(delta)
-                .ok_or_else(|| reject_at(insn, "stack pointer overflow"))?,
-            insn,
-        )?,
+                .ok_or_else(|| reject_at(insn, "stack pointer overflow"))?;
+            if is_frame_pair_restore(insn)
+                && (!(0..=MAX_FRAME_BYTES).contains(&adjusted) || adjusted % STACK_ALIGNMENT != 0)
+            {
+                return Err(reject_at(
+                    insn,
+                    "frame epilogue does not restore the entry stack pointer",
+                ));
+            }
+            check_stack_offset(adjusted, insn)?
+        }
         SpEffect::FromFramePointer => match state.frame_pointer {
             FramePointer::At(offset) => check_stack_offset(offset, insn)?,
             FramePointer::Absent | FramePointer::Conflicting => {
@@ -923,6 +957,16 @@ pub(super) fn analyze(
     if !reachable.contains(&0) {
         return Err(reject("stack state analysis has no entry state"));
     }
+    if let Some(index) = reachable
+        .iter()
+        .copied()
+        .find(|index: &usize| insns[*index].mnemonic == "brk")
+    {
+        return Err(reject_at(
+            &insns[index],
+            "non-returning trap has no frame epilogue",
+        ));
+    }
 
     let mut management: BTreeSet<usize> = BTreeSet::new();
     let mut absorbed: BTreeSet<usize> = BTreeSet::new();
@@ -1101,6 +1145,7 @@ pub(super) fn analyze(
         },
         management,
         absorbed,
+        reachable,
     })
 }
 

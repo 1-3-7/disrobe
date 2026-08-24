@@ -121,6 +121,30 @@ fn compiled_security_frame_fixture() -> Vec<u8> {
     std::fs::read(object_path).expect("read security frame fixture object")
 }
 
+fn compiled_frame_remainder_fixture() -> Vec<u8> {
+    let clang: PathBuf =
+        find_program("clang").expect("clang is required for the frame remainder fixture");
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("aarch64_recovery")
+        .join("frame_remainder.s");
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create frame remainder fixture scratch");
+    let object_path: PathBuf = scratch.path().join("frame_remainder.o");
+    run_tool(
+        &clang,
+        vec![
+            "--target=aarch64-none-elf".into(),
+            "-c".into(),
+            fixture.as_os_str().to_owned(),
+            "-o".into(),
+            object_path.as_os_str().to_owned(),
+        ],
+    );
+    std::fs::read(object_path).expect("read frame remainder fixture object")
+}
+
 #[cfg(feature = "chain")]
 fn linked_extended_register_fixture() -> Vec<u8> {
     let clang: PathBuf =
@@ -1285,6 +1309,115 @@ fn clang_assembled_security_frame_recovers_through_the_object_path() {
         object_symbol::function_code(&object, "security_frame").expect("security frame symbol");
     let recovered: LeafRecovery =
         recover_aarch64_function(&code, address).expect("security frame object recovers");
+    assert!(recovered.source.contains("return"), "{}", recovered.source);
+}
+
+#[test]
+fn clang_assembled_framed_multiple_returns_and_callee_saved_pairs_recover() {
+    let object: Vec<u8> = compiled_frame_remainder_fixture();
+    for symbol in ["frame_fixed_offset", "frame_callee_saved_pairs"] {
+        let (code, address): (Vec<u8>, u64) =
+            object_symbol::function_code(&object, symbol).expect("frame remainder symbol");
+        let recovered: LeafRecovery = recover_aarch64_function(&code, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"));
+        assert!(
+            recovered.source.contains("return"),
+            "{symbol}: {}",
+            recovered.source
+        );
+    }
+    let (code, address): (Vec<u8>, u64) =
+        object_symbol::function_code(&object, "frame_multiple_returns")
+            .expect("multiple-return frame symbol");
+    let recovered: LeafRecovery = recover_aarch64_function(&code, address)
+        .unwrap_or_else(|error: Error| panic!("frame_multiple_returns rejected: {error:?}"));
+    assert!(recovered.source.contains("if ("), "{}", recovered.source);
+    let compiler: PathBuf = find_program("cc")
+        .or_else(|| find_program("clang"))
+        .expect("a host compiler is required for the frame execution check");
+    let scratch: tempfile::TempDir = tempfile::tempdir().expect("create frame execution scratch");
+    let source: PathBuf = scratch.path().join("frame_multiple_returns.c");
+    let executable: PathBuf = scratch.path().join("frame_multiple_returns.exe");
+    std::fs::write(
+        &source,
+        format!(
+            "{}\nint main(void) {{ if (recovered(0, 0x2aULL) != 0) return 1; if (recovered(1, 0x2aULL) != 0x2aULL) return 2; return 0; }}\n",
+            recovered.source
+        ),
+    )
+    .expect("write multiple-return execution check");
+    run_tool(
+        &compiler,
+        vec![
+            source.as_os_str().to_owned(),
+            "-o".into(),
+            executable.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let output: CapturedOutput =
+        run_captured(&executable, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("run multiple-return execution check")
+            .expect("multiple-return execution check timeout");
+    assert_eq!(output.exit_code, Some(0), "{}", recovered.source);
+}
+
+#[test]
+fn clang_assembled_callee_saved_pair_mismatches_refuse() {
+    let object: Vec<u8> = compiled_frame_remainder_fixture();
+    for symbol in [
+        "frame_multiple_return_mismatch",
+        "frame_swapped_integer_pair",
+        "frame_missing_integer_pair",
+        "frame_swapped_fp_pair",
+        "frame_missing_fp_pair",
+    ] {
+        let (code, address): (Vec<u8>, u64) =
+            object_symbol::function_code(&object, symbol).expect("pair mismatch symbol");
+        let error: Error = recover_aarch64_function(&code, address)
+            .expect_err("a callee-saved pair mismatch must refuse");
+        let reason: &str = if symbol == "frame_multiple_return_mismatch" {
+            "frame epilogue does not restore the entry stack pointer"
+        } else {
+            "a callee-saved register is not provably restored"
+        };
+        assert!(format!("{error:?}").contains(reason), "{symbol}: {error:?}");
+    }
+}
+
+#[test]
+fn mismatched_tail_and_no_return_frame_epilogues_refuse_with_construct_specific_reasons() {
+    let mismatched: [u8; 12] = [
+        0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x7b, 0xc2, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let tail: [u8; 12] = [
+        0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x7b, 0xc1, 0xa8, 0x00, 0x00, 0x1f, 0xd6,
+    ];
+    let no_return: [u8; 8] = [0xfd, 0x7b, 0xbf, 0xa9, 0x00, 0x00, 0x20, 0xd4];
+    for (bytes, reason) in [
+        (
+            &mismatched[..],
+            "frame epilogue does not restore the entry stack pointer",
+        ),
+        (
+            &tail[..],
+            "indirect tail-call epilogue has no recovered target set",
+        ),
+        (&no_return[..], "non-returning trap has no frame epilogue"),
+    ] {
+        let error: Error = recover_aarch64_function(bytes, 0)
+            .expect_err("unbalanced or tail frame epilogue must refuse");
+        assert!(format!("{error:?}").contains(reason), "{error:?}");
+    }
+}
+
+#[test]
+fn unreachable_aarch64_trap_does_not_refuse_the_reachable_frame() {
+    let bytes: [u8; 12] = [
+        0xe0, 0x03, 0x1f, 0xaa, 0xc0, 0x03, 0x5f, 0xd6, 0x00, 0x00, 0x20, 0xd4,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("unreachable trap must not reject");
     assert!(recovered.source.contains("return"), "{}", recovered.source);
 }
 

@@ -105,6 +105,7 @@ struct FrameAnalysis {
     info: FrameInfo,
     management: BTreeSet<usize>,
     absorbed: BTreeSet<usize>,
+    reachable: BTreeSet<usize>,
 }
 
 struct FinishContext<'a> {
@@ -614,6 +615,9 @@ fn recover_with_calls_and_image<'image>(
     let d_transfer_classes: BTreeMap<usize, DTransferClass> =
         classify_d_transfers(&insns, &frame.management)?;
     for (index, insn) in insns.iter().enumerate() {
+        if !frame.reachable.contains(&index) {
+            continue;
+        }
         let address: u64 = item_address(base, index, 0)?;
         if let Some(dispatch) = switches.get(&index) {
             let cases: Vec<(i64, u64)> = dispatch
