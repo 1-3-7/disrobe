@@ -132,7 +132,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     FigureBudget {
         path: "benches/head-to-head/results.md",
         figures: 14,
-        digest: "e828e8cb7779edd6",
+        digest: "d33f36357a2650f2",
     },
     FigureBudget {
         path: "benches/native-unpack/results.md",
