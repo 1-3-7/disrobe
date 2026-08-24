@@ -118,7 +118,7 @@ struct Emitter<'a> {
     fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload>,
     poisoned_regs: BTreeSet<u16>,
     const_zero: BTreeSet<u16>,
-    pending_new: BTreeMap<u16, String>,
+    pending_new: BTreeMap<u16, (String, u32)>,
     eager_new_pcs: BTreeSet<u32>,
     iinc_suppressed: BTreeSet<u32>,
     eager_new_active: BTreeMap<u16, String>,
@@ -2710,7 +2710,7 @@ impl Emitter<'_> {
         match op {
             0x0D => self.move_exception(regs),
             0x00 | 0x1D | 0x1E => {}
-            0x01..=0x09 => self.move_reg(regs),
+            0x01..=0x09 => self.move_reg(op, regs),
             0x0A => self.move_result(regs, Slot::Int),
             0x0B => self.move_result(regs, Slot::Long),
             0x0C => self.move_result(regs, Slot::Ref),
@@ -2747,11 +2747,28 @@ impl Emitter<'_> {
         }
     }
 
-    fn move_reg(&mut self, regs: &[u16]) {
+    fn move_reg(&mut self, op: u8, regs: &[u16]) {
         let (Some(&dest), Some(&src)): (Option<&u16>, Option<&u16>) = (regs.first(), regs.get(1))
         else {
             return;
         };
+        let pending_marker: Option<(String, u32)> = self.pending_new.get(&src).cloned();
+        if let Some(marker) = pending_marker {
+            if !is_move_object(op)
+                || self
+                    .pending_new
+                    .get(&dest)
+                    .is_some_and(|existing: &(String, u32)| *existing != marker)
+            {
+                record_bail_kind("pending-new-alias-conflict");
+                self.bail();
+                return;
+            }
+            self.pending_new.insert(dest, marker);
+            self.reg_array_elem.remove(&dest);
+            self.array_elem_desc.remove(&dest);
+            return;
+        }
         let src_marker: Option<(String, u32)> = self.materialize_active.get(&src).cloned();
         if let Some(marker) = src_marker {
             self.move_uninitialized_alias(dest, src, marker);
@@ -2993,7 +3010,7 @@ impl Emitter<'_> {
             self.materialize_active.insert(dest, (owner, insn.pc));
             return;
         }
-        self.pending_new.insert(dest, owner);
+        self.pending_new.insert(dest, (owner, insn.pc));
     }
 
     fn new_array(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -3486,7 +3503,7 @@ impl Emitter<'_> {
             && self
                 .pending_new
                 .get(&recv)
-                .is_some_and(|t: &String| *t == owner)
+                .is_some_and(|(t, _): &(String, u32)| *t == owner)
         {
             self.emit_constructor(recv, &owner, &name, &descriptor, &param_types, &insn.regs);
             return;
@@ -3552,7 +3569,23 @@ impl Emitter<'_> {
         param_types: &[String],
         regs: &[u16],
     ) {
-        self.pending_new.remove(&recv);
+        let aliases: Vec<u16> = match self
+            .pending_new
+            .get(&recv)
+            .map(|(_, new_pc): &(String, u32)| *new_pc)
+        {
+            Some(new_pc) => self
+                .pending_new
+                .iter()
+                .filter_map(|(&reg, (_, pc)): (&u16, &(String, u32))| {
+                    (*pc == new_pc).then_some(reg)
+                })
+                .collect(),
+            None => vec![recv],
+        };
+        for &reg in &aliases {
+            self.pending_new.remove(&reg);
+        }
         let class_idx: u16 = self.cp.class_const(owner);
         self.push(0xBB);
         self.push_u16(class_idx);
@@ -3581,7 +3614,13 @@ impl Emitter<'_> {
         self.push(0xB7);
         self.push_u16(method_idx);
         self.adjust_stack(-consumed - 1);
-        self.emit_store(recv, Slot::Ref);
+        for (index, &reg) in aliases.iter().enumerate() {
+            if index + 1 < aliases.len() {
+                self.push(0x59);
+                self.adjust_stack(1);
+            }
+            self.emit_store(reg, Slot::Ref);
+        }
         self.pending_result = None;
     }
 

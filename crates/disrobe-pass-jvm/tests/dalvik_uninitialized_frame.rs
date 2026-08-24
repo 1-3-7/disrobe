@@ -778,7 +778,7 @@ fn foo_class_with_last() -> ClassDef {
     }
 }
 
-fn make_twonews_dex() -> Vec<u8> {
+fn make_twonews_dex_with_alias_op(alias_op: u8) -> Vec<u8> {
     let mut sample_init_units: Vec<u16> = Vec::new();
     let mut sample_init_relocs: Vec<Reloc> = Vec::new();
     sample_init_units.extend(insn::fmt35c_one(0x70, 0, 0));
@@ -808,7 +808,7 @@ fn make_twonews_dex() -> Vec<u8> {
 
     let mut units: Vec<u16> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
-    units.push(0x38 | (2u16 << 8));
+    units.push(0x38 | (3u16 << 8));
     units.push(6);
     let new_a: usize = units.len();
     units.extend(insn::fmt21c(0x22, 0, 0));
@@ -825,13 +825,14 @@ fn make_twonews_dex() -> Vec<u8> {
         descriptor: "LFoo;".to_owned(),
     });
     units.extend(insn::fmt11n(0x12, 1, 2));
+    units.extend(insn::fmt12x(alias_op, 2, 0));
     let invoke_pos: usize = units.len();
-    units.extend(insn::fmt35c_two(0x70, 0, 1, 0));
+    units.extend(insn::fmt35c_two(0x70, 2, 1, 0));
     relocs.push(Reloc::MethodIndex {
         unit: invoke_pos + 1,
         method: foo_init(),
     });
-    units.extend(insn::fmt11x(0x11, 0));
+    units.extend(insn::fmt11x(0x11, 2));
 
     let make2: EncodedMethod = EncodedMethod {
         tries: Vec::new(),
@@ -845,7 +846,7 @@ fn make_twonews_dex() -> Vec<u8> {
         },
         access_flags: 0x9,
         is_direct: true,
-        registers_size: 3,
+        registers_size: 4,
         ins_size: 1,
         outs_size: 2,
         insns: units,
@@ -864,6 +865,10 @@ fn make_twonews_dex() -> Vec<u8> {
         virtual_methods: Vec::new(),
     });
     builder.build()
+}
+
+fn make_twonews_dex() -> Vec<u8> {
+    make_twonews_dex_with_alias_op(0x07)
 }
 
 fn translate_twonews() -> Dex2JarResult {
@@ -959,9 +964,9 @@ fn nondominated_merge_new_recovers_instead_of_stub() {
     let cf: ClassFile = parse_classfile(sample).expect("parse twonews Sample.class");
     assert!(
         !class_names_contain(&cf, "java/lang/UnsupportedOperationException"),
-        "make2() reaches Foo.<init> from two forward new-instance predecessors that do not all \
-         pass through one `new` (the dominance check fails); the method must be recovered, not \
-         emitted as a throwing stub, but the class references UnsupportedOperationException"
+        "make2() reaches Foo.<init> through a post-merge move-object alias of two forward \
+         new-instance predecessors that do not all pass through one `new`; the allocation must be \
+         sunk to the shared constructor instead of failing on the pending alias load"
     );
     let code: Vec<u8> = method_bytecode(&cf, "make2");
     assert!(
@@ -975,6 +980,21 @@ fn nondominated_merge_new_recovers_instead_of_stub() {
         entries >= 2,
         "make2()'s recovered branch/merge structure must carry the merge and else-arm frames; \
          only {entries} StackMapTable entries were emitted"
+    );
+}
+
+#[test]
+fn non_object_move_of_pending_allocation_stays_stubbed() {
+    let result: Dex2JarResult = translate_dex_bytes(&make_twonews_dex_with_alias_op(0x01))
+        .expect("translate malformed pending-new move dex");
+    let sample: &Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present in malformed alias translation");
+    let cf: ClassFile = parse_classfile(sample).expect("parse malformed alias Sample.class");
+    assert!(
+        class_names_contain(&cf, "java/lang/UnsupportedOperationException"),
+        "an integer move cannot alias an uninitialized reference; the method must fail closed"
     );
 }
 
