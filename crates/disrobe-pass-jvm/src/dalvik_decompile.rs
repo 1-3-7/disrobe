@@ -139,9 +139,18 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             fields: code_report.fields(),
             decoded: &items,
         };
+        let kotlin_evidence: KotlinClassEvidence<'_> = KotlinClassEvidence {
+            source_file: source_file_for_class(dex, bytes, class_descriptor),
+            metadata_is_absent: matches!(
+                class_kotlin_metadata_evidence(dex, bytes, class_descriptor),
+                KotlinMetadataEvidence::Absent
+            ),
+            continuation_impl_bridge: continuation_impl_ancestor(dex, class_descriptor),
+        };
         let mut rendered: RenderedClass = render_class(
             dex,
             class_descriptor,
+            kotlin_evidence,
             &members,
             recovery,
             &cff_by_method,
@@ -232,6 +241,151 @@ fn java_source_path(package: Option<&str>, simple: &str) -> String {
     }
 }
 
+fn source_file_for_class<'a>(
+    dex: &'a DexFile,
+    bytes: &'a [u8],
+    class_descriptor: &str,
+) -> Option<&'a str> {
+    let class_index: usize = dex
+        .class_descriptors
+        .iter()
+        .position(|descriptor: &String| descriptor == class_descriptor)?;
+    let class_offset: usize =
+        (dex.header.class_defs_off as usize).checked_add(class_index.checked_mul(32)?)?;
+    let source_offset: usize = class_offset.checked_add(16)?;
+    let source_index: usize = u32::from_le_bytes(
+        bytes
+            .get(source_offset..source_offset + 4)?
+            .try_into()
+            .ok()?,
+    ) as usize;
+    dex.strings.get(source_index).map(String::as_str)
+}
+
+enum KotlinMetadataEvidence {
+    Absent,
+    Present,
+    Unknown,
+}
+
+fn class_kotlin_metadata_evidence(
+    dex: &DexFile,
+    bytes: &[u8],
+    class_descriptor: &str,
+) -> KotlinMetadataEvidence {
+    let Some(class_index): Option<usize> = dex
+        .class_descriptors
+        .iter()
+        .position(|descriptor: &String| descriptor == class_descriptor)
+    else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    let Some(class_offset): Option<usize> =
+        (dex.header.class_defs_off as usize).checked_add(class_index.saturating_mul(32))
+    else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    let Some(annotation_directory): Option<usize> = class_offset
+        .checked_add(20)
+        .and_then(|offset| dex_u32(bytes, offset))
+    else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    if annotation_directory == 0 {
+        return KotlinMetadataEvidence::Absent;
+    }
+    let Some(annotation_set): Option<usize> = dex_u32(bytes, annotation_directory) else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    if annotation_set == 0 {
+        return KotlinMetadataEvidence::Absent;
+    }
+    let Some(count): Option<usize> = dex_u32(bytes, annotation_set) else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    let Some(entries_end): Option<usize> = annotation_set.checked_add(4).and_then(|start| {
+        count
+            .checked_mul(4)
+            .and_then(|size| start.checked_add(size))
+    }) else {
+        return KotlinMetadataEvidence::Unknown;
+    };
+    if entries_end > bytes.len() {
+        return KotlinMetadataEvidence::Unknown;
+    }
+    for index in 0..count {
+        let Some(entry): Option<usize> = annotation_set.checked_add(4 + index.saturating_mul(4))
+        else {
+            return KotlinMetadataEvidence::Unknown;
+        };
+        let Some(annotation): Option<usize> = dex_u32(bytes, entry) else {
+            return KotlinMetadataEvidence::Unknown;
+        };
+        if !matches!(bytes.get(annotation), Some(0..=2)) {
+            return KotlinMetadataEvidence::Unknown;
+        }
+        let Some(type_index): Option<usize> = annotation
+            .checked_add(1)
+            .and_then(|offset: usize| dex_uleb128(bytes, offset))
+        else {
+            return KotlinMetadataEvidence::Unknown;
+        };
+        if dex.type_names.get(type_index).is_none() {
+            return KotlinMetadataEvidence::Unknown;
+        }
+        if dex
+            .type_names
+            .get(type_index)
+            .is_some_and(|name: &String| name == "Lkotlin/Metadata;")
+        {
+            return KotlinMetadataEvidence::Present;
+        }
+    }
+    KotlinMetadataEvidence::Absent
+}
+
+fn dex_u32(bytes: &[u8], offset: usize) -> Option<usize> {
+    bytes
+        .get(offset..offset.checked_add(4)?)?
+        .try_into()
+        .ok()
+        .map(u32::from_le_bytes)
+        .and_then(|value: u32| usize::try_from(value).ok())
+}
+
+fn dex_uleb128(bytes: &[u8], offset: usize) -> Option<usize> {
+    let mut value: u32 = 0;
+    for shift in (0..35).step_by(7) {
+        let byte: u8 = *bytes.get(offset.checked_add(shift / 7)?)?;
+        if shift == 28 && byte & 0xf0 != 0 {
+            return None;
+        }
+        value |= u32::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return usize::try_from(value).ok();
+        }
+    }
+    None
+}
+
+fn continuation_impl_ancestor(dex: &DexFile, class_descriptor: &str) -> bool {
+    let mut current: &str = class_descriptor;
+    for _ in 0..=dex.class_descriptors.len() {
+        if matches!(
+            current,
+            "Lkotlin/coroutines/jvm/internal/ContinuationImpl;"
+                | "Lkotlin/coroutines/jvm/internal/RestrictedContinuationImpl;"
+        ) {
+            return true;
+        }
+        let Some(parent): Option<&String> = dex.class_super_descriptors.get(current) else {
+            return false;
+        };
+        current = parent;
+    }
+    false
+}
+
 fn field_declarations(fields: &[crate::dex::DexFieldDecl], class_descriptor: &str) -> String {
     let mut out: String = String::new();
     for field in fields {
@@ -260,9 +414,25 @@ struct ClassMembers<'a> {
     decoded: &'a [CodeItem],
 }
 
+#[derive(Clone, Copy)]
+struct ClassRenderInfo<'a> {
+    simple: &'a str,
+    source_file: Option<&'a str>,
+    metadata_is_absent: bool,
+    continuation_impl_bridge: bool,
+}
+
+#[derive(Clone, Copy)]
+struct KotlinClassEvidence<'a> {
+    source_file: Option<&'a str>,
+    metadata_is_absent: bool,
+    continuation_impl_bridge: bool,
+}
+
 fn render_class(
     dex: &DexFile,
     class_descriptor: &str,
+    kotlin_evidence: KotlinClassEvidence<'_>,
     members: &ClassMembers<'_>,
     recovery: Option<&crate::dalvik_strdec::DexStringRecovery>,
     cff_by_method: &BTreeMap<(String, String, String), crate::dalvik_dexguard::DalvikMethodCff>,
@@ -321,6 +491,12 @@ fn render_class(
     let inlined_helpers: crate::dalvik_desugar::InlinedHelpers =
         crate::dalvik_desugar::InlinedHelpers::default();
     let mut declared: Vec<(u32, RenderedMethod)> = Vec::with_capacity(members.methods.len());
+    let class: ClassRenderInfo<'_> = ClassRenderInfo {
+        simple,
+        source_file: kotlin_evidence.source_file,
+        metadata_is_absent: kotlin_evidence.metadata_is_absent,
+        continuation_impl_bridge: kotlin_evidence.continuation_impl_bridge,
+    };
     for method in members.methods {
         if desugar.interfaces.suppresses_method(
             &method.class,
@@ -359,7 +535,7 @@ fn render_class(
                 |bridge: &CodeItem| {
                     render_method(
                         dex,
-                        simple,
+                        class,
                         bridge,
                         None,
                         None,
@@ -381,7 +557,7 @@ fn render_class(
             }
             (DexCodeState::Decoded(_), Some(item), None) => render_method(
                 dex,
-                simple,
+                class,
                 item,
                 cff,
                 generic_sites,
@@ -449,7 +625,7 @@ fn render_class(
             |item: &CodeItem| {
                 render_method(
                     dex,
-                    simple,
+                    class,
                     item,
                     None,
                     None,
@@ -634,7 +810,7 @@ fn render_unavailable_method(
 
 fn render_method(
     dex: &DexFile,
-    class_simple: &str,
+    class: ClassRenderInfo<'_>,
     item: &CodeItem,
     cff: Option<&crate::dalvik_dexguard::DalvikMethodCff>,
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
@@ -669,6 +845,41 @@ fn render_method(
                 recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Static
             },
         ) || recovered_default.is_none() && !is_constructor && item.ins_size <= footprint;
+    let continuation_register: Option<u16> = parsed.as_ref().and_then(|descriptor: &MethodDescriptor| {
+        descriptor.params.last().and_then(|parameter: &crate::descriptor::JavaType| {
+            if matches!(parameter, crate::descriptor::JavaType::Object(name) if name == "Lkotlin/coroutines/Continuation;") {
+                item.registers_size.checked_sub(1)
+            } else {
+                None
+            }
+        })
+    });
+    let decoded: Vec<DalvikInsn> = crate::dalvik::decode_method(&item.insns);
+    let complete_decode: bool = !decoded.is_empty()
+        && decoded
+            .iter()
+            .all(|insn: &DalvikInsn| insn.mnemonic != "unused")
+        && decoded
+            .iter()
+            .map(|insn: &DalvikInsn| usize::from(insn.width))
+            .sum::<usize>()
+            == item.insns.len();
+    let continuation_is_unused: bool = complete_decode
+        && continuation_register
+            .is_some_and(|register: u16| !incoming_register_is_used(item, register));
+    let hide_final_continuation: bool =
+        parsed
+            .as_ref()
+            .is_some_and(|descriptor: &MethodDescriptor| {
+                crate::kotlin::is_metadata_absent_suspend_signature(
+                    class.metadata_is_absent,
+                    class.source_file,
+                    method_name,
+                    descriptor,
+                    continuation_is_unused,
+                    class.continuation_impl_bridge,
+                )
+            });
 
     let mut signature: String = String::new();
     let modifier: &str = if recovered_default.is_some_and(
@@ -688,6 +899,9 @@ fn render_method(
             .params
             .iter()
             .enumerate()
+            .filter(|(i, _): &(usize, &crate::descriptor::JavaType)| {
+                !hide_final_continuation || *i + 1 != md.params.len()
+            })
             .map(|(i, p)| {
                 let parameter_index: usize = i + usize::from(recovered_default.is_some_and(
                     |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
@@ -708,7 +922,7 @@ fn render_method(
     };
 
     if is_constructor {
-        let _ = write!(signature, "    {modifier}{class_simple}({params})");
+        let _ = write!(signature, "    {modifier}{}({params})", class.simple);
     } else if is_clinit {
         let _ = write!(signature, "    static");
     } else {
@@ -806,6 +1020,76 @@ fn register_mention_blocks(
         }
     }
     out
+}
+
+fn incoming_register_is_used(item: &CodeItem, register: u16) -> bool {
+    let Some(built): Option<DalvikMethodCfg> = build_dalvik_cfg_from_code_item(item) else {
+        return true;
+    };
+    let mut incoming: Vec<Option<bool>> = vec![None; built.cfg.blocks.len()];
+    let entry: usize = built.cfg.entry.0 as usize;
+    let Some(entry_state): Option<&mut Option<bool>> = incoming.get_mut(entry) else {
+        return true;
+    };
+    *entry_state = Some(true);
+    let mut pending: std::collections::VecDeque<BlockId> =
+        std::collections::VecDeque::from([built.cfg.entry]);
+    while let Some(block_id) = pending.pop_front() {
+        let block_index: usize = block_id.0 as usize;
+        let Some(block): Option<&BasicBlock> = built.cfg.blocks.get(block_index) else {
+            return true;
+        };
+        let Some(mut live): Option<bool> = incoming.get(block_index).copied().flatten() else {
+            continue;
+        };
+        let block_entry_live: bool = live;
+        let Some(insns): Option<&[DalvikInsn]> =
+            built.insns.get(block.insn_range.0..block.insn_range.1)
+        else {
+            return true;
+        };
+        for insn in insns {
+            if live && instruction_reads_register(insn, register) {
+                return true;
+            }
+            if instruction_writes_register(insn, register) {
+                live = false;
+            }
+        }
+        for edge in &block.successors {
+            let successor: usize = edge.target.0 as usize;
+            let propagated: bool = if matches!(edge.kind, EdgeKind::Exception) {
+                block_entry_live
+            } else {
+                live
+            };
+            let Some(state): Option<&mut Option<bool>> = incoming.get_mut(successor) else {
+                return true;
+            };
+            let merged: bool = state.unwrap_or(false) || propagated;
+            if *state != Some(merged) {
+                *state = Some(merged);
+                pending.push_back(edge.target);
+            }
+        }
+    }
+    false
+}
+
+fn instruction_reads_register(insn: &DalvikInsn, register: u16) -> bool {
+    if !writes_first_register(insn.op) {
+        return insn.regs.contains(&register);
+    }
+    if matches!(insn.op, 0x1F | 0xB0..=0xCF) {
+        return insn.regs.contains(&register);
+    }
+    insn.regs
+        .get(1..)
+        .is_some_and(|regs: &[u16]| regs.contains(&register))
+}
+
+fn instruction_writes_register(insn: &DalvikInsn, register: u16) -> bool {
+    writes_first_register(insn.op) && insn.regs.first() == Some(&register)
 }
 
 fn lift_method(

@@ -5,6 +5,7 @@ use crate::attributes::{
     parse_declaration_annotations,
 };
 use crate::classfile::ClassFile;
+use crate::descriptor::{JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
 
 const METADATA_ANNOTATION: &str = "Lkotlin/Metadata;";
@@ -40,6 +41,34 @@ pub struct KotlinMetadata {
     pub metadata_version: Vec<i32>,
     pub bytecode_version: Vec<i32>,
     pub package_name: Option<String>,
+}
+
+#[must_use]
+pub fn is_metadata_absent_suspend_signature(
+    metadata_is_absent: bool,
+    source_file: Option<&str>,
+    method_name: &str,
+    descriptor: &MethodDescriptor,
+    continuation_is_unused: bool,
+    continuation_impl_bridge: bool,
+) -> bool {
+    let kotlin_source: bool =
+        source_file.is_some_and(|file: &str| file.ends_with(".kt") || file.ends_with(".kts"));
+    let continuation_final: bool = matches!(
+        descriptor.params.last(),
+        Some(JavaType::Object(name)) if name == "Lkotlin/coroutines/Continuation;"
+    );
+    let returns_object: bool = matches!(
+        descriptor.returns,
+        JavaType::Object(ref name) if name == "Ljava/lang/Object;"
+    );
+    metadata_is_absent
+        && kotlin_source
+        && continuation_final
+        && returns_object
+        && continuation_is_unused
+        && !continuation_impl_bridge
+        && !matches!(method_name, "create" | "invoke" | "invokeSuspend")
 }
 
 pub fn recover_metadata(cf: &ClassFile) -> Result<Option<KotlinMetadata>> {

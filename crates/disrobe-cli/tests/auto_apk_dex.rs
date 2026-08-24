@@ -240,6 +240,42 @@ fn auto_chain_apk_dex_recovers_decompiled_class_tokens() {
     );
 }
 
+#[test]
+fn auto_chain_recovers_metadata_stripped_kotlin_suspend_signatures() {
+    let fixture: PathBuf = workspace_root()
+        .join("crates")
+        .join("disrobe-pass-jvm")
+        .join("tests")
+        .join("fixtures")
+        .join("kotlin_suspend_abi")
+        .join("KotlinSuspendAbi.metadata-stripped.dex");
+    assert!(fixture.is_file(), "tracked fixture missing at {fixture:?}");
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        tmp_path("kotlin-suspend-out");
+    let proc_out: std::process::Output = run_chain_capture(&fixture, &out_dir);
+    assert!(
+        proc_out.status.success(),
+        "auto chain failed: {}",
+        String::from_utf8_lossy(&proc_out.stderr)
+    );
+    let json: String = read_chain_json(&out_dir);
+    let doc: serde_json::Value = serde_json::from_str(&json)
+        .unwrap_or_else(|e: serde_json::Error| panic!("chain.json is not valid json: {e}"));
+    assert!(
+        picked_passes(&doc)
+            .iter()
+            .any(|pass: &String| pass == "jvm.classify"),
+        "auto did not route the DEX through jvm.classify: {json}"
+    );
+    let source: String = read_recovered_jvm_source(&out_dir);
+    assert!(source.contains("Object unusedContinuation()"), "{source}");
+    assert!(source.contains("Object scriptUnused()"), "{source}");
+    assert!(
+        source.contains("Object storeContinuation(kotlin.coroutines.Continuation"),
+        "{source}"
+    );
+}
+
 const JNI_REGISTER_X64_SO: &[u8] =
     include_bytes!("../../disrobe-pass-jvm/tests/fixtures/jni_register/libjnireg_x64.so");
 
