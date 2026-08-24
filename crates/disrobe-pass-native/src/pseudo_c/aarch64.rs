@@ -698,7 +698,12 @@ fn recover_with_calls_and_image<'image>(
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
-        if insn.mnemonic == "nop" {
+        if insn.mnemonic == "nop"
+            || matches!(
+                (insn.mnemonic.as_str(), insn.operands.as_str()),
+                ("hint", "#0x22" | "#0x19" | "#0x1d") | ("bti", "c") | ("paciasp" | "autiasp", "")
+            )
+        {
             continue;
         }
         if let Some(fold) = address_folds.get(&index) {

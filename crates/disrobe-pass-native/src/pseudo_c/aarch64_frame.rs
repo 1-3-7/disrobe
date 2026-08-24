@@ -53,6 +53,8 @@ enum FramePointer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StackState {
     sp_to_entry: i64,
+    link_signed: bool,
+    entry_prologue_open: bool,
     frame_pointer: FramePointer,
     preserved: [Preserved; PRESERVED_COUNT],
     saved: BTreeMap<i64, Preserved>,
@@ -70,6 +72,13 @@ enum SpEffect {
     Unchanged,
     Delta(i64),
     FromFramePointer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecurityHint {
+    BtiC,
+    PaciAsp,
+    AutiAsp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +107,18 @@ struct Facts {
     calls: bool,
     reads_frame_register: bool,
     exits: bool,
+    security_hint: Option<SecurityHint>,
+}
+
+fn security_hint(insn: &DisasmInsn) -> Result<Option<SecurityHint>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    match (insn.mnemonic.as_str(), operands.as_slice()) {
+        ("hint", ["#0x22"]) | ("bti", ["c"]) => Ok(Some(SecurityHint::BtiC)),
+        ("hint", ["#0x19"]) | ("paciasp", []) => Ok(Some(SecurityHint::PaciAsp)),
+        ("hint", ["#0x1d"]) | ("autiasp", []) => Ok(Some(SecurityHint::AutiAsp)),
+        ("hint", _) => Err(reject_at(insn, "unsupported aarch64 hint instruction")),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +135,8 @@ impl StackState {
         }
         Self {
             sp_to_entry: 0,
+            link_signed: false,
+            entry_prologue_open: true,
             frame_pointer: FramePointer::Absent,
             preserved,
             saved: BTreeMap::new(),
@@ -125,6 +148,12 @@ impl StackState {
             return Err(reject_at(
                 insn,
                 "stack pointer offsets disagree on the paths reaching this instruction",
+            ));
+        }
+        if self.link_signed != other.link_signed {
+            return Err(reject_at(
+                insn,
+                "pointer-authentication state disagrees on incoming paths",
             ));
         }
         let frame_pointer: FramePointer = if self.frame_pointer == other.frame_pointer {
@@ -152,6 +181,8 @@ impl StackState {
             .collect();
         Ok(Self {
             sp_to_entry: self.sp_to_entry,
+            link_signed: self.link_signed,
+            entry_prologue_open: self.entry_prologue_open && other.entry_prologue_open,
             frame_pointer,
             preserved,
             saved,
@@ -335,6 +366,7 @@ fn writes_nothing(mnemonic: &str) -> bool {
 
 fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
     let operands: Vec<&str> = split_operands(&insn.operands);
+    let security_hint: Option<SecurityHint> = security_hint(insn)?;
     let mut facts: Facts = Facts {
         sp: SpEffect::Unchanged,
         establishes_frame_pointer: None,
@@ -345,6 +377,7 @@ fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
         calls: matches!(insn.mnemonic.as_str(), "bl" | "blr"),
         reads_frame_register: false,
         exits: insn.mnemonic == "ret",
+        security_hint,
     };
     if insn.mnemonic == "ret" && !insn.operands.trim().is_empty() {
         return Err(reject_at(insn, "return uses a non-default link register"));
@@ -496,7 +529,7 @@ fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
             .is_some_and(|transfer: &PreservedTransfer| {
                 transfer.registers.contains(&FRAME_POINTER_SLOT)
             });
-    if !writes_nothing(&insn.mnemonic) {
+    if facts.security_hint.is_none() && !writes_nothing(&insn.mnemonic) {
         let dests: usize = if is_pair_load(&insn.mnemonic) { 2 } else { 1 };
         for token in operands.iter().take(dests) {
             match preserved_slot(token) {
@@ -513,6 +546,16 @@ fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
         facts.written.push(FRAME_POINTER_SLOT);
     }
     Ok(facts)
+}
+
+fn is_entry_stub_frame_chain_termination(insn: &DisasmInsn) -> bool {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    insn.mnemonic == "mov"
+        && operands.first() == Some(&"x29")
+        && operands.len() == 2
+        && operands.get(1).is_some_and(|immediate: &&str| {
+            parse_immediate(immediate).is_ok_and(|value: i64| value == 0)
+        })
 }
 
 fn successors(
@@ -583,6 +626,25 @@ fn check_stack_offset(value: i64, insn: &DisasmInsn) -> Result<i64> {
 
 fn transfer(state: &StackState, facts: &Facts, insn: &DisasmInsn) -> Result<StackState> {
     let mut next: StackState = state.clone();
+    match facts.security_hint {
+        Some(SecurityHint::PaciAsp) => {
+            if !state.entry_prologue_open || state.sp_to_entry != 0 || state.link_signed {
+                return Err(reject_at(insn, "paciasp lies outside the entry prologue"));
+            }
+            next.link_signed = true;
+            next.entry_prologue_open = false;
+        }
+        Some(SecurityHint::AutiAsp) => {
+            if !state.link_signed {
+                return Err(reject_at(insn, "autiasp lacks a matching paciasp"));
+            }
+            next.link_signed = false;
+        }
+        Some(SecurityHint::BtiC) | None => {}
+    }
+    if facts.security_hint.is_none() {
+        next.entry_prologue_open = false;
+    }
     let access_offset: i64 = match facts.sp {
         SpEffect::Delta(delta) if facts.accesses.iter().any(|a: &Access| a.after_writeback) => {
             check_stack_offset(
@@ -779,10 +841,45 @@ pub(super) fn analyze(
     insns: &[DisasmInsn],
     switches: &BTreeMap<usize, SwitchDispatch>,
 ) -> Result<FrameAnalysis> {
+    if insns.iter().any(is_entry_stub_frame_chain_termination)
+        && !insns.iter().any(|insn: &DisasmInsn| insn.mnemonic == "ret")
+    {
+        return Err(reject(
+            "entry-stub frame-chain termination has no matching epilogue",
+        ));
+    }
     let count: usize = insns.len();
     let mut facts: Vec<Facts> = Vec::with_capacity(count);
     for insn in insns {
         facts.push(stack_facts(insn)?);
+    }
+    for (index, fact) in facts.iter().enumerate() {
+        match fact.security_hint {
+            Some(SecurityHint::BtiC) if index != 0 => {
+                return Err(reject_at(
+                    &insns[index],
+                    "bti c lies outside the entry landing pad",
+                ));
+            }
+            Some(SecurityHint::PaciAsp)
+                if !insns[index + 1..].iter().any(|insn: &DisasmInsn| {
+                    insn.mnemonic == "stp" && insn.operands.starts_with("x29, x30, [sp")
+                }) =>
+            {
+                return Err(reject_at(&insns[index], "paciasp lacks a framed prologue"));
+            }
+            Some(SecurityHint::AutiAsp)
+                if insns
+                    .get(index + 1)
+                    .is_none_or(|insn: &DisasmInsn| insn.mnemonic != "ret") =>
+            {
+                return Err(reject_at(
+                    &insns[index],
+                    "autiasp lacks its return epilogue",
+                ));
+            }
+            _ => {}
+        }
     }
     let mut edges: Vec<Vec<usize>> = Vec::with_capacity(count);
     for index in 0..count {
@@ -857,6 +954,12 @@ pub(super) fn analyze(
         frame_size = frame_size.max(access_offset);
         if facts.exits {
             saw_return = true;
+            if state.link_signed {
+                return Err(reject_at(
+                    insn,
+                    "paciasp has no matching autiasp before the return",
+                ));
+            }
             if state.sp_to_entry != 0 {
                 return Err(reject_at(
                     insn,

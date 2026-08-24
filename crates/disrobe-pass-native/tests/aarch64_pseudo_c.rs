@@ -5,8 +5,8 @@
 mod object_symbol;
 
 use disrobe_pass_native::{
-    Error, LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, recover_aarch64_function,
-    recover_aarch64_function_with_calls, recover_leaf_function_abi,
+    Arch, Error, LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, disassemble,
+    recover_aarch64_function, recover_aarch64_function_with_calls, recover_leaf_function_abi,
     recover_leaf_function_in_object,
 };
 use std::ffi::OsString;
@@ -94,6 +94,31 @@ fn compiled_extended_register_fixture() -> Vec<u8> {
         ],
     );
     std::fs::read(object_path).expect("read extended-register fixture object")
+}
+
+fn compiled_security_frame_fixture() -> Vec<u8> {
+    let clang: PathBuf =
+        find_program("clang").expect("clang is required for the security frame fixture");
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("aarch64_recovery")
+        .join("security_frame.s");
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create security frame fixture scratch");
+    let object_path: PathBuf = scratch.path().join("security_frame.o");
+    run_tool(
+        &clang,
+        vec![
+            "--target=aarch64-none-elf".into(),
+            "-march=armv8.5-a+pauth".into(),
+            "-c".into(),
+            fixture.as_os_str().to_owned(),
+            "-o".into(),
+            object_path.as_os_str().to_owned(),
+        ],
+    );
+    std::fs::read(object_path).expect("read security frame fixture object")
 }
 
 #[cfg(feature = "chain")]
@@ -1215,6 +1240,107 @@ fn frame_pointer_omitted_link_register_frame_lifts() {
     assert!(recovered.signature.observed_integer_registers().is_empty());
     assert!(recovered.source.contains("helper()"));
     assert_eq!(recovered.call_targets, vec![4]);
+}
+
+#[test]
+fn pointer_authenticated_frame_record_lifts_without_exposing_the_security_landing_pad() {
+    let bytes: [u8; 28] = [
+        0x5f, 0x24, 0x03, 0xd5, 0x3f, 0x23, 0x03, 0xd5, 0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00,
+        0x91, 0xe0, 0x03, 0x01, 0xaa, 0xfd, 0x7b, 0xc1, 0xa8, 0xbf, 0x23, 0x03, 0xd5,
+    ];
+    let mut code: Vec<u8> = bytes.to_vec();
+    code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+    let instructions: Vec<String> = disassemble(Arch::Aarch64, 0, &code)
+        .expect("disassemble pointer-authenticated frame")
+        .into_iter()
+        .map(|insn| format!("{} {}", insn.mnemonic, insn.operands))
+        .collect();
+    assert_eq!(
+        instructions,
+        [
+            "hint #0x22",
+            "hint #0x19",
+            "stp x29, x30, [sp, #-0x10]!",
+            "mov x29, sp",
+            "mov x0, x1",
+            "ldp x29, x30, [sp], #0x10",
+            "hint #0x1d",
+            "ret "
+        ]
+    );
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&code, 0).expect("pointer-authenticated frame recovers");
+    assert!(recovered.source.contains("return"), "{}", recovered.source);
+    assert!(
+        !recovered.source.contains("paciasp"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn clang_assembled_security_frame_recovers_through_the_object_path() {
+    let object: Vec<u8> = compiled_security_frame_fixture();
+    let (code, address): (Vec<u8>, u64) =
+        object_symbol::function_code(&object, "security_frame").expect("security frame symbol");
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&code, address).expect("security frame object recovers");
+    assert!(recovered.source.contains("return"), "{}", recovered.source);
+}
+
+#[test]
+fn unsupported_aarch64_hint_refuses_with_its_own_reason() {
+    let bytes: [u8; 8] = [0x1f, 0x23, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
+    let error: Error =
+        recover_aarch64_function(&bytes, 0).expect_err("unsupported hint must refuse");
+    assert!(
+        format!("{error:?}").contains("unsupported aarch64 hint instruction"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn unpaired_or_mid_body_pointer_authentication_refuses_with_a_named_reason() {
+    let paci_only: [u8; 20] = [
+        0x3f, 0x23, 0x03, 0xd5, 0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xfd, 0x7b, 0xc1,
+        0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let auti_only: [u8; 8] = [0xbf, 0x23, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
+    let mid_body_paci: [u8; 28] = [
+        0xe0, 0x03, 0x01, 0xaa, 0x3f, 0x23, 0x03, 0xd5, 0xfd, 0x7b, 0xbf, 0xa9, 0xfd, 0x03, 0x00,
+        0x91, 0xfd, 0x7b, 0xc1, 0xa8, 0xbf, 0x23, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    for (bytes, reason) in [
+        (&paci_only[..], "paciasp has no matching autiasp"),
+        (&auti_only[..], "autiasp lacks a matching paciasp"),
+        (
+            &mid_body_paci[..],
+            "paciasp lies outside the entry prologue",
+        ),
+    ] {
+        let error: Error =
+            recover_aarch64_function(bytes, 0).expect_err("unpaired pointer authentication");
+        assert!(format!("{error:?}").contains(reason), "{error:?}");
+    }
+}
+
+#[test]
+fn entry_stub_frame_chain_termination_rejects_with_its_own_reason() {
+    let bytes: [u8; 12] = [
+        0x1d, 0x00, 0x80, 0xd2, 0x1e, 0x00, 0x80, 0xd2, 0x00, 0x00, 0x1f, 0xd6,
+    ];
+    let instructions: Vec<String> = disassemble(Arch::Aarch64, 0, &bytes)
+        .expect("disassemble entry stub")
+        .into_iter()
+        .map(|insn| format!("{} {}", insn.mnemonic, insn.operands))
+        .collect();
+    assert_eq!(instructions, ["mov x29, #0x0", "mov x30, #0x0", "br x0"]);
+    let error: Error = recover_aarch64_function(&bytes, 0).expect_err("entry stub must not lift");
+    assert!(
+        format!("{error:?}")
+            .contains("entry-stub frame-chain termination has no matching epilogue"),
+        "{error:?}"
+    );
 }
 
 #[test]
