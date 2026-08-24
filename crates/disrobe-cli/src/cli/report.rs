@@ -211,6 +211,15 @@ pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
             };
         }
     };
+    if blake3::hash(&bytes).to_hex().as_str() != input.blake3 {
+        return CapabilitySection {
+            available: false,
+            report: None,
+            reason: Some(
+                "the analysis target no longer matches the chain document blake3".to_string(),
+            ),
+        };
+    }
     match super::capabilities::build_report(&bytes, path, Path::new(path)) {
         Ok(report) => CapabilitySection {
             available: true,
@@ -2092,6 +2101,28 @@ mod tests {
                 .as_deref()
                 .is_some_and(|reason: &str| reason.contains("report capability input limit")),
             "{section:?}"
+        );
+    }
+
+    #[test]
+    fn capability_section_rejects_a_same_length_target_replacement() {
+        let scratch: ScratchDir = tmp_dir("capability-replaced-target");
+        let path: PathBuf = scratch.path().join("target.bin");
+        std::fs::write(&path, b"new").expect("write replacement target");
+        let input: InputIdentity = InputIdentity {
+            path: Some(path.display().to_string()),
+            size: 3,
+            blake3: blake3::hash(b"old").to_hex().to_string(),
+            detected: Vec::new(),
+            final_format: None,
+        };
+
+        let section: CapabilitySection = capabilities_section(&input);
+        assert!(!section.available);
+        assert!(section.report.is_none());
+        assert_eq!(
+            section.reason.as_deref(),
+            Some("the analysis target no longer matches the chain document blake3")
         );
     }
 
