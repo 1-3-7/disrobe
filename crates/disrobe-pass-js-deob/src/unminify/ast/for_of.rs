@@ -202,25 +202,53 @@ fn string_evidence(
     bindings: &BTreeMap<EvidenceKey, StringEvidence>,
     symbols: &SymbolTable,
 ) -> StringEvidence {
+    string_evidence_at_depth(expr, bindings, symbols, 0)
+}
+
+fn string_evidence_at_depth(
+    expr: &Expression<'_>,
+    bindings: &BTreeMap<EvidenceKey, StringEvidence>,
+    symbols: &SymbolTable,
+    depth: usize,
+) -> StringEvidence {
+    if depth > crate::sandbox_guard::MAX_OPERATOR_CHAIN {
+        return StringEvidence::Opaque;
+    }
     match expr.get_inner_expression() {
         Expression::StringLiteral(literal) => literal_string_evidence(literal.value.as_str()),
-        Expression::TemplateLiteral(template) => {
-            if !template.expressions.is_empty() || template.quasis.len() != 1 {
-                return StringEvidence::Opaque;
-            }
-            template.quasis.first().map_or(
-                StringEvidence::Opaque,
-                |quasi: &oxc_ast::ast::TemplateElement<'_>| {
-                    quasi
-                        .value
-                        .cooked
-                        .as_ref()
-                        .map_or(StringEvidence::Opaque, |cooked: &oxc_span::Atom<'_>| {
-                            literal_string_evidence(cooked.as_str())
-                        })
+        Expression::TemplateLiteral(template) => template
+            .quasis
+            .iter()
+            .map(|quasi: &oxc_ast::ast::TemplateElement<'_>| {
+                quasi
+                    .value
+                    .cooked
+                    .as_ref()
+                    .map_or(StringEvidence::Opaque, |cooked: &oxc_span::Atom<'_>| {
+                        literal_string_evidence(cooked.as_str())
+                    })
+            })
+            .chain(
+                template
+                    .expressions
+                    .iter()
+                    .map(|expression: &Expression<'_>| {
+                        string_evidence_at_depth(
+                            expression,
+                            bindings,
+                            symbols,
+                            depth.saturating_add(1),
+                        )
+                    }),
+            )
+            .try_fold(
+                StringEvidence::BasicPlane,
+                |evidence: StringEvidence, next: StringEvidence| {
+                    (evidence == StringEvidence::BasicPlane && next == StringEvidence::BasicPlane)
+                        .then_some(StringEvidence::BasicPlane)
                 },
             )
-        }
+            .unwrap_or(StringEvidence::Opaque),
         Expression::Identifier(identifier) => bindings
             .get(&EvidenceKey::Reference(identifier.span.start))
             .copied()
@@ -231,12 +259,16 @@ fn string_evidence(
             })
             .unwrap_or_default(),
         Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
-            let left: StringEvidence = string_evidence(&binary.left, bindings, symbols);
-            let right: StringEvidence = string_evidence(&binary.right, bindings, symbols);
-            if left == StringEvidence::None && right == StringEvidence::None {
-                StringEvidence::None
-            } else {
-                StringEvidence::Opaque
+            let left: StringEvidence =
+                string_evidence_at_depth(&binary.left, bindings, symbols, depth.saturating_add(1));
+            let right: StringEvidence =
+                string_evidence_at_depth(&binary.right, bindings, symbols, depth.saturating_add(1));
+            match (left, right) {
+                (StringEvidence::BasicPlane, StringEvidence::BasicPlane) => {
+                    StringEvidence::BasicPlane
+                }
+                (StringEvidence::None, StringEvidence::None) => StringEvidence::None,
+                _ => StringEvidence::Opaque,
             }
         }
         Expression::CallExpression(call) => match call.callee.get_inner_expression() {
@@ -363,24 +395,8 @@ impl<'a> Visit<'a> for StringSubjectCollector<'_> {
     }
 
     fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
-        let direct: Option<SymbolId> =
-            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) =
-                &assignment.left
-            {
-                reference_symbol(target, self.symbols)
-            } else {
-                None
-            };
         for symbol_id in written_symbols(&assignment.left, self.symbols) {
-            let evidence: StringEvidence = if self.conditional_depth == 0
-                && assignment.operator == AssignmentOperator::Assign
-                && direct == Some(symbol_id)
-            {
-                string_evidence(&assignment.right, &self.evidence, self.symbols)
-            } else {
-                StringEvidence::Opaque
-            };
-            self.assign(symbol_id, evidence);
+            self.assign(symbol_id, StringEvidence::Opaque);
         }
         oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
     }

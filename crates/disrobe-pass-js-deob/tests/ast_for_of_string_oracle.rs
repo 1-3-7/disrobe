@@ -71,6 +71,41 @@ for (var _i = 0, _s = "abc"; _i < _s.length; _i++) {
 print(out.join(','));
 "#;
 
+const BASIC_PLANE_STATIC_STRING_EXPRESSIONS: &str = r#"
+var concatenated = "ab" + "c";
+for (var i = 0; i < concatenated.length; i++) {
+  var ch = concatenated[i];
+  print(ch);
+}
+var templated = `d${"e"}f`;
+for (var j = 0; j < templated.length; j++) {
+  var ch = templated[j];
+  print(ch);
+}
+"#;
+
+const UNSAFE_STRING_EXPRESSIONS: &str = r#"
+var astralConcatenated = "a" + "\u{1F600}" + "b";
+for (var i = 0; i < astralConcatenated.length; i++) {
+  var ch = astralConcatenated[i];
+  print(ch.codePointAt(0).toString(16));
+}
+var astralTemplated = `a${"\u{1F600}"}b`;
+for (var j = 0; j < astralTemplated.length; j++) {
+  var ch = astralTemplated[j];
+  print(ch.codePointAt(0).toString(16));
+}
+function unsafeInputs() {
+  var dynamic = "a" + unknown;
+  for (var k = 0; k < dynamic.length; k++) { var ch = dynamic[k]; }
+  var coercionSensitive = "a" + 1;
+  for (var l = 0; l < coercionSensitive.length; l++) { var ch = coercionSensitive[l]; }
+}
+var reassigned = "a";
+reassigned = "b" + "c";
+for (var m = 0; m < reassigned.length; m++) { var ch = reassigned[m]; }
+"#;
+
 const ARRAY_SUBJECT: &str = r"
 var items = ['a', 'b', 'c'];
 var out = [];
@@ -142,6 +177,35 @@ fn an_index_loop_over_a_basic_plane_string_literal_keeps_its_behaviour() {
         stats.index_loops_to_for_of, 1,
         "a string literal with no astral code point iterates identically both ways, so refusing it would cost recovery for no correctness gain:
 {recovered}"
+    );
+}
+
+#[test]
+fn index_loops_over_static_basic_plane_string_expressions_are_resugared() {
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(BASIC_PLANE_STATIC_STRING_EXPRESSIONS);
+    assert_recovered_equivalent(
+        "basic plane static string expressions",
+        BASIC_PLANE_STATIC_STRING_EXPRESSIONS,
+        &recovered,
+    );
+    assert_eq!(
+        stats.index_loops_to_for_of, 2,
+        "static string concatenations and template substitutions without astral code points iterate identically both ways:\n{recovered}"
+    );
+}
+
+#[test]
+fn unsafe_string_expression_subjects_are_not_resugared() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(UNSAFE_STRING_EXPRESSIONS);
+    assert_recovered_equivalent(
+        "unsafe string expressions",
+        UNSAFE_STRING_EXPRESSIONS,
+        &recovered,
+    );
+    assert_eq!(
+        stats.index_loops_to_for_of, 0,
+        "astral, dynamic, coercion-sensitive, and reassigned string subjects must remain index loops:\n{recovered}"
     );
 }
 
