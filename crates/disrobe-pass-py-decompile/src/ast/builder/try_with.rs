@@ -7,7 +7,7 @@ use super::function_meta::load_const;
 use super::loops::{
     active_loop_exit_tail_range, exprs_equal_ignoring_lines, find_for_with_cold_handler, find_loop,
     for_cold_handler_exit_epilogue, is_walrus_store_shape, loop_header_owns_test, non_empty,
-    try_enclosed_by_loop,
+    stmts_equal_ignoring_lines, try_enclosed_by_loop,
 };
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
@@ -4935,13 +4935,23 @@ fn shared_construct_exit_return(raw: &[Stmt], handlers: &[ExceptHandler]) -> Opt
     if handlers.is_empty() {
         return None;
     }
-    let exit_repr: String = format!("{exit:?}");
     let all_share: bool = handlers.iter().all(|h: &ExceptHandler| {
         h.body
             .last()
-            .is_some_and(|s: &Stmt| format!("{s:?}") == exit_repr)
+            .is_some_and(|s: &Stmt| stmts_equal_ignoring_lines(s, exit))
     });
     all_share.then(|| vec![exit.clone()])
+}
+
+fn shared_construct_exit_return_at_range(
+    raw: &[Stmt],
+    handlers: &[ExceptHandler],
+    active_range: Option<(usize, usize)>,
+    candidate_range: (usize, usize),
+) -> Option<Vec<Stmt>> {
+    (active_range == Some(candidate_range))
+        .then(|| shared_construct_exit_return(raw, handlers))
+        .flatten()
 }
 
 fn strip_shared_exit_suffix(
@@ -4951,18 +4961,14 @@ fn strip_shared_exit_suffix(
     if continuation.is_empty() {
         return handlers;
     }
-    let cont_reprs: Vec<String> = continuation
-        .iter()
-        .map(|s: &Stmt| format!("{s:?}"))
-        .collect();
     handlers
         .into_iter()
         .map(|mut h: ExceptHandler| {
             let mut match_len: usize = 0;
-            while match_len < cont_reprs.len() && match_len < h.body.len() {
+            while match_len < continuation.len() && match_len < h.body.len() {
                 let body_idx: usize = h.body.len() - 1 - match_len;
-                let cont_idx: usize = cont_reprs.len() - 1 - match_len;
-                if format!("{:?}", h.body[body_idx]) == cont_reprs[cont_idx] {
+                let cont_idx: usize = continuation.len() - 1 - match_len;
+                if format!("{:?}", h.body[body_idx]) == format!("{:?}", continuation[cont_idx]) {
                     match_len += 1;
                 } else {
                     break;
@@ -5438,8 +5444,6 @@ fn structure_try_except_family(
                     (raw, tail)
                 } else if body_had_comp {
                     (Vec::new(), raw)
-                } else if let Some(shared) = shared_construct_exit_return(&raw, &handlers) {
-                    (Vec::new(), shared)
                 } else {
                     (raw, Vec::new())
                 }
@@ -6024,8 +6028,12 @@ fn structure_pre311_try_except(
         None => Vec::new(),
     };
     if let Some((else_start, else_end)) = else_region
-        && let Some(shared) = shared_construct_exit_return(&orelse, &handlers)
-        && loop_owns_shared_exit_tail(Some((else_start, else_end)))
+        && let Some(shared) = shared_construct_exit_return_at_range(
+            &orelse,
+            &handlers,
+            active_loop_exit_tail_range(),
+            (else_start, else_end),
+        )
     {
         orelse.clear();
         handlers = strip_shared_exit_return_with_loop_ownership(
@@ -9661,10 +9669,12 @@ mod with_region_bounds {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::super::DecodedStream;
+    use super::super::loops::stmts_equal_ignoring_lines;
     use super::{
         SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
-        loop_frame_owns_shared_exit_tail, shared_construct_exit_return, single_residual,
-        special_method_name, strip_shared_exit_return,
+        loop_frame_owns_shared_exit_tail, shared_construct_exit_return,
+        shared_construct_exit_return_at_range, single_residual, special_method_name,
+        strip_shared_exit_return,
     };
     use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt};
     use crate::bytecode::flow::ExceptionTableEntry;
@@ -9755,6 +9765,78 @@ mod with_region_bounds {
             shared_construct_exit_return(std::slice::from_ref(&exit), &handlers),
             None
         );
+    }
+
+    #[test]
+    fn shared_exit_return_accepts_the_same_nested_expression_with_shifted_lines() {
+        let exit: Stmt = Stmt::Return(Some(Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::Or,
+            values: vec![
+                Expr::Name {
+                    id: "value".to_owned(),
+                    ctx: ExprCtx::Load,
+                    line: Some(11),
+                },
+                Expr::Constant {
+                    value: ConstValue::None,
+                    line: Some(11),
+                },
+            ],
+        }));
+        let handler_return: Stmt = Stmt::Return(Some(Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::Or,
+            values: vec![
+                Expr::Name {
+                    id: "value".to_owned(),
+                    ctx: ExprCtx::Load,
+                    line: Some(29),
+                },
+                Expr::Constant {
+                    value: ConstValue::None,
+                    line: Some(29),
+                },
+            ],
+        }));
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![handler_return],
+            line: Some(29),
+        }];
+        assert_eq!(
+            shared_construct_exit_return(std::slice::from_ref(&exit), &handlers),
+            Some(vec![exit])
+        );
+    }
+
+    #[test]
+    fn matching_returns_at_distinct_instruction_ranges_remain_unpromoted() {
+        let exit: Stmt = named_return("value", 11);
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("value", 29)],
+            line: Some(29),
+        }];
+
+        assert_eq!(
+            shared_construct_exit_return_at_range(
+                std::slice::from_ref(&exit),
+                &handlers,
+                Some((7, 11)),
+                (12, 16),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn structural_stmt_comparison_ignores_nested_lines_but_not_return_values() {
+        let left: Stmt = named_return("value", 11);
+        let shifted: Stmt = named_return("value", 29);
+        let different: Stmt = named_return("other", 29);
+        assert!(stmts_equal_ignoring_lines(&left, &shifted));
+        assert!(!stmts_equal_ignoring_lines(&left, &different));
     }
 
     #[test]

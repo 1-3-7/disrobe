@@ -886,6 +886,53 @@ fn is_simple_loop_epilogue_stmt(stmt: &Stmt) -> bool {
 struct LineStripper;
 
 impl crate::ast::visitor::VisitorMut for LineStripper {
+    fn visit_stmt_mut(&mut self, stmt: &mut Stmt) {
+        match stmt {
+            Stmt::FunctionDef {
+                line,
+                args,
+                type_params,
+                ..
+            } => {
+                *line = None;
+                Self::strip_argument_lines(args);
+                self.strip_type_param_lines(type_params);
+            }
+            Stmt::ClassDef {
+                line, type_params, ..
+            }
+            | Stmt::TypeAlias {
+                line, type_params, ..
+            } => {
+                *line = None;
+                self.strip_type_param_lines(type_params);
+            }
+            Stmt::Assign { line, .. }
+            | Stmt::AugAssign { line, .. }
+            | Stmt::AnnAssign { line, .. }
+            | Stmt::For { line, .. }
+            | Stmt::While { line, .. }
+            | Stmt::If { line, .. }
+            | Stmt::With { line, .. }
+            | Stmt::Match { line, .. }
+            | Stmt::Raise { line, .. }
+            | Stmt::Try { line, .. }
+            | Stmt::TryStar { line, .. }
+            | Stmt::Assert { line, .. }
+            | Stmt::ImportFrom { line, .. } => *line = None,
+            Stmt::Return(_)
+            | Stmt::Delete(_)
+            | Stmt::Import(_)
+            | Stmt::Global(_)
+            | Stmt::Nonlocal(_)
+            | Stmt::Expr(_)
+            | Stmt::Pass
+            | Stmt::Break
+            | Stmt::Continue => {}
+        }
+        crate::ast::visitor::walk_stmt_mut(self, stmt);
+    }
+
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
         match expr {
             Expr::Constant { line, .. }
@@ -897,6 +944,51 @@ impl crate::ast::visitor::VisitorMut for LineStripper {
         }
         crate::ast::visitor::walk_expr_mut(self, expr);
     }
+
+    fn visit_handler_mut(&mut self, handler: &mut crate::ast::node::ExceptHandler) {
+        handler.line = None;
+        crate::ast::visitor::walk_handler_mut(self, handler);
+    }
+}
+
+impl LineStripper {
+    fn strip_argument_lines(args: &mut crate::ast::node::Arguments) {
+        for arg in args
+            .posonly
+            .iter_mut()
+            .chain(args.args.iter_mut())
+            .chain(args.kwonly.iter_mut())
+        {
+            arg.line = None;
+        }
+        if let Some(arg) = args.vararg.as_mut() {
+            arg.line = None;
+        }
+        if let Some(arg) = args.kwarg.as_mut() {
+            arg.line = None;
+        }
+    }
+
+    fn strip_type_param_lines(&mut self, type_params: &mut [crate::ast::node::TypeParam]) {
+        for type_param in type_params {
+            match type_param {
+                crate::ast::node::TypeParam::TypeVar { bound, default, .. } => {
+                    if let Some(bound) = bound.as_mut() {
+                        crate::ast::visitor::VisitorMut::visit_expr_mut(self, bound);
+                    }
+                    if let Some(default) = default.as_mut() {
+                        crate::ast::visitor::VisitorMut::visit_expr_mut(self, default);
+                    }
+                }
+                crate::ast::node::TypeParam::ParamSpec { default, .. }
+                | crate::ast::node::TypeParam::TypeVarTuple { default, .. } => {
+                    if let Some(default) = default.as_mut() {
+                        crate::ast::visitor::VisitorMut::visit_expr_mut(self, default);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(super) fn exprs_equal_ignoring_lines(a: &Expr, b: &Expr) -> bool {
@@ -906,6 +998,16 @@ pub(super) fn exprs_equal_ignoring_lines(a: &Expr, b: &Expr) -> bool {
     let mut stripper: LineStripper = LineStripper;
     stripper.visit_expr_mut(&mut sa);
     stripper.visit_expr_mut(&mut sb);
+    sa == sb
+}
+
+pub(super) fn stmts_equal_ignoring_lines(a: &Stmt, b: &Stmt) -> bool {
+    use crate::ast::visitor::VisitorMut as _;
+    let mut sa: Stmt = a.clone();
+    let mut sb: Stmt = b.clone();
+    let mut stripper: LineStripper = LineStripper;
+    stripper.visit_stmt_mut(&mut sa);
+    stripper.visit_stmt_mut(&mut sb);
     sa == sb
 }
 
@@ -3673,11 +3775,74 @@ fn redundant_entry_guard_start(
 mod for_target_bounds {
     use super::super::DecodedStream;
     use super::super::try_with::{LoopKind, LoopRegion};
-    use super::{find_for_loop, find_loop, loop_tail_start, recover_for_target};
-    use crate::ast::node::Expr;
+    use super::{
+        find_for_loop, find_loop, loop_tail_start, recover_for_target, stmts_equal_ignoring_lines,
+    };
+    use crate::ast::node::{Arg, Arguments, Expr, ExprCtx, Stmt, TypeParam};
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
     use disrobe_py_marshal::{CodeEra, CodeObject, Object};
+
+    fn named_expr(name: &str, line: u32) -> Expr {
+        Expr::Name {
+            id: name.to_owned(),
+            ctx: ExprCtx::Load,
+            line: Some(line),
+        }
+    }
+
+    #[test]
+    fn stmt_comparison_ignores_argument_and_type_parameter_line_metadata() {
+        let function = |line: u32| Stmt::FunctionDef {
+            name: "f".to_owned(),
+            type_params: vec![TypeParam::TypeVar {
+                name: "T".to_owned(),
+                bound: Some(named_expr("Bound", line)),
+                default: Some(named_expr("Default", line)),
+            }],
+            args: Arguments {
+                args: vec![Arg {
+                    arg: "value".to_owned(),
+                    annotation: Some(Box::new(named_expr("Annotation", line))),
+                    default: Some(Box::new(named_expr("ArgumentDefault", line))),
+                    line: Some(line),
+                }],
+                ..Arguments::default()
+            },
+            body: vec![Stmt::Pass],
+            decorators: Vec::new(),
+            returns: None,
+            is_async: false,
+            docstring: None,
+            line: Some(line),
+        };
+        let class = |line: u32| Stmt::ClassDef {
+            name: "C".to_owned(),
+            type_params: vec![TypeParam::ParamSpec {
+                name: "P".to_owned(),
+                default: Some(named_expr("Parameters", line)),
+            }],
+            bases: Vec::new(),
+            keywords: Vec::new(),
+            body: vec![Stmt::Pass],
+            decorators: Vec::new(),
+            docstring: None,
+            line: Some(line),
+        };
+        let alias = |line: u32| Stmt::TypeAlias {
+            name: "Alias".to_owned(),
+            type_params: vec![TypeParam::TypeVarTuple {
+                name: "Ts".to_owned(),
+                default: Some(named_expr("Types", line)),
+            }],
+            value: named_expr("Value", line),
+            line: Some(line),
+        };
+
+        assert!(stmts_equal_ignoring_lines(&function(11), &function(29)));
+        assert!(stmts_equal_ignoring_lines(&class(11), &class(29)));
+        assert!(stmts_equal_ignoring_lines(&alias(11), &alias(29)));
+    }
 
     fn code_with_names(names: &[&str]) -> CodeObject {
         let mut code: CodeObject = CodeObject::new(CodeEra::Py311Plus);
