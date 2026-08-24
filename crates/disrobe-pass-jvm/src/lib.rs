@@ -60,6 +60,7 @@ pub mod dex_builder;
 pub mod error;
 pub mod format_wire;
 pub mod frame_infer;
+pub mod hierarchy;
 pub mod jar;
 pub mod jni;
 pub mod jsr_inline;
@@ -190,6 +191,7 @@ pub use dex2jar::{
 pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};
 pub use frame_infer::{FrameInferOutcome, FrameInferReport, FrameState, infer_frames};
+pub use hierarchy::{HierarchyKind, HierarchyNode, classfile_hierarchy_node, dex_hierarchy_nodes};
 pub use jar::{
     AabExtract, AabModule, AarExtract, ApkExtract, ApksExtract, JIMAGE_MAGIC, JMOD_MAGIC, JarEntry,
     JarExtract, Jimage, JimageHeader, JimageResource, JmodExtract, extract as extract_jar,

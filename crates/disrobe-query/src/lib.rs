@@ -2,6 +2,7 @@
 #![deny(unreachable_pub)]
 
 pub mod eval;
+pub mod jvm;
 pub mod lift;
 pub mod model;
 pub mod navigation;
@@ -14,6 +15,10 @@ use disrobe_ir::{Envelope, EnvelopeError};
 use disrobe_nir::{NirCodecError, NirModule, decode_nir};
 
 pub use eval::evaluate;
+pub use jvm::{
+    JvmHierarchyDiagnostic, JvmHierarchyNode, JvmImplementorMatch, JvmImplementorResult,
+    JvmTypeKind, MAX_JVM_HIERARCHY_EDGES, MAX_JVM_HIERARCHY_NODES, resolve_jvm_implementors,
+};
 pub use lift::{disasm_to_nir, disasm_to_nir_as};
 pub use model::{
     BasicBlock, BlockKind, CallGraph, CallGraphEdge, CallGraphNode, Function, InsnClass,
@@ -45,6 +50,8 @@ pub enum QueryError {
     DecodeNir(String),
     #[error(transparent)]
     Parse(#[from] ParseError),
+    #[error("concrete implementors require a JVM or DEX hierarchy input")]
+    UnsupportedHierarchyQuery,
 }
 
 pub fn module_from_envelope(env: &Envelope) -> Result<Module, QueryError> {
@@ -75,6 +82,9 @@ pub fn run(module: &Module, query: &Query) -> QueryResult {
 
 pub fn run_expr(module: &Module, expr: &str) -> Result<QueryResult, QueryError> {
     let query: Query = parse_query(expr)?;
+    if matches!(query, Query::ConcreteImplementors { .. }) {
+        return Err(QueryError::UnsupportedHierarchyQuery);
+    }
     Ok(evaluate(module, &query))
 }
 
@@ -150,6 +160,14 @@ mod tests {
         assert_eq!(module.functions().len(), 2);
         let result: QueryResult = run_expr(&module, "calls-to helper").expect("query");
         assert_eq!(result.count(), 1);
+    }
+
+    #[test]
+    fn hierarchy_query_over_an_ir_module_returns_a_typed_error() {
+        let module: Module = module_from_envelope(&disasm_envelope()).expect("module");
+        let error: QueryError = run_expr(&module, "implementors Lexample/Root;")
+            .expect_err("hierarchy requires hierarchy input");
+        assert!(matches!(error, QueryError::UnsupportedHierarchyQuery));
     }
 
     #[test]

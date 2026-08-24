@@ -36,6 +36,11 @@ pub fn evaluate(module: &Module, query: &Query) -> QueryResult {
             capability: *capability,
             matches: capability_sites(module, *capability),
         },
+        Query::ConcreteImplementors { target } => QueryResult::Unsupported {
+            message: format!(
+                "concrete implementors of `{target}` require a JVM or DEX hierarchy input"
+            ),
+        },
     }
 }
 

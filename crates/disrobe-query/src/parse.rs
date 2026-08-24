@@ -12,7 +12,7 @@ pub enum ParseError {
     #[error("query `{verb}` argument is too long; max {max} bytes")]
     ArgumentTooLong { verb: &'static str, max: usize },
     #[error(
-        "unknown query verb `{0}`; expected one of: functions, calls-to, xrefs-to, string-decoders, complexity-over, capability"
+        "unknown query verb `{0}`; expected one of: functions, calls-to, xrefs-to, string-decoders, complexity-over, capability, implementors"
     )]
     UnknownVerb(String),
     #[error("query `{verb}` requires an argument: {hint}")]
@@ -74,6 +74,14 @@ pub fn parse_query(expr: &str) -> Result<Query, ParseError> {
                 Capability::parse(&raw).ok_or(ParseError::BadCapability(raw))?;
             Ok(Query::CapabilitySites { capability })
         }
+        "implementors" | "concrete-implementors" => {
+            let target: String = require_arg(
+                "implementors",
+                "a JVM or DEX type descriptor such as Lpkg/Type;",
+                rest,
+            )?;
+            Ok(Query::ConcreteImplementors { target })
+        }
         _ => Err(ParseError::UnknownVerb(verb.to_owned())),
     }
 }
@@ -134,6 +142,12 @@ mod tests {
             parse_query("capability network").expect("ok"),
             Query::CapabilitySites {
                 capability: Capability::Network
+            }
+        );
+        assert_eq!(
+            parse_query("implementors Lexample/Root;").expect("ok"),
+            Query::ConcreteImplementors {
+                target: "Lexample/Root;".to_owned()
             }
         );
     }

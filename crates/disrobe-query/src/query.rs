@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::jvm::JvmImplementorResult;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Capability {
@@ -135,6 +137,7 @@ pub enum Query {
     StringDecoders,
     ComplexityOver { threshold: u32 },
     CapabilitySites { capability: Capability },
+    ConcreteImplementors { target: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -206,6 +209,10 @@ pub enum QueryResult {
         capability: Capability,
         matches: Vec<CapabilitySiteMatch>,
     },
+    ConcreteImplementors(JvmImplementorResult),
+    Unsupported {
+        message: String,
+    },
 }
 
 impl QueryResult {
@@ -217,6 +224,8 @@ impl QueryResult {
             Self::XrefsTo { matches, .. } => matches.len(),
             Self::StringDecoders { matches } => matches.len(),
             Self::CapabilitySites { matches, .. } => matches.len(),
+            Self::ConcreteImplementors(result) => result.matches.len(),
+            Self::Unsupported { .. } => 0,
         }
     }
 }

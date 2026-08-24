@@ -850,7 +850,7 @@ fn decode_mutf8(raw: &[u8], base_offset: usize) -> Result<String> {
     Ok(out)
 }
 
-fn parse_string_data(bytes: &[u8], offset: usize) -> Result<String> {
+pub(super) fn parse_string_data(bytes: &[u8], offset: usize) -> Result<String> {
     let (declared_utf16_size, data_start): (u32, usize) = read_uleb128(bytes, offset)?;
     let data: &[u8] = bytes.get(data_start..).ok_or(Error::BadBytecode {
         offset: data_start,

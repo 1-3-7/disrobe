@@ -11,6 +11,7 @@ disrobe query app.exe xrefs-to sekret           # references to a symbol or addr
 disrobe query app.exe string-decoders           # decoder-shaped functions (loops + byte arith)
 disrobe query app.exe complexity-over 20        # functions over a cyclomatic threshold
 disrobe query app.exe capability network        # instructions tied to a capability
+disrobe query classes implementors 'Lpkg/Root;' # concrete JVM/DEX implementors
 ```
 
 The query layer is built on the same function discovery the disassembler uses (call-target and prologue scanning), so it works without a symbol table. It accepts a `.dr` envelope at the Disasm or Mir rung; an envelope at any other rung is rejected with an explicit unsupported-rung error rather than silently returning empty or wrong results. The six verbs are:
@@ -23,8 +24,11 @@ The query layer is built on the same function discovery the disassembler uses (c
 | `string-decoders` | Functions shaped like a string decoder: a loop plus byte arithmetic over a buffer. |
 | `complexity-over <n>` | Functions whose cyclomatic complexity exceeds a threshold, to triage the dense routines first. |
 | `capability <name>` | Instructions tied to a capability category (network, filesystem, process, crypto, and so on). |
+| `implementors <descriptor>` | Concrete JVM or DEX classes reachable from an interface or abstract-class descriptor, with a child-to-target inheritance proof. |
 
 Every query honors the global `--json` flag, so the output drops straight into a script.
+
+`implementors` accepts a single `.class` or `.dex` file, or a directory containing `.class` and `.dex` files. JVM descriptors such as `Lpkg/Type;` use nonempty components and allow Unicode, hyphens, and control characters except `.`, `;`, `[`, and `/`. DEX descriptors follow the file version's `SimpleName` grammar: ASCII letters and digits, `$`, `-`, `_`, and the format's declared Unicode ranges are valid in every position; DEX 040 additionally admits its declared space characters. Controls, parentheses, and code points outside those ranges are rejected. Target descriptors are limited to 1,048,576 UTF-8 bytes. Quote descriptors at a shell prompt because the terminator is a semicolon. Text output escapes control characters; JSON preserves accepted descriptors. Results and proof paths are sorted by descriptor. The result records missing targets, duplicate definitions, malformed edges, cycles, rejected directory artifacts, and every traversal budget that produced a partial result. A rejected `.class` or `.dex` in a directory does not discard valid siblings. Malformed, missing-definition, and rejected-artifact identities are capped independently by count and byte length, with typed truncation diagnostics. APK and JAR containers are not query inputs, and DEX 041 container-relative layouts are rejected explicitly.
 
 ## Navigation through MCP
 
