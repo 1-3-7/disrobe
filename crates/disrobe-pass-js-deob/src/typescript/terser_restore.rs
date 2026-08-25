@@ -94,6 +94,7 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
                 ctx.member_accesses.insert(member);
             }
             ctx.indexed_elements_called |= indexed_element_called_on_reference(nodes, node_id);
+            ctx.called_as_predicate |= direct_call_used_as_condition(nodes, node_id);
             if let Some((member, literals)) =
                 static_member_call_literals_on_reference(nodes, node_id)
                 && !literals.is_empty()
@@ -321,6 +322,32 @@ fn indexed_element_called_on_reference(nodes: &AstNodes<'_>, reference_node: Nod
         return false;
     };
     call.callee.span() == member.span()
+}
+
+fn direct_call_used_as_condition(nodes: &AstNodes<'_>, reference_node: NodeId) -> bool {
+    let Some(call_node) = nodes.parent_node(reference_node) else {
+        return false;
+    };
+    let AstKind::CallExpression(call) = call_node.kind() else {
+        return false;
+    };
+    if call.optional || call.type_parameters.is_some() {
+        return false;
+    }
+    let AstKind::IdentifierReference(reference) = nodes.kind(reference_node) else {
+        return false;
+    };
+    if call.callee.span() != reference.span {
+        return false;
+    }
+    let Some(condition_node) = nodes.parent_node(call_node.id()) else {
+        return false;
+    };
+    match condition_node.kind() {
+        AstKind::ConditionalExpression(conditional) => conditional.test.span() == call.span,
+        AstKind::IfStatement(statement) => statement.test.span() == call.span,
+        _ => false,
+    }
 }
 
 fn static_member_call_literals_on_reference(

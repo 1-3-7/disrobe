@@ -53,6 +53,9 @@ impl HeuristicNameSource {
     }
 
     fn lookup_member_hint(&self, context: &Context) -> Option<(&'static str, Confidence)> {
+        if context.called_as_predicate {
+            return Some(("predicate", Confidence::MEDIUM));
+        }
         if context.member_accesses.contains("push")
             && context.member_accesses.contains("join")
             && context
@@ -205,6 +208,16 @@ mod tests {
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("slice resolves");
         assert_eq!(s.name, "source");
         assert_eq!(s.confidence, Confidence::LOW);
+    }
+
+    #[test]
+    fn a_direct_condition_call_is_a_medium_confidence_predicate() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Parameter, ScopeKey(0));
+        ctx.called_as_predicate = true;
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("predicate resolves");
+        assert_eq!(s.name, "predicate");
+        assert_eq!(s.confidence, Confidence::MEDIUM);
     }
 
     #[test]

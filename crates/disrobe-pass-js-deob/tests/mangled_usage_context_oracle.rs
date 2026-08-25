@@ -475,3 +475,89 @@ fn incomplete_listener_evidence_remains_a_list() {
         assert_eq!(node_capture(&report.rewritten), node_capture(source));
     }
 }
+
+const CONDITIONAL_PREDICATE: &str = r#"
+function partition(values, a) {
+  var matched = [];
+  var rejected = [];
+  values.forEach(function (value, index) {
+    a(value, index) ? matched.push(value) : rejected.push(value);
+  });
+  print(matched.join(",") + ":" + rejected.join(","));
+}
+partition([1, 2, 3], function (value) { return value > 1; });
+"#;
+
+#[test]
+fn direct_conditional_test_calls_receive_the_predicate_role_deterministically() {
+    let first: TerserRestoreReport = restore_terser_mangled(CONDITIONAL_PREDICATE);
+    let second: TerserRestoreReport = restore_terser_mangled(CONDITIONAL_PREDICATE);
+    assert!(
+        first
+            .rewritten
+            .contains("function partition(values, predicate)"),
+        "a scope-resolved call used directly as a conditional test must name its predicate role:\n{}",
+        first.rewritten
+    );
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved(
+        "conditional-predicate",
+        CONDITIONAL_PREDICATE,
+        &first.rewritten,
+    );
+    assert_eq!(
+        node_capture(&first.rewritten),
+        node_capture(CONDITIONAL_PREDICATE)
+    );
+}
+
+const IF_PREDICATE_COLLISION: &str = r#"
+var predicate = "outer";
+function accepts(a, value) {
+  if (a(value)) {
+    print(predicate + ":yes");
+  }
+}
+accepts(function (value) { return value === 3; }, 3);
+"#;
+
+#[test]
+fn if_test_predicate_roles_do_not_shadow_outer_bindings() {
+    let report: TerserRestoreReport = restore_terser_mangled(IF_PREDICATE_COLLISION);
+    assert!(
+        report
+            .rewritten
+            .contains("function accepts(predicate_2, value)"),
+        "the predicate role must be suffixed rather than shadow the outer binding:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved(
+        "if-predicate-collision",
+        IF_PREDICATE_COLLISION,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(IF_PREDICATE_COLLISION)
+    );
+}
+
+const VALUE_CALL: &str = r"
+function transform(a, value) {
+  var b = a(value);
+  print(b);
+}
+transform(function (value) { return value + 1; }, 2);
+";
+
+#[test]
+fn calls_consumed_as_values_refuse_the_predicate_role() {
+    let report: TerserRestoreReport = restore_terser_mangled(VALUE_CALL);
+    assert!(
+        !report.rewritten.contains("predicate"),
+        "a call result used as a value does not prove a predicate role:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("value-call", VALUE_CALL, &report.rewritten);
+    assert_eq!(node_capture(&report.rewritten), node_capture(VALUE_CALL));
+}

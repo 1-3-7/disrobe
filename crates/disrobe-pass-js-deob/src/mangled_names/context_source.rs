@@ -133,6 +133,7 @@ mod tests {
             member_accesses: BTreeSet::new(),
             member_call_literals: std::collections::BTreeMap::new(),
             indexed_elements_called: false,
+            called_as_predicate: false,
             nearby_strings: BTreeSet::new(),
             assigned_from: BTreeSet::new(),
         };
