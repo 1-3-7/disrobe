@@ -90,7 +90,7 @@ Each band compiles the same pinned module list on its own interpreter, then reco
 
 | Band | Interpreter | Recovered | Rate | Modules | Enforced on |
 |---|---|---|---|---|---|
-| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5224 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->95.71%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
+| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5225 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->95.73%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
 | 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5433 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->96.36%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
 | 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5402 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.45%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | tag, schedule |
 | 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5715 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->95.79%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | tag, schedule |
