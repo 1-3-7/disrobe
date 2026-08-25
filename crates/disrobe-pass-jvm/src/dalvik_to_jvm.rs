@@ -119,6 +119,7 @@ struct Emitter<'a> {
     poisoned_regs: BTreeSet<u16>,
     const_zero: BTreeSet<u16>,
     pending_new: BTreeMap<u16, (String, u32)>,
+    discarded_new_pcs: BTreeSet<u32>,
     eager_new_pcs: BTreeSet<u32>,
     iinc_suppressed: BTreeSet<u32>,
     eager_new_active: BTreeMap<u16, String>,
@@ -295,6 +296,7 @@ pub(crate) fn emit_method_code(
         return None;
     };
     let eager_new_pcs: BTreeSet<u32> = collect_eager_new_pcs(dex, &insns, &collect_leaders(&insns));
+    let discarded_new_pcs: BTreeSet<u32> = collect_discarded_new_pcs(&insns);
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
     let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
         collect_fill_payloads(&insns, &item.insns);
@@ -313,6 +315,7 @@ pub(crate) fn emit_method_code(
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
+        discarded_new_pcs,
         eager_new_pcs,
         iinc_suppressed,
         eager_new_active: BTreeMap::new(),
@@ -469,6 +472,7 @@ pub(crate) fn emit_branch_method_code(
         record_bail_kind("new-instance-pair-untrackable");
         return None;
     }
+    let discarded_new_pcs: BTreeSet<u32> = collect_discarded_new_pcs(&insns);
     let fill_payloads: BTreeMap<u32, crate::dalvik::ArrayDataPayload> =
         collect_fill_payloads(&insns, &item.insns);
     let entry_pc: u32 = insns.first().map_or(0, |i: &DalvikInsn| i.pc);
@@ -678,6 +682,7 @@ pub(crate) fn emit_branch_method_code(
         poisoned_regs: BTreeSet::new(),
         const_zero: BTreeSet::new(),
         pending_new: BTreeMap::new(),
+        discarded_new_pcs,
         eager_new_pcs,
         iinc_suppressed,
         eager_new_active: BTreeMap::new(),
@@ -1484,11 +1489,44 @@ fn new_instance_pairs_are_trackable(dex: &DexFile, insns: &[DalvikInsn]) -> bool
         };
         if paired_init_pc(dex, insns, k, dest, &owner).is_none()
             && !new_dest_discarded_by_renew(dex, insns, k, dest)
+            && !new_dest_immediately_discarded_by_literal(insns, k, dest)
         {
             return false;
         }
     }
     true
+}
+
+fn new_dest_immediately_discarded_by_literal(
+    insns: &[DalvikInsn],
+    from_idx: usize,
+    dest: u16,
+) -> bool {
+    let Some(insn): Option<&DalvikInsn> = insns.get(from_idx) else {
+        return false;
+    };
+    let Some(follow): Option<&DalvikInsn> = insns.get(from_idx + 1) else {
+        return false;
+    };
+    insn.pc
+        .checked_add(u32::from(insn.width))
+        .is_some_and(|next_pc: u32| next_pc == follow.pc)
+        && matches!(follow.op, 0x12..=0x19)
+        && follow.regs.first() == Some(&dest)
+}
+
+fn collect_discarded_new_pcs(insns: &[DalvikInsn]) -> BTreeSet<u32> {
+    insns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, insn): (usize, &DalvikInsn)| {
+            if insn.op != 0x22 {
+                return None;
+            }
+            let dest: u16 = *insn.regs.first()?;
+            new_dest_immediately_discarded_by_literal(insns, index, dest).then_some(insn.pc)
+        })
+        .collect()
 }
 
 fn new_dest_discarded_by_renew(
@@ -3002,6 +3040,15 @@ impl Emitter<'_> {
             return;
         }
         self.pending_new.remove(&dest);
+        if self.discarded_new_pcs.contains(&insn.pc) {
+            let class_idx: u16 = self.cp.class_const(&owner);
+            self.push(0xBB);
+            self.push_u16(class_idx);
+            self.adjust_stack(1);
+            self.push(0x57);
+            self.adjust_stack(-1);
+            return;
+        }
         if self.eager_new_pcs.contains(&insn.pc) {
             let class_idx: u16 = self.cp.class_const(&owner);
             self.push(0xBB);

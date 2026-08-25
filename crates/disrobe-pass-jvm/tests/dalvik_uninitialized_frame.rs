@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_jvm::dex_builder::{
-    ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef, Reloc, insn,
+    CatchHandler, ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef,
+    Reloc, TryItem, insn,
 };
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 use disrobe_pass_jvm::{ClassFile, ConstantPoolEntry, parse_classfile};
@@ -804,6 +805,7 @@ fn make_twonews_dex_with_shape(
     alias_op: u8,
     second_owner: &str,
     init_method: MethodRef,
+    include_skipped_payload: bool,
 ) -> Vec<u8> {
     let mut sample_init_units: Vec<u16> = Vec::new();
     let mut sample_init_relocs: Vec<Reloc> = Vec::new();
@@ -908,6 +910,152 @@ fn make_twonews_dex_with_shape(
         relocations: overwrite_relocs,
     };
 
+    let mut discard_units: Vec<u16> = Vec::new();
+    let mut discard_relocs: Vec<Reloc> = Vec::new();
+    let discard_new: usize = discard_units.len();
+    discard_units.extend(insn::fmt21c(0x22, 0, 0));
+    discard_relocs.push(Reloc::TypeIndex {
+        unit: discard_new + 1,
+        descriptor: "LSample;".to_owned(),
+    });
+    discard_units.extend(insn::fmt11n(0x12, 0, 7));
+    discard_units.push(0x38 | (1u16 << 8));
+    discard_units.push(3);
+    discard_units.extend(insn::fmt11x(0x0F, 0));
+    discard_units.extend(insn::fmt11x(0x0F, 0));
+    let discard: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "I".to_owned(),
+                params: vec!["Z".to_owned()],
+            },
+            name: "discard".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 1,
+        outs_size: 0,
+        insns: discard_units,
+        relocations: discard_relocs,
+    };
+
+    let mut discard_wide_units: Vec<u16> = Vec::new();
+    let mut discard_wide_relocs: Vec<Reloc> = Vec::new();
+    let discard_wide_new: usize = discard_wide_units.len();
+    discard_wide_units.extend(insn::fmt21c(0x22, 0, 0));
+    discard_wide_relocs.push(Reloc::TypeIndex {
+        unit: discard_wide_new + 1,
+        descriptor: "LSample;".to_owned(),
+    });
+    discard_wide_units.extend(insn::fmt21s(0x16, 0, 7));
+    discard_wide_units.push(0x38 | (2u16 << 8));
+    discard_wide_units.push(3);
+    discard_wide_units.extend(insn::fmt11x(0x10, 0));
+    discard_wide_units.extend(insn::fmt11x(0x10, 0));
+    let discard_wide: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "J".to_owned(),
+                params: vec!["Z".to_owned()],
+            },
+            name: "discardWide".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 3,
+        ins_size: 1,
+        outs_size: 0,
+        insns: discard_wide_units,
+        relocations: discard_wide_relocs,
+    };
+
+    let mut discard_try_units: Vec<u16> = Vec::new();
+    let mut discard_try_relocs: Vec<Reloc> = Vec::new();
+    let discard_try_new: usize = discard_try_units.len();
+    discard_try_units.extend(insn::fmt21c(0x22, 0, 0));
+    discard_try_relocs.push(Reloc::TypeIndex {
+        unit: discard_try_new + 1,
+        descriptor: "LSample;".to_owned(),
+    });
+    discard_try_units.extend(insn::fmt11n(0x12, 0, 7));
+    discard_try_units.extend(insn::fmt11x(0x0F, 0));
+    discard_try_units.extend(insn::fmt11x(0x0D, 1));
+    discard_try_units.extend(insn::fmt11n(0x12, 0, -1));
+    discard_try_units.extend(insn::fmt11x(0x0F, 0));
+    let discard_try: EncodedMethod = EncodedMethod {
+        tries: vec![TryItem {
+            start_unit: 0,
+            unit_count: 2,
+            handlers: vec![CatchHandler {
+                exception_type: Some("Ljava/lang/Throwable;".to_owned()),
+                handler_unit: 4,
+            }],
+        }],
+        method: MethodRef {
+            class: "LSample;".to_owned(),
+            proto: ProtoRef {
+                return_type: "I".to_owned(),
+                params: Vec::new(),
+            },
+            name: "discardTry".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 0,
+        outs_size: 0,
+        insns: discard_try_units,
+        relocations: discard_try_relocs,
+    };
+
+    let mut direct_methods: Vec<EncodedMethod> = vec![
+        sample_ctor,
+        make2,
+        overwrite,
+        discard,
+        discard_wide,
+        discard_try,
+    ];
+    if include_skipped_payload {
+        let mut payload_units: Vec<u16> = Vec::new();
+        let mut payload_relocs: Vec<Reloc> = Vec::new();
+        let payload_new: usize = payload_units.len();
+        payload_units.extend(insn::fmt21c(0x22, 0, 0));
+        payload_relocs.push(Reloc::TypeIndex {
+            unit: payload_new + 1,
+            descriptor: "LSample;".to_owned(),
+        });
+        payload_units.extend([0x0100, 0, 0, 0]);
+        payload_units.extend(insn::fmt11n(0x12, 0, 7));
+        payload_units.push(0x38 | (1u16 << 8));
+        payload_units.push(3);
+        payload_units.extend(insn::fmt11x(0x0F, 0));
+        payload_units.extend(insn::fmt11x(0x0F, 0));
+        direct_methods.push(EncodedMethod {
+            tries: Vec::new(),
+            method: MethodRef {
+                class: "LSample;".to_owned(),
+                proto: ProtoRef {
+                    return_type: "I".to_owned(),
+                    params: vec!["Z".to_owned()],
+                },
+                name: "payloadDiscard".to_owned(),
+            },
+            access_flags: 0x9,
+            is_direct: true,
+            registers_size: 2,
+            ins_size: 1,
+            outs_size: 0,
+            insns: payload_units,
+            relocations: payload_relocs,
+        });
+    }
+
     let mut builder: DexBuilder = DexBuilder::new();
     builder.add_class(foo_class_with_last());
     builder.add_class(ClassDef {
@@ -916,14 +1064,14 @@ fn make_twonews_dex_with_shape(
         access_flags: 0x1,
         static_fields: Vec::new(),
         static_values: Vec::new(),
-        direct_methods: vec![sample_ctor, make2, overwrite],
+        direct_methods,
         virtual_methods: Vec::new(),
     });
     builder.build()
 }
 
 fn make_twonews_dex() -> Vec<u8> {
-    make_twonews_dex_with_shape(0x07, "LFoo;", foo_init())
+    make_twonews_dex_with_shape(0x07, "LFoo;", foo_init(), false)
 }
 
 fn translate_twonews() -> Dex2JarResult {
@@ -1039,10 +1187,89 @@ fn nondominated_merge_new_recovers_instead_of_stub() {
 }
 
 #[test]
+fn pending_allocation_overwritten_by_literal_recovers_instead_of_stub() {
+    let result: Dex2JarResult = translate_twonews();
+    let sample: &Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present in discarded-new translation");
+    let cf: ClassFile = parse_classfile(sample).expect("parse discarded-new Sample.class");
+    let code: Vec<u8> = method_bytecode(&cf, "discard");
+    assert!(
+        code.contains(&0xBB) && code.contains(&0x57) && code.contains(&0xAC),
+        "discard() must preserve the dead allocation as new/pop, then return the overwriting \
+         literal instead of falling back to a throw stub; got bytecode {code:02x?}"
+    );
+    assert!(
+        !code.contains(&0xBF),
+        "discard() must not contain athrow after the pending allocation is safely discarded; got \
+         bytecode {code:02x?}"
+    );
+}
+
+#[test]
+fn pending_allocation_overwritten_by_wide_literal_recovers_instead_of_stub() {
+    let result: Dex2JarResult = translate_twonews();
+    let sample: &Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present in discarded-wide-new translation");
+    let cf: ClassFile = parse_classfile(sample).expect("parse discarded-wide-new Sample.class");
+    let code: Vec<u8> = method_bytecode(&cf, "discardWide");
+    assert!(
+        code.contains(&0xBB) && code.contains(&0x57) && code.contains(&0xAD),
+        "discardWide() must preserve the dead allocation as new/pop, then return the overwriting \
+         wide literal instead of falling back to a throw stub; got bytecode {code:02x?}"
+    );
+}
+
+#[test]
+fn pending_allocation_inside_try_recovers_instead_of_stub() {
+    let result: Dex2JarResult = translate_twonews();
+    let sample: &Vec<u8> = result
+        .jar_entries
+        .get("Sample.class")
+        .expect("Sample.class present in discarded-try-new translation");
+    let cf: ClassFile = parse_classfile(sample).expect("parse discarded-try-new Sample.class");
+    let code: Vec<u8> = method_bytecode(&cf, "discardTry");
+    assert!(
+        code.contains(&0xBB) && code.contains(&0x57) && code.contains(&0xAC),
+        "discardTry() must preserve the dead allocation inside its protected range and recover \
+         both normal and handler returns; got bytecode {code:02x?}"
+    );
+}
+
+#[test]
+fn skipped_payload_breaks_literal_overwrite_adjacency() {
+    let result: Dex2JarResult = translate_dex_bytes(&make_twonews_dex_with_shape(
+        0x07,
+        "LFoo;",
+        foo_init(),
+        true,
+    ))
+    .expect("translate skipped-payload pending-new dex");
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.method.as_deref() == Some("payloadDiscard(Z)I"))
+        .expect("payloadDiscard refusal diagnostic");
+    assert!(
+        diagnostic.reason.contains("new-instance-pair-untrackable"),
+        "a skipped payload between new-instance and const must break decoded-PC adjacency and \
+         retain the stable refusal, got {}",
+        diagnostic.reason
+    );
+}
+
+#[test]
 fn non_object_move_of_pending_allocation_stays_stubbed() {
-    let result: Dex2JarResult =
-        translate_dex_bytes(&make_twonews_dex_with_shape(0x01, "LFoo;", foo_init()))
-            .expect("translate malformed pending-new move dex");
+    let result: Dex2JarResult = translate_dex_bytes(&make_twonews_dex_with_shape(
+        0x01,
+        "LFoo;",
+        foo_init(),
+        false,
+    ))
+    .expect("translate malformed pending-new move dex");
     let sample: &Vec<u8> = result
         .jar_entries
         .get("Sample.class")
@@ -1060,6 +1287,7 @@ fn different_owner_cannot_replace_pending_allocation() {
         0x07,
         "Ljava/lang/Integer;",
         integer_init(),
+        false,
     ))
     .expect("translate conflicting pending-new owners");
     let diagnostic = result
@@ -1086,9 +1314,18 @@ public class Probe {
         Object f = m.invoke(null, false);
         int af = foo.getField("last").getInt(null);
         int overwritten = (Integer)c.getMethod("overwrite").invoke(null);
+        java.lang.reflect.Method discard = c.getMethod("discard", boolean.class);
+        int discardedTrue = (Integer)discard.invoke(null, true);
+        int discardedFalse = (Integer)discard.invoke(null, false);
+        java.lang.reflect.Method discardWide = c.getMethod("discardWide", boolean.class);
+        long discardedWideTrue = (Long)discardWide.invoke(null, true);
+        long discardedWideFalse = (Long)discardWide.invoke(null, false);
+        int discardedTry = (Integer)c.getMethod("discardTry").invoke(null);
         System.out.println(
             "verify_ok=1 " + t.getClass().getName() + " " + at + " "
-            + f.getClass().getName() + " " + af + " " + overwritten);
+            + f.getClass().getName() + " " + af + " " + overwritten + " "
+            + discardedTrue + " " + discardedFalse + " " + discardedWideTrue + " "
+            + discardedWideFalse + " " + discardedTry);
     }
 }
 "#;
@@ -1148,10 +1385,14 @@ fn nondominated_merge_verifies_and_wrong_frame_is_rejected() {
         String::from_utf8_lossy(&ok.stderr).trim()
     );
     assert!(
-        ok.status.success() && ok_out.contains("verify_ok=1") && ok_out.contains("Foo 1 Foo 2 7"),
+        ok.status.success()
+            && ok_out.contains("verify_ok=1")
+            && ok_out.contains("Foo 1 Foo 2 7 7 7 7 7 7"),
         "the recovered Sample.class must pass -Xverify:all and construct a Foo on both arms with \
          the branch-selected constructor argument (1 on the true arm, 2 on the false arm), \
-         while the integer overwrite survives initialization through its remaining alias"
+         while the integer overwrite survives initialization through its remaining alias and the \
+         discarded narrow and wide allocations return 7 on both branch outcomes and the \
+         try-protected allocation returns 7"
     );
 
     let cf: ClassFile = parse_classfile(&sample).expect("parse twonews Sample.class");
