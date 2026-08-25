@@ -194,3 +194,72 @@ fn object_keys_concat_names_the_result_and_preserves_boa_and_node_behavior() {
         "Object.keys result inference must preserve Node output"
     );
 }
+
+const INDEX_OF_RESULT: &str = r#"
+function locate(values, needle) {
+  var a = values.indexOf(needle);
+  print(a);
+  return a;
+}
+locate(["x", "y"], "y");
+"#;
+
+#[test]
+fn index_of_names_its_result_role_and_preserves_boa_and_node_behavior() {
+    let first: TerserRestoreReport = restore_terser_mangled(INDEX_OF_RESULT);
+    let second: TerserRestoreReport = restore_terser_mangled(INDEX_OF_RESULT);
+    assert!(
+        first
+            .rewritten
+            .contains("var position = values.indexOf(needle)"),
+        "the generic indexOf result role must be named at low confidence:\n{}",
+        first.rewritten
+    );
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved("index-of-result", INDEX_OF_RESULT, &first.rewritten);
+    assert_eq!(
+        node_capture(&first.rewritten),
+        node_capture(INDEX_OF_RESULT)
+    );
+}
+
+const INDEX_OF_CAPTURE: &str = r#"
+var position = 7;
+function locate(values, needle) {
+  var a = values.indexOf(needle);
+  print(position + a);
+  return a;
+}
+locate(["x", "y"], "y");
+"#;
+
+#[test]
+fn index_of_result_role_does_not_shadow_an_outer_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(INDEX_OF_CAPTURE);
+    assert!(
+        report
+            .rewritten
+            .contains("var position_2 = values.indexOf(needle)"),
+        "the semantic role must be suffixed rather than capture the outer position:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("index-of-capture", INDEX_OF_CAPTURE, &report.rewritten);
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(INDEX_OF_CAPTURE)
+    );
+}
+
+const INDEX_OF_DIRECT_EVAL: &str =
+    "function locate(values,needle){var a=values.indexOf(needle);return eval(\"a\");}";
+const INDEX_OF_WITH: &str =
+    "function locate(values,needle){with({needle:0}){var a=values.indexOf(needle);return a;}}";
+
+#[test]
+fn dynamic_name_scopes_refuse_index_of_result_inference() {
+    for source in [INDEX_OF_DIRECT_EVAL, INDEX_OF_WITH] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert_eq!(report.rewritten, source);
+        assert!(report.renames.is_empty());
+    }
+}

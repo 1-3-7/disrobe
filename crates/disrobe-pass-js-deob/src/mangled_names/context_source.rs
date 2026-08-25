@@ -23,7 +23,7 @@ impl NameSource for ContextNameSource {
         }
         if let Some(assigned) = context.assigned_from.iter().next() {
             return Some(Suggestion {
-                name: to_camel_case(assigned, context.role),
+                name: to_camel_case(semantic_result_role(assigned), context.role),
                 confidence: Confidence::LOW,
                 source_label: self.label(),
             });
@@ -33,6 +33,13 @@ impl NameSource for ContextNameSource {
 
     fn label(&self) -> &'static str {
         "context"
+    }
+}
+
+fn semantic_result_role(name: &str) -> &str {
+    match name {
+        "indexOf" => "position",
+        _ => name,
     }
 }
 
