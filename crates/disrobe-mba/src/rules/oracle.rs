@@ -74,12 +74,17 @@ fn collect_captures(
     next_variable: &mut u32,
 ) {
     match pattern {
-        Pattern::AnyExpr { bind } | Pattern::AnyConst { bind } => {
+        Pattern::AnyExpr { bind } => {
             captures.entry(bind.clone()).or_insert_with(|| {
                 let value: Expr = Expr::var(*next_variable);
                 *next_variable += 1;
                 value
             });
+        }
+        Pattern::AnyConst { bind } => {
+            captures
+                .entry(bind.clone())
+                .or_insert_with(|| Expr::konst(0));
         }
         Pattern::Const { .. } | Pattern::Var { .. } => {}
         Pattern::Unary { operand, .. } => collect_captures(operand, captures, next_variable),
@@ -96,6 +101,7 @@ fn collect_captures(
             collect_captures(then, captures, next_variable);
             collect_captures(otherwise, captures, next_variable);
         }
+        Pattern::Slice { inner, .. } => collect_captures(inner, captures, next_variable),
     }
 }
 
@@ -129,6 +135,11 @@ fn instantiate_pattern(
             instantiate_pattern(cond, captures, width)?,
             instantiate_pattern(then, captures, width)?,
             instantiate_pattern(otherwise, captures, width)?,
+        )),
+        Pattern::Slice { inner, lo, hi } => Some(Expr::slice(
+            instantiate_pattern(inner, captures, width)?,
+            *lo,
+            *hi,
         )),
     }
 }

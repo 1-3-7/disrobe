@@ -33,6 +33,8 @@ pub enum LoadError {
         bytes: usize,
         max: usize,
     },
+    #[error("rule {rule:?} has invalid slice range [{lo}, {hi})")]
+    InvalidSliceRange { rule: String, lo: u32, hi: u32 },
     #[error("rule {rule:?} pattern has {nodes} nodes, above the {max} node cap")]
     PatternTooLarge {
         rule: String,

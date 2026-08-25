@@ -283,3 +283,33 @@ fn constant_ite_matches_hardcoded_at_every_supported_width() {
         }
     }
 }
+
+#[test]
+fn constant_slice_bits_match_hardcoded_at_every_supported_width() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        let low_bit: Expr = Expr::slice(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), 0, 1);
+        let dsl: Expr = rewrite_fixpoint(&set, &low_bit, width, FIXPOINT_PASSES);
+        assert_eq!(dsl, canonicalize(&low_bit, width));
+        if equivalent_exhaustive_runnable(width, 0) {
+            assert!(equivalent_exhaustive(&low_bit, &dsl, width, 0));
+        }
+        if width != Width::W1 {
+            let next_bit: Expr = Expr::slice(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), 1, 2);
+            let dsl: Expr = rewrite_fixpoint(&set, &next_bit, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, canonicalize(&next_bit, width));
+            if equivalent_exhaustive_runnable(width, 0) {
+                assert!(equivalent_exhaustive(&next_bit, &dsl, width, 0));
+            }
+        }
+    }
+}

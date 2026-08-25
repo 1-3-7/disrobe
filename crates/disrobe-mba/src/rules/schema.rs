@@ -79,6 +79,11 @@ pub enum Pattern {
         then: Box<Self>,
         otherwise: Box<Self>,
     },
+    Slice {
+        inner: Box<Self>,
+        lo: u32,
+        hi: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +117,11 @@ pub enum Template {
         op: Binary,
         left: Box<Self>,
         right: Box<Self>,
+    },
+    SliceConst {
+        expr: String,
+        lo: u32,
+        hi: u32,
     },
 }
 

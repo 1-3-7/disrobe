@@ -310,3 +310,19 @@ source = "fixed-width conditional with a nonzero condition"
 pattern = { kind = "ite", cond = { kind = "any_const", bind = "c" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
 when = [{ check = "is_non_zero", expr = "c" }]
 rewrite = { build = "use", expr = "then" }
+
+[[rules]]
+name = "slice_const_low_bit"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width extraction of bit zero from a constant"
+pattern = { kind = "slice", inner = { kind = "any_const", bind = "c" }, lo = 0, hi = 1 }
+rewrite = { build = "slice_const", expr = "c", lo = 0, hi = 1 }
+
+[[rules]]
+name = "slice_const_next_bit"
+widths = [2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width extraction of bit one from a constant"
+pattern = { kind = "slice", inner = { kind = "any_const", bind = "c" }, lo = 1, hi = 2 }
+rewrite = { build = "slice_const", expr = "c", lo = 1, hi = 2 }

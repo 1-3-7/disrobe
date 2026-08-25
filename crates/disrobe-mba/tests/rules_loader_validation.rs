@@ -2,9 +2,9 @@
 use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
 
 #[test]
-fn shipped_rules_load_and_have_thirty_six_migrated_rules() {
+fn shipped_rules_load_and_have_thirty_eight_migrated_rules() {
     let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
-    assert_eq!(set.len(), 36);
+    assert_eq!(set.len(), 38);
     assert!(set.commutative_match);
 }
 
@@ -180,6 +180,43 @@ rewrite = { build = "use", expr = "x" }
         load_str(text),
         Err(LoadError::MissingProofRoute { .. })
     ));
+}
+
+#[test]
+fn invalid_slice_ranges_are_rejected_in_patterns_and_templates() {
+    for (surface, lo, hi) in [
+        ("pattern", 0u32, 0u32),
+        ("pattern", 2, 1),
+        ("pattern", 0, 65),
+        ("template", 0, 0),
+        ("template", 2, 1),
+        ("template", 0, 65),
+    ] {
+        let (pattern, rewrite): (String, String) = if surface == "pattern" {
+            (
+                format!(
+                    "{{ kind = \"slice\", inner = {{ kind = \"any_const\", bind = \"c\" }}, lo = {lo}, hi = {hi} }}"
+                ),
+                "{ build = \"use\", expr = \"c\" }".to_owned(),
+            )
+        } else {
+            (
+                "{ kind = \"slice\", inner = { kind = \"any_const\", bind = \"c\" }, lo = 0, hi = 1 }".to_owned(),
+                format!("{{ build = \"slice_const\", expr = \"c\", lo = {lo}, hi = {hi} }}"),
+            )
+        };
+        let text: String = format!(
+            "[[rules]]\nname = \"invalid_slice_{surface}_{lo}_{hi}\"\nwidths = [8]\nproof = \"shared_equivalence\"\nsource = \"test\"\npattern = {pattern}\nrewrite = {rewrite}\n"
+        );
+        assert!(matches!(
+            load_str(&text),
+            Err(LoadError::InvalidSliceRange {
+                lo: actual_lo,
+                hi: actual_hi,
+                ..
+            }) if actual_lo == lo && actual_hi == hi
+        ));
+    }
 }
 
 #[test]

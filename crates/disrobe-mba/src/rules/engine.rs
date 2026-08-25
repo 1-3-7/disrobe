@@ -197,6 +197,14 @@ fn match_pattern(
             }
             _ => false,
         },
+        Pattern::Slice { inner, lo, hi } => match expr {
+            Expr::Slice(actual_inner, actual_lo, actual_hi)
+                if actual_lo == lo && actual_hi == hi =>
+            {
+                match_pattern(inner, actual_inner, bindings, width, commutative)
+            }
+            _ => false,
+        },
     }
 }
 
@@ -331,7 +339,29 @@ fn instantiate_bounded(
             let rhs: Expr = instantiate_bounded(right, bindings, width, budget)?;
             Ok(Expr::Binary(op.to_mba(), Box::new(lhs), Box::new(rhs)))
         }
+        Template::SliceConst { expr, lo, hi } => {
+            let value: u64 =
+                bindings
+                    .const_value(expr)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: expr.clone(),
+                    })?;
+            Ok(Expr::Const(slice_constant(value, *lo, *hi, width)))
+        }
     }
+}
+
+const fn slice_constant(value: u64, lo: u32, hi: u32, width: Width) -> u64 {
+    let span: u32 = hi.saturating_sub(lo);
+    let mask: u64 = if span == 0 {
+        0
+    } else if span >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << span) - 1
+    };
+    let shifted: u64 = if lo >= 64 { 0 } else { value >> lo };
+    (shifted & mask) & width.mask()
 }
 
 #[cfg(test)]

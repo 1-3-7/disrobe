@@ -198,6 +198,10 @@ fn pattern_shape_into(
             pattern_shape_into(then, captures, next_capture),
             pattern_shape_into(otherwise, captures, next_capture)
         ),
+        Pattern::Slice { inner, lo, hi } => format!(
+            "slice:{lo}:{hi}({})",
+            pattern_shape_into(inner, captures, next_capture)
+        ),
     }
 }
 
@@ -221,6 +225,9 @@ fn template_shape_into(template: &Template, captures: &BTreeMap<String, usize>) 
             template_shape_into(left, captures),
             template_shape_into(right, captures)
         ),
+        Template::SliceConst { expr, lo, hi } => {
+            format!("slice_const:{lo}:{hi}(capture:{})", captures[expr.as_str()])
+        }
     }
 }
 
@@ -267,6 +274,10 @@ fn collect_pattern_binds<'a>(
                 stack.push(then);
                 stack.push(cond);
             }
+            Pattern::Slice { inner, lo, hi } => {
+                validate_slice_range(rule, *lo, *hi)?;
+                stack.push(inner);
+            }
         }
     }
     Ok(())
@@ -309,7 +320,13 @@ fn check_template_refs(
             });
         }
         match current {
-            Template::Use { expr } => require_bound(expr, bound, rule)?,
+            Template::Use { expr } => {
+                require_bound(expr, bound, rule)?;
+            }
+            Template::SliceConst { expr, lo, hi } => {
+                validate_slice_range(rule, *lo, *hi)?;
+                require_bound(expr, bound, rule)?;
+            }
             Template::Const { .. } | Template::AllOnes => {}
             Template::Unary { operand, .. } => {
                 stack.push(operand);
@@ -321,6 +338,18 @@ fn check_template_refs(
         }
     }
     Ok(())
+}
+
+fn validate_slice_range(rule: &Rule, lo: u32, hi: u32) -> Result<(), LoadError> {
+    if lo < hi && hi <= 64 {
+        Ok(())
+    } else {
+        Err(LoadError::InvalidSliceRange {
+            rule: rule.name.clone(),
+            lo,
+            hi,
+        })
+    }
 }
 
 fn require_bound(name: &str, bound: &BTreeSet<&str>, rule: &Rule) -> Result<(), LoadError> {
