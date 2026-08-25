@@ -348,8 +348,8 @@ fn nested_base64_rot13_gzinflate_wrapper_runtime_equivalent() {
 }
 
 #[test]
-fn rc4_in_a_while_loop_matches_the_canonical_recognizer_shape() {
-    let graded: String = String::from("the rc4 interpreter and recognizer cross-check");
+fn canonical_rc4_ord_and_raw_prga_paths_runtime_equivalent() {
+    let graded: String = String::from("the canonical and while-form RC4 interpreter paths");
     let Some(_php): Option<PhpRuntime> = require_php(&graded) else {
         return;
     };
@@ -368,16 +368,15 @@ fn rc4_in_a_while_loop_matches_the_canonical_recognizer_shape() {
     )
     .into_bytes();
 
-    let from_recognizer: String = recover_and_grade("rc4-canonical", &canonical);
-    let from_interpreter: String = recover_and_grade("rc4-while-form", &while_form);
+    let from_canonical: String = recover_and_grade("rc4-canonical", &canonical);
+    let from_while_form: String = recover_and_grade("rc4-while-form", &while_form);
     assert_eq!(
-        from_recognizer, from_interpreter,
-        "the rc4 shape recognizer and the bounded interpreter disagree on the same key and \
-         ciphertext, so one of the two decode paths is wrong"
+        from_canonical, from_while_form,
+        "the canonical and while-form interpreter paths disagree on the same key and ciphertext"
     );
     assert!(
-        from_recognizer.contains(MARKER),
-        "both rc4 paths agreed but neither recovered the payload: {from_recognizer}"
+        from_canonical.contains(MARKER),
+        "the interpreter paths agreed but neither recovered the payload: {from_canonical}"
     );
 }
 
@@ -393,6 +392,58 @@ fn rc4_helper_with_chained_state_initialization_runtime_equivalent() {
     .into_bytes();
 
     recover_and_grade("rc4-helper-chained-state", &blob);
+}
+
+#[test]
+fn mutated_rc4_ksa_runtime_equivalent() {
+    let blob: Vec<u8> = b"<?php $d=base64_decode('lJQvjXvR4Yi8u1NHpeqwxbkQaDxGrpviC7WWaU8=');$k='foreach_rc4_key';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%strlen($k)])+1)%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec();
+    recover_and_grade("mutated-rc4-ksa", &blob);
+}
+
+#[test]
+fn rc4_adversarial_shapes_runtime_equivalent() {
+    let key: &[u8] = b"foreach_rc4_key";
+    let xor_cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let xor_loader = |decoy: &str| {
+        loader_with_body(
+            &xor_cipher,
+            "$k = 'foreach_rc4_key';",
+            &format!(
+                "for ($i = 0; $i < strlen($d); $i++) {{ if (0) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; }} {decoy} $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); }}"
+            ),
+        )
+    };
+    let comment_decoy: &str = "/* $o .= $d[$n]^chr($s[($s[$i]+$s[$j])%256]); */";
+    let string_decoy: &str = "$noise='$o .= $d[$n]^chr($s[($s[$i]+$s[$j])%256]);';";
+    let mismatched_state_decoy: &str =
+        "if (0) { $o .= chr(ord($d[$n]) ^ $q[($s[$i] + $s[$j]) % 256]); }";
+    let multiple_candidate_decoy: &str = "if (0) { $a .= $d[$n] ^ chr($s[($s[$i] + $s[$j]) % 256]); $b .= $d[$n] ^ chr($s[($s[$i] + $s[$j]) % 256]); }";
+    let earlier_block: Vec<u8> = format!(
+        "<?php $d=base64_decode('{}');$k='foreach_rc4_key';$s=range(0,255);$j=0;$o='';for($i=0;$i<0;$i++){{$j=($j+$s[$i]+ord($k[$i%strlen($k)]))%256;$o.=$d[$i]^chr($s[($s[$i]+$s[$j])%256]);}}for($i=0;$i<strlen($d);$i++){{$o.=chr(ord($d[$i])^ord($k[$i%strlen($k)]));}}ev\x61l($o);",
+        b64(&xor_cipher)
+    )
+    .into_bytes();
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "rc4-mismatched-divisor-variable",
+            b"<?php $d=base64_decode('Z2q+YGI1VjYVNduoljLDrn2THHG1bZeQBwoAtPo=');$k='foreach_rc4_key';$other='divisor';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%strlen($other)]))%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec(),
+        ),
+        (
+            "rc4-mismatched-divisor-expression",
+            b"<?php $d=base64_decode('qzQ4omqbd4A85asBEnCpJKIjAygLkauYYwoCfVg=');$k='foreach_rc4_key';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%(strlen($k)-1)]))%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec(),
+        ),
+        ("rc4-comment-decoy", xor_loader(comment_decoy)),
+        ("rc4-string-decoy", xor_loader(string_decoy)),
+        ("rc4-mismatched-state-decoy", xor_loader(mismatched_state_decoy)),
+        (
+            "rc4-multiple-candidate-decoy",
+            xor_loader(multiple_candidate_decoy),
+        ),
+        ("rc4-earlier-block-decoy", earlier_block),
+    ];
+    for (label, blob) in cases {
+        recover_and_grade(label, &blob);
+    }
 }
 
 #[test]

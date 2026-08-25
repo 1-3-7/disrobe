@@ -918,9 +918,11 @@ fn no_cipher_implementation_lives_in_this_crate() {
         .find(|(name, _): &&(String, String)| name == "loader.rs")
         .expect("loader.rs is part of this crate");
     assert!(
-        loader.1.contains("disrobe_core::codec::cipher::rc4_apply"),
-        "the rc4 loop recovery must run the disrobe-core stream cipher, not a second one written \
-         here"
+        !loader.1.contains("eval_rc4_loop")
+            && !loader.1.contains("capture_rc4_")
+            && !loader.1.contains("rc4_transform"),
+        "the PHP pass must route RC4 through the bounded interpreter instead of retaining a \
+         text-matching fast path"
     );
     let interpreter: &(String, String) = sources
         .iter()

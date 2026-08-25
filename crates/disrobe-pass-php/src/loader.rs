@@ -941,7 +941,6 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut env: Env = Env::default();
     let mut bound: usize = 0;
     let mut sink_result: Option<LoaderReport> = None;
-    let mut loop_src: Vec<u8> = Vec::new();
     let mut interp: crate::decode_loop::Interp =
         crate::decode_loop::Interp::new(crate::decode_loop::Budget::default());
     for (stmt, _span) in &stmts {
@@ -1022,13 +1021,7 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                 }
             }
             Stmt::ControlBlock { raw } => {
-                loop_src.extend_from_slice(raw);
-                loop_src.push(b'\n');
-                if let Some((name, plaintext)) = eval_rc4_loop(&loop_src, &env) {
-                    interp.observe_scalar(&name, &plaintext);
-                    env.set(name, Value::Str(plaintext));
-                    bound += 1;
-                } else if let Some((name, plaintext)) = eval_xor_keystream_loop(raw, &env) {
+                if let Some((name, plaintext)) = eval_xor_keystream_loop(raw, &env) {
                     interp.observe_scalar(&name, &plaintext);
                     env.set(name, Value::Str(plaintext));
                     bound += 1;
@@ -1774,22 +1767,6 @@ fn eval_xor_keystream_loop(body: &[u8], env: &Env) -> Option<(Vec<u8>, Vec<u8>)>
     Some((out, plaintext))
 }
 
-fn eval_rc4_loop(src: &[u8], env: &Env) -> Option<(Vec<u8>, Vec<u8>)> {
-    memchr::memmem::find(src, b"256")?;
-    let key: Vec<u8> = capture_rc4_key_var(src)?;
-    let (out, cipher): (Vec<u8>, Vec<u8>) = capture_rc4_prga(src)?;
-    if cipher == key {
-        return None;
-    }
-    let Value::Str(cipher_bytes): Value = env.get(&cipher)?.clone();
-    let Value::Str(key_bytes): Value = env.get(&key)?.clone();
-    if key_bytes.is_empty() {
-        return None;
-    }
-    let plaintext: Vec<u8> = rc4_transform(&key_bytes, &cipher_bytes);
-    Some((out, plaintext))
-}
-
 fn xor_repeating_key(buf: &[u8], key: &[u8]) -> Vec<u8> {
     if key.is_empty() {
         return buf.to_vec();
@@ -1798,13 +1775,6 @@ fn xor_repeating_key(buf: &[u8], key: &[u8]) -> Vec<u8> {
         .enumerate()
         .map(|(i, b): (usize, &u8)| b ^ key[i % key.len()])
         .collect()
-}
-
-fn rc4_transform(key: &[u8], data: &[u8]) -> Vec<u8> {
-    if key.is_empty() {
-        return data.to_vec();
-    }
-    disrobe_core::codec::cipher::rc4_apply(key, data)
 }
 
 fn strip_dollar(name: &[u8]) -> Option<Vec<u8>> {
@@ -1835,39 +1805,6 @@ fn capture_plain_indexed_var(body: &[u8]) -> Option<Vec<u8>> {
         Regex::new(r"(?is)(\$\w+)\s*\[\s*\$\w+\s*\]").expect("plain-indexed var regex")
     });
     strip_dollar(re.captures(body)?.get(1)?.as_bytes())
-}
-
-#[allow(clippy::expect_used)]
-fn capture_rc4_key_var(src: &[u8]) -> Option<Vec<u8>> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re: &Regex = RE.get_or_init(|| {
-        Regex::new(
-            r"(?is)=\s*\(\s*\$\w+\s*\+\s*\$\w+\s*\[\s*\$\w+\s*\]\s*\+\s*(?:ord\s*\(\s*)?(\$\w+)\s*\[\s*\$\w+\s*%[^\]]*\]",
-        )
-        .expect("rc4 key-schedule regex")
-    });
-    strip_dollar(re.captures(src)?.get(1)?.as_bytes())
-}
-
-#[allow(clippy::expect_used)]
-fn capture_rc4_prga(src: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    static DIRECT: OnceLock<Regex> = OnceLock::new();
-    static WRAPPED: OnceLock<Regex> = OnceLock::new();
-    let direct: &Regex = DIRECT.get_or_init(|| {
-        Regex::new(r"(?is)(\$\w+)\s*\.=\s*(\$\w+)\s*\[\s*\$\w+\s*\]\s*\^")
-            .expect("rc4 prga direct regex")
-    });
-    let wrapped: &Regex = WRAPPED.get_or_init(|| {
-        Regex::new(
-            r"(?is)(\$\w+)\s*\.=\s*chr\s*\(\s*ord\s*\(\s*(\$\w+)\s*\[\s*\$\w+\s*\]\s*\)\s*\^",
-        )
-        .expect("rc4 prga wrapped regex")
-    });
-    let caps: regex::bytes::Captures<'_> =
-        direct.captures(src).or_else(|| wrapped.captures(src))?;
-    let out: Vec<u8> = strip_dollar(caps.get(1)?.as_bytes())?;
-    let cipher: Vec<u8> = strip_dollar(caps.get(2)?.as_bytes())?;
-    Some((out, cipher))
 }
 
 #[cfg(test)]
@@ -2256,7 +2193,8 @@ mod tests {
     fn static_rc4_loop_materializes_plaintext() {
         let payload: &[u8] = b"echo 'rc4-static-recovered';";
         let key: &[u8] = b"staticrc4key";
-        let cipher_b64: String = B64_STD.encode(rc4_transform(key, payload));
+        let cipher_b64: String =
+            B64_STD.encode(disrobe_core::codec::cipher::rc4_apply(key, payload));
         let src: String = format!(
             "<?php $d=base64_decode('{cipher_b64}');$k='staticrc4key';$s=array();for($i=0;$i<256;$i++){{$s[$i]=$i;}}$j=0;for($i=0;$i<256;$i++){{$j=($j+$s[$i]+ord($k[$i%strlen($k)]))%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}}$i=0;$j=0;$o='';for($y=0;$y<strlen($d);$y++){{$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=$d[$y]^chr($s[($s[$i]+$s[$j])%256]);}}eval($o);"
         );
@@ -2286,11 +2224,11 @@ mod tests {
     }
 
     #[test]
-    fn rc4_transform_is_symmetric() {
+    fn core_rc4_is_symmetric() {
         let key: &[u8] = b"abc123";
         let plain: &[u8] = b"the quick brown fox";
-        let cipher: Vec<u8> = rc4_transform(key, plain);
+        let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, plain);
         assert_ne!(cipher, plain);
-        assert_eq!(rc4_transform(key, &cipher), plain);
+        assert_eq!(disrobe_core::codec::cipher::rc4_apply(key, &cipher), plain);
     }
 }
