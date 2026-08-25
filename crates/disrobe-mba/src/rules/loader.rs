@@ -202,6 +202,15 @@ fn pattern_shape_into(
             "slice:{lo}:{hi}({})",
             pattern_shape_into(inner, captures, next_capture)
         ),
+        Pattern::Compose {
+            low,
+            high,
+            low_bits,
+        } => format!(
+            "compose:{low_bits}({},{})",
+            pattern_shape_into(low, captures, next_capture),
+            pattern_shape_into(high, captures, next_capture)
+        ),
     }
 }
 
@@ -228,6 +237,15 @@ fn template_shape_into(template: &Template, captures: &BTreeMap<String, usize>) 
         Template::SliceConst { expr, lo, hi } => {
             format!("slice_const:{lo}:{hi}(capture:{})", captures[expr.as_str()])
         }
+        Template::ComposeConst {
+            low,
+            high,
+            low_bits,
+        } => format!(
+            "compose_const:{low_bits}(capture:{},capture:{})",
+            captures[low.as_str()],
+            captures[high.as_str()]
+        ),
     }
 }
 
@@ -278,6 +296,15 @@ fn collect_pattern_binds<'a>(
                 validate_slice_range(rule, *lo, *hi)?;
                 stack.push(inner);
             }
+            Pattern::Compose {
+                low,
+                high,
+                low_bits,
+            } => {
+                validate_compose_low_bits(rule, *low_bits)?;
+                stack.push(high);
+                stack.push(low);
+            }
         }
     }
     Ok(())
@@ -327,6 +354,15 @@ fn check_template_refs(
                 validate_slice_range(rule, *lo, *hi)?;
                 require_bound(expr, bound, rule)?;
             }
+            Template::ComposeConst {
+                low,
+                high,
+                low_bits,
+            } => {
+                validate_compose_low_bits(rule, *low_bits)?;
+                require_bound(low, bound, rule)?;
+                require_bound(high, bound, rule)?;
+            }
             Template::Const { .. } | Template::AllOnes => {}
             Template::Unary { operand, .. } => {
                 stack.push(operand);
@@ -348,6 +384,17 @@ fn validate_slice_range(rule: &Rule, lo: u32, hi: u32) -> Result<(), LoadError> 
             rule: rule.name.clone(),
             lo,
             hi,
+        })
+    }
+}
+
+fn validate_compose_low_bits(rule: &Rule, low_bits: u32) -> Result<(), LoadError> {
+    if low_bits <= 64 {
+        Ok(())
+    } else {
+        Err(LoadError::InvalidComposeLowBits {
+            rule: rule.name.clone(),
+            low_bits,
         })
     }
 }

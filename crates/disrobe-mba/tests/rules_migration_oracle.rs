@@ -313,3 +313,37 @@ fn constant_slice_bits_match_hardcoded_at_every_supported_width() {
         }
     }
 }
+
+#[test]
+fn constant_compose_layouts_match_hardcoded_at_every_supported_width() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        for input in [
+            Expr::compose(
+                Expr::konst(0xA5A5_A5A5_A5A5_A5A5),
+                Expr::konst(0x5A5A_5A5A_5A5A_5A5A),
+                1,
+            ),
+            Expr::compose(
+                Expr::konst(0xA5A5_A5A5_A5A5_A5A5),
+                Expr::konst(0x5A5A_5A5A_5A5A_5A5A),
+                8,
+            ),
+        ] {
+            let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, canonicalize(&input, width));
+            if equivalent_exhaustive_runnable(width, 0) {
+                assert!(equivalent_exhaustive(&input, &dsl, width, 0));
+            }
+        }
+    }
+}

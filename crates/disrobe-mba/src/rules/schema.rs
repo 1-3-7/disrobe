@@ -84,6 +84,11 @@ pub enum Pattern {
         lo: u32,
         hi: u32,
     },
+    Compose {
+        low: Box<Self>,
+        high: Box<Self>,
+        low_bits: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +127,11 @@ pub enum Template {
         expr: String,
         lo: u32,
         hi: u32,
+    },
+    ComposeConst {
+        low: String,
+        high: String,
+        low_bits: u32,
     },
 }
 

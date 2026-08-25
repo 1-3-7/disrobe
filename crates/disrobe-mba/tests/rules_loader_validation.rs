@@ -2,9 +2,9 @@
 use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
 
 #[test]
-fn shipped_rules_load_and_have_thirty_eight_migrated_rules() {
+fn shipped_rules_load_and_have_forty_migrated_rules() {
     let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
-    assert_eq!(set.len(), 38);
+    assert_eq!(set.len(), 40);
     assert!(set.commutative_match);
 }
 
@@ -217,6 +217,44 @@ fn invalid_slice_ranges_are_rejected_in_patterns_and_templates() {
             }) if actual_lo == lo && actual_hi == hi
         ));
     }
+}
+
+#[test]
+fn invalid_compose_low_bit_counts_are_rejected_in_patterns_and_templates() {
+    for surface in ["pattern", "template"] {
+        let (pattern, rewrite): (String, String) = if surface == "pattern" {
+            (
+                "{ kind = \"compose\", low = { kind = \"any_const\", bind = \"low\" }, high = { kind = \"any_const\", bind = \"high\" }, low_bits = 65 }".to_owned(),
+                "{ build = \"use\", expr = \"low\" }".to_owned(),
+            )
+        } else {
+            (
+                "{ kind = \"compose\", low = { kind = \"any_const\", bind = \"low\" }, high = { kind = \"any_const\", bind = \"high\" }, low_bits = 1 }".to_owned(),
+                "{ build = \"compose_const\", low = \"low\", high = \"high\", low_bits = 65 }".to_owned(),
+            )
+        };
+        let text: String = format!(
+            "[[rules]]\nname = \"invalid_compose_{surface}\"\nwidths = [8]\nproof = \"shared_equivalence\"\nsource = \"test\"\npattern = {pattern}\nrewrite = {rewrite}\n"
+        );
+        assert!(matches!(
+            load_str(&text),
+            Err(LoadError::InvalidComposeLowBits { low_bits: 65, .. })
+        ));
+    }
+}
+
+#[test]
+fn compose_pattern_requires_both_operands() {
+    let text: &str = r#"
+[[rules]]
+name = "missing_compose_high"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, low_bits = 1 }
+rewrite = { build = "use", expr = "low" }
+"#;
+    assert!(matches!(load_str(text), Err(LoadError::Toml(_))));
 }
 
 #[test]

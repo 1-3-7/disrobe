@@ -205,6 +205,19 @@ fn match_pattern(
             }
             _ => false,
         },
+        Pattern::Compose {
+            low,
+            high,
+            low_bits,
+        } => match expr {
+            Expr::Compose(actual_low, actual_high, actual_low_bits)
+                if actual_low_bits == low_bits =>
+            {
+                match_pattern(low, actual_low, bindings, width, commutative)
+                    && match_pattern(high, actual_high, bindings, width, commutative)
+            }
+            _ => false,
+        },
     }
 }
 
@@ -348,6 +361,27 @@ fn instantiate_bounded(
                     })?;
             Ok(Expr::Const(slice_constant(value, *lo, *hi, width)))
         }
+        Template::ComposeConst {
+            low,
+            high,
+            low_bits,
+        } => {
+            let low_value: u64 =
+                bindings
+                    .const_value(low)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: low.clone(),
+                    })?;
+            let high_value: u64 =
+                bindings
+                    .const_value(high)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: high.clone(),
+                    })?;
+            Ok(Expr::Const(compose_constant(
+                low_value, high_value, *low_bits, width,
+            )))
+        }
     }
 }
 
@@ -362,6 +396,20 @@ const fn slice_constant(value: u64, lo: u32, hi: u32, width: Width) -> u64 {
     };
     let shifted: u64 = if lo >= 64 { 0 } else { value >> lo };
     (shifted & mask) & width.mask()
+}
+
+const fn compose_constant(low: u64, high: u64, low_bits: u32, width: Width) -> u64 {
+    let low_mask: u64 = if low_bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << low_bits).wrapping_sub(1)
+    };
+    let high_part: u64 = if low_bits >= 64 {
+        0
+    } else {
+        high.wrapping_shl(low_bits)
+    };
+    ((low & low_mask) | high_part) & width.mask()
 }
 
 #[cfg(test)]

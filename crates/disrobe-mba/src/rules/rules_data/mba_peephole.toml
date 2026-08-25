@@ -326,3 +326,19 @@ proof = "shared_equivalence"
 source = "fixed-width extraction of bit one from a constant"
 pattern = { kind = "slice", inner = { kind = "any_const", bind = "c" }, lo = 1, hi = 2 }
 rewrite = { build = "slice_const", expr = "c", lo = 1, hi = 2 }
+
+[[rules]]
+name = "compose_const_low_bit"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width composition with a one-bit low constant field"
+pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, high = { kind = "any_const", bind = "high" }, low_bits = 1 }
+rewrite = { build = "compose_const", low = "low", high = "high", low_bits = 1 }
+
+[[rules]]
+name = "compose_const_low_byte"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width composition with an eight-bit low constant field"
+pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, high = { kind = "any_const", bind = "high" }, low_bits = 8 }
+rewrite = { build = "compose_const", low = "low", high = "high", low_bits = 8 }

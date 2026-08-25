@@ -102,6 +102,10 @@ fn collect_captures(
             collect_captures(otherwise, captures, next_variable);
         }
         Pattern::Slice { inner, .. } => collect_captures(inner, captures, next_variable),
+        Pattern::Compose { low, high, .. } => {
+            collect_captures(low, captures, next_variable);
+            collect_captures(high, captures, next_variable);
+        }
     }
 }
 
@@ -140,6 +144,15 @@ fn instantiate_pattern(
             instantiate_pattern(inner, captures, width)?,
             *lo,
             *hi,
+        )),
+        Pattern::Compose {
+            low,
+            high,
+            low_bits,
+        } => Some(Expr::compose(
+            instantiate_pattern(low, captures, width)?,
+            instantiate_pattern(high, captures, width)?,
+            *low_bits,
         )),
     }
 }

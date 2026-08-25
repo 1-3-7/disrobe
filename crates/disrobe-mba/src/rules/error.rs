@@ -35,6 +35,8 @@ pub enum LoadError {
     },
     #[error("rule {rule:?} has invalid slice range [{lo}, {hi})")]
     InvalidSliceRange { rule: String, lo: u32, hi: u32 },
+    #[error("rule {rule:?} has invalid compose low-bit count {low_bits}")]
+    InvalidComposeLowBits { rule: String, low_bits: u32 },
     #[error("rule {rule:?} pattern has {nodes} nodes, above the {max} node cap")]
     PatternTooLarge {
         rule: String,
