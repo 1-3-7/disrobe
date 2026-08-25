@@ -49,7 +49,18 @@ fn recover_and_grade(label: &str, obfuscated: &[u8]) -> String {
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
         return String::new();
     };
+    recover_and_grade_with_runtime(label, obfuscated, &php)
+}
 
+fn recover_and_grade_required(label: &str, obfuscated: &[u8]) -> String {
+    let graded: String = format!("the {label} decode loop against the real php interpreter");
+    let php: PhpRuntime = require_php(&graded).unwrap_or_else(|| {
+        panic!("{graded} requires PHP 8.x; install php and put it on PATH, or set DISROBE_PHP_BIN")
+    });
+    recover_and_grade_with_runtime(label, obfuscated, &php)
+}
+
+fn recover_and_grade_with_runtime(label: &str, obfuscated: &[u8], php: &PhpRuntime) -> String {
     let obf_stdout: Vec<u8> = php.stdout_of(label, obfuscated);
     let obf_text: String = String::from_utf8_lossy(&obf_stdout).into_owned();
     assert!(
@@ -430,7 +441,7 @@ fn rc4_skipped_destructuring_targets_runtime_equivalent() {
         )
         .into_bytes();
 
-        recover_and_grade(label, &blob);
+        recover_and_grade_required(label, &blob);
     }
 }
 
@@ -468,7 +479,7 @@ fn rc4_trailing_comma_destructuring_targets_runtime_equivalent() {
         )
         .into_bytes();
 
-        recover_and_grade(label, &blob);
+        recover_and_grade_required(label, &blob);
     }
 }
 
@@ -501,87 +512,87 @@ fn rc4_one_level_nested_destructuring_swaps_runtime_equivalent() {
 }
 
 #[test]
-fn a_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
-    let graded: String = String::from("the destructuring count-mismatch refusal");
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
-    let encoded: String = b64(payload().as_bytes());
-    let blob: Vec<u8> = format!(
-        "<?php $parts = [base64_decode('{encoded}'), 'extra']; $body = ''; for ($i = 0; $i < 1; $i++) {{ [$body] = $parts; }} ev\x61l($body);"
-    )
-    .into_bytes();
-    let loader_stdout: Vec<u8> = php.stdout_of("destructuring-count-mismatch", &blob);
-    assert_eq!(
-        String::from_utf8_lossy(&loader_stdout),
-        MARKER,
-        "the reference loader must execute before its conservative refusal can be graded"
-    );
+fn rc4_recursive_keyed_and_append_destructuring_runtime_equivalent() {
+    let key: &[u8] = b"recursive_destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 2] = [
+        (
+            "rc4-short-recursive-keyed-append-destructuring",
+            "[1 => [[[$s[$i]]]], 0 => [[[$s[$j]]]],]",
+            "[[[[$s[$i]]]], [[[$s[$j]]]]]",
+        ),
+        (
+            "rc4-list-recursive-keyed-append-destructuring",
+            "list(1 => list(list(list($s[$i]))), 0 => list(list(list($s[$j]))),)",
+            "array(array(array(array($s[$i]))), array(array(array($s[$j]))))",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = []; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; [$o[]] = [chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256])]; }} ev\x61l(implode('', $o));"
+        )
+        .into_bytes();
 
-    let report: RecoveryReport =
-        recover_php(&blob, None).expect("recover mismatched destructuring");
-    assert!(
-        !report.output.contains(MARKER),
-        "a destructuring assignment outside the evaluator's exact-count subset must abstain rather \
-         than emit a partially assigned body; got:\n{}",
-        report.output
-    );
+        recover_and_grade_required(label, &blob);
+    }
 }
 
 #[test]
-fn a_list_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
-    let graded: String = String::from("the list destructuring count-mismatch refusal");
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
+fn unequal_destructuring_widths_runtime_equivalent() {
     let encoded: String = b64(payload().as_bytes());
-    let blob: Vec<u8> = format!(
-        "<?php $parts = [base64_decode('{encoded}'), 'extra']; $body = ''; for ($i = 0; $i < 1; $i++) {{ list($body) = $parts; }} ev\x61l($body);"
-    )
-    .into_bytes();
-    let loader_stdout: Vec<u8> = php.stdout_of("list-destructuring-count-mismatch", &blob);
-    assert_eq!(
-        String::from_utf8_lossy(&loader_stdout),
-        MARKER,
-        "the reference loader must execute before its conservative refusal can be graded"
-    );
+    let decoded: String = format!("base64_decode('{encoded}')");
+    let cases: [(&str, String); 10] = [
+        (
+            "short-extra-destructuring-value",
+            format!("[$body] = [{decoded}, 'ignored']"),
+        ),
+        (
+            "list-extra-destructuring-value",
+            format!("list($body) = [{decoded}, 'ignored']"),
+        ),
+        (
+            "short-missing-destructuring-value",
+            format!("[$body, $missing] = [{decoded}]"),
+        ),
+        (
+            "list-missing-destructuring-value",
+            format!("list($body, $missing) = [{decoded}]"),
+        ),
+        (
+            "short-nested-extra-destructuring-value",
+            format!("[[$body]] = [[{decoded}, 'ignored']]"),
+        ),
+        (
+            "list-nested-extra-destructuring-value",
+            format!("list(list($body)) = [[{decoded}, 'ignored']]"),
+        ),
+        (
+            "short-nested-missing-destructuring-value",
+            format!("[[$body, $missing]] = [[{decoded}]]"),
+        ),
+        (
+            "list-nested-missing-destructuring-value",
+            format!("list(list($body, $missing)) = [[{decoded}]]"),
+        ),
+        (
+            "short-skipped-missing-destructuring-value",
+            format!("[$body, , $missing] = [{decoded}, 'discarded']"),
+        ),
+        (
+            "list-skipped-missing-destructuring-value",
+            format!("list($body, , $missing) = [{decoded}, 'discarded']"),
+        ),
+    ];
+    for (label, assignment) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $body = ''; for ($i = 0; $i < 1; $i++) {{ {assignment}; }} ev\x61l($body);"
+        )
+        .into_bytes();
 
-    let report: RecoveryReport =
-        recover_php(&blob, None).expect("recover mismatched list destructuring");
-    assert!(
-        !report.output.contains(MARKER),
-        "a list assignment outside the evaluator's exact-count subset must abstain rather than \
-         emit a partially assigned body; got:\n{}",
-        report.output
-    );
-}
-
-#[test]
-fn a_skipped_target_counts_toward_the_exact_rhs_width() {
-    let graded: String = String::from("the skipped-target count-mismatch refusal");
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
-    let encoded: String = b64(payload().as_bytes());
-    let blob: Vec<u8> = format!(
-        "<?php $parts = [base64_decode('{encoded}'), 'discarded']; $body = ''; for ($i = 0; $i < 1; $i++) {{ list($body, , $missing) = $parts; }} ev\x61l($body);"
-    )
-    .into_bytes();
-    let loader_stdout: Vec<u8> = php.stdout_of("skipped-target-count-mismatch", &blob);
-    assert_eq!(
-        String::from_utf8_lossy(&loader_stdout),
-        MARKER,
-        "the reference loader must execute before its conservative refusal can be graded"
-    );
-
-    let report: RecoveryReport =
-        recover_php(&blob, None).expect("recover mismatched skipped target");
-    assert!(
-        !report.output.contains(MARKER),
-        "a skipped target consumes one RHS position, so a shorter RHS must abstain before any \
-         assignment; got:\n{}",
-        report.output
-    );
+        recover_and_grade_required(label, &blob);
+    }
 }
 
 #[test]
@@ -635,41 +646,40 @@ fn all_empty_destructuring_targets_are_refused() {
 }
 
 #[test]
-fn unsupported_nested_destructuring_forms_are_refused() {
-    let graded: String = String::from("the unsupported nested destructuring refusals");
-    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
-        return;
-    };
+fn accepted_destructuring_alias_and_key_semantics_are_refused() {
+    let graded: String = String::from("the accepted destructuring semantic refusals");
+    let php: PhpRuntime = require_php(&graded)
+        .unwrap_or_else(|| panic!("{graded} requires PHP 8.x; install php or set DISROBE_PHP_BIN"));
     let encoded: String = b64(payload().as_bytes());
     let valid_cases: [(&str, String); 5] = [
         (
-            "nested-width-mismatch",
+            "dynamic-integer-key",
             format!(
-                "<?php $parts=[[base64_decode('{encoded}'),'extra']];$body='';for($i=0;$i<1;$i++){{[[$body]]=$parts;}}ev\x61l($body);"
+                "<?php $key=0;$body='';for($i=0;$i<1;$i++){{[$key=>$body]=[base64_decode('{encoded}')];}}ev\x61l($body);"
             ),
         ),
         (
-            "nested-depth-two",
+            "string-key",
             format!(
-                "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{[[[$body]]]=[[[$parts[0]]]];}}ev\x61l($body);"
+                "<?php $body='';for($i=0;$i<1;$i++){{['payload'=>$body]=['payload'=>base64_decode('{encoded}')];}}ev\x61l($body);"
             ),
         ),
         (
-            "nested-keyed-target",
+            "reference-variable",
             format!(
-                "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{[['payload'=>$body]]=[['payload'=>$parts[0]]];}}ev\x61l($body);"
+                "<?php $payload=base64_decode('{encoded}');$parts=[&$payload];$body='';for($i=0;$i<1;$i++){{[&$body]=$parts;}}ev\x61l($body);"
             ),
         ),
         (
-            "nested-append-target",
+            "nested-keyed-reference",
             format!(
-                "<?php $parts=[base64_decode('{encoded}')];$body=[];for($i=0;$i<1;$i++){{[[$body[]]]=[[$parts[0]]];}}ev\x61l($body[0]);"
+                "<?php $payload=base64_decode('{encoded}');$inner=[&$payload];$outer=[1=>$inner];$body='';for($i=0;$i<1;$i++){{[1=>[&$body]]=$outer;}}ev\x61l($body);"
             ),
         ),
         (
-            "nested-reference-target",
+            "reference-append",
             format!(
-                "<?php $parts=[base64_decode('{encoded}')];$body='';$inner=[&$parts[0]];$outer=[$inner];for($i=0;$i<1;$i++){{[[&$body]]=$outer;}}ev\x61l($body);"
+                "<?php $payload=base64_decode('{encoded}');$parts=[&$payload];$body=[];for($i=0;$i<1;$i++){{[&$body[]]=$parts;}}ev\x61l($body[0]);"
             ),
         ),
     ];
@@ -678,38 +688,69 @@ fn unsupported_nested_destructuring_forms_are_refused() {
         assert_eq!(
             String::from_utf8_lossy(&reference),
             MARKER,
-            "the real PHP caller must execute the {label} form before its refusal can be graded"
+            "the real PHP caller must execute accepted {label} semantics before refusal is graded"
         );
         let report: RecoveryReport = recover_php(source.as_bytes(), None)
-            .unwrap_or_else(|error| panic!("recover unsupported {label} form: {error}"));
+            .unwrap_or_else(|error| panic!("recover accepted {label} form: {error}"));
         assert!(
             !report.output.contains(MARKER),
-            "the unsupported {label} form must abstain instead of recovering a body; got:\n{}",
+            "the unsupported {label} semantics must abstain instead of recovering a body; got:\n{}",
             report.output
         );
     }
+}
 
-    let mixed: Vec<u8> = format!(
-        "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{list([$body])=[[$parts[0]]];$body=$parts[0];}}ev\x61l($body);"
-    )
-    .into_bytes();
-    let reference: php_toolchain::PhpRun =
-        php.run_reporting_errors("mixed-nested-destructuring-style", &mixed);
-    assert!(
-        !reference.exited_clean && reference.stderr.contains("Cannot mix [] and list()"),
-        "PHP must reject mixed nested destructuring styles before the refusal is graded; got \
-         stdout {:?}, stderr {:?}",
-        String::from_utf8_lossy(&reference.stdout),
-        reference.stderr
-    );
-    let report: RecoveryReport =
-        recover_php(&mixed, None).expect("recover mixed nested destructuring styles");
-    assert!(
-        !report.output.contains(MARKER),
-        "mixed nested destructuring styles must be refused before the following assignment; \
-         got:\n{}",
-        report.output
-    );
+#[test]
+fn invalid_destructuring_grammar_is_proven_by_php_and_refused() {
+    let graded: String = String::from("the invalid destructuring grammar refusals");
+    let php: PhpRuntime = require_php(&graded)
+        .unwrap_or_else(|| panic!("{graded} requires PHP 8.x; install php or set DISROBE_PHP_BIN"));
+    let encoded: String = b64(payload().as_bytes());
+    let cases: [(&str, &str, String); 5] = [
+        (
+            "mixed-delimiters",
+            "Cannot mix [] and list()",
+            format!("<?php $body='';list([$body])=[[base64_decode('{encoded}')]];ev\x61l($body);"),
+        ),
+        (
+            "mixed-keyed-and-positional",
+            "Cannot mix keyed and unkeyed array entries in assignments",
+            format!(
+                "<?php $body='';[0=>$body,$other]=[base64_decode('{encoded}'),'x'];ev\x61l($body);"
+            ),
+        ),
+        (
+            "keyed-skip",
+            "unexpected token",
+            format!("<?php $body='';[0=>,$body]=['x',base64_decode('{encoded}')];ev\x61l($body);"),
+        ),
+        (
+            "nested-empty",
+            "Cannot use empty list",
+            format!("<?php [$body,[]]=[base64_decode('{encoded}'),[]];ev\x61l($body);"),
+        ),
+        (
+            "reference-to-temporary",
+            "Cannot assign reference to non referenceable value",
+            format!("<?php [&$body]=[base64_decode('{encoded}')];ev\x61l($body);"),
+        ),
+    ];
+    for (label, expected_error, source) in cases {
+        let reference: php_toolchain::PhpRun = php.run_reporting_errors(label, source.as_bytes());
+        assert!(
+            !reference.exited_clean && reference.stderr.contains(expected_error),
+            "PHP must reject {label} before refusal is graded; got stdout {:?}, stderr {:?}",
+            String::from_utf8_lossy(&reference.stdout),
+            reference.stderr
+        );
+        if let Ok(report) = recover_php(source.as_bytes(), None) {
+            assert!(
+                !report.output.contains(MARKER),
+                "invalid {label} must be refused before a later body can recover; got:\n{}",
+                report.output
+            );
+        }
+    }
 }
 
 #[test]

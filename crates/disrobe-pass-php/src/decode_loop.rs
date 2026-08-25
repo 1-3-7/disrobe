@@ -6,7 +6,7 @@ use crate::loader::{
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt, md5_digest, sha1_digest};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,10 +62,17 @@ type Eval<T> = Result<T, Abstain>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Val {
+    Null,
     Int(i64),
     Float(f64),
     Str(Vec<u8>),
     Arr(BTreeMap<i64, Self>),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SnapshotValue<'a> {
+    Borrowed(&'a Val),
+    Missing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +126,7 @@ enum AssignOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LExpr {
+    Null,
     Int(i64),
     Str(Vec<u8>),
     Var(Vec<u8>),
@@ -163,15 +171,22 @@ enum LValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DestructureLeaf {
-    Assign(LValue),
-    Skip,
+enum DestructureSelector {
+    Position(i64),
+    Key(LExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DestructureEntry {
+    selector: DestructureSelector,
+    target: DestructureTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DestructureTarget {
-    Leaf(DestructureLeaf),
-    Nested(Vec<DestructureLeaf>),
+    Assign { target: LValue, by_reference: bool },
+    Skip,
+    Nested(Vec<DestructureEntry>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,7 +207,7 @@ enum LStmt {
         value: LExpr,
     },
     Destructure {
-        targets: Vec<DestructureTarget>,
+        targets: Vec<DestructureEntry>,
         value: LExpr,
     },
     IncDec {
@@ -767,8 +782,8 @@ impl<'a> LoopParser<'a> {
     fn parse_destructure(&mut self) -> Option<LStmt> {
         let syntax: DestructureSyntax = self.parse_destructure_open()?;
         let mut remaining: usize = MAX_STATEMENTS;
-        let targets: Vec<DestructureTarget> =
-            self.parse_destructure_targets(syntax, &mut remaining)?;
+        let targets: Vec<DestructureEntry> =
+            self.parse_destructure_targets(syntax, 0, &mut remaining)?;
         if !self.eat(b"=") || self.peek() == Some(b'=') {
             return None;
         }
@@ -791,14 +806,20 @@ impl<'a> LoopParser<'a> {
     fn parse_destructure_targets(
         &mut self,
         syntax: DestructureSyntax,
+        depth: u32,
         remaining: &mut usize,
-    ) -> Option<Vec<DestructureTarget>> {
+    ) -> Option<Vec<DestructureEntry>> {
+        if depth > MAX_PARSE_DEPTH {
+            return None;
+        }
         let close: u8 = match syntax {
             DestructureSyntax::Short => b']',
             DestructureSyntax::List => b')',
         };
-        let mut targets: Vec<DestructureTarget> = Vec::new();
+        let mut targets: Vec<DestructureEntry> = Vec::new();
         let mut has_assignment: bool = false;
+        let mut keyed: Option<bool> = None;
+        let mut position: i64 = 0;
         loop {
             self.skip_trivia();
             if self.peek() == Some(close) {
@@ -813,23 +834,57 @@ impl<'a> LoopParser<'a> {
             }
             *remaining -= 1;
             if self.peek() == Some(b',') {
-                self.pos += 1;
-                targets.push(DestructureTarget::Leaf(DestructureLeaf::Skip));
-                continue;
-            }
-            let nested_start: usize = self.pos;
-            let target: DestructureTarget = if let Some(nested_syntax) =
-                self.parse_destructure_open()
-            {
-                if nested_syntax != syntax {
+                if keyed == Some(true) {
                     return None;
                 }
-                DestructureTarget::Nested(self.parse_destructure_leaves(syntax, remaining)?)
+                keyed = Some(false);
+                self.pos += 1;
+                targets.push(DestructureEntry {
+                    selector: DestructureSelector::Position(position),
+                    target: DestructureTarget::Skip,
+                });
+                position = position.checked_add(1)?;
+                continue;
+            }
+            let selector_start: usize = self.pos;
+            let selector: DestructureSelector = if let Some(expr) = self.parse_expr()
+                && self.eat(b"=>")
+            {
+                if keyed == Some(false) {
+                    return None;
+                }
+                keyed = Some(true);
+                DestructureSelector::Key(expr)
             } else {
-                self.pos = nested_start;
-                DestructureTarget::Leaf(DestructureLeaf::Assign(self.parse_destructure_lvalue()?))
+                self.pos = selector_start;
+                if keyed == Some(true) {
+                    return None;
+                }
+                keyed = Some(false);
+                let selector: DestructureSelector = DestructureSelector::Position(position);
+                position = position.checked_add(1)?;
+                selector
             };
-            targets.push(target);
+            let by_reference: bool = self.eat(b"&");
+            let nested_start: usize = self.pos;
+            let target: DestructureTarget =
+                if let Some(nested_syntax) = self.parse_destructure_open() {
+                    if by_reference || nested_syntax != syntax {
+                        return None;
+                    }
+                    DestructureTarget::Nested(self.parse_destructure_targets(
+                        syntax,
+                        depth.checked_add(1)?,
+                        remaining,
+                    )?)
+                } else {
+                    self.pos = nested_start;
+                    DestructureTarget::Assign {
+                        target: self.parse_lvalue()?,
+                        by_reference,
+                    }
+                };
+            targets.push(DestructureEntry { selector, target });
             has_assignment = true;
             self.skip_trivia();
             match self.peek() {
@@ -842,63 +897,6 @@ impl<'a> LoopParser<'a> {
             }
         }
         Some(targets)
-    }
-
-    fn parse_destructure_leaves(
-        &mut self,
-        syntax: DestructureSyntax,
-        remaining: &mut usize,
-    ) -> Option<Vec<DestructureLeaf>> {
-        let close: u8 = match syntax {
-            DestructureSyntax::Short => b']',
-            DestructureSyntax::List => b')',
-        };
-        let mut leaves: Vec<DestructureLeaf> = Vec::new();
-        let mut has_assignment: bool = false;
-        loop {
-            self.skip_trivia();
-            if self.peek() == Some(close) {
-                if !has_assignment {
-                    return None;
-                }
-                self.pos += 1;
-                break;
-            }
-            if *remaining == 0 {
-                return None;
-            }
-            *remaining -= 1;
-            if self.peek() == Some(b',') {
-                self.pos += 1;
-                leaves.push(DestructureLeaf::Skip);
-                continue;
-            }
-            let nested_start: usize = self.pos;
-            if self.parse_destructure_open().is_some() {
-                return None;
-            }
-            self.pos = nested_start;
-            leaves.push(DestructureLeaf::Assign(self.parse_destructure_lvalue()?));
-            has_assignment = true;
-            self.skip_trivia();
-            match self.peek() {
-                Some(b',') => self.pos += 1,
-                Some(candidate) if candidate == close => {
-                    self.pos += 1;
-                    break;
-                }
-                _ => return None,
-            }
-        }
-        Some(leaves)
-    }
-
-    fn parse_destructure_lvalue(&mut self) -> Option<LValue> {
-        let target: LValue = self.parse_lvalue()?;
-        if matches!(target, LValue::Index { idx: None, .. }) {
-            return None;
-        }
-        Some(target)
     }
 
     fn match_assign_op(&mut self) -> Option<AssignOp> {
@@ -1365,6 +1363,7 @@ pub(crate) struct Interp {
     steps: u64,
     rounds: u32,
     live_bytes: usize,
+    reserved_bytes: usize,
     frames_deep: u32,
     functions: BTreeMap<Vec<u8>, FnDef>,
     constants: BTreeMap<Vec<u8>, Val>,
@@ -1384,6 +1383,7 @@ impl Interp {
             steps: 0,
             rounds: 0,
             live_bytes: 0,
+            reserved_bytes: 0,
             frames_deep: 0,
             functions: BTreeMap::new(),
             constants,
@@ -1412,7 +1412,7 @@ impl Interp {
     }
 
     fn check_heap(&self) -> Eval<()> {
-        if self.live_bytes > self.budget.heap_bytes {
+        if self.live_bytes.saturating_add(self.reserved_bytes) > self.budget.heap_bytes {
             return Err(Abstain::HeapBudget);
         }
         Ok(())
@@ -1489,7 +1489,7 @@ impl Interp {
         self.frames_deep -= 1;
         match outcome? {
             Flow::Return(value) => Ok(value),
-            Flow::Normal | Flow::Break(_) | Flow::Continue(_) => Ok(Val::Str(Vec::new())),
+            Flow::Normal | Flow::Break(_) | Flow::Continue(_) => Ok(Val::Null),
         }
     }
 
@@ -1615,30 +1615,73 @@ impl Interp {
             }
             LStmt::Destructure { targets, value } => {
                 let rhs: Val = self.eval(value, 0)?;
-                let leaf_count: usize = targets
-                    .iter()
-                    .map(|target: &DestructureTarget| match target {
-                        DestructureTarget::Leaf(_) => 1,
-                        DestructureTarget::Nested(leaves) => leaves.len(),
-                    })
-                    .sum();
-                if targets.iter().any(|target: &DestructureTarget| {
-                    matches!(target, DestructureTarget::Nested(_))
-                }) {
-                    let snapshot_bytes: usize =
-                        leaf_count.saturating_mul(size_of::<(Option<&'static LValue>, Val)>());
-                    let transient_bytes: usize = val_size(&rhs).saturating_add(snapshot_bytes);
-                    if self.live_bytes.saturating_add(transient_bytes) > self.budget.heap_bytes {
-                        return Err(Abstain::HeapBudget);
-                    }
+                validate_destructure(targets)?;
+                let leaf_count: usize = destructure_leaf_count(targets);
+                let snapshot_bytes: usize = leaf_count
+                    .saturating_mul(size_of::<(Option<&'static LValue>, SnapshotValue<'static>)>());
+                let transient_bytes: usize = val_size(&rhs).saturating_add(snapshot_bytes);
+                if self
+                    .live_bytes
+                    .saturating_add(self.reserved_bytes)
+                    .saturating_add(transient_bytes)
+                    > self.budget.heap_bytes
+                {
+                    return Err(Abstain::HeapBudget);
                 }
-                let mut snapshot: Vec<(Option<&LValue>, Val)> = Vec::with_capacity(leaf_count);
-                self.snapshot_destructure(targets, rhs, &mut snapshot)?;
-                for (destination, assigned) in snapshot {
-                    self.tick()?;
-                    if let Some(destination) = destination {
-                        self.assign(destination, AssignOp::Set, assigned)?;
+                let mut snapshot: Vec<(Option<&LValue>, SnapshotValue<'_>)> =
+                    Vec::with_capacity(leaf_count);
+                self.snapshot_destructure(targets, Some(&rhs), 0, &mut snapshot)?;
+                let mut names: BTreeSet<Vec<u8>> = BTreeSet::new();
+                collect_destructure_names(targets, &mut names);
+                let rollback_bytes: usize = names
+                    .iter()
+                    .filter_map(|name: &Vec<u8>| self.scope.get(name))
+                    .map(val_size)
+                    .fold(0usize, usize::saturating_add);
+                if self
+                    .live_bytes
+                    .saturating_add(self.reserved_bytes)
+                    .saturating_add(transient_bytes)
+                    .saturating_add(rollback_bytes)
+                    > self.budget.heap_bytes
+                {
+                    return Err(Abstain::HeapBudget);
+                }
+                let originals: BTreeMap<Vec<u8>, Option<Val>> = names
+                    .into_iter()
+                    .map(|name: Vec<u8>| {
+                        let original: Option<Val> = self.scope.get(&name).cloned();
+                        (name, original)
+                    })
+                    .collect();
+                let live_before: usize = self.live_bytes;
+                let reserved_before: usize = self.reserved_bytes;
+                self.reserved_bytes = self
+                    .reserved_bytes
+                    .saturating_add(transient_bytes)
+                    .saturating_add(rollback_bytes);
+                let outcome: Eval<()> = (|| {
+                    for (destination, assigned) in snapshot {
+                        self.tick()?;
+                        if let Some(destination) = destination {
+                            let value: Val = match assigned {
+                                SnapshotValue::Borrowed(value) => value.clone(),
+                                SnapshotValue::Missing => Val::Null,
+                            };
+                            self.assign(destination, AssignOp::Set, value)?;
+                        }
                     }
+                    Ok(())
+                })();
+                self.reserved_bytes = reserved_before;
+                if let Err(error) = outcome {
+                    restore_destructure_names(
+                        &mut self.scope,
+                        originals,
+                        live_before,
+                        &mut self.live_bytes,
+                    );
+                    return Err(error);
                 }
                 Ok(Flow::Normal)
             }
@@ -1679,7 +1722,7 @@ impl Interp {
                     let evaluated: Val = self.eval(expr, 0)?;
                     Ok(Flow::Return(evaluated))
                 }
-                None => Ok(Flow::Return(Val::Str(Vec::new()))),
+                None => Ok(Flow::Return(Val::Null)),
             },
         }
     }
@@ -1730,55 +1773,55 @@ impl Interp {
 
     fn snapshot_destructure<'a>(
         &mut self,
-        targets: &'a [DestructureTarget],
-        rhs: Val,
-        snapshot: &mut Vec<(Option<&'a LValue>, Val)>,
+        targets: &'a [DestructureEntry],
+        rhs: Option<&'a Val>,
+        depth: u32,
+        snapshot: &mut Vec<(Option<&'a LValue>, SnapshotValue<'a>)>,
     ) -> Eval<()> {
-        let Val::Arr(mut values) = rhs else {
-            return Err(Abstain::TypeMismatch);
-        };
-        if values.len() != targets.len() {
-            return Err(Abstain::Unsupported);
+        if depth > self.budget.expr_depth {
+            return Err(Abstain::DepthBudget);
         }
-        for (index, target) in targets.iter().enumerate() {
-            let key: i64 = i64::try_from(index).map_err(|_| Abstain::OutOfRange)?;
-            let assigned: Val = values.remove(&key).ok_or(Abstain::Unsupported)?;
-            match target {
-                DestructureTarget::Leaf(leaf) => {
-                    Self::snapshot_destructure_leaf(leaf, assigned, snapshot);
-                }
-                DestructureTarget::Nested(leaves) => {
-                    self.tick()?;
-                    let Val::Arr(mut nested_values) = assigned else {
-                        return Err(Abstain::TypeMismatch);
-                    };
-                    if nested_values.len() != leaves.len() {
+        if depth > 0 {
+            self.tick()?;
+        }
+        let values: Option<&BTreeMap<i64, Val>> = match rhs {
+            Some(Val::Arr(values)) => Some(values),
+            Some(Val::Null | Val::Int(_) | Val::Float(_) | Val::Str(_)) | None => None,
+        };
+        for entry in targets {
+            let key: i64 = match &entry.selector {
+                DestructureSelector::Position(position) => *position,
+                DestructureSelector::Key(expr) => {
+                    let evaluated: Val = self.eval(expr, 0)?;
+                    let Val::Int(key) = evaluated else {
                         return Err(Abstain::Unsupported);
-                    }
-                    for (nested_index, leaf) in leaves.iter().enumerate() {
-                        let nested_key: i64 =
-                            i64::try_from(nested_index).map_err(|_| Abstain::OutOfRange)?;
-                        let nested_assigned: Val = nested_values
-                            .remove(&nested_key)
-                            .ok_or(Abstain::Unsupported)?;
-                        Self::snapshot_destructure_leaf(leaf, nested_assigned, snapshot);
-                    }
+                    };
+                    key
+                }
+            };
+            let assigned: SnapshotValue<'a> = values
+                .and_then(|values: &BTreeMap<i64, Val>| values.get(&key))
+                .map_or(SnapshotValue::Missing, SnapshotValue::Borrowed);
+            match &entry.target {
+                DestructureTarget::Assign { target, .. } => {
+                    snapshot.push((Some(target), assigned));
+                }
+                DestructureTarget::Skip => snapshot.push((None, assigned)),
+                DestructureTarget::Nested(nested) => {
+                    let nested_rhs: Option<&Val> = match assigned {
+                        SnapshotValue::Borrowed(value) => Some(value),
+                        SnapshotValue::Missing => None,
+                    };
+                    self.snapshot_destructure(
+                        nested,
+                        nested_rhs,
+                        depth.checked_add(1).ok_or(Abstain::DepthBudget)?,
+                        snapshot,
+                    )?;
                 }
             }
         }
         Ok(())
-    }
-
-    fn snapshot_destructure_leaf<'a>(
-        leaf: &'a DestructureLeaf,
-        assigned: Val,
-        snapshot: &mut Vec<(Option<&'a LValue>, Val)>,
-    ) {
-        let destination: Option<&LValue> = match leaf {
-            DestructureLeaf::Assign(target) => Some(target),
-            DestructureLeaf::Skip => None,
-        };
-        snapshot.push((destination, assigned));
     }
 
     fn exec_do_while(&mut self, body: &LStmt, cond: &LExpr) -> Eval<Flow> {
@@ -1808,7 +1851,9 @@ impl Interp {
         self.enter_loop()?;
         let items: Vec<(i64, Val)> = match self.eval(subject, 0)? {
             Val::Arr(map) => map.into_iter().collect(),
-            Val::Str(_) | Val::Int(_) | Val::Float(_) => return Err(Abstain::TypeMismatch),
+            Val::Null | Val::Str(_) | Val::Int(_) | Val::Float(_) => {
+                return Err(Abstain::TypeMismatch);
+            }
         };
         for (k, v) in items {
             self.tick()?;
@@ -1865,11 +1910,12 @@ impl Interp {
                 let Val::Arr(map) = slot else {
                     return Err(Abstain::TypeMismatch);
                 };
-                let key: i64 = key.unwrap_or_else(|| {
-                    map.keys()
-                        .next_back()
-                        .map_or(0, |k: &i64| k.saturating_add(1))
-                });
+                let key: i64 = match key {
+                    Some(key) => key,
+                    None => map.keys().next_back().map_or(Ok(0), |key: &i64| {
+                        key.checked_add(1).ok_or(Abstain::OutOfRange)
+                    })?,
+                };
                 let added: usize = val_size(&value).saturating_add(ARRAY_SLOT_OVERHEAD);
                 let removed: usize = map.insert(key, value).map_or(0, |old: Val| {
                     val_size(&old).saturating_add(ARRAY_SLOT_OVERHEAD)
@@ -1889,6 +1935,7 @@ impl Interp {
             return Err(Abstain::DepthBudget);
         }
         match expr {
+            LExpr::Null => Ok(Val::Null),
             LExpr::Int(n) => Ok(Val::Int(*n)),
             LExpr::Str(s) => Ok(Val::Str(s.clone())),
             LExpr::Var(name) => self.scope.get(name).cloned().ok_or(Abstain::UndefinedRead),
@@ -2152,7 +2199,7 @@ impl Interp {
                 Val::Arr(map) => Ok(Val::Int(
                     i64::try_from(map.len()).map_err(|_| Abstain::OutOfRange)?,
                 )),
-                Val::Str(_) | Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
+                Val::Null | Val::Str(_) | Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
             },
             b"ord" => {
                 let s: Vec<u8> = to_bytes(arg0?)?;
@@ -2399,6 +2446,7 @@ fn scope_size(scope: &BTreeMap<Vec<u8>, Val>) -> usize {
 
 fn val_size(value: &Val) -> usize {
     match value {
+        Val::Null => 0,
         Val::Int(_) => size_of::<i64>(),
         Val::Float(_) => size_of::<f64>(),
         Val::Str(bytes) => bytes.len(),
@@ -2720,7 +2768,10 @@ fn literal_keyword(name: &[u8]) -> Option<LExpr> {
     if name.eq_ignore_ascii_case(b"true") {
         return Some(LExpr::Int(1));
     }
-    if name.eq_ignore_ascii_case(b"false") || name.eq_ignore_ascii_case(b"null") {
+    if name.eq_ignore_ascii_case(b"null") {
+        return Some(LExpr::Null);
+    }
+    if name.eq_ignore_ascii_case(b"false") {
         return Some(LExpr::Str(Vec::new()));
     }
     None
@@ -2728,7 +2779,7 @@ fn literal_keyword(name: &[u8]) -> Option<LExpr> {
 
 fn is_constant_expr(expr: &LExpr) -> bool {
     match expr {
-        LExpr::Int(_) | LExpr::Str(_) | LExpr::Const(_) => true,
+        LExpr::Null | LExpr::Int(_) | LExpr::Str(_) | LExpr::Const(_) => true,
         LExpr::Index { base, idx }
         | LExpr::Bin {
             lhs: base,
@@ -2742,6 +2793,100 @@ fn is_constant_expr(expr: &LExpr) -> bool {
         LExpr::ArrayLit(elements) => elements.iter().all(is_constant_expr),
         LExpr::Var(_) | LExpr::Assign { .. } | LExpr::Call { .. } | LExpr::DynCall { .. } => false,
     }
+}
+
+fn is_destructure_index_expr(expr: &LExpr) -> bool {
+    match expr {
+        LExpr::Null | LExpr::Int(_) | LExpr::Str(_) | LExpr::Var(_) | LExpr::Const(_) => true,
+        LExpr::Index { base, idx }
+        | LExpr::Bin {
+            lhs: base,
+            rhs: idx,
+            ..
+        } => is_destructure_index_expr(base) && is_destructure_index_expr(idx),
+        LExpr::Unary { operand, .. } => is_destructure_index_expr(operand),
+        LExpr::Ternary { cond, then, other } => {
+            is_destructure_index_expr(cond)
+                && is_destructure_index_expr(then)
+                && is_destructure_index_expr(other)
+        }
+        LExpr::ArrayLit(elements) => elements.iter().all(is_destructure_index_expr),
+        LExpr::Assign { .. } | LExpr::Call { .. } | LExpr::DynCall { .. } => false,
+    }
+}
+
+fn validate_destructure(targets: &[DestructureEntry]) -> Eval<()> {
+    for entry in targets {
+        if let DestructureSelector::Key(expr) = &entry.selector
+            && !is_constant_expr(expr)
+        {
+            return Err(Abstain::Unsupported);
+        }
+        match &entry.target {
+            DestructureTarget::Assign {
+                target,
+                by_reference,
+            } => {
+                if *by_reference {
+                    return Err(Abstain::Unsupported);
+                }
+                if let LValue::Index {
+                    idx: Some(expr), ..
+                } = target
+                    && !is_destructure_index_expr(expr)
+                {
+                    return Err(Abstain::Unsupported);
+                }
+            }
+            DestructureTarget::Skip => {}
+            DestructureTarget::Nested(nested) => validate_destructure(nested)?,
+        }
+    }
+    Ok(())
+}
+
+fn destructure_leaf_count(targets: &[DestructureEntry]) -> usize {
+    targets
+        .iter()
+        .fold(0usize, |count: usize, entry: &DestructureEntry| {
+            count.saturating_add(match &entry.target {
+                DestructureTarget::Assign { .. } | DestructureTarget::Skip => 1,
+                DestructureTarget::Nested(nested) => destructure_leaf_count(nested),
+            })
+        })
+}
+
+fn collect_destructure_names(targets: &[DestructureEntry], names: &mut BTreeSet<Vec<u8>>) {
+    for entry in targets {
+        match &entry.target {
+            DestructureTarget::Assign { target, .. } => {
+                let name: &Vec<u8> = match target {
+                    LValue::Var(name) | LValue::Index { name, .. } => name,
+                };
+                names.insert(name.clone());
+            }
+            DestructureTarget::Skip => {}
+            DestructureTarget::Nested(nested) => {
+                collect_destructure_names(nested, names);
+            }
+        }
+    }
+}
+
+fn restore_destructure_names(
+    scope: &mut BTreeMap<Vec<u8>, Val>,
+    originals: BTreeMap<Vec<u8>, Option<Val>>,
+    live_before: usize,
+    live_bytes: &mut usize,
+) {
+    for (name, original) in originals {
+        if let Some(value) = original {
+            scope.insert(name, value);
+        } else {
+            scope.remove(&name);
+        }
+    }
+    *live_bytes = live_before;
 }
 
 fn is_reserved_word(name: &[u8]) -> bool {
@@ -2763,7 +2908,7 @@ fn index_value(container: &Val, key: i64) -> Eval<Val> {
                 .map(|b: &u8| Val::Str(vec![*b]))
                 .ok_or(Abstain::OutOfRange)
         }
-        Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
+        Val::Null | Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
     }
 }
 
@@ -2785,6 +2930,7 @@ const fn assign_op_to_binary(op: AssignOp) -> BinOp {
 
 fn to_int(value: &Val) -> Eval<i64> {
     match value {
+        Val::Null => Ok(0),
         Val::Int(n) => Ok(*n),
         Val::Float(f) => {
             let truncated: f64 = f.trunc();
@@ -2811,6 +2957,7 @@ const fn either_is_float(lhs: &Val, rhs: &Val) -> bool {
 
 fn to_float(value: &Val) -> Eval<f64> {
     match value {
+        Val::Null => Ok(0.0),
         Val::Float(f) => Ok(*f),
         Val::Int(n) => Ok(*n as f64),
         Val::Str(_) => to_int(value).map(|n: i64| n as f64),
@@ -2820,6 +2967,7 @@ fn to_float(value: &Val) -> Eval<f64> {
 
 fn to_bytes(value: &Val) -> Eval<Vec<u8>> {
     match value {
+        Val::Null => Ok(Vec::new()),
         Val::Int(n) => Ok(n.to_string().into_bytes()),
         Val::Str(s) => Ok(s.clone()),
         Val::Float(_) | Val::Arr(_) => Err(Abstain::TypeMismatch),
@@ -2828,6 +2976,7 @@ fn to_bytes(value: &Val) -> Eval<Vec<u8>> {
 
 fn to_bool(value: &Val) -> bool {
     match value {
+        Val::Null => false,
         Val::Int(n) => *n != 0,
         Val::Float(f) => *f != 0.0,
         Val::Str(s) => !s.is_empty() && s.as_slice() != b"0",
@@ -2840,7 +2989,17 @@ fn is_numeric(value: &Val) -> bool {
         Val::Int(_) | Val::Float(_) => true,
         Val::Str(s) => std::str::from_utf8(s)
             .is_ok_and(|t: &str| !t.trim().is_empty() && t.trim().parse::<i64>().is_ok()),
-        Val::Arr(_) => false,
+        Val::Null | Val::Arr(_) => false,
+    }
+}
+
+fn null_loose_equal(value: &Val) -> bool {
+    match value {
+        Val::Null => true,
+        Val::Int(n) => *n == 0,
+        Val::Float(f) => *f == 0.0,
+        Val::Str(bytes) => bytes.is_empty(),
+        Val::Arr(values) => values.is_empty(),
     }
 }
 
@@ -2860,7 +3019,7 @@ fn apply_unary(op: UnOp, value: &Val) -> Eval<Val> {
         UnOp::BitNot => match value {
             Val::Str(s) => Ok(Val::Str(s.iter().map(|b: &u8| !*b).collect())),
             Val::Int(_) | Val::Float(_) => Ok(Val::Int(!to_int(value)?)),
-            Val::Arr(_) => Err(Abstain::TypeMismatch),
+            Val::Null | Val::Arr(_) => Err(Abstain::TypeMismatch),
         },
     }
 }
@@ -2920,6 +3079,8 @@ fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
         BinOp::Eq | BinOp::Ne | BinOp::Identical | BinOp::NotIdentical => {
             let equal: bool = match op {
                 BinOp::Identical | BinOp::NotIdentical => lhs == rhs,
+                _ if matches!(lhs, Val::Null) => null_loose_equal(rhs),
+                _ if matches!(rhs, Val::Null) => null_loose_equal(lhs),
                 _ if either_is_float(lhs, rhs) => {
                     to_float(lhs)?.partial_cmp(&to_float(rhs)?) == Some(std::cmp::Ordering::Equal)
                 }
@@ -3008,7 +3169,7 @@ mod tests {
                 .iter()
                 .filter_map(|(k, v): (&Vec<u8>, &Val)| match v {
                     Val::Str(s) => Some((k.clone(), s.clone())),
-                    Val::Int(_) | Val::Float(_) | Val::Arr(_) => None,
+                    Val::Null | Val::Int(_) | Val::Float(_) | Val::Arr(_) => None,
                 })
                 .collect(),
         )
@@ -3514,16 +3675,31 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_returning_nothing_yields_the_empty_string() {
-        let mut interp: Interp = with_helper("function dd($s){ $x = $s; }", Budget::default());
-        interp.observe_scalar(b"c", b"seed");
-        let produced: Vec<(Vec<u8>, Vec<u8>)> = interp.run_block(b"$o = dd($c);").expect("runs");
-        assert!(
-            produced
-                .iter()
-                .any(|(name, value): &(Vec<u8>, Vec<u8>)| name == b"o" && value.is_empty()),
-            "a php function with no return statement yields null, which concatenates as empty"
-        );
+    fn implicit_and_bare_helper_returns_preserve_null_and_empty_concatenation() {
+        for (declaration, call) in [
+            ("function dd($s){ $x = $s; }", "dd($c)"),
+            ("function dd($s){ return; }", "dd($c)"),
+        ] {
+            let mut interp: Interp = with_helper(declaration, Budget::default());
+            interp.observe_scalar(b"c", b"seed");
+            let source: String =
+                format!("$direct={call};$strict=($direct===null)?'yes':'no';$concat='x'.{call};");
+            let produced: Vec<(Vec<u8>, Vec<u8>)> =
+                interp.run_block(source.as_bytes()).expect("runs");
+            assert!(produced.iter().any(|(name, value): &(Vec<u8>, Vec<u8>)| {
+                name == b"strict" && value == b"yes"
+            }));
+            assert!(
+                produced.iter().any(|(name, value): &(Vec<u8>, Vec<u8>)| {
+                    name == b"concat" && value == b"x"
+                })
+            );
+            assert!(
+                !produced
+                    .iter()
+                    .any(|(name, _): &(Vec<u8>, Vec<u8>)| name == b"direct")
+            );
+        }
     }
 
     #[test]
@@ -3593,6 +3769,168 @@ mod tests {
         };
         let src: &str = "$x=str_repeat('a',32);[[$a]]=[[$x]];";
         assert_eq!(abstain_under(budget, src), Some(Abstain::HeapBudget));
+    }
+
+    #[test]
+    fn unequal_destructuring_widths_assign_available_values_and_nullish_missing_values() {
+        let scope: BTreeMap<Vec<u8>, Vec<u8>> = run(
+            "$parts=['payload'];[$extra]=[$parts[0],'ignored'];[$body,$missing]=$parts;",
+            &[],
+        )
+        .expect("unequal destructuring executes");
+        assert_eq!(scope.get(b"extra".as_slice()), Some(&b"payload".to_vec()));
+        assert_eq!(scope.get(b"body".as_slice()), Some(&b"payload".to_vec()));
+        assert!(!scope.contains_key(b"missing".as_slice()));
+    }
+
+    #[test]
+    fn missing_and_scalar_destructuring_values_preserve_null_semantics() {
+        let source: &[u8] = b"[$a,[$b]]=[];$strict_a=($a===null)?'yes':'no';$strict_b=($b===null)?'yes':'no';$distinct=($a==='')?'no':'yes';$concat='x'.$a;$sum=1+$b;";
+        let mut parser: LoopParser<'_> = LoopParser::new(source);
+        let program: Vec<LStmt> = parser.parse_program().expect("null semantics parse");
+        let mut interp: Interp = Interp::new(Budget::default());
+        assert_eq!(interp.exec_all(&program).err(), None);
+        assert_eq!(interp.scope.get(b"a".as_slice()), Some(&Val::Null));
+        assert_eq!(interp.scope.get(b"b".as_slice()), Some(&Val::Null));
+        assert_eq!(
+            interp.scope.get(b"strict_a".as_slice()),
+            Some(&Val::Str(b"yes".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"strict_b".as_slice()),
+            Some(&Val::Str(b"yes".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"distinct".as_slice()),
+            Some(&Val::Str(b"yes".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"concat".as_slice()),
+            Some(&Val::Str(b"x".to_vec()))
+        );
+        assert_eq!(interp.scope.get(b"sum".as_slice()), Some(&Val::Int(1)));
+    }
+
+    #[test]
+    fn duplicate_integer_keys_and_append_targets_preserve_target_order() {
+        let mut parser: LoopParser<'_> =
+            LoopParser::new(b"$out=[];[1=>$out[],0=>$out[],1=>$out[]]=['zero','one'];");
+        let program: Vec<LStmt> = parser.parse_program().expect("keyed append targets parse");
+        let mut interp: Interp = Interp::new(Budget::default());
+        assert!(interp.exec_all(&program).is_ok());
+        assert_eq!(
+            interp.scope.get(b"out".as_slice()),
+            Some(&Val::Arr(BTreeMap::from([
+                (0, Val::Str(b"one".to_vec())),
+                (1, Val::Str(b"zero".to_vec())),
+                (2, Val::Str(b"one".to_vec())),
+            ])))
+        );
+    }
+
+    #[test]
+    fn accepted_alias_and_dynamic_key_semantics_are_typed_refusals() {
+        for source in [
+            "$rhs=['x'];[&$a]=$rhs;",
+            "$key=0;[$key=>$a]=['x'];",
+            "['key'=>$a]=['x'];",
+        ] {
+            let mut parser: LoopParser<'_> = LoopParser::new(source.as_bytes());
+            let program: Vec<LStmt> = parser.parse_program().expect("accepted PHP syntax parses");
+            let mut interp: Interp = Interp::new(Budget::default());
+            assert_eq!(interp.exec_all(&program).err(), Some(Abstain::Unsupported));
+        }
+    }
+
+    #[test]
+    fn failed_destructuring_rolls_back_every_prior_target() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"[$a,$out[]]=['changed','value'];");
+        let program: Vec<LStmt> = parser.parse_program().expect("append target parses");
+        let mut interp: Interp =
+            seeded(Budget::default(), &[("a", b"original"), ("out", b"scalar")]);
+        assert_eq!(interp.exec_all(&program).err(), Some(Abstain::TypeMismatch));
+        assert_eq!(
+            interp.scope.get(b"a".as_slice()),
+            Some(&Val::Str(b"original".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"out".as_slice()),
+            Some(&Val::Str(b"scalar".to_vec()))
+        );
+    }
+
+    #[test]
+    fn assignment_step_exhaustion_rolls_back_every_prior_target() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"[$a,$b]=['changed','changed'];");
+        let program: Vec<LStmt> = parser.parse_program().expect("assignment parses");
+        let mut interp: Interp = seeded(
+            Budget {
+                steps: 5,
+                ..Budget::default()
+            },
+            &[("a", b"first"), ("b", b"second")],
+        );
+        assert_eq!(interp.exec_all(&program).err(), Some(Abstain::StepBudget));
+        assert_eq!(
+            interp.scope.get(b"a".as_slice()),
+            Some(&Val::Str(b"first".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"b".as_slice()),
+            Some(&Val::Str(b"second".to_vec()))
+        );
+    }
+
+    #[test]
+    fn snapshot_reservation_remains_charged_during_every_target_write() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"[$a,$b]=['12345678','12345678'];");
+        let program: Vec<LStmt> = parser.parse_program().expect("assignment parses");
+        let mut interp: Interp = seeded(
+            Budget {
+                heap_bytes: 95,
+                ..Budget::default()
+            },
+            &[("a", b"a"), ("b", b"b")],
+        );
+        assert_eq!(interp.exec_all(&program).err(), Some(Abstain::HeapBudget));
+        assert_eq!(
+            interp.scope.get(b"a".as_slice()),
+            Some(&Val::Str(b"a".to_vec()))
+        );
+        assert_eq!(
+            interp.scope.get(b"b".as_slice()),
+            Some(&Val::Str(b"b".to_vec()))
+        );
+    }
+
+    #[test]
+    fn append_after_the_largest_integer_key_abstains_without_mutation() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"[$out[]]=['changed'];");
+        let program: Vec<LStmt> = parser.parse_program().expect("append target parses");
+        let original: Val = Val::Arr(BTreeMap::from([(i64::MAX, Val::Str(b"original".to_vec()))]));
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.bind_unchecked(b"out".to_vec(), original.clone());
+        assert_eq!(interp.exec_all(&program).err(), Some(Abstain::OutOfRange));
+        assert_eq!(interp.scope.get(b"out".as_slice()), Some(&original));
+    }
+
+    #[test]
+    fn recursive_destructuring_uses_the_expression_depth_budget() {
+        let budget: Budget = Budget {
+            expr_depth: 1,
+            ..Budget::default()
+        };
+        assert_eq!(
+            abstain_under(budget, "[[[$a]]]=[[['x']]];"),
+            Some(Abstain::DepthBudget)
+        );
+    }
+
+    #[test]
+    fn recursive_destructuring_uses_the_parser_depth_budget() {
+        let nesting: usize = usize::try_from(MAX_PARSE_DEPTH).unwrap_or(usize::MAX) + 2;
+        let source: String = format!("{}$a{}=[];", "[".repeat(nesting), "]".repeat(nesting));
+        assert!(LoopParser::new(source.as_bytes()).parse_program().is_none());
     }
 
     #[test]
@@ -3770,19 +4108,19 @@ mod tests {
     }
 
     #[test]
-    fn one_level_nested_destructuring_shares_the_target_limit() {
-        let within: String = (0..(MAX_STATEMENTS - 1))
+    fn recursive_destructuring_shares_the_target_limit() {
+        let within: String = (0..(MAX_STATEMENTS - 2))
             .map(|index: usize| format!("$a{index}"))
             .collect::<Vec<String>>()
             .join(",");
-        let at_limit: String = format!("[[{within}]] = [[]];");
+        let at_limit: String = format!("[[[{within}]]] = [[[]]];");
         assert!(
             LoopParser::new(at_limit.as_bytes())
                 .parse_program()
                 .is_some()
         );
 
-        let over_limit: String = format!("[[{within},$overflow]] = [[]];");
+        let over_limit: String = format!("[[[{within},$overflow]]] = [[[]]];");
         assert!(
             LoopParser::new(over_limit.as_bytes())
                 .parse_program()
