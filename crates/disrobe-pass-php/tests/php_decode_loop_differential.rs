@@ -409,6 +409,32 @@ fn rc4_list_destructuring_swaps_runtime_equivalent() {
 }
 
 #[test]
+fn rc4_skipped_destructuring_targets_runtime_equivalent() {
+    let key: &[u8] = b"skipped_slot_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str); 2] = [
+        (
+            "rc4-list-skipped-destructuring-target",
+            "list($s[$i], , $s[$j])",
+        ),
+        (
+            "rc4-short-skipped-destructuring-target",
+            "[$s[$i], , $s[$j]]",
+        ),
+    ];
+    for (label, swap) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = [$s[$j], 0, $s[$i]]; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = [$s[$j], 0, $s[$i]]; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade(label, &blob);
+    }
+}
+
+#[test]
 fn a_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
     let graded: String = String::from("the destructuring count-mismatch refusal");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
@@ -465,6 +491,34 @@ fn a_list_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
 }
 
 #[test]
+fn a_skipped_target_counts_toward_the_exact_rhs_width() {
+    let graded: String = String::from("the skipped-target count-mismatch refusal");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let encoded: String = b64(payload().as_bytes());
+    let blob: Vec<u8> = format!(
+        "<?php $parts = [base64_decode('{encoded}'), 'discarded']; $body = ''; for ($i = 0; $i < 1; $i++) {{ list($body, , $missing) = $parts; }} ev\x61l($body);"
+    )
+    .into_bytes();
+    let loader_stdout: Vec<u8> = php.stdout_of("skipped-target-count-mismatch", &blob);
+    assert_eq!(
+        String::from_utf8_lossy(&loader_stdout),
+        MARKER,
+        "the reference loader must execute before its conservative refusal can be graded"
+    );
+
+    let report: RecoveryReport =
+        recover_php(&blob, None).expect("recover mismatched skipped target");
+    assert!(
+        !report.output.contains(MARKER),
+        "a skipped target consumes one RHS position, so a shorter RHS must abstain before any \
+         assignment; got:\n{}",
+        report.output
+    );
+}
+
+#[test]
 fn mixed_list_destructuring_delimiters_are_refused() {
     let encoded: String = b64(payload().as_bytes());
     let blob: Vec<u8> = format!(
@@ -479,6 +533,21 @@ fn mixed_list_destructuring_delimiters_are_refused() {
             report.output
         );
     }
+}
+
+#[test]
+fn an_all_empty_list_target_is_refused() {
+    let encoded: String = b64(payload().as_bytes());
+    let blob: Vec<u8> = format!(
+        "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ list(,) = $parts; $body = $parts[0]; }} ev\x61l($body);"
+    )
+    .into_bytes();
+    let report: RecoveryReport = recover_php(&blob, None).expect("recover malformed empty list");
+    assert!(
+        !report.output.contains(MARKER),
+        "an all-empty list is invalid PHP and must be rejected before assignment; got:\n{}",
+        report.output
+    );
 }
 
 #[test]

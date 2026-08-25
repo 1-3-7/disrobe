@@ -163,6 +163,12 @@ enum LValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum DestructureTarget {
+    Assign(LValue),
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum LStmt {
     Const {
         name: Vec<u8>,
@@ -174,7 +180,7 @@ enum LStmt {
         value: LExpr,
     },
     Destructure {
-        targets: Vec<LValue>,
+        targets: Vec<DestructureTarget>,
         value: LExpr,
     },
     IncDec {
@@ -756,16 +762,22 @@ impl<'a> LoopParser<'a> {
         } else {
             return None;
         };
-        let mut targets: Vec<LValue> = Vec::new();
+        let mut targets: Vec<DestructureTarget> = Vec::new();
         loop {
             if targets.len() >= MAX_STATEMENTS {
                 return None;
+            }
+            self.skip_trivia();
+            if self.peek() == Some(b',') {
+                self.pos += 1;
+                targets.push(DestructureTarget::Skip);
+                continue;
             }
             let target: LValue = self.parse_lvalue()?;
             if matches!(target, LValue::Index { idx: None, .. }) {
                 return None;
             }
-            targets.push(target);
+            targets.push(DestructureTarget::Assign(target));
             self.skip_trivia();
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -1510,7 +1522,9 @@ impl Interp {
                 }
                 for (target, assigned) in targets.iter().zip(snapshot) {
                     self.tick()?;
-                    self.assign(target, AssignOp::Set, assigned)?;
+                    if let DestructureTarget::Assign(destination) = target {
+                        self.assign(destination, AssignOp::Set, assigned)?;
+                    }
                 }
                 Ok(Flow::Normal)
             }
