@@ -149,6 +149,18 @@ fn validate_symbols(symbols: &[FlutterEngineSymbol]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "native-image")]
+pub(crate) fn normalize_flutter_engine_symbol_summary(
+    identity: &FlutterEngineIdentity,
+    symbols: &[FlutterEngineSymbol],
+) -> Result<(FlutterEngineIdentity, Vec<FlutterEngineSymbol>)> {
+    let identity: FlutterEngineIdentity = validate_identity(identity.clone())?;
+    validate_symbols(symbols)?;
+    let mut entries: Vec<FlutterEngineSymbol> = symbols.to_vec();
+    entries.sort_unstable_by_key(|symbol: &FlutterEngineSymbol| symbol.address);
+    Ok((identity, entries))
+}
+
 fn validate_identity(mut identity: FlutterEngineIdentity) -> Result<FlutterEngineIdentity> {
     let value: &str = identity.value.as_str();
     let valid: bool = match identity.kind {

@@ -21,6 +21,8 @@ pub mod dart_graph_layout;
 pub mod dart_graph_recovery;
 pub mod demangler;
 pub mod disasm;
+#[cfg(feature = "native-image")]
+pub mod engine_cache;
 pub mod engine_symbols;
 pub mod kernel;
 pub mod libapp_parser;
@@ -70,6 +72,11 @@ pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
 pub use disasm::{
     Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction, disassemble_function,
     disassemble_functions, disassemble_range,
+};
+#[cfg(feature = "native-image")]
+pub use engine_cache::{
+    FLUTTER_ENGINE_SYMBOL_CACHE_FORMAT, FLUTTER_ENGINE_SYMBOL_CACHE_MAX_BYTES,
+    FLUTTER_ENGINE_SYMBOL_CACHE_VERSION, FlutterEngineSymbolCache,
 };
 #[cfg(feature = "native-image")]
 pub use engine_symbols::validate_flutter_engine_symbol_map_for_elf;
