@@ -256,3 +256,30 @@ fn left_shift_at_its_width_matches_hardcoded_at_every_supported_width() {
         }
     }
 }
+
+#[test]
+fn constant_ite_matches_hardcoded_at_every_supported_width() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        for input in [
+            Expr::ite(Expr::konst(0), Expr::var(0), Expr::var(1)),
+            Expr::ite(Expr::konst(1), Expr::var(0), Expr::var(1)),
+            Expr::ite(Expr::konst(2), Expr::var(0), Expr::var(1)),
+        ] {
+            let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, canonicalize(&input, width));
+            if equivalent_exhaustive_runnable(width, 2) {
+                assert!(equivalent_exhaustive(&input, &dsl, width, 2));
+            }
+        }
+    }
+}

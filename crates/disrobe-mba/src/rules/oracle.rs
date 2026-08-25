@@ -49,7 +49,7 @@ fn witness_input(rule: &Rule, width: Width) -> Option<Expr> {
             Condition::IsZero { expr } => {
                 captures.insert(expr.clone(), Expr::konst(0));
             }
-            Condition::IsOne { expr } => {
+            Condition::IsNonZero { expr } | Condition::IsOne { expr } => {
                 captures.insert(expr.clone(), Expr::konst(1));
             }
             Condition::IsAllOnes { expr } => {
@@ -87,6 +87,15 @@ fn collect_captures(
             collect_captures(left, captures, next_variable);
             collect_captures(right, captures, next_variable);
         }
+        Pattern::Ite {
+            cond,
+            then,
+            otherwise,
+        } => {
+            collect_captures(cond, captures, next_variable);
+            collect_captures(then, captures, next_variable);
+            collect_captures(otherwise, captures, next_variable);
+        }
     }
 }
 
@@ -111,6 +120,15 @@ fn instantiate_pattern(
             op.to_mba(),
             Box::new(instantiate_pattern(left, captures, width)?),
             Box::new(instantiate_pattern(right, captures, width)?),
+        )),
+        Pattern::Ite {
+            cond,
+            then,
+            otherwise,
+        } => Some(Expr::ite(
+            instantiate_pattern(cond, captures, width)?,
+            instantiate_pattern(then, captures, width)?,
+            instantiate_pattern(otherwise, captures, width)?,
         )),
     }
 }

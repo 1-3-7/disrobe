@@ -188,6 +188,16 @@ fn pattern_shape_into(
             pattern_shape_into(left, captures, next_capture),
             pattern_shape_into(right, captures, next_capture)
         ),
+        Pattern::Ite {
+            cond,
+            then,
+            otherwise,
+        } => format!(
+            "ite({},{},{})",
+            pattern_shape_into(cond, captures, next_capture),
+            pattern_shape_into(then, captures, next_capture),
+            pattern_shape_into(otherwise, captures, next_capture)
+        ),
     }
 }
 
@@ -248,6 +258,15 @@ fn collect_pattern_binds<'a>(
                 stack.push(right);
                 stack.push(left);
             }
+            Pattern::Ite {
+                cond,
+                then,
+                otherwise,
+            } => {
+                stack.push(otherwise);
+                stack.push(then);
+                stack.push(cond);
+            }
         }
     }
     Ok(())
@@ -259,9 +278,10 @@ fn check_condition_refs(
     rule: &Rule,
 ) -> Result<(), LoadError> {
     let refs: [&str; 2] = match condition {
-        Condition::IsZero { expr } | Condition::IsOne { expr } | Condition::IsAllOnes { expr } => {
-            [expr.as_str(), expr.as_str()]
-        }
+        Condition::IsZero { expr }
+        | Condition::IsNonZero { expr }
+        | Condition::IsOne { expr }
+        | Condition::IsAllOnes { expr } => [expr.as_str(), expr.as_str()],
         Condition::Equal { left, right } | Condition::Complement { left, right } => {
             [left.as_str(), right.as_str()]
         }

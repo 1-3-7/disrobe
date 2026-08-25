@@ -2,9 +2,9 @@
 use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
 
 #[test]
-fn shipped_rules_load_and_have_thirty_four_migrated_rules() {
+fn shipped_rules_load_and_have_thirty_six_migrated_rules() {
     let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
-    assert_eq!(set.len(), 34);
+    assert_eq!(set.len(), 36);
     assert!(set.commutative_match);
 }
 

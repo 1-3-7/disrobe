@@ -74,6 +74,11 @@ pub enum Pattern {
         left: Box<Self>,
         right: Box<Self>,
     },
+    Ite {
+        cond: Box<Self>,
+        then: Box<Self>,
+        otherwise: Box<Self>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +86,7 @@ pub enum Pattern {
 #[serde(tag = "check", rename_all = "snake_case")]
 pub enum Condition {
     IsZero { expr: String },
+    IsNonZero { expr: String },
     IsOne { expr: String },
     IsAllOnes { expr: String },
     Equal { left: String, right: String },

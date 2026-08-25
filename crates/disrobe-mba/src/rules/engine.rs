@@ -185,6 +185,18 @@ fn match_pattern(
             }
             _ => false,
         },
+        Pattern::Ite {
+            cond,
+            then,
+            otherwise,
+        } => match expr {
+            Expr::Ite(actual_cond, actual_then, actual_otherwise) => {
+                match_pattern(cond, actual_cond, bindings, width, commutative)
+                    && match_pattern(then, actual_then, bindings, width, commutative)
+                    && match_pattern(otherwise, actual_otherwise, bindings, width, commutative)
+            }
+            _ => false,
+        },
     }
 }
 
@@ -240,6 +252,8 @@ fn condition_holds(condition: &Condition, bindings: &Bindings, width: Width) -> 
     match condition {
         Condition::IsZero { expr } => const_or_subtree_const(expr, bindings, width)
             .is_some_and(|value: u64| (value & width.mask()) == 0),
+        Condition::IsNonZero { expr } => const_or_subtree_const(expr, bindings, width)
+            .is_some_and(|value: u64| (value & width.mask()) != 0),
         Condition::IsOne { expr } => const_or_subtree_const(expr, bindings, width)
             .is_some_and(|value: u64| (value & width.mask()) == 1),
         Condition::IsAllOnes { expr } => const_or_subtree_const(expr, bindings, width)

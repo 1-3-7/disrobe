@@ -292,3 +292,21 @@ proof = "shared_equivalence"
 source = "fixed-width logical shift at the operand width"
 pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 64 } }
 rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "ite_zero_selects_otherwise"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width conditional with a zero condition"
+pattern = { kind = "ite", cond = { kind = "any_const", bind = "c" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "is_zero", expr = "c" }]
+rewrite = { build = "use", expr = "otherwise" }
+
+[[rules]]
+name = "ite_nonzero_selects_then"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width conditional with a nonzero condition"
+pattern = { kind = "ite", cond = { kind = "any_const", bind = "c" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "is_non_zero", expr = "c" }]
+rewrite = { build = "use", expr = "then" }
