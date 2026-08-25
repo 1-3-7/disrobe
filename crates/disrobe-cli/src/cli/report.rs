@@ -878,6 +878,19 @@ pub(crate) fn build_forensic(
     build_single(doc, recovery, Some(out_dir), out_dir)
 }
 
+pub(crate) fn write_single_forensic(
+    doc: &ChainDocument,
+    recovery: &ChainRecoveryReport,
+    out_dir: &Path,
+    redact: bool,
+) -> miette::Result<()> {
+    let report: SingleReport = build_forensic(doc, recovery, out_dir);
+    let json: String = render_json_value(&report, redact)?;
+    let document: ReportDocument = ReportDocument::Single(Box::new(report));
+    let sarif: String = render_forensic_sarif(&document, redact)?;
+    write_forensic_bytes(out_dir, json, sarif)
+}
+
 fn build_single(
     doc: &ChainDocument,
     recovery: &ChainRecoveryReport,
@@ -1028,13 +1041,35 @@ pub(crate) fn write_batch_forensic(
     redact: bool,
 ) -> miette::Result<()> {
     let document: ReportDocument = ReportDocument::Batch(Box::new(build_batch(manifest, out_dir)));
-    let report_path: PathBuf = out_dir.join("report.json");
-    std::fs::write(
-        &report_path,
-        render_json_document(&document, redact)?.into_bytes(),
+    write_forensic_document(&document, out_dir, redact)
+}
+
+fn write_forensic_document(
+    document: &ReportDocument,
+    out_dir: &Path,
+    redact: bool,
+) -> miette::Result<()> {
+    let json: String = render_json_document(document, redact)?;
+    let sarif: String = render_forensic_sarif(document, redact)?;
+    write_forensic_bytes(out_dir, json, sarif)
+}
+
+fn render_forensic_sarif(document: &ReportDocument, redact: bool) -> miette::Result<String> {
+    redact_json(
+        super::report_forensic::render_sarif(document)?,
+        redact,
+        "DR-CLI-0361",
     )
-    .map_err(|e: std::io::Error| {
+}
+
+fn write_forensic_bytes(out_dir: &Path, json: String, sarif: String) -> miette::Result<()> {
+    let report_path: PathBuf = out_dir.join("report.json");
+    std::fs::write(&report_path, json.into_bytes()).map_err(|e: std::io::Error| {
         miette::miette!("DR-CLI-0360: cannot write {}: {e}", report_path.display())
+    })?;
+    let sarif_path: PathBuf = out_dir.join("report.sarif");
+    std::fs::write(&sarif_path, sarif.into_bytes()).map_err(|e: std::io::Error| {
+        miette::miette!("DR-CLI-0360: cannot write {}: {e}", sarif_path.display())
     })
 }
 
@@ -1691,8 +1726,12 @@ pub(crate) fn run(
 }
 
 fn render_json_document(document: &ReportDocument, redact: bool) -> miette::Result<String> {
+    render_json_value(document, redact)
+}
+
+fn render_json_value<T: Serialize>(value: &T, redact: bool) -> miette::Result<String> {
     if redact {
-        let mut value: serde_json::Value = serde_json::to_value(document)
+        let mut value: serde_json::Value = serde_json::to_value(value)
             .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
         Redactor::new()
             .redact_json_value(&mut value)
@@ -1700,7 +1739,7 @@ fn render_json_document(document: &ReportDocument, redact: bool) -> miette::Resu
         serde_json::to_string_pretty(&value)
             .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))
     } else {
-        serde_json::to_string_pretty(document)
+        serde_json::to_string_pretty(value)
             .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))
     }
 }

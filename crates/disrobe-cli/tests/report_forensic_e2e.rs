@@ -201,6 +201,28 @@ fn the_forensic_report_validates_against_the_pinned_sarif_schema() {
 }
 
 #[test]
+fn auto_writes_a_standards_report_that_validates_against_sarif_and_stix() {
+    let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        completed_run("forensic-auto-sidecar", &(0u8..96).collect::<Vec<u8>>());
+    let path: PathBuf = out.join("report.sarif");
+    let bytes: Vec<u8> = std::fs::read(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("auto must write {}: {e}", path.display()));
+    let log: Value = serde_json::from_slice(&bytes).expect("automatic standards report is JSON");
+    assert_valid(&sarif_validator(), &log, "the automatic standards report");
+    let stix: &Value = &log["runs"][0]["properties"]["stix"];
+    assert_eq!(stix["available"], serde_json::json!(true));
+    let objects: &Vec<Value> = stix["bundle"]["objects"]
+        .as_array()
+        .expect("automatic standards report embeds a STIX bundle");
+    for object in objects {
+        let object_type: &str = object["type"].as_str().expect("STIX object type");
+        if matches!(object_type, "identity" | "indicator" | "malware-analysis") {
+            assert_valid(&stix_validator(object_type), object, object_type);
+        }
+    }
+}
+
+#[test]
 fn every_cited_range_names_the_artifact_it_indexes() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
         completed_run("forensic-ranges", &(0u8..96).collect::<Vec<u8>>());

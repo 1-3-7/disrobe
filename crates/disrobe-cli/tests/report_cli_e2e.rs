@@ -131,6 +131,19 @@ fn report_on_batch_dir_aggregates_manifest() {
     assert_eq!(parsed["report_kind"], serde_json::json!("batch"));
     assert_eq!(parsed["processed"], serde_json::json!(2));
     assert!(parsed["files"].as_array().is_some_and(|a| a.len() == 2));
+    let sarif_path: PathBuf = batch_out.join("report.sarif");
+    assert!(
+        sarif_path.is_file(),
+        "batch auto must write a standards report beside manifest.json: {}",
+        sarif_path.display()
+    );
+    let sarif: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&sarif_path).expect("read batch automatic standards report"),
+    )
+    .expect("batch automatic standards report must be JSON");
+    assert_eq!(sarif["version"], serde_json::json!("2.1.0"));
+    assert_eq!(sarif["runs"][0]["properties"]["stix"]["available"], false);
+    assert!(sarif["runs"][0]["properties"]["stix"]["reason"].is_string());
 }
 
 #[test]

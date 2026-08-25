@@ -703,15 +703,12 @@ pub(crate) fn run_with_disk(
     } else {
         None
     };
+    super::report::write_single_forensic(&doc, &report, &out_dir, redact)?;
     let forensic_path: PathBuf = out_dir.join("report.json");
-    let forensic_bytes: Vec<u8> = serialized_report(
-        &super::report::build_forensic(&doc, &report, &out_dir),
-        redact,
-    )
-    .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
-    std::fs::write(&forensic_path, &forensic_bytes)
-        .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
+    let forensic_sarif_path: PathBuf = out_dir.join("report.sarif");
     let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
+    let forensic_sarif_path_str: String =
+        redacted_text(forensic_sarif_path.display().to_string(), redact)?;
     let chain_path_str: String = redacted_text(chain_path.display().to_string(), redact)?;
     let supplemental_label: Option<&str> =
         supplemental_output
@@ -734,6 +731,7 @@ pub(crate) fn run_with_disk(
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
         println!("report.json written: {forensic_path_str}");
+        println!("report.sarif written: {forensic_sarif_path_str}");
         if let (Some(label), Some(path)) = (supplemental_label, supplemental_path_str.as_ref()) {
             println!("{label} symbol export written: {path}");
         }
@@ -981,13 +979,7 @@ pub(crate) fn run_chain_to_dir(
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
-    let forensic_bytes: Vec<u8> = serialized_report(
-        &super::report::build_forensic(&doc, &report, out_dir),
-        redact,
-    )
-    .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
-    std::fs::write(out_dir.join("report.json"), &forensic_bytes)
-        .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
+    super::report::write_single_forensic(&doc, &report, out_dir, redact)?;
     let supplemental_outputs: Vec<String> = supplemental_output
         .as_ref()
         .map(|output: &SupplementalOutput| write_supplemental_output(out_dir, output))
