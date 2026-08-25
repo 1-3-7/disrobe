@@ -763,11 +763,19 @@ impl<'a> LoopParser<'a> {
             return None;
         };
         let mut targets: Vec<DestructureTarget> = Vec::new();
+        let mut has_assignment: bool = false;
         loop {
+            self.skip_trivia();
+            if self.peek() == Some(close) {
+                if !has_assignment {
+                    return None;
+                }
+                self.pos += 1;
+                break;
+            }
             if targets.len() >= MAX_STATEMENTS {
                 return None;
             }
-            self.skip_trivia();
             if self.peek() == Some(b',') {
                 self.pos += 1;
                 targets.push(DestructureTarget::Skip);
@@ -778,6 +786,7 @@ impl<'a> LoopParser<'a> {
                 return None;
             }
             targets.push(DestructureTarget::Assign(target));
+            has_assignment = true;
             self.skip_trivia();
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -3543,6 +3552,30 @@ mod tests {
             let _: Option<Vec<(Vec<u8>, Vec<u8>)>> =
                 Interp::new(Budget::default()).run_block(case.as_bytes());
         }
+    }
+
+    #[test]
+    fn a_trailing_comma_preserves_the_exact_destructuring_target_limit() {
+        let targets: String = (0..MAX_STATEMENTS)
+            .map(|index: usize| format!("$a{index}"))
+            .collect::<Vec<String>>()
+            .join(",");
+        let at_limit: String = format!("[{targets},] = range(0, {});", MAX_STATEMENTS - 1);
+        assert!(
+            LoopParser::new(at_limit.as_bytes())
+                .parse_program()
+                .is_some(),
+            "a trailing delimiter is not a target, so exactly {MAX_STATEMENTS} targets must stay \
+             within the existing parser limit"
+        );
+
+        let over_limit: String = format!("[{targets},$overflow,] = range(0, {MAX_STATEMENTS});");
+        assert!(
+            LoopParser::new(over_limit.as_bytes())
+                .parse_program()
+                .is_none(),
+            "a trailing delimiter must not let a real target exceed the existing parser limit"
+        );
     }
 
     #[test]

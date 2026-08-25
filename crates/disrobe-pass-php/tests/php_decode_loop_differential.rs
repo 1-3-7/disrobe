@@ -435,6 +435,44 @@ fn rc4_skipped_destructuring_targets_runtime_equivalent() {
 }
 
 #[test]
+fn rc4_trailing_comma_destructuring_targets_runtime_equivalent() {
+    let key: &[u8] = b"trailing_comma_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 4] = [
+        (
+            "rc4-short-trailing-comma-target",
+            "[$s[$i], $s[$j],]",
+            "[$s[$j], $s[$i]]",
+        ),
+        (
+            "rc4-list-trailing-comma-target",
+            "list($s[$i], $s[$j],)",
+            "[$s[$j], $s[$i]]",
+        ),
+        (
+            "rc4-short-skipped-trailing-comma-target",
+            "[$s[$i], , $s[$j],]",
+            "[$s[$j], 0, $s[$i]]",
+        ),
+        (
+            "rc4-list-skipped-trailing-comma-target",
+            "list($s[$i], , $s[$j],)",
+            "[$s[$j], 0, $s[$i]]",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade(label, &blob);
+    }
+}
+
+#[test]
 fn a_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
     let graded: String = String::from("the destructuring count-mismatch refusal");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
@@ -536,18 +574,36 @@ fn mixed_list_destructuring_delimiters_are_refused() {
 }
 
 #[test]
-fn an_all_empty_list_target_is_refused() {
+fn all_empty_destructuring_targets_are_refused() {
+    let graded: String = String::from("the all-empty destructuring target refusals");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
     let encoded: String = b64(payload().as_bytes());
-    let blob: Vec<u8> = format!(
-        "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ list(,) = $parts; $body = $parts[0]; }} ev\x61l($body);"
-    )
-    .into_bytes();
-    let report: RecoveryReport = recover_php(&blob, None).expect("recover malformed empty list");
-    assert!(
-        !report.output.contains(MARKER),
-        "an all-empty list is invalid PHP and must be rejected before assignment; got:\n{}",
-        report.output
-    );
+    for (label, target) in [("short", "[,]"), ("list", "list(,)")] {
+        let blob: Vec<u8> = format!(
+            "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ {target} = $parts; $body = $parts[0]; }} ev\x61l($body);"
+        )
+        .into_bytes();
+        let reference: php_toolchain::PhpRun =
+            php.run_reporting_errors(&format!("all-empty-{label}-target"), &blob);
+        assert!(
+            !reference.exited_clean && reference.stderr.contains("Cannot use empty list"),
+            "php must reject the all-empty {label} target before its refusal can be graded; got \
+             stdout {:?}, stderr {:?}",
+            String::from_utf8_lossy(&reference.stdout),
+            reference.stderr
+        );
+
+        let report: RecoveryReport =
+            recover_php(&blob, None).expect("recover malformed empty destructuring target");
+        assert!(
+            !report.output.contains(MARKER),
+            "an all-empty {label} target is invalid PHP and must be rejected before assignment; \
+             got:\n{}",
+            report.output
+        );
+    }
 }
 
 #[test]
