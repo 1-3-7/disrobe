@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use disrobe_core::interop::{ArtifactSchema, IndicatorAggregator, IndicatorBundle};
+#[cfg(feature = "chain")]
 use disrobe_core::ioc::{self, IocReport};
 
 use crate::cli::output::OutputFormat;
@@ -20,6 +21,7 @@ const fn schema_label(schema: ArtifactSchema) -> &'static str {
     }
 }
 
+#[cfg(feature = "chain")]
 pub(crate) fn analyze_target(
     bytes: &[u8],
     uri: &str,

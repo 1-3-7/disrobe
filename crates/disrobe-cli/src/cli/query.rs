@@ -502,9 +502,9 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use super::{
-        class_directory_nodes, hierarchy_diagnostic, load_jvm_implementors, terminal_safe_text,
-    };
+    #[cfg(windows)]
+    use super::class_directory_nodes;
+    use super::{hierarchy_diagnostic, load_jvm_implementors, terminal_safe_text};
 
     fn fixture(path: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
