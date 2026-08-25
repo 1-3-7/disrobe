@@ -7,6 +7,8 @@
     clippy::unnecessary_debug_formatting
 )]
 
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -15,7 +17,9 @@ use disrobe_core::chain::{
     ChainDocument, DetectContext, DetectVerdict, Detector, DetectorPick, NodeDoc, PassRegistry,
     VerdictDoc,
 };
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::chain_detector::NativeImageDetector;
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
 
 const NATIVE_IMAGE_PASS_ID: &str = "native.image-classify";
 
@@ -29,6 +33,24 @@ const PLAIN_MACHO: &[u8] = include_bytes!("fixtures/native/plain_x86_64.macho");
 const OBJC_MACHO: &[u8] = include_bytes!(
     "../../disrobe-pass-swift-objc/tests/fixtures/objc_dispatch/dispatch_sends_x86_64.macho"
 );
+
+const ELF_EH_FRAME_HDR_SOURCE: &str = r#"
+__attribute__((noinline, visibility("hidden"))) long header_alpha(long value) {
+    return value + 3;
+}
+
+__attribute__((noinline, visibility("hidden"))) long header_beta(long value) {
+    return value * 5;
+}
+
+__attribute__((noinline, visibility("hidden"))) long header_gamma(long value) {
+    return value ^ 7;
+}
+"#;
+
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+
+const TOOL_CAPTURE_LIMIT: usize = 1 << 20;
 
 fn workspace_root() -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -58,6 +80,98 @@ fn read_fixture(rel: &str) -> Vec<u8> {
             path.display()
         )
     })
+}
+
+fn aarch64_eh_frame_hdr_images(directory: &Path) -> (Vec<u8>, Vec<u8>, PathBuf) {
+    let source: PathBuf = directory.join("eh_frame_hdr.c");
+    let reference: PathBuf = directory.join("eh_frame_hdr.reference.so");
+    let stripped: PathBuf = directory.join("eh_frame_hdr.stripped.so");
+    std::fs::write(&source, ELF_EH_FRAME_HDR_SOURCE).expect("write fixture source");
+    let arguments: Vec<OsString> = vec![
+        OsString::from("--target=aarch64-unknown-linux-gnu"),
+        OsString::from("-O1"),
+        OsString::from("-fPIC"),
+        OsString::from("-fuse-ld=lld"),
+        OsString::from("-nostdlib"),
+        OsString::from("-shared"),
+        OsString::from("-Wl,--eh-frame-hdr"),
+        OsString::from("-o"),
+        reference.as_os_str().to_os_string(),
+        source.as_os_str().to_os_string(),
+    ];
+    let compiled: CapturedOutput = run_captured(
+        Path::new("clang"),
+        &arguments,
+        TOOL_TIMEOUT,
+        TOOL_CAPTURE_LIMIT,
+    )
+    .expect("start the AArch64 eh-frame-header fixture compiler")
+    .expect("the AArch64 eh-frame-header fixture compiler exceeded its timeout");
+    assert_eq!(
+        compiled.exit_code,
+        Some(0),
+        "clang failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let strip_arguments: Vec<OsString> = vec![
+        OsString::from("--strip-all"),
+        OsString::from("-o"),
+        stripped.as_os_str().to_os_string(),
+        reference.as_os_str().to_os_string(),
+    ];
+    let stripped_output: CapturedOutput = run_captured(
+        Path::new("llvm-strip"),
+        &strip_arguments,
+        TOOL_TIMEOUT,
+        TOOL_CAPTURE_LIMIT,
+    )
+    .expect("start the AArch64 fixture stripper")
+    .expect("the AArch64 fixture stripper exceeded its timeout");
+    assert_eq!(
+        stripped_output.exit_code,
+        Some(0),
+        "llvm-strip failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stripped_output.stdout),
+        String::from_utf8_lossy(&stripped_output.stderr)
+    );
+    (
+        std::fs::read(reference).expect("read unstripped eh-frame-header fixture"),
+        std::fs::read(&stripped).expect("read stripped eh-frame-header fixture"),
+        stripped,
+    )
+}
+
+fn eh_frame_header_reference_starts(reference: &[u8]) -> BTreeSet<u64> {
+    let file: object::File<'_> =
+        object::File::parse(reference).expect("the unstripped reference must parse");
+    file.symbols()
+        .filter(|symbol: &object::Symbol<'_, '_>| {
+            matches!(symbol.kind(), ObjSymbolKind::Text)
+                && !symbol.is_undefined()
+                && symbol
+                    .name()
+                    .is_ok_and(|name: &str| name.starts_with("header_"))
+        })
+        .map(|symbol: object::Symbol<'_, '_>| symbol.address())
+        .collect()
+}
+
+fn erase_section_contents(bytes: &mut [u8], name: &str) {
+    let file: object::File<'_> = object::File::parse(&*bytes).expect("parse linked fixture");
+    let section: object::Section<'_, '_> = file
+        .section_by_name(name)
+        .expect("the linked fixture must contain the requested section");
+    let (offset, size): (u64, u64) = section.file_range().expect("section has a file range");
+    let start: usize = usize::try_from(offset).expect("section offset fits usize");
+    let length: usize = usize::try_from(size).expect("section size fits usize");
+    let end: usize = start
+        .checked_add(length)
+        .expect("section extent fits usize");
+    bytes
+        .get_mut(start..end)
+        .expect("section range lies inside linked fixture")
+        .fill(0);
 }
 
 fn cargo_bin() -> PathBuf {
@@ -413,6 +527,71 @@ fn find_file_named(dir: &Path, target: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[test]
+fn auto_presents_aarch64_eh_frame_header_starts_through_production_registry() {
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("create fixture directory");
+    let (reference, mut stripped, stripped_path): (Vec<u8>, Vec<u8>, PathBuf) =
+        aarch64_eh_frame_hdr_images(directory.path());
+    let expected: BTreeSet<u64> = eh_frame_header_reference_starts(&reference);
+    assert_eq!(
+        expected.len(),
+        3,
+        "compiler reference must expose three starts"
+    );
+
+    erase_section_contents(&mut stripped, ".eh_frame");
+    std::fs::write(&stripped_path, &stripped).expect("write header-only fixture");
+    assert_eq!(
+        winning_pass_id(&stripped).as_deref(),
+        Some(NATIVE_IMAGE_PASS_ID),
+        "the production registry must select the native pass for the header-only image",
+    );
+
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("aarch64-eh-frame-header");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+    let proc_out: CapturedOutput = run_auto(&stripped_path, &out);
+    assert_eq!(
+        proc_out.exit_code,
+        Some(0),
+        "disrobe auto failed: {}",
+        String::from_utf8_lossy(&proc_out.stderr),
+    );
+
+    let raw_chain: String =
+        std::fs::read_to_string(out.join("chain.json")).expect("read auto chain document");
+    let chain: ChainDocument = serde_json::from_str(&raw_chain).expect("parse auto chain document");
+    let native: &NodeDoc = chain
+        .nodes
+        .iter()
+        .find(|node: &&NodeDoc| node.pass.as_deref() == Some(NATIVE_IMAGE_PASS_ID))
+        .expect("auto chain must contain the native pass");
+    assert_eq!(native.verdict, VerdictDoc::FanOut);
+
+    let report_path: PathBuf =
+        find_file_named(&out, "pseudo-source.json").expect("auto must write pseudo-source.json");
+    let report_bytes: Vec<u8> = std::fs::read(report_path).expect("read pseudo-source report");
+    let report: serde_json::Value =
+        serde_json::from_slice(&report_bytes).expect("parse pseudo-source report");
+    assert_eq!(report["run"], true);
+    let presented: BTreeSet<u64> = ["recovered", "unrecovered"]
+        .into_iter()
+        .flat_map(|key: &str| {
+            report[key]
+                .as_array()
+                .expect("function result collection must be an array")
+        })
+        .map(|function: &serde_json::Value| {
+            function["address"]
+                .as_u64()
+                .expect("function result must carry an address")
+        })
+        .collect();
+    assert!(
+        expected.is_subset(&presented),
+        "auto presented {presented:?}, missing compiler starts {expected:?}",
+    );
 }
 
 #[test]

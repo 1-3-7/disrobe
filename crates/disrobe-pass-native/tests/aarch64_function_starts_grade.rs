@@ -11,12 +11,6 @@ use disrobe_ir::payload::{DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_pass_native::build_disasm_payload;
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
 
-#[cfg(feature = "chain")]
-use disrobe_core::chain::Pass as _;
-
-#[cfg(feature = "chain")]
-use disrobe_core::{Artifact, Rung};
-
 const STATIC_STRIPPED: &[u8] =
     include_bytes!("../../../corpus/native/discovery/disc_aarch64.stripped.elf");
 
@@ -498,67 +492,39 @@ fn stripped_elf_jump_slots_seed_each_aarch64_plt_entry() {
     );
 }
 
-#[test]
-fn stripped_elf_eh_frame_header_starts_reach_disassembly_without_fde_contents() {
-    let (reference, mut stripped): (Vec<u8>, Vec<u8>) = aarch64_eh_frame_hdr_images();
-    let expected: BTreeMap<u64, String> = reference_starts(&reference)
+fn eh_frame_header_reference_starts(reference: &[u8]) -> BTreeMap<u64, String> {
+    reference_starts(reference)
         .into_iter()
         .filter(|(_, name): &(u64, String)| name.starts_with("header_"))
-        .collect();
+        .collect()
+}
+
+#[test]
+fn stripped_elf_eh_frame_header_is_load_bearing_for_disassembly() {
+    let (reference, stripped): (Vec<u8>, Vec<u8>) = aarch64_eh_frame_hdr_images();
+    let expected: BTreeMap<u64, String> = eh_frame_header_reference_starts(&reference);
     assert_eq!(
         expected.len(),
         3,
         "the compiler reference must retain the three hidden functions"
     );
-    erase_section_contents(&mut stripped, ".eh_frame");
-    let recovered: BTreeSet<u64> = recovered_starts(&stripped);
-    let missing: BTreeMap<u64, String> = expected
-        .into_iter()
-        .filter(|(address, _): &(u64, String)| !recovered.contains(address))
+    let expected_addresses: BTreeSet<u64> = expected.keys().copied().collect();
+    let mut without_unwind_sources: Vec<u8> = stripped.clone();
+    erase_section_contents(&mut without_unwind_sources, ".eh_frame");
+    erase_section_contents(&mut without_unwind_sources, ".eh_frame_hdr");
+    let negative: BTreeSet<u64> = recovered_starts(&without_unwind_sources)
+        .intersection(&expected_addresses)
+        .copied()
         .collect();
     assert!(
-        missing.is_empty(),
-        "the stripped .eh_frame_hdr must seed every independently named function, missing {missing:?}"
+        negative.is_empty(),
+        "the three hidden starts must disappear when both unwind sources are erased, found {negative:?}"
     );
-}
-
-#[cfg(feature = "chain")]
-#[test]
-fn stripped_elf_eh_frame_header_starts_reach_the_auto_native_pass() {
-    let (reference, mut stripped): (Vec<u8>, Vec<u8>) = aarch64_eh_frame_hdr_images();
-    let expected: BTreeSet<u64> = reference_starts(&reference)
-        .into_iter()
-        .filter(|(_, name): &(u64, String)| name.starts_with("header_"))
-        .map(|(address, _): (u64, String)| address)
-        .collect();
-    assert_eq!(expected.len(), 3, "the compiler reference changed shape");
-    erase_section_contents(&mut stripped, ".eh_frame");
-    let artifact: Artifact = Artifact::new(Rung::Raw, stripped, [0_u8; 32]);
-    let children: Vec<disrobe_core::chain::ChildArtifact> =
-        disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS
-            .extract_children(&artifact)
-            .expect("the registered native pass must process the stripped image");
-    let pseudo: &disrobe_core::chain::ChildArtifact = children
-        .iter()
-        .find(|child: &&disrobe_core::chain::ChildArtifact| {
-            child.handle.relative_path == "pseudo-source.json"
-        })
-        .expect("the auto native output must include pseudo-source.json");
-    let report: serde_json::Value =
-        serde_json::from_slice(&pseudo.bytes).expect("the pseudo-source report must be json");
-    assert_eq!(report["run"].as_bool(), Some(true));
-    let presented: BTreeSet<u64> = ["recovered", "unrecovered"]
-        .into_iter()
-        .flat_map(|field: &str| {
-            report[field]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|function: &serde_json::Value| function["address"].as_u64())
-        })
-        .collect();
+    let mut header_only: Vec<u8> = stripped;
+    erase_section_contents(&mut header_only, ".eh_frame");
+    let recovered: BTreeSet<u64> = recovered_starts(&header_only);
     assert!(
-        expected.is_subset(&presented),
-        "the auto pass must present every header-indexed start; expected {expected:?}, presented {presented:?}"
+        expected_addresses.is_subset(&recovered),
+        "the stripped .eh_frame_hdr must seed all 3 independently named functions; expected {expected_addresses:?}, recovered {recovered:?}"
     );
 }

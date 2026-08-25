@@ -951,6 +951,9 @@ fn decode_elf_eh_frame_hdr(
 }
 
 fn collect_elf_eh_frame_hdr(view: &ImageView<'_>, seeds: &mut SeedSet) {
+    if !view.has_linked_addresses() {
+        return;
+    }
     let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
         return;
     };
@@ -2185,6 +2188,31 @@ mod tests {
 
             assert!(seeds.addresses().is_empty(), "encoding index {index}");
         }
+    }
+
+    #[test]
+    fn elf_eh_frame_header_abstains_from_relocatable_objects() {
+        let mut bytes: Vec<u8> = corpus_bytes(UNWOUND_STATIC.stripped);
+        let linked_native: NativeFile =
+            parse_native(&bytes).expect("the linked AArch64 ELF must parse");
+        let linked: SeedSet = collect(&linked_native, &bytes);
+        assert!(
+            linked
+                .counts()
+                .get(&SeedOrigin::ElfEhFrameHeader)
+                .is_some_and(|count: &usize| *count > 0),
+            "the control image must carry a populated .eh_frame_hdr"
+        );
+        bytes[16..18].copy_from_slice(&object::elf::ET_REL.to_le_bytes());
+        let parsed: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the ET_REL view must parse");
+        assert_eq!(parsed.kind(), object::ObjectKind::Relocatable);
+        let native: NativeFile =
+            parse_native(&bytes).expect("the ET_REL view must reach discovery");
+
+        let seeds: SeedSet = collect(&native, &bytes);
+
+        assert_eq!(seeds.counts().get(&SeedOrigin::ElfEhFrameHeader), None);
     }
 
     #[test]
