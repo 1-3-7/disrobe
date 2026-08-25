@@ -19,6 +19,7 @@ mod dotnet;
 mod envelope;
 mod err;
 mod extend;
+mod flutter;
 mod go;
 mod hermes;
 mod js;
@@ -59,6 +60,7 @@ fn disrobe(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     pyinstaller::register(m)?;
     nuitka::register(m)?;
     hermes::register(m)?;
+    flutter::register(m)?;
     macho::register(m)?;
     jvm::register(m)?;
     dotnet::register(m)?;

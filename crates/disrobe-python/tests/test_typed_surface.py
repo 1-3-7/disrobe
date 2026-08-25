@@ -29,6 +29,18 @@ CORE_LIBRARY_SOURCE: str = (
     / "desugar-core"
     / "CoreLibraryProbe.recovered.java.txt"
 ).read_text(encoding="utf-8")
+FLUTTER_AOT: bytes = (
+    ROOT / "corpus" / "mobile" / "flutter" / "disrobe_sample" / "libapp_arm64.so"
+).read_bytes()
+FLUTTER_ENGINE_MAP: bytes = b"""{
+  "format": "disrobe.flutter.engine-symbol-map",
+  "version": 1,
+  "identity": {
+    "kind": "elf-build-id",
+    "value": "b71885094a73117bf90d3cfa05824129"
+  },
+  "symbols": [{"address": 0, "name": "FlutterEngineExternal"}]
+}"""
 
 
 def _build_disasm_dr() -> bytes:
@@ -234,6 +246,37 @@ def test_native_typed_returns() -> None:
     dot = disrobe.native_imports_dot(SAMPLE_ELF)
     assert isinstance(dot, str)
     assert "digraph" in dot
+
+
+def test_flutter_engine_symbol_map_keeps_validated_identity_and_provenance() -> None:
+    report: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT, FLUTTER_ENGINE_MAP, source="analyst-map.json"
+    )
+
+    assert isinstance(report, disrobe.FlutterEngineSymbols)
+    assert report.identity == "b71885094a73117bf90d3cfa05824129"
+    assert report.symbol_count == 1
+    assert report.raw["symbols"] == [
+        {"address": 0, "name": "FlutterEngineExternal"}
+    ]
+    assert report.raw["provenance"] == [
+        {
+            "source": "analyst-map.json",
+            "kind": "disrobe.flutter.engine-symbol-map",
+            "identity": "b71885094a73117bf90d3cfa05824129",
+        }
+    ]
+
+
+def test_flutter_engine_symbol_map_refuses_mismatched_build_id() -> None:
+    mismatched_map: bytes = FLUTTER_ENGINE_MAP.replace(
+        b"b71885094a73117bf90d3cfa05824129", b"00000000000000000000000000000000"
+    )
+
+    with pytest.raises(disrobe.DisrobeError, match="DR-MOB-0060"):
+        disrobe.flutter_engine_symbols(
+            FLUTTER_AOT, mismatched_map, source="analyst-map.json"
+        )
 
 
 def test_native_diff_and_sigmaker() -> None:

@@ -425,6 +425,16 @@ typed_report!(
 );
 
 typed_report!(
+    FlutterEngineSymbols,
+    "FlutterEngineSymbols",
+    "Validated external Flutter engine symbols with build identity and caller-supplied provenance.",
+    accessors {
+        identity -> Option<String> : |d| nested_str(d, "identity", "value"),
+        symbol_count -> usize : |d| array_len(d, "symbols"),
+    }
+);
+
+typed_report!(
     SbomReport,
     "SbomReport",
     "CycloneDX 1.5 SBOM derived from an embedded cargo-auditable dependency section.",
@@ -1355,6 +1365,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IdentifyReport>()?;
     m.add_class::<SecretScanReport>()?;
     m.add_class::<SymbolsReport>()?;
+    m.add_class::<FlutterEngineSymbols>()?;
     m.add_class::<SbomReport>()?;
     m.add_class::<FingerprintReport>()?;
     m.add_class::<SignatureReport>()?;

@@ -135,6 +135,7 @@ def test_typed_return_classes_exported() -> None:
         "IdentifyReport",
         "SecretScanReport",
         "SymbolsReport",
+        "FlutterEngineSymbols",
         "SbomReport",
         "FingerprintReport",
         "SignatureReport",
