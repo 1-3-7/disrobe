@@ -29,17 +29,17 @@ const REAL_APK_METHOD_TOTAL: usize = 89_516;
 
 const REAL_APK_CODE_ITEM_METHODS: usize = 83_943;
 
-const SELF_REPORTED_BODIES: usize = 82_923;
+const SELF_REPORTED_BODIES: usize = 83_609;
 
-const CANDIDATE_BODIES: usize = 82_891;
+const CANDIDATE_BODIES: usize = 83_577;
 
-const SAMPLED_BODIES: usize = 8_357;
+const SAMPLED_BODIES: usize = 8_414;
 
-const ATTESTED_PRESENTED: usize = 2_997;
+const ATTESTED_PRESENTED: usize = 2_998;
 
-const ATTESTED_CLEAN: usize = 2_983;
+const ATTESTED_CLEAN: usize = 2_985;
 
-const ATTESTED_REJECTED: usize = 14;
+const ATTESTED_REJECTED: usize = 13;
 
 struct BodyAttest {
     self_reported_bodies: usize,

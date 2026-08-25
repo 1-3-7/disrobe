@@ -166,15 +166,15 @@ Nothing asserts bytecode-equivalence for that row. The recovered source compiles
 
 | Metric | Measured | Oracle | Reproduce |
 |---|---|---|---|
-| Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_pct -->98.8%<!-- /m --> of defined methods `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
-| Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->82923 / 83943<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
+| Android DEX, real APKs `coverage-self-reported` | <!-- m:dalvik_body_pct -->99.6%<!-- /m --> of methods that declare a code item `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dex2jar_realworld_apks.rs` |
+| Android DEX, real APKs, count `coverage-self-reported` | <!-- m:dalvik_body_frac -->83609 / 83943<!-- /m --> `[local]` | self-reported, gitignored apks | `crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs` |
 | WebAssembly, op-coverage `coverage-self-reported` | <!-- m:wasm_opcoverage_count -->1034 of 1034<!-- /m --> opcodes across 38 parseable modules `[CI]` | wasm-tools 1.250.0 supplies the denominator; lowering is self-counted | `crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs` |
 | Swift symbol rendering `coverage-self-reported` | committed symbols produce pinned renderings `[CI]` | binary `LC_SYMTAB` membership with pinned in-process output | `crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs` |
 | PyArmor v8/v9 default-trial wrappers `coverage-self-reported` | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named wrappers decode one complete header-anchored root `CodeObject` `[CI]` | self-reported structural check | `crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs` |
 
 That figure is the total across all three apks and not any one of them. The per-apk split, and a separate verifier-attested population with its own smaller denominator, are in the [Android guide](docs/src/languages/jvm-android.md).
 
-The recovered bodies that can be presented to the verifier are attested at <!-- m:dalvik_body_attested_frac -->2983 of 2997<!-- /m -->, graded by real `java -Xverify:all` over bodies rather than methods, which is a different and smaller population than the method-coverage figure above.
+The recovered bodies that can be presented to the verifier are attested at <!-- m:dalvik_body_attested_frac -->2985 of 2998<!-- /m -->, graded by real `java -Xverify:all` over bodies rather than methods, which is a different and smaller population than the method-coverage figure above.
 
 The WebAssembly denominator is external and frozen: `wasm-tools 1.250.0` disassembles each committed `.wat` and its per-function instruction inventory is checked in, keyed by the fixture's BLAKE3, so a decoder that stops seeing opcodes scores lower rather than shrinking the population it is divided by. The two decoders agree instruction for instruction, 1034 accounted against 1034 counted. The row stays self-reported because the numerator is still disrobe counting the opcodes it lowered, and a lowering rule firing is not the same as the lowering being right. The 2 corpus files outside the 38 are the ones `wasm-tools` rejects too, pinned with its own error text.
 

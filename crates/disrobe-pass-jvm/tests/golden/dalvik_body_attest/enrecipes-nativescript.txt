@@ -157,6 +157,7 @@ ATTEST androidx.customview.widget.ViewDragHelper#isEdgeTouched(I)Z
 ATTEST androidx.documentfile.provider.SingleDocumentFile#isFile()Z
 ATTEST androidx.documentfile.provider.TreeDocumentFile#renameTo(Ljava/lang/String;)Z
 ATTEST androidx.drawerlayout.widget.DrawerLayout$AccessibilityDelegate#copyNodeInfoNoChildren(Landroidx/core/view/accessibility/AccessibilityNodeInfoCompat;Landroidx/core/view/accessibility/AccessibilityNodeInfoCompat;)V
+ATTEST androidx.exifinterface.media.ExifInterface#getDateTimeDigitized()J
 ATTEST androidx.exifinterface.media.ExifInterface#isJpegFormat([B)Z
 ATTEST androidx.exifinterface.media.ExifInterface$ByteOrderedDataInputStream#readChar()C
 ATTEST androidx.exifinterface.media.ExifInterface$ByteOrderedDataInputStream#readUnsignedInt()J
@@ -381,7 +382,6 @@ ATTEST com.google.android.material.shape.ShapePath#setStartY(F)V
 ATTEST com.google.android.material.shape.ShapePath$PathArcOperation#getLeft()F
 ATTEST com.google.android.material.shape.ShapePath$PathLineOperation#access$000(Lcom/google/android/material/shape/ShapePath$PathLineOperation;)F
 ATTEST com.google.android.material.shape.ShapePath$PathQuadOperation#getControlY()F
-ATTEST com.google.android.material.snackbar.BaseTransientBottomBar#getTranslationYBottom()I
 ATTEST com.google.android.material.snackbar.BaseTransientBottomBar#getViewAbsoluteBottom()I
 ATTEST com.google.android.material.snackbar.BaseTransientBottomBar#isShown()Z
 ATTEST com.google.android.material.snackbar.BaseTransientBottomBar#setGestureInsetBottomIgnored(Z)Lcom/google/android/material/snackbar/BaseTransientBottomBar;

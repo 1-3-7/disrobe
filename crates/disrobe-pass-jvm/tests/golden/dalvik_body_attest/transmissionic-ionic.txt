@@ -410,7 +410,6 @@ ATTEST kotlin.UByte#floorDiv-xj2QHRw(BS)I
 ATTEST kotlin.UByte#mod-xj2QHRw(BS)S
 ATTEST kotlin.UByte#toByte-impl(B)B
 ATTEST kotlin.UByteArray#contains(Ljava/lang/Object;)Z
-ATTEST kotlin.UByteArray#containsAll-impl([BLjava/util/Collection;)Z
 ATTEST kotlin.UByteArray#hashCode-impl([B)I
 ATTEST kotlin.UByteArray#isEmpty-impl([B)Z
 ATTEST kotlin.UInt#equals(Ljava/lang/Object;)Z

@@ -274,6 +274,7 @@ ATTEST d2.e#get()Ljava/lang/Object;
 ATTEST d2.g#run()V
 ATTEST d2.p#b(JJJ)J
 ATTEST d2.p#n(I)V
+ATTEST d2.r#l()V
 ATTEST d2.s#j(Z)V
 ATTEST d2.z#run()V
 ATTEST d3.a#E(BB)Z
@@ -926,6 +927,7 @@ ATTEST q1.w$d#d(Ljava/lang/Throwable;)Ljava/lang/String;
 ATTEST q4.a$b#b(Lq4/a$b;)I
 ATTEST r.d$b#a()Ljava/lang/String;
 ATTEST r0.a#E(Ljava/io/FileDescriptor;)Z
+ATTEST r0.a#P(Ljava/lang/String;)V
 ATTEST r0.a$a#readAt(J[BII)I
 ATTEST r0.a$b#available()I
 ATTEST r0.a$b#read([BII)I
@@ -1070,7 +1072,6 @@ ATTEST v7.o1#f0()Z
 ATTEST v7.o1#g(Lc7/g$c;)Lc7/g;
 ATTEST v7.o1#h0()Z
 ATTEST v7.o1#u0(Lv7/n1;)V
-ATTEST v7.o1#x0(Ljava/lang/Object;)Ljava/lang/String;
 ATTEST v7.o1$b#c()Z
 ATTEST v7.o1$c#f(La8/s;)Ljava/lang/Object;
 ATTEST v7.p1#b()La8/h0;
@@ -1206,13 +1207,14 @@ ATTEST z2.o#f([B)Ljava/util/UUID;
 ATTEST z2.v#b(J)I
 ATTEST z5.c$a#w(Ln4/i;)Lz5/c$a;
 ATTEST z5.e#f(I)Lz5/e;
+ATTEST z5.f#S()Ljava/lang/String;
+ATTEST z5.f#W([B)Lz5/f;
 ATTEST z5.g#a()[Lz5/g;
 ATTEST z5.g$a#a(I)Ln4/b0$c;
 ATTEST z6.g#c(Ljava/lang/Object;)Z
 ATTEST z7.e#c(Lc7/g;Ljava/lang/Object;Ljava/lang/Object;Lm7/p;Lc7/d;ILjava/lang/Object;)Ljava/lang/Object;
 REJECT a8.s#k(La8/a0;)La8/s;
 REJECT a8.x#b(Ljava/lang/Throwable;Ljava/lang/String;ILjava/lang/Object;)La8/y;
-REJECT i1.s1#D0(Landroid/content/Context;)I
 REJECT n4.v0#F(Ljava/lang/Object;II)Z
 REJECT t0.k0#l0(Landroid/view/View;)Lt0/r;
 REJECT u4.j#a(Lu4/b;[F)V

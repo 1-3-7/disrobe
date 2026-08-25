@@ -28,18 +28,18 @@ const CLASS_SCOPE_GOLDEN: &str = "transmissionic-ionic.txt";
 
 const CLASS_SCOPE_CLASSES: usize = 3_835;
 
-const CLASS_SCOPE_GRADED_FLOOR: usize = 3_210;
+const CLASS_SCOPE_GRADED_FLOOR: usize = 3_217;
 
 const CLASS_SCOPE_REPEAT_RUNS: usize = 8;
 
-const CLASS_SCOPE_CLEAN: usize = 3_045;
+const CLASS_SCOPE_CLEAN: usize = 3_050;
 
-const CLASS_SCOPE_CLEAN_METHODS: usize = 14_938;
+const CLASS_SCOPE_CLEAN_METHODS: usize = 14_972;
 
-const CLASS_SCOPE_REJECTABLE: usize = 176;
+const CLASS_SCOPE_REJECTABLE: usize = 182;
 
 const CLASS_SCOPE_JAR_SHA256: &str =
-    "34d7b82e4e3dbb8fa93bb8f56a30933a465a727028032dd1fe0970e6eee96ba8";
+    "d1b41cf5821fa4600701b052d65764976ec6177ea4bb18606936388b35ea180b";
 
 fn class_verify_golden() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -128,14 +128,14 @@ fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
         rejectable.len(),
         CLASS_SCOPE_REJECTABLE,
         "the golden pins {} rejectable classes but this gate expects {CLASS_SCOPE_REJECTABLE}. That \
-         section is a work queue rather than a bound: it lists classes the real jvm has been seen \
-         to reject over {CLASS_SCOPE_REPEAT_RUNS} runs, it grows as reach varies, and it is not \
-         asserted against a run because a class reaching the verifier for the first time is not a \
-         regression. Roughly half of it is not a lifter defect at all: those entries name, in the \
-         verifier's own Reason clause, a class the apk does not define and the harness had to \
-         stub, which the attribution line above sizes. What is left is led by one family, a locals \
-         slot whose declared type disagrees with a predecessor's, in the integer against reference \
-         and integer against float directions. The family where one address served as both an \
+         section is the accumulated envelope of classes the real jvm rejected over \
+         {CLASS_SCOPE_REPEAT_RUNS} bounded runs. Reach varies, so the envelope grows when a new \
+         class reaches the verifier and the assertion below requires every rejected class to be a \
+         member. Roughly half of it is not a lifter defect at all: those entries name, in the \
+         verifier's own Reason clause, a class the apk does not define and the harness had to stub, \
+         which the attribution line above sizes. What is left is led by one family, a locals slot \
+         whose declared type disagrees with a predecessor's, in the integer against reference and \
+         integer against float directions. The family where one address served as both an \
          exception handler entry and a normal branch target is gone. Change this number only when \
          you have added or fixed entries by hand",
         rejectable.len()
@@ -168,6 +168,12 @@ fn assert_verdict_membership(clean: &[String], rejected: &[String]) {
              golden's REJECTABLE section"
         );
     }
+    assert!(
+        unexpected.is_empty(),
+        "{} classes rejected by the real jvm are absent from the {CLASS_SCOPE_REPEAT_RUNS}-run \
+         rejectable envelope: {unexpected:?}",
+        unexpected.len()
+    );
     let gained: Vec<&String> = clean
         .iter()
         .filter(|name: &&String| pinned_clean.binary_search(name).is_err())
@@ -452,9 +458,9 @@ fn realworld_apk_translated_classes_verify() {
          pinned {CLASS_SCOPE_GRADED_FLOOR}; {link_skipped} were link-skipped, and moving classes \
          into that bucket must not shrink the population the pass is graded over. The clean set \
          below is reproducible and pinned by name, so this bound guards the other side, which is \
-         reach. It is empirical, set at the pinned clean count plus the rejections that recurred in \
-         every one of {CLASS_SCOPE_REPEAT_RUNS} runs rather than at any single run's total, because \
-         a bound pinned to one run's figure fails on the next",
+         reach. It is empirical, set to the minimum graded population across \
+         {CLASS_SCOPE_REPEAT_RUNS} bounded runs rather than at any single run's total, because a \
+         bound pinned to one run's figure fails on the next",
         clean + failed
     );
     assert_eq!(
