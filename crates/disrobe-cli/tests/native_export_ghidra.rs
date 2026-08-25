@@ -204,7 +204,7 @@ fn native_export_produces_loadable_pe_and_parseable_sidecar() {
         .unwrap_or_else(|e: std::io::Error| panic!("read symbol map: {e}"));
     let map: serde_json::Value =
         serde_json::from_str(&map_text).expect("symbol map must be valid JSON");
-    assert_eq!(map["schema"], "disrobe.native.symbol-map/v1");
+    assert_eq!(map["schema"], "disrobe.symbol-map/v2");
     assert!(
         map["symbol_count"].as_u64().unwrap_or(0) >= 1,
         "symbol map must carry at least one recovered symbol"

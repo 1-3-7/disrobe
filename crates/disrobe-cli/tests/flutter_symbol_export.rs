@@ -101,7 +101,7 @@ fn flutter_dump_emits_shared_symbol_formats_from_real_libapp() {
             "json" => {
                 let map: serde_json::Value =
                     serde_json::from_str(&text).expect("parse symbol map JSON");
-                assert_eq!(map["schema"], "disrobe.native.symbol-map/v1");
+                assert_eq!(map["schema"], "disrobe.symbol-map/v2");
                 assert_eq!(map["format"], "elf-flutter-aot");
                 assert!(
                     map["symbol_count"]

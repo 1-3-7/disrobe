@@ -162,7 +162,7 @@ impl SymbolExportSource for SymbolMap {
             })
             .collect();
         SymbolExport {
-            schema: self.schema,
+            schema: SYMBOL_EXPORT_SCHEMA,
             source: self.source.clone(),
             format: self.format.clone(),
             image_base: Some(self.image_base),
