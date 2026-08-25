@@ -6036,6 +6036,7 @@ fn structure_pre311_try_except(
 
     let mut body_end: usize = extended_body_end;
     let mut else_region: Option<(usize, usize)> = None;
+    let mut fallthrough_continuation: Option<(usize, usize)> = None;
     let mut handler_region_end: usize = region.region_end;
     let mut consumed: usize = region.region_end;
 
@@ -6130,6 +6131,7 @@ fn structure_pre311_try_except(
             {
                 body_end = pb;
                 else_region = Some((else_start, else_end));
+                fallthrough_continuation = Some((else_start, else_end));
             }
         }
     }
@@ -6156,6 +6158,13 @@ fn structure_pre311_try_except(
             Some((else_start, else_end)),
         );
         consumed = else_start;
+    }
+    if let Some((continuation_start, _)) = fallthrough_continuation
+        && let Some(shared) = shared_construct_exit_return(&orelse, &handlers)
+    {
+        orelse.clear();
+        handlers = strip_shared_exit_return(handlers, &shared);
+        consumed = continuation_start;
     }
     Ok((
         Stmt::Try {
