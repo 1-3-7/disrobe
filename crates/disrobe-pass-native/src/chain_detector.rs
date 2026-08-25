@@ -12,6 +12,7 @@ use disrobe_core::chain::{
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes};
+use indexmap::IndexSet;
 
 use crate::packers::{
     AspackPhaseTwoOutput, Detection as PackerDetection, DonutModuleType, FsgUnpackOutput,
@@ -266,20 +267,41 @@ fn native_pseudo_report(
     }
     let mut recovered: Vec<serde_json::Value> = Vec::with_capacity(spans.len());
     let mut unrecovered: Vec<serde_json::Value> = Vec::new();
+    let mut span_instructions: usize = 0;
+    let mut modelled_instructions: usize = 0;
+    let mut unmodelled_mnemonics: Vec<String> = Vec::new();
+    let mut unmodelled_mnemonic_set: IndexSet<String> = IndexSet::new();
+    let mut instruction_cursor: usize = 0;
     for span in spans {
-        let code: Vec<u8> = payload
+        while payload.instructions.get(instruction_cursor).is_some_and(
+            |instruction: &disrobe_ir::payload::DisasmInstruction| {
+                instruction.offset < span.address
+            },
+        ) {
+            instruction_cursor += 1;
+        }
+        let span_start: usize = instruction_cursor;
+        while payload.instructions.get(instruction_cursor).is_some_and(
+            |instruction: &disrobe_ir::payload::DisasmInstruction| instruction.offset < span.end,
+        ) {
+            instruction_cursor += 1;
+        }
+        let span_instruction_population: &[disrobe_ir::payload::DisasmInstruction] = payload
             .instructions
+            .get(span_start..instruction_cursor)
+            .unwrap_or_default();
+        let code: Vec<u8> = span_instruction_population
             .iter()
-            .filter(|instruction: &&disrobe_ir::payload::DisasmInstruction| {
-                instruction.offset >= span.address && instruction.offset < span.end
-            })
             .flat_map(|instruction: &disrobe_ir::payload::DisasmInstruction| {
                 instruction.bytes.iter().copied()
             })
             .collect();
-        let recovery: crate::Result<crate::pseudo_c::LeafRecovery> = match abi {
-            None => crate::pseudo_c::recover_aarch64_function(&code, span.address),
-            Some(x86_abi) => crate::pseudo_c::recover_leaf_function_in_object(
+        let (recovery, coverage): (
+            crate::Result<crate::pseudo_c::LeafRecovery>,
+            crate::pseudo_c::LifterInstructionCoverage,
+        ) = match abi {
+            None => crate::pseudo_c::recover_aarch64_function_with_coverage(&code, span.address),
+            Some(x86_abi) => crate::pseudo_c::recover_leaf_function_in_object_with_coverage(
                 bytes,
                 &code,
                 span.address,
@@ -287,18 +309,39 @@ fn native_pseudo_report(
                 &[],
             ),
         };
+        span_instructions += coverage.span_instructions;
+        modelled_instructions += coverage.modelled_instructions;
+        for mnemonic in &coverage.unmodelled_mnemonics {
+            if unmodelled_mnemonic_set.insert(mnemonic.clone()) {
+                unmodelled_mnemonics.push(mnemonic.clone());
+            }
+        }
         match recovery {
-            Ok(function) => recovered.push(serde_json::json!({
-                "name": span.name,
-                "address": span.address,
-                "source": function.source,
-                "rust_source": function.rust_source,
-            })),
-            Err(error) => unrecovered.push(serde_json::json!({
-                "name": span.name,
-                "address": span.address,
-                "reason": error.to_string(),
-            })),
+            Ok(function) => {
+                recovered.push(serde_json::json!({
+                    "name": span.name,
+                    "address": span.address,
+                    "source": function.source,
+                    "rust_source": function.rust_source,
+                    "instruction_coverage": {
+                        "span_instructions": coverage.span_instructions,
+                        "modelled_instructions": coverage.modelled_instructions,
+                        "unmodelled_mnemonics": coverage.unmodelled_mnemonics,
+                    },
+                }));
+            }
+            Err(error) => {
+                unrecovered.push(serde_json::json!({
+                    "name": span.name,
+                    "address": span.address,
+                    "reason": error.to_string(),
+                    "instruction_coverage": {
+                        "span_instructions": coverage.span_instructions,
+                        "modelled_instructions": coverage.modelled_instructions,
+                        "unmodelled_mnemonics": coverage.unmodelled_mnemonics,
+                    },
+                }));
+            }
         }
     }
     Ok(Some(serde_json::json!({
@@ -306,6 +349,11 @@ fn native_pseudo_report(
         "run": true,
         "functions_recovered": recovered.len(),
         "functions_unrecovered": unrecovered.len(),
+        "instruction_coverage": {
+            "span_instructions": span_instructions,
+            "modelled_instructions": modelled_instructions,
+            "unmodelled_mnemonics": unmodelled_mnemonics,
+        },
         "recovered": recovered,
         "unrecovered": unrecovered,
     })))
@@ -1211,6 +1259,30 @@ mod tests {
         assert_eq!(
             manifest["control_flow_recovery_sweep"]["reason"],
             "the bounded auto pseudo-source sweep is available only for aarch64 images and x86-64 PE, ELF, and thin Mach-O images; fat Mach-O requires an exposed architecture slice"
+        );
+    }
+
+    #[test]
+    fn a_bounded_pseudo_source_refusal_preserves_its_reason_without_zero_coverage() {
+        let mut image: Vec<u8> = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../disrobe-cli/tests/fixtures/native_aarch64_mixed_coverage.elf"
+        ))
+        .to_vec();
+        image.resize(MAX_AUTO_PSEUDO_IMAGE_BYTES + 1, 0);
+        let report: serde_json::Value = native_pseudo_report(StructuralFormat::Elf, &image)
+            .expect("bounded pseudo-source decision")
+            .expect("aarch64 ELF must report its bounded refusal");
+        assert_eq!(report["run"], false);
+        assert!(
+            report["reason"].as_str().is_some_and(
+                |reason: &str| reason.contains("exceeds the bounded auto pseudo-source input")
+            ),
+            "the refusal must name its input bound: {report}"
+        );
+        assert!(
+            report.get("instruction_coverage").is_none(),
+            "a sweep that did not run must not be reported as zero recovered instructions: {report}"
         );
     }
 

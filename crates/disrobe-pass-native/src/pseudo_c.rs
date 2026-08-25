@@ -1851,6 +1851,85 @@ pub struct LeafRecovery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LifterInstructionCoverage {
+    pub(crate) span_instructions: usize,
+    pub(crate) modelled_instructions: usize,
+    pub(crate) unmodelled_instructions: usize,
+    pub(crate) unmodelled_mnemonics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstructionCoverageState {
+    Pending,
+    Modelled,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct LifterCoverageTrace {
+    mnemonics: Vec<String>,
+    states: Vec<InstructionCoverageState>,
+}
+
+impl LifterCoverageTrace {
+    pub(super) fn begin_attempt(&mut self, insns: &[DisasmInsn]) {
+        self.mnemonics = insns
+            .iter()
+            .map(|insn: &DisasmInsn| insn.mnemonic.clone())
+            .collect();
+        self.states = vec![InstructionCoverageState::Pending; insns.len()];
+    }
+
+    pub(super) fn mark_modelled(&mut self, index: usize) {
+        if let Some(state) = self.states.get_mut(index) {
+            *state = InstructionCoverageState::Modelled;
+        }
+    }
+
+    fn mark_all_modelled(&mut self) {
+        self.states.fill(InstructionCoverageState::Modelled);
+    }
+
+    pub(super) fn finish(self) -> LifterInstructionCoverage {
+        let modelled_instructions: usize = self
+            .states
+            .iter()
+            .filter(|state: &&InstructionCoverageState| {
+                **state == InstructionCoverageState::Modelled
+            })
+            .count();
+        let mut seen: IndexSet<&str> = IndexSet::new();
+        let mut unmodelled_mnemonics: Vec<String> = Vec::new();
+        for (mnemonic, state) in self.mnemonics.iter().zip(&self.states) {
+            if *state == InstructionCoverageState::Pending && seen.insert(mnemonic.as_str()) {
+                unmodelled_mnemonics.push(mnemonic.clone());
+            }
+        }
+        LifterInstructionCoverage {
+            span_instructions: self.states.len(),
+            modelled_instructions,
+            unmodelled_instructions: self.states.len().saturating_sub(modelled_instructions),
+            unmodelled_mnemonics,
+        }
+    }
+}
+
+pub(super) fn mark_instruction_modelled(
+    coverage: &mut Option<&mut LifterCoverageTrace>,
+    instruction_index: usize,
+) {
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.mark_modelled(instruction_index);
+    }
+}
+
+pub(crate) fn recover_aarch64_function_with_coverage(
+    machine_code: &[u8],
+    base: u64,
+) -> (Result<LeafRecovery>, LifterInstructionCoverage) {
+    aarch64::recover_with_coverage(machine_code, base)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpTable {
     pub table_va: u64,
     pub entries: Vec<i32>,
@@ -1994,7 +2073,29 @@ pub fn recover_leaf_function_in_object(
         abi,
         calls,
         &proven_integer64_tail_targets,
+        None,
     )
+}
+
+pub(crate) fn recover_leaf_function_in_object_with_coverage(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+) -> (Result<LeafRecovery>, LifterInstructionCoverage) {
+    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    let mut coverage: LifterCoverageTrace = LifterCoverageTrace::default();
+    let recovery: Result<LeafRecovery> = recover_leaf_function_in_object_with_tail_proofs(
+        object,
+        machine_code,
+        base,
+        abi,
+        calls,
+        &proven_integer64_tail_targets,
+        Some(&mut coverage),
+    );
+    (recovery, coverage.finish())
 }
 
 fn recover_leaf_function_in_object_with_tail_proofs(
@@ -2004,9 +2105,16 @@ fn recover_leaf_function_in_object_with_tail_proofs(
     abi: Abi,
     calls: &[ResolvedCall],
     proven_integer64_tail_targets: &BTreeSet<u64>,
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
+        if let Some(trace) = coverage.as_deref_mut()
+            && let Ok(insns) = disassemble(Arch::X86_64, base, machine_code)
+        {
+            trace.begin_attempt(&insns);
+            trace.mark_all_modelled();
+        }
         return Ok(recovery);
     }
     let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
@@ -2035,13 +2143,23 @@ fn recover_leaf_function_in_object_with_tail_proofs(
         &[],
         &packed_consts,
         calls,
-        object_facts,
-        rip_relative_lea_policy,
+        LeafLiftContext {
+            object_facts,
+            rip_relative_lea_policy,
+            coverage: coverage.as_deref_mut(),
+        },
     ) {
         Ok(recovery) => return Ok(recovery),
         Err(err) => err,
     };
-    match recover_switch_in_object(object, machine_code, base, abi, calls) {
+    match recover_switch_in_object(
+        object,
+        machine_code,
+        base,
+        abi,
+        calls,
+        coverage.as_deref_mut(),
+    ) {
         Ok(recovery) => return Ok(recovery),
         Err(switch_err) => {
             if !matches!(&switch_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
@@ -2050,7 +2168,7 @@ fn recover_leaf_function_in_object_with_tail_proofs(
             }
         }
     }
-    match recover_value_switch_in_object(object, machine_code, base, abi) {
+    match recover_value_switch_in_object(object, machine_code, base, abi, coverage.as_deref_mut()) {
         Ok(recovery) => return Ok(recovery),
         Err(value_err) => {
             if !matches!(&value_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
@@ -2059,7 +2177,14 @@ fn recover_leaf_function_in_object_with_tail_proofs(
             }
         }
     }
-    match recover_o0_switch_in_object(object, machine_code, base, abi, calls) {
+    match recover_o0_switch_in_object(
+        object,
+        machine_code,
+        base,
+        abi,
+        calls,
+        coverage.as_deref_mut(),
+    ) {
         Ok(recovery) => return Ok(recovery),
         Err(o0_err) => {
             if !matches!(&o0_err, Error::LlvmIr(message) if message.contains("dispatch prologue")) {
@@ -2067,7 +2192,7 @@ fn recover_leaf_function_in_object_with_tail_proofs(
             }
         }
     }
-    match recover_clang_o0_switch_in_object(object, machine_code, base, abi, calls) {
+    match recover_clang_o0_switch_in_object(object, machine_code, base, abi, calls, coverage) {
         Ok(recovery) => Ok(recovery),
         Err(clang_err) => {
             if matches!(&clang_err, Error::LlvmIr(message) if message.contains("dispatch prologue"))
@@ -2242,6 +2367,12 @@ struct ObjectTransferFacts {
 struct ObjectCallFacts<'facts> {
     proven_integer64_tail_targets: &'facts BTreeSet<u64>,
     transfers: &'facts ObjectTransferFacts,
+}
+
+struct LeafLiftContext<'facts, 'trace> {
+    object_facts: ObjectCallFacts<'facts>,
+    rip_relative_lea_policy: RipRelativeLeaPolicy,
+    coverage: Option<&'trace mut LifterCoverageTrace>,
 }
 
 impl<'facts> ObjectCallFacts<'facts> {
@@ -2872,6 +3003,7 @@ fn straight_line_integer64_return_is_proven(
         &[],
         empty.facts(),
         RipRelativeLeaPolicy::Allow,
+        None,
     );
     let Ok(leaf) = leaf_result else {
         return false;
@@ -2963,6 +3095,7 @@ fn recover_program_function(
         abi,
         &[],
         &proven_integer64_tail_targets,
+        None,
     )
     .map_err(|e: Error| e.to_string())?;
     let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
@@ -3003,6 +3136,7 @@ fn recover_program_function(
         abi,
         &resolved,
         &proven_integer64_tail_targets,
+        None,
     )
     .map_err(|e: Error| e.to_string())?;
     let resolved_names: Vec<String> = resolved
@@ -3209,6 +3343,7 @@ fn build_leaf_items(
     packed_consts: &[PackedConstant],
     object_facts: ObjectCallFacts<'_>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafItems> {
     require_x86_abi(abi)?;
     if machine_code.is_empty() {
@@ -3217,6 +3352,9 @@ fn build_leaf_items(
     let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, base, machine_code)?;
     if insns.is_empty() {
         return Err(Error::LlvmIr("no decodable instructions".to_owned()));
+    }
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
     }
     let packed_mode: bool = uses_packed_integer_sse(&insns);
     let mut items: Vec<Item> = Vec::new();
@@ -3240,14 +3378,17 @@ fn build_leaf_items(
             || insn.mnemonic == "endbr64"
             || is_xchg_self(&insn.mnemonic, &insn.operands)
         {
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if insn.mnemonic == "cld" {
             df_backward = false;
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if insn.mnemonic == "std" {
             df_backward = true;
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if insn.mnemonic == "rep" {
@@ -3263,6 +3404,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if matches!(insn.mnemonic.as_str(), "repe" | "repz" | "repne" | "repnz") {
@@ -3280,6 +3422,7 @@ fn build_leaf_items(
         if is_frame_management(&insn.mnemonic, &insn.operands)
             || is_ms_x64_callee_saved_xmm_spill(&insn.mnemonic, &insn.operands, abi)
         {
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if object_facts
@@ -3287,6 +3430,7 @@ fn build_leaf_items(
             .stack_guard_sequence_sites
             .contains(&insn.address)
         {
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if packed_mode
@@ -3309,6 +3453,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(fp_flags) =
@@ -3316,6 +3461,7 @@ fn build_leaf_items(
         {
             flags = Some(fp_flags);
             flags_mark = items.len();
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(fp_stmt) = lift_fp(&insn.mnemonic, &insn.operands, insn.address, consts)? {
@@ -3329,10 +3475,12 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(fp_stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(high) = lift_dividend_extend(&insn.mnemonic, &insn.operands) {
             dividend_high = Some(high);
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(divisor) = parse_divide_operand(&insn.mnemonic, &insn.operands) {
@@ -3356,6 +3504,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(divide),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if is_direct_transfer(insn)
@@ -3382,6 +3531,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Ret,
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if insn.mnemonic == "call"
@@ -3398,6 +3548,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(call),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(trap) = x86_direct_trap(&insn.bytes, insn.address) {
@@ -3415,6 +3566,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Ret,
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if insn.mnemonic == "ret" {
@@ -3424,8 +3576,10 @@ fn build_leaf_items(
                 kind: ItemKind::Ret,
             });
             if max_branch_target > insn.address {
+                mark_instruction_modelled(&mut coverage, instruction_index);
                 continue;
             }
+            mark_instruction_modelled(&mut coverage, instruction_index);
             break;
         }
         if let Some(target) = parse_branch_target(&insn.operands)
@@ -3472,6 +3626,7 @@ fn build_leaf_items(
                         kind: ItemKind::Ret,
                     });
                     saw_ret = true;
+                    mark_instruction_modelled(&mut coverage, instruction_index);
                     continue;
                 }
                 if relocated_branch {
@@ -3481,6 +3636,7 @@ fn build_leaf_items(
                     address: insn.address,
                     kind: ItemKind::Jmp { target },
                 });
+                mark_instruction_modelled(&mut coverage, instruction_index);
                 continue;
             }
             if relocated_branch {
@@ -3542,6 +3698,7 @@ fn build_leaf_items(
                 saw_ret = true;
                 return_width = Width::W64;
                 flags = None;
+                mark_instruction_modelled(&mut coverage, instruction_index);
                 continue;
             }
             items.push(Item {
@@ -3552,11 +3709,13 @@ fn build_leaf_items(
                     target,
                 },
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(new_flags) = lift_flag_setter(&insn.mnemonic, &insn.operands) {
             flags = Some(new_flags);
             flags_mark = items.len();
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(suffix) = insn.mnemonic.strip_prefix("cmov") {
@@ -3611,6 +3770,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(suffix) = insn.mnemonic.strip_prefix("set")
@@ -3651,6 +3811,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(setcc),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if let Some(stmt) = lift_width_extension(&insn.mnemonic, &insn.operands) {
@@ -3669,6 +3830,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         if matches!(rip_relative_lea_policy, RipRelativeLeaPolicy::Allow)
@@ -3683,6 +3845,7 @@ fn build_leaf_items(
                 address: insn.address,
                 kind: ItemKind::Stmt(stmt),
             });
+            mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
         let stmt: Stmt = lift_one(&insn.mnemonic, &insn.operands).ok_or_else(|| {
@@ -3775,6 +3938,7 @@ fn build_leaf_items(
             address: insn.address,
             kind: ItemKind::Stmt(stmt),
         });
+        mark_instruction_modelled(&mut coverage, instruction_index);
     }
     if !saw_ret {
         return Err(Error::LlvmIr(
@@ -3834,8 +3998,11 @@ fn recover_leaf_function_calls_impl(
         consts,
         packed_consts,
         calls,
-        empty.facts(),
-        rip_relative_lea_policy,
+        LeafLiftContext {
+            object_facts: empty.facts(),
+            rip_relative_lea_policy,
+            coverage: None,
+        },
     )
 }
 
@@ -3846,9 +4013,13 @@ fn recover_leaf_function_calls_with_tail_proofs(
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
     calls: &[ResolvedCall],
-    object_facts: ObjectCallFacts<'_>,
-    rip_relative_lea_policy: RipRelativeLeaPolicy,
+    context: LeafLiftContext<'_, '_>,
 ) -> Result<LeafRecovery> {
+    let LeafLiftContext {
+        object_facts,
+        rip_relative_lea_policy,
+        coverage,
+    } = context;
     let LeafItems {
         insns,
         mut items,
@@ -3861,6 +4032,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
         packed_consts,
         object_facts,
         rip_relative_lea_policy,
+        coverage,
     )?;
     let frame_shape: FrameShape = classify_frame(&insns, abi);
     let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, base, frame_shape)?;
@@ -4502,7 +4674,16 @@ pub fn recover_leaf_function_switch_const_abi(
             .ok_or_else(|| Error::LlvmIr("jump-table target out of range".to_owned()))?;
         case_targets.push(target);
     }
-    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, consts, &[])
+    build_switch_recovery(
+        &insns,
+        &by_addr,
+        abi,
+        &dispatch,
+        &case_targets,
+        consts,
+        &[],
+        None,
+    )
 }
 
 fn require_x86_abi(abi: Abi) -> Result<()> {
@@ -4522,14 +4703,20 @@ fn build_switch_recovery(
     case_targets: &[u64],
     consts: &[FpConstant],
     calls: &[ResolvedCall],
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     let mut leaders: Vec<u64> = case_targets.to_vec();
     leaders.push(dispatch.default_addr);
     leaders.sort_unstable();
     leaders.dedup();
 
-    let inter: Vec<Stmt> =
-        lift_stmt_range(insns, dispatch.inter_start, dispatch.inter_end, consts)?;
+    let inter: Vec<Stmt> = lift_stmt_range_with_coverage(
+        insns,
+        dispatch.inter_start,
+        dispatch.inter_end,
+        consts,
+        coverage.as_deref_mut(),
+    )?;
 
     let mut return_width: Width = Width::W64;
     let mut bodies: BTreeMap<u64, SwitchBody> = BTreeMap::new();
@@ -4538,8 +4725,15 @@ fn build_switch_recovery(
         if bodies.contains_key(&addr) {
             continue;
         }
-        let (stmts, term, fp_end): (Vec<Stmt>, BodyTerm, Option<FpWidth>) =
-            lift_switch_body(insns, by_addr, addr, &leaders, &mut return_width, consts)?;
+        let (stmts, term, fp_end): (Vec<Stmt>, BodyTerm, Option<FpWidth>) = lift_switch_body(
+            insns,
+            by_addr,
+            addr,
+            &leaders,
+            &mut return_width,
+            consts,
+            coverage.as_deref_mut(),
+        )?;
         if let BodyTerm::Tail(tail) = term {
             pending.push(tail);
         }
@@ -4567,7 +4761,8 @@ fn build_switch_recovery(
         _ => (0, dispatch.first_index),
     };
 
-    let preamble: Vec<Stmt> = lift_stmt_range(insns, 0, first_index, consts)?;
+    let preamble: Vec<Stmt> =
+        lift_stmt_range_with_coverage(insns, 0, first_index, consts, coverage)?;
     for stmt in preamble.iter().chain(inter.iter()) {
         update_return_width(stmt, &mut return_width);
     }
@@ -4743,6 +4938,7 @@ fn recover_switch_in_object(
     base: u64,
     abi: Abi,
     calls: &[ResolvedCall],
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -4761,8 +4957,26 @@ fn recover_switch_in_object(
             "no dense jump-table dispatch prologue in leaf".to_owned(),
         ));
     };
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
+    }
     let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
-    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+    let recovery: Result<LeafRecovery> = build_switch_recovery(
+        &insns,
+        &by_addr,
+        abi,
+        &dispatch,
+        &case_targets,
+        &[],
+        calls,
+        coverage.as_deref_mut(),
+    );
+    if recovery.is_ok()
+        && let Some(trace) = coverage
+    {
+        trace.mark_all_modelled();
+    }
+    recovery
 }
 
 fn recover_o0_switch_in_object(
@@ -4771,6 +4985,7 @@ fn recover_o0_switch_in_object(
     base: u64,
     abi: Abi,
     calls: &[ResolvedCall],
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -4791,9 +5006,27 @@ fn recover_o0_switch_in_object(
             "no O0 dense jump-table dispatch prologue in leaf".to_owned(),
         ));
     };
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
+    }
     verify_shared_table_lea(object, base, &insns, dispatch.inter_end, second_lea_idx)?;
     let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
-    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+    let recovery: Result<LeafRecovery> = build_switch_recovery(
+        &insns,
+        &by_addr,
+        abi,
+        &dispatch,
+        &case_targets,
+        &[],
+        calls,
+        coverage.as_deref_mut(),
+    );
+    if recovery.is_ok()
+        && let Some(trace) = coverage
+    {
+        trace.mark_all_modelled();
+    }
+    recovery
 }
 
 fn recover_clang_o0_switch_in_object(
@@ -4802,6 +5035,7 @@ fn recover_clang_o0_switch_in_object(
     base: u64,
     abi: Abi,
     calls: &[ResolvedCall],
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -4820,8 +5054,26 @@ fn recover_clang_o0_switch_in_object(
             "no clang O0 jump-table dispatch prologue in leaf".to_owned(),
         ));
     };
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
+    }
     let case_targets: Vec<u64> = object_switch_case_targets(object, base, &insns, &dispatch)?;
-    build_switch_recovery(&insns, &by_addr, abi, &dispatch, &case_targets, &[], calls)
+    let recovery: Result<LeafRecovery> = build_switch_recovery(
+        &insns,
+        &by_addr,
+        abi,
+        &dispatch,
+        &case_targets,
+        &[],
+        calls,
+        coverage.as_deref_mut(),
+    );
+    if recovery.is_ok()
+        && let Some(trace) = coverage
+    {
+        trace.mark_all_modelled();
+    }
+    recovery
 }
 
 fn verify_shared_table_lea(
@@ -4870,6 +5122,7 @@ fn recover_value_switch_in_object(
     machine_code: &[u8],
     base: u64,
     abi: Abi,
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
@@ -4883,8 +5136,17 @@ fn recover_value_switch_in_object(
             "no value-table dispatch prologue in leaf".to_owned(),
         ));
     };
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
+    }
     let values: Vec<i64> = object_value_table(object, base, &insns, &switch)?;
-    build_value_switch_recovery(abi, &switch, &values)
+    let recovery: Result<LeafRecovery> = build_value_switch_recovery(abi, &switch, &values);
+    if recovery.is_ok()
+        && let Some(trace) = coverage
+    {
+        trace.mark_all_modelled();
+    }
+    recovery
 }
 
 fn build_value_switch_recovery(
@@ -6267,19 +6529,31 @@ fn lift_straight_stmt(insn: &DisasmInsn) -> Option<Stmt> {
     lift_one(&insn.mnemonic, &insn.operands)
 }
 
+#[cfg(test)]
 fn lift_stmt_range(
     insns: &[DisasmInsn],
     lo: usize,
     hi: usize,
     consts: &[FpConstant],
 ) -> Result<Vec<Stmt>> {
+    lift_stmt_range_with_coverage(insns, lo, hi, consts, None)
+}
+
+fn lift_stmt_range_with_coverage(
+    insns: &[DisasmInsn],
+    lo: usize,
+    hi: usize,
+    consts: &[FpConstant],
+    mut coverage: Option<&mut LifterCoverageTrace>,
+) -> Result<Vec<Stmt>> {
     let mut out: Vec<Stmt> = Vec::new();
     let mut lifter: StraightLifter<'_> = StraightLifter::new(consts);
-    for insn in &insns[lo..hi] {
+    for (instruction_index, insn) in insns.iter().enumerate().take(hi).skip(lo) {
         match lifter.feed(insn)? {
             StraightOutcome::Ignorable | StraightOutcome::StateOnly => {}
             StraightOutcome::Emit(stmt) => out.push(stmt),
         }
+        mark_instruction_modelled(&mut coverage, instruction_index);
     }
     Ok(out)
 }
@@ -6514,6 +6788,7 @@ fn lift_switch_body(
     leaders: &[u64],
     return_width: &mut Width,
     consts: &[FpConstant],
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<(Vec<Stmt>, BodyTerm, Option<FpWidth>)> {
     let start: usize = *by_addr
         .get(&start_addr)
@@ -6528,12 +6803,14 @@ fn lift_switch_body(
             return Ok((stmts, BodyTerm::FellInto(insn.address), fp_return));
         }
         if insn.mnemonic == "ret" {
+            mark_instruction_modelled(&mut coverage, idx);
             return Ok((stmts, BodyTerm::Ret, fp_return));
         }
         if insn.mnemonic == "jmp" {
             let target: u64 = parse_branch_target(&insn.operands).ok_or_else(|| {
                 Error::LlvmIr("switch case jmp is not a direct forward tail".to_owned())
             })?;
+            mark_instruction_modelled(&mut coverage, idx);
             return Ok((stmts, BodyTerm::Tail(target), fp_return));
         }
         match lifter.feed(insn)? {
@@ -6544,6 +6821,7 @@ fn lift_switch_body(
                 stmts.push(stmt);
             }
         }
+        mark_instruction_modelled(&mut coverage, idx);
         idx += 1;
     }
     Err(Error::LlvmIr(
@@ -32638,6 +32916,7 @@ mod structuring_corpus {
             &[],
             empty.facts(),
             RipRelativeLeaPolicy::Allow,
+            None,
         )
         .ok()
         .map(|leaf: LeafItems| leaf.items)
@@ -32769,6 +33048,7 @@ mod structuring_corpus {
             &packed_consts,
             empty.facts(),
             RipRelativeLeaPolicy::Refuse,
+            None,
         )
         .expect("lift nested loop function");
         let structured: super::Structured =
@@ -33500,6 +33780,62 @@ mod structuring_corpus {
             rs_if_cond_expr(&or, &AggregatePlan::default())
                 .is_some_and(|s: String| s.contains("||")),
             "fused OR must render `||` in rust"
+        );
+    }
+
+    #[test]
+    fn x86_object_coverage_uses_the_production_dispatch_and_preserves_verdicts() {
+        let object: Vec<u8> = compile_elf_assembly(
+            "instruction_coverage",
+            ".intel_syntax noprefix\n.text\n.globl coverage_full\n.type coverage_full, @function\ncoverage_full:\nmov rax, rdi\nadd rax, 1\nret\n.size coverage_full, .-coverage_full\n.globl coverage_partial\n.type coverage_partial, @function\ncoverage_partial:\nmov rax, rdi\ncpuid\nadd rax, 1\nret\n.size coverage_partial, .-coverage_partial\n",
+        );
+        let (full_code, full_base): (Vec<u8>, u64) =
+            function_code(&object, "coverage_full").expect("full coverage function");
+        let normal_full: super::LeafRecovery =
+            super::recover_leaf_function_in_object(&object, &full_code, full_base, Abi::SysV, &[])
+                .expect("normal full recovery");
+        let (traced_full, full_coverage) = super::recover_leaf_function_in_object_with_coverage(
+            &object,
+            &full_code,
+            full_base,
+            Abi::SysV,
+            &[],
+        );
+        assert_eq!(traced_full.expect("traced full recovery"), normal_full);
+        assert_eq!(full_coverage.span_instructions, 3);
+        assert_eq!(full_coverage.modelled_instructions, 3);
+        assert!(full_coverage.unmodelled_mnemonics.is_empty());
+
+        let (partial_code, partial_base): (Vec<u8>, u64) =
+            function_code(&object, "coverage_partial").expect("partial coverage function");
+        let normal_reason: String = super::recover_leaf_function_in_object(
+            &object,
+            &partial_code,
+            partial_base,
+            Abi::SysV,
+            &[],
+        )
+        .expect_err("normal recovery must refuse cpuid")
+        .to_string();
+        let (traced_partial, partial_coverage) =
+            super::recover_leaf_function_in_object_with_coverage(
+                &object,
+                &partial_code,
+                partial_base,
+                Abi::SysV,
+                &[],
+            );
+        assert_eq!(
+            traced_partial
+                .expect_err("traced recovery must refuse cpuid")
+                .to_string(),
+            normal_reason
+        );
+        assert_eq!(partial_coverage.span_instructions, 4);
+        assert_eq!(partial_coverage.modelled_instructions, 1);
+        assert_eq!(
+            partial_coverage.unmodelled_mnemonics,
+            ["cpuid", "add", "ret"]
         );
     }
 }
@@ -34432,5 +34768,57 @@ mod forward_join_scope {
             !contains_goto(&body),
             "a shape the earlier passes already handle must not gain a goto: {body:#?}"
         );
+    }
+
+    #[test]
+    fn instruction_coverage_keeps_zero_full_and_refused_populations_distinct() {
+        let (_, empty): (
+            super::Result<super::LeafRecovery>,
+            super::LifterInstructionCoverage,
+        ) = super::recover_aarch64_function_with_coverage(&[], 0x1000);
+        assert_eq!(empty.span_instructions, 0);
+        assert_eq!(empty.modelled_instructions, 0);
+        assert!(empty.unmodelled_mnemonics.is_empty());
+
+        let (_, full): (
+            super::Result<super::LeafRecovery>,
+            super::LifterInstructionCoverage,
+        ) = super::recover_aarch64_function_with_coverage(
+            &[0x00, 0x00, 0x01, 0x8b, 0xc0, 0x03, 0x5f, 0xd6],
+            0x1000,
+        );
+        assert_eq!(full.span_instructions, 2);
+        assert_eq!(full.modelled_instructions, 2);
+        assert!(full.unmodelled_mnemonics.is_empty());
+
+        let normal_refusal: String = super::recover_aarch64_function(
+            &[
+                0x41, 0xd0, 0x3b, 0xd5, 0x01, 0x00, 0x00, 0xd4, 0xc0, 0x03, 0x5f, 0xd6,
+            ],
+            0x1000,
+        )
+        .expect_err("normal recovery must refuse system instructions")
+        .to_string();
+        let (traced_refusal, refused): (
+            super::Result<super::LeafRecovery>,
+            super::LifterInstructionCoverage,
+        ) = super::recover_aarch64_function_with_coverage(
+            &[
+                0x41, 0xd0, 0x3b, 0xd5, 0x01, 0x00, 0x00, 0xd4, 0xc0, 0x03, 0x5f, 0xd6,
+            ],
+            0x1000,
+        );
+        assert_eq!(
+            traced_refusal
+                .expect_err("traced recovery must preserve the normal refusal")
+                .to_string(),
+            normal_refusal
+        );
+        assert_eq!(refused.span_instructions, 3);
+        assert_eq!(
+            refused.modelled_instructions, 1,
+            "normal refusal: {normal_refusal}; coverage: {refused:?}"
+        );
+        assert_eq!(refused.unmodelled_mnemonics, ["mrs", "svc"]);
     }
 }

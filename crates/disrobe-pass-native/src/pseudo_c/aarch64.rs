@@ -3,12 +3,13 @@ use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, CrcPolynomial, Error, ExtSource, FP_ARG_ORDER,
     Flags, FnReturn, FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpRoundKind,
     FpRoundRange, FpToIntRound, FpUnaryOp, FpUnorderedModel, FpWidth, FrameShape, IndexExtend,
-    IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, RecoveredSignature, ReduceOp, Reg,
-    RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn,
-    StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width,
-    Xmm, annotate_calls_block_with_abi, collect_call_targets, condition_is_sound, detect_sret,
-    emit_c, emit_rust, infer_aggregate_plan, infer_fp_params, infer_params, plan_frame,
-    stmt_writes_rax_int, structure_items,
+    IndexOperand, Item, ItemKind, LeafRecovery, LifterCoverageTrace, LifterInstructionCoverage,
+    MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode,
+    ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
+    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
+    infer_fp_params, infer_params, mark_instruction_modelled, plan_frame, stmt_writes_rax_int,
+    structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -406,6 +407,7 @@ pub(super) fn recover_with_image<'image>(
         image,
         relocations,
         &no_aarch64_instruction_relocation,
+        None,
     )
 }
 
@@ -423,6 +425,7 @@ pub(super) fn recover_with_image_and_instruction_relocations<'image>(
         image,
         relocations,
         instruction_relocations,
+        None,
     )
 }
 
@@ -438,7 +441,26 @@ pub(super) fn recover_with_calls(
         &no_aarch64_image,
         &no_aarch64_relocation,
         &no_aarch64_instruction_relocation,
+        None,
     )
+}
+
+pub(super) fn recover_with_coverage(
+    machine_code: &[u8],
+    base: u64,
+) -> (Result<LeafRecovery>, LifterInstructionCoverage) {
+    let recovery: Result<LeafRecovery> = super::recover_aarch64_function(machine_code, base);
+    let mut trace: LifterCoverageTrace = LifterCoverageTrace::default();
+    let _: Result<LeafRecovery> = recover_with_calls_and_image(
+        machine_code,
+        base,
+        &[],
+        &no_aarch64_image,
+        &no_aarch64_relocation,
+        &no_aarch64_instruction_relocation,
+        Some(&mut trace),
+    );
+    (recovery, trace.finish())
 }
 
 fn no_aarch64_image(_: u64) -> Option<&'static [u8]> {
@@ -528,6 +550,7 @@ fn recover_with_calls_and_image<'image>(
     image: &dyn Fn(u64) -> Option<&'image [u8]>,
     relocations: &dyn Fn(u64) -> Option<u64>,
     instruction_relocations: &dyn Fn(u64) -> bool,
+    mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     if calls.iter().any(|call: &ResolvedCall| {
         call.signature.abi() != Abi::Aapcs64
@@ -554,6 +577,9 @@ fn recover_with_calls_and_image<'image>(
         return Err(reject("instruction bytes exceed the bounded lift"));
     }
     let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, base, machine_code)?;
+    if let Some(trace) = coverage.as_deref_mut() {
+        trace.begin_attempt(&insns);
+    }
     if insns
         .iter()
         .any(|instruction: &DisasmInsn| instruction_relocations(instruction.address))
@@ -610,12 +636,22 @@ fn recover_with_calls_and_image<'image>(
     let mut flags: Option<TrackedFlags> = None;
     let mut next_sel: u32 = 0;
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
-    let frame: FrameAnalysis = aarch64_frame::analyze(&insns, &switches)?;
+    let frame: FrameAnalysis = match aarch64_frame::analyze(&insns, &switches) {
+        Ok(frame) => frame,
+        Err(_) if coverage.is_some() => FrameAnalysis {
+            info: FrameInfo::default(),
+            management: BTreeSet::new(),
+            absorbed: BTreeSet::new(),
+            reachable: (0..insns.len()).collect(),
+        },
+        Err(error) => return Err(error),
+    };
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
     let d_transfer_classes: BTreeMap<usize, DTransferClass> =
         classify_d_transfers(&insns, &frame.management)?;
     for (index, insn) in insns.iter().enumerate() {
         if !frame.reachable.contains(&index) {
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         let address: u64 = item_address(base, index, 0)?;
@@ -636,14 +672,17 @@ fn recover_with_calls_and_image<'image>(
                     default,
                 },
             });
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if ignored_instructions.contains(&index) {
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         let outgoing_slots: &[OutgoingSlot] =
             outgoing.get(&index).map(Vec::as_slice).unwrap_or_default();
         if frame.management.contains(&index) {
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if is_frame_management(insn) {
@@ -662,10 +701,12 @@ fn recover_with_calls_and_image<'image>(
             javascript_flags_dead,
         )? {
             push_stmts(&mut items, base, index, stmts)?;
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if let Some(stmts) = try_lower_scalar_simd(insn)? {
             push_stmts(&mut items, base, index, stmts)?;
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if matches!(insn.mnemonic.as_str(), "ldr" | "str" | "ldur" | "stur")
@@ -680,6 +721,7 @@ fn recover_with_calls_and_image<'image>(
                 frame.info_at(index),
             )?;
             push_stmts(&mut items, base, index, stmts)?;
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if matches!(insn.mnemonic.as_str(), "ldp" | "stp")
@@ -688,6 +730,7 @@ fn recover_with_calls_and_image<'image>(
         {
             let stmts: Vec<Stmt> = lower_vector(insn, frame.info_at(index))?;
             push_stmts(&mut items, base, index, stmts)?;
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if !matches!(
@@ -700,6 +743,7 @@ fn recover_with_calls_and_image<'image>(
         if operand_is_vector(insn) {
             let stmts: Vec<Stmt> = lower_vector(insn, frame.info_at(index))?;
             push_stmts(&mut items, base, index, stmts)?;
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if insn.mnemonic == "nop"
@@ -708,6 +752,7 @@ fn recover_with_calls_and_image<'image>(
                 ("hint", "#0x22" | "#0x19" | "#0x1d") | ("bti", "c") | ("paciasp" | "autiasp", "")
             )
         {
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         if let Some(fold) = address_folds.get(&index) {
@@ -729,6 +774,7 @@ fn recover_with_calls_and_image<'image>(
             if dest.reg == Reg::Rax {
                 return_width = dest.width;
             }
+            mark_instruction_modelled(&mut coverage, index);
             continue;
         }
         match insn.mnemonic.as_str() {
@@ -1559,6 +1605,7 @@ fn recover_with_calls_and_image<'image>(
                     return Err(reject_at(insn, "malformed pc-relative address"));
                 }
                 if operands[0] == "xzr" {
+                    mark_instruction_modelled(&mut coverage, index);
                     continue;
                 }
                 let dest: RegRef = parse_reg(operands[0])?;
@@ -1770,8 +1817,14 @@ fn recover_with_calls_and_image<'image>(
                     return_width = dest.width;
                 }
             }
-            _ => return Err(reject_at(insn, "unsupported instruction")),
+            _ => {
+                if coverage.is_some() {
+                    continue;
+                }
+                return Err(reject_at(insn, "unsupported instruction"));
+            }
         }
+        mark_instruction_modelled(&mut coverage, index);
     }
     if items
         .iter()
