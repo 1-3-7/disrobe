@@ -73,8 +73,25 @@ const SYNTHESIZED_DALVIK_FINALLY_RUNNER_SOURCE: &str = "public final class Runne
         }\n\
     }\n\
 }\n";
+const SYNTHESIZED_DALVIK_FINALLY_THROW_RUNNER_SOURCE: &str = "public final class Runner {\n\
+    public static void main(String[] args) {\n\
+        int left = Integer.parseInt(args[0]);\n\
+        int right = Integer.parseInt(args[1]);\n\
+        int seed = Integer.parseInt(args[2]);\n\
+        RuntimeException replacement = new IllegalStateException(\"replacement\");\n\
+        DalvikFinallyThrow.counter = seed;\n\
+        try {\n\
+            int value = DalvikFinallyThrow.run(left, right, replacement, replacement);\n\
+            System.out.print(\"value:\" + value + \":counter:\" + DalvikFinallyThrow.counter);\n\
+        } catch (Throwable error) {\n\
+            System.out.print(\"throw:\" + error.getClass().getName() + \":counter:\" + DalvikFinallyThrow.counter);\n\
+        }\n\
+    }\n\
+}\n";
 const SYNTHESIZED_DALVIK_FINALLY_SHA256: &str =
     "fec24294d6f604766018e8de95adfee7e6d7052ad16e70adf7d5bc5dc1ae8f5d";
+const SYNTHESIZED_DALVIK_FINALLY_THROW_SHA256: &str =
+    "14e1392ac80ecc68f634aba05ac05445b6693b658f3a402bf1274efb476d0a38";
 
 const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
     static int CTR = 0;\n\
@@ -319,6 +336,95 @@ fn synthesized_dalvik_finally_dex(handler_delta: i8, handler_unit: u32) -> Vec<u
     };
     let class: ClassDef = ClassDef {
         class: "LDalvikFinallyIf;".to_owned(),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: vec![EncodedField {
+            field: counter,
+            access_flags: 0x9,
+        }],
+        static_values: vec![EncodedValue::Int(0)],
+        direct_methods: vec![run],
+        virtual_methods: Vec::new(),
+    };
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(class);
+    builder.build()
+}
+
+fn synthesized_dalvik_finally_throw_dex(handler_throw_register: u8, handler_unit: u32) -> Vec<u8> {
+    let counter: FieldRef = FieldRef {
+        class: "LDalvikFinallyThrow;".to_owned(),
+        type_desc: "I".to_owned(),
+        name: "counter".to_owned(),
+    };
+    let mut units: Vec<u16> = Vec::new();
+    let mut relocations: Vec<Reloc> = Vec::new();
+    units.extend(insn::fmt23x(0x93, 0, 5, 6));
+    let normal_get: usize = units.len();
+    units.extend(insn::fmt21c(0x60, 1, 0));
+    relocations.push(Reloc::FieldIndex {
+        unit: normal_get + 1,
+        field: counter.clone(),
+    });
+    units.extend([0x053D, 3]);
+    units.extend(insn::fmt11x(0x27, 7));
+    units.extend(insn::fmt22b(0xD8, 1, 1, 1));
+    let normal_put: usize = units.len();
+    units.extend(insn::fmt21c(0x67, 1, 0));
+    relocations.push(Reloc::FieldIndex {
+        unit: normal_put + 1,
+        field: counter.clone(),
+    });
+    units.extend(insn::fmt11x(0x0F, 0));
+    units.extend(insn::fmt11x(0x0D, 2));
+    let handler_get: usize = units.len();
+    units.extend(insn::fmt21c(0x60, 1, 0));
+    relocations.push(Reloc::FieldIndex {
+        unit: handler_get + 1,
+        field: counter.clone(),
+    });
+    units.extend([0x053D, 3]);
+    units.extend(insn::fmt11x(0x27, handler_throw_register));
+    units.extend(insn::fmt22b(0xD8, 1, 1, 1));
+    let handler_put: usize = units.len();
+    units.extend(insn::fmt21c(0x67, 1, 0));
+    relocations.push(Reloc::FieldIndex {
+        unit: handler_put + 1,
+        field: counter.clone(),
+    });
+    units.extend(insn::fmt11x(0x27, 2));
+    let run: EncodedMethod = EncodedMethod {
+        method: MethodRef {
+            class: "LDalvikFinallyThrow;".to_owned(),
+            proto: ProtoRef {
+                return_type: "I".to_owned(),
+                params: vec![
+                    "I".to_owned(),
+                    "I".to_owned(),
+                    "Ljava/lang/RuntimeException;".to_owned(),
+                    "Ljava/lang/RuntimeException;".to_owned(),
+                ],
+            },
+            name: "run".to_owned(),
+        },
+        access_flags: 0x9,
+        is_direct: true,
+        registers_size: 9,
+        ins_size: 4,
+        outs_size: 0,
+        insns: units,
+        relocations,
+        tries: vec![TryItem {
+            start_unit: 0,
+            unit_count: 2,
+            handlers: vec![CatchHandler {
+                exception_type: None,
+                handler_unit,
+            }],
+        }],
+    };
+    let class: ClassDef = ClassDef {
+        class: "LDalvikFinallyThrow;".to_owned(),
         super_class: "Ljava/lang/Object;".to_owned(),
         access_flags: 0x1,
         static_fields: vec![EncodedField {
@@ -2044,6 +2150,155 @@ fn synthesized_dalvik_finally_rejects_an_out_of_range_handler() {
     assert!(
         !body.contains("finally {") && !body.contains("catch (Throwable"),
         "an invalid handler target was rendered as structured exception flow:\n{body}"
+    );
+}
+
+#[test]
+fn synthesized_dalvik_throwing_finally_matches_the_translated_runtime() {
+    let dex: Vec<u8> = synthesized_dalvik_finally_throw_dex(7, 12);
+    let digest: sha2::digest::Output<sha2::Sha256> = <sha2::Sha256 as sha2::Digest>::digest(&dex);
+    assert_eq!(
+        format!("{digest:x}"),
+        SYNTHESIZED_DALVIK_FINALLY_THROW_SHA256,
+        "the synthesized Dalvik throwing-finally fixture changed"
+    );
+    assert_eq!(
+        dex,
+        synthesized_dalvik_finally_throw_dex(7, 12),
+        "the synthesized Dalvik throwing-finally fixture is not deterministic"
+    );
+    let translated: Dex2JarResult =
+        translate_dex_bytes(&dex).expect("translate synthesized Dalvik throwing-finally fixture");
+    assert_eq!(
+        translated.stubbed_body_count, 0,
+        "the throwing-finally fixture must reach the structurer"
+    );
+    let original: &Vec<u8> = translated
+        .jar_entries
+        .get("DalvikFinallyThrow.class")
+        .expect("translated throwing-finally class");
+    let recovered: DecompiledClass =
+        decompile_classfile_bytes(original).expect("decompile translated throwing-finally class");
+    let body: String = assert_finally_recovered(&recovered.source, " run(");
+    assert!(
+        body.contains("throw "),
+        "the finally body's explicit throw is missing:\n{body}"
+    );
+    assert!(
+        body.contains("counter"),
+        "the finally body's fallthrough effect is missing:\n{body}"
+    );
+
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let java: PathBuf = find_on_path("java").unwrap_or_else(|| {
+        panic!("synthesized Dalvik throwing-finally runtime requires java on PATH")
+    });
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_synthesized_dalvik_finally_throw")
+            .expect("scratch");
+    let original_dir: PathBuf = scratch.path().join("original");
+    let recovered_dir: PathBuf = scratch.path().join("recovered");
+    std::fs::create_dir_all(&original_dir).expect("original runtime directory");
+    std::fs::create_dir_all(&recovered_dir).expect("recovered runtime directory");
+    std::fs::write(original_dir.join("DalvikFinallyThrow.class"), original)
+        .expect("translated class");
+    let original_runner: PathBuf = original_dir.join("Runner.java");
+    std::fs::write(
+        &original_runner,
+        SYNTHESIZED_DALVIK_FINALLY_THROW_RUNNER_SOURCE,
+    )
+    .expect("original runner");
+    compile_synthesized_dalvik_finally_runtime(&javac, &original_dir, &[original_runner]);
+    let recovered_source: PathBuf = recovered_dir.join("DalvikFinallyThrow.java");
+    let recovered_runner: PathBuf = recovered_dir.join("Runner.java");
+    std::fs::write(&recovered_source, &recovered.source).expect("recovered source");
+    std::fs::write(
+        &recovered_runner,
+        SYNTHESIZED_DALVIK_FINALLY_THROW_RUNNER_SOURCE,
+    )
+    .expect("recovered runner");
+    compile_synthesized_dalvik_finally_runtime(
+        &javac,
+        &recovered_dir,
+        &[recovered_source, recovered_runner],
+    );
+
+    let cases: &[(i32, i32, i32, &str)] = &[
+        (-6, 2, 10, "value:-3:counter:11"),
+        (6, 2, 10, "throw:java.lang.IllegalStateException:counter:10"),
+        (-6, 0, 10, "throw:java.lang.ArithmeticException:counter:11"),
+        (6, 0, 10, "throw:java.lang.IllegalStateException:counter:10"),
+    ];
+    for &(left, right, seed, expected) in cases {
+        let authored: String =
+            run_synthesized_dalvik_finally_runtime(&java, &original_dir, left, right, seed);
+        let regenerated: String =
+            run_synthesized_dalvik_finally_runtime(&java, &recovered_dir, left, right, seed);
+        assert_eq!(authored, expected, "unexpected translated Dalvik result");
+        assert_eq!(
+            regenerated, authored,
+            "recovered Dalvik throwing finally changed behavior for ({left}, {right}, {seed})\n{}",
+            recovered.source
+        );
+    }
+}
+
+#[test]
+fn synthesized_dalvik_throwing_finally_refuses_a_mismatched_throw_operand() {
+    let dex: Vec<u8> = synthesized_dalvik_finally_throw_dex(8, 12);
+    let translated: Dex2JarResult =
+        translate_dex_bytes(&dex).expect("translate mismatched Dalvik throwing-finally fixture");
+    assert_eq!(
+        translated.stubbed_body_count, 0,
+        "the mismatch gate must reach finally structuring rather than grade a translation stub"
+    );
+    let class_bytes: &Vec<u8> = translated
+        .jar_entries
+        .get("DalvikFinallyThrow.class")
+        .expect("translated throwing-finally mismatch class");
+    let recovered: DecompiledClass = decompile_classfile_bytes(class_bytes)
+        .expect("decompile translated throwing-finally mismatch class");
+    let body: String = method_body(&recovered.source, " run(").expect("mismatched run method");
+    assert!(
+        body.contains("not recovered:"),
+        "different explicit throw operands in the finally copies were folded:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "a mismatched synthesized Dalvik throwing finally became a Throwable catch:\n{body}"
+    );
+}
+
+#[test]
+fn synthesized_dalvik_throwing_finally_rejects_an_out_of_range_handler() {
+    let dex: Vec<u8> = synthesized_dalvik_finally_throw_dex(7, 23);
+    let translated: Dex2JarResult = translate_dex_bytes(&dex)
+        .expect("translate malformed-handler Dalvik throwing-finally fixture");
+    assert_eq!(
+        translated.stubbed_body_count, 1,
+        "the out-of-range handler must refuse the only throwing-finally method body"
+    );
+    assert!(
+        translated.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .method
+                .as_deref()
+                .is_some_and(|method: &str| method.starts_with("run("))
+                && !diagnostic.reason.is_empty()
+        }),
+        "the malformed throwing-finally handler refusal did not name the affected method: {:?}",
+        translated.diagnostics
+    );
+    let class_bytes: &Vec<u8> = translated
+        .jar_entries
+        .get("DalvikFinallyThrow.class")
+        .expect("translated malformed throwing-finally class");
+    let recovered: DecompiledClass =
+        decompile_classfile_bytes(class_bytes).expect("decompile malformed throwing-finally stub");
+    let body: String = method_body(&recovered.source, " run(").expect("malformed run method");
+    assert!(
+        !body.contains("finally {") && !body.contains("catch (Throwable"),
+        "an invalid throwing-finally handler target was rendered as structured exception flow:\n{body}"
     );
 }
 
