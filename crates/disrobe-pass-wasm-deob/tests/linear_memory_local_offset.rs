@@ -142,6 +142,27 @@ fn assert_walled(source: &str) {
     assert!(contains_br_table(&recovered.bytes));
 }
 
+fn insert_before_dispatch(source: &str, instructions: &str) -> String {
+    let mutated: String = source.replacen(
+        "i32.const 0\n    i32.store offset=4\n    loop",
+        &format!("i32.const 0\n    i32.store offset=4\n    {instructions}\n    loop"),
+        1,
+    );
+    assert_ne!(mutated, source);
+    mutated
+}
+
+fn assert_behavior_changed(reference: &str, mutant: &str) {
+    let engine: Engine = engine();
+    let mut reference: Instance = instantiate(&engine, &assemble(reference));
+    let mut mutant: Instance = instantiate(&engine, &assemble(mutant));
+    assert!(
+        battery()
+            .into_iter()
+            .any(|argument: i32| call(&mut reference, argument) != call(&mut mutant, argument))
+    );
+}
+
 fn mutate_store(bytes: &[u8], memory: bool) -> Vec<u8> {
     let mut module: walrus::Module =
         walrus::Module::from_buffer(bytes).expect("parse memory mutation");
@@ -194,6 +215,7 @@ fn immutable_local_plus_offset_reloops_through_public_callers_under_wasmtime() {
         std::str::from_utf8(&surfaced.envelope).expect("surface envelope must be UTF-8 WAT");
     assert!(!source.contains("br_table"));
     assert!(!source.contains("i32.const 16"));
+    assert_equivalent(&clean, &assemble(source));
 }
 
 #[test]
@@ -293,4 +315,43 @@ fn aliases_mismatched_accesses_and_observable_memories_remain_walled() {
         memory_error.to_string().contains("multiple memories"),
         "mismatched memory must retain its named feature refusal: {memory_error}"
     );
+}
+
+#[test]
+fn scalar_accesses_overlapping_either_selector_boundary_remain_walled() {
+    let base: String = local_offset_source();
+    let overlap_left_i64: String =
+        insert_before_dispatch(&base, "i32.const 32\n    i64.load\n    drop");
+    let overlap_left_i32: String =
+        insert_before_dispatch(&base, "i32.const 35\n    i32.load\n    drop");
+    let overlap_right_i64: String = insert_before_dispatch(
+        &base,
+        "i32.const 37\n    i64.const 72623859790382856\n    i64.store",
+    );
+    for source in [&overlap_left_i64, &overlap_left_i32, &overlap_right_i64] {
+        assert_walled(source);
+    }
+}
+
+#[test]
+fn bulk_memory_writes_that_can_touch_the_selector_remain_walled() {
+    let base: String = local_offset_source();
+    let fill: String = insert_before_dispatch(
+        &base,
+        "i32.const 36\n    i32.const 1\n    i32.const 1\n    memory.fill",
+    );
+    let initialized: String = insert_before_dispatch(
+        &base,
+        "i32.const 36\n    i32.const 0\n    i32.const 1\n    memory.init 0\n    data.drop 0",
+    );
+    let initialized: String =
+        initialized.replacen("  (func (;0;)", "  (data \"\\01\")\n  (func (;0;)", 1);
+    let copied: String = insert_before_dispatch(
+        &base,
+        "i32.const 40\n    i32.const 1\n    i32.store8\n    i32.const 36\n    i32.const 40\n    i32.const 1\n    memory.copy",
+    );
+    for source in [&fill, &initialized, &copied] {
+        assert_behavior_changed(&base, source);
+        assert_walled(source);
+    }
 }

@@ -525,6 +525,7 @@ fn constant_local_setup(
 struct MemoryAccess {
     memory: MemoryId,
     offset: u32,
+    width: u32,
     exact_kind: bool,
     expression: Option<(MemoryAddress, usize)>,
 }
@@ -543,6 +544,9 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
         return false;
     };
     let Some(target): Option<u32> = effective_address(base, address_offset, memory_offset) else {
+        return false;
+    };
+    let Some(target_end): Option<u32> = target.checked_add(4) else {
         return false;
     };
     let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
@@ -575,6 +579,7 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
                 Instr::Load(load) => Some(MemoryAccess {
                     memory: load.memory,
                     offset: load.arg.offset,
+                    width: load.kind.width(),
                     exact_kind: matches!(load.kind, LoadKind::I32 { atomic: false }),
                     expression: MemoryAddress::expression_suffix(body, index),
                 }),
@@ -583,6 +588,7 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
                     Some(MemoryAccess {
                         memory: store.memory,
                         offset: store.arg.offset,
+                        width: store.kind.width(),
                         exact_kind: matches!(store.kind, StoreKind::I32 { atomic: false }),
                         expression: address_end
                             .and_then(|end: usize| MemoryAddress::expression_suffix(body, end)),
@@ -593,6 +599,7 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
             if let Some(MemoryAccess {
                 memory: access_memory,
                 offset: access_offset,
+                width,
                 exact_kind,
                 expression,
             }) = access
@@ -604,6 +611,9 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
                 let Some(effective): Option<u32> =
                     candidate.effective_address(base, local, access_offset)
                 else {
+                    return false;
+                };
+                let Some(effective_end): Option<u32> = effective.checked_add(width) else {
                     return false;
                 };
                 if candidate.uses_local(local) {
@@ -619,7 +629,8 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
                     }
                     admitted_gets.insert(start);
                 }
-                if effective == target
+                if effective < target_end
+                    && target < effective_end
                     && (candidate
                         != (MemoryAddress::LocalOffset {
                             local,
@@ -630,6 +641,12 @@ fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, ba
                 {
                     return false;
                 }
+            }
+            if matches!(instruction, Instr::MemoryFill(fill) if fill.memory == memory)
+                || matches!(instruction, Instr::MemoryInit(init) if init.memory == memory)
+                || matches!(instruction, Instr::MemoryCopy(copy) if copy.src == memory || copy.dst == memory)
+            {
+                return false;
             }
             let node_capacity: usize = NODE_LIMIT.saturating_sub(seen.len());
             if !push_nested_sequences(instruction, &mut pending, node_capacity) {
