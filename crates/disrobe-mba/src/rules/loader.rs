@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expr::Width;
 use crate::rules::error::LoadError;
+use crate::rules::oracle;
 use crate::rules::schema::{Condition, Pattern, Rule, RuleSet, Template};
 
 const MAX_RULE_TEXT_BYTES: usize = 256 * 1024;
@@ -47,6 +48,9 @@ fn validate(set: &RuleSet) -> Result<(), LoadError> {
         validate_rule(rule)?;
     }
     reject_unconditional_cycles(&set.rules)?;
+    for rule in &set.rules {
+        oracle::grade(rule)?;
+    }
     Ok(())
 }
 

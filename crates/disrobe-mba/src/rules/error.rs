@@ -61,6 +61,8 @@ pub enum LoadError {
     MissingProofRoute { rule: String },
     #[error("rule {rule:?} has no source reference")]
     MissingSource { rule: String },
+    #[error("rule {rule:?} did not prove equivalent at declared width {width}")]
+    EquivalenceRejected { rule: String, width: u8 },
     #[error("unconditional rewrite rules form a cycle through {rule:?}")]
     RewriteCycle { rule: String },
 }

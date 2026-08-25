@@ -52,3 +52,93 @@ proof = "shared_equivalence"
 source = "Boolean algebra involution"
 pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
 rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_zero_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra annihilator"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "and_all_ones_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
+when = [{ check = "is_all_ones", expr = "m" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_self_idempotent"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_complement_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "or_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_all_ones_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra annihilator"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
+when = [{ check = "is_all_ones", expr = "m" }]
+rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "or_self_idempotent"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_complement_all_ones"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "xor_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "xor_complement_all_ones"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "all_ones" }

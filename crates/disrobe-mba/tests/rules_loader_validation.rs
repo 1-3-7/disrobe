@@ -2,10 +2,28 @@
 use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
 
 #[test]
-fn shipped_rules_load_and_have_six_migrated_rules() {
+fn shipped_rules_load_and_have_sixteen_migrated_rules() {
     let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
-    assert_eq!(set.len(), 6);
+    assert_eq!(set.len(), 16);
     assert!(set.commutative_match);
+}
+
+#[test]
+fn a_rule_is_rejected_when_a_declared_width_fails_shared_equivalence() {
+    let text: &str = r#"
+[[rules]]
+name = "neg_is_identity"
+widths = [1, 2]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::EquivalenceRejected { rule, width })
+            if rule == "neg_is_identity" && width == 2
+    ));
 }
 
 #[test]

@@ -137,12 +137,18 @@ fn add_const_sweep_fires_only_on_zero_and_matches_hardcoded_identity() {
 }
 
 #[test]
-fn xor_const_sweep_fires_only_on_all_ones_and_matches_hardcoded_identity() {
+fn xor_const_sweep_fires_only_on_zero_or_all_ones_and_matches_hardcoded_identity() {
     let set: RuleSet = rules();
     for value in 0u64..=255 {
         let input: Expr = Expr::xor(Expr::var(0), Expr::konst(value));
         let hit: Option<RuleHit> = apply_root(&set, &input, Width::W8);
-        if value == 0xFF {
+        if value == 0 {
+            let hit: RuleHit = hit.expect("xor_zero must fire for const 0");
+            assert_eq!(hit.rule, "xor_zero_identity");
+            assert_eq!(hit.result, canonicalize(&input, Width::W8));
+            assert_eq!(hit.result, Expr::var(0));
+            assert!(equivalent_exhaustive(&input, &hit.result, Width::W8, 1));
+        } else if value == 0xFF {
             let hit: RuleHit = hit.expect("xor_all_ones must fire for const 0xFF");
             assert_eq!(hit.rule, "xor_all_ones_is_not");
             assert_eq!(hit.result, canonicalize(&input, Width::W8));

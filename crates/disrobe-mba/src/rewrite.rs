@@ -411,22 +411,7 @@ fn rewrite_mul(left: Expr, right: Expr, _width: Width) -> Expr {
     Expr::mul(left, right)
 }
 
-fn rewrite_and(left: Expr, right: Expr, width: Width) -> Expr {
-    if is_zero(&left) || is_zero(&right) {
-        return Expr::konst(0);
-    }
-    if is_all_ones(&left, width) {
-        return right;
-    }
-    if is_all_ones(&right, width) {
-        return left;
-    }
-    if left == right {
-        return left;
-    }
-    if is_complement(&left, &right, width) {
-        return Expr::konst(0);
-    }
+fn rewrite_and(left: Expr, right: Expr, _width: Width) -> Expr {
     if absorbs(BinOp::Or, &left, &right) {
         return left;
     }
@@ -436,22 +421,7 @@ fn rewrite_and(left: Expr, right: Expr, width: Width) -> Expr {
     Expr::and(left, right)
 }
 
-fn rewrite_or(left: Expr, right: Expr, width: Width) -> Expr {
-    if is_zero(&left) {
-        return right;
-    }
-    if is_zero(&right) {
-        return left;
-    }
-    if is_all_ones(&left, width) || is_all_ones(&right, width) {
-        return Expr::Const(width.mask());
-    }
-    if left == right {
-        return left;
-    }
-    if is_complement(&left, &right, width) {
-        return Expr::Const(width.mask());
-    }
+fn rewrite_or(left: Expr, right: Expr, _width: Width) -> Expr {
     if absorbs(BinOp::And, &left, &right) {
         return left;
     }
@@ -461,19 +431,7 @@ fn rewrite_or(left: Expr, right: Expr, width: Width) -> Expr {
     Expr::or(left, right)
 }
 
-fn rewrite_xor(left: Expr, right: Expr, width: Width) -> Expr {
-    if is_zero(&left) {
-        return right;
-    }
-    if is_zero(&right) {
-        return left;
-    }
-    if left == right {
-        return Expr::konst(0);
-    }
-    if is_complement(&left, &right, width) {
-        return Expr::Const(width.mask());
-    }
+fn rewrite_xor(left: Expr, right: Expr, _width: Width) -> Expr {
     Expr::xor(left, right)
 }
 
@@ -504,36 +462,12 @@ const fn is_one(expr: &Expr) -> bool {
     matches!(expr, Expr::Const(1))
 }
 
-fn is_all_ones(expr: &Expr, width: Width) -> bool {
-    matches!(expr, Expr::Const(value) if (value & width.mask()) == width.mask())
-}
-
 fn absorbs(inner_op: BinOp, outer: &Expr, candidate: &Expr) -> bool {
     matches!(
         candidate,
         Expr::Binary(op, left, right)
             if *op == inner_op && (outer == &**left || outer == &**right)
     )
-}
-
-fn is_complement(left: &Expr, right: &Expr, width: Width) -> bool {
-    complement_of(left, width).as_ref() == Some(right)
-        || complement_of(right, width).as_ref() == Some(left)
-}
-
-fn complement_of(expr: &Expr, width: Width) -> Option<Expr> {
-    match expr {
-        Expr::Unary(UnOp::Not, inner) => Some((**inner).clone()),
-        Expr::Binary(BinOp::Xor, left, right) => match (&**left, &**right) {
-            (Expr::Const(mask), other) | (other, Expr::Const(mask))
-                if (mask & width.mask()) == width.mask() =>
-            {
-                Some(other.clone())
-            }
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 #[cfg(test)]

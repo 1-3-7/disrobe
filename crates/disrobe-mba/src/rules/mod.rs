@@ -4,6 +4,7 @@ pub mod egraph_rules;
 pub mod engine;
 pub mod error;
 pub mod loader;
+mod oracle;
 pub mod schema;
 
 pub use engine::{RuleHit, apply_root, rewrite_fixpoint};
