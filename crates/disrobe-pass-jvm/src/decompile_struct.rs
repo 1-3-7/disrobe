@@ -1487,14 +1487,19 @@ impl<'a> Structurer<'a> {
         &mut self,
         chain: &FinallyChain,
         start: BlockId,
-    ) -> Option<(Vec<BlockId>, Option<BlockId>)> {
+    ) -> Option<FinallyInlineBlocks> {
         let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
         let mut copy: Vec<Instruction> = Vec::new();
-        let mut blocks: Vec<BlockId> = Vec::new();
+        let mut skips: Vec<(BlockId, usize)> = Vec::new();
         let mut current: BlockId = start;
         let mut trailing_exit_pc: Option<u32> = None;
+        let mut partial_continuation: Option<BlockId> = None;
         while copy.len() < body.len() {
-            if blocks.len() >= MAX_BLOCKS || blocks.contains(&current) {
+            if skips.len() >= MAX_BLOCKS
+                || skips
+                    .iter()
+                    .any(|(block, _): &(BlockId, usize)| *block == current)
+            {
                 return None;
             }
             let instructions: &[Instruction] = self.block_instructions(current);
@@ -1505,17 +1510,22 @@ impl<'a> Structurer<'a> {
             if instructions.len() > remaining {
                 let (prefix, suffix): (&[Instruction], &[Instruction]) =
                     instructions.split_at(remaining);
-                let [trailing]: &[Instruction; 1] = suffix.try_into().ok()?;
-                if !matches!(trailing.opcode, 0xA7 | 0xC8) {
+                if let [trailing] = suffix
+                    && matches!(trailing.opcode, 0xA7 | 0xC8)
+                {
+                    trailing_exit_pc = Some(branch_target(trailing)?);
+                    skips.push((current, instructions.len()));
+                } else if typed_return_slot(suffix).is_some() {
+                    partial_continuation = Some(current);
+                    skips.push((current, remaining));
+                } else {
                     return None;
                 }
-                trailing_exit_pc = Some(branch_target(trailing)?);
                 copy.extend_from_slice(prefix);
-                blocks.push(current);
                 break;
             }
             copy.extend_from_slice(instructions);
-            blocks.push(current);
+            skips.push((current, instructions.len()));
             if copy.len() < body.len() {
                 current = self.next_block_by_pc(current)?;
             }
@@ -1525,7 +1535,7 @@ impl<'a> Structurer<'a> {
             catch_parameter_slots,
             scoped_local_slots,
         }: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
-        if blocks.len() <= 1 {
+        if skips.len() <= 1 || partial_continuation.is_some() && trailing_exit_pc.is_some() {
             return None;
         }
         self.finally_catch_parameter_slots
@@ -1538,9 +1548,16 @@ impl<'a> Structurer<'a> {
         };
         let exit: Option<BlockId> = match exit_pc {
             Some(pc) => Some(self.cfg.pc_to_block.get(&pc).copied()?),
-            None => None,
+            None => partial_continuation.or_else(|| {
+                skips
+                    .last()
+                    .and_then(|(block, _): &(BlockId, usize)| self.next_block_by_pc(*block))
+            }),
         };
-        Some((blocks, exit))
+        Some(FinallyInlineBlocks {
+            skips,
+            continuation: exit,
+        })
     }
 
     fn finally_diverging_copy_blocks(
@@ -1688,9 +1705,13 @@ impl<'a> Structurer<'a> {
         group: &GroupedTry,
         copy_head: BlockId,
         continuation: BlockId,
+        skip: usize,
     ) -> Option<(BlockId, u16)> {
-        let [load, ret]: &[Instruction; 2] =
-            self.block_instructions(continuation).try_into().ok()?;
+        let [load, ret]: &[Instruction; 2] = self
+            .block_instructions(continuation)
+            .get(skip..)?
+            .try_into()
+            .ok()?;
         if !matches!(ret.opcode, 0xAC..=0xB0) {
             return None;
         }
@@ -2377,18 +2398,24 @@ impl<'a> Structurer<'a> {
                                 after_try = None;
                             } else {
                                 match self.finally_inline_blocks(&chain, copy_head) {
-                                    Some((blocks, exit)) if blocks.len() > 1 => {
-                                        let continuation: Option<BlockId> = exit.or_else(|| {
-                                            blocks.last().and_then(|last: &BlockId| {
-                                                self.next_block_by_pc(*last)
+                                    Some(FinallyInlineBlocks {
+                                        skips,
+                                        continuation,
+                                    }) if skips.len() > 1 => {
+                                        let continuation_skip: usize = continuation
+                                            .and_then(|cont: BlockId| {
+                                                skips.iter().find_map(
+                                                    |(block, skip): &(BlockId, usize)| {
+                                                        (*block == cont).then_some(*skip)
+                                                    },
+                                                )
                                             })
-                                        });
-                                        for block in blocks {
-                                            self.finally_inline_skips.insert(
-                                                block,
-                                                self.block_instructions(block).len(),
-                                            );
-                                            self.visited.insert(block);
+                                            .unwrap_or(0);
+                                        for (block, skip) in skips {
+                                            self.finally_inline_skips.insert(block, skip);
+                                            if skip == self.block_instructions(block).len() {
+                                                self.visited.insert(block);
+                                            }
                                         }
                                         if let Some(continuation) = continuation
                                             && let Some((predecessor, slot)) = self
@@ -2396,6 +2423,7 @@ impl<'a> Structurer<'a> {
                                                     &try_group,
                                                     copy_head,
                                                     continuation,
+                                                    continuation_skip,
                                                 )
                                         {
                                             self.finally_return_stores.insert(predecessor, slot);
@@ -2527,8 +2555,16 @@ impl<'a> Structurer<'a> {
                                     }
                                 }
                                 self.finally_body_depth += 1;
+                                let tail_contains_body: bool = chain.termination
+                                    == FinallyTermination::Rethrow
+                                    && self
+                                        .block_instructions(tail)
+                                        .len()
+                                        .checked_sub(chain.termination.trim())
+                                        .is_some_and(|remaining: usize| remaining > 0);
                                 let stop: Option<BlockId> = (chain.termination
-                                    != FinallyTermination::Diverge)
+                                    != FinallyTermination::Diverge
+                                    && !tail_contains_body)
                                     .then_some(tail);
                                 let body: Region = self.structure_at(head, stop);
                                 self.finally_body_depth -= 1;
@@ -3170,6 +3206,12 @@ struct TwrResult {
 struct FinallyChain {
     blocks: Vec<BlockId>,
     termination: FinallyTermination,
+}
+
+#[derive(Debug, Clone)]
+struct FinallyInlineBlocks {
+    skips: Vec<(BlockId, usize)>,
+    continuation: Option<BlockId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
