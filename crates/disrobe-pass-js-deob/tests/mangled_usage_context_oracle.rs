@@ -1,10 +1,17 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::Duration;
+
 use boa_engine::{Context, Source};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{TerserRestoreReport, restore_terser_mangled};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
+const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_CAPTURE: usize = 1usize << 18;
 
 fn eval_capture(program: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -21,6 +28,26 @@ fn eval_capture(program: &str) -> Option<String> {
     value
         .as_string()
         .map(boa_engine::JsString::to_std_string_escaped)
+}
+
+fn node_capture(program: &str) -> String {
+    let harness: String = format!(
+        "var __out=[];var print=function(v){{__out.push(String(v));}};{program};process.stdout.write(__out.join('\\u0001'));"
+    );
+    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
+    let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
+        .expect("node is required for the name-inference semantic reference")
+        .expect("name-inference semantic reference must finish within the timeout");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "node must execute source\nstderr: {}\nsource:\n{program}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("Node output is utf-8")
+        .trim()
+        .to_owned()
 }
 
 fn reparses(source: &str) -> bool {
@@ -142,4 +169,28 @@ fn pure_arithmetic_locals_still_recover_and_preserve_behavior() {
     let r: TerserRestoreReport = restore_terser_mangled(NO_USAGE_SIGNAL);
     assert!(r.identifiers_renamed >= 1, "{}", r.rewritten);
     assert_behavior_preserved("arith", NO_USAGE_SIGNAL, &r.rewritten);
+}
+
+const OBJECT_KEYS_CONCAT: &str = r#"
+function f() {
+  var a = Object.keys({ left: 1 }).concat(Object.keys({ right: 2 }));
+  print(a.join(","));
+}
+f();
+"#;
+
+#[test]
+fn object_keys_concat_names_the_result_and_preserves_boa_and_node_behavior() {
+    let report: TerserRestoreReport = restore_terser_mangled(OBJECT_KEYS_CONCAT);
+    assert!(
+        report.rewritten.contains("var keys = Object.keys"),
+        "the Object.keys result must retain its collection provenance:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("object-keys-concat", OBJECT_KEYS_CONCAT, &report.rewritten);
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(OBJECT_KEYS_CONCAT),
+        "Object.keys result inference must preserve Node output"
+    );
 }

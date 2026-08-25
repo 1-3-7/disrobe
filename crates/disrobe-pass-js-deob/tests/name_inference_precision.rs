@@ -416,6 +416,29 @@ fn a_name_is_never_inferred_from_a_reserved_word_callee() {
     );
 }
 
+const DIRECT_EVAL_NAME_SCOPE: &str =
+    "function f(){var a=Object.keys({x:1}).concat([]);return eval(\"a.length\");}";
+
+#[test]
+fn direct_eval_preserves_the_entire_name_scope() {
+    let report: TerserRestoreReport = restore_terser_mangled(DIRECT_EVAL_NAME_SCOPE);
+    assert_eq!(
+        report.rewritten, DIRECT_EVAL_NAME_SCOPE,
+        "a direct eval can resolve minified bindings by spelling, so name inference must abstain"
+    );
+}
+
+const WITH_NAME_SCOPE: &str = "function f(a){with({a:1}){return a;}}";
+
+#[test]
+fn with_preserves_the_entire_name_scope() {
+    let report: TerserRestoreReport = restore_terser_mangled(WITH_NAME_SCOPE);
+    assert_eq!(
+        report.rewritten, WITH_NAME_SCOPE,
+        "with makes lexical resolution dynamic, so name inference must abstain"
+    );
+}
+
 #[test]
 fn the_holdout_population_is_graded_and_reported_separately() {
     let slots: Vec<GradedSlot> = grade_holdout();
@@ -499,7 +522,7 @@ const PINNED_HOLDOUT: &[&str] = &[
 
 const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/collection|a|args|groupBy|low|corpus",
-    "esbuild/collection|e|concat|keys|low|context",
+    "esbuild/collection|e|keys|keys|low|context",
     "esbuild/collection|e|event|index|low|corpus",
     "esbuild/collection|e|event|offset|low|corpus",
     "esbuild/collection|e|list_2|rejected|medium|heuristic",
@@ -567,7 +590,7 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "terser/collection|n|node|cursor|low|corpus",
     "terser/collection|n|node|position|low|corpus",
     "terser/collection|n|node|record|low|corpus",
-    "terser/collection|o|concat|keys|low|context",
+    "terser/collection|o|keys|keys|low|context",
     "terser/collection|o|list_2|rejected|medium|heuristic",
     "terser/collection|o|options|index|low|corpus",
     "terser/collection|o|options|offset|low|corpus",

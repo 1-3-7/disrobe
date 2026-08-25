@@ -4,8 +4,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use oxc_allocator::Allocator;
-use oxc_ast::AstKind;
-use oxc_ast::ast::Expression;
+use oxc_ast::ast::{CallExpression, Expression, Program, WithStatement};
+use oxc_ast::{AstKind, Visit};
 use oxc_parser::Parser;
 use oxc_semantic::{
     AstNodes, NodeId, ScopeId, ScopeTree, Semantic, SemanticBuilder, SymbolId, SymbolTable,
@@ -41,6 +41,12 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
     let source_type: SourceType = SourceType::from_path("terser.js").unwrap_or_default();
     let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
     if parsed.panicked {
+        return TerserRestoreReport {
+            rewritten: source.to_owned(),
+            ..Default::default()
+        };
+    }
+    if dynamic_name_lookup_exists(&parsed.program) {
         return TerserRestoreReport {
             rewritten: source.to_owned(),
             ..Default::default()
@@ -294,18 +300,88 @@ fn assigned_from_name(
         return None;
     };
     match declarator.init.as_ref()? {
-        Expression::CallExpression(call) => match &call.callee {
-            Expression::StaticMemberExpression(member) => {
-                Some(member.property.name.as_str().to_owned())
-            }
-            Expression::Identifier(id) => Some(id.name.as_str().to_owned()),
-            _ => None,
-        },
+        Expression::CallExpression(call) => {
+            object_keys_concat_name(call, symbols).or_else(|| match &call.callee {
+                Expression::StaticMemberExpression(member) => {
+                    Some(member.property.name.as_str().to_owned())
+                }
+                Expression::Identifier(id) => Some(id.name.as_str().to_owned()),
+                _ => None,
+            })
+        }
         Expression::NewExpression(new_expr) => match &new_expr.callee {
             Expression::Identifier(id) => Some(id.name.as_str().to_owned()),
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn object_keys_concat_name(call: &CallExpression<'_>, symbols: &SymbolTable) -> Option<String> {
+    if call.optional || call.type_parameters.is_some() {
+        return None;
+    }
+    let Expression::StaticMemberExpression(concat) = call.callee.get_inner_expression() else {
+        return None;
+    };
+    if concat.property.name.as_str() != "concat" {
+        return None;
+    }
+    let Expression::CallExpression(keys_call) = concat.object.get_inner_expression() else {
+        return None;
+    };
+    if keys_call.optional || keys_call.type_parameters.is_some() {
+        return None;
+    }
+    let Expression::StaticMemberExpression(keys) = keys_call.callee.get_inner_expression() else {
+        return None;
+    };
+    if keys.property.name.as_str() != "keys" {
+        return None;
+    }
+    let Expression::Identifier(object) = keys.object.get_inner_expression() else {
+        return None;
+    };
+    if object.name.as_str() != "Object" {
+        return None;
+    }
+    let reference_id = object.reference_id.get()?;
+    symbols
+        .get_reference(reference_id)
+        .symbol_id()
+        .is_none()
+        .then_some("keys".to_owned())
+}
+
+fn dynamic_name_lookup_exists(program: &Program<'_>) -> bool {
+    let mut probe = DynamicNameLookupProbe { found: false };
+    probe.visit_program(program);
+    probe.found
+}
+
+struct DynamicNameLookupProbe {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for DynamicNameLookupProbe {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if is_direct_eval_callee(&call.callee) {
+            self.found = true;
+            return;
+        }
+        oxc_ast::visit::walk::walk_call_expression(self, call);
+    }
+
+    fn visit_with_statement(&mut self, _statement: &WithStatement<'a>) {
+        self.found = true;
+    }
+}
+
+fn is_direct_eval_callee(callee: &Expression<'_>) -> bool {
+    match callee {
+        Expression::Identifier(identifier) => identifier.name == "eval",
+        Expression::ParenthesizedExpression(paren) => is_direct_eval_callee(&paren.expression),
+        _ => false,
     }
 }
 
