@@ -12,6 +12,7 @@ impl Default for HeuristicNameSource {
         let mut member_keywords: BTreeMap<&'static str, (&'static str, Confidence)> =
             BTreeMap::new();
         member_keywords.insert("push", ("list", Confidence::MEDIUM));
+        member_keywords.insert("slice", ("source", Confidence::LOW));
         member_keywords.insert("then", ("promise", Confidence::HIGH));
         member_keywords.insert("catch", ("promise", Confidence::HIGH));
         member_keywords.insert("finally", ("promise", Confidence::HIGH));
@@ -177,5 +178,16 @@ mod tests {
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("got suggestion");
         assert_eq!(s.name, "promise");
         assert_eq!(s.confidence, Confidence::HIGH);
+    }
+
+    #[test]
+    fn a_slice_receiver_is_a_low_confidence_source() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Parameter, ScopeKey(0));
+        ctx.member_accesses.insert("length".to_owned());
+        ctx.member_accesses.insert("slice".to_owned());
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("slice resolves");
+        assert_eq!(s.name, "source");
+        assert_eq!(s.confidence, Confidence::LOW);
     }
 }

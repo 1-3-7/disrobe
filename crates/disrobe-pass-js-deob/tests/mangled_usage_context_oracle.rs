@@ -254,12 +254,64 @@ const INDEX_OF_DIRECT_EVAL: &str =
     "function locate(values,needle){var a=values.indexOf(needle);return eval(\"a\");}";
 const INDEX_OF_WITH: &str =
     "function locate(values,needle){with({needle:0}){var a=values.indexOf(needle);return a;}}";
+const SLICE_DIRECT_EVAL: &str =
+    "function copy(a){var b=a.slice(1);return eval(\"a.length+b.length\");}";
+const SLICE_WITH: &str = "function copy(a){with({a:[9]}){return a.slice(1);}}";
 
 #[test]
-fn dynamic_name_scopes_refuse_index_of_result_inference() {
-    for source in [INDEX_OF_DIRECT_EVAL, INDEX_OF_WITH] {
+fn dynamic_name_scopes_refuse_semantic_role_inference() {
+    for source in [
+        INDEX_OF_DIRECT_EVAL,
+        INDEX_OF_WITH,
+        SLICE_DIRECT_EVAL,
+        SLICE_WITH,
+    ] {
         let report: TerserRestoreReport = restore_terser_mangled(source);
         assert_eq!(report.rewritten, source);
         assert!(report.renames.is_empty());
     }
+}
+
+const SLICE_SOURCE: &str = r#"
+function copy(a) {
+  var output = a.slice(1);
+  print(output.join(","));
+  return output;
+}
+copy([0, 1, 2]);
+"#;
+
+#[test]
+fn slice_names_its_receiver_role_and_preserves_boa_and_node_behavior() {
+    let first: TerserRestoreReport = restore_terser_mangled(SLICE_SOURCE);
+    let second: TerserRestoreReport = restore_terser_mangled(SLICE_SOURCE);
+    assert!(
+        first.rewritten.contains("function copy(source)"),
+        "the generic slice receiver role must be named at low confidence:\n{}",
+        first.rewritten
+    );
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved("slice-source", SLICE_SOURCE, &first.rewritten);
+    assert_eq!(node_capture(&first.rewritten), node_capture(SLICE_SOURCE));
+}
+
+const SLICE_CAPTURE: &str = r#"
+var source = [9];
+function copy(a) {
+  print(source.length);
+  return a.slice(1);
+}
+print(copy([0, 1, 2]).join(","));
+"#;
+
+#[test]
+fn slice_receiver_role_does_not_shadow_an_outer_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(SLICE_CAPTURE);
+    assert!(
+        report.rewritten.contains("function copy(source_2)"),
+        "the semantic role must be suffixed rather than shadow the outer source:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("slice-capture", SLICE_CAPTURE, &report.rewritten);
+    assert_eq!(node_capture(&report.rewritten), node_capture(SLICE_CAPTURE));
 }
