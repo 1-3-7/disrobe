@@ -237,6 +237,35 @@ pub enum Error {
         offset: u64,
         limit: usize,
     },
+
+    #[error("DR-MOB-0051: Flutter engine symbol map is malformed: {0}")]
+    FlutterEngineSymbolMapMalformed(String),
+
+    #[error("DR-MOB-0052: Flutter engine symbol map version {version} is unsupported")]
+    FlutterEngineSymbolMapUnsupportedVersion { version: u32 },
+
+    #[error(
+        "DR-MOB-0053: Flutter engine symbol map has {actual} bytes, exceeding the {limit}-byte cap"
+    )]
+    FlutterEngineSymbolMapTooLarge { actual: usize, limit: usize },
+
+    #[error(
+        "DR-MOB-0054: Flutter engine symbol map has {count} entries, exceeding the {limit}-entry cap"
+    )]
+    FlutterEngineSymbolMapTooManyEntries { count: usize, limit: usize },
+
+    #[error("DR-MOB-0055: Flutter engine symbol map repeats address {address:#x}")]
+    FlutterEngineSymbolMapDuplicateAddress { address: u64 },
+
+    #[error(
+        "DR-MOB-0056: Flutter engine symbol map address {address:#x} is outside image range [{start:#x}, {end:#x})"
+    )]
+    FlutterEngineSymbolMapAddressOutsideImage { address: u64, start: u64, end: u64 },
+
+    #[error(
+        "DR-MOB-0057: Flutter engine image range start {start:#x} plus size {size:#x} overflows"
+    )]
+    FlutterEngineSymbolMapImageRangeOverflow { start: u64, size: u64 },
 }
 
 impl From<zip::result::ZipError> for Error {

@@ -21,6 +21,7 @@ pub mod dart_graph_layout;
 pub mod dart_graph_recovery;
 pub mod demangler;
 pub mod disasm;
+pub mod engine_symbols;
 pub mod kernel;
 pub mod libapp_parser;
 pub mod object_pool;
@@ -69,6 +70,13 @@ pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
 pub use disasm::{
     Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction, disassemble_function,
     disassemble_functions, disassemble_range,
+};
+pub use engine_symbols::{
+    FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES,
+    FLUTTER_ENGINE_SYMBOL_MAP_MAX_ENTRIES, FLUTTER_ENGINE_SYMBOL_MAP_VERSION,
+    FlutterEngineIdentity, FlutterEngineSymbol, FlutterEngineSymbolMap,
+    FlutterEngineSymbolMapIdentityKind, parse_flutter_engine_symbol_map,
+    parse_flutter_engine_symbol_map_reader,
 };
 pub use kernel::{
     DART_KERNEL_MAGIC, DartKernel, KernelClass, KernelLibrary, KernelProcedure,
