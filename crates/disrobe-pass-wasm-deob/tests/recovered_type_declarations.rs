@@ -1,9 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::error::Error as StdError;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_wasm_deob::{
     BlockId, ConstVal, Error, LiftResult, LiftTarget, OpKind, RecoveredTypesError, SsaBlock,
     SsaFunction, SsaMemArg, SsaTerm, TypeRecoveryRefusal, TypeScriptModuleLift, ValueDef, ValueId,
@@ -50,7 +53,30 @@ const TRACKED_STRUCT_EXPLICIT_NAME: &str = r#"
     f64.load offset=16))
 "#;
 
+const TRACKED_SIGNEDNESS: &str = r#"
+(module
+  (memory (export "memory") 1 1 shared)
+  (func (export "signedness") (param i32 i32 i32 i32 i64 i64 i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i32.div_s
+    drop
+    local.get 2
+    local.get 3
+    i32.div_u
+    drop
+    local.get 4
+    local.get 5
+    i64.div_s
+    drop
+    local.get 6
+    local.get 7
+    i64.div_u))
+"#;
+
 const REAL_RUSTC_ALPHA: &[u8] = include_bytes!("fixtures/fingerprint/alpha_v196.wasm");
+const TYPESCRIPT_COMPILE_TIMEOUT: Duration = Duration::from_secs(30);
+const TYPESCRIPT_COMPILE_CAPTURE: usize = 256 * 1024;
 
 fn bytes(wat_source: &str) -> Vec<u8> {
     wat::parse_str(wat_source).expect("tracked fixture parses")
@@ -118,6 +144,25 @@ fn compile_c(source: &str, directory: &Path, label: &str) -> Output {
         .expect("run C layout grade")
 }
 
+fn compile_typescript(source: &str, directory: &Path, label: &str) -> CapturedOutput {
+    let source_path: PathBuf = directory.join(format!("{label}.mts"));
+    std::fs::write(&source_path, source).expect("write TypeScript signedness grade");
+    let node: PathBuf = tool("node").expect("Node is required for the TypeScript signedness grade");
+    let args: Vec<OsString> = vec![
+        OsString::from("--experimental-strip-types"),
+        OsString::from("--no-warnings"),
+        source_path.into_os_string(),
+    ];
+    run_captured(
+        &node,
+        &args,
+        TYPESCRIPT_COMPILE_TIMEOUT,
+        TYPESCRIPT_COMPILE_CAPTURE,
+    )
+    .expect("spawn TypeScript signedness grade")
+    .expect("TypeScript signedness grade completes within its deadline")
+}
+
 #[test]
 fn tracked_fixture_emits_exact_sparse_float_aware_declarations() {
     let rust: String = lift(TRACKED_STRUCT, LiftTarget::Rust);
@@ -166,6 +211,47 @@ fn recovered_memory_roles_name_unnamed_parameters_in_every_source_target() {
             .contains("wasmLoadI32(record_address, 0)"),
         "{}",
         typescript_module.source
+    );
+}
+
+#[test]
+fn typescript_module_declares_independently_specified_integer_signedness() {
+    let lifted: TypeScriptModuleLift = try_lift_typescript_module(&bytes(TRACKED_SIGNEDNESS))
+        .expect("tracked signedness fixture lifts");
+
+    assert!(
+        lifted.source.contains(
+            "function disrobeWasmFunction0(p0: number & { readonly disrobeSignedI32?: never }, p1: number & { readonly disrobeSignedI32?: never }, p2: number & { readonly disrobeUnsignedI32?: never }, p3: number & { readonly disrobeUnsignedI32?: never }, p4: bigint & { readonly disrobeSignedI64?: never }, p5: bigint & { readonly disrobeSignedI64?: never }, p6: bigint & { readonly disrobeUnsignedI64?: never }, p7: bigint & { readonly disrobeUnsignedI64?: never }): bigint"
+        ),
+        "{}",
+        lifted.source
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_typescript_signedness")
+            .expect("create TypeScript signedness grade directory");
+    let compilation: CapturedOutput =
+        compile_typescript(&lifted.source, scratch.path(), "signedness_aliases");
+    assert!(
+        compilation.exit_code == Some(0),
+        "Node rejected the TypeScript signedness declarations: {}",
+        String::from_utf8_lossy(&compilation.stderr)
+    );
+}
+
+#[test]
+fn c_and_rust_signedness_fixture_output_is_stable() {
+    let fixture: &str =
+        "(module (func (param i32 i32) (result i32) local.get 0 local.get 1 i32.div_s))";
+    let rust: String = lift(fixture, LiftTarget::Rust);
+    let c: String = lift(fixture, LiftTarget::C);
+
+    assert_eq!(
+        rust,
+        "pub fn func_0(p0: i32, p1: i32) -> i32 {\n    let t0: i32 = wasm_i32_div_s(p0, p1);\n    return t0;\n}\n"
+    );
+    assert_eq!(
+        c,
+        "int32_t func_0(int32_t p0, int32_t p1) {\n    int32_t t0 = wasm_i32_div_s(p0, p1);\n    return t0;\n}\n"
     );
 }
 

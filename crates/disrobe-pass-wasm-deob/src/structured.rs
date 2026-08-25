@@ -16,6 +16,8 @@ use crate::lift::{
 use crate::memory64::{MemoryRecord, ModuleMemoryScan, scan_module_memories};
 use crate::op_names::operator_mnemonic;
 use crate::signature::{FunctionSig, MAX_FUNCTION_LOCALS};
+use crate::ssa::{ValueDef, build_ssa};
+use crate::types::{Signedness, recover_signedness};
 
 macro_rules! push_text {
     ($output:expr, $($arg:tt)*) => {
@@ -289,6 +291,7 @@ struct Translator<'a, 'budget> {
     coverage: LiftCoverage,
     targeted_labels: std::collections::BTreeSet<usize>,
     loop_block_merges: BTreeMap<usize, usize>,
+    parameter_signedness: Vec<Signedness>,
 }
 
 pub(crate) fn lift_body_structured(
@@ -365,6 +368,11 @@ fn lift_body_structured_inner(
     }
     let targeted_labels: std::collections::BTreeSet<usize> = scan_branch_targets(&ops);
     let loop_block_merges: BTreeMap<usize, usize> = scan_loop_block_merges(&ops);
+    let parameter_signedness: Vec<Signedness> = if lang == HighLang::TypeScript {
+        recover_parameter_signedness(body, sig)
+    } else {
+        vec![Signedness::Unknown; sig.params.len()]
+    };
 
     let mut t: Translator<'_, '_> = Translator {
         lang,
@@ -386,6 +394,7 @@ fn lift_body_structured_inner(
         coverage: LiftCoverage::default(),
         targeted_labels,
         loop_block_merges,
+        parameter_signedness,
     };
     t.emit_signature_prefix();
     t.emit_local_decls();
@@ -402,6 +411,33 @@ fn lift_body_structured_inner(
     let coverage: LiftCoverage = t.coverage;
     let source: String = t.out.finish()?;
     Ok((source, blocks_emitted, coverage))
+}
+
+fn recover_parameter_signedness(body: &FunctionBody<'_>, sig: &FunctionSig) -> Vec<Signedness> {
+    let Ok(cfg): Result<crate::cfg::FunctionCfg> = crate::cfg::build_function_cfg(body) else {
+        return vec![Signedness::Unknown; sig.params.len()];
+    };
+    let Ok(ssa): Result<crate::ssa::SsaFunction> = build_ssa(&cfg, body, &sig.params) else {
+        return vec![Signedness::Unknown; sig.params.len()];
+    };
+    let report: crate::types::SignednessReport = recover_signedness(&ssa);
+    sig.params
+        .iter()
+        .enumerate()
+        .map(|(parameter_index, _)| {
+            let value_index: Option<usize> = ssa.values.iter().enumerate().find_map(
+                |(value_index, definition)| match definition {
+                    ValueDef::Param(_, index) if usize::from(*index) == parameter_index => {
+                        Some(value_index)
+                    }
+                    _ => None,
+                },
+            );
+            value_index
+                .and_then(|index| report.value_signedness.get(index).copied())
+                .unwrap_or(Signedness::Unknown)
+        })
+        .collect()
 }
 
 fn scan_branch_targets(ops: &[Operator<'_>]) -> std::collections::BTreeSet<usize> {
@@ -576,7 +612,8 @@ impl Translator<'_, '_> {
                         self.out.push_str(", ");
                     }
                     let name: String = self.param_name(i);
-                    push_text!(self.out, "{name}: {}", typescript_type(*ty));
+                    let parameter_type: String = self.typescript_parameter_type(i, *ty);
+                    push_text!(self.out, "{name}: {parameter_type}");
                 }
                 let ret: &str = self
                     .sig
@@ -636,6 +673,33 @@ impl Translator<'_, '_> {
 
     fn param_name(&self, index: usize) -> String {
         self.local_name(u32::try_from(index).unwrap_or(u32::MAX))
+    }
+
+    fn typescript_parameter_type(&self, index: usize, ty: ValType) -> String {
+        let signedness: Signedness = self
+            .parameter_signedness
+            .get(index)
+            .copied()
+            .unwrap_or(Signedness::Unknown);
+        match (ty, signedness) {
+            (ValType::I32 | ValType::I64, Signedness::Signed | Signedness::Unsigned) => {
+                let suffix: &str = match signedness {
+                    Signedness::Signed => "Signed",
+                    Signedness::Unsigned => "Unsigned",
+                    Signedness::Unknown | Signedness::Conflict => "Unknown",
+                };
+                let width: &str = match ty {
+                    ValType::I32 => "I32",
+                    ValType::I64 => "I64",
+                    _ => "Integer",
+                };
+                format!(
+                    "{} & {{ readonly disrobe{suffix}{width}?: never }}",
+                    typescript_type(ty)
+                )
+            }
+            _ => typescript_type(ty).to_owned(),
+        }
     }
 
     fn pad(&self) -> String {
