@@ -128,7 +128,7 @@ When any entry carries no digest, a further step counts those entries and points
 
 ## SARIF output
 
-`--format sarif` prints a SARIF 2.1.0 log to stdout. The CLI test suite validates that log against the SARIF 2.1.0 schema vendored under `crates/disrobe-cli/tests/schemas/`.
+`--format sarif` prints a SARIF 2.1.0 log to stdout. Its `$schema` is the stable OASIS 2.1.0 Errata 01 URI, and the CLI test suite validates the emitted log against the matching schema vendored under `crates/disrobe-cli/tests/schemas/`.
 
 `run.artifacts` is the artifact table. Each entry carries its URI, a description, the byte length when the report knows it, its SARIF roles, and a `blake3` hash when the report has one. An entry with no digest carries no hash. The roles follow the evidence roles: the analysis target becomes `analysisTarget`, a recovered artifact becomes `resultFile`, and a stage input or output becomes `unmodified`.
 

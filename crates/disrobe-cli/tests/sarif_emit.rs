@@ -2,9 +2,25 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use jsonschema::Validator;
 use serde_json::Value;
 
 const OS_SYSTEM_REDUCE: &[u8] = b"\x80\x04\x95\x17\x00\x00\x00\x00\x00\x00\x00\x8c\x02os\x8c\x06system\x93\x94\x8c\x02id\x85\x94R\x94.";
+const SARIF_SCHEMA: &str = include_str!("schemas/sarif-2.1.0.schema.json");
+
+fn assert_valid_sarif(document: &Value) {
+    let schema: Value = serde_json::from_str(SARIF_SCHEMA).expect("pinned SARIF schema parses");
+    let validator: Validator =
+        jsonschema::validator_for(&schema).expect("pinned SARIF schema compiles");
+    let errors: Vec<String> = validator
+        .iter_errors(document)
+        .map(|error: jsonschema::ValidationError<'_>| error.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "pickle safety SARIF violates the pinned SARIF 2.1.0 schema: {errors:#?}"
+    );
+}
 
 fn cli_binary() -> PathBuf {
     let exe: PathBuf = std::env::current_exe().expect("current exe");
@@ -55,8 +71,9 @@ fn pickle_safety_sarif_reaches_scanner() {
     assert_eq!(v["version"], "2.1.0");
     assert_eq!(
         v["$schema"],
-        "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
+        "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
     );
+    assert_valid_sarif(&v);
     assert_eq!(v["runs"][0]["tool"]["driver"]["name"], "disrobe");
 
     let results: &Vec<Value> = v["runs"][0]["results"]

@@ -6,7 +6,8 @@ use serde::Serialize;
 #[cfg(feature = "pickle")]
 use disrobe_pass_pickle::{Finding, SafetyReport, Severity};
 
-const SARIF_SCHEMA_URI: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json";
+const SARIF_SCHEMA_URI: &str =
+    "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
 const DRIVER_NAME: &str = "disrobe";
 const DRIVER_INFO_URI: &str = "https://github.com/1-3-7/disrobe";
@@ -436,7 +437,7 @@ mod tests {
         assert_eq!(v["version"], "2.1.0");
         assert_eq!(
             v["$schema"],
-            "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
+            "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
         );
         let driver: &Value = &v["runs"][0]["tool"]["driver"];
         assert_eq!(driver["name"], "disrobe");
