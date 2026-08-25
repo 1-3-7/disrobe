@@ -44,8 +44,8 @@ pub use external_wrap::{
     probe_external_tools, set_overrides, wrap_external_extract,
 };
 pub use extract::{
-    EntryCompression, ExtractedEntry, ExtractionResult, QuotaSummary, detect_and_extract_with_hint,
-    extract_to, extract_to_with_quota,
+    EntryCompression, ExtractedEntry, ExtractedEntryOrigin, ExtractionResult, QuotaSummary,
+    detect_and_extract_with_hint, extract_to, extract_to_with_quota,
 };
 pub use native::{
     Arch, Endian, ExportInfo, ImportInfo, NativeFile, NativeFormat as ParsedNativeFormat,

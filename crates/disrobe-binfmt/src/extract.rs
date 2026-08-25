@@ -28,6 +28,8 @@ pub enum EntryCompression {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedEntry {
+    #[serde(skip)]
+    pub origin: ExtractedEntryOrigin,
     pub name: String,
     pub disk_path: Option<PathBuf>,
     pub uncompressed_size: u64,
@@ -43,6 +45,13 @@ pub struct ExtractionResult {
     pub encoding: BTreeMap<String, EntryCompression>,
     pub integrity_violations: Vec<String>,
     pub quota: QuotaSummary,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExtractedEntryOrigin {
+    #[default]
+    ArchiveMember,
+    GeneratedSidecar,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -62,6 +71,32 @@ impl From<&QuotaReport> for QuotaSummary {
             max_observed_ratio: r.max_observed_ratio,
         }
     }
+}
+
+fn validate_materialized_path(
+    paths: &BTreeSet<String>,
+    safe_name: &str,
+) -> std::result::Result<String, &'static str> {
+    let key: String = safe_name.to_ascii_lowercase();
+    if paths.contains(&key) {
+        return Err("case-insensitive duplicate output path");
+    }
+    let mut ancestor: &str = key.as_str();
+    while let Some((prefix, _)) = ancestor.rsplit_once('/') {
+        if paths.contains(prefix) {
+            return Err("output path has a materialized file ancestor");
+        }
+        ancestor = prefix;
+    }
+    let descendant_prefix: String = format!("{key}/");
+    if paths
+        .range(descendant_prefix.clone()..)
+        .next()
+        .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix))
+    {
+        return Err("output path is an ancestor of a materialized file");
+    }
+    Ok(key)
 }
 
 pub fn extract_to(kind: ContainerKind, bytes: &[u8], out_dir: &Path) -> Result<ExtractionResult> {
@@ -264,6 +299,7 @@ fn extract_firmware(
         std::fs::write(&disk_path, &member.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -285,6 +321,7 @@ fn extract_firmware(
     std::fs::write(&summary_path, summary_json.as_bytes())?;
     encoding.insert(tool_summary_name.clone(), EntryCompression::Stored);
     entries.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: tool_summary_name,
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -405,6 +442,7 @@ fn squashfs_walk_to_disk(
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(walk.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
     for file in &walk.files {
         if file.is_symlink {
             continue;
@@ -412,19 +450,30 @@ fn squashfs_walk_to_disk(
         let safe_name: String = match sanitize_entry_path(&file.path) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("squashfs-slip: {e}"));
+                violations.push(format!("squashfs-slip `{}`: {e}", file.path));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("squashfs-path `{safe_name}`: {error}"));
                 continue;
             }
         };
         let size: u64 = file.data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, size) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, size, size) {
             violations.push(format!("squashfs-quota `{safe_name}`: {e}"));
             continue;
         }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &file.data)?;
+        guard = admitted;
+        paths.insert(path_key);
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -552,6 +601,7 @@ fn extract_cramfs(
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Deflate);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -597,6 +647,7 @@ fn extract_ext4(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -642,6 +693,7 @@ fn extract_romfs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -691,6 +743,7 @@ fn extract_minixfs(
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -732,6 +785,7 @@ fn extract_android_sparse(
     std::fs::write(&disk_path, &raw)?;
     encoding.insert(tool_name.clone(), EntryCompression::Other);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: tool_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -786,6 +840,7 @@ fn extract_btrfs_send(
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -815,6 +870,7 @@ fn extract_erofs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(walk.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = walk.notes.clone();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
     for file in &walk.files {
         if file.is_symlink {
             continue;
@@ -822,19 +878,30 @@ fn extract_erofs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
         let safe_name: String = match sanitize_entry_path(&file.path) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("erofs-slip: {e}"));
+                violations.push(format!("erofs-slip `{}`: {e}", file.path));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("erofs-path `{safe_name}`: {error}"));
                 continue;
             }
         };
         let size: u64 = file.data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, size) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, size, size) {
             violations.push(format!("erofs-quota `{safe_name}`: {e}"));
             continue;
         }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &file.data)?;
+        guard = admitted;
+        paths.insert(path_key);
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -884,6 +951,7 @@ fn extract_jffs2(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -930,6 +998,7 @@ fn extract_ntfs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -979,6 +1048,7 @@ fn extract_ubifs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -998,6 +1068,7 @@ fn extract_ubifs(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result
         std::fs::write(&disk_path, image)?;
         encoding.insert(tool_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: tool_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -1047,6 +1118,7 @@ fn extract_yaffs2(
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -1101,6 +1173,7 @@ fn extract_fat(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         std::fs::write(&disk_path, &data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -1230,6 +1303,7 @@ fn extract_minidump(
                 std::fs::write(&disk_path, &carved.image)?;
                 encoding.insert(label.clone(), EntryCompression::Stored);
                 entries_out.push(ExtractedEntry {
+                    origin: ExtractedEntryOrigin::ArchiveMember,
                     name: label.clone(),
                     disk_path: Some(disk_path),
                     uncompressed_size: size,
@@ -1288,6 +1362,7 @@ fn extract_minidump(
     std::fs::write(&summary_path, summary_json.as_bytes())?;
     encoding.insert(tool_summary_name.clone(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: tool_summary_name,
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -1351,6 +1426,7 @@ fn extract_msi(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         EntryCompression::Stored,
     );
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: ".disrobe-msi-summary.json".to_owned(),
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -1409,6 +1485,7 @@ fn extract_msi_cab(
         std::fs::write(&disk_path, &buf)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -1458,6 +1535,7 @@ fn extract_rar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
 
     for entry in &archive.entries {
         if entry.is_dir {
@@ -1466,7 +1544,14 @@ fn extract_rar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         let safe_name: String = match sanitize_entry_path(&entry.name) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("rar-slip: {e}"));
+                violations.push(format!("rar-slip `{}`: {e}", entry.name));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("rar-path `{safe_name}`: {error}"));
                 continue;
             }
         };
@@ -1495,12 +1580,15 @@ fn extract_rar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         };
         let size: u64 = data.len() as u64;
         let packed_size: u64 = entry.packed_size;
-        if let Err(e) = guard.admit_entry(&safe_name, size, packed_size) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, size, packed_size) {
             violations.push(format!("rar-quota `{safe_name}`: {e}"));
             continue;
         }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &data)?;
+        guard = admitted;
+        paths.insert(path_key);
         let compression: EntryCompression = if is_store {
             EntryCompression::Stored
         } else {
@@ -1508,6 +1596,7 @@ fn extract_rar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -1563,6 +1652,7 @@ fn extract_xar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         let comp: EntryCompression = xar_entry_compression(file.encoding);
         encoding.insert(safe_name.clone(), comp);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -1647,6 +1737,7 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 std::fs::write(&disk_path, &data)?;
                 encoding.insert(safe_name.clone(), EntryCompression::Stored);
                 entries.push(ExtractedEntry {
+                    origin: ExtractedEntryOrigin::ArchiveMember,
                     name: safe_name,
                     disk_path: Some(disk_path),
                     uncompressed_size: size,
@@ -1694,6 +1785,7 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             std::fs::write(&disk_path, &data)?;
             encoding.insert(safe_name.clone(), EntryCompression::Stored);
             entries.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: safe_name,
                 disk_path: Some(disk_path),
                 uncompressed_size: size,
@@ -1714,6 +1806,7 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         EntryCompression::Stored,
     );
     entries.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name,
         disk_path: Some(disk_path),
         uncompressed_size: image_size,
@@ -1744,39 +1837,64 @@ fn extract_iso(
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut paths: BTreeMap<String, crate::containers::IsoEntryKind> = BTreeMap::new();
     let mut directories: Vec<String> = Vec::new();
-    let mut files: Vec<(usize, String, u64, u64)> = Vec::new();
+    let mut files: Vec<(usize, String, u64, u64, Vec<u8>)> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
+    let layout_name: String = ".disrobe-iso-layout.json".to_owned();
+    for reserved_path in reserved_paths
+        .iter()
+        .copied()
+        .chain(std::iter::once(layout_name.as_str()))
+    {
+        paths.insert(
+            reserved_path.to_ascii_lowercase(),
+            crate::containers::IsoEntryKind::Regular,
+        );
+    }
     for (index, entry) in image.files.iter().enumerate() {
-        let safe_name: String = sanitize_entry_path(&entry.path).map_err(|error: Error| {
-            Error::Decompression(format!("iso entry path `{}`: {error}", entry.path))
-        })?;
-        preflight_iso_path(&paths, &safe_name, entry.kind)?;
-        let key: String = safe_name.to_ascii_lowercase();
-        paths.insert(key, entry.kind);
+        let safe_name: String = match sanitize_entry_path(&entry.path) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("iso-slip `{}`: {error}", entry.path));
+                continue;
+            }
+        };
+        if let Err(error) = preflight_iso_path(&paths, &safe_name, entry.kind) {
+            violations.push(format!("iso-path `{safe_name}`: {error}"));
+            continue;
+        }
         match entry.kind {
-            crate::containers::IsoEntryKind::Directory => directories.push(safe_name),
+            crate::containers::IsoEntryKind::Directory => {
+                paths.insert(safe_name.to_ascii_lowercase(), entry.kind);
+                directories.push(safe_name);
+            }
             crate::containers::IsoEntryKind::Regular => {
                 let uncompressed_size: u64 = entry
                     .zisofs
                     .map_or(entry.data_len, |info| u64::from(info.uncompressed_size));
-                guard.admit_entry(&safe_name, uncompressed_size, entry.data_len)?;
-                files.push((index, safe_name, uncompressed_size, entry.data_len));
+                let mut admitted: QuotaGuard = guard.clone();
+                if let Err(error) =
+                    admitted.admit_entry(&safe_name, uncompressed_size, entry.data_len)
+                {
+                    violations.push(format!("iso-quota `{safe_name}`: {error}"));
+                    continue;
+                }
+                let data: Vec<u8> =
+                    match crate::containers::iso::read_file_data(bytes, entry, uncompressed_size) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            violations.push(format!("iso-decode `{safe_name}`: {error}"));
+                            continue;
+                        }
+                    };
+                guard = admitted;
+                paths.insert(safe_name.to_ascii_lowercase(), entry.kind);
+                files.push((index, safe_name, uncompressed_size, entry.data_len, data));
             }
-            crate::containers::IsoEntryKind::Symlink | crate::containers::IsoEntryKind::Other => {}
+            crate::containers::IsoEntryKind::Symlink | crate::containers::IsoEntryKind::Other => {
+                paths.insert(safe_name.to_ascii_lowercase(), entry.kind);
+            }
         }
     }
-    for reserved_path in reserved_paths {
-        preflight_iso_path(
-            &paths,
-            reserved_path,
-            crate::containers::IsoEntryKind::Regular,
-        )?;
-    }
-    let layout_name: String = ".disrobe-iso-layout.json".to_owned();
-    preflight_iso_path(
-        &paths,
-        &layout_name,
-        crate::containers::IsoEntryKind::Regular,
-    )?;
     guard.admit_entry(&layout_name, layout.len() as u64, layout.len() as u64)?;
 
     let staging: disrobe_core::scratch::ScratchDir =
@@ -1784,10 +1902,7 @@ fn extract_iso(
     for directory in &directories {
         prepare_entry_dir(staging.path(), directory)?;
     }
-    for (index, safe_name, uncompressed_size, _) in &files {
-        let entry: &crate::containers::IsoEntry = &image.files[*index];
-        let data: Vec<u8> =
-            crate::containers::iso::read_file_data(bytes, entry, *uncompressed_size)?;
+    for (_, safe_name, _, _, data) in &files {
         let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
         std::fs::write(staged_path, data)?;
     }
@@ -1801,7 +1916,7 @@ fn extract_iso(
     }
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(files.len() + 1);
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    for (index, safe_name, uncompressed_size, compressed_size) in files {
+    for (index, safe_name, uncompressed_size, compressed_size, _) in files {
         let entry: &crate::containers::IsoEntry = &image.files[index];
         let staged_path: PathBuf = staging.path().join(&safe_name);
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
@@ -1813,6 +1928,7 @@ fn extract_iso(
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -1825,6 +1941,7 @@ fn extract_iso(
     std::fs::copy(staging.path().join(&layout_name), &layout_path)?;
     encoding.insert(layout_name.clone(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: layout_name,
         disk_path: Some(layout_path),
         uncompressed_size: layout.len() as u64,
@@ -1837,7 +1954,7 @@ fn extract_iso(
         kind: ContainerKind::Iso,
         entries: entries_out,
         encoding,
-        integrity_violations: Vec::new(),
+        integrity_violations: violations,
         quota: QuotaSummary::from(guard.report()),
     })
 }
@@ -1915,6 +2032,7 @@ fn extract_bun(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         std::fs::write(&disk_path, contents)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -1962,16 +2080,25 @@ fn extract_dotnet_single_file(
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(bundle.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
 
     for file in &bundle.files {
         let safe_name: String = match sanitize_entry_path(&file.relative_path) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("dotnet-bundle-slip: {e}"));
+                violations.push(format!("dotnet-bundle-slip `{}`: {e}", file.relative_path));
                 continue;
             }
         };
-        if let Err(e) = guard.admit_entry(&safe_name, file.size, file.stored_len()) {
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("dotnet-bundle-path `{safe_name}`: {error}"));
+                continue;
+            }
+        };
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, file.size, file.stored_len()) {
             violations.push(format!("dotnet-bundle-quota `{safe_name}`: {e}"));
             continue;
         }
@@ -1985,6 +2112,8 @@ fn extract_dotnet_single_file(
             continue;
         }
         std::io::Write::flush(&mut sink)?;
+        guard = admitted;
+        paths.insert(path_key);
         let compression: EntryCompression = if file.is_compressed() {
             EntryCompression::Deflate
         } else {
@@ -1992,6 +2121,7 @@ fn extract_dotnet_single_file(
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: file.size,
@@ -2101,6 +2231,7 @@ fn extract_flatpak(
         std::fs::write(&disk_path, &file.content)?;
         encoding.insert(safe_name.clone(), EntryCompression::Deflate);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -2116,6 +2247,7 @@ fn extract_flatpak(
     std::fs::write(&summary_path, summary_json.as_bytes())?;
     encoding.insert(".disrobe-flatpak.json".to_owned(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: ".disrobe-flatpak.json".to_owned(),
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -2137,8 +2269,9 @@ fn inno_output_key(name: &str) -> String {
     name.chars().flat_map(char::to_uppercase).collect()
 }
 
-fn reserve_inno_output(reserved: &mut BTreeSet<String>, name: &str) -> bool {
-    reserved.insert(inno_output_key(name))
+fn validate_inno_output(reserved: &BTreeSet<String>, name: &str) -> Option<String> {
+    let key: String = inno_output_key(name);
+    (!reserved.contains(&key)).then_some(key)
 }
 
 const fn ratio_output_limit(compressed: u64, max_ratio: u64) -> u64 {
@@ -2183,6 +2316,7 @@ fn extract_innosetup(
         EntryCompression::Stored,
     );
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: ".disrobe-innosetup-info.json".to_owned(),
         disk_path: Some(info_path),
         uncompressed_size: info_size,
@@ -2243,6 +2377,7 @@ fn extract_innosetup(
         std::fs::write(&blob_path, &decoded)?;
         encoding.insert(tool_blob_name.clone(), header_compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: tool_blob_name,
             disk_path: Some(blob_path),
             uncompressed_size: decoded_size,
@@ -2299,16 +2434,17 @@ fn extract_innosetup(
                 let safe_name: String = match sanitize_entry_path(&file.path) {
                     Ok(name) => name,
                     Err(error) => {
-                        violations.push(format!("inno-slip: {error}"));
+                        violations.push(format!("inno-slip `{}`: {error}", file.path));
                         continue;
                     }
                 };
-                if !reserve_inno_output(&mut reserved, &safe_name) {
+                let Some(output_key): Option<String> = validate_inno_output(&reserved, &safe_name)
+                else {
                     violations.push(format!(
                         "inno-output-collision: `{safe_name}` conflicts with another output path"
                     ));
                     continue;
-                }
+                };
                 let size: u64 = file.data.len() as u64;
                 let compressed_size: u64 =
                     if charged_compressed_groups.contains(&file.compressed_group) {
@@ -2316,13 +2452,16 @@ fn extract_innosetup(
                     } else {
                         file.compressed_size
                     };
-                if let Err(error) = guard.admit_entry(&safe_name, size, compressed_size) {
+                let mut admitted: QuotaGuard = guard.clone();
+                if let Err(error) = admitted.admit_entry(&safe_name, size, compressed_size) {
                     violations.push(format!("inno-quota `{safe_name}`: {error}"));
                     continue;
                 }
                 charged_compressed_groups.insert(file.compressed_group);
                 let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
                 std::fs::write(&disk_path, &file.data)?;
+                guard = admitted;
+                reserved.insert(output_key);
                 let entry_compression: EntryCompression = match file.compression {
                     crate::containers::innosetup::InnoFileCompression::Stored => {
                         EntryCompression::Stored
@@ -2340,6 +2479,7 @@ fn extract_innosetup(
                 };
                 encoding.insert(safe_name.clone(), entry_compression);
                 entries_out.push(ExtractedEntry {
+                    origin: ExtractedEntryOrigin::ArchiveMember,
                     name: safe_name,
                     disk_path: Some(disk_path),
                     uncompressed_size: size,
@@ -2381,6 +2521,7 @@ fn extract_innosetup(
             std::fs::write(&disk_path, engine)?;
             encoding.insert(tool_name.clone(), EntryCompression::Stored);
             entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: tool_name,
                 disk_path: Some(disk_path),
                 uncompressed_size: loader.exe_uncompressed_size,
@@ -2419,19 +2560,29 @@ fn extract_installshield(
     let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(archive.files.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = archive.integrity_violations.clone();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
     for file in archive.recovered() {
         let safe_name: String = match sanitize_entry_path(&file.path) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("installshield-slip: {e}"));
+                violations.push(format!("installshield-slip `{}`: {e}", file.path));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("installshield-path `{safe_name}`: {error}"));
                 continue;
             }
         };
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &file.data)?;
+        paths.insert(path_key);
         let compression: EntryCompression = installshield_entry_compression(file.compression);
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: file.expanded_size,
@@ -2559,6 +2710,7 @@ fn extract_nsis(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         std::fs::write(&disk_path, &data)?;
         encoding.insert(safe_name.clone(), entry_compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -2742,25 +2894,22 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
-    let mut accepted: Vec<(usize, String)> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (index, entry) in recovered.entries.iter().enumerate() {
-        let safe_name: String = sanitize_entry_path(&entry.name)?;
-        if !seen.insert(safe_name.clone()) {
-            return Err(Error::Rpm(format!(
-                "duplicate normalized payload path `{safe_name}`"
-            )));
+    for entry in &recovered.entries {
+        let safe_name: String = match sanitize_entry_path(&entry.name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("rpm-slip `{}`: {error}", entry.name));
+                continue;
+            }
+        };
+        let path_key: String = safe_name.to_ascii_lowercase();
+        if seen.contains(&path_key) {
+            violations.push(format!(
+                "rpm-path `{safe_name}`: duplicate normalized payload path"
+            ));
+            continue;
         }
-        if cpio_entry_kind(entry.mode) == 0o100_000 && !entry.ghost {
-            guard.admit_entry(&safe_name, entry.file_size, entry.file_size)?;
-        }
-        accepted.push((index, safe_name));
-    }
-    for (index, safe_name) in accepted {
-        let entry: &crate::containers::RpmEntry = recovered
-            .entries
-            .get(index)
-            .ok_or_else(|| Error::Rpm("validated RPM entry disappeared".to_owned()))?;
         let entry_kind: u32 = cpio_entry_kind(entry.mode);
         let materializes: bool =
             entry_kind == 0o040_000 || (entry_kind == 0o100_000 && !entry.ghost);
@@ -2769,6 +2918,7 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 "rpm-host-path `{safe_name}` cannot be represented by the output filesystem"
             ));
             entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: safe_name,
                 disk_path: None,
                 uncompressed_size: entry.file_size,
@@ -2780,7 +2930,9 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         }
         if entry_kind == 0o040_000 {
             let _: PathBuf = prepare_entry_dir(out_dir, &safe_name)?;
+            seen.insert(path_key);
             entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: safe_name,
                 disk_path: None,
                 uncompressed_size: 0,
@@ -2791,7 +2943,9 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             continue;
         }
         if entry_kind != 0o100_000 || entry.ghost {
+            seen.insert(path_key);
             entries_out.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: safe_name,
                 disk_path: None,
                 uncompressed_size: entry.file_size,
@@ -2801,11 +2955,25 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             });
             continue;
         }
-        let data: &[u8] = recovered.member_bytes(entry)?;
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(error) = admitted.admit_entry(&safe_name, entry.file_size, entry.file_size) {
+            violations.push(format!("rpm-quota `{safe_name}`: {error}"));
+            continue;
+        }
+        let data: &[u8] = match recovered.member_bytes(entry) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("rpm-member `{safe_name}`: {error}"));
+                continue;
+            }
+        };
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, data)?;
+        guard = admitted;
+        seen.insert(path_key);
         encoding.insert(safe_name.clone(), entry_compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: entry.file_size,
@@ -2860,6 +3028,7 @@ fn extract_cab(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         std::fs::write(&disk_path, &buf)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -2902,6 +3071,7 @@ fn extract_cab_lzms_folders(
         std::fs::write(&disk_path, &file.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -3608,6 +3778,7 @@ fn extract_zip(
         Vec::with_capacity(count.min(crate::quota::DEFAULT_MAX_ENTRIES));
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
 
     for i in 0..count {
         let mut file: zip::read::ZipFile<'_> =
@@ -3616,13 +3787,20 @@ fn extract_zip(
         let safe_name: String = match sanitize_entry_path(&raw_name) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("zip-slip: {e}"));
+                violations.push(format!("zip-slip `{raw_name}`: {e}"));
                 continue;
             }
         };
         if file.is_dir() {
             continue;
         }
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("zip-path `{safe_name}`: {error}"));
+                continue;
+            }
+        };
         let compressed_size: u64 = file.compressed_size();
         let uncompressed_size: u64 = file.size();
         let entry_compression: EntryCompression = encode_method(file.compression());
@@ -3633,24 +3811,26 @@ fn extract_zip(
                 bounded_prealloc(uncompressed_size)
             )
         });
-        if let Err(e) = guard.admit_entry(&safe_name, uncompressed_size, compressed_size) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, uncompressed_size, compressed_size) {
             crate::debug::dbg_line(|| format!("zip-quota reject `{safe_name}`: {e}"));
-            return Err(e);
+            violations.push(format!("zip-quota `{safe_name}`: {e}"));
+            continue;
         }
-        let buf: Vec<u8> =
-            read_entry_to_limit(&mut file, &safe_name, uncompressed_size).map_err(|e: Error| {
-                match e {
-                    Error::Io(e) => Error::ZipEntry {
-                        name: safe_name.clone(),
-                        reason: e.to_string(),
-                    },
-                    other => other,
-                }
-            })?;
+        let buf: Vec<u8> = match read_entry_to_limit(&mut file, &safe_name, uncompressed_size) {
+            Ok(buf) => buf,
+            Err(error) => {
+                violations.push(format!("zip-decode `{safe_name}`: {error}"));
+                continue;
+            }
+        };
+        guard = admitted;
+        paths.insert(path_key);
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &buf)?;
         encoding.insert(safe_name.clone(), entry_compression);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -3791,6 +3971,7 @@ fn walk_tar<R: Read + Seek>(
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
     let raw_entries: tar::Entries<'_, R> =
         archive.entries().map_err(|e| Error::Tar(e.to_string()))?;
     for entry_result in raw_entries {
@@ -3808,23 +3989,37 @@ fn walk_tar<R: Read + Seek>(
         let safe_name: String = match sanitize_entry_path(&raw_name) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("tar-slip: {e}"));
+                violations.push(format!("tar-slip `{raw_name}`: {e}"));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("tar-path `{safe_name}`: {error}"));
                 continue;
             }
         };
         let uncompressed_size: u64 = entry.size();
-        guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size)?;
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(error) = admitted.admit_entry(&safe_name, uncompressed_size, uncompressed_size) {
+            violations.push(format!("tar-quota `{safe_name}`: {error}"));
+            continue;
+        }
         let buf: Vec<u8> = read_entry_to_limit(&mut entry, &safe_name, uncompressed_size).map_err(
             |e: Error| match e {
                 Error::Io(e) => Error::Tar(e.to_string()),
                 other => other,
             },
         )?;
+        guard = admitted;
+        paths.insert(path_key);
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &buf)?;
         let is_executable: bool = mode_bits & 0o111 != 0;
         encoding.insert(safe_name.clone(), inner_compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -3882,6 +4077,7 @@ fn extract_sevenz(
                     .map_err(|e: std::io::Error| sevenz_rust2::Error::other(e.to_string()))?;
                 encoding.insert(safe_name.clone(), EntryCompression::Other);
                 entries_out.push(ExtractedEntry {
+                    origin: ExtractedEntryOrigin::ArchiveMember,
                     name: safe_name,
                     disk_path: Some(disk_path),
                     uncompressed_size,
@@ -3923,6 +4119,7 @@ fn extract_asar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         std::fs::write(&disk_path, view)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -3976,6 +4173,7 @@ fn extract_cpio(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         std::fs::write(&disk_path, view)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4023,6 +4221,7 @@ fn extract_ar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<Ex
         std::fs::write(&disk_path, data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4052,7 +4251,7 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         let safe_name: String = match sanitize_entry_path(&entry.name) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("arj-slip: {e}"));
+                violations.push(format!("arj-slip `{}`: {e}", entry.name));
                 continue;
             }
         };
@@ -4066,6 +4265,7 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         }
         if let Err(e) = crate::containers::arj::preflight_entry_quota(entry, quota) {
             violations.push(format!("arj-quota `{safe_name}`: {e}"));
+            seen.remove(&safe_name.to_ascii_lowercase());
             continue;
         }
         let data: Vec<u8> = match crate::containers::arj_entry_bytes(
@@ -4076,16 +4276,20 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             Ok(d) => d,
             Err(e) => {
                 violations.push(format!("arj `{safe_name}`: {e}"));
+                seen.remove(&safe_name.to_ascii_lowercase());
                 continue;
             }
         };
         let size: u64 = data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, entry.compressed_size.into()) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, size, entry.compressed_size.into()) {
             violations.push(format!("arj-quota `{safe_name}`: {e}"));
+            seen.remove(&safe_name.to_ascii_lowercase());
             continue;
         }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &data)?;
+        guard = admitted;
         let compression: EntryCompression = if crate::containers::arj_entry_is_stored(entry) {
             EntryCompression::Stored
         } else {
@@ -4093,6 +4297,7 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4115,32 +4320,45 @@ fn extract_arc(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         crate::containers::arc::parse_arc_with_entry_limit(bytes, quota.max_entries)?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut names: BTreeSet<String> = BTreeSet::new();
-    let mut prepared: Vec<(&crate::containers::ArcEntry, String)> = Vec::new();
+    let mut recovered: Vec<(&crate::containers::ArcEntry, String, Vec<u8>)> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
     for entry in &archive.entries {
         let safe_name: String = match sanitize_entry_path(&entry.name) {
             Ok(name) => name,
             Err(error) => {
-                violations.push(format!("arc-slip: {error}"));
+                violations.push(format!("arc-slip `{}`: {error}", entry.name));
                 continue;
             }
         };
-        crate::containers::arc::admit_output_path(&mut names, &safe_name)?;
-        crate::containers::arc::preflight_entry_quota(entry, quota)?;
-        prepared.push((entry, safe_name));
-    }
-    let mut recovered: Vec<(&crate::containers::ArcEntry, String, Vec<u8>)> = Vec::new();
-    for (entry, safe_name) in prepared {
+        let path_key: String = match validate_materialized_path(&names, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("arc-path `{safe_name}`: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = crate::containers::arc::preflight_entry_quota(entry, quota) {
+            violations.push(format!("arc-quota `{safe_name}`: {error}"));
+            continue;
+        }
         match crate::containers::arc_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed) {
             Ok(data) => {
-                guard.admit_entry(
+                let mut admitted: QuotaGuard = guard.clone();
+                if let Err(error) = admitted.admit_entry(
                     &safe_name,
                     data.len() as u64,
                     u64::from(entry.compressed_size),
-                )?;
+                ) {
+                    violations.push(format!("arc-quota `{safe_name}`: {error}"));
+                    continue;
+                }
+                guard = admitted;
+                names.insert(path_key);
                 recovered.push((entry, safe_name, data));
             }
-            Err(error) => violations.push(format!("arc `{safe_name}`: {error}")),
+            Err(error) => {
+                violations.push(format!("arc `{safe_name}`: {error}"));
+            }
         }
     }
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
@@ -4156,6 +4374,7 @@ fn extract_arc(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4180,6 +4399,7 @@ fn extract_lzh(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = archive.notes.clone();
+    let mut paths: BTreeSet<String> = BTreeSet::new();
     for file in &archive.files {
         if file.is_directory || !file.decoder_supported {
             continue;
@@ -4187,19 +4407,30 @@ fn extract_lzh(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         let safe_name: String = match sanitize_entry_path(&file.path) {
             Ok(s) => s,
             Err(e) => {
-                violations.push(format!("lzh-slip: {e}"));
+                violations.push(format!("lzh-slip `{}`: {e}", file.path));
+                continue;
+            }
+        };
+        let path_key: String = match validate_materialized_path(&paths, &safe_name) {
+            Ok(value) => value,
+            Err(error) => {
+                violations.push(format!("lzh-path `{safe_name}`: {error}"));
                 continue;
             }
         };
         let size: u64 = u64::try_from(file.data.len()).map_or(u64::MAX, |value: u64| value);
-        if let Err(e) = guard.admit_entry(&safe_name, size, file.compressed_size) {
+        let mut admitted: QuotaGuard = guard.clone();
+        if let Err(e) = admitted.admit_entry(&safe_name, size, file.compressed_size) {
             violations.push(format!("lzh-quota `{safe_name}`: {e}"));
             continue;
         }
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &file.data)?;
+        guard = admitted;
+        paths.insert(path_key);
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4247,6 +4478,7 @@ fn extract_lzop(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     std::fs::write(&disk_path, &file.data)?;
     encoding.insert(safe_name.clone(), EntryCompression::Other);
     let entries_out: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -4286,6 +4518,7 @@ fn extract_uzip(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     std::fs::write(&disk_path, &image.image)?;
     encoding.insert(tool_name.clone(), compression);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: tool_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -4324,6 +4557,7 @@ fn extract_xalz(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     std::fs::write(&disk_path, &asm.data)?;
     encoding.insert(tool_name.clone(), EntryCompression::Other);
     let entries_out: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: tool_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -4379,6 +4613,7 @@ fn extract_par2(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     std::fs::write(&summary_path, summary_json.as_bytes())?;
     encoding.insert(tool_summary_name.clone(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: tool_summary_name,
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -4393,6 +4628,7 @@ fn extract_par2(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     std::fs::write(&recovery_path, bytes)?;
     encoding.insert(tool_recovery_name.clone(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: tool_recovery_name,
         disk_path: Some(recovery_path),
         uncompressed_size: size,
@@ -4426,6 +4662,7 @@ fn carve_only_payload(
     std::fs::write(&disk_path, bytes)?;
     encoding.insert(safe_name.clone(), EntryCompression::Other);
     let entries_out: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -4481,6 +4718,7 @@ fn extract_partclone(
     std::fs::write(&disk_path, &raw)?;
     encoding.insert(tool_name.clone(), EntryCompression::Other);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: tool_name,
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -4532,7 +4770,10 @@ fn extract_stuffit(
         ..quota
     });
     let mut paths: BTreeSet<String> = BTreeSet::new();
-    let mut forks: Vec<(String, &crate::containers::SitFork)> = Vec::new();
+    let mut recovered: Vec<(String, &crate::containers::SitFork, Vec<u8>)> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
+    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
+        .map_or(usize::MAX, |value: usize| value);
     for entry in &archive.entries {
         for (suffix, fork, required) in [
             (
@@ -4552,34 +4793,50 @@ fn extract_stuffit(
                 continue;
             }
             let raw_name: String = format!("{}{suffix}", entry.name);
-            let safe_name: String = sanitize_entry_path(&raw_name).map_err(|error: Error| {
-                Error::StuffIt(format!("stuffit: unsafe entry path `{raw_name}`: {error}"))
-            })?;
-            preflight_stuffit_path(&paths, &safe_name)?;
-            paths.insert(safe_name.to_ascii_lowercase());
-            guard.admit_entry(
+            let safe_name: String = match sanitize_entry_path(&raw_name) {
+                Ok(value) => value,
+                Err(error) => {
+                    violations.push(format!("stuffit-slip `{raw_name}`: {error}"));
+                    continue;
+                }
+            };
+            if let Err(error) = preflight_stuffit_path(&paths, &safe_name) {
+                violations.push(format!("stuffit-path `{safe_name}`: {error}"));
+                continue;
+            }
+            let mut admitted: QuotaGuard = guard.clone();
+            if let Err(error) = admitted.admit_entry(
                 &safe_name,
                 u64::from(fork.uncompressed_len),
                 u64::from(fork.compressed_len),
-            )?;
-            forks.push((safe_name, fork));
+            ) {
+                violations.push(format!("stuffit-quota `{safe_name}`: {error}"));
+                continue;
+            }
+            let data: Vec<u8> =
+                match crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        violations.push(format!("stuffit-decode `{safe_name}`: {error}"));
+                        continue;
+                    }
+                };
+            guard = admitted;
+            paths.insert(safe_name.to_ascii_lowercase());
+            recovered.push((safe_name, fork, data));
         }
     }
-
-    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
-        .map_or(usize::MAX, |value: usize| value);
     let staging: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-extract")?;
-    for (safe_name, fork) in &forks {
-        let data: Vec<u8> = crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output)?;
+    for (safe_name, _, data) in &recovered {
         let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
         std::fs::write(staged_path, data)?;
     }
 
     std::fs::create_dir_all(out_dir)?;
-    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(forks.len());
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(recovered.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    for (safe_name, fork) in forks {
+    for (safe_name, fork, _) in recovered {
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::copy(staging.path().join(&safe_name), &disk_path)?;
         let compression: EntryCompression = if crate::containers::sit_fork_is_stored(fork) {
@@ -4589,6 +4846,7 @@ fn extract_stuffit(
         };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: u64::from(fork.uncompressed_len),
@@ -4601,7 +4859,7 @@ fn extract_stuffit(
         kind: ContainerKind::StuffIt,
         entries: entries_out,
         encoding,
-        integrity_violations: Vec::new(),
+        integrity_violations: violations,
         quota: QuotaSummary::from(guard.report()),
     })
 }
@@ -4618,7 +4876,10 @@ fn extract_stuffit5(
         ..quota
     });
     let mut paths: BTreeSet<String> = BTreeSet::new();
-    let mut forks: Vec<(String, &crate::containers::Sit5Fork)> = Vec::new();
+    let mut recovered: Vec<(String, &crate::containers::Sit5Fork, Vec<u8>)> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
+    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
+        .map_or(usize::MAX, |value: usize| value);
     for entry in &archive.entries {
         for (suffix, fork) in [
             ("", entry.data.as_ref()),
@@ -4628,36 +4889,50 @@ fn extract_stuffit5(
                 continue;
             };
             let raw_name: String = format!("{}{suffix}", entry.path);
-            let safe_name: String = sanitize_entry_path(&raw_name).map_err(|error: Error| {
-                Error::StuffIt(format!(
-                    "stuffit 5: unsafe entry path `{raw_name}`: {error}"
-                ))
-            })?;
-            preflight_stuffit_path(&paths, &safe_name)?;
-            paths.insert(safe_name.to_ascii_lowercase());
-            guard.admit_entry(
+            let safe_name: String = match sanitize_entry_path(&raw_name) {
+                Ok(value) => value,
+                Err(error) => {
+                    violations.push(format!("stuffit5-slip `{raw_name}`: {error}"));
+                    continue;
+                }
+            };
+            if let Err(error) = preflight_stuffit_path(&paths, &safe_name) {
+                violations.push(format!("stuffit5-path `{safe_name}`: {error}"));
+                continue;
+            }
+            let mut admitted: QuotaGuard = guard.clone();
+            if let Err(error) = admitted.admit_entry(
                 &safe_name,
                 u64::from(fork.uncompressed_len),
                 u64::from(fork.compressed_len),
-            )?;
-            forks.push((safe_name, fork));
+            ) {
+                violations.push(format!("stuffit5-quota `{safe_name}`: {error}"));
+                continue;
+            }
+            let data: Vec<u8> =
+                match crate::containers::sit5_fork_bytes_bounded(bytes, fork, max_output) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        violations.push(format!("stuffit5-decode `{safe_name}`: {error}"));
+                        continue;
+                    }
+                };
+            guard = admitted;
+            paths.insert(safe_name.to_ascii_lowercase());
+            recovered.push((safe_name, fork, data));
         }
     }
-
-    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
-        .map_or(usize::MAX, |value: usize| value);
     let staging: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("binfmt-stuffit5-extract")?;
-    for (safe_name, fork) in &forks {
-        let data: Vec<u8> = crate::containers::sit5_fork_bytes_bounded(bytes, fork, max_output)?;
+    for (safe_name, _, data) in &recovered {
         let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
         std::fs::write(staged_path, data)?;
     }
 
     std::fs::create_dir_all(out_dir)?;
-    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(forks.len());
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(recovered.len());
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    for (safe_name, fork) in forks {
+    for (safe_name, fork, _) in recovered {
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::copy(staging.path().join(&safe_name), &disk_path)?;
         let compression: EntryCompression =
@@ -4668,6 +4943,7 @@ fn extract_stuffit5(
             };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: u64::from(fork.uncompressed_len),
@@ -4680,7 +4956,7 @@ fn extract_stuffit5(
         kind: ContainerKind::StuffIt,
         entries: entries_out,
         encoding,
-        integrity_violations: Vec::new(),
+        integrity_violations: violations,
         quota: QuotaSummary::from(guard.report()),
     })
 }
@@ -4739,6 +5015,7 @@ fn extract_qnx(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         std::fs::write(&disk_path, &image)?;
         encoding.insert(tool_name.clone(), EntryCompression::Deflate);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: tool_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4774,6 +5051,7 @@ fn extract_qnx(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         std::fs::write(&disk_path, &image)?;
         encoding.insert(tool_name.clone(), EntryCompression::Other);
         entries_out.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: tool_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -4824,6 +5102,28 @@ struct UefiFvFileSummary {
     written_file: Option<String>,
 }
 
+fn contains_case_insensitive(names: &BTreeSet<String>, candidate: &str) -> bool {
+    names
+        .iter()
+        .any(|name: &String| name.eq_ignore_ascii_case(candidate))
+}
+
+fn unique_uefi_summary_name(names: &BTreeSet<String>) -> Result<String> {
+    let preferred: &str = ".disrobe-uefi-fv.json";
+    if !contains_case_insensitive(names, preferred) {
+        return Ok(preferred.to_owned());
+    }
+    for suffix in 1..=names.len().saturating_add(1) {
+        let candidate: String = format!(".disrobe-uefi-fv.{suffix}.json");
+        if !contains_case_insensitive(names, &candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::Decompression(
+        "uefi-fv summary path allocation exhausted".to_owned(),
+    ))
+}
+
 fn extract_uefi_firmware_volume(
     bytes: &[u8],
     out_dir: &Path,
@@ -4856,20 +5156,23 @@ fn extract_uefi_firmware_volume(
                 .clone()
                 .and_then(|n: String| sanitize_entry_path(&n).ok())
                 .unwrap_or_else(|| format!("{guid_string}.efi"));
-            let label: String = if used_names.contains(&base_name) {
+            let label: String = if contains_case_insensitive(&used_names, &base_name) {
                 format!("{guid_string}.{base_name}")
             } else {
                 base_name
             };
             let size: u64 = pe.data.len() as u64;
-            if let Err(e) = guard.admit_entry(&label, size, size) {
+            let mut admitted: QuotaGuard = guard.clone();
+            if let Err(e) = admitted.admit_entry(&label, size, size) {
                 violations.push(format!("uefi-fv-quota `{label}`: {e}"));
             } else {
                 used_names.insert(label.clone());
                 let disk_path: PathBuf = prepare_entry_path(out_dir, &label)?;
                 std::fs::write(&disk_path, &pe.data)?;
+                guard = admitted;
                 encoding.insert(label.clone(), EntryCompression::Stored);
                 entries_out.push(ExtractedEntry {
+                    origin: ExtractedEntryOrigin::ArchiveMember,
                     name: label.clone(),
                     disk_path: Some(disk_path),
                     uncompressed_size: size,
@@ -4900,11 +5203,12 @@ fn extract_uefi_firmware_volume(
     };
     let summary_json: String =
         serde_json::to_string_pretty(&summary).unwrap_or_else(|_: serde_json::Error| String::new());
-    let tool_summary_name: String = ".disrobe-uefi-fv.json".to_owned();
+    let tool_summary_name: String = unique_uefi_summary_name(&used_names)?;
     let summary_path: PathBuf = out_dir.join(&tool_summary_name);
     std::fs::write(&summary_path, summary_json.as_bytes())?;
     encoding.insert(tool_summary_name.clone(), EntryCompression::Stored);
     entries_out.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: tool_summary_name,
         disk_path: Some(summary_path),
         uncompressed_size: summary_json.len() as u64,
@@ -4958,6 +5262,7 @@ fn extract_bare_xz(
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     encoding.insert(safe_name.clone(), EntryCompression::Xz);
     let entries: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name,
         disk_path: Some(disk_path),
         uncompressed_size,
@@ -5035,6 +5340,7 @@ fn extract_bare_single_stream(
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     encoding.insert(safe_name.clone(), compression);
     let entries: Vec<ExtractedEntry> = vec![ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name,
         disk_path: Some(disk_path),
         uncompressed_size,
@@ -5095,6 +5401,7 @@ fn extract_bare_gzip(
         std::fs::write(&disk_path, &member.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Deflate);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size,
@@ -5199,6 +5506,7 @@ fn carve_partition_to_disk(
     sink.encoding
         .insert(safe_name.clone(), EntryCompression::Stored);
     sink.entries.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
         name: safe_name.clone(),
         disk_path: Some(disk_path),
         uncompressed_size: size,
@@ -5302,6 +5610,7 @@ fn extract_fat_into(
         sink.encoding
             .insert(entry_name.clone(), EntryCompression::Stored);
         sink.entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: entry_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -5527,6 +5836,7 @@ fn extract_unityfs(
         std::fs::write(&disk_path, &node.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -5571,6 +5881,7 @@ fn extract_unityfs(
             std::fs::write(&disk_path, &asset.script)?;
             encoding.insert(safe_name.clone(), EntryCompression::Stored);
             entries.push(ExtractedEntry {
+                origin: ExtractedEntryOrigin::ArchiveMember,
                 name: safe_name,
                 disk_path: Some(disk_path),
                 uncompressed_size: size,
@@ -5608,6 +5919,7 @@ fn write_summary_entry(
     std::fs::write(&path, json.as_bytes())?;
     encoding.insert(tool_filename.to_owned(), EntryCompression::Stored);
     entries.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::GeneratedSidecar,
         name: tool_filename.to_owned(),
         disk_path: Some(path),
         uncompressed_size: json.len() as u64,
@@ -5823,6 +6135,7 @@ fn extract_wim(
         std::fs::write(&disk_path, &resource.data)?;
         encoding.insert(safe_name.clone(), EntryCompression::Stored);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -5914,6 +6227,7 @@ fn decompress_wim_header_resources(
         }
         encoding.insert(safe_name.clone(), EntryCompression::Other);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::GeneratedSidecar,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: decoded.len() as u64,
@@ -5991,6 +6305,7 @@ fn extract_wim_image_files(
         };
         encoding.insert(safe_name.clone(), entry_compression);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
@@ -6007,6 +6322,60 @@ mod tests {
     use std::io::Write as _;
 
     use super::*;
+
+    #[test]
+    fn materialized_path_validation_is_non_mutating() {
+        let paths: BTreeSet<String> = BTreeSet::from(["existing.bin".to_owned()]);
+        let key: String =
+            validate_materialized_path(&paths, "new.bin").expect("validate new output path");
+        assert_eq!(key, "new.bin");
+        assert_eq!(paths, BTreeSet::from(["existing.bin".to_owned()]));
+    }
+
+    #[cfg(feature = "chain")]
+    #[test]
+    fn uefi_member_named_like_the_generated_summary_survives_direct_and_chain_extraction() {
+        use disrobe_core::pass::Pass as _;
+        use disrobe_core::{Artifact, Rung};
+
+        let member_name: &str = ".disrobe-uefi-fv.json";
+        let member_bytes: &[u8] = b"archive-controlled";
+        let archive: Vec<u8> =
+            crate::containers::uefi_fv::hostile_named_image(member_name, member_bytes)
+                .expect("construct named firmware volume");
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("uefi-sidecar-collision")
+                .expect("create extraction directory");
+        let direct: ExtractionResult = extract_to(ContainerKind::UefiFv, &archive, scratch.path())
+            .expect("extract named firmware member");
+        let member: &ExtractedEntry = direct
+            .entries
+            .iter()
+            .find(|entry: &&ExtractedEntry| entry.origin == ExtractedEntryOrigin::ArchiveMember)
+            .expect("archive member");
+        assert_eq!(member.name, member_name);
+        assert_eq!(
+            std::fs::read(member.disk_path.as_deref().expect("member path"))
+                .expect("read archive member"),
+            member_bytes
+        );
+        let sidecar: &ExtractedEntry = direct
+            .entries
+            .iter()
+            .find(|entry: &&ExtractedEntry| entry.origin == ExtractedEntryOrigin::GeneratedSidecar)
+            .expect("generated sidecar");
+        assert_eq!(sidecar.name, ".disrobe-uefi-fv.1.json");
+        assert_ne!(sidecar.disk_path, member.disk_path);
+
+        let artifact: Artifact = Artifact::new(Rung::Raw, archive, [0; 32]);
+        let children: Vec<disrobe_core::chain::ChildArtifact> =
+            crate::chain_detector::CONTAINER_PASS
+                .extract_children(&artifact)
+                .expect("extract firmware member through chain policy");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].handle.relative_path, member_name);
+        assert_eq!(children[0].bytes, member_bytes);
+    }
 
     fn squashfs_entry(path: &str, is_symlink: bool) -> crate::containers::SquashfsFile {
         crate::containers::SquashfsFile {

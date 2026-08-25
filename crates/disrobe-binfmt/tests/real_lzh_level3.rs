@@ -268,11 +268,15 @@ fn level3_truncated_body_and_corrupt_member_crc_are_rejected() {
 
     let mut damaged: Vec<u8> = LEVEL3_LONG_NAME.to_vec();
     damaged[82] ^= 0x01;
-    let error: disrobe_binfmt::Error =
-        parse_lzh(&damaged, 1024).expect_err("reject corrupt member body CRC");
+    let parsed: disrobe_binfmt::containers::lzh::LzhArchive =
+        parse_lzh(&damaged, 1024).expect("record corrupt member body CRC");
     assert!(
-        error.to_string().contains("crc16 mismatch"),
-        "unexpected member CRC error: {error}"
+        parsed.files.is_empty()
+            && parsed.notes.len() == 1
+            && parsed.notes[0].contains("Long Filename.txt")
+            && parsed.notes[0].contains("crc16 mismatch"),
+        "unexpected member CRC refusal: {:?}",
+        parsed.notes
     );
 }
 
@@ -281,7 +285,7 @@ fn level3_member_quota_refuses_before_output_creation() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-lzh-level3-quota")
             .expect("create quota output directory");
-    let error: disrobe_binfmt::Error = extract_to_with_quota(
+    let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::Lzh,
         LEVEL3_LONG_NAME,
         scratch.path(),
@@ -293,10 +297,14 @@ fn level3_member_quota_refuses_before_output_creation() {
             max_aggregate_ratio: 100,
         },
     )
-    .expect_err("reject member beyond caller quota");
+    .expect("record member beyond caller quota");
     assert!(
-        error.to_string().contains("per-entry cap 13"),
-        "unexpected quota error: {error}"
+        result.entries.is_empty()
+            && result.integrity_violations.len() == 1
+            && result.integrity_violations[0].contains("Long Filename.txt")
+            && result.integrity_violations[0].contains("per-entry cap 13"),
+        "unexpected quota refusal: {:?}",
+        result.integrity_violations
     );
     assert_eq!(
         std::fs::read_dir(scratch.path())
@@ -311,7 +319,7 @@ fn level3_expansion_ratio_refuses_before_output_creation() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-lzh-level3-ratio")
             .expect("create ratio output directory");
-    let error: disrobe_binfmt::Error = extract_to_with_quota(
+    let result: ExtractionResult = extract_to_with_quota(
         ContainerKind::Lzh,
         LEVEL3_LH5,
         scratch.path(),
@@ -323,12 +331,14 @@ fn level3_expansion_ratio_refuses_before_output_creation() {
             max_aggregate_ratio: 1,
         },
     )
-    .expect_err("reject expansion ratio");
+    .expect("record expansion ratio refusal");
     assert!(
-        error
-            .to_string()
-            .contains("per-entry expansion ratio 2 exceeds cap 1"),
-        "unexpected ratio error: {error}"
+        result.entries.is_empty()
+            && result.integrity_violations.len() == 1
+            && result.integrity_violations[0].contains("GPL-2")
+            && result.integrity_violations[0].contains("per-entry expansion ratio 2 exceeds cap 1"),
+        "unexpected ratio refusal: {:?}",
+        result.integrity_violations
     );
     assert_eq!(
         std::fs::read_dir(scratch.path())
@@ -369,26 +379,36 @@ fn hostile_and_colliding_paths_refuse_before_output_creation() {
         level2_member_with_mode(METHOD_FIXTURES[2].0, *b"case1", 0o100_644, *b"-lh6-");
     let upper: Vec<u8> =
         level2_member_with_mode(METHOD_FIXTURES[2].0, *b"CASE1", 0o100_644, *b"-lh6-");
-    let mut duplicate: Vec<u8> = concatenate_members(&lower, &upper);
-    let first_body: usize = usize::from(u16::from_le_bytes([duplicate[0], duplicate[1]]));
-    duplicate[first_body] ^= 0xff;
+    let trailing: Vec<u8> =
+        level2_member_with_mode(METHOD_FIXTURES[2].0, *b"data1", 0o100_644, *b"-lh6-");
+    let duplicate_pair: Vec<u8> = concatenate_members(&lower, &upper);
+    let duplicate: Vec<u8> = concatenate_members(&duplicate_pair, &trailing);
     let duplicate_output: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-lzh-duplicate-path")
             .expect("create duplicate-path output");
-    let error: disrobe_binfmt::Error =
+    let result: ExtractionResult =
         extract_to(ContainerKind::Lzh, &duplicate, duplicate_output.path())
-            .expect_err("reject duplicate LZH path");
+            .expect("retain the valid duplicate-path sibling");
+    assert_eq!(
+        result
+            .entries
+            .iter()
+            .map(|entry: &disrobe_binfmt::ExtractedEntry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["case1", "data1"]
+    );
     assert!(
-        error
-            .to_string()
-            .contains("duplicate normalized output path"),
-        "{error}"
+        result.integrity_violations.len() == 1
+            && result.integrity_violations[0].contains("CASE1")
+            && result.integrity_violations[0].contains("duplicate normalized output path"),
+        "{:?}",
+        result.integrity_violations
     );
     assert_eq!(
         std::fs::read_dir(duplicate_output.path())
             .expect("read duplicate-path output")
             .count(),
-        0
+        2
     );
 }
 
@@ -445,9 +465,21 @@ fn a_mislabelled_pm1_or_pm2_member_is_refused_without_partial_output() {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("disrobe-lzh-pm-mislabelled")
                 .expect("create PM output");
-        let error: disrobe_binfmt::Error = extract_to(ContainerKind::Lzh, &archive, scratch.path())
-            .expect_err("refuse a member whose body is not a PMarc stream");
-        assert!(error.to_string().contains(message), "{error}");
+        let result: ExtractionResult = extract_to(ContainerKind::Lzh, &archive, scratch.path())
+            .expect("record a member whose body is not a PMarc stream");
+        assert!(
+            result.entries.is_empty()
+                && result
+                    .integrity_violations
+                    .iter()
+                    .all(|refusal: &String| refusal.contains("GPL-2.GZ"))
+                && result
+                    .integrity_violations
+                    .iter()
+                    .any(|refusal: &String| refusal.contains(message)),
+            "{:?}",
+            result.integrity_violations
+        );
         assert_eq!(
             std::fs::read_dir(scratch.path())
                 .expect("read PM output")

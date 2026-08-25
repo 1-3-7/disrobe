@@ -34,6 +34,53 @@ impl<'p> ChainPassRunner<'p> {
     }
 }
 
+fn insert_refusal_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    refusals: &[String],
+) -> Result<(), String> {
+    if refusals.is_empty() {
+        return Ok(());
+    }
+    let mut encoded_bytes: usize = 2;
+    let mut bounded: Vec<String> = Vec::new();
+    for refusal in refusals {
+        let encoded: Vec<u8> =
+            serde_json::to_vec(refusal).map_err(|error: serde_json::Error| error.to_string())?;
+        let separator_bytes: usize = usize::from(!bounded.is_empty());
+        let Some(next_bytes): Option<usize> = encoded_bytes
+            .checked_add(separator_bytes)
+            .and_then(|value: usize| value.checked_add(encoded.len()))
+        else {
+            break;
+        };
+        if next_bytes > keys::CONTAINER_REFUSALS_KEY.max_bytes() {
+            break;
+        }
+        encoded_bytes = next_bytes;
+        bounded.push(refusal.clone());
+    }
+    let total: i64 = i64::try_from(refusals.len())
+        .map_err(|_error: std::num::TryFromIntError| "container refusal count overflow")?;
+    let omitted_count: usize = refusals.len().saturating_sub(bounded.len());
+    let omitted: i64 = i64::try_from(omitted_count)
+        .map_err(|_error: std::num::TryFromIntError| "container omitted-refusal count overflow")?;
+    let value: serde_json::Value =
+        serde_json::to_value(bounded).map_err(|error: serde_json::Error| error.to_string())?;
+    metadata_keys::set_json(metadata, keys::CONTAINER_REFUSALS_KEY, &value)
+        .map_err(|error: MetadataValueError| error.to_string())?;
+    metadata_keys::set_integer(metadata, keys::CONTAINER_REFUSALS_TOTAL_KEY, total)
+        .map_err(|error: MetadataValueError| error.to_string())?;
+    metadata_keys::set_integer(metadata, keys::CONTAINER_REFUSALS_OMITTED_KEY, omitted)
+        .map_err(|error: MetadataValueError| error.to_string())?;
+    metadata_keys::set_boolean(
+        metadata,
+        keys::CONTAINER_REFUSALS_TRUNCATED_KEY,
+        omitted_count != 0,
+    )
+    .map_err(|error: MetadataValueError| error.to_string())?;
+    Ok(())
+}
+
 impl PassRunner for ChainPassRunner<'_> {
     fn run(
         &self,
@@ -55,7 +102,15 @@ impl PassRunner for ChainPassRunner<'_> {
             .run_with_context(&artifact, context)
             .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
         let initial_kind: OutputKind = pick.pass.output_kind(&out_artifact);
-        let mut metadata: BTreeMap<String, String> = BTreeMap::new();
+        let mut metadata: BTreeMap<String, String> = pick
+            .pass
+            .chain_metadata(&artifact)
+            .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
+        let refusals: Vec<String> = pick
+            .pass
+            .chain_refusals(&artifact)
+            .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
+        insert_refusal_metadata(&mut metadata, &refusals)?;
         let (kind, children): (OutputKind, Vec<Vec<u8>>) = if initial_kind.is_mixed() {
             let extracted: Vec<ChildArtifact> = pick
                 .pass
@@ -1147,6 +1202,7 @@ mod tests {
     use disrobe_core::chain::{Detector, Pass};
     use disrobe_core::error::Result as CoreResult;
     use disrobe_core::pass::PassId;
+    use std::io::Write as _;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static OBSERVED_AUTHORIZATION: AtomicBool = AtomicBool::new(false);
@@ -1367,6 +1423,367 @@ mod tests {
     fn mirror_tmp(stem: &str) -> ScratchDir {
         let purpose: String = format!("disrobe-mirror-{stem}");
         ScratchDir::create(&purpose).expect("create scratch directory")
+    }
+
+    fn partial_arc_for_auto() -> Vec<u8> {
+        const ARC_METHODS: &[u8] = include_bytes!("../../../../corpus/binfmt/arc/methods.arc");
+        let parsed: disrobe_binfmt::containers::ArcArchive =
+            disrobe_binfmt::containers::parse_arc(ARC_METHODS).expect("parse ARC method fixture");
+        let entry: &disrobe_binfmt::containers::ArcEntry = parsed
+            .entries
+            .iter()
+            .find(|entry: &&disrobe_binfmt::containers::ArcEntry| entry.method != 1)
+            .expect("ARC member with an original-size field");
+        let original_size_offset: usize = entry.data_offset - 4;
+        let mut archive: Vec<u8> = ARC_METHODS.to_vec();
+        archive[original_size_offset..original_size_offset + 4]
+            .copy_from_slice(&(512 * 1024 * 1024 + 1_u32).to_le_bytes());
+        archive
+    }
+
+    fn partial_zip_for_auto() -> Vec<u8> {
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+        let mut writer: zip::ZipWriter<std::io::Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+        for (name, bytes) in [
+            ("first.bin", b"first".as_slice()),
+            (".disrobe-user.bin", b"user-controlled".as_slice()),
+            ("../refused.bin", b"refused".as_slice()),
+            ("last.bin", b"last".as_slice()),
+        ] {
+            writer.start_file(name, options).expect("start ZIP member");
+            writer.write_all(bytes).expect("write ZIP member");
+        }
+        writer.finish().expect("finish ZIP").into_inner()
+    }
+
+    fn duplicate_zip_for_auto() -> Vec<u8> {
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+        let mut writer: zip::ZipWriter<std::io::Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+        for (name, bytes) in [
+            ("duplicate.bin", b"first".as_slice()),
+            ("DUPLICATE.bin", b"second".as_slice()),
+            ("last.bin", b"last".as_slice()),
+        ] {
+            writer.start_file(name, options).expect("start ZIP member");
+            writer.write_all(bytes).expect("write ZIP member");
+        }
+        writer.finish().expect("finish ZIP").into_inner()
+    }
+
+    fn refusal_overflow_zip_for_auto() -> Vec<u8> {
+        let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+        let mut writer: zip::ZipWriter<std::io::Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let options: zip::write::FileOptions<()> = zip::write::FileOptions::default();
+        writer
+            .start_file("retained.bin", options)
+            .expect("start retained ZIP member");
+        writer
+            .write_all(b"retained")
+            .expect("write retained ZIP member");
+        for index in 0..1_500_u16 {
+            let name: String = format!("../refused-{index:04}-{}.bin", "x".repeat(48));
+            writer
+                .start_file(name, options)
+                .expect("start refused ZIP member");
+            writer
+                .write_all(b"refused")
+                .expect("write refused ZIP member");
+        }
+        writer.finish().expect("finish ZIP").into_inner()
+    }
+
+    fn partial_tar_for_auto() -> Vec<u8> {
+        let mut builder: tar::Builder<Vec<u8>> = tar::Builder::new(Vec::new());
+        for (name, bytes) in [
+            ("first.bin", b"first".as_slice()),
+            ("../refused.bin", b"refused".as_slice()),
+            ("last.bin", b"last".as_slice()),
+        ] {
+            let mut header: tar::Header = tar::Header::new_gnu();
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_mode(0o644);
+            header.set_size(u64::try_from(bytes.len()).expect("TAR member size"));
+            header.set_cksum();
+            builder.append(&header, bytes).expect("append TAR member");
+        }
+        builder.into_inner().expect("finish TAR")
+    }
+
+    fn assert_real_auto_container_parity(
+        label: &str,
+        extension: &str,
+        kind: disrobe_binfmt::container::ContainerKind,
+        archive: Vec<u8>,
+        partial: bool,
+    ) {
+        let scratch: ScratchDir = mirror_tmp(&format!("container-parity-{label}"));
+        let input: PathBuf = scratch.path().join(format!("input.{extension}"));
+        let out: PathBuf = scratch.path().join("out");
+        let direct_out: PathBuf = scratch.path().join("direct");
+        let direct: disrobe_binfmt::ExtractionResult =
+            disrobe_binfmt::extract_to(kind, &archive, &direct_out)
+                .expect("direct matrix extraction");
+        let expected_members: Vec<(String, [u8; 32])> = direct
+            .entries
+            .iter()
+            .filter_map(|entry: &disrobe_binfmt::ExtractedEntry| {
+                if entry.origin == disrobe_binfmt::ExtractedEntryOrigin::GeneratedSidecar {
+                    return None;
+                }
+                let path: &Path = entry.disk_path.as_deref()?;
+                let bytes: Vec<u8> = std::fs::read(path).expect("read direct member");
+                Some((entry.name.clone(), blake3_hash(&bytes)))
+            })
+            .collect();
+        assert!(!expected_members.is_empty(), "{label} materialized members");
+        if partial {
+            assert!(!direct.integrity_violations.is_empty(), "{label} refusals");
+        }
+        std::fs::write(&input, archive).expect("write container input");
+        run_with_disk(
+            input,
+            Some(out.clone()),
+            "auto:1".to_owned(),
+            None,
+            OutputFormat::Json,
+            ChainRunOptions {
+                write_to_disk: true,
+                redact: false,
+                capture_stages: false,
+                emit_recovery: false,
+                backend_export: None,
+                i_have_authorization: false,
+            },
+        )
+        .expect("run matrix auto");
+        let chain: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(out.join("chain.json")).expect("read chain document"),
+        )
+        .expect("parse chain document");
+        let nodes: &[serde_json::Value] = chain["nodes"].as_array().expect("nodes");
+        let node: &serde_json::Value = nodes
+            .iter()
+            .find(|node: &&serde_json::Value| {
+                node["pass"] == "binfmt.container" && node["output_kind"]["kind"] == "mixed"
+            })
+            .expect("matrix container mixed node");
+        let refusals: Vec<String> = node["metadata"][keys::CONTAINER_REFUSALS]
+            .as_str()
+            .map(|encoded: &str| serde_json::from_str(encoded).expect("refusal list"))
+            .unwrap_or_default();
+        assert_eq!(refusals, direct.integrity_violations, "{label} refusals");
+        let children: &[serde_json::Value] = node["output_kind"]["children"]
+            .as_array()
+            .expect("mixed children");
+        let actual_members: Vec<(String, [u8; 32])> = children
+            .iter()
+            .map(|child: &serde_json::Value| {
+                let name: String = child["relative_path"]
+                    .as_str()
+                    .expect("child path")
+                    .to_owned();
+                let bytes: Vec<u8> = std::fs::read(out.join("extracted").join(&name))
+                    .expect("read matrix auto member");
+                (name, blake3_hash(&bytes))
+            })
+            .collect();
+        assert_eq!(actual_members, expected_members, "{label} members");
+    }
+
+    #[test]
+    fn real_auto_container_matrix_matches_direct_order_bytes_and_refusals() {
+        use disrobe_binfmt::container::ContainerKind;
+        for (label, extension, kind, archive, partial) in [
+            (
+                "arc",
+                "arc",
+                ContainerKind::Arc,
+                partial_arc_for_auto(),
+                true,
+            ),
+            (
+                "rar",
+                "rar",
+                ContainerKind::Rar,
+                include_bytes!("../../../../corpus/binfmt/rar/store-rar4.rar").to_vec(),
+                false,
+            ),
+            (
+                "arj",
+                "arj",
+                ContainerKind::Arj,
+                include_bytes!("../../../../corpus/binfmt/arj/method0.arj").to_vec(),
+                false,
+            ),
+            (
+                "lzh",
+                "pma",
+                ContainerKind::Lzh,
+                include_bytes!("../../../../corpus/binfmt/lzh/pmarc/generated_pm1.pma").to_vec(),
+                true,
+            ),
+            (
+                "inno",
+                "exe",
+                ContainerKind::InnoSetup,
+                include_bytes!(
+                    "../../../disrobe-binfmt/tests/fixtures/innosetup/innosetup-6.3.3.exe"
+                )
+                .to_vec(),
+                false,
+            ),
+            (
+                "installshield",
+                "cab",
+                ContainerKind::InstallShield,
+                include_bytes!("../../../../corpus/binfmt/installshield/wireplay-user1.cab")
+                    .to_vec(),
+                true,
+            ),
+            (
+                "zip",
+                "zip",
+                ContainerKind::Zip,
+                partial_zip_for_auto(),
+                true,
+            ),
+            (
+                "zip-duplicate",
+                "zip",
+                ContainerKind::Zip,
+                duplicate_zip_for_auto(),
+                true,
+            ),
+            (
+                "tar",
+                "tar",
+                ContainerKind::Tar,
+                partial_tar_for_auto(),
+                true,
+            ),
+            (
+                "dotnet",
+                "exe",
+                ContainerKind::DotnetSingleFile,
+                include_bytes!("../../../../corpus/binfmt/dotnet-single-file/probe.v6.win-x64.exe")
+                    .to_vec(),
+                false,
+            ),
+            (
+                "erofs",
+                "erofs",
+                ContainerKind::Erofs,
+                include_bytes!(
+                    "../../../disrobe-binfmt/tests/fixtures/erofs/lzma-compact-mixed.erofs"
+                )
+                .to_vec(),
+                false,
+            ),
+            (
+                "stuffit",
+                "sit",
+                ContainerKind::StuffIt,
+                include_bytes!(
+                    "../../../disrobe-binfmt/tests/fixtures/stuffit/stuffit45-method13.sit"
+                )
+                .to_vec(),
+                false,
+            ),
+            (
+                "rpm",
+                "rpm",
+                ContainerKind::Rpm,
+                include_bytes!("../../../disrobe-binfmt/tests/fixtures/rpm/hello-v4-gzip.rpm")
+                    .to_vec(),
+                false,
+            ),
+            (
+                "appimage",
+                "AppImage",
+                ContainerKind::AppImage,
+                include_bytes!(
+                    "../../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage"
+                )
+                .to_vec(),
+                false,
+            ),
+            (
+                "uefi",
+                "fv",
+                ContainerKind::UefiFv,
+                include_bytes!(
+                    "../../../disrobe-binfmt/tests/fixtures/uefi_fv/edk2_brotli_guided.fv"
+                )
+                .to_vec(),
+                false,
+            ),
+        ] {
+            assert_real_auto_container_parity(label, extension, kind, archive, partial);
+        }
+    }
+
+    #[test]
+    fn real_auto_bounds_refusal_metadata_without_losing_children_or_counts() {
+        let scratch: ScratchDir = mirror_tmp("container-refusal-overflow");
+        let input: PathBuf = scratch.path().join("input.zip");
+        let out: PathBuf = scratch.path().join("out");
+        std::fs::write(&input, refusal_overflow_zip_for_auto()).expect("write overflow ZIP");
+        run_with_disk(
+            input,
+            Some(out.clone()),
+            "auto:1".to_owned(),
+            None,
+            OutputFormat::Json,
+            ChainRunOptions {
+                write_to_disk: true,
+                redact: false,
+                capture_stages: false,
+                emit_recovery: false,
+                backend_export: None,
+                i_have_authorization: false,
+            },
+        )
+        .expect("run overflow auto");
+        assert_eq!(
+            std::fs::read(out.join("extracted/retained.bin")).expect("read retained child"),
+            b"retained"
+        );
+        let chain: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(out.join("chain.json")).expect("read overflow chain document"),
+        )
+        .expect("parse overflow chain document");
+        let node: &serde_json::Value = chain["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node: &&serde_json::Value| node["pass"] == "binfmt.container")
+            .expect("container node");
+        let metadata: &serde_json::Value = &node["metadata"];
+        let retained: Vec<String> = serde_json::from_str(
+            metadata[keys::CONTAINER_REFUSALS]
+                .as_str()
+                .expect("bounded refusal array"),
+        )
+        .expect("parse bounded refusal array");
+        let total: usize = metadata[keys::CONTAINER_REFUSALS_TOTAL]
+            .as_str()
+            .expect("total refusal count")
+            .parse()
+            .expect("parse total refusal count");
+        let omitted: usize = metadata[keys::CONTAINER_REFUSALS_OMITTED]
+            .as_str()
+            .expect("omitted refusal count")
+            .parse()
+            .expect("parse omitted refusal count");
+        assert_eq!(total, 1_500);
+        assert_eq!(omitted, total - retained.len());
+        assert!(omitted > 0);
+        assert_eq!(
+            metadata[keys::CONTAINER_REFUSALS_TRUNCATED].as_str(),
+            Some("true")
+        );
     }
 
     #[test]

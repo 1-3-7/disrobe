@@ -253,13 +253,14 @@ fn pm1_and_pm2_members_reach_the_dedicated_extraction_surface() {
 
 #[test]
 fn pm2_code_tree_above_the_declared_ceiling_is_refused() {
-    let error: disrobe_binfmt::Error =
-        parse_lzh(EVIL_PM2, QUOTA).expect_err("refuse the oversized -pm2- code tree");
+    let parsed: LzhArchive =
+        parse_lzh(EVIL_PM2, QUOTA).expect("record the oversized -pm2- code tree");
     assert!(
-        error
-            .to_string()
-            .contains("-pm2- code tree declares 31 codes above the 29 ceiling"),
-        "{error}"
+        parsed.files.is_empty()
+            && parsed.notes.len() == 1
+            && parsed.notes[0].contains("-pm2- code tree declares 31 codes above the 29 ceiling"),
+        "{:?}",
+        parsed.notes
     );
 }
 
@@ -343,9 +344,17 @@ fn a_single_flipped_bit_in_a_pm1_or_pm2_body_fails_the_stored_crc16() {
     for (archive, position, message) in cases {
         let mut mutated: Vec<u8> = archive.to_vec();
         mutated[position] ^= 0x01;
-        let error: disrobe_binfmt::Error =
-            parse_lzh(&mutated, QUOTA).expect_err("refuse a corrupted PMarc member");
-        assert!(error.to_string().contains(message), "{error}");
+        let parsed: LzhArchive =
+            parse_lzh(&mutated, QUOTA).expect("record a corrupted PMarc member");
+        assert!(
+            parsed.files.is_empty()
+                && parsed
+                    .notes
+                    .iter()
+                    .any(|refusal: &String| refusal.contains(message)),
+            "{:?}",
+            parsed.notes
+        );
     }
 }
 

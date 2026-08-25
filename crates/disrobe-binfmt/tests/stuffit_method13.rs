@@ -64,17 +64,26 @@ fn stuffit45_method13_forks_match_the_unar_manifest() {
 }
 
 #[test]
-fn method13_integrity_failure_publishes_no_partial_members() {
+fn method13_integrity_failure_refuses_the_named_fork_and_keeps_siblings() {
     let mut corrupted: Vec<u8> = FIXTURE.to_vec();
     corrupted[22 + 112 + 17] ^= 0x40;
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-rollback")
             .expect("create rollback directory");
-    assert!(extract_to(ContainerKind::StuffIt, &corrupted, scratch.path()).is_err());
+    let result: ExtractionResult = extract_to(ContainerKind::StuffIt, &corrupted, scratch.path())
+        .expect("retain recoverable StuffIt forks");
+    assert_eq!(result.entries.len(), 8);
+    assert_eq!(result.integrity_violations.len(), 1);
     assert_eq!(
-        std::fs::read_dir(scratch.path())
-            .expect("read rollback directory")
-            .count(),
-        0
+        result.integrity_violations[0],
+        "stuffit-decode `Test Image.rsrc`: DR-BINFMT-0063: stuffit archive parse failed: stuffit: method 13 stream is incomplete: invalid Huffman code lengths"
     );
+    assert!(
+        result
+            .entries
+            .iter()
+            .all(|entry: &disrobe_binfmt::ExtractedEntry| entry.name != "Test Image.rsrc")
+    );
+    assert!(scratch.path().join("Test Text").is_file());
+    assert!(scratch.path().join("testfile.txt.rsrc").is_file());
 }

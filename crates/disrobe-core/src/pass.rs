@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use serde::Serialize;
@@ -130,5 +131,13 @@ pub trait Pass: Debug + Send + Sync {
         _context: PassContext<'_>,
     ) -> CoreResult<Vec<ChildArtifact>> {
         self.extract_children(input)
+    }
+
+    fn chain_metadata(&self, _input: &Artifact) -> CoreResult<BTreeMap<String, String>> {
+        Ok(BTreeMap::new())
+    }
+
+    fn chain_refusals(&self, _input: &Artifact) -> CoreResult<Vec<String>> {
+        Ok(Vec::new())
     }
 }

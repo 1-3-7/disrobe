@@ -9,7 +9,9 @@ use disrobe_core::scratch::{ScratchDir, ScratchFile};
 
 use crate::container::ContainerKind;
 use crate::error::{Error, Result};
-use crate::extract::{EntryCompression, ExtractedEntry, ExtractionResult, QuotaSummary};
+use crate::extract::{
+    EntryCompression, ExtractedEntry, ExtractedEntryOrigin, ExtractionResult, QuotaSummary,
+};
 use crate::quota::{ExtractionQuota, QuotaGuard, sanitize_entry_path};
 
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
@@ -544,6 +546,7 @@ fn walk_collect(
         guard.admit_entry(&safe, size, size)?;
         encoding.insert(safe.clone(), EntryCompression::Other);
         entries.push(ExtractedEntry {
+            origin: ExtractedEntryOrigin::ArchiveMember,
             name: safe,
             disk_path: Some(path),
             uncompressed_size: size,

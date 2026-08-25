@@ -223,14 +223,15 @@ impl Pass for ContainerPass {
         let Some(tag): Option<&'static str> = sniff_container_tag(bytes) else {
             return Ok(Vec::new());
         };
-        let members: Vec<(String, Vec<u8>)> =
+        let extraction: MemberExtraction =
             extract_members(tag, bytes).map_err(|e: CoreError| match e {
                 CoreError::PassFailure(msg) => CoreError::PassFailure(format!(
                     "DR-BINFMT-0903: binfmt.container extract: {msg}"
                 )),
                 other @ CoreError::RungMismatch { .. } => other,
             })?;
-        let children: Vec<ChildArtifact> = members
+        let children: Vec<ChildArtifact> = extraction
+            .members
             .into_iter()
             .enumerate()
             .map(
@@ -272,6 +273,13 @@ impl Pass for ContainerPass {
             artifact.root_hash,
         ))
     }
+
+    fn chain_refusals(&self, artifact: &Artifact) -> CoreResult<Vec<String>> {
+        let Some(tag): Option<&'static str> = sniff_container_tag(&artifact.envelope) else {
+            return Ok(Vec::new());
+        };
+        Ok(extract_members(tag, &artifact.envelope)?.refusals)
+    }
 }
 
 pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
@@ -306,6 +314,11 @@ fn render_container_manifest(tag: &str, bytes: &[u8]) -> String {
         }
         Inventory::Unreadable(reason) => {
             push_line(&mut s, &format!("entries=unreadable reason={reason}"));
+        }
+    }
+    if let Ok(extraction) = extract_members(tag, bytes) {
+        for refusal in extraction.refusals {
+            push_line(&mut s, &format!("refusal={refusal}"));
         }
     }
     s
@@ -362,6 +375,26 @@ fn arc_inventory(bytes: &[u8]) -> Inventory {
             .map(|entry: crate::containers::ArcEntry| (entry.name, u64::from(entry.original_size)))
             .collect(),
     )
+}
+
+fn installshield_inventory(bytes: &[u8]) -> Inventory {
+    let defaults: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota::default_safe();
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+        max_aggregate_ratio: defaults.max_aggregate_ratio.max(1000),
+        max_per_entry_ratio: defaults.max_per_entry_ratio.max(1000),
+        ..defaults
+    };
+    match crate::containers::walk_installshield(bytes, quota) {
+        Ok(archive) => Inventory::Listed(
+            archive
+                .recovered()
+                .map(|file: &crate::containers::InstallShieldFile| {
+                    (file.path.clone(), file.expanded_size)
+                })
+                .collect(),
+        ),
+        Err(error) => Inventory::Unreadable(error.to_string()),
+    }
 }
 
 fn zip_inventory(bytes: &[u8]) -> Inventory {
@@ -424,671 +457,98 @@ fn tar_inventory_with_cap(bytes: &[u8], max_entries: usize) -> Inventory {
 }
 
 const MAX_MEMBER_COUNT: usize = 100_000;
-const MAX_MEMBER_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+#[derive(Debug)]
+struct MemberExtraction {
+    members: Vec<(String, Vec<u8>)>,
+    refusals: Vec<String>,
+}
+
+impl MemberExtraction {
+    const fn complete(members: Vec<(String, Vec<u8>)>) -> Self {
+        Self {
+            members,
+            refusals: Vec::new(),
+        }
+    }
+}
+
+fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
     match tag {
-        TAG_ZIP => extract_zip_members(bytes),
-        TAG_TAR => extract_tar_members(bytes),
-        TAG_GZIP => extract_single_stream(bytes, "gzip", decode_gzip),
-        TAG_XZ => extract_single_stream(bytes, "xz", decode_xz),
-        TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
-        TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
-        TAG_RAR => extract_rar_members(bytes),
-        TAG_RPM => extract_rpm_members(bytes),
-        TAG_ARC => extract_arc_members(bytes),
-        TAG_ARJ => extract_arj_members(bytes),
-        TAG_LZH => extract_lzh_members(bytes),
-        TAG_STUFFIT => extract_stuffit_members(bytes),
-        TAG_INNOSETUP => extract_innosetup_members(bytes),
-        TAG_INSTALLSHIELD => extract_installshield_members(bytes),
-        TAG_APPIMAGE => extract_appimage_members(bytes),
-        TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
-        TAG_UEFI_FV => extract_uefi_fv_members(bytes),
-        TAG_EROFS => extract_erofs_members(bytes),
-        _ => Ok(Vec::new()),
+        TAG_ZIP
+        | TAG_TAR
+        | TAG_RAR
+        | TAG_RPM
+        | TAG_ARC
+        | TAG_ARJ
+        | TAG_LZH
+        | TAG_STUFFIT
+        | TAG_INNOSETUP
+        | TAG_INSTALLSHIELD
+        | TAG_APPIMAGE
+        | TAG_DOTNET_SINGLE_FILE
+        | TAG_UEFI_FV
+        | TAG_EROFS => extract_members_with_direct_policy(tag, bytes),
+        TAG_GZIP => {
+            extract_single_stream(bytes, "gzip", decode_gzip).map(MemberExtraction::complete)
+        }
+        TAG_XZ => extract_single_stream(bytes, "xz", decode_xz).map(MemberExtraction::complete),
+        TAG_ZSTD => {
+            extract_single_stream(bytes, "zstd", decode_zstd).map(MemberExtraction::complete)
+        }
+        TAG_BZIP2 => {
+            extract_single_stream(bytes, "bz2", decode_bzip2).map(MemberExtraction::complete)
+        }
+        _ => Ok(MemberExtraction::complete(Vec::new())),
     }
 }
 
-fn extract_stuffit_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    if crate::containers::detect_stuffit(bytes) == Some(crate::containers::StuffItKind::Version5) {
-        return extract_stuffit5_members(bytes);
-    }
-    let archive: crate::containers::SitArchive = crate::containers::parse_sit_classic(bytes)
-        .map_err(|error: crate::error::Error| fail(format!("stuffit payload: {error}")))?;
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut forks: Vec<(String, &crate::containers::SitFork)> = Vec::new();
-    let mut total: u64 = 0;
-    for entry in &archive.entries {
-        for (suffix, fork, required) in [
-            (
-                "",
-                &entry.data,
-                entry.data.uncompressed_len > 0
-                    || entry.data.compressed_len > 0
-                    || (entry.resource.uncompressed_len == 0 && entry.resource.compressed_len == 0),
-            ),
-            (
-                ".rsrc",
-                &entry.resource,
-                entry.resource.uncompressed_len > 0 || entry.resource.compressed_len > 0,
-            ),
-        ] {
-            if !required {
-                continue;
-            }
-            if forks.len() >= MAX_MEMBER_COUNT {
-                return Err(fail(format!(
-                    "stuffit member count exceeds {MAX_MEMBER_COUNT}"
-                )));
-            }
-            total = total
-                .checked_add(u64::from(fork.uncompressed_len))
-                .ok_or_else(|| fail("stuffit aggregate member size overflows".to_owned()))?;
-            if total > MAX_MEMBER_BYTES {
-                return Err(fail(
-                    "stuffit aggregate member size exceeds limit".to_owned(),
-                ));
-            }
-            let raw_name: String = format!("{}{suffix}", entry.name);
-            let name: String = preflight_chain_path(&mut keys, &raw_name, "stuffit")?;
-            forks.push((name, fork));
-        }
-    }
-    let max_output: usize =
-        usize::try_from(MAX_MEMBER_BYTES).map_or(usize::MAX, |value: usize| value);
-    forks
-        .into_iter()
-        .map(|(name, fork): (String, &crate::containers::SitFork)| {
-            let data: Vec<u8> = crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output)
-                .map_err(|error: crate::error::Error| {
-                    fail(format!("stuffit member `{name}`: {error}"))
-                })?;
-            Ok((name, data))
-        })
-        .collect()
-}
-
-fn extract_stuffit5_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let archive: crate::containers::Sit5Archive = crate::containers::parse_sit5(bytes)
-        .map_err(|error: crate::error::Error| fail(format!("stuffit 5 payload: {error}")))?;
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut forks: Vec<(String, &crate::containers::Sit5Fork)> = Vec::new();
-    let mut total: u64 = 0;
-    for entry in &archive.entries {
-        for (suffix, fork) in [
-            ("", entry.data.as_ref()),
-            (".rsrc", entry.resource.as_ref()),
-        ] {
-            let Some(fork) = fork else {
-                continue;
-            };
-            if forks.len() >= MAX_MEMBER_COUNT {
-                return Err(fail(format!(
-                    "stuffit 5 member count exceeds {MAX_MEMBER_COUNT}"
-                )));
-            }
-            total = total
-                .checked_add(u64::from(fork.uncompressed_len))
-                .ok_or_else(|| fail("stuffit 5 aggregate member size overflows".to_owned()))?;
-            if total > MAX_MEMBER_BYTES {
-                return Err(fail(
-                    "stuffit 5 aggregate member size exceeds limit".to_owned(),
-                ));
-            }
-            let raw_name: String = format!("{}{suffix}", entry.path);
-            let name: String = preflight_chain_path(&mut keys, &raw_name, "stuffit 5")?;
-            forks.push((name, fork));
-        }
-    }
-    let max_output: usize =
-        usize::try_from(MAX_MEMBER_BYTES).map_or(usize::MAX, |value: usize| value);
-    forks
-        .into_iter()
-        .map(|(name, fork): (String, &crate::containers::Sit5Fork)| {
-            let data: Vec<u8> = crate::containers::sit5_fork_bytes_bounded(bytes, fork, max_output)
-                .map_err(|error: crate::error::Error| {
-                    fail(format!("stuffit 5 member `{name}`: {error}"))
-                })?;
-            Ok((name, data))
-        })
-        .collect()
-}
-
-fn extract_appimage_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let layout: crate::containers::AppImageLayout = crate::containers::parse_appimage(bytes)
-        .map_err(|error: crate::error::Error| fail(format!("appimage payload: {error}")))?;
-    match layout.payload {
-        crate::containers::AppImagePayloadLayout::Iso9660 => extract_iso_members(bytes),
-        crate::containers::AppImagePayloadLayout::Squashfs { offset, .. } => {
-            let base: usize =
-                usize::try_from(offset).map_err(|_error: std::num::TryFromIntError| {
-                    fail("appimage offset overflow".to_owned())
-                })?;
-            let walk: crate::containers::SquashfsWalk =
-                crate::containers::walk_squashfs(bytes, base, MAX_MEMBER_BYTES).map_err(
-                    |error: crate::error::Error| {
-                        fail(format!("appimage squashfs payload: {error}"))
-                    },
-                )?;
-            if walk.files.len() > MAX_MEMBER_COUNT {
-                return Err(fail(format!(
-                    "appimage member count {} exceeds {MAX_MEMBER_COUNT}",
-                    walk.files.len()
-                )));
-            }
-            let files: Vec<(String, Vec<u8>)> = walk
-                .files
-                .into_iter()
-                .filter(|file: &crate::containers::SquashfsFile| !file.is_symlink)
-                .map(|file: crate::containers::SquashfsFile| (file.path, file.data))
-                .collect();
-            preflight_chain_members(files, "appimage")
-        }
-    }
-}
-
-fn extract_iso_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let image: crate::containers::IsoImage = crate::containers::parse_iso(bytes)
-        .map_err(|error: crate::error::Error| fail(format!("appimage iso payload: {error}")))?;
-    if image.files.len() > MAX_MEMBER_COUNT {
-        return Err(fail(format!(
-            "appimage member count {} exceeds {MAX_MEMBER_COUNT}",
-            image.files.len()
-        )));
-    }
-    let mut total: u64 = 0;
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let entries: Vec<(&crate::containers::IsoEntry, String)> = image
-        .files
-        .iter()
-        .filter(|entry: &&crate::containers::IsoEntry| {
-            entry.kind == crate::containers::IsoEntryKind::Regular
-        })
-        .map(|entry: &crate::containers::IsoEntry| {
-            let name: String = preflight_chain_path(&mut keys, &entry.path, "appimage")?;
-            Ok((entry, name))
-        })
-        .collect::<CoreResult<Vec<_>>>()?;
-    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
-    for (entry, name) in entries {
-        let output_size: u64 = entry
-            .zisofs
-            .map_or(entry.data_len, |info| u64::from(info.uncompressed_size));
-        total = total
-            .checked_add(output_size)
-            .ok_or_else(|| fail("appimage aggregate member size overflows".to_owned()))?;
-        if output_size > MAX_MEMBER_BYTES || total > MAX_MEMBER_BYTES {
-            return Err(fail(
-                "appimage aggregate member size exceeds limit".to_owned(),
-            ));
-        }
-        let data: Vec<u8> = crate::containers::read_iso_file_data(bytes, entry, output_size)
-            .map_err(|error: crate::error::Error| {
-                fail(format!("appimage member `{}`: {error}", entry.path))
-            })?;
-        files.push((name, data));
-    }
-    Ok(files)
-}
-
-fn preflight_chain_members(
-    files: Vec<(String, Vec<u8>)>,
-    format: &str,
-) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
-    for (raw_name, data) in files {
-        let name: String = preflight_chain_path(&mut keys, &raw_name, format)?;
-        members.push((name, data));
-    }
-    Ok(members)
-}
-
-fn preflight_chain_path(
-    keys: &mut std::collections::BTreeSet<String>,
-    raw_name: &str,
-    format: &str,
-) -> CoreResult<String> {
-    let name: String = crate::quota::sanitize_entry_path(raw_name)
-        .map_err(|error: crate::error::Error| fail(format!("{format} member path: {error}")))?;
-    let key: String = name.to_ascii_lowercase();
-    let mut ancestor: &str = key.as_str();
-    while let Some((prefix, _)) = ancestor.rsplit_once('/') {
-        if keys.contains(prefix) {
-            return Err(fail(format!("{format} member path collision at `{name}`")));
-        }
-        ancestor = prefix;
-    }
-    let descendant_prefix: String = format!("{key}/");
-    if !keys.insert(key)
-        || keys
-            .range(descendant_prefix.clone()..)
-            .next()
-            .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix))
-    {
-        return Err(fail(format!("{format} member path collision at `{name}`")));
-    }
-    Ok(name)
-}
-
-fn extract_erofs_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let walk: crate::containers::erofs::ErofsWalk =
-        crate::containers::erofs::walk_erofs(bytes, MAX_MEMBER_BYTES)
-            .map_err(|error: crate::error::Error| fail(format!("erofs payload: {error}")))?;
-    if walk.files.len() > MAX_MEMBER_COUNT {
-        return Err(fail(format!(
-            "erofs member count {} exceeds {MAX_MEMBER_COUNT}",
-            walk.files.len()
-        )));
-    }
-    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(walk.files.len());
-    for file in walk.files {
-        if file.is_symlink {
-            continue;
-        }
-        let name: String = crate::quota::sanitize_entry_path(&file.path)
-            .map_err(|error: crate::error::Error| fail(format!("erofs member path: {error}")))?;
-        let key: String = name.to_ascii_lowercase();
-        let mut ancestor: &str = key.as_str();
-        loop {
-            let split: Option<(&str, &str)> = ancestor.rsplit_once('/');
-            let Some((prefix, _)) = split else {
-                break;
-            };
-            if keys.contains(prefix) {
-                return Err(fail(format!("erofs member path collision at `{name}`")));
-            }
-            ancestor = prefix;
-        }
-        let descendant_prefix: String = format!("{key}/");
-        if !keys.insert(key.clone())
-            || keys
-                .range(descendant_prefix.clone()..)
-                .next()
-                .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix))
-        {
-            return Err(fail(format!("erofs member path collision at `{name}`")));
-        }
-        members.push((name, file.data));
-    }
-    Ok(members)
-}
-
-fn extract_uefi_fv_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
-        max_entries: MAX_MEMBER_COUNT,
-        max_total_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_ratio: 1_000,
-        max_aggregate_ratio: 1_000,
+fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
+    let kind: crate::container::ContainerKind = match tag {
+        TAG_ZIP => crate::container::ContainerKind::Zip,
+        TAG_TAR => crate::container::ContainerKind::Tar,
+        TAG_RAR => crate::container::ContainerKind::Rar,
+        TAG_RPM => crate::container::ContainerKind::Rpm,
+        TAG_ARC => crate::container::ContainerKind::Arc,
+        TAG_ARJ => crate::container::ContainerKind::Arj,
+        TAG_LZH => crate::container::ContainerKind::Lzh,
+        TAG_STUFFIT => crate::container::ContainerKind::StuffIt,
+        TAG_INNOSETUP => crate::container::ContainerKind::InnoSetup,
+        TAG_INSTALLSHIELD => crate::container::ContainerKind::InstallShield,
+        TAG_APPIMAGE => crate::container::ContainerKind::AppImage,
+        TAG_DOTNET_SINGLE_FILE => crate::container::ContainerKind::DotnetSingleFile,
+        TAG_UEFI_FV => crate::container::ContainerKind::UefiFv,
+        TAG_EROFS => crate::container::ContainerKind::Erofs,
+        _ => return Ok(MemberExtraction::complete(Vec::new())),
     };
-    let extraction: crate::containers::FvExtraction =
-        crate::containers::extract_uefi_fv(bytes, quota)
-            .map_err(|error: crate::error::Error| fail(format!("uefi-fv payload: {error}")))?;
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(extraction.pe_images.len());
-    for image in extraction.pe_images {
-        let guid: String = crate::containers::guid_to_string(&image.file_guid);
-        let preferred: String = image.name.unwrap_or_else(|| format!("{guid}.efi"));
-        let safe: String = crate::quota::sanitize_entry_path(&preferred)
-            .map_err(|error: crate::error::Error| fail(format!("uefi-fv member path: {error}")))?;
-        let name: String = if names.insert(safe.clone()) {
-            safe
-        } else {
-            let disambiguated: String = format!("{guid}.{safe}");
-            if !names.insert(disambiguated.clone()) {
-                return Err(fail(format!(
-                    "uefi-fv duplicate member path `{disambiguated}`"
-                )));
-            }
-            disambiguated
-        };
-        members.push((name, image.data));
-    }
-    Ok(members)
-}
-
-fn extract_arc_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
-        max_entries: MAX_MEMBER_COUNT,
-        max_total_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_ratio: 1_000,
-        max_aggregate_ratio: 1_000,
-    };
-    let archive: crate::containers::ArcArchive =
-        crate::containers::arc::parse_arc_with_entry_limit(bytes, quota.max_entries)
-            .map_err(|error: crate::error::Error| fail(format!("arc payload: {error}")))?;
-    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut prepared: Vec<(&crate::containers::ArcEntry, String)> = Vec::new();
-    for entry in &archive.entries {
-        let name: String = crate::quota::sanitize_entry_path(&entry.name)
-            .map_err(|error: crate::error::Error| fail(format!("arc member path: {error}")))?;
-        crate::containers::arc::admit_output_path(&mut names, &name)
-            .map_err(|error: crate::error::Error| fail(format!("arc member path: {error}")))?;
-        crate::containers::arc::preflight_entry_quota(entry, quota)
-            .map_err(|error: crate::error::Error| fail(format!("arc quota: {error}")))?;
-        prepared.push((entry, name));
-    }
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(prepared.len());
-    for (entry, name) in prepared {
-        let data: Vec<u8> =
-            crate::containers::arc_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
-                .map_err(|error: crate::error::Error| {
-                    fail(format!("arc member `{name}`: {error}"))
-                })?;
-        guard
-            .admit_entry(&name, data.len() as u64, u64::from(entry.compressed_size))
-            .map_err(|error: crate::error::Error| fail(format!("arc quota: {error}")))?;
-        members.push((name, data));
-    }
-    if members.is_empty() && !archive.entries.is_empty() {
-        return Err(fail("arc payload contains no verified members".to_owned()));
-    }
-    Ok(members)
-}
-
-fn extract_rar_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
-        max_entries: MAX_MEMBER_COUNT,
-        max_total_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_ratio: 1_000,
-        max_aggregate_ratio: 1_000,
-    };
-    let archive: crate::containers::RarArchive = crate::containers::rar::parse_rar(bytes)
-        .map_err(|error: crate::error::Error| fail(format!("rar payload: {error}")))?;
-    if archive.entries.len() > MAX_MEMBER_COUNT {
-        return Err(fail(format!(
-            "rar member count {} exceeds cap {MAX_MEMBER_COUNT}",
-            archive.entries.len()
-        )));
-    }
-    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
-    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
-    for entry in &archive.entries {
-        if entry.is_dir {
-            continue;
-        }
-        let name: String = crate::quota::sanitize_entry_path(&entry.name)
-            .map_err(|error: crate::error::Error| fail(format!("rar member path: {error}")))?;
-        let data: Vec<u8> =
-            crate::containers::rar_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
-                .map_err(|error: crate::error::Error| {
-                    fail(format!("rar member `{name}`: {error}"))
-                })?;
-        guard
-            .admit_entry(&name, data.len() as u64, entry.packed_size)
-            .map_err(|error: crate::error::Error| fail(format!("rar quota: {error}")))?;
-        members.push((name, data));
-    }
-    Ok(members)
-}
-
-fn extract_arj_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
-        max_entries: MAX_MEMBER_COUNT,
-        max_total_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_ratio: 1_000,
-        max_aggregate_ratio: 1_000,
-    };
-    let archive: crate::containers::ArjArchive =
-        crate::containers::arj::parse_arj_with_entry_limit(bytes, quota.max_entries)
-            .map_err(|error: crate::error::Error| fail(format!("arj payload: {error}")))?;
-    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut prepared: Vec<(&crate::containers::ArjEntry, String)> = Vec::new();
-    for entry in &archive.entries {
-        let name: String = crate::quota::sanitize_entry_path(&entry.name)
-            .map_err(|error: crate::error::Error| fail(format!("arj member path: {error}")))?;
-        crate::containers::arj::admit_output_path(&mut names, &name)
-            .map_err(|error: crate::error::Error| fail(format!("arj member path: {error}")))?;
-        if entry.is_directory {
-            continue;
-        }
-        crate::containers::arj::preflight_entry_quota(entry, quota)
-            .map_err(|error: crate::error::Error| fail(format!("arj quota: {error}")))?;
-        prepared.push((entry, name));
-    }
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(prepared.len());
-    for (entry, name) in prepared {
-        let data: Vec<u8> =
-            crate::containers::arj_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
-                .map_err(|error: crate::error::Error| {
-                    fail(format!("arj member `{name}`: {error}"))
-                })?;
-        guard
-            .admit_entry(&name, data.len() as u64, u64::from(entry.compressed_size))
-            .map_err(|error: crate::error::Error| fail(format!("arj quota: {error}")))?;
-        members.push((name, data));
-    }
-    Ok(members)
-}
-
-fn extract_lzh_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let archive: crate::containers::LzhArchive = crate::containers::lzh::parse_lzh_with_quota(
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-chain-extract")
+            .map_err(|error: std::io::Error| fail(format!("{tag} scratch: {error}")))?;
+    let result: crate::extract::ExtractionResult = crate::extract::extract_to_with_quota(
+        kind,
         bytes,
-        crate::quota::ExtractionQuota {
-            max_entries: MAX_MEMBER_COUNT,
-            max_total_uncompressed: MAX_MEMBER_BYTES,
-            max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-            max_per_entry_ratio: 1_000,
-            max_aggregate_ratio: 1_000,
-        },
+        scratch.path(),
+        crate::quota::ExtractionQuota::default_safe(),
     )
-    .map_err(|error: crate::error::Error| fail(format!("lzh payload: {error}")))?;
-    if archive.files.len() > MAX_MEMBER_COUNT {
-        return Err(fail(format!(
-            "lzh member count {} exceeds cap {MAX_MEMBER_COUNT}",
-            archive.files.len()
-        )));
-    }
-    if !archive.notes.is_empty() {
-        return Err(fail(format!(
-            "lzh payload contains {} refusal(s): {}",
-            archive.notes.len(),
-            archive.notes.join("; ")
-        )));
-    }
-    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total_output: u64 = 0;
-    for file in archive.files {
-        if file.is_directory {
+    .map_err(|error: crate::error::Error| fail(format!("{tag} payload: {error}")))?;
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(result.entries.len());
+    for entry in result.entries {
+        if entry.origin == crate::extract::ExtractedEntryOrigin::GeneratedSidecar {
             continue;
         }
-        if !file.decoder_supported {
-            return Err(fail(format!(
-                "lzh member `{}` uses unsupported method {}",
-                file.path, file.method
-            )));
-        }
-        let name: String = crate::quota::sanitize_entry_path(&file.path)
-            .map_err(|error: crate::error::Error| fail(format!("lzh member path: {error}")))?;
-        let member_size: u64 = u64::try_from(file.data.len())
-            .map_err(|_| fail("lzh member size exceeds u64".to_owned()))?;
-        total_output = total_output
-            .checked_add(member_size)
-            .ok_or_else(|| fail("lzh aggregate output size overflow".to_owned()))?;
-        if total_output > MAX_MEMBER_BYTES {
-            return Err(fail(format!(
-                "lzh aggregate output {total_output} exceeds cap {MAX_MEMBER_BYTES}"
-            )));
-        }
-        members.push((name, file.data));
-    }
-    Ok(members)
-}
-
-fn extract_innosetup_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let metadata: crate::containers::innosetup::InnoMetadata =
-        crate::containers::innosetup::recover_inno_metadata_with_limits(
-            bytes,
-            MAX_MEMBER_BYTES,
-            MAX_MEMBER_COUNT,
-        )
-        .map_err(|error: crate::error::Error| fail(format!("Inno Setup metadata: {error}")))?;
-    if metadata.files.len() > MAX_MEMBER_COUNT {
-        return Err(fail(format!(
-            "Inno Setup member count {} exceeds cap {MAX_MEMBER_COUNT}",
-            metadata.files.len()
-        )));
-    }
-    let recovered: crate::containers::InnoNamedRecovery =
-        crate::containers::innosetup::recover_inno_named_files_with_quota(
-            bytes,
-            &metadata,
-            crate::containers::innosetup::InnoRecoveryLimits {
-                max_entries: MAX_MEMBER_COUNT,
-                max_total: MAX_MEMBER_BYTES,
-                max_per_entry: MAX_MEMBER_BYTES,
-                max_per_entry_ratio: 1_000,
-                max_aggregate_ratio: 1_000,
-                initial_uncompressed: 0,
-                initial_compressed: 0,
-            },
-        )
-        .map_err(|error: crate::error::Error| fail(format!("Inno Setup payload: {error}")))?;
-    if !recovered.refusals.is_empty() {
-        return Err(fail(format!(
-            "Inno Setup payload contains {} refused member(s): {}",
-            recovered.refusals.len(),
-            recovered.refusals.join("; ")
-        )));
-    }
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(recovered.files.len());
-    for file in recovered.files {
-        let name: String = crate::quota::sanitize_entry_path(&file.path).map_err(
-            |error: crate::error::Error| fail(format!("Inno Setup member path: {error}")),
-        )?;
-        if !names.insert(name.clone()) {
-            return Err(fail(format!(
-                "Inno Setup payload contains duplicate normalized path `{name}`"
-            )));
-        }
-        members.push((name, file.data));
-    }
-    Ok(members)
-}
-
-const fn installshield_chain_quota() -> crate::quota::ExtractionQuota {
-    crate::quota::ExtractionQuota {
-        max_entries: MAX_MEMBER_COUNT,
-        max_total_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
-        max_per_entry_ratio: 1_000,
-        max_aggregate_ratio: 1_000,
-    }
-}
-
-fn walk_installshield_for_chain(
-    bytes: &[u8],
-) -> CoreResult<crate::containers::InstallShieldArchive> {
-    crate::containers::walk_installshield(bytes, installshield_chain_quota())
-        .map_err(|error: crate::error::Error| fail(format!("InstallShield cabinet: {error}")))
-}
-
-fn extract_installshield_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let archive: crate::containers::InstallShieldArchive = walk_installshield_for_chain(bytes)?;
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(archive.recovered_count());
-    for file in archive.recovered() {
-        let name: String = crate::quota::sanitize_entry_path(&file.path).map_err(
-            |error: crate::error::Error| fail(format!("InstallShield member path: {error}")),
-        )?;
-        if !names.insert(name.clone()) {
-            return Err(fail(format!(
-                "InstallShield cabinet contains duplicate normalized path `{name}`"
-            )));
-        }
-        members.push((name, file.data.clone()));
-    }
-    Ok(members)
-}
-
-fn installshield_inventory(bytes: &[u8]) -> Inventory {
-    match walk_installshield_for_chain(bytes) {
-        Ok(archive) => Inventory::Listed(
-            archive
-                .recovered()
-                .map(|file: &crate::containers::InstallShieldFile| {
-                    (file.path.clone(), file.expanded_size)
-                })
-                .collect(),
-        ),
-        Err(error) => Inventory::Unreadable(error.to_string()),
-    }
-}
-
-fn extract_rpm_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    extract_rpm_members_with_output_cap(bytes, MAX_MEMBER_BYTES)
-}
-
-fn extract_rpm_members_with_output_cap(
-    bytes: &[u8],
-    output_cap: u64,
-) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let recovered: crate::containers::RecoveredRpm =
-        crate::containers::recover_rpm(bytes, MAX_STREAM_BYTES)
-            .map_err(|error: crate::error::Error| fail(format!("rpm payload: {error}")))?;
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut total_output: u64 = 0;
-    for entry in &recovered.entries {
-        if entry.mode & 0o170_000 != 0o100_000 || entry.ghost {
+        let Some(path) = entry.disk_path else {
             continue;
-        }
-        let name: String = crate::quota::sanitize_entry_path(&entry.name)
-            .map_err(|error: crate::error::Error| fail(format!("rpm member path: {error}")))?;
-        if !names.insert(name.clone()) {
-            return Err(fail(format!(
-                "rpm payload contains duplicate normalized path `{name}`"
-            )));
-        }
-        let data: &[u8] = recovered
-            .member_bytes(entry)
-            .map_err(|error: crate::error::Error| fail(format!("rpm member `{name}`: {error}")))?;
-        let member_size: u64 =
-            u64::try_from(data.len()).map_err(|_error: std::num::TryFromIntError| {
-                fail("rpm member size overflow".to_owned())
-            })?;
-        admit_rpm_member_output(&mut total_output, member_size, output_cap)?;
-        members.push((name, data.to_vec()));
-    }
-    Ok(members)
-}
-
-fn admit_rpm_member_output(total: &mut u64, additional: u64, cap: u64) -> CoreResult<()> {
-    let next: u64 = total
-        .checked_add(additional)
-        .ok_or_else(|| fail("rpm aggregate output size overflow".to_owned()))?;
-    if next > cap {
-        return Err(fail(format!(
-            "rpm aggregate output {next} exceeds cap {cap}"
-        )));
-    }
-    *total = next;
-    Ok(())
-}
-
-fn extract_dotnet_single_file_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let entries: Vec<crate::containers::DotnetBundleEntry> =
-        crate::containers::extract_dotnet_bundle(
-            bytes,
-            crate::quota::ExtractionQuota::default_safe(),
-        )
-        .map_err(|e: crate::error::Error| {
-            CoreError::PassFailure(format!("dotnet single-file bundle: {e}"))
+        };
+        let data: Vec<u8> = std::fs::read(&path).map_err(|error: std::io::Error| {
+            fail(format!("{tag} member `{}` read: {error}", entry.name))
         })?;
-    Ok(entries
-        .into_iter()
-        .map(|entry: crate::containers::DotnetBundleEntry| (entry.relative_path, entry.data))
-        .collect())
+        members.push((entry.name, data));
+    }
+    Ok(MemberExtraction {
+        members,
+        refusals: result.integrity_violations,
+    })
 }
 
 const fn fail(msg: String) -> CoreError {
@@ -1114,80 +574,6 @@ fn read_capped<R: std::io::Read>(
         return Err(fail(format!("{context}: output exceeds {max_bytes} bytes")));
     }
     Ok(data)
-}
-
-fn extract_zip_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let mut archive: zip::ZipArchive<std::io::Cursor<&[u8]>> =
-        zip::ZipArchive::new(std::io::Cursor::new(bytes))
-            .map_err(|e: zip::result::ZipError| fail(format!("zip open: {e}")))?;
-    let count: usize = archive.len();
-    if count > MAX_MEMBER_COUNT {
-        return Err(fail(format!("zip member count {count} exceeds cap")));
-    }
-    let mut out: Vec<(String, Vec<u8>)> = Vec::with_capacity(count);
-    for i in 0..count {
-        let mut file: zip::read::ZipFile<'_> = archive
-            .by_index(i)
-            .map_err(|e: zip::result::ZipError| fail(format!("zip entry {i}: {e}")))?;
-        if file.is_dir() {
-            continue;
-        }
-        let name: String = file.name().to_owned();
-        let declared: u64 = file.size();
-        if declared > MAX_MEMBER_BYTES {
-            return Err(fail(format!(
-                "zip entry `{name}` declares {declared} bytes, over cap"
-            )));
-        }
-        let context: String = format!("zip entry `{name}` read");
-        let data: Vec<u8> = read_capped(
-            &mut file,
-            MAX_MEMBER_BYTES,
-            crate::quota::bounded_prealloc(declared),
-            &context,
-        )?;
-        out.push((name, data));
-    }
-    Ok(out)
-}
-
-fn extract_tar_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
-    let mut archive: tar::Archive<std::io::Cursor<&[u8]>> =
-        tar::Archive::new(std::io::Cursor::new(bytes));
-    let raw_entries: tar::Entries<'_, std::io::Cursor<&[u8]>> = archive
-        .entries()
-        .map_err(|e: std::io::Error| fail(format!("tar entries: {e}")))?;
-    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-    for entry_result in raw_entries {
-        let mut entry: tar::Entry<'_, std::io::Cursor<&[u8]>> =
-            entry_result.map_err(|e: std::io::Error| fail(format!("tar entry: {e}")))?;
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        if out.len() >= MAX_MEMBER_COUNT {
-            return Err(fail("tar member count exceeds cap".to_owned()));
-        }
-        let name: String = entry
-            .path()
-            .map_err(|e: std::io::Error| fail(format!("tar path: {e}")))?
-            .to_string_lossy()
-            .into_owned();
-        let declared: u64 = entry.size();
-        if declared > MAX_MEMBER_BYTES {
-            return Err(fail(format!(
-                "tar entry `{name}` declares {declared} bytes, over cap"
-            )));
-        }
-        let context: String = format!("tar entry `{name}` read");
-        let data: Vec<u8> = read_capped(
-            &mut entry,
-            MAX_MEMBER_BYTES,
-            crate::quota::bounded_prealloc(declared),
-            &context,
-        )?;
-        out.push((name, data));
-    }
-    Ok(out)
 }
 
 fn extract_single_stream(
@@ -1366,8 +752,9 @@ mod tests {
     #[test]
     fn a_filtered_rar3_member_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_RAR3_FILTER), Some(TAG_RAR));
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_RAR, REAL_RAR3_FILTER).expect("extract rar3 filter members");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
+            .expect("extract rar3 filter members")
+            .members;
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].0, "bsdcat.exe");
         assert_eq!(members[0].1.len(), 204_288);
@@ -1389,8 +776,9 @@ mod tests {
             .expect("one file member");
         let direct: Vec<u8> = crate::containers::rar_entry_bytes(REAL_RAR3_FILTER, entry, 1 << 30)
             .expect("direct extraction");
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_RAR, REAL_RAR3_FILTER).expect("chain extraction");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
+            .expect("chain extraction")
+            .members;
         assert_eq!(members[0].1, direct);
     }
 
@@ -1409,8 +797,9 @@ mod tests {
     #[test]
     fn level3_lzh_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_LZH_LEVEL3), Some(TAG_LZH));
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_LZH, REAL_LZH_LEVEL3).expect("extract level-3 LZH members");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_LZH, REAL_LZH_LEVEL3)
+            .expect("extract level-3 LZH members")
+            .members;
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].0, "subdir/subdir2/HELLO.TXT");
         assert_eq!(members[0].1, b"hello world!\r\n");
@@ -1419,8 +808,9 @@ mod tests {
     #[test]
     fn method13_stuffit_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_STUFFIT), Some(TAG_STUFFIT));
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_STUFFIT, REAL_STUFFIT).expect("extract StuffIt members");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_STUFFIT, REAL_STUFFIT)
+            .expect("extract StuffIt members")
+            .members;
         assert_eq!(members.len(), 9);
         assert!(members.iter().any(|(name, bytes): &(String, Vec<u8>)| {
             name == "testfile.txt" && bytes.len() == 12
@@ -1433,8 +823,9 @@ mod tests {
             crate::containers::arc::synth_stored_arc("hello.txt", b"verified ARC child bytes")
                 .expect("build ARC fixture");
         assert_eq!(sniff_container_tag(&archive), Some(TAG_ARC));
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_ARC, &archive).expect("extract ARC members");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_ARC, &archive)
+            .expect("extract ARC members")
+            .members;
         assert_eq!(
             members,
             vec![("hello.txt".to_owned(), b"verified ARC child bytes".to_vec())]
@@ -1455,11 +846,13 @@ mod tests {
             8,
         ));
         archive.extend_from_slice(&[crate::containers::arc::ARC_MARKER, 0]);
-        let error: CoreError =
-            extract_members(TAG_ARC, &archive).expect_err("reject bad ARC member");
-        let message: String = error.to_string();
-        assert!(message.contains("bad.bin"));
-        assert!(message.contains("CRC"));
+        let recovery: MemberExtraction =
+            extract_members(TAG_ARC, &archive).expect("recover the verified ARC sibling");
+        assert_eq!(recovery.members.len(), 1);
+        assert_eq!(recovery.members[0].0, "good.bin");
+        assert_eq!(recovery.refusals.len(), 1);
+        assert!(recovery.refusals[0].contains("bad.bin"));
+        assert!(recovery.refusals[0].contains("CRC"));
     }
 
     #[test]
@@ -1568,8 +961,9 @@ mod tests {
     #[test]
     fn inno_setup_real_members_reach_the_container_pass() {
         assert_eq!(sniff_container_tag(REAL_INNOSETUP), Some(TAG_INNOSETUP));
-        let members: Vec<(String, Vec<u8>)> =
-            extract_members(TAG_INNOSETUP, REAL_INNOSETUP).expect("Inno Setup members");
+        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_INNOSETUP, REAL_INNOSETUP)
+            .expect("Inno Setup members")
+            .members;
         assert_eq!(members.len(), 94);
         let compiler: &(String, Vec<u8>) = members
             .iter()
@@ -1673,7 +1067,7 @@ mod tests {
         );
 
         let members: Vec<(String, Vec<u8>)> = match extract_members(TAG_ZIP, &zip_bytes) {
-            Ok(m) => m,
+            Ok(m) => m.members,
             Err(_) => return,
         };
         for (name, data) in &members {
@@ -1698,23 +1092,6 @@ mod tests {
         let mut cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(b"abc");
         let out: Vec<u8> = read_capped(&mut cursor, 3, 0, "cap test").expect("exact cap");
         assert_eq!(out, b"abc");
-    }
-
-    #[test]
-    fn rpm_member_output_budget_counts_repeated_hardlink_bytes() {
-        let mut total: u64 = 0;
-        admit_rpm_member_output(&mut total, 21, 21).expect("first hardlink fits");
-        let error: CoreError = admit_rpm_member_output(&mut total, 21, 21)
-            .expect_err("second hardlink must exceed aggregate output");
-        assert!(error.to_string().contains("aggregate output"), "{error}");
-    }
-
-    #[test]
-    fn rpm_hardlink_children_reach_the_aggregate_output_budget() {
-        let bytes: &[u8] = include_bytes!("../tests/fixtures/rpm/rpm-v6-hardlinks.rpm").as_slice();
-        let error: CoreError = extract_rpm_members_with_output_cap(bytes, 21)
-            .expect_err("repeated hardlink bytes must reach the aggregate budget");
-        assert!(error.to_string().contains("aggregate output"), "{error}");
     }
 
     #[test]

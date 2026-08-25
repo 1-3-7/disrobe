@@ -651,6 +651,17 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     continue;
                                 };
                                 if next_bytes.is_empty() && !ch.is_terminal() {
+                                    if self.config.persist_children {
+                                        let artifact: ExtractedArtifact = ExtractedArtifact {
+                                            node_id: layer_id,
+                                            relative_path: ch.relative_path.clone(),
+                                            bytes: Vec::new(),
+                                        };
+                                        sink(&artifact);
+                                        if !self.config.stream_extracted {
+                                            extracted.push(artifact);
+                                        }
+                                    }
                                     push_terminal_layer(
                                         &mut nodes,
                                         layer_id,
@@ -2344,6 +2355,51 @@ mod tests {
             stalled, 0,
             "a terminal child carries no further recovery, so an empty one is Extracted rather \
              than Stalled"
+        );
+    }
+
+    #[test]
+    fn a_non_terminal_child_with_no_bytes_is_written_before_it_stalls() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: Vec::new(),
+                    kind: OutputKind::Mixed {
+                        children: vec![ChildHandle {
+                            artifact_index: 0,
+                            relative_path: "tree/empty.bin".to_string(),
+                            hint: Some("archive-member".to_string()),
+                        }],
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: vec![Vec::new()],
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(
+            plan.extracted
+                .iter()
+                .map(|artifact: &ExtractedArtifact| {
+                    (artifact.relative_path.as_str(), artifact.bytes.len())
+                })
+                .collect::<Vec<_>>(),
+            [("tree/empty.bin", 0)]
+        );
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .filter(|node: &&Node| matches!(node.verdict, Verdict::Stalled))
+                .count(),
+            1
         );
     }
 

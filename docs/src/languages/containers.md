@@ -40,6 +40,8 @@ disrobe extract crash.dmp --out carved/
 
 Directory inputs are batch-processed recursively; `--batch-max-depth` limits directory descent. Container nesting inside a detected artifact is governed by `--max-depth` (default 8).
 
+For ZIP, TAR, ARC, RAR, ARJ, LZH, StuffIt, Inno Setup, InstallShield, RPM, AppImage, .NET single-file, EROFS, and UEFI firmware-volume inputs, `disrobe extract` and `disrobe auto` apply the same default quota policy and retain the same ordered, byte-identical archive members. Extractor-generated sidecars are tagged separately and remain direct-only; an archive-controlled name such as `.disrobe-user.bin` remains an archive member. When an independently indexed member has an unsafe path, exceeds a quota, or cannot be decoded, extraction skips it and continues with trustworthy siblings. The direct result records the ordered reasons in `integrity_violations`; the automatic chain writes the ordered prefix that fits the 64 KiB `container.refusals` bound. `container.refusals_total`, `container.refusals_omitted`, and `container.refusals_truncated` make any truncation explicit. A malformed directory or table that cannot identify the next member safely still refuses the whole container.
+
 ## Coverage and fidelity
 
 ### Windows crash dumps

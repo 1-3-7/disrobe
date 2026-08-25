@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::error::{Error, Result};
 
 pub const ARC_MARKER: u8 = 0x1A;
@@ -115,25 +113,6 @@ pub(crate) fn parse_arc_with_entry_limit(bytes: &[u8], max_entries: usize) -> Re
         return Err(Error::Arc("arc: missing end marker".to_owned()));
     }
     Ok(ArcArchive { entries })
-}
-
-pub(crate) fn admit_output_path(paths: &mut BTreeSet<String>, name: &str) -> Result<()> {
-    let key: String = name.to_ascii_lowercase();
-    let has_ancestor: bool = key
-        .match_indices('/')
-        .any(|(index, _): (usize, &str)| paths.contains(&key[..index]));
-    let descendant_prefix: String = format!("{key}/");
-    let has_descendant: bool = paths
-        .range(descendant_prefix.clone()..)
-        .next()
-        .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix));
-    if paths.contains(&key) || has_ancestor || has_descendant {
-        return Err(Error::Arc(format!(
-            "arc: normalized output path collision at `{name}`"
-        )));
-    }
-    paths.insert(key);
-    Ok(())
 }
 
 #[must_use]

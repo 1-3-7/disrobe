@@ -620,30 +620,20 @@ pub(crate) fn parse_lzh_with_quota(
     quota: crate::quota::ExtractionQuota,
 ) -> Result<LzhArchive> {
     let members: Vec<LzhMember<'_>> = walk_members(bytes, quota.max_entries)?;
-    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut safe_paths: Vec<Option<String>> = Vec::with_capacity(members.len());
     let mut notes: Vec<String> = Vec::new();
     for member in &members {
         match crate::quota::sanitize_entry_path(&member.name) {
-            Ok(path) => {
-                if !member.is_directory {
-                    let collision_key: String = path.to_ascii_lowercase();
-                    if !names.insert(collision_key) {
-                        return Err(Error::Lzh(format!(
-                            "lzh: duplicate normalized output path `{path}`"
-                        )));
-                    }
-                }
-                safe_paths.push(Some(path));
-            }
+            Ok(path) => safe_paths.push(Some(path)),
             Err(error) => {
-                notes.push(format!("lzh-slip: {error}"));
+                notes.push(format!("lzh-slip `{}`: {error}", member.name));
                 safe_paths.push(None);
             }
         }
     }
     let mut files: Vec<LzhFile> = Vec::new();
     let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (member, safe_path) in members.iter().zip(safe_paths) {
         let Some(path): Option<String> = safe_path else {
             continue;
@@ -663,7 +653,13 @@ pub(crate) fn parse_lzh_with_quota(
             });
             continue;
         }
-        guard.admit_entry(&path, member.original_size, member.compressed_size)?;
+        let mut admitted: crate::quota::QuotaGuard = guard.clone();
+        if let Err(error) =
+            admitted.admit_entry(&path, member.original_size, member.compressed_size)
+        {
+            notes.push(format!("lzh-quota `{path}`: {error}"));
+            continue;
+        }
         let (data, supported): (Vec<u8>, bool) = if let Some(dm) = dyn_method(member.method) {
             let max_output: u64 = quota
                 .max_per_entry_uncompressed
@@ -671,9 +667,8 @@ pub(crate) fn parse_lzh_with_quota(
             match lha_dyn::decode_bounded(dm, member.body, member.original_size, max_output) {
                 Ok(d) => (d, true),
                 Err(error) => {
-                    return Err(Error::Lzh(format!(
-                        "lzh `{path}`: {method} decode failed: {error}"
-                    )));
+                    notes.push(format!("lzh `{path}`: {method} decode failed: {error}"));
+                    continue;
                 }
             }
         } else if let Some(pm) = pm_method(member.method) {
@@ -693,16 +688,16 @@ pub(crate) fn parse_lzh_with_quota(
                     (decoded.data, true)
                 }
                 Err(error) => {
-                    return Err(Error::Lzh(format!(
-                        "lzh `{path}`: {method} decode failed: {error}"
-                    )));
+                    notes.push(format!("lzh `{path}`: {method} decode failed: {error}"));
+                    continue;
                 }
             }
         } else {
             match decode_via_delharc(member, member.original_size) {
                 Ok(d) => (d, true),
                 Err((true, error)) => {
-                    return Err(Error::Lzh(format!("lzh `{path}`: decode failed: {error}")));
+                    notes.push(format!("lzh `{path}`: decode failed: {error}"));
+                    continue;
                 }
                 Err((false, _)) => {
                     notes.push(format!(
@@ -716,18 +711,28 @@ pub(crate) fn parse_lzh_with_quota(
             let decoded_size: u64 = u64::try_from(data.len())
                 .map_err(|_| Error::Lzh("lzh: decoded size exceeds u64".to_owned()))?;
             if decoded_size != member.original_size {
-                return Err(Error::Lzh(format!(
+                notes.push(format!(
                     "lzh `{path}`: decoded size {decoded_size} differs from declared size {}",
                     member.original_size
-                )));
+                ));
+                continue;
             }
             let decoded_crc: u16 = crc16_arc(&data);
             if decoded_crc != member.file_crc {
-                return Err(Error::Lzh(format!(
+                notes.push(format!(
                     "lzh `{path}`: decoded CRC {decoded_crc:04x} differs from declared CRC {:04x}",
                     member.file_crc
-                )));
+                ));
+                continue;
             }
+            let collision_key: String = path.to_ascii_lowercase();
+            if !names.insert(collision_key) {
+                notes.push(format!(
+                    "lzh-path `{path}`: duplicate normalized output path"
+                ));
+                continue;
+            }
+            guard = admitted;
         }
         files.push(LzhFile {
             path,

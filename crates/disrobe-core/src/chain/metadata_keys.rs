@@ -172,7 +172,9 @@ const fn valid_key_name(name: &str) -> bool {
 }
 
 pub mod keys {
-    use super::{CommaSeparatedList, MetadataKey, RegisteredKey, descriptor};
+    use super::{
+        Boolean, CommaSeparatedList, Integer, JsonFragment, MetadataKey, RegisteredKey, descriptor,
+    };
 
     macro_rules! define_metadata_keys {
         ($($legacy:ident, $typed:ident: $value_type:ty => $name:literal, $max_bytes:expr, $published:expr);+ $(;)?) => {
@@ -197,6 +199,26 @@ pub mod keys {
         ANTI_RECOVERED_TECHNIQUES_KEY: CommaSeparatedList =>
             "anti.recovered_techniques",
             4_096,
+            true;
+        CONTAINER_REFUSALS,
+        CONTAINER_REFUSALS_KEY: JsonFragment =>
+            "container.refusals",
+            65_536,
+            true;
+        CONTAINER_REFUSALS_TOTAL,
+        CONTAINER_REFUSALS_TOTAL_KEY: Integer =>
+            "container.refusals_total",
+            20,
+            true;
+        CONTAINER_REFUSALS_OMITTED,
+        CONTAINER_REFUSALS_OMITTED_KEY: Integer =>
+            "container.refusals_omitted",
+            20,
+            true;
+        CONTAINER_REFUSALS_TRUNCATED,
+        CONTAINER_REFUSALS_TRUNCATED_KEY: Boolean =>
+            "container.refusals_truncated",
+            5,
             true;
     );
 }
@@ -586,7 +608,7 @@ mod tests {
             MetadataValueKind::JsonFragment
         );
         let registered: &[RegisteredKey] = registered_keys();
-        assert_eq!(registered.len(), 1);
+        assert_eq!(registered.len(), 5);
         assert_eq!(registered[0].symbol(), "ANTI_RECOVERED_TECHNIQUES_KEY");
         assert_eq!(registered[0].name(), "anti.recovered_techniques");
         assert_eq!(
@@ -595,6 +617,26 @@ mod tests {
         );
         assert!(registered[0].max_bytes() > 0);
         assert!(registered[0].published());
+        assert_eq!(registered[1].symbol(), "CONTAINER_REFUSALS_KEY");
+        assert_eq!(registered[1].name(), "container.refusals");
+        assert_eq!(registered[1].value_kind(), MetadataValueKind::JsonFragment);
+        assert_eq!(registered[1].max_bytes(), 65_536);
+        assert!(registered[1].published());
+        assert_eq!(registered[2].symbol(), "CONTAINER_REFUSALS_TOTAL_KEY");
+        assert_eq!(registered[2].name(), "container.refusals_total");
+        assert_eq!(registered[2].value_kind(), MetadataValueKind::Integer);
+        assert_eq!(registered[2].max_bytes(), 20);
+        assert!(registered[2].published());
+        assert_eq!(registered[3].symbol(), "CONTAINER_REFUSALS_OMITTED_KEY");
+        assert_eq!(registered[3].name(), "container.refusals_omitted");
+        assert_eq!(registered[3].value_kind(), MetadataValueKind::Integer);
+        assert_eq!(registered[3].max_bytes(), 20);
+        assert!(registered[3].published());
+        assert_eq!(registered[4].symbol(), "CONTAINER_REFUSALS_TRUNCATED_KEY");
+        assert_eq!(registered[4].name(), "container.refusals_truncated");
+        assert_eq!(registered[4].value_kind(), MetadataValueKind::Boolean);
+        assert_eq!(registered[4].max_bytes(), 5);
+        assert!(registered[4].published());
         for valid in ["a.b", "anti.recovered_techniques", "format.v2-name"] {
             assert!(valid_key_name(valid));
         }
