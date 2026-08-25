@@ -15,7 +15,7 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-disrobe-binfmt = { workspace = true }
+disrobe-binfmt = { workspace = true, optional = true }
 disrobe-bytes = { workspace = true }
 disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
@@ -36,6 +36,7 @@ sha2 = { workspace = true }
 default = []
 chain = ["disrobe-core/chain"]
 jni = ["dep:disrobe-pass-jvm"]
+native-image = ["dep:disrobe-binfmt"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }

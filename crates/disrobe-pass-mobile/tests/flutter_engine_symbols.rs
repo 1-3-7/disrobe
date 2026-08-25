@@ -1,9 +1,10 @@
 #![allow(clippy::expect_used, clippy::format_push_string)]
 
+#[cfg(feature = "native-image")]
+use disrobe_pass_mobile::validate_flutter_engine_symbol_map_for_elf;
 use disrobe_pass_mobile::{
     Error, FlutterEngineSymbolMap, FlutterEngineSymbolMapIdentityKind,
     parse_flutter_engine_symbol_map, parse_flutter_engine_symbol_map_reader,
-    validate_flutter_engine_symbol_map_for_elf,
 };
 
 const VALID_MAP: &[u8] = br#"{
@@ -136,6 +137,7 @@ fn streaming_reader_stops_one_byte_past_the_hard_cap() {
 }
 
 #[test]
+#[cfg(feature = "native-image")]
 fn validated_map_rejects_an_address_between_elf_segments() {
     let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

@@ -3,7 +3,9 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "native-image")]
 use disrobe_binfmt::rewrite::{DerivedKind, ImagePlan, plan_native_image};
+#[cfg(feature = "native-image")]
 use disrobe_binfmt::{NativeFile, parse_native};
 
 use crate::error::{Error, Result};
@@ -197,6 +199,7 @@ pub fn parse_flutter_engine_symbol_map_reader<R: Read>(
     parse_flutter_engine_symbol_map(&bytes)
 }
 
+#[cfg(feature = "native-image")]
 pub fn validate_flutter_engine_symbol_map_for_elf(
     input_bytes: &[u8],
     map: FlutterEngineSymbolMap,
