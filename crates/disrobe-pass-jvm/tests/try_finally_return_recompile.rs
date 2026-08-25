@@ -951,6 +951,17 @@ const FINALLY_CONDITIONAL_CONTINUE_SRC: &str = "public class FinallyConditionalC
     }\n\
 }\n";
 
+const FINALLY_LOOP_SRC: &str = "public class FinallyLoop {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            for (int i = 0; i < a; i++) { CTR++; }\n\
+        }\n\
+    }\n\
+}\n";
+
 const FINALLY_NESTED_TRY_SRC: &str = "public class FinallyNestedTry {\n\
     static int CTR = 0;\n\
     static int run(int a, int b) {\n\
@@ -1309,6 +1320,21 @@ fn finally_continue_only_latch_is_not_hoisted_to_the_normal_loop_path() {
     assert_eq!(
         recompiled.original, recompiled.recovered,
         "a continue-only latch became a universal loop update:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_with_a_counted_loop_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass = recompile_recovered_class("FinallyLoop", FINALLY_LOOP_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("for (") || body.contains("while ("),
+        "the counted loop is missing from the finally body:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled loop-in-finally bytecode differs from the original:\n{}",
         recompiled.source
     );
 }
@@ -1724,17 +1750,10 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[(&str, &str)] = &[
-    (
-        "finallyLoops",
-        "a compiler-inserted finally handler with internal control flow has no source form this \
-         structurer can build",
-    ),
-    (
-        "finallySpins",
-        "a compiler-inserted finally handler forms no foldable chain",
-    ),
-];
+const UNMODELLED_FINALLY_METHODS: &[(&str, &str)] = &[(
+    "finallySpins",
+    "a compiler-inserted finally handler forms no foldable chain",
+)];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {

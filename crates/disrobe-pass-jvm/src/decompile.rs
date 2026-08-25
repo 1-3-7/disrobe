@@ -2157,6 +2157,7 @@ fn lift_structured(
     let finally_exception_slots: BTreeSet<u16> = structurer.take_finally_exception_slots();
     let finally_catch_parameter_slots: BTreeSet<u16> =
         structurer.take_finally_catch_parameter_slots();
+    let finally_scoped_local_slots: BTreeSet<u16> = structurer.take_finally_scoped_local_slots();
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
@@ -2178,6 +2179,8 @@ fn lift_structured(
         pending_handler_seed: None,
         handler_entry_skips: BTreeSet::new(),
         finally_catch_parameter_slots,
+        finally_scoped_local_slots,
+        declared_finally_scoped_local_slots: BTreeSet::new(),
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots,
@@ -2199,6 +2202,7 @@ fn lift_structured(
     hidden_slots.extend(ctx.foreach_hidden_slots.iter().copied());
     hidden_slots.extend(finally_exception_slots.iter().copied());
     hidden_slots.extend(ctx.finally_catch_parameter_slots.iter().copied());
+    hidden_slots.extend(ctx.finally_scoped_local_slots.iter().copied());
     hidden_slots.extend(ctx.finally_return_stores.values().copied());
     let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
@@ -3864,6 +3868,8 @@ struct RenderCtx<'a> {
     pending_handler_seed: Option<(BlockId, Vec<Expr>)>,
     handler_entry_skips: BTreeSet<BlockId>,
     finally_catch_parameter_slots: BTreeSet<u16>,
+    finally_scoped_local_slots: BTreeSet<u16>,
+    declared_finally_scoped_local_slots: BTreeSet<u16>,
     pattern_binding_slots: BTreeSet<u16>,
     catch_var_counter: usize,
     reused_exc_slots: BTreeSet<u16>,
@@ -4352,6 +4358,30 @@ fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: 
     render_block_seeded(ctx, bid, out, level, Vec::new());
 }
 
+fn finally_scoped_local_statement(
+    ctx: &mut RenderCtx<'_>,
+    instruction: &Instruction,
+    statement: String,
+) -> String {
+    let Some(slot): Option<u16> = matches!(instruction.opcode, 0x36..=0x4E)
+        .then(|| local_slot_operand(instruction))
+        .flatten()
+    else {
+        return statement;
+    };
+    if !ctx.finally_scoped_local_slots.contains(&slot) {
+        return statement;
+    }
+    let Some(ty): Option<String> = ctx.slot_types.get(&slot).cloned() else {
+        ctx.finally_scoped_local_slots.remove(&slot);
+        return statement;
+    };
+    if !ctx.declared_finally_scoped_local_slots.insert(slot) {
+        return statement;
+    }
+    format!("{ty} {statement}")
+}
+
 struct ForEachPlan {
     header: BlockId,
     elem_ty: String,
@@ -4815,6 +4845,7 @@ fn render_block_seeded(
         if matches!(op, 0x36 | 0x3B..=0x3E)
             && let Some(stmt) = boolean_local_store(ins, &mut stack, ctx.params, &ctx.slot_types)
         {
+            let stmt: String = finally_scoped_local_statement(ctx, ins, stmt);
             let _ = writeln!(out, "{pad}{stmt};");
             continue;
         }
@@ -4844,6 +4875,7 @@ fn render_block_seeded(
         );
         match lifted {
             LiftResult::Statement(s) => {
+                let s: String = finally_scoped_local_statement(ctx, ins, s);
                 let _ = writeln!(out, "{pad}{s};");
             }
             LiftResult::ControlFlow(s) => {
@@ -5023,6 +5055,8 @@ fn compute_block_entry_stacks(
         pending_handler_seed: None,
         handler_entry_skips: BTreeSet::new(),
         finally_catch_parameter_slots: BTreeSet::new(),
+        finally_scoped_local_slots: BTreeSet::new(),
+        declared_finally_scoped_local_slots: BTreeSet::new(),
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),
@@ -7047,6 +7081,8 @@ const fn pattern_render_ctx<'a>(
         pending_handler_seed: None,
         handler_entry_skips: BTreeSet::new(),
         finally_catch_parameter_slots: BTreeSet::new(),
+        finally_scoped_local_slots: BTreeSet::new(),
+        declared_finally_scoped_local_slots: BTreeSet::new(),
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),

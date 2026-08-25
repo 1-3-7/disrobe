@@ -541,6 +541,7 @@ pub struct Structurer<'a> {
     finally_return_stores: BTreeMap<BlockId, u16>,
     finally_exception_slots: BTreeSet<u16>,
     finally_catch_parameter_slots: BTreeSet<u16>,
+    finally_scoped_local_slots: BTreeSet<u16>,
     slot_use_counts: BTreeMap<u16, usize>,
     visited: BTreeSet<BlockId>,
     loop_header_of: BTreeMap<BlockId, BlockId>,
@@ -612,6 +613,7 @@ impl<'a> Structurer<'a> {
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
             finally_catch_parameter_slots: BTreeSet::new(),
+            finally_scoped_local_slots: BTreeSet::new(),
             slot_use_counts,
             visited: BTreeSet::new(),
             loop_header_of,
@@ -665,6 +667,11 @@ impl<'a> Structurer<'a> {
     #[must_use]
     pub fn take_finally_catch_parameter_slots(&mut self) -> BTreeSet<u16> {
         std::mem::take(&mut self.finally_catch_parameter_slots)
+    }
+
+    #[must_use]
+    pub fn take_finally_scoped_local_slots(&mut self) -> BTreeSet<u16> {
+        std::mem::take(&mut self.finally_scoped_local_slots)
     }
 
     pub fn structure(&mut self) -> Region {
@@ -933,6 +940,20 @@ impl<'a> Structurer<'a> {
     fn finally_handler_chain(&self, handler_bid: BlockId) -> Option<FinallyChain> {
         let entry_insns: &[Instruction] = self.block_instructions(handler_bid);
         let slot: u16 = astore_slot(entry_insns.first()?)?;
+        let handler_pc: u32 = self.cfg.blocks[handler_bid.0 as usize].start_pc;
+        let rethrow_tail_pc: Option<u32> = self
+            .cfg
+            .pc_to_block
+            .range(handler_pc..)
+            .take(MAX_BLOCKS)
+            .find_map(|(pc, bid): (&u32, &BlockId)| {
+                let instructions: &[Instruction] = self.block_instructions(*bid);
+                let last: &Instruction = instructions.last()?;
+                (last.opcode == 0xBF
+                    && instructions.len() >= 2
+                    && aload_slot(&instructions[instructions.len() - 2]) == Some(slot))
+                .then_some(*pc)
+            });
         let mut chain: Vec<BlockId> = vec![handler_bid];
         let mut cur: BlockId = handler_bid;
         let mut steps: usize = 0;
@@ -947,19 +968,25 @@ impl<'a> Structurer<'a> {
                     && block_insns.len() >= 2
                     && aload_slot(&block_insns[block_insns.len() - 2]) == Some(slot)
                 {
-                    return Some(FinallyChain {
+                    let result: FinallyChain = FinallyChain {
                         blocks: chain,
                         trim: 2,
-                    });
+                    };
+                    return self
+                        .finally_chain_is_closed(&result.blocks)
+                        .then_some(result);
                 }
                 if matches!(last.opcode, 0xAC..=0xB1 | 0xBF)
                     && !self.chain_reloads_slot(&chain, slot)
                     && self.slot_total_uses(slot) == 1
                 {
-                    return Some(FinallyChain {
+                    let result: FinallyChain = FinallyChain {
                         blocks: chain,
                         trim: 0,
-                    });
+                    };
+                    return self
+                        .finally_chain_is_closed(&result.blocks)
+                        .then_some(result);
                 }
             }
             let next: BlockId = self.next_block_by_pc(cur)?;
@@ -979,23 +1006,47 @@ impl<'a> Structurer<'a> {
                 })
                 .copied()
                 .collect();
+            let next_pc: u32 = self.cfg.blocks[next.0 as usize].start_pc;
+            let normal_predecessors_admitted: bool = !normal_predecessors.is_empty()
+                && normal_predecessors.iter().all(|predecessor: &BlockId| {
+                    if chain.contains(predecessor) {
+                        return true;
+                    }
+                    let predecessor_pc: u32 = self.cfg.blocks[predecessor.0 as usize].start_pc;
+                    rethrow_tail_pc.is_some_and(|tail_pc: u32| {
+                        predecessor_pc > next_pc && predecessor_pc < tail_pc
+                    })
+                });
             let exception_only_predecessors_admitted: bool = normal_predecessors.is_empty()
                 && !self.cfg.blocks[next.0 as usize].predecessors.is_empty()
                 && self.cfg.blocks[next.0 as usize]
                     .predecessors
                     .iter()
                     .all(|predecessor: &BlockId| chain.contains(predecessor));
-            if !exception_only_predecessors_admitted
-                && (normal_predecessors.is_empty()
-                    || !normal_predecessors
-                        .iter()
-                        .all(|predecessor: &BlockId| chain.contains(predecessor)))
-            {
+            if !exception_only_predecessors_admitted && !normal_predecessors_admitted {
                 return None;
             }
             chain.push(next);
             cur = next;
         }
+    }
+
+    fn finally_chain_is_closed(&self, chain: &[BlockId]) -> bool {
+        let blocks: BTreeSet<BlockId> = chain.iter().copied().collect();
+        chain.iter().skip(1).all(|bid: &BlockId| {
+            self.cfg.blocks[bid.0 as usize]
+                .predecessors
+                .iter()
+                .all(|predecessor: &BlockId| {
+                    blocks.contains(predecessor)
+                        || !self.cfg.blocks[predecessor.0 as usize]
+                            .successors
+                            .iter()
+                            .any(|edge: &Edge| {
+                                edge.target == *bid && !matches!(edge.kind, EdgeKind::Exception)
+                            })
+                })
+        })
     }
 
     fn self_protecting_spans(&self, head: BlockId) -> Vec<(u32, u32)> {
@@ -1156,6 +1207,9 @@ impl<'a> Structurer<'a> {
         let mut catch_parameter_slots: BTreeSet<u16> = BTreeSet::new();
         let mut paired_catch_slots: BTreeMap<u16, u16> = BTreeMap::new();
         let mut paired_copy_slots: BTreeMap<u16, u16> = BTreeMap::new();
+        let mut paired_local_slots: BTreeMap<u16, u16> = BTreeMap::new();
+        let mut paired_copy_local_slots: BTreeMap<u16, u16> = BTreeMap::new();
+        let mut scoped_local_slots: BTreeSet<u16> = BTreeSet::new();
         for (a, b) in body.iter().zip(copy.iter()) {
             match identity.catch_store_match(a, b) {
                 FinallyCatchStoreMatch::Absent => {}
@@ -1190,6 +1244,42 @@ impl<'a> Structurer<'a> {
                 && paired_catch_slots.get(&body_slot) == Some(&copy_slot)
             {
                 continue;
+            }
+            match (finally_local_access(a), finally_local_access(b)) {
+                (Some((body_operation, body_slot)), Some((copy_operation, copy_slot))) => {
+                    if body_operation != copy_operation {
+                        return None;
+                    }
+                    if body_slot == copy_slot {
+                        continue;
+                    }
+                    let new_mapping: bool = !paired_local_slots.contains_key(&body_slot)
+                        && !paired_copy_local_slots.contains_key(&copy_slot);
+                    let body_uses: usize = identity.body_slot_uses(body_slot);
+                    let copy_uses: usize = identity.copy_slot_uses(copy_slot);
+                    if (new_mapping && !matches!(body_operation, FinallyLocalOperation::Store(_)))
+                        || body_uses == 0
+                        || body_uses != copy_uses
+                        || self.slot_total_uses(body_slot) != body_uses
+                        || self.slot_total_uses(copy_slot) != copy_uses
+                        || paired_catch_slots.contains_key(&body_slot)
+                        || paired_copy_slots.contains_key(&copy_slot)
+                        || paired_local_slots
+                            .get(&body_slot)
+                            .is_some_and(|mapped: &u16| *mapped != copy_slot)
+                        || paired_copy_local_slots
+                            .get(&copy_slot)
+                            .is_some_and(|mapped: &u16| *mapped != body_slot)
+                    {
+                        return None;
+                    }
+                    paired_local_slots.insert(body_slot, copy_slot);
+                    paired_copy_local_slots.insert(copy_slot, body_slot);
+                    scoped_local_slots.extend([body_slot, copy_slot]);
+                    continue;
+                }
+                (None, None) => {}
+                _ => return None,
             }
             if a.opcode != b.opcode {
                 return None;
@@ -1289,6 +1379,7 @@ impl<'a> Structurer<'a> {
         Some(FinallyCopyMatch {
             exit_pc,
             catch_parameter_slots,
+            scoped_local_slots,
         })
     }
 
@@ -1368,9 +1459,14 @@ impl<'a> Structurer<'a> {
         let FinallyCopyMatch {
             exit_pc: matched_exit_pc,
             catch_parameter_slots,
+            scoped_local_slots,
         }: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
+        if blocks.len() <= 1 {
+            return None;
+        }
         self.finally_catch_parameter_slots
             .extend(catch_parameter_slots);
+        self.finally_scoped_local_slots.extend(scoped_local_slots);
         let exit_pc: Option<u32> = match (matched_exit_pc, trailing_exit_pc) {
             (Some(left), Some(right)) if left != right => return None,
             (Some(pc), _) | (_, Some(pc)) => Some(pc),
@@ -1468,8 +1564,12 @@ impl<'a> Structurer<'a> {
         let FinallyCopyMatch {
             exit_pc,
             catch_parameter_slots,
+            scoped_local_slots,
         }: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
-        if exit_pc != Some(copy_end) || !catch_parameter_slots.is_empty() {
+        if exit_pc != Some(copy_end)
+            || !catch_parameter_slots.is_empty()
+            || !scoped_local_slots.is_empty()
+        {
             return None;
         }
         Some((vec![start, success_return, catch_block], predecessor, slot))
@@ -2441,6 +2541,7 @@ impl<'a> Structurer<'a> {
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
             finally_catch_parameter_slots: BTreeSet::new(),
+            finally_scoped_local_slots: BTreeSet::new(),
             slot_use_counts: self.slot_use_counts.clone(),
             visited: BTreeSet::new(),
             loop_header_of: self.loop_header_of.clone(),
@@ -2485,6 +2586,8 @@ impl<'a> Structurer<'a> {
             .extend(inner.take_finally_exception_slots());
         self.finally_catch_parameter_slots
             .extend(inner.take_finally_catch_parameter_slots());
+        self.finally_scoped_local_slots
+            .extend(inner.take_finally_scoped_local_slots());
         self.labels_used.extend(inner.labels_used);
         region
     }
@@ -2755,7 +2858,7 @@ fn typed_return_slot(instructions: &[Instruction]) -> Option<(u16, u8)> {
 fn count_slot_uses(insns: &[Instruction]) -> BTreeMap<u16, usize> {
     let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
     for instruction in insns {
-        if let Some(slot) = any_load_slot(instruction).or_else(|| any_store_slot(instruction)) {
+        if let Some((_, slot)) = finally_local_access(instruction) {
             let count: &mut usize = counts.entry(slot).or_default();
             *count = count.saturating_add(1);
         }
@@ -2948,6 +3051,7 @@ struct FinallyChain {
 struct FinallyCopyMatch {
     exit_pc: Option<u32>,
     catch_parameter_slots: BTreeSet<u16>,
+    scoped_local_slots: BTreeSet<u16>,
 }
 
 struct FinallySwitchTargets<Offsets> {
@@ -2965,6 +3069,50 @@ enum FinallyCatchStoreMatch {
     Matched(u16, u16),
     MatchedDiscard,
     Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinallyLocalOperation {
+    Load(u8),
+    Store(u8),
+    Increment(i32),
+}
+
+fn finally_local_access(instruction: &Instruction) -> Option<(FinallyLocalOperation, u16)> {
+    let load_type: Option<u8> = match instruction.opcode {
+        0x15 | 0x1A..=0x1D => Some(0),
+        0x16 | 0x1E..=0x21 => Some(1),
+        0x17 | 0x22..=0x25 => Some(2),
+        0x18 | 0x26..=0x29 => Some(3),
+        0x19 | 0x2A..=0x2D => Some(4),
+        _ => None,
+    };
+    if let Some(load_type) = load_type {
+        return Some((
+            FinallyLocalOperation::Load(load_type),
+            any_load_slot(instruction)?,
+        ));
+    }
+    let store_type: Option<u8> = match instruction.opcode {
+        0x36 | 0x3B..=0x3E => Some(0),
+        0x37 | 0x3F..=0x42 => Some(1),
+        0x38 | 0x43..=0x46 => Some(2),
+        0x39 | 0x47..=0x4A => Some(3),
+        0x3A | 0x4B..=0x4E => Some(4),
+        _ => None,
+    };
+    if let Some(store_type) = store_type {
+        return Some((
+            FinallyLocalOperation::Store(store_type),
+            any_store_slot(instruction)?,
+        ));
+    }
+    match &instruction.operands {
+        Operands::Iinc { index, delta } if instruction.opcode == 0x84 => {
+            Some((FinallyLocalOperation::Increment(*delta), *index))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -3024,7 +3172,7 @@ impl FinallyCopyIndex {
             if positions.insert(instruction.pc, index).is_some() {
                 return None;
             }
-            if let Some(slot) = any_load_slot(instruction).or_else(|| any_store_slot(instruction)) {
+            if let Some((_, slot)) = finally_local_access(instruction) {
                 let uses: &mut usize = slot_uses.entry(slot).or_default();
                 *uses = uses.checked_add(1)?;
             }
