@@ -474,6 +474,7 @@ pub struct AstUnminifyStats {
     pub amd_parameters_renamed: usize,
     pub commonjs_parameters_renamed: usize,
     pub global_iife_parameters_renamed: usize,
+    pub parcel_parameters_renamed: usize,
     pub system_register_parameters_renamed: usize,
 }
 
@@ -1313,6 +1314,7 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
             stats.amd_parameters_renamed += amd_stats.amd;
             stats.commonjs_parameters_renamed += amd_stats.commonjs;
             stats.global_iife_parameters_renamed += amd_stats.global_iife;
+            stats.parcel_parameters_renamed += amd_stats.parcel;
         }
         RuleStats::SystemRegisterParam(system_stats) => {
             stats.system_register_parameters_renamed += system_stats.parameters_renamed;

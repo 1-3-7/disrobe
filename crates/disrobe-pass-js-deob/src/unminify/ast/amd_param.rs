@@ -26,6 +26,7 @@ pub(super) struct AmdParamStats {
     pub(super) amd: usize,
     pub(super) commonjs: usize,
     pub(super) global_iife: usize,
+    pub(super) parcel: usize,
 }
 
 pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
@@ -159,6 +160,60 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         }
     }
 
+    for factory in parcel_factories(nodes, symbols) {
+        let mut reserved: IndexSet<String> = root_reserved.clone();
+        let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
+        for ((parameter, preferred), live) in factory
+            .factory
+            .params
+            .items
+            .iter()
+            .zip(["module", "exports"])
+            .zip(factory.live_roles)
+        {
+            if !live {
+                continue;
+            }
+            let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                continue;
+            };
+            let local_name: &str = binding.name.as_str();
+            if !is_minified_local(local_name) || local_name == preferred {
+                continue;
+            }
+            let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
+                continue;
+            };
+            let owner_scope: ScopeId = symbols.get_scope_id(symbol_id);
+            let Some(new_name): Option<String> = choose_name(
+                &safety,
+                symbol_id,
+                owner_scope,
+                local_name,
+                preferred,
+                &reserved,
+                &mut next_suffixes,
+            ) else {
+                continue;
+            };
+            let mut candidate_edits: Vec<Edit> = vec![Edit {
+                start: binding.span.start as usize,
+                end: binding.span.end as usize,
+                replacement: new_name.clone(),
+            }];
+            push_reference_edits(symbols, nodes, symbol_id, &new_name, &mut candidate_edits);
+            if candidate_edits
+                .iter()
+                .any(|edit: &Edit| edit_overlaps_comments(edit, &parsed.program.comments))
+            {
+                continue;
+            }
+            reserved.insert(new_name);
+            edits.extend(candidate_edits);
+            stats.parcel = stats.parcel.saturating_add(1);
+        }
+    }
+
     for node in nodes.iter() {
         let AstKind::CallExpression(call) = node.kind() else {
             continue;
@@ -228,6 +283,163 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         return (RuleOutcome::empty(), AmdParamStats::default());
     }
     (RuleOutcome { edits }, stats)
+}
+
+fn parcel_factories<'a>(
+    nodes: &'a AstNodes<'a>,
+    symbols: &'a SymbolTable,
+) -> Vec<ParcelFactory<'a>> {
+    let mut factories: Vec<ParcelFactory<'_>> = Vec::new();
+    for node in nodes.iter() {
+        let AstKind::CallExpression(call) = node.kind() else {
+            continue;
+        };
+        if !is_parcel_register_call(call, symbols)
+            || call.optional
+            || call.type_parameters.is_some()
+        {
+            continue;
+        }
+        let [module_id, factory_argument] = call.arguments.as_slice() else {
+            continue;
+        };
+        let Some(module_id): Option<&Expression<'_>> = module_id.as_expression() else {
+            continue;
+        };
+        let Expression::StringLiteral(module_id) = module_id.get_inner_expression() else {
+            continue;
+        };
+        if module_id.value.is_empty() {
+            continue;
+        }
+        let Some(factory_argument): Option<&Expression<'_>> = factory_argument.as_expression()
+        else {
+            continue;
+        };
+        let Expression::FunctionExpression(factory) = factory_argument.get_inner_expression()
+        else {
+            continue;
+        };
+        let Some(body): Option<&FunctionBody<'_>> = factory.body.as_deref() else {
+            continue;
+        };
+        if factory.r#async
+            || factory.generator
+            || factory.type_parameters.is_some()
+            || factory.params.rest.is_some()
+            || factory.params.items.len() != 2
+            || factory.params.items.iter().any(|parameter| {
+                !matches!(
+                    parameter.pattern.kind,
+                    BindingPatternKind::BindingIdentifier(_)
+                )
+            })
+            || body_has_dynamic_scope(body)
+        {
+            continue;
+        }
+        let Some(live_roles): Option<[bool; 2]> = parcel_factory_role_evidence(factory, symbols)
+        else {
+            continue;
+        };
+        if live_roles.iter().any(|live: &bool| *live) {
+            factories.push(ParcelFactory {
+                factory,
+                live_roles,
+            });
+        }
+    }
+    factories
+}
+
+fn is_parcel_register_call(call: &CallExpression<'_>, symbols: &SymbolTable) -> bool {
+    let Some(register): Option<&oxc_ast::ast::StaticMemberExpression<'_>> =
+        parcel_register_member(&call.callee)
+    else {
+        return false;
+    };
+    if register.optional || register.property.name.as_str() != "register" {
+        return false;
+    }
+    let Expression::StaticMemberExpression(runtime) = register.object.get_inner_expression() else {
+        return false;
+    };
+    if runtime.optional || !is_parcel_runtime_property(runtime.property.name.as_str()) {
+        return false;
+    }
+    let Expression::Identifier(global) = runtime.object.get_inner_expression() else {
+        return false;
+    };
+    ["globalThis", "self", "window"]
+        .into_iter()
+        .any(|name: &str| unresolved_identifier_is(global, name, symbols))
+}
+
+fn parcel_register_member<'a>(
+    callee: &'a Expression<'a>,
+) -> Option<&'a oxc_ast::ast::StaticMemberExpression<'a>> {
+    match callee.get_inner_expression() {
+        Expression::StaticMemberExpression(member) => Some(member),
+        Expression::SequenceExpression(sequence) => {
+            let [prefix, register] = sequence.expressions.as_slice() else {
+                return None;
+            };
+            let Expression::NumericLiteral(prefix) = prefix.get_inner_expression() else {
+                return None;
+            };
+            if prefix.value != 0.0 {
+                return None;
+            }
+            let Expression::StaticMemberExpression(register) = register.get_inner_expression()
+            else {
+                return None;
+            };
+            Some(register)
+        }
+        _ => None,
+    }
+}
+
+fn is_parcel_runtime_property(name: &str) -> bool {
+    let Some(suffix): Option<&str> = name.strip_prefix("parcelRequire") else {
+        return false;
+    };
+    suffix.is_empty() || suffix.bytes().all(|byte: u8| byte.is_ascii_hexdigit())
+}
+
+fn parcel_factory_role_evidence(
+    factory: &Function<'_>,
+    symbols: &SymbolTable,
+) -> Option<[bool; 2]> {
+    let parameter_symbols: [SymbolId; 2] = factory
+        .params
+        .items
+        .iter()
+        .map(|parameter| {
+            let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                return None;
+            };
+            binding.symbol_id.get()
+        })
+        .collect::<Option<Vec<SymbolId>>>()?
+        .try_into()
+        .ok()?;
+    let body: &FunctionBody<'_> = factory.body.as_deref()?;
+    let mut probe: ParcelRoleProbe<'_> = ParcelRoleProbe {
+        parameter_symbols,
+        symbols,
+        module_exports: false,
+        exports_member: false,
+    };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    Some([probe.module_exports, probe.exports_member])
+}
+
+struct ParcelFactory<'a> {
+    factory: &'a Function<'a>,
+    live_roles: [bool; 2],
 }
 
 fn browserify_factories<'a>(registry: &'a ObjectExpression<'a>) -> Vec<&'a Function<'a>> {
@@ -1580,6 +1792,13 @@ struct WebpackRoleProbe<'s> {
     other_member: [bool; 3],
 }
 
+struct ParcelRoleProbe<'s> {
+    parameter_symbols: [SymbolId; 2],
+    symbols: &'s SymbolTable,
+    module_exports: bool,
+    exports_member: bool,
+}
+
 struct WebpackCycleProbe<'s> {
     require_symbol: SymbolId,
     symbols: &'s SymbolTable,
@@ -1588,6 +1807,16 @@ struct WebpackCycleProbe<'s> {
 }
 
 impl WebpackRoleProbe<'_> {
+    fn parameter_index(&self, identifier: &oxc_ast::ast::IdentifierReference<'_>) -> Option<usize> {
+        let reference_id: ReferenceId = identifier.reference_id.get()?;
+        let symbol_id: SymbolId = self.symbols.get_reference(reference_id).symbol_id()?;
+        self.parameter_symbols
+            .iter()
+            .position(|candidate: &SymbolId| *candidate == symbol_id)
+    }
+}
+
+impl ParcelRoleProbe<'_> {
     fn parameter_index(&self, identifier: &oxc_ast::ast::IdentifierReference<'_>) -> Option<usize> {
         let reference_id: ReferenceId = identifier.reference_id.get()?;
         let symbol_id: SymbolId = self.symbols.get_reference(reference_id).symbol_id()?;
@@ -1621,6 +1850,34 @@ impl<'a> Visit<'a> for WebpackRoleProbe<'_> {
                 self.exports_member[index] = true;
             } else {
                 self.other_member[index] = true;
+            }
+        }
+        self.visit_expression(&member.object);
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        _arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+    }
+}
+
+impl<'a> Visit<'a> for ParcelRoleProbe<'_> {
+    fn visit_static_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::StaticMemberExpression<'a>,
+    ) {
+        if !member.optional
+            && let Expression::Identifier(object) = member.object.get_inner_expression()
+            && let Some(index) = self.parameter_index(object)
+        {
+            if index == 0 && member.property.name.as_str() == "exports" {
+                self.module_exports = true;
+            } else if index == 1 && member.property.name.as_str() != "exports" {
+                self.exports_member = true;
             }
         }
         self.visit_expression(&member.object);

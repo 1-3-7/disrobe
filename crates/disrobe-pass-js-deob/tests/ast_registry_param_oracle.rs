@@ -313,3 +313,65 @@ fn non_static_or_dynamic_registry_factories_abstain() {
         );
     }
 }
+
+#[test]
+fn parcel_register_factory_recovers_live_module_and_exports_parameters() {
+    let source: &str = r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};(0,globalThis.parcelRequire7a05.register)("entry",function(a,b){a.exports.answer=__require("./math-utils").sum(8,9);b.value=a.exports.answer;print(b.value);});"#;
+    let (first, stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+    assert_eq!(
+        first, second,
+        "Parcel registry recovery must be byte-identical"
+    );
+    assert!(
+        first.contains("function(module,exports)"),
+        "a static Parcel register factory must expose its runtime parameter roles:\n{first}"
+    );
+    assert!(
+        first.contains("module.exports.answer") && first.contains("exports.value"),
+        "resolved Parcel factory references must follow both recovered names:\n{first}"
+    );
+    assert_eq!(stats.parcel_parameters_renamed, 2);
+    assert_runtime_parity(source, &first);
+}
+
+#[test]
+fn direct_parcel_register_factory_recovers_the_same_roles() {
+    let source: &str = r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};globalThis.parcelRequire7a05.register("entry",function(a,b){a.exports.answer=__require("./math-utils").sum(6,7);b.value=a.exports.answer;print(b.value);});"#;
+    let (first, stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+    assert_eq!(first, second);
+    assert!(first.contains("function(module,exports)"));
+    assert!(first.contains("module.exports.answer") && first.contains("exports.value"));
+    assert_eq!(stats.parcel_parameters_renamed, 2);
+    assert_runtime_parity(source, &first);
+}
+
+#[test]
+fn parcel_register_recovery_avoids_capture_and_rejects_near_misses() {
+    let collision: &str = r#"const module=10;var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};(0,globalThis.parcelRequire7a05.register)("entry",function(a,b){a.exports.answer=__require("./math-utils").sum(module,4);b.value=a.exports.answer;print(b.value);});"#;
+    let (recovered, _) = unminify_ast(collision);
+    assert!(
+        recovered.contains("function(module_1,exports)"),
+        "Parcel recovery must not capture an outer module binding:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("module_1.exports.answer") && recovered.contains("sum(module,4)"),
+        "the collision-safe binding and outer binding must remain distinct:\n{recovered}"
+    );
+    assert_runtime_parity(collision, &recovered);
+
+    let near_misses: [&str; 4] = [
+        r#"var callbacks={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};callbacks.register("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};globalThis.parcelRequire7a05.register(dynamicId,function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});",
+        r#"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};globalThis.parcelRequire7a05.register("entry",function(a,b){with({}){a.exports.answer=1;b.value=a.exports.answer;print(b.value);}});"#,
+        r#"const globalThis={parcelRequire7a05:{register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}}};globalThis.parcelRequire7a05.register("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+    ];
+    for source in near_misses {
+        let (unchanged, _) = unminify_ast(source);
+        assert!(
+            unchanged.contains("function(a,b)"),
+            "only proven static Parcel register factories may rename roles:\n{unchanged}"
+        );
+    }
+}
