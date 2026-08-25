@@ -22,8 +22,7 @@ const PM1_MAX_COPY: usize = 244;
 const PM2_MAX_COPY: usize = 256;
 const PM1_MAX_COMMAND_OUTPUT: usize = PM1_MAX_BYTE_BLOCK + PM1_MAX_COPY;
 const PM1_TREE_WALK_LIMIT: usize = 5;
-const PM1_MAX_PAD_BITS: u64 = 64;
-const PM2_MAX_PAD_BITS: u64 = 0;
+const PM1_MAX_ZERO_FILL_BITS: u64 = 2_424;
 const PM2_CODE_TREE_ELEMENTS: usize = 65;
 const PM2_OFFSET_TREE_ELEMENTS: usize = 17;
 const PM2_MAX_CODES: usize = 29;
@@ -215,11 +214,11 @@ struct BitReader<'a> {
     consumed_bits: u64,
     pad_bits: u64,
     method: PmMethod,
-    max_pad_bits: u64,
+    allow_zero_fill: bool,
 }
 
 impl<'a> BitReader<'a> {
-    const fn new(src: &'a [u8], method: PmMethod, max_pad_bits: u64) -> Self {
+    const fn new(src: &'a [u8], method: PmMethod, allow_zero_fill: bool) -> Self {
         Self {
             src,
             pos: 0,
@@ -228,7 +227,7 @@ impl<'a> BitReader<'a> {
             consumed_bits: 0,
             pad_bits: 0,
             method,
-            max_pad_bits,
+            allow_zero_fill,
         }
     }
 
@@ -243,27 +242,31 @@ impl<'a> BitReader<'a> {
         }
         while self.bits < count {
             let byte: u8 = if let Some(&value) = self.src.get(self.pos) {
-                self.pos += 1;
+                self.pos = self.pos.checked_add(1).ok_or_else(|| {
+                    Error::Decompression("pmarc: compressed input position overflow".to_owned())
+                })?;
                 value
             } else {
-                if self.max_pad_bits == 0 {
+                if !self.allow_zero_fill {
                     return Err(Error::Decompression(format!(
                         "pmarc: {} compressed body ended before the decoded stream",
                         self.method.tag()
                     )));
                 }
-                self.pad_bits = self.pad_bits.saturating_add(8);
-                if self.pad_bits > self.max_pad_bits {
+                self.pad_bits = self.pad_bits.checked_add(8).ok_or_else(|| {
+                    Error::Decompression("pmarc: zero-fill work counter overflow".to_owned())
+                })?;
+                if self.pad_bits > PM1_MAX_ZERO_FILL_BITS {
                     return Err(Error::Decompression(format!(
-                        "pmarc: {} stream read {} bit(s) past the compressed body",
-                        self.method.tag(),
-                        self.pad_bits
+                        "pmarc: -pm1- zero-fill work exceeds the {PM1_MAX_ZERO_FILL_BITS}-bit final-command ceiling"
                     )));
                 }
                 0
             };
             self.accumulator |= u64::from(byte) << (56 - self.bits);
-            self.bits += 8;
+            self.bits = self.bits.checked_add(8).ok_or_else(|| {
+                Error::Decompression("pmarc: buffered bit count overflow".to_owned())
+            })?;
         }
         let value: u32 = u32::try_from(self.accumulator >> (64 - u64::from(count))).map_err(
             |_e: std::num::TryFromIntError| {
@@ -272,7 +275,10 @@ impl<'a> BitReader<'a> {
         )?;
         self.accumulator <<= count;
         self.bits -= count;
-        self.consumed_bits = self.consumed_bits.saturating_add(u64::from(count));
+        self.consumed_bits = self
+            .consumed_bits
+            .checked_add(u64::from(count))
+            .ok_or_else(|| Error::Decompression("pmarc: consumed bit count overflow".to_owned()))?;
         Ok(value)
     }
 
@@ -290,9 +296,22 @@ impl<'a> BitReader<'a> {
             .ok_or_else(|| Error::Decompression("pmarc: variable-length value overflow".to_owned()))
     }
 
-    const fn unread_bits(&self) -> u64 {
-        let available: u64 = (self.src.len() as u64).saturating_mul(8);
-        available.saturating_sub(self.consumed_bits)
+    fn unread_bits(&self) -> Result<u64> {
+        let source_len: u64 =
+            u64::try_from(self.src.len()).map_err(|_error: std::num::TryFromIntError| {
+                Error::Decompression("pmarc: compressed input length exceeds u64".to_owned())
+            })?;
+        let available: u64 = source_len.checked_mul(8).ok_or_else(|| {
+            Error::Decompression("pmarc: compressed input bit length overflow".to_owned())
+        })?;
+        match self.consumed_bits.cmp(&available) {
+            std::cmp::Ordering::Less => {
+                available.checked_sub(self.consumed_bits).ok_or_else(|| {
+                    Error::Decompression("pmarc: unread bit count underflow".to_owned())
+                })
+            }
+            std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => Ok(0),
+        }
     }
 }
 
@@ -306,8 +325,8 @@ impl HistoryList {
     fn new() -> Self {
         let mut prev: [u8; 256] = [0; 256];
         let mut next: [u8; 256] = [0; 256];
-        for index in 0..256usize {
-            let code: u8 = index as u8;
+        for code in u8::MIN..=u8::MAX {
+            let index: usize = usize::from(code);
             prev[index] = code.wrapping_add(1);
             next[index] = code.wrapping_sub(1);
         }
@@ -361,28 +380,86 @@ impl HistoryList {
     }
 }
 
+fn decoded_count(value: u32, offset: usize, method: PmMethod) -> Result<usize> {
+    let value: usize = usize::try_from(value).map_err(|_error: std::num::TryFromIntError| {
+        Error::Decompression(format!(
+            "pmarc: {} decoded count exceeds usize",
+            method.tag()
+        ))
+    })?;
+    value.checked_add(offset).ok_or_else(|| {
+        Error::Decompression(format!("pmarc: {} decoded count overflow", method.tag()))
+    })
+}
+
+fn allocate_ring(size: usize, fill: u8, method: PmMethod) -> Result<Box<[u8]>> {
+    let mut ring: Vec<u8> = Vec::new();
+    ring.try_reserve_exact(size)
+        .map_err(|error: std::collections::TryReserveError| {
+            Error::Decompression(format!(
+                "pmarc: {} ring allocation failed: {error}",
+                method.tag()
+            ))
+        })?;
+    ring.resize(size, fill);
+    Ok(ring.into_boxed_slice())
+}
+
+fn allocate_output(declared: usize, method: PmMethod) -> Result<Vec<u8>> {
+    let declared_u64: u64 =
+        u64::try_from(declared).map_err(|_error: std::num::TryFromIntError| {
+            Error::Decompression("pmarc: declared output exceeds u64".to_owned())
+        })?;
+    let capacity: usize = crate::quota::bounded_prealloc(declared_u64);
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(capacity)
+        .map_err(|error: std::collections::TryReserveError| {
+            Error::Decompression(format!(
+                "pmarc: {} output allocation failed: {error}",
+                method.tag()
+            ))
+        })?;
+    Ok(out)
+}
+
+fn reserve_output(out: &mut Vec<u8>, additional: usize, method: PmMethod) -> Result<()> {
+    let _: usize = out.len().checked_add(additional).ok_or_else(|| {
+        Error::Decompression(format!("pmarc: {} output length overflow", method.tag()))
+    })?;
+    out.try_reserve(additional)
+        .map_err(|error: std::collections::TryReserveError| {
+            Error::Decompression(format!(
+                "pmarc: {} output allocation failed: {error}",
+                method.tag()
+            ))
+        })
+}
+
 struct Pm1Decoder {
-    ring: Box<[u8; PM1_RING_SIZE]>,
+    ring: Box<[u8]>,
     ring_pos: usize,
     history: HistoryList,
     tree: &'static [u8; 5],
 }
 
 impl Pm1Decoder {
-    fn new() -> Self {
-        Self {
-            ring: Box::new([0; PM1_RING_SIZE]),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ring: allocate_ring(PM1_RING_SIZE, 0, PmMethod::Pm1)?,
             ring_pos: 0,
             history: HistoryList::new(),
             tree: &PM1_BYTE_DECODE_TREES[31],
-        }
+        })
     }
 
-    fn output_byte(&mut self, out: &mut Vec<u8>, byte: u8) {
+    fn output_byte(&mut self, out: &mut Vec<u8>, byte: u8) -> Result<()> {
         self.ring[self.ring_pos] = byte;
-        self.ring_pos = (self.ring_pos + 1) % PM1_RING_SIZE;
+        self.ring_pos = self.ring_pos.checked_add(1).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm1- ring position overflow".to_owned())
+        })? % PM1_RING_SIZE;
         self.history.update(byte);
         out.push(byte);
+        Ok(())
     }
 
     fn read_byte_decode_index(&self, reader: &mut BitReader<'_>) -> Result<usize> {
@@ -408,7 +485,9 @@ impl Pm1Decoder {
                     "pmarc: -pm1- byte tree contains a zero-offset node".to_owned(),
                 ));
             }
-            node += child;
+            node = node.checked_add(child).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm1- byte tree position overflow".to_owned())
+            })?;
         }
         Err(Error::Decompression(
             "pmarc: -pm1- byte tree exceeds its depth limit".to_owned(),
@@ -427,19 +506,19 @@ impl Pm1Decoder {
     fn read_copy_byte_count(reader: &mut BitReader<'_>) -> Result<usize> {
         let first: u32 = reader.read(2)?;
         if first < 3 {
-            return Ok(first as usize + 3);
+            return decoded_count(first, 3, PmMethod::Pm1);
         }
         let second: u32 = reader.read(3)?;
         match second {
-            0..=4 => Ok(second as usize + 6),
-            5 => Ok(reader.read(2)? as usize + 11),
-            6 => Ok(reader.read(3)? as usize + 15),
+            0..=4 => decoded_count(second, 6, PmMethod::Pm1),
+            5 => decoded_count(reader.read(2)?, 11, PmMethod::Pm1),
+            6 => decoded_count(reader.read(3)?, 15, PmMethod::Pm1),
             _ => {
                 let third: u32 = reader.read(6)?;
                 match third {
-                    0..=61 => Ok(third as usize + 23),
-                    62 => Ok(reader.read(5)? as usize + 85),
-                    _ => Ok(reader.read(7)? as usize + 117),
+                    0..=61 => decoded_count(third, 23, PmMethod::Pm1),
+                    62 => decoded_count(reader.read(5)?, 85, PmMethod::Pm1),
+                    _ => decoded_count(reader.read(7)?, 117, PmMethod::Pm1),
                 }
             }
         }
@@ -448,17 +527,17 @@ impl Pm1Decoder {
     fn read_byte_block_count(reader: &mut BitReader<'_>) -> Result<usize> {
         let first: u32 = reader.read(2)?;
         if first < 3 {
-            return Ok(first as usize + 1);
+            return decoded_count(first, 1, PmMethod::Pm1);
         }
         let second: u32 = reader.read(3)?;
         if second < 7 {
-            return Ok(second as usize + 4);
+            return decoded_count(second, 4, PmMethod::Pm1);
         }
         let third: u32 = reader.read(4)?;
         match third {
-            0..=13 => Ok(third as usize + 11),
-            14 => Ok(reader.read(6)? as usize + 25),
-            _ => Ok(reader.read(7)? as usize + 89),
+            0..=13 => decoded_count(third, 11, PmMethod::Pm1),
+            14 => decoded_count(reader.read(6)?, 25, PmMethod::Pm1),
+            _ => decoded_count(reader.read(7)?, 89, PmMethod::Pm1),
         }
     }
 
@@ -480,7 +559,10 @@ impl Pm1Decoder {
             if Self::read_bit_after_threshold(reader, produced, 576, 0)? != 0 {
                 return Ok(4);
             }
-            return Ok(Self::read_bit_after_threshold(reader, produced, 64, 0)? as usize);
+            return usize::try_from(Self::read_bit_after_threshold(reader, produced, 64, 0)?)
+                .map_err(|_error: std::num::TryFromIntError| {
+                    Error::Decompression("pmarc: -pm1- copy range exceeds usize".to_owned())
+                });
         }
         if Self::read_bit_after_threshold(reader, produced, 64, 1)? == 0 {
             return Ok(3);
@@ -507,7 +589,10 @@ impl Pm1Decoder {
     }
 
     fn read_copy_command(&mut self, reader: &mut BitReader<'_>, out: &mut Vec<u8>) -> Result<()> {
-        let produced: u64 = out.len() as u64;
+        let produced: u64 =
+            u64::try_from(out.len()).map_err(|_error: std::num::TryFromIntError| {
+                Error::Decompression("pmarc: -pm1- output length exceeds u64".to_owned())
+            })?;
         let range_index: usize = Self::read_copy_type_range(reader, produced)?;
         let count: usize = if range_index < 2 {
             2
@@ -531,11 +616,22 @@ impl Pm1Decoder {
             usize::try_from(distance).map_err(|_e: std::num::TryFromIntError| {
                 Error::Decompression("pmarc: -pm1- copy distance exceeds usize".to_owned())
             })?;
-        let mut source: usize = (self.ring_pos + PM1_RING_SIZE - distance - 1) % PM1_RING_SIZE;
+        reserve_output(out, count, PmMethod::Pm1)?;
+        let mut source: usize = self
+            .ring_pos
+            .checked_add(PM1_RING_SIZE)
+            .and_then(|value: usize| value.checked_sub(distance))
+            .and_then(|value: usize| value.checked_sub(1))
+            .ok_or_else(|| {
+                Error::Decompression("pmarc: -pm1- history position overflow".to_owned())
+            })?
+            % PM1_RING_SIZE;
         for _ in 0..count {
             let byte: u8 = self.ring[source];
-            self.output_byte(out, byte);
-            source = (source + 1) % PM1_RING_SIZE;
+            self.output_byte(out, byte)?;
+            source = source.checked_add(1).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm1- history position overflow".to_owned())
+            })? % PM1_RING_SIZE;
         }
         Ok(())
     }
@@ -547,9 +643,10 @@ impl Pm1Decoder {
                 "pmarc: -pm1- byte block length {block_len} is outside 1..={PM1_MAX_BYTE_BLOCK}"
             )));
         }
+        reserve_output(out, block_len, PmMethod::Pm1)?;
         for _ in 0..block_len {
             let byte: u8 = self.read_byte(reader)?;
-            self.output_byte(out, byte);
+            self.output_byte(out, byte)?;
         }
         if block_len == PM1_MAX_BYTE_BLOCK {
             return Ok(());
@@ -578,7 +675,7 @@ impl Pm2RebuildState {
 }
 
 struct Pm2Decoder {
-    ring: Box<[u8; PM2_RING_SIZE]>,
+    ring: Box<[u8]>,
     ring_pos: usize,
     history: HistoryList,
     code_tree: [u8; PM2_CODE_TREE_ELEMENTS],
@@ -590,9 +687,9 @@ struct Pm2Decoder {
 }
 
 impl Pm2Decoder {
-    fn new() -> Self {
-        Self {
-            ring: Box::new([b' '; PM2_RING_SIZE]),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ring: allocate_ring(PM2_RING_SIZE, b' ', PmMethod::Pm2)?,
             ring_pos: 0,
             history: HistoryList::new(),
             code_tree: [TREE_LEAF; PM2_CODE_TREE_ELEMENTS],
@@ -601,19 +698,24 @@ impl Pm2Decoder {
             state: Pm2RebuildState::Unbuilt,
             rebuild_remaining: Pm2RebuildState::Unbuilt.interval(),
             rebuild_pending: true,
-        }
+        })
     }
 
-    fn output_byte(&mut self, out: &mut Vec<u8>, byte: u8) {
+    fn output_byte(&mut self, out: &mut Vec<u8>, byte: u8) -> Result<()> {
         self.ring[self.ring_pos] = byte;
-        self.ring_pos = (self.ring_pos + 1) % PM2_RING_SIZE;
+        self.ring_pos = self.ring_pos.checked_add(1).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm2- ring position overflow".to_owned())
+        })? % PM2_RING_SIZE;
         self.history.update(byte);
         out.push(byte);
-        self.rebuild_remaining = self.rebuild_remaining.saturating_sub(1);
+        self.rebuild_remaining = self.rebuild_remaining.checked_sub(1).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm2- rebuild work counter underflow".to_owned())
+        })?;
         if self.rebuild_remaining == 0 {
             self.rebuild_pending = true;
             self.rebuild_remaining = self.state.interval();
         }
+        Ok(())
     }
 
     fn read_from_tree(reader: &mut BitReader<'_>, tree: &[u8]) -> Result<u8> {
@@ -622,14 +724,22 @@ impl Pm2Decoder {
             .ok_or_else(|| Error::Decompression("pmarc: -pm2- tree has no root node".to_owned()))?;
         let mut steps: usize = 0;
         while code & TREE_LEAF == 0 {
-            steps += 1;
+            steps = steps.checked_add(1).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree walk count overflow".to_owned())
+            })?;
             if steps > tree.len() {
                 return Err(Error::Decompression(
                     "pmarc: -pm2- tree walk exceeds its node count".to_owned(),
                 ));
             }
             let bit: u32 = reader.read(1)?;
-            let slot: usize = usize::from(code) + bit as usize;
+            let bit: usize =
+                usize::try_from(bit).map_err(|_error: std::num::TryFromIntError| {
+                    Error::Decompression("pmarc: -pm2- tree bit exceeds usize".to_owned())
+                })?;
+            let slot: usize = usize::from(code).checked_add(bit).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree position overflow".to_owned())
+            })?;
             code = *tree.get(slot).ok_or_else(|| {
                 Error::Decompression("pmarc: -pm2- tree walks past its node table".to_owned())
             })?;
@@ -646,40 +756,60 @@ impl Pm2Decoder {
     }
 
     fn build_tree(tree: &mut [u8], code_lengths: &[u8]) -> Result<()> {
+        tree.fill(TREE_LEAF);
         let mut next_entry: usize = 0;
         let mut allocated: usize = 1;
         let mut code_len: u32 = 0;
         loop {
-            let new_nodes: usize = allocated.saturating_sub(next_entry).saturating_mul(2);
-            if allocated.saturating_add(new_nodes) <= tree.len() {
-                let end_offset: usize = allocated;
-                while next_entry < end_offset {
-                    if allocated >= usize::from(TREE_LEAF) {
-                        return Err(Error::Decompression(
-                            "pmarc: -pm2- tree node index collides with the leaf flag".to_owned(),
-                        ));
-                    }
-                    let slot: &mut u8 = tree.get_mut(next_entry).ok_or_else(|| {
-                        Error::Decompression(
-                            "pmarc: -pm2- tree build ran past its table".to_owned(),
-                        )
-                    })?;
-                    *slot = allocated as u8;
-                    allocated += 2;
-                    next_entry += 1;
-                }
+            let pending: usize = allocated.checked_sub(next_entry).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree queue position overflow".to_owned())
+            })?;
+            let new_nodes: usize = pending.checked_mul(2).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree node count overflow".to_owned())
+            })?;
+            let expanded: usize = allocated.checked_add(new_nodes).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree allocation count overflow".to_owned())
+            })?;
+            if expanded > tree.len() {
+                return Err(Error::Decompression(
+                    "pmarc: -pm2- tree construction exceeds its node table".to_owned(),
+                ));
             }
-            code_len += 1;
+            let end_offset: usize = allocated;
+            while next_entry < end_offset {
+                if allocated >= usize::from(TREE_LEAF) {
+                    return Err(Error::Decompression(
+                        "pmarc: -pm2- tree node index collides with the leaf flag".to_owned(),
+                    ));
+                }
+                let slot: &mut u8 = tree.get_mut(next_entry).ok_or_else(|| {
+                    Error::Decompression("pmarc: -pm2- tree build ran past its table".to_owned())
+                })?;
+                *slot = u8::try_from(allocated).map_err(|_error: std::num::TryFromIntError| {
+                    Error::Decompression("pmarc: -pm2- tree node index exceeds u8".to_owned())
+                })?;
+                allocated = allocated.checked_add(2).ok_or_else(|| {
+                    Error::Decompression("pmarc: -pm2- tree allocation overflow".to_owned())
+                })?;
+                next_entry = next_entry.checked_add(1).ok_or_else(|| {
+                    Error::Decompression("pmarc: -pm2- tree queue overflow".to_owned())
+                })?;
+            }
+            code_len = code_len.checked_add(1).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- tree depth overflow".to_owned())
+            })?;
             let mut codes_remaining: bool = false;
             for (index, &length) in code_lengths.iter().enumerate() {
                 if u32::from(length) == code_len {
-                    let node: usize = if next_entry < allocated {
-                        let taken: usize = next_entry;
-                        next_entry += 1;
-                        taken
-                    } else {
-                        0
-                    };
+                    if next_entry >= allocated {
+                        return Err(Error::Decompression(
+                            "pmarc: -pm2- tree declares more codes than available nodes".to_owned(),
+                        ));
+                    }
+                    let node: usize = next_entry;
+                    next_entry = next_entry.checked_add(1).ok_or_else(|| {
+                        Error::Decompression("pmarc: -pm2- tree queue overflow".to_owned())
+                    })?;
                     let code: u8 =
                         u8::try_from(index).map_err(|_e: std::num::TryFromIntError| {
                             Error::Decompression("pmarc: -pm2- tree code exceeds u8".to_owned())
@@ -695,9 +825,14 @@ impl Pm2Decoder {
                 }
             }
             if !codes_remaining {
+                if next_entry != allocated {
+                    return Err(Error::Decompression(
+                        "pmarc: -pm2- tree leaves part of its prefix space unassigned".to_owned(),
+                    ));
+                }
                 return Ok(());
             }
-            if code_len > u32::from(u8::MAX) {
+            if code_len >= u32::from(u8::MAX) {
                 return Err(Error::Decompression(
                     "pmarc: -pm2- tree code lengths exceed the depth limit".to_owned(),
                 ));
@@ -706,7 +841,10 @@ impl Pm2Decoder {
     }
 
     fn read_code_tree(&mut self, reader: &mut BitReader<'_>) -> Result<()> {
-        let num_codes: usize = reader.read(5)? as usize;
+        let num_codes: usize =
+            usize::try_from(reader.read(5)?).map_err(|_error: std::num::TryFromIntError| {
+                Error::Decompression("pmarc: -pm2- code count exceeds usize".to_owned())
+            })?;
         let min_code_length: u32 = reader.read(3)?;
         if num_codes > PM2_MAX_CODES {
             return Err(Error::Decompression(format!(
@@ -772,11 +910,18 @@ impl Pm2Decoder {
                 single_offset = u8::try_from(offset).map_err(|_e: std::num::TryFromIntError| {
                     Error::Decompression("pmarc: -pm2- offset index exceeds u8".to_owned())
                 })?;
-                num_codes += 1;
+                num_codes = num_codes.checked_add(1).ok_or_else(|| {
+                    Error::Decompression("pmarc: -pm2- offset code count overflow".to_owned())
+                })?;
             }
         }
         if num_codes == 1 {
             return Self::set_tree_single(&mut self.offset_tree, single_offset);
+        }
+        if num_codes == 0 {
+            return Err(Error::Decompression(
+                "pmarc: -pm2- offset tree declares no symbols".to_owned(),
+            ));
         }
         let lengths: &[u8] = offset_lengths.get(..num_offsets).ok_or_else(|| {
             Error::Decompression("pmarc: -pm2- offset length table underflow".to_owned())
@@ -818,10 +963,14 @@ impl Pm2Decoder {
 
     fn history_get_count(reader: &mut BitReader<'_>, code: usize) -> Result<usize> {
         if code < 15 {
-            return Ok(code + 2);
+            return code.checked_add(2).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- copy length overflow".to_owned())
+            });
         }
         let value: u32 = reader.read_variable(&PM2_COPY_DECODE, code - 15)?;
-        Ok(value as usize)
+        usize::try_from(value).map_err(|_error: std::num::TryFromIntError| {
+            Error::Decompression("pmarc: -pm2- copy length exceeds usize".to_owned())
+        })
     }
 
     fn history_get_offset(&self, reader: &mut BitReader<'_>, code: usize) -> Result<usize> {
@@ -833,7 +982,9 @@ impl Pm2Decoder {
             if selector == 0 {
                 6
             } else {
-                let bits: u32 = u32::from(selector) + 5;
+                let bits: u32 = u32::from(selector).checked_add(5).ok_or_else(|| {
+                    Error::Decompression("pmarc: -pm2- offset width overflow".to_owned())
+                })?;
                 result = 1u32.checked_shl(bits).ok_or_else(|| {
                     Error::Decompression("pmarc: -pm2- offset width overflow".to_owned())
                 })?;
@@ -846,7 +997,9 @@ impl Pm2Decoder {
         let offset: u32 = result
             .checked_add(value)
             .ok_or_else(|| Error::Decompression("pmarc: -pm2- offset overflow".to_owned()))?;
-        Ok(offset as usize)
+        usize::try_from(offset).map_err(|_error: std::num::TryFromIntError| {
+            Error::Decompression("pmarc: -pm2- offset exceeds usize".to_owned())
+        })
     }
 
     fn read_single_byte(
@@ -860,7 +1013,8 @@ impl Pm2Decoder {
             Error::Decompression("pmarc: -pm2- history distance exceeds 255".to_owned())
         })?;
         let byte: u8 = self.history.find(offset);
-        self.output_byte(out, byte);
+        reserve_output(out, 1, PmMethod::Pm2)?;
+        self.output_byte(out, byte)?;
         Ok(())
     }
 
@@ -869,6 +1023,7 @@ impl Pm2Decoder {
         reader: &mut BitReader<'_>,
         out: &mut Vec<u8>,
         code: usize,
+        remaining: usize,
     ) -> Result<()> {
         let to_copy: usize = Self::history_get_count(reader, code)?;
         let offset: usize = self.history_get_offset(reader, code)?;
@@ -877,25 +1032,44 @@ impl Pm2Decoder {
                 "pmarc: -pm2- copy length {to_copy} is outside 1..={PM2_MAX_COPY}"
             )));
         }
+        if to_copy > remaining {
+            return Err(Error::Decompression(
+                "pmarc: -pm2- command output exceeds the remaining declared length".to_owned(),
+            ));
+        }
         if offset >= PM2_RING_SIZE {
             return Err(Error::Decompression(format!(
                 "pmarc: -pm2- copy offset {offset} exceeds the {PM2_RING_SIZE}-byte window"
             )));
         }
-        let start: usize = self.ring_pos + PM2_RING_SIZE - 1 - offset;
+        reserve_output(out, to_copy, PmMethod::Pm2)?;
+        let start: usize = self
+            .ring_pos
+            .checked_add(PM2_RING_SIZE)
+            .and_then(|value: usize| value.checked_sub(1))
+            .and_then(|value: usize| value.checked_sub(offset))
+            .ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- history position overflow".to_owned())
+            })?;
         for index in 0..to_copy {
-            let byte: u8 = self.ring[(start + index) % PM2_RING_SIZE];
-            self.output_byte(out, byte);
+            let position: usize = start.checked_add(index).ok_or_else(|| {
+                Error::Decompression("pmarc: -pm2- history position overflow".to_owned())
+            })? % PM2_RING_SIZE;
+            let byte: u8 = self.ring[position];
+            self.output_byte(out, byte)?;
         }
         Ok(())
     }
 }
 
 fn decode_pm1(src: &[u8], declared: usize) -> Result<PmDecoded> {
-    let mut reader: BitReader<'_> = BitReader::new(src, PmMethod::Pm1, PM1_MAX_PAD_BITS);
-    let mut decoder: Pm1Decoder = Pm1Decoder::new();
-    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(declared as u64));
-    let tree_index: usize = reader.read(5)? as usize;
+    let mut reader: BitReader<'_> = BitReader::new(src, PmMethod::Pm1, true);
+    let mut decoder: Pm1Decoder = Pm1Decoder::new()?;
+    let mut out: Vec<u8> = allocate_output(declared, PmMethod::Pm1)?;
+    let tree_index: usize =
+        usize::try_from(reader.read(5)?).map_err(|_error: std::num::TryFromIntError| {
+            Error::Decompression("pmarc: -pm1- start tree index exceeds usize".to_owned())
+        })?;
     decoder.tree = PM1_BYTE_DECODE_TREES.get(tree_index).ok_or_else(|| {
         Error::Decompression(format!(
             "pmarc: -pm1- start header selects tree {tree_index} outside the 32-entry table"
@@ -903,7 +1077,9 @@ fn decode_pm1(src: &[u8], declared: usize) -> Result<PmDecoded> {
     })?;
     let mut commands: usize = 0;
     while out.len() < declared {
-        commands += 1;
+        commands = commands.checked_add(1).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm1- command work counter overflow".to_owned())
+        })?;
         if commands > declared {
             return Err(Error::Decompression(format!(
                 "pmarc: -pm1- stream issued more than {declared} command(s)"
@@ -920,14 +1096,20 @@ fn decode_pm1(src: &[u8], declared: usize) -> Result<PmDecoded> {
                 "pmarc: -pm1- command produced no output".to_owned(),
             ));
         }
-        if out.len() > declared + PM1_MAX_COMMAND_OUTPUT {
-            return Err(Error::Decompression(format!(
-                "pmarc: -pm1- decoded {} bytes past the declared {declared}",
-                out.len() - declared
-            )));
+        if reader.pad_bits > 0 && out.len() < declared {
+            return Err(Error::Decompression(
+                "pmarc: -pm1- zero-fill work limit exhausted before declared output".to_owned(),
+            ));
+        }
+        if let Some(overrun) = out.len().checked_sub(declared)
+            && overrun > PM1_MAX_COMMAND_OUTPUT
+        {
+            return Err(Error::Decompression(
+                "pmarc: -pm1- command exceeded its output ceiling".to_owned(),
+            ));
         }
     }
-    let unread_bits: u64 = reader.unread_bits();
+    let unread_bits: u64 = reader.unread_bits()?;
     out.truncate(declared);
     Ok(PmDecoded {
         data: out,
@@ -936,13 +1118,15 @@ fn decode_pm1(src: &[u8], declared: usize) -> Result<PmDecoded> {
 }
 
 fn decode_pm2(src: &[u8], declared: usize) -> Result<PmDecoded> {
-    let mut reader: BitReader<'_> = BitReader::new(src, PmMethod::Pm2, PM2_MAX_PAD_BITS);
-    let mut decoder: Pm2Decoder = Pm2Decoder::new();
-    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(declared as u64));
+    let mut reader: BitReader<'_> = BitReader::new(src, PmMethod::Pm2, false);
+    let mut decoder: Pm2Decoder = Pm2Decoder::new()?;
+    let mut out: Vec<u8> = allocate_output(declared, PmMethod::Pm2)?;
     let _discarded: u32 = reader.read(1)?;
     let mut commands: usize = 0;
     while out.len() < declared {
-        commands += 1;
+        commands = commands.checked_add(1).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm2- command work counter overflow".to_owned())
+        })?;
         if commands > declared {
             return Err(Error::Decompression(format!(
                 "pmarc: -pm2- stream issued more than {declared} command(s)"
@@ -953,26 +1137,22 @@ fn decode_pm2(src: &[u8], declared: usize) -> Result<PmDecoded> {
             decoder.rebuild_tree(&mut reader)?;
         }
         let produced: usize = out.len();
+        let remaining: usize = declared.checked_sub(produced).ok_or_else(|| {
+            Error::Decompression("pmarc: -pm2- remaining output underflow".to_owned())
+        })?;
         let code: usize = usize::from(Pm2Decoder::read_from_tree(&mut reader, &decoder.code_tree)?);
         if code < 8 {
             decoder.read_single_byte(&mut reader, &mut out, code)?;
         } else {
-            decoder.copy_from_history(&mut reader, &mut out, code - 8)?;
+            decoder.copy_from_history(&mut reader, &mut out, code - 8, remaining)?;
         }
         if out.len() <= produced {
             return Err(Error::Decompression(
                 "pmarc: -pm2- command produced no output".to_owned(),
             ));
         }
-        if out.len() > declared + PM2_MAX_COPY {
-            return Err(Error::Decompression(format!(
-                "pmarc: -pm2- decoded {} bytes past the declared {declared}",
-                out.len() - declared
-            )));
-        }
     }
-    let unread_bits: u64 = reader.unread_bits();
-    out.truncate(declared);
+    let unread_bits: u64 = reader.unread_bits()?;
     Ok(PmDecoded {
         data: out,
         unread_bits,
@@ -1001,9 +1181,16 @@ pub fn decode_bounded(
             Error::Decompression("pmarc: declared output exceeds usize".to_owned())
         })?;
     if declared == 0 {
+        let source_len: u64 =
+            u64::try_from(src.len()).map_err(|_error: std::num::TryFromIntError| {
+                Error::Decompression("pmarc: compressed input length exceeds u64".to_owned())
+            })?;
+        let unread_bits: u64 = source_len.checked_mul(8).ok_or_else(|| {
+            Error::Decompression("pmarc: compressed input bit length overflow".to_owned())
+        })?;
         return Ok(PmDecoded {
             data: Vec::new(),
-            unread_bits: (src.len() as u64).saturating_mul(8),
+            unread_bits,
         });
     }
     let decoded: PmDecoded = match method {
@@ -1017,4 +1204,24 @@ pub fn decode_bounded(
         )));
     }
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PmMethod, reserve_output};
+
+    #[test]
+    fn output_reservation_grows_amortized_capacity() {
+        let mut output: Vec<u8> = Vec::new();
+        let initial_reserve: std::result::Result<(), std::collections::TryReserveError> =
+            output.try_reserve_exact(64);
+        assert!(initial_reserve.is_ok(), "{initial_reserve:?}");
+        output.resize(output.capacity(), 0);
+        let previous_capacity: usize = output.capacity();
+        assert!(previous_capacity <= usize::MAX / 2);
+        let doubled_capacity: usize = previous_capacity * 2;
+        let growth: crate::Result<()> = reserve_output(&mut output, 1, PmMethod::Pm1);
+        assert!(growth.is_ok(), "{growth:?}");
+        assert!(output.capacity() >= doubled_capacity);
+    }
 }

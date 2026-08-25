@@ -87,6 +87,44 @@ fn crc16_arc(data: &[u8]) -> u16 {
     crc
 }
 
+fn append_bits(bits: &mut Vec<u8>, value: u32, width: u32) {
+    for shift in (0..width).rev() {
+        bits.push(((value >> shift) & 1) as u8);
+    }
+}
+
+fn pack_bits(bits: &[u8]) -> Vec<u8> {
+    bits.chunks(8)
+        .map(|chunk: &[u8]| {
+            chunk
+                .iter()
+                .enumerate()
+                .fold(0u8, |byte: u8, (index, bit)| byte | (*bit << (7 - index)))
+        })
+        .collect()
+}
+
+fn pm2_literal_stream(output: usize, refresh_at_4096: bool) -> Vec<u8> {
+    let mut bits: Vec<u8> = Vec::new();
+    append_bits(&mut bits, 0, 1);
+    append_bits(&mut bits, 2, 5);
+    append_bits(&mut bits, 1, 3);
+    append_bits(&mut bits, 2, 3);
+    append_bits(&mut bits, 5, 4);
+    for produced in 0..output {
+        if produced == 4_096 && refresh_at_4096 {
+            append_bits(&mut bits, 1, 1);
+            append_bits(&mut bits, 2, 5);
+            append_bits(&mut bits, 1, 3);
+            append_bits(&mut bits, 2, 3);
+            append_bits(&mut bits, 5, 4);
+        }
+        append_bits(&mut bits, 0, 1);
+        append_bits(&mut bits, 0, 3);
+    }
+    pack_bits(&bits)
+}
+
 #[test]
 fn pmarc124_pm1_member_matches_the_reference_extraction() {
     let parsed: LzhArchive = parse(PMARC124_PM1, "pmarc124 pm1");
@@ -278,7 +316,7 @@ fn truncated_pm1_and_pm2_bodies_fail_without_partial_output() {
     assert!(
         pm1_error
             .to_string()
-            .contains("-pm1- stream read 72 bit(s) past the compressed body"),
+            .contains("-pm1- zero-fill work limit exhausted before declared output"),
         "{pm1_error}"
     );
     let pm2_error: disrobe_binfmt::Error =
@@ -383,11 +421,152 @@ fn a_pm2_code_tree_declaring_no_codes_is_refused() {
 }
 
 #[test]
-fn a_pm1_stream_running_entirely_on_zero_fill_is_refused_by_the_pad_ceiling() {
-    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm1, &[0xff, 0xff], 1 << 20, QUOTA)
-        .expect_err("refuse a -pm1- stream that runs on zero fill");
+fn invalid_pm1_distance_and_pm2_symbol_are_refused() {
+    let pm1: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm1, &[], 16, QUOTA)
+        .expect_err("refuse a PM1 copy before any output");
     assert!(
-        error.to_string().contains("past the compressed body"),
+        pm1.to_string()
+            .contains("copy distance 0 exceeds the 0 byte(s) produced"),
+        "{pm1}"
+    );
+
+    let pm2: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &[0x7c, 0x00], 16, QUOTA)
+        .expect_err("refuse a PM2 symbol outside the code table");
+    assert!(
+        pm2.to_string()
+            .contains("code tree declares 31 codes above the 29 ceiling"),
+        "{pm2}"
+    );
+}
+
+#[test]
+fn pm2_tree_and_rebuild_truncation_classes_are_refused() {
+    let initial_code_tree: &[u8] = &[0x04];
+    let initial_offset_tree: &[u8] = &[0x28, 0x00];
+    let build3: Vec<u8> = pm2_literal_stream(4_096, false);
+    let continuing: Vec<u8> = pm2_literal_stream(8_192, true);
+    let build3_prefix: PmDecoded = decode_bounded(PmMethod::Pm2, &build3, 4_096, QUOTA)
+        .expect("reach the 4 KiB rebuild boundary");
+    let continuing_prefix: PmDecoded = decode_bounded(PmMethod::Pm2, &continuing, 8_192, QUOTA)
+        .expect("reach the continuing rebuild boundary");
+    assert!(build3_prefix.data.iter().all(|byte: &u8| *byte == b' '));
+    assert!(continuing_prefix.data.iter().all(|byte: &u8| *byte == b' '));
+    let cases: [(&str, &[u8], u64); 4] = [
+        ("initial code tree", initial_code_tree, 1),
+        ("initial offset tree", initial_offset_tree, 1),
+        ("4 KiB rebuild", &build3, 4_097),
+        ("8 KiB continuing rebuild", &continuing, 8_193),
+    ];
+    for (label, body, declared) in cases {
+        let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, body, declared, QUOTA)
+            .expect_err("refuse a truncated PM2 tree state");
+        assert!(
+            error
+                .to_string()
+                .contains("compressed body ended before the decoded stream"),
+            "{label}: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_oversubscribed_pm2_code_tree_is_refused() {
+    let mut bits: Vec<u8> = Vec::new();
+    append_bits(&mut bits, 0, 1);
+    append_bits(&mut bits, 3, 5);
+    append_bits(&mut bits, 1, 3);
+    append_bits(&mut bits, 1, 3);
+    append_bits(&mut bits, 7, 3);
+    append_bits(&mut bits, 0, 4);
+    let body: Vec<u8> = pack_bits(&bits);
+    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &body, 1, QUOTA)
+        .expect_err("refuse an oversubscribed PM2 code tree");
+    assert!(
+        error
+            .to_string()
+            .contains("tree declares more codes than available nodes"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_incomplete_pm2_code_tree_is_refused() {
+    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &[0x04, 0x80], 1, QUOTA)
+        .expect_err("refuse an incomplete PM2 code tree");
+    assert!(
+        error
+            .to_string()
+            .contains("tree leaves part of its prefix space unassigned"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_pm2_code_tree_exceeding_its_node_table_is_refused() {
+    let mut bits: Vec<u8> = Vec::new();
+    append_bits(&mut bits, 0, 1);
+    append_bits(&mut bits, 2, 5);
+    append_bits(&mut bits, 7, 3);
+    append_bits(&mut bits, 6, 3);
+    append_bits(&mut bits, 27, 6);
+    append_bits(&mut bits, 27, 6);
+    let body: Vec<u8> = pack_bits(&bits);
+    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &body, 1, QUOTA)
+        .expect_err("refuse a PM2 code tree exceeding its node table");
+    assert!(
+        error
+            .to_string()
+            .contains("tree construction exceeds its node table"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_pm2_offset_tree_without_symbols_is_refused() {
+    let mut bits: Vec<u8> = Vec::new();
+    append_bits(&mut bits, 0, 1);
+    append_bits(&mut bits, 10, 5);
+    append_bits(&mut bits, 0, 3);
+    append_bits(&mut bits, 0, 15);
+    append_bits(&mut bits, 0, 1);
+    append_bits(&mut bits, 0, 6);
+    let body: Vec<u8> = pack_bits(&bits);
+    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &body, 3, QUOTA)
+        .expect_err("refuse a PM2 offset tree without symbols");
+    assert!(
+        error
+            .to_string()
+            .contains("offset tree declares no symbols"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_pm1_stream_cannot_fund_additional_commands_with_zero_fill() {
+    for body in [&[0xff, 0xff][..], &[0xfc, 0x00, 0x00][..]] {
+        let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm1, body, 1 << 20, QUOTA)
+            .expect_err("refuse a -pm1- stream that funds later commands with zero fill");
+        assert!(
+            error
+                .to_string()
+                .contains("zero-fill work limit exhausted before declared output"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn command_output_obeys_each_method_framing_contract() {
+    let pm1: PmDecoded = decode_bounded(PmMethod::Pm1, &[0xfc, 0x00, 0x00], 2, QUOTA)
+        .expect("retain the declared part of a whole PM1 command");
+    assert_eq!(pm1.data, b"  ");
+
+    let error: disrobe_binfmt::Error = decode_bounded(PmMethod::Pm2, &[0x24, 0x00], 1, QUOTA)
+        .expect_err("refuse a PM2 command larger than the remaining output");
+    assert!(
+        error
+            .to_string()
+            .contains("command output exceeds the remaining declared length"),
         "{error}"
     );
 }

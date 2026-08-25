@@ -1643,6 +1643,13 @@ mod tests {
                 true,
             ),
             (
+                "lzh-pm2",
+                "pma",
+                ContainerKind::Lzh,
+                include_bytes!("../../../../corpus/binfmt/lzh/pmarc/pmarc2_comment.pma").to_vec(),
+                false,
+            ),
+            (
                 "inno",
                 "exe",
                 ContainerKind::InnoSetup,
