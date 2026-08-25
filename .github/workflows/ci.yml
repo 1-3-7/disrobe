@@ -756,6 +756,9 @@ jobs:
     name: py band gate (3.10, 3.12, 3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
       - uses: actions/checkout@v6
       - name: free disk space

@@ -114,13 +114,80 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         assert_eq!(configured, full_route, "ci.yml {job} full-route condition");
     }
     for job in [
-        "check", "fmt", "clippy", "graphs", "deny", "typos", "hygiene", "msrv", "slim",
+        "check",
+        "fmt",
+        "clippy",
+        "graphs",
+        "py-band-gate",
+        "deny",
+        "typos",
+        "hygiene",
+        "msrv",
+        "slim",
     ] {
         assert!(
             jobs.get(job)
                 .and_then(|value: &Value| value.get("if"))
                 .is_none(),
             "ci.yml {job} must remain on the fast main route"
+        );
+    }
+    let py_band: &Value = jobs.get("py-band-gate").expect("ci.yml py-band-gate job");
+    let py_band_environment: &Value = py_band.get("env").expect("ci.yml py-band-gate environment");
+    assert_eq!(
+        py_band_environment
+            .get("CARGO_PROFILE_RELEASE_LTO")
+            .and_then(Value::as_str),
+        Some("false"),
+        "the push-critical Python band gate must not pay for release LTO"
+    );
+    assert_eq!(
+        py_band_environment
+            .get("CARGO_PROFILE_RELEASE_CODEGEN_UNITS")
+            .and_then(Value::as_str),
+        Some("16"),
+        "the push-critical Python band gate must compile release code in parallel"
+    );
+    let py_band_steps: &Vec<Value> = py_band
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("ci.yml py-band-gate steps");
+    assert_eq!(
+        test_step_command(py_band_steps, "build the disrobe cli the harness drives"),
+        "cargo build --release -p disrobe-cli --bin disrobe",
+        "the Python band gate must still exercise an optimized release CLI"
+    );
+    for (name, requirement, target) in [
+        (
+            "per-code-object recompile-equivalence floor (>= 95.71% on the 3.10 band)",
+            "DISROBE_REQUIRE_PY_310",
+            "arbitrary_recompile_gate_310",
+        ),
+        (
+            "per-code-object recompile-equivalence floor (>= 95.49% on the 3.12 band)",
+            "DISROBE_REQUIRE_PY_312",
+            "arbitrary_recompile_gate_312",
+        ),
+        (
+            "per-code-object recompile-equivalence floor (>= 95.82% on the 3.13 band)",
+            "DISROBE_REQUIRE_PY_313",
+            "arbitrary_recompile_gate_313",
+        ),
+    ] {
+        let step: &Value = test_step(py_band_steps, name);
+        assert_eq!(
+            step.get("env")
+                .and_then(|value: &Value| value.get(requirement))
+                .and_then(Value::as_str),
+            Some("1"),
+            "{name} must fail instead of skipping its required interpreter band"
+        );
+        let expected_command: String =
+            format!("cargo test -p disrobe-pass-py-decompile --test {target} -- --nocapture");
+        assert_eq!(
+            step.get("run").and_then(Value::as_str),
+            Some(expected_command.as_str()),
+            "{name} must retain its exact independent recovery grader"
         );
     }
     let concurrency: &Value = ci.get("concurrency").expect("ci.yml concurrency");
