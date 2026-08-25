@@ -84,6 +84,16 @@ pub struct SymbolMap {
     pub original_entry_point: Option<u64>,
     pub symbol_count: usize,
     pub symbols: Vec<RecoveredSymbol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<SymbolMapProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolMapProvenance {
+    pub source: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
 }
 
 pub const SYMBOL_MAP_SCHEMA: &str = "disrobe.native.symbol-map/v1";
@@ -139,6 +149,8 @@ pub struct SymbolExport {
     pub original_entry_point: Option<u64>,
     pub symbol_count: usize,
     pub symbols: Vec<ExportSymbol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<SymbolMapProvenance>,
 }
 
 pub trait SymbolExportSource {
@@ -169,6 +181,7 @@ impl SymbolExportSource for SymbolMap {
             original_entry_point: self.original_entry_point,
             symbol_count: symbols.len(),
             symbols,
+            provenance: self.provenance.clone(),
         }
     }
 }
@@ -614,6 +627,7 @@ pub fn collect_recovered_symbols_with_oep(
         original_entry_point: oep_va,
         symbol_count,
         symbols,
+        provenance: Vec::new(),
     })
 }
 
@@ -1571,6 +1585,7 @@ mod tests {
                 origin: SymbolOrigin::SymbolTable,
                 note: None,
             }],
+            provenance: Vec::new(),
         };
         let java: String = render_ghidra_postscript(&map).expect("render Ghidra script");
         assert!(java.contains("public class DisrobeApplySymbols extends GhidraScript"));
@@ -1600,6 +1615,7 @@ mod tests {
                 origin: SymbolOrigin::SymbolTable,
                 note: None,
             }],
+            provenance: Vec::new(),
         };
         let py: String = render_idapython(&map).expect("render IDAPython script");
         assert!(py.contains("DISROBE_BASE = 4194304"));

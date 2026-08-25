@@ -435,18 +435,19 @@ fn build_registry() -> PassRegistry {
     disrobe_passes::build_registry()
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ChainRunOptions {
     pub(crate) write_to_disk: bool,
     pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) emit_recovery: bool,
     pub(crate) backend_export: Option<BackendExportTarget>,
+    pub(crate) engine_symbol_map: Option<PathBuf>,
     pub(crate) i_have_authorization: bool,
 }
 
 impl ChainRunOptions {
-    fn chain_config(self, stream_extracted: bool) -> ChainConfig {
+    fn chain_config(&self, stream_extracted: bool) -> ChainConfig {
         ChainConfig {
             capture_stage_bytes: self.capture_stages && self.write_to_disk,
             persist_children: self.write_to_disk,
@@ -492,18 +493,34 @@ fn prepare_flutter_symbol_export(
     plan: &ChainPlan,
     input: &[u8],
     input_path: &Path,
+    engine_symbol_map_path: Option<&Path>,
     target: Option<BackendExportTarget>,
 ) -> miette::Result<Option<SupplementalOutput>> {
+    let input_hash: [u8; 32] = blake3_hash(input);
+    if direct_root_flutter_node(plan, input_hash).is_none() {
+        if engine_symbol_map_path.is_some() {
+            return Err(miette::miette!(
+                "DR-CLI-0446: --engine-symbol-map requires a successful direct root Flutter AOT classification for the original input"
+            ));
+        }
+        return Ok(None);
+    }
     let Some(target): Option<BackendExportTarget> = target else {
         return Ok(None);
     };
-    let input_hash: [u8; 32] = blake3_hash(input);
-    if direct_root_flutter_node(plan, input_hash).is_none() {
-        return Ok(None);
-    }
     let layout: disrobe_pass_mobile::LibAppLayout = disrobe_pass_mobile::parse_libapp_so(input)
         .map_err(|error| miette::miette!("DR-CLI-0445: requested Flutter symbol export cannot parse the classified root libapp.so: {error}"))?;
-    super::flutter::prepare_flutter_symbol_export(input_path, &layout, target).map(Some)
+    let engine_symbol_map: Option<super::flutter::FlutterEngineSymbolInput> =
+        engine_symbol_map_path
+            .map(|path: &Path| super::flutter::load_flutter_engine_symbol_map(path, input))
+            .transpose()?;
+    super::flutter::prepare_flutter_symbol_export(
+        input_path,
+        &layout,
+        engine_symbol_map.as_ref(),
+        target,
+    )
+    .map(Some)
 }
 
 #[cfg(not(feature = "flutter"))]
@@ -511,8 +528,14 @@ fn prepare_flutter_symbol_export(
     _plan: &ChainPlan,
     _input: &[u8],
     _input_path: &Path,
+    engine_symbol_map_path: Option<&Path>,
     target: Option<BackendExportTarget>,
 ) -> miette::Result<Option<SupplementalOutput>> {
+    if engine_symbol_map_path.is_some() {
+        return Err(miette::miette!(
+            "DR-CLI-0447: --engine-symbol-map requires a binary built with the `flutter` feature"
+        ));
+    }
     let _ = target;
     Ok(None)
 }
@@ -561,14 +584,12 @@ pub(crate) fn run_with_disk(
     fmt: OutputFormat,
     options: ChainRunOptions,
 ) -> miette::Result<()> {
-    let ChainRunOptions {
-        write_to_disk,
-        redact,
-        capture_stages,
-        emit_recovery,
-        backend_export,
-        ..
-    } = options;
+    let write_to_disk: bool = options.write_to_disk;
+    let redact: bool = options.redact;
+    let capture_stages: bool = options.capture_stages;
+    let emit_recovery: bool = options.emit_recovery;
+    let backend_export: Option<BackendExportTarget> = options.backend_export;
+    let engine_symbol_map: Option<&Path> = options.engine_symbol_map.as_deref();
     let spec_raw: String = match pin_arg {
         None => chain_arg,
         Some(pin) => combine_chain_and_pin_owned(chain_arg, &pin)?,
@@ -642,8 +663,13 @@ pub(crate) fn run_with_disk(
         return Err(error);
     }
     let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
-        let flutter_output: Option<SupplementalOutput> =
-            prepare_flutter_symbol_export(&plan, &seed_for_scan, &input, backend_export)?;
+        let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
+            &plan,
+            &seed_for_scan,
+            &input,
+            engine_symbol_map,
+            backend_export,
+        )?;
         if flutter_output.is_some() {
             flutter_output
         } else {
@@ -998,6 +1024,7 @@ pub(crate) fn run_chain_to_dir(
         capture_stages,
         emit_recovery: false,
         backend_export,
+        engine_symbol_map: None,
         i_have_authorization,
     }
     .chain_config(false);
@@ -1008,6 +1035,7 @@ pub(crate) fn run_chain_to_dir(
         &plan,
         &seed_for_scan,
         Path::new(input_label),
+        None,
         backend_export,
     )?;
     let supplemental_output: Option<SupplementalOutput> = if flutter_output.is_some() {
@@ -1330,6 +1358,7 @@ mod tests {
             capture_stages: false,
             emit_recovery: false,
             backend_export: None,
+            engine_symbol_map: None,
             i_have_authorization,
         }
     }
@@ -1572,6 +1601,7 @@ mod tests {
                 capture_stages: false,
                 emit_recovery: false,
                 backend_export: None,
+                engine_symbol_map: None,
                 i_have_authorization: false,
             },
         )
@@ -1767,6 +1797,7 @@ mod tests {
                 capture_stages: false,
                 emit_recovery: false,
                 backend_export: None,
+                engine_symbol_map: None,
                 i_have_authorization: false,
             },
         )

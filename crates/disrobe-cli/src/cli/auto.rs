@@ -16,12 +16,13 @@ pub(crate) struct BatchArgs {
     pub(crate) jobs: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AutoOptions {
     pub(crate) dry_run: bool,
     pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) backend_export: Option<BackendExportTarget>,
+    pub(crate) engine_symbol_map: Option<PathBuf>,
     pub(crate) i_have_authorization: bool,
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn run(
         redact,
         capture_stages,
         backend_export,
+        engine_symbol_map,
         i_have_authorization,
     } = options;
     #[cfg(not(any(feature = "jvm", feature = "flutter")))]
@@ -58,6 +60,11 @@ pub(crate) fn run(
     let cap: u8 = max_depth.unwrap_or(8);
 
     if input.is_dir() {
+        if engine_symbol_map.is_some() {
+            return Err(miette::miette!(
+                "DR-CLI-0446: `auto --engine-symbol-map` requires a single matching Flutter ELF input"
+            ));
+        }
         if dry_run {
             return Err(miette::miette!(
                 "DR-CLI-0346: `auto --dry-run` is a single-file plan-only mode; it does not apply to directory batch runs"
@@ -96,6 +103,7 @@ pub(crate) fn run(
             capture_stages,
             emit_recovery,
             backend_export,
+            engine_symbol_map,
             i_have_authorization,
         },
     )

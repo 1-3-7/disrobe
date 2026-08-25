@@ -266,6 +266,25 @@ pub enum Error {
         "DR-MOB-0057: Flutter engine image range start {start:#x} plus size {size:#x} overflows"
     )]
     FlutterEngineSymbolMapImageRangeOverflow { start: u64, size: u64 },
+
+    #[error("DR-MOB-0058: Flutter engine symbol map requires an elf-build-id identity")]
+    FlutterEngineSymbolMapIdentityKind,
+
+    #[error("DR-MOB-0059: Flutter ELF carries no unambiguous GNU build ID")]
+    FlutterEngineSymbolMapIdentityUnavailable,
+
+    #[error(
+        "DR-MOB-0060: Flutter engine symbol map identity {map} does not match input build ID {input}"
+    )]
+    FlutterEngineSymbolMapIdentityMismatch { map: String, input: String },
+
+    #[error("DR-MOB-0061: Flutter engine image cannot be bounded: {0}")]
+    FlutterEngineSymbolMapImage(String),
+
+    #[error(
+        "DR-MOB-0062: Flutter engine symbol map address {address:#x} is outside every image segment"
+    )]
+    FlutterEngineSymbolMapAddressOutsideSegments { address: u64 },
 }
 
 impl From<zip::result::ZipError> for Error {

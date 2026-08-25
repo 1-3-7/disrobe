@@ -75,8 +75,9 @@ pub use engine_symbols::{
     FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES,
     FLUTTER_ENGINE_SYMBOL_MAP_MAX_ENTRIES, FLUTTER_ENGINE_SYMBOL_MAP_VERSION,
     FlutterEngineIdentity, FlutterEngineSymbol, FlutterEngineSymbolMap,
-    FlutterEngineSymbolMapIdentityKind, parse_flutter_engine_symbol_map,
-    parse_flutter_engine_symbol_map_reader,
+    FlutterEngineSymbolMapIdentityKind, ValidatedFlutterEngineSymbolMap,
+    parse_flutter_engine_symbol_map, parse_flutter_engine_symbol_map_reader,
+    validate_flutter_engine_symbol_map_for_elf,
 };
 pub use kernel::{
     DART_KERNEL_MAGIC, DartKernel, KernelClass, KernelLibrary, KernelProcedure,

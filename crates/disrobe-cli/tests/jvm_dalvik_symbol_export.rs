@@ -747,6 +747,7 @@ fn symbol_export(symbols: Vec<ExportSymbol>) -> SymbolExport {
         original_entry_point: None,
         symbol_count: symbols.len(),
         symbols,
+        provenance: Vec::new(),
     }
 }
 

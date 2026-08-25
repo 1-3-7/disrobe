@@ -2347,6 +2347,7 @@ version = "0.10.5"
 dependencies = [
  "blake3",
  "boa_engine",
+ "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-cfg",
  "disrobe-core",

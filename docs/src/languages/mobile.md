@@ -26,6 +26,7 @@ disrobe hermes disasm index.android.bundle --out disasm/
 disrobe hermes info index.android.bundle
 
 disrobe flutter dump libapp.so --out layout.json
+disrobe flutter dump libflutter.so --format json --engine-symbol-map engine-symbols.json
 disrobe flutter decompile libapp.so --out estimate.json
 disrobe flutter kernel app.dill --out kernel.json
 disrobe flutter disasm libapp.so --emit-listing
@@ -38,7 +39,23 @@ disrobe flutter inventory-standalone vm_data vm_instructions isolate_data isolat
 
 `hermes decompile` lifts each function back to pseudo-JavaScript. `hermes disasm` emits a per-function summary without a JS surface. Pass `--function <INDEX_OR_NAME>` to select a zero-based index or exact function name, and add `--json` to receive the same instruction list as a structured document. Duplicate names require an index. `hermes info` prints the version, function count, string count, and identifier count.
 
-`flutter dump` reports the four Dart snapshot sections and their sizes. `flutter map` parses a Flutter `obfuscation_map.json` into a typed original-to-obfuscated lookup.
+`flutter dump` reports the four Dart snapshot sections and their sizes. With `--format`, an optional `--engine-symbol-map` accepts the versioned `disrobe.flutter.engine-symbol-map` JSON format. Disrobe applies those names only when the map's GNU build ID matches the ELF input and every address lies inside an image segment. The parser caps the map at 1 MiB and 10,000 unique addresses. `flutter map` parses a Flutter `obfuscation_map.json` into a typed original-to-obfuscated lookup.
+
+```json
+{
+  "format": "disrobe.flutter.engine-symbol-map",
+  "version": 1,
+  "identity": {
+    "kind": "elf-build-id",
+    "value": "b71885094a73117bf90d3cfa05824129"
+  },
+  "symbols": [
+    { "address": 4096, "name": "Dart_Invoke" }
+  ]
+}
+```
+
+`address` is an unsigned virtual address in the input image, not a file offset or image-relative offset. Addresses must be unique. A validated external entry replaces a symbol-table entry at the same address; all other local symbols remain. JSON exports record the map path, format, and matched build ID in `provenance`. The same map can be supplied to a single-file automatic run with `disrobe auto <input> --format json --engine-symbol-map <map>`.
 
 Output shapes below are illustrative.
 

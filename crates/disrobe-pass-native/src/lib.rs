@@ -91,9 +91,9 @@ pub use authenticode::{
 };
 pub use backend_export::{
     ExportFormat, RebuildLayout, RebuiltImage, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass,
-    SymbolMap, SymbolOrigin, collect_recovered_symbols, collect_recovered_symbols_with_oep,
-    rebuild_passthrough, rebuild_unpacked_pe, render_ghidra_postscript, render_idapython,
-    render_symbol_map_json,
+    SymbolMap, SymbolMapProvenance, SymbolOrigin, collect_recovered_symbols,
+    collect_recovered_symbols_with_oep, rebuild_passthrough, rebuild_unpacked_pe,
+    render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
 pub use bindiff::{
     BINDIFF_SCHEMA, BinDiffReport, CfgFingerprint, ChangeKind, ChangedFunction, FunctionPrint,

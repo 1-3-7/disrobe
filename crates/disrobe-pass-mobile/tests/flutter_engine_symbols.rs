@@ -2,13 +2,14 @@
 
 use disrobe_pass_mobile::{
     Error, FlutterEngineSymbolMap, FlutterEngineSymbolMapIdentityKind,
-    parse_flutter_engine_symbol_map,
+    parse_flutter_engine_symbol_map, parse_flutter_engine_symbol_map_reader,
+    validate_flutter_engine_symbol_map_for_elf,
 };
 
 const VALID_MAP: &[u8] = br#"{
   "format": "disrobe.flutter.engine-symbol-map",
   "version": 1,
-  "identity": { "kind": "elf-build-id", "value": "0123456789abcdef" },
+  "identity": { "kind": "elf-build-id", "value": "0123456789abcdef0123456789abcdef" },
   "symbols": [
     { "address": 8192, "name": "FlutterEngineStart" },
     { "address": 4096, "name": "Dart_Invoke" }
@@ -21,14 +22,14 @@ fn parses_a_versioned_engine_map_in_deterministic_address_order() {
         parse_flutter_engine_symbol_map(VALID_MAP).expect("map parses");
 
     assert_eq!(
-        map.identity.kind,
+        map.identity().kind,
         FlutterEngineSymbolMapIdentityKind::ElfBuildId
     );
-    assert_eq!(map.identity.value, "0123456789abcdef");
-    assert_eq!(map.entries.len(), 2);
-    assert_eq!(map.entries[0].address, 4096);
-    assert_eq!(map.entries[0].name, "Dart_Invoke");
-    assert_eq!(map.entries[1].address, 8192);
+    assert_eq!(map.identity().value, "0123456789abcdef0123456789abcdef");
+    assert_eq!(map.symbols().len(), 2);
+    assert_eq!(map.symbols()[0].address, 4096);
+    assert_eq!(map.symbols()[0].name, "Dart_Invoke");
+    assert_eq!(map.symbols()[1].address, 8192);
 }
 
 #[test]
@@ -36,7 +37,7 @@ fn rejects_an_unknown_engine_map_version() {
     let bytes: &[u8] = br#"{
       "format": "disrobe.flutter.engine-symbol-map",
       "version": 2,
-      "identity": { "kind": "elf-build-id", "value": "a" },
+      "identity": { "kind": "elf-build-id", "value": "0123456789abcdef0123456789abcdef" },
       "symbols": []
     }"#;
 
@@ -46,6 +47,35 @@ fn rejects_an_unknown_engine_map_version() {
         error,
         Error::FlutterEngineSymbolMapUnsupportedVersion { version: 2 }
     ));
+}
+
+#[test]
+fn rejects_an_identity_that_does_not_match_its_declared_kind() {
+    let bytes: &[u8] = br#"{
+      "format": "disrobe.flutter.engine-symbol-map",
+      "version": 1,
+      "identity": { "kind": "elf-build-id", "value": "not-a-build-id" },
+      "symbols": []
+    }"#;
+
+    let error: Error = parse_flutter_engine_symbol_map(bytes).expect_err("identity must fail");
+
+    assert!(matches!(error, Error::FlutterEngineSymbolMapMalformed(_)));
+}
+
+#[test]
+fn accepts_sha1_length_elf_build_ids() {
+    let bytes: &[u8] = br#"{
+      "format": "disrobe.flutter.engine-symbol-map",
+      "version": 1,
+      "identity": { "kind": "elf-build-id", "value": "0123456789abcdef0123456789abcdef01234567" },
+      "symbols": []
+    }"#;
+
+    let map: FlutterEngineSymbolMap =
+        parse_flutter_engine_symbol_map(bytes).expect("SHA-1 build ID parses");
+
+    assert_eq!(map.identity().value.len(), 40);
 }
 
 #[test]
@@ -61,7 +91,7 @@ fn rejects_duplicate_engine_symbol_addresses() {
     let bytes: &[u8] = br#"{
       "format": "disrobe.flutter.engine-symbol-map",
       "version": 1,
-      "identity": { "kind": "elf-build-id", "value": "a" },
+      "identity": { "kind": "elf-build-id", "value": "0123456789abcdef0123456789abcdef" },
       "symbols": [
         { "address": 4096, "name": "first" },
         { "address": 4096, "name": "second" }
@@ -92,6 +122,63 @@ fn rejects_map_bytes_over_the_hard_cap_before_deserializing() {
 }
 
 #[test]
+fn streaming_reader_stops_one_byte_past_the_hard_cap() {
+    let bytes: Vec<u8> = vec![b' '; disrobe_pass_mobile::FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES + 64];
+    let error: Error = parse_flutter_engine_symbol_map_reader(std::io::Cursor::new(bytes))
+        .expect_err("oversized reader must fail");
+
+    assert!(matches!(
+        error,
+        Error::FlutterEngineSymbolMapTooLarge { actual, limit }
+            if actual == disrobe_pass_mobile::FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES + 1
+                && limit == disrobe_pass_mobile::FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES
+    ));
+}
+
+#[test]
+fn validated_map_rejects_an_address_between_elf_segments() {
+    let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("corpus")
+        .join("mobile")
+        .join("flutter")
+        .join("disrobe_sample")
+        .join("libapp_arm64.so");
+    let input: Vec<u8> = std::fs::read(&fixture).expect("read Flutter fixture");
+    let native: disrobe_binfmt::NativeFile =
+        disrobe_binfmt::parse_native(&input).expect("parse Flutter fixture");
+    let mut segments: Vec<(u64, u64)> = native
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            segment
+                .address
+                .checked_add(segment.size)
+                .map(|end| (segment.address, end))
+        })
+        .collect();
+    segments.sort_unstable();
+    let gap: u64 = segments
+        .windows(2)
+        .find_map(|pair| (pair[0].1 < pair[1].0).then_some(pair[0].1))
+        .expect("fixture carries a segment gap");
+    let map_json: String = format!(
+        "{{\"format\":\"disrobe.flutter.engine-symbol-map\",\"version\":1,\"identity\":{{\"kind\":\"elf-build-id\",\"value\":\"b71885094a73117bf90d3cfa05824129\"}},\"symbols\":[{{\"address\":{gap},\"name\":\"gap\"}}]}}"
+    );
+    let map: FlutterEngineSymbolMap =
+        parse_flutter_engine_symbol_map(map_json.as_bytes()).expect("parse gap map");
+
+    let error: Error =
+        validate_flutter_engine_symbol_map_for_elf(&input, map).expect_err("segment gap must fail");
+
+    assert!(matches!(
+        error,
+        Error::FlutterEngineSymbolMapAddressOutsideSegments { address } if address == gap
+    ));
+}
+
+#[test]
 fn rejects_map_entries_over_the_hard_cap() {
     let mut symbols: String = String::new();
     for address in 0..=disrobe_pass_mobile::FLUTTER_ENGINE_SYMBOL_MAP_MAX_ENTRIES {
@@ -103,7 +190,7 @@ fn rejects_map_entries_over_the_hard_cap() {
         ));
     }
     let bytes: Vec<u8> = format!(
-        "{{\"format\":\"disrobe.flutter.engine-symbol-map\",\"version\":1,\"identity\":{{\"kind\":\"elf-build-id\",\"value\":\"a\"}},\"symbols\":[{symbols}]}}"
+        "{{\"format\":\"disrobe.flutter.engine-symbol-map\",\"version\":1,\"identity\":{{\"kind\":\"elf-build-id\",\"value\":\"0123456789abcdef0123456789abcdef\"}},\"symbols\":[{symbols}]}}"
     )
     .into_bytes();
 

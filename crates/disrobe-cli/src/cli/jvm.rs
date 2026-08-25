@@ -1847,6 +1847,7 @@ fn dalvik_symbol_export(input: &std::path::Path, dex: &DexFile) -> SymbolExport 
         original_entry_point: None,
         symbol_count,
         symbols,
+        provenance: Vec::new(),
     }
 }
 

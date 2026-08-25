@@ -1,4 +1,5 @@
 #![allow(clippy::needless_pass_by_value)]
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -9,14 +10,16 @@ use disrobe_pass_mobile::{
     AotLiftReport, Arm64Disassembly, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL,
     DART_VM_DATA_SYMBOL, DART_VM_INSTR_SYMBOL, DartAotDecompile, DartGraphObfuscationHint,
     DartGraphRecoveryOptions, DartGraphRecoveryReport, DartKernelDecompile, DartLiftedFunction,
-    DartSnapshotHeader, FlutterObfuscationMap, LibAppLayout, decompile_dart_aot,
+    DartSnapshotHeader, FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FlutterEngineSymbolMap,
+    FlutterObfuscationMap, LibAppLayout, ValidatedFlutterEngineSymbolMap, decompile_dart_aot,
     decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel, lift_libapp_aot,
-    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_pinned_elf,
-    recover_dart_pinned_standalone,
+    parse_dart_snapshot, parse_flutter_engine_symbol_map_reader, parse_flutter_obfuscation_map,
+    parse_libapp_so, recover_dart_pinned_elf, recover_dart_pinned_standalone,
+    validate_flutter_engine_symbol_map_for_elf,
 };
 use disrobe_pass_native::{
-    ExportFormat, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass, SymbolMap, SymbolOrigin,
-    render_ghidra_postscript, render_idapython, render_symbol_map_json,
+    ExportFormat, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass, SymbolMap, SymbolMapProvenance,
+    SymbolOrigin, render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
 
 #[cfg(feature = "chain")]
@@ -43,6 +46,12 @@ pub(crate) enum FlutterCmd {
             help = "also emit recovered function names for an analysis tool"
         )]
         format: Option<FlutterExportTarget>,
+        #[arg(
+            long,
+            requires = "format",
+            help = "validated disrobe.flutter.engine-symbol-map v1 file whose build identity must match the input"
+        )]
+        engine_symbol_map: Option<PathBuf>,
     },
     #[command(
         about = "recover pseudo-Dart from a Flutter libapp.so, or inspect metadata in a raw Dart AOT snapshot"
@@ -161,6 +170,11 @@ pub(crate) enum FlutterExportTarget {
     Json,
 }
 
+pub(crate) struct FlutterEngineSymbolInput {
+    map: ValidatedFlutterEngineSymbolMap,
+    source: String,
+}
+
 impl FlutterExportTarget {
     const fn into_pass(self) -> ExportFormat {
         match self {
@@ -183,7 +197,12 @@ impl ObfuscationNames {
 
 pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
     match action {
-        FlutterCmd::Dump { input, out, format } => dump(input, out, format),
+        FlutterCmd::Dump {
+            input,
+            out,
+            format,
+            engine_symbol_map,
+        } => dump(input, out, format, engine_symbol_map),
         FlutterCmd::Decompile { input, out, emit } => decompile(input, out, emit),
         FlutterCmd::Kernel {
             input,
@@ -306,11 +325,16 @@ fn dump(
     input: PathBuf,
     out: Option<PathBuf>,
     export_target: Option<FlutterExportTarget>,
+    engine_symbol_map_path: Option<PathBuf>,
 ) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0750: cannot read input: {e}"))?;
     let layout: LibAppLayout =
         parse_libapp_so(&bytes).map_err(|e| miette::miette!("DR-CLI-0751: libapp parse: {e}"))?;
+    let engine_symbol_map: Option<FlutterEngineSymbolInput> = engine_symbol_map_path
+        .as_deref()
+        .map(|path: &Path| load_flutter_engine_symbol_map(path, &bytes))
+        .transpose()?;
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -328,7 +352,13 @@ fn dump(
         .map_err(|e| miette::miette!("DR-CLI-0754: cannot write output: {e}"))?;
     let sidecar_path: Option<PathBuf> = export_target
         .map(|target: FlutterExportTarget| {
-            write_flutter_symbol_export(&input, &out_path, &layout, target)
+            write_flutter_symbol_export(
+                &input,
+                &out_path,
+                &layout,
+                engine_symbol_map.as_ref(),
+                target,
+            )
         })
         .transpose()?;
     println!("flutter dump: OK");
@@ -375,19 +405,22 @@ fn write_flutter_symbol_export(
     input: &Path,
     out_path: &Path,
     layout: &LibAppLayout,
+    engine_symbol_map: Option<&FlutterEngineSymbolInput>,
     target: FlutterExportTarget,
 ) -> miette::Result<PathBuf> {
     let format: ExportFormat = target.into_pass();
-    let rendered: String = render_flutter_symbol_export(input, layout, format)?;
+    let rendered: String =
+        render_flutter_symbol_export_with_engine_map(input, layout, engine_symbol_map, format)?;
     let sidecar_path: PathBuf = out_path.with_extension(format.sidecar_extension());
     std::fs::write(&sidecar_path, rendered.as_bytes())
         .map_err(|error| miette::miette!("DR-CLI-0756: cannot write symbol export: {error}"))?;
     Ok(sidecar_path)
 }
 
-pub(crate) fn render_flutter_symbol_export(
+fn render_flutter_symbol_export_with_engine_map(
     input: &Path,
     layout: &LibAppLayout,
+    engine_symbol_map: Option<&FlutterEngineSymbolInput>,
     format: ExportFormat,
 ) -> miette::Result<String> {
     let mut symbols: Vec<RecoveredSymbol> = layout
@@ -407,6 +440,29 @@ pub(crate) fn render_flutter_symbol_export(
             },
         )
         .collect();
+    if let Some(map) = engine_symbol_map {
+        let external_addresses: BTreeSet<u64> = map
+            .map
+            .symbols()
+            .iter()
+            .map(|symbol| symbol.address)
+            .collect();
+        symbols.retain(|symbol: &RecoveredSymbol| !external_addresses.contains(&symbol.address));
+        for external in map.map.symbols() {
+            symbols.push(RecoveredSymbol {
+                address: external.address,
+                name: external.name.clone(),
+                demangled: None,
+                class: SymbolClass::Function,
+                origin: SymbolOrigin::CompilerRuntime,
+                note: Some(format!(
+                    "Flutter engine symbol from {:?} {}",
+                    map.map.identity().kind,
+                    map.map.identity().value
+                )),
+            });
+        }
+    }
     symbols.sort_unstable_by(|left: &RecoveredSymbol, right: &RecoveredSymbol| {
         left.address
             .cmp(&right.address)
@@ -423,6 +479,13 @@ pub(crate) fn render_flutter_symbol_export(
         original_entry_point: None,
         symbol_count: symbols.len(),
         symbols,
+        provenance: engine_symbol_map.map_or_else(Vec::new, |map| {
+            vec![SymbolMapProvenance {
+                source: map.source.clone(),
+                kind: FLUTTER_ENGINE_SYMBOL_MAP_FORMAT.to_owned(),
+                identity: Some(map.map.identity().value.clone()),
+            }]
+        }),
     };
     match format {
         ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map)
@@ -434,13 +497,40 @@ pub(crate) fn render_flutter_symbol_export(
     }
 }
 
+pub(crate) fn load_flutter_engine_symbol_map(
+    path: &Path,
+    input_bytes: &[u8],
+) -> miette::Result<FlutterEngineSymbolInput> {
+    let file: std::fs::File = std::fs::File::open(path).map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0757: cannot open Flutter engine symbol map {}: {error}",
+            path.display()
+        )
+    })?;
+    let map: FlutterEngineSymbolMap = parse_flutter_engine_symbol_map_reader(file)
+        .map_err(|error| miette::miette!("DR-CLI-0758: Flutter engine symbol map: {error}"))?;
+    let validated: ValidatedFlutterEngineSymbolMap =
+        validate_flutter_engine_symbol_map_for_elf(input_bytes, map)
+            .map_err(|error| miette::miette!("DR-CLI-0759: Flutter engine symbol map: {error}"))?;
+    Ok(FlutterEngineSymbolInput {
+        map: validated,
+        source: path.display().to_string(),
+    })
+}
+
 #[cfg(feature = "chain")]
 pub(crate) fn prepare_flutter_symbol_export(
     input: &Path,
     layout: &LibAppLayout,
+    engine_symbol_map: Option<&FlutterEngineSymbolInput>,
     target: BackendExportTarget,
 ) -> miette::Result<SupplementalOutput> {
-    let rendered: String = render_flutter_symbol_export(input, layout, target.format())?;
+    let rendered: String = render_flutter_symbol_export_with_engine_map(
+        input,
+        layout,
+        engine_symbol_map,
+        target.format(),
+    )?;
     SupplementalOutput::new(target.flutter_auto_path(), rendered.into_bytes())
 }
 
@@ -781,10 +871,73 @@ fn write_inventory_report(
 #[allow(
     clippy::expect_used,
     clippy::cast_possible_truncation,
+    clippy::panic,
     clippy::unwrap_used
 )]
 mod tests {
     use super::*;
+    use disrobe_pass_mobile::parse_flutter_engine_symbol_map;
+
+    fn flutter_aot_fixture() -> Vec<u8> {
+        let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("mobile")
+            .join("flutter")
+            .join("disrobe_sample")
+            .join("libapp_arm64.so");
+        std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+    }
+
+    #[test]
+    fn matching_external_engine_map_reaches_the_flutter_export() {
+        let input: Vec<u8> = flutter_aot_fixture();
+        let native: disrobe_binfmt::NativeFile =
+            disrobe_binfmt::parse_native(&input).expect("parse native image");
+        let address: u64 = native
+            .segments
+            .iter()
+            .find(|segment| segment.size != 0)
+            .expect("bounded segment")
+            .address;
+        let map_json: String = format!(
+            r#"{{"format":"disrobe.flutter.engine-symbol-map","version":1,"identity":{{"kind":"elf-build-id","value":"b71885094a73117bf90d3cfa05824129"}},"symbols":[{{"address":{address},"name":"FlutterEngineExternal"}}]}}"#
+        );
+        let map: FlutterEngineSymbolMap =
+            parse_flutter_engine_symbol_map(map_json.as_bytes()).expect("parse matching map");
+        let validated: ValidatedFlutterEngineSymbolMap =
+            validate_flutter_engine_symbol_map_for_elf(&input, map).expect("matching map");
+        let external: FlutterEngineSymbolInput = FlutterEngineSymbolInput {
+            map: validated,
+            source: "engine-symbols.json".to_owned(),
+        };
+        let layout: LibAppLayout = parse_libapp_so(&input).expect("parse Flutter layout");
+        let rendered: String = render_flutter_symbol_export_with_engine_map(
+            Path::new("libapp_arm64.so"),
+            &layout,
+            Some(&external),
+            ExportFormat::Json,
+        )
+        .expect("render export");
+
+        assert!(rendered.contains("FlutterEngineExternal"), "{rendered}");
+        assert!(rendered.contains("compiler-runtime"), "{rendered}");
+    }
+
+    #[test]
+    fn mismatched_external_engine_map_is_refused_before_export() {
+        let input: Vec<u8> = flutter_aot_fixture();
+        let map: FlutterEngineSymbolMap = parse_flutter_engine_symbol_map(
+            br#"{"format":"disrobe.flutter.engine-symbol-map","version":1,"identity":{"kind":"elf-build-id","value":"00000000000000000000000000000000"},"symbols":[]}"#,
+        )
+        .expect("parse mismatched map");
+
+        let error: disrobe_pass_mobile::Error =
+            validate_flutter_engine_symbol_map_for_elf(&input, map).expect_err("identity mismatch");
+
+        assert!(error.to_string().contains("does not match input build ID"));
+    }
 
     fn encode_uint(value: u64) -> Vec<u8> {
         if value < 0x80 {

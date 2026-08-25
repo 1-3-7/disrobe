@@ -898,6 +898,12 @@ enum Cmd {
             help = "emit a direct-root Flutter or DEX symbol map under <out>/exports for Ghidra, IDA, or JSON"
         )]
         format: Option<BackendExportTarget>,
+        #[arg(
+            long,
+            requires = "format",
+            help = "validated Flutter engine symbol map for a matching direct-root ELF input"
+        )]
+        engine_symbol_map: Option<PathBuf>,
         #[arg(long, help = "report what would happen without writing any output")]
         dry_run: bool,
         #[arg(
@@ -2012,6 +2018,7 @@ fn main() -> miette::Result<()> {
             max_depth,
             emit,
             format,
+            engine_symbol_map,
             dry_run,
             redact,
             capture_stages,
@@ -2060,6 +2067,7 @@ fn main() -> miette::Result<()> {
                     redact: redact || eff.redact,
                     capture_stages,
                     backend_export: format,
+                    engine_symbol_map,
                     i_have_authorization: llm_flags.i_have_authorization,
                 },
                 auto::BatchArgs {
@@ -2089,6 +2097,7 @@ fn main() -> miette::Result<()> {
                 capture_stages,
                 emit_recovery: false,
                 backend_export: None,
+                engine_symbol_map: None,
                 i_have_authorization: llm_flags.i_have_authorization,
             },
         ),

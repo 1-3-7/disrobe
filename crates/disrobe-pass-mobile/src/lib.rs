@@ -93,9 +93,10 @@ pub use flutter::{
     FlutterObfuscationMap, ImageHeader, KernelClass, KernelLibrary, KernelProcedure,
     KernelProcedureKind, KernelSource, LibAppLayout, ObjectPoolReferenceMap,
     PINNED_DART_GRAPH_LAYOUTS, PoolSlotUse, PredefinedClass, SnapshotSection,
-    attach_cluster_schema, build_program_skeleton as build_dart_program_skeleton,
-    cid_matches_version, cid_table, decompile_dart_aot, decompile_dart_kernel, decompile_libapp_so,
-    decompile_libapp_so_recovery, decompile_libapp_so_structured, demangle as demangle_dart_name,
+    ValidatedFlutterEngineSymbolMap, attach_cluster_schema,
+    build_program_skeleton as build_dart_program_skeleton, cid_matches_version, cid_table,
+    decompile_dart_aot, decompile_dart_kernel, decompile_libapp_so, decompile_libapp_so_recovery,
+    decompile_libapp_so_structured, demangle as demangle_dart_name,
     demangle_qualified as demangle_dart_qualified,
     disassemble_function as disassemble_dart_function,
     disassemble_functions as disassemble_dart_functions, disassemble_libapp_so,
@@ -110,7 +111,8 @@ pub use flutter::{
     recover_dart_snapshot_structure, recover_dart_snapshot_structure_with_symbols,
     recover_dart_static, recover_libapp, recover_object_pool_references, recover_string_pool,
     recovery_counts as dart_recovery_counts, resolve_pool_literals, traverse_arm64,
-    vm_data_bytes as dart_vm_data_bytes, vm_instruction_bytes as dart_vm_instruction_bytes,
+    validate_flutter_engine_symbol_map_for_elf, vm_data_bytes as dart_vm_data_bytes,
+    vm_instruction_bytes as dart_vm_instruction_bytes,
 };
 pub use hermes::{
     BigIntTableEntry, BufferKind, DeclineCount, DecompileReport, DecompiledFunction,

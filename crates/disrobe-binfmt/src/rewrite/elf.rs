@@ -473,7 +473,7 @@ pub(super) fn plan(bytes: &[u8], format: NativeFormat) -> Result<ImagePlan> {
     }
 
     if let Some(table) = program_headers.as_ref() {
-        record_build_id(&mut builder, bytes, table, file_len);
+        record_build_ids(&mut builder, bytes, table, file_len)?;
     }
 
     builder.finish()
@@ -601,28 +601,31 @@ fn resolve_program_count(header: &ElfHeader, sections: Option<&ElfSectionHeaders
         )
 }
 
-fn record_build_id(
+fn record_build_ids(
     builder: &mut PlanBuilder,
     bytes: &[u8],
     table: &ElfProgramHeaders,
     file_len: u64,
-) {
+) -> Result<()> {
     for segment in &table.entries {
         if segment.kind != PT_NOTE || segment.filesz == 0 {
             continue;
         }
         if segment.filesz > MAX_NOTE_SEGMENT_BYTES {
-            continue;
+            return Err(rewrite_error(
+                "an ELF note segment exceeds the parsing limit",
+            ));
         }
         let Some(end) = segment.offset.checked_add(segment.filesz) else {
-            continue;
+            return Err(rewrite_error("an ELF note segment range overflows"));
         };
         if end > file_len {
-            continue;
+            return Err(rewrite_error("an ELF note segment exceeds the input"));
         }
-        if let Some((desc_start, desc_end)) =
-            find_build_id(bytes, table.endian, segment.offset, end)
-        {
+        let Some(ranges) = find_build_ids(bytes, table.endian, segment.offset, end) else {
+            return Err(rewrite_error("an ELF note segment is malformed"));
+        };
+        for (desc_start, desc_end) in ranges {
             builder.derive(DerivedValue {
                 kind: DerivedKind::ElfGnuBuildId,
                 field_start: desc_start,
@@ -633,16 +636,17 @@ fn record_build_id(
                          writer does not recompute it"
                     .to_owned(),
             });
-            return;
         }
     }
+    Ok(())
 }
 
-fn find_build_id(bytes: &[u8], endian: Endian, start: u64, end: u64) -> Option<(u64, u64)> {
+fn find_build_ids(bytes: &[u8], endian: Endian, start: u64, end: u64) -> Option<Vec<(u64, u64)>> {
     let mut cursor: u64 = start;
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
     for _ in 0..MAX_NOTES_PER_SEGMENT {
         if cursor >= end {
-            return None;
+            return Some(ranges);
         }
         let index: usize = usize::try_from(cursor).ok()?;
         let mut reader: ByteReader<'_> = ByteReader::new(bytes);
@@ -663,12 +667,112 @@ fn find_build_id(bytes: &[u8], endian: Endian, start: u64, end: u64) -> Option<(
         let name_end: usize = name_index.checked_add(namesz as usize)?;
         let name: &[u8] = bytes.get(name_index..name_end)?;
         if note_type == NT_GNU_BUILD_ID && name == GNU_NOTE_NAME && descsz != 0 {
-            return Some((desc_start, desc_end));
+            ranges.push((desc_start, desc_end));
         }
         if next <= cursor {
             return None;
         }
         cursor = next;
     }
-    None
+    (cursor >= end).then_some(ranges)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod build_id_tests {
+    use super::find_build_ids;
+    use crate::rewrite::{DerivedKind, ImagePlan, plan_native_image};
+    use disrobe_bytes::Endian;
+
+    fn elf_with_notes(notes: &[u8]) -> Vec<u8> {
+        let note_offset: u64 = 120;
+        let mut bytes: Vec<u8> = vec![0; note_offset as usize];
+        bytes[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+        bytes[16..18].copy_from_slice(&2_u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&0xb7_u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64_u64.to_le_bytes());
+        bytes[52..54].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[54..56].copy_from_slice(&56_u16.to_le_bytes());
+        bytes[56..58].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[64..68].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[72..80].copy_from_slice(&note_offset.to_le_bytes());
+        bytes[96..104].copy_from_slice(&(notes.len() as u64).to_le_bytes());
+        bytes[104..112].copy_from_slice(&(notes.len() as u64).to_le_bytes());
+        bytes[112..120].copy_from_slice(&4_u64.to_le_bytes());
+        bytes.extend_from_slice(notes);
+        bytes
+    }
+
+    fn variable_note(descriptor: &[u8]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::with_capacity(16 + descriptor.len());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&(descriptor.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNU\0");
+        bytes.extend_from_slice(descriptor);
+        bytes
+    }
+
+    fn note(descriptor: [u8; 16]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::with_capacity(32);
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(b"GNU\0");
+        bytes.extend_from_slice(&descriptor);
+        bytes
+    }
+
+    #[test]
+    fn records_every_build_id_in_a_note_segment() {
+        let mut bytes: Vec<u8> = note([0x11; 16]);
+        bytes.extend_from_slice(&note([0x22; 16]));
+
+        assert_eq!(
+            find_build_ids(&bytes, Endian::Little, 0, bytes.len() as u64),
+            Some(vec![(16, 32), (48, 64)])
+        );
+    }
+
+    #[test]
+    fn refuses_a_build_id_descriptor_that_overruns_its_segment() {
+        let mut bytes: Vec<u8> = note([0x11; 16]);
+        bytes.truncate(24);
+
+        assert_eq!(
+            find_build_ids(&bytes, Endian::Little, 0, bytes.len() as u64),
+            None
+        );
+    }
+
+    #[test]
+    fn public_plan_records_duplicate_build_ids_for_ambiguity_checks() {
+        let mut notes: Vec<u8> = variable_note(&[0x11; 16]);
+        notes.extend_from_slice(&variable_note(&[0x22; 16]));
+
+        let plan: ImagePlan =
+            plan_native_image(&elf_with_notes(&notes)).expect("plan duplicate build IDs");
+        let count: usize = plan
+            .derived_values()
+            .iter()
+            .filter(|value| value.kind == DerivedKind::ElfGnuBuildId)
+            .count();
+
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn public_plan_refuses_a_valid_build_id_followed_by_a_malformed_note() {
+        let mut notes: Vec<u8> = variable_note(&[0x11; 16]);
+        notes.extend_from_slice(&4_u32.to_le_bytes());
+        notes.extend_from_slice(&32_u32.to_le_bytes());
+        notes.extend_from_slice(&3_u32.to_le_bytes());
+        notes.extend_from_slice(b"GNU\0");
+
+        let error: crate::Error =
+            plan_native_image(&elf_with_notes(&notes)).expect_err("malformed trailing note");
+
+        assert!(error.to_string().contains("note segment is malformed"));
+    }
 }
