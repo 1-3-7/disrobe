@@ -21,7 +21,7 @@ pub fn mba_peephole_rule_pack_id() -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in MBA_PEEPHOLE_RULES
         .bytes()
-        .chain([0].into_iter())
+        .chain(std::iter::once(0))
         .chain(MBA_PEEPHOLE_AUDIT.bytes())
     {
         hash ^= u64::from(byte);
