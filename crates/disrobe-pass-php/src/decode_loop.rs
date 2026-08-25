@@ -748,10 +748,14 @@ impl<'a> LoopParser<'a> {
 
     fn parse_destructure(&mut self) -> Option<LStmt> {
         self.skip_trivia();
-        if self.peek() != Some(b'[') {
+        let close: u8 = if self.peek() == Some(b'[') {
+            self.pos += 1;
+            b']'
+        } else if self.eat_keyword(b"list") && self.eat(b"(") {
+            b')'
+        } else {
             return None;
-        }
-        self.pos += 1;
+        };
         let mut targets: Vec<LValue> = Vec::new();
         loop {
             if targets.len() >= MAX_STATEMENTS {
@@ -765,7 +769,7 @@ impl<'a> LoopParser<'a> {
             self.skip_trivia();
             match self.peek() {
                 Some(b',') => self.pos += 1,
-                Some(b']') => {
+                Some(candidate) if candidate == close => {
                     self.pos += 1;
                     break;
                 }
