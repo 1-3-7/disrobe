@@ -219,6 +219,7 @@ zip = { workspace = true }
 tar = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
+zeroize = { workspace = true }
 
 [[test]]
 name = "grpc_e2e"

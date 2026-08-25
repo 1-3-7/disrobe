@@ -5,6 +5,34 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
+    #[error("DR-BINFMT-0076: malformed LUKS1 header")]
+    Luks1Malformed,
+    #[error("DR-BINFMT-0077: LUKS1 key derivation cost {iterations} exceeds the configured cap")]
+    Luks1KdfCost { iterations: u32 },
+    #[error("DR-BINFMT-0078: LUKS1 raw volume key does not match the header digest")]
+    Luks1WrongKey,
+    #[error(
+        "DR-BINFMT-0079: unsupported LUKS1 cipher {cipher} mode {mode}; this path accepts only aes-cbc-plain with a raw volume key"
+    )]
+    Luks1UnsupportedCipher { cipher: String, mode: String },
+    #[error("DR-BINFMT-0080: unsupported LUKS1 hash {hash}")]
+    Luks1UnsupportedHash { hash: String },
+    #[error("DR-BINFMT-0081: unsupported LUKS1 volume-key size {key_bytes}")]
+    Luks1UnsupportedKeyBytes { key_bytes: usize },
+    #[error("DR-BINFMT-0082: LUKS1 payload is truncated or not sector-aligned")]
+    Luks1TruncatedPayload,
+    #[error("DR-BINFMT-0083: LUKS1 payload size {bytes} exceeds the {cap}-byte recovery cap")]
+    Luks1PayloadTooLarge { bytes: usize, cap: usize },
+    #[error("DR-BINFMT-0084: LUKS1 payload offset {bytes} exceeds the {cap}-byte header-area cap")]
+    Luks1PayloadOffsetTooLarge { bytes: u64, cap: u64 },
+    #[error(
+        "DR-BINFMT-0085: detached LUKS1 header requires its separately supplied encrypted payload"
+    )]
+    Luks1DetachedPayload,
+    #[error(
+        "DR-BINFMT-0086: unsupported LUKS header version {version}; this path accepts only LUKS1"
+    )]
+    LuksUnsupportedVersion { version: u16 },
     #[error("DR-BINFMT-0001: I/O error: {0}")]
     Io(#[from] std::io::Error),
 

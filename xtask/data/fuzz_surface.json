@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1427,
-    "parse_shaped": 583,
+    "entry_points": 1432,
+    "parse_shaped": 586,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 652,
+    "named_by_a_resilience_suite": 653,
     "named_by_a_suite_recording_seed_reach": 128,
-    "named_by_neither": 742
+    "named_by_neither": 746
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,11 +22,11 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 246,
-      "parse_shaped": 165,
+      "entry_points": 251,
+      "parse_shaped": 168,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 155,
+      "named_by_a_resilience_suite": 156,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -64,6 +64,10 @@
         "disrobe-binfmt/src/containers/installshield.rs::installshield_display_name",
         "disrobe-binfmt/src/containers/installshield.rs::parse_installshield_header",
         "disrobe-binfmt/src/containers/iso.rs::read_file_data",
+        "disrobe-binfmt/src/containers/luks1.rs::decrypt_luks1_aes_cbc_plain_with_raw_volume_key",
+        "disrobe-binfmt/src/containers/luks1.rs::detect_luks1",
+        "disrobe-binfmt/src/containers/luks1.rs::extract_luks1_aes_cbc_plain_with_raw_volume_key",
+        "disrobe-binfmt/src/containers/luks1.rs::luks1_raw_volume_key_wall",
         "disrobe-binfmt/src/containers/lzms.rs::lzms_compress",
         "disrobe-binfmt/src/containers/minidump/carve.rs::carve_module",
         "disrobe-binfmt/src/containers/nsis.rs::decode_solid_region",

@@ -566,6 +566,12 @@ enum Cmd {
             help = "maximum recursion depth when --recursive is set"
         )]
         max_depth: u32,
+        #[arg(
+            long,
+            value_name = "PATH|-",
+            help = "raw LUKS1 volume key file, or '-' for standard input; never a passphrase"
+        )]
+        luks1_raw_volume_key_file: Option<PathBuf>,
     },
     #[command(
         about = "static-carve the shipped web frontend (HTML/JS/CSS/assets) from a compiled webview-desktop binary (Electron ASAR byte-exact; Tauri/Wails byte-exact against a compressed embedded asset map)"
@@ -1845,7 +1851,15 @@ fn main() -> miette::Result<()> {
             out,
             recursive,
             max_depth,
-        } => extract::run(input, out, recursive, max_depth, fmt),
+            luks1_raw_volume_key_file,
+        } => extract::run(
+            input,
+            out,
+            recursive,
+            max_depth,
+            luks1_raw_volume_key_file,
+            fmt,
+        ),
         Cmd::Webview { input, out } => webview::run(input, out, fmt),
         Cmd::Yara { action } => yara::run(action, fmt),
         #[cfg(feature = "js")]

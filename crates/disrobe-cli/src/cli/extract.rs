@@ -1,3 +1,4 @@
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_binfmt::containers::{
@@ -9,21 +10,44 @@ use disrobe_binfmt::{
 };
 use serde::Serialize;
 use walkdir::WalkDir;
+use zeroize::Zeroizing;
 
 use crate::cli::output::{self, OutputFormat};
 use crate::cli::progress_ui::StageSpinner;
 
 const BLAZOR_DIR_MAX_DEPTH: usize = 16;
+const RAW_VOLUME_KEY_READ_SLACK: u64 = 1;
 
 pub(crate) fn run(
     input: PathBuf,
     out: Option<PathBuf>,
     recursive: bool,
     max_depth: u32,
+    luks1_raw_volume_key_file: Option<PathBuf>,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
     if input.is_dir() {
         return run_blazor_dir(&input, out, fmt);
+    }
+    let luks1_probe: Option<crate::cli::luks1_input::Luks1FileProbe> =
+        crate::cli::luks1_input::probe(&input).map_err(
+            |error: crate::cli::luks1_input::Luks1ProbeError| match error {
+                crate::cli::luks1_input::Luks1ProbeError::Input(error) => miette::miette!(
+                    "DR-EXTRACT-0050: cannot read input {}: {error}",
+                    input.display()
+                ),
+                crate::cli::luks1_input::Luks1ProbeError::Refused(error) => miette::miette!(
+                    "DR-CLI-0844: LUKS1 input {} was refused before payload allocation: {error}",
+                    input.display()
+                ),
+            },
+        )?;
+    if let Some(probe) = luks1_probe {
+        let Some(key_file): Option<PathBuf> = luks1_raw_volume_key_file else {
+            return run_luks1_wall(&probe.prefix, fmt);
+        };
+        let bytes: Vec<u8> = crate::cli::luks1_input::read_luks1_bounded(&input, &probe)?;
+        return run_luks1_raw_key(&input, &bytes, out, &key_file, recursive, max_depth, fmt);
     }
     let bytes: Vec<u8> = std::fs::read(&input).map_err(|e| {
         miette::miette!(
@@ -31,11 +55,149 @@ pub(crate) fn run(
             input.display()
         )
     })?;
+    if let Some(key_file) = luks1_raw_volume_key_file {
+        return run_luks1_raw_key(&input, &bytes, out, &key_file, recursive, max_depth, fmt);
+    }
     if recursive {
         run_recursive(&input, &bytes, out, max_depth, fmt)
     } else {
         run_flat(&input, &bytes, out, fmt)
     }
+}
+
+fn run_luks1_raw_key(
+    input: &Path,
+    bytes: &[u8],
+    out: Option<PathBuf>,
+    key_file: &Path,
+    recursive: bool,
+    max_depth: u32,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    let header: disrobe_binfmt::containers::luks1::Luks1Header =
+        disrobe_binfmt::containers::luks1::parse_luks1(bytes).map_err(|error| {
+            miette::miette!("DR-EXTRACT-0063: cannot read LUKS1 header before key input: {error}")
+        })?;
+    disrobe_binfmt::containers::luks1::validate_luks1_raw_key_support(&header).map_err(
+        |error: disrobe_binfmt::Error| {
+            miette::miette!("DR-EXTRACT-0063: unsupported LUKS1 header before key input: {error}")
+        },
+    )?;
+    let key: Zeroizing<Vec<u8>> = read_raw_volume_key(key_file, header.key_bytes)?;
+    let decrypted: Vec<u8> =
+        disrobe_binfmt::containers::luks1::decrypt_luks1_aes_cbc_plain_with_raw_volume_key(
+            bytes,
+            key.as_slice(),
+        )
+        .map_err(|error| {
+            miette::miette!("DR-EXTRACT-0066: LUKS1 raw-volume-key recovery refused: {error}")
+        })?;
+    drop(key);
+    if recursive {
+        return run_recursive(input, &decrypted, out, max_depth, fmt);
+    }
+    let out_dir: PathBuf = out.unwrap_or_else(|| default_out_dir(input));
+    let kind: ContainerKind = disrobe_binfmt::detect_container(&decrypted).ok_or_else(|| {
+        miette::miette!(
+            "DR-EXTRACT-0067: decrypted LUKS1 payload did not enter the container pipeline: container not recognized"
+        )
+    })?;
+    let result: ExtractionResult = disrobe_binfmt::extract_to_with_quota(
+        kind,
+        &decrypted,
+        &out_dir,
+        ExtractionQuota::default_safe(),
+    )
+    .map_err(|error| {
+        miette::miette!(
+            "DR-EXTRACT-0067: decrypted LUKS1 payload did not enter the container pipeline: {error}"
+        )
+    })?;
+    output::emit(fmt, &result, || render_flat(&result, &out_dir))
+}
+
+fn read_raw_volume_key(path: &Path, expected_bytes: usize) -> miette::Result<Zeroizing<Vec<u8>>> {
+    let cap: u64 = u64::try_from(expected_bytes)
+        .ok()
+        .and_then(|bytes: u64| bytes.checked_add(RAW_VOLUME_KEY_READ_SLACK))
+        .ok_or_else(|| {
+            miette::miette!("DR-EXTRACT-0065: raw volume-key size is not addressable")
+        })?;
+    let mut key: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(expected_bytes));
+    let read_result: std::io::Result<usize> = if path.as_os_str() == "-" {
+        let stdin: std::io::Stdin = std::io::stdin();
+        let locked: std::io::StdinLock<'_> = stdin.lock();
+        locked.take(cap).read_to_end(&mut key)
+    } else {
+        let file: std::fs::File = std::fs::File::open(path).map_err(|error: std::io::Error| {
+            miette::miette!(
+                "DR-EXTRACT-0065: cannot open raw LUKS1 volume-key file {}: {error}",
+                path.display()
+            )
+        })?;
+        let mut limited: std::io::Take<std::fs::File> = file.take(cap);
+        limited.read_to_end(&mut key)
+    };
+    read_result.map_err(|error: std::io::Error| {
+        miette::miette!(
+            "DR-EXTRACT-0065: cannot read raw LUKS1 volume key from {}: {error}",
+            if path.as_os_str() == "-" {
+                "standard input".to_owned()
+            } else {
+                path.display().to_string()
+            }
+        )
+    })?;
+    if key.len() != expected_bytes {
+        return Err(miette::miette!(
+            "DR-EXTRACT-0065: raw LUKS1 volume key must contain exactly {expected_bytes} bytes; read {}",
+            key.len()
+        ));
+    }
+    Ok(key)
+}
+
+#[derive(Debug, Serialize)]
+struct Luks1WallReport {
+    format: &'static str,
+    cipher: String,
+    mode: String,
+    digest: String,
+    iteration_count: u32,
+    key_derivation: String,
+    missing_input: &'static str,
+    wall: disrobe_core::CryptoWall,
+}
+
+fn run_luks1_wall(bytes: &[u8], fmt: OutputFormat) -> miette::Result<()> {
+    let header: disrobe_binfmt::containers::luks1::Luks1Header =
+        disrobe_binfmt::containers::luks1::parse_luks1(bytes).map_err(|error| {
+            miette::miette!("DR-EXTRACT-0064: malformed detected LUKS1 header: {error}")
+        })?;
+    let wall: disrobe_core::CryptoWall =
+        disrobe_binfmt::containers::luks1::luks1_raw_volume_key_wall(bytes).map_err(|error| {
+            miette::miette!("DR-EXTRACT-0064: cannot report LUKS1 wall: {error}")
+        })?;
+    let report: Luks1WallReport = Luks1WallReport {
+        format: "luks1",
+        cipher: header.cipher_name,
+        mode: header.cipher_mode,
+        digest: header.hash_spec.clone(),
+        iteration_count: header.digest_iterations,
+        key_derivation: format!("pbkdf2-{}", header.hash_spec),
+        missing_input: "raw volume key",
+        wall,
+    };
+    output::emit(fmt, &report, || render_luks1_wall(&report))
+}
+
+fn render_luks1_wall(report: &Luks1WallReport) {
+    println!("format: {}", report.format);
+    println!("cipher: {}", report.cipher);
+    println!("mode: {}", report.mode);
+    println!("key derivation: {}", report.key_derivation);
+    println!("iterations: {}", report.iteration_count);
+    println!("wall: missing {}", report.missing_input);
 }
 
 #[derive(Debug, Serialize)]

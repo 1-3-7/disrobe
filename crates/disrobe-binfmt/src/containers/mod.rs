@@ -290,3 +290,4 @@ pub use xar::{
     XarArchive, XarEncoding, XarFile, detect_xar, file_data as xar_file_data, parse_xar,
 };
 pub use yaffs::{Yaffs2Endian, Yaffs2File, Yaffs2Walk, detect_yaffs2, walk_yaffs2};
+pub mod luks1;

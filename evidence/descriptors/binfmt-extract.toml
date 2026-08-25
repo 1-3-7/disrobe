@@ -1,13 +1,13 @@
 id = "binfmt-extract"
 ecosystem = "binfmt"
-title = "Container, archive, and firmware in-tree extraction"
-claim = "disrobe declares 101 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 41 of the 101 are driven to member bytes on disk by an input this repository commits. The other 60 have no committed input, so they are unverified rather than shown to fail."
+title = "Container, archive, firmware, and encrypted-volume extraction"
+claim = "disrobe detects 102 container, archive, firmware, and encrypted-volume formats. 101 carry a generic in-tree payload extractor and LUKS1 carries a bounded raw-volume-key route plus a typed keyless wall. 41 generic routes are driven to member bytes on disk by an input this repository commits, and LUKS1 is graded separately against tracked plaintext. The other 60 generic routes have no committed input, so they are unverified rather than shown to fail."
 oracle_strength = "coverage-self-reported"
 ci = true
 
 [oracle]
 kind = "recovery-import"
-external = "the delivered count is disrobe extracting from its own committed corpus and counting the formats that wrote bytes, not an independent check. Individual format tests may use external byte manifests, but the 62 formats with no committed input carry no measurement at all"
+external = "the delivered count is disrobe extracting from its own committed corpus and counting the generic formats that wrote bytes, not an independent check. The LUKS1 route is separately compared with tracked plaintext and an independently generated encrypted fixture. Individual format tests may use external byte manifests, but the 60 generic formats with no committed input carry no measurement at all"
 reproduce = "cargo test -p disrobe-binfmt published_container_counts_match_this_enum"
 
 [source]

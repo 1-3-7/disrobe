@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1874" viewBox="0 0 920 1874" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:e45136c83d0902973720ee11ac189e01</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1874" viewBox="0 0 920 1874" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:156be108a8b28773ac6f3ee100b1a810</desc>
   <rect x="0" y="0" width="920" height="1874" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="1873" rx="9.5" fill="none" stroke="#262626"/>
   <desc>graded from evidence/descriptors sha256:ff820ee428e2eedecbb75944a7e3fa5b</desc>
@@ -330,12 +330,12 @@
 <path d="M169 18.5L560 18.5A3 3 0 0 1 563 21.5L563 28.5A3 3 0 0 1 560 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
 <path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
 <path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#333333" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-4"></path>
-<path d="M169 18.5L324.2 18.5A3 3 0 0 1 327.2 21.5L327.2 28.5A3 3 0 0 1 324.2 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#4a5a6b" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
+<path d="M169 18.5L322.6 18.5A3 3 0 0 1 325.6 21.5L325.6 28.5A3 3 0 0 1 322.6 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#4a5a6b" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 <path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#4a5a6b" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 <path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#4a5a6b" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
 
 </svg>
-  <text x="601.00" y="1535.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">41 extracted from a committed input / 101</text>
+  <text x="601.00" y="1535.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">41 extracted from a committed input / 102</text>
   <text x="601.00" y="1571.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-1" dominant-baseline="central" xml:space="preserve">72 decoded root CodeObjects / 72</text>
   <text x="601.00" y="1607.00" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-2" dominant-baseline="central" xml:space="preserve">9 reached by the recovered program / 9</text>
   <rect x="601.00" y="1547.00" width="8.00" height="8.00" rx="1.50" fill="#4a5a6b"/>

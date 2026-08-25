@@ -106,6 +106,7 @@ pub enum ContainerKind {
     Minidump,
     UefiFv,
     DotnetSingleFile,
+    Luks1,
     None,
 }
 
@@ -273,6 +274,7 @@ impl ContainerKind {
             Self::Minidump => "minidump",
             Self::UefiFv => "uefi-fv",
             Self::DotnetSingleFile => "dotnet-single-file",
+            Self::Luks1 => "luks1",
             Self::None => "none",
         }
     }
@@ -295,7 +297,7 @@ impl ContainerKind {
         )
     }
 
-    pub const ALL: [Self; 101] = [
+    pub const ALL: [Self; 102] = [
         Self::Zip,
         Self::Tar,
         Self::TarGz,
@@ -397,6 +399,7 @@ impl ContainerKind {
         Self::Minidump,
         Self::UefiFv,
         Self::DotnetSingleFile,
+        Self::Luks1,
     ];
 
     #[must_use]
@@ -503,6 +506,7 @@ impl ContainerKind {
             | Self::UefiFv
             | Self::InstallShield
             | Self::DotnetSingleFile => ExtractionMode::Payload,
+            Self::Luks1 => ExtractionMode::MetadataOnly,
             Self::None => ExtractionMode::Unsupported,
         }
     }
@@ -575,6 +579,9 @@ pub fn detect_container_with_hint(bytes: &[u8], path: Option<&Path>) -> Option<C
             path.map_or_else(|| "<none>".to_owned(), |p: &Path| p.display().to_string())
         });
         crate::debug::dbg_hex("magic", bytes, 16);
+    }
+    if crate::containers::luks1::detect_luks1(bytes) {
+        return Some(ContainerKind::Luks1);
     }
     if crate::containers::detect_appimage(bytes).is_some() {
         return Some(ContainerKind::AppImage);
@@ -1424,9 +1431,9 @@ mod tests {
     }
 
     #[test]
-    fn detected_count_is_one_hundred_and_one() {
-        assert_eq!(ContainerKind::detected_format_count(), 101);
-        assert_eq!(ContainerKind::ALL.len(), 101);
+    fn detected_count_is_one_hundred_and_two() {
+        assert_eq!(ContainerKind::detected_format_count(), 102);
+        assert_eq!(ContainerKind::ALL.len(), 102);
     }
 
     const BREADTH_EVIDENCE: &str = "crates/disrobe-cli/tests/golden/container_breadth.txt";
@@ -1510,24 +1517,26 @@ mod tests {
     }
 
     #[test]
-    fn every_declared_format_carries_a_payload_extractor() {
-        let metadata_only: usize = ContainerKind::ALL
+    fn every_declared_format_names_its_extraction_boundary() {
+        let metadata_only: Vec<ContainerKind> = ContainerKind::ALL
             .iter()
             .filter(|k: &&ContainerKind| {
                 matches!(k.extraction_mode(), ExtractionMode::MetadataOnly)
             })
-            .count();
-        let external: usize = ContainerKind::ALL
+            .copied()
+            .collect();
+        let external: Vec<ContainerKind> = ContainerKind::ALL
             .iter()
             .filter(|k: &&ContainerKind| {
                 matches!(k.extraction_mode(), ExtractionMode::ExternalTool)
             })
-            .count();
-        assert_eq!(metadata_only, 0);
-        assert_eq!(external, 0);
+            .copied()
+            .collect();
+        assert_eq!(metadata_only, vec![ContainerKind::Luks1]);
+        assert!(external.is_empty());
         assert_eq!(
-            ContainerKind::payload_extractor_count() + metadata_only + external,
-            101,
+            ContainerKind::payload_extractor_count() + metadata_only.len() + external.len(),
+            102,
             "this counts what the roster declares, not what any input reached; the delivered figure \
              is measured in {BREADTH_EVIDENCE} and asserted by \
              published_container_counts_match_this_enum"

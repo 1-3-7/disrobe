@@ -64,6 +64,7 @@ pub(crate) mod jvm;
 pub(crate) mod llm;
 #[cfg(feature = "lua")]
 pub(crate) mod lua;
+pub(crate) mod luks1_input;
 #[cfg(feature = "swift")]
 pub(crate) mod macho;
 pub(crate) mod man;

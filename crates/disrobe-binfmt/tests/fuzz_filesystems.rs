@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use disrobe_binfmt::containers::{
-    appimage, cramfs, erofs, jffs2, romfs, snap, squashfs, ubifs, vhd, vhdx,
+    appimage, cramfs, erofs, jffs2, luks1, romfs, snap, squashfs, ubifs, vhd, vhdx,
 };
 
 const CAP: u64 = 8 * 1024 * 1024;
@@ -126,6 +126,10 @@ fn appimage_seed() -> Vec<u8> {
     v
 }
 
+fn luks1_seed() -> Vec<u8> {
+    include_bytes!("fixtures/luks1/aes128-cbc-plain.luks1")[..592].to_vec()
+}
+
 fn mutate(seed: &[u8], rng: &mut Xorshift64) -> Vec<u8> {
     let mut out: Vec<u8> = seed.to_vec();
     let kind: u64 = rng.next_u64() % 7;
@@ -200,6 +204,7 @@ fn exercise(bytes: &[u8]) {
     let _ = vhd::parse_vhd(bytes);
     let _ = vhdx::parse_vhdx(bytes);
     let _ = appimage::parse_appimage(bytes);
+    let _ = luks1::parse_luks1(bytes);
 }
 
 #[test]
@@ -246,7 +251,7 @@ fn erofs_compressed_pcluster_past_eof_does_not_underflow() {
 
 #[test]
 fn magic_prefixed_inputs_reach_walkers() {
-    let seeds: [Vec<u8>; 11] = [
+    let seeds: [Vec<u8>; 12] = [
         erofs_seed(),
         cramfs_seed(),
         jffs2_seed(),
@@ -257,6 +262,7 @@ fn magic_prefixed_inputs_reach_walkers() {
         vhd_seed(),
         vhdx_seed(),
         appimage_seed(),
+        luks1_seed(),
         Vec::new(),
     ];
     let mut rng: Xorshift64 = Xorshift64::new(0x5751_E3F5_0102_0304);

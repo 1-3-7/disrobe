@@ -132,6 +132,7 @@ const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
 const TAG_UEFI_FV: &str = "uefi-fv";
 const TAG_EROFS: &str = "erofs";
 const TAG_INSTALLSHIELD: &str = "installshield";
+const TAG_LUKS1: &str = "luks1";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -296,6 +297,28 @@ fn render_container_manifest(tag: &str, bytes: &[u8]) -> String {
     let mut s: String = String::with_capacity(256);
     push_line(&mut s, "binfmt.container");
     push_line(&mut s, &format!("format={tag} size={}", bytes.len()));
+    if tag == TAG_LUKS1 {
+        match crate::containers::luks1::parse_luks1(bytes).and_then(|header| {
+            crate::containers::luks1::validate_luks1_raw_key_support(&header)?;
+            Ok(header)
+        }) {
+            Ok(header) => {
+                push_line(
+                    &mut s,
+                    &format!(
+                        "cipher={} mode={} kdf=pbkdf2-{} iterations={}",
+                        header.cipher_name,
+                        header.cipher_mode,
+                        header.hash_spec,
+                        header.digest_iterations
+                    ),
+                );
+                push_line(&mut s, "wall=missing-raw-volume-key");
+            }
+            Err(error) => push_line(&mut s, &format!("entries=unreadable reason={error}")),
+        }
+        return s;
+    }
     match inventory_entries(tag, bytes) {
         Inventory::Listed(entries) => {
             push_line(
@@ -476,6 +499,15 @@ impl MemberExtraction {
 
 fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
     match tag {
+        TAG_LUKS1 => {
+            let wall: disrobe_core::CryptoWall =
+                crate::containers::luks1::luks1_raw_volume_key_wall(bytes)
+                    .map_err(|error: crate::error::Error| fail(error.to_string()))?;
+            Ok(MemberExtraction {
+                members: Vec::new(),
+                refusals: vec![wall.evidence],
+            })
+        }
         TAG_ZIP
         | TAG_TAR
         | TAG_RAR
@@ -715,6 +747,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if crate::containers::detect_appimage(bytes).is_some() {
         return Some(TAG_APPIMAGE);
     }
+    if crate::containers::luks1::detect_luks1(bytes) {
+        return Some(TAG_LUKS1);
+    }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);
     }
@@ -739,6 +774,7 @@ mod tests {
     const REAL_STUFFIT: &[u8] = include_bytes!("../tests/fixtures/stuffit/stuffit45-method13.sit");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
     const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
+    const REAL_LUKS1: &[u8] = include_bytes!("../tests/fixtures/luks1/aes128-cbc-plain.luks1");
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -792,6 +828,26 @@ mod tests {
         assert_eq!(children[0].handle.relative_path, "bsdcat.exe");
         assert_eq!(children[0].handle.hint.as_deref(), Some(TAG_RAR));
         assert_eq!(children[0].bytes.len(), 204_288);
+    }
+
+    #[test]
+    fn luks1_chain_reports_the_raw_volume_key_wall_without_empty_success() {
+        let artifact: Artifact = Artifact::new(Rung::Raw, REAL_LUKS1.to_vec(), [0u8; 32]);
+        let refusals: Vec<String> = CONTAINER_PASS
+            .chain_refusals(&artifact)
+            .expect("LUKS1 wall");
+        assert_eq!(refusals.len(), 1);
+        assert!(refusals[0].contains("raw volume key"));
+        assert!(refusals[0].contains("cipher=aes"));
+        assert!(refusals[0].contains("mode=cbc-plain"));
+        assert!(refusals[0].contains("kdf=pbkdf2-sha256"));
+        let children: Vec<ChildArtifact> = CONTAINER_PASS
+            .extract_children(&artifact)
+            .expect("LUKS1 wall is not a pass failure");
+        assert!(children.is_empty());
+        let manifest: Artifact = CONTAINER_PASS.run(&artifact).expect("LUKS1 manifest");
+        let text: &str = std::str::from_utf8(&manifest.envelope).expect("manifest text");
+        assert!(text.contains("wall=missing-raw-volume-key"));
     }
 
     #[test]

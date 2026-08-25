@@ -1847,6 +1847,7 @@ dependencies = [
  "msi",
  "ntfs",
  "object",
+ "pbkdf2",
  "plist",
  "rpm",
  "serde",
@@ -1855,6 +1856,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sha3",
+ "subtle",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -1990,6 +1992,7 @@ dependencies = [
  "wasmparser 0.250.0",
  "wasmtime",
  "wat",
+ "zeroize",
  "zip",
  "zstd",
 ]

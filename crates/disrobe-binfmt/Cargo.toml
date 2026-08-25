@@ -52,7 +52,9 @@ serde_json = { workspace = true }
 sevenz-rust2 = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }
+pbkdf2 = { workspace = true }
 sha3 = { workspace = true }
+subtle = { workspace = true }
 tar = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }

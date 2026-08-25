@@ -40,3 +40,4 @@ zlib	extract	corpus/binfmt/bare-stream/payload.zlib
 Z	extract	corpus/binfmt/bare-stream/payload.Z
 uefi-fv	extract	crates/disrobe-binfmt/tests/fixtures/uefi_fv/edk2_brotli_guided.fv
 dotnet-single-file	extract	corpus/binfmt/dotnet-single-file/probe.v1.win-x64.exe
+luks1	detect-only	crates/disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1

@@ -31,7 +31,7 @@
     { "label": "Shell / PowerShell", "kind": "source", "note": "deobfuscate" },
     { "label": "Native PE/ELF/Mach-O", "kind": "unpack", "note": "stub-emu unpack" },
     { "label": "Nim / Zig / Crystal", "kind": "symbols", "note": "demangle + metadata" },
-    { "label": "Containers", "kind": "carve", "note": "101 formats in-tree" }
+    { "label": "Containers", "kind": "carve", "note": "102 formats detected" }
   ],
   "footnote": "Bytecode-to-source is structurally faithful but never byte-identical: class/dex/CIL erase local names, generics, and formatting. AOT-compiled native languages keep symbols and metadata, not the source body."
 }

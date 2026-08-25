@@ -42,6 +42,7 @@ pub enum CryptoWallKind {
     AesGcm,
     ChaCha20Poly1305,
     AesCbcHmac,
+    Luks1RawVolumeKey,
     RsaPkcs1V15,
     RsaOaep,
 }
@@ -54,6 +55,7 @@ impl CryptoWallKind {
             Self::AesGcm => "aes-gcm",
             Self::ChaCha20Poly1305 => "chacha20-poly1305",
             Self::AesCbcHmac => "aes-cbc-hmac",
+            Self::Luks1RawVolumeKey => "luks1-raw-volume-key",
             Self::RsaPkcs1V15 => "rsa-pkcs1v15",
             Self::RsaOaep => "rsa-oaep",
         }

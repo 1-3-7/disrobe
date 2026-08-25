@@ -156,7 +156,7 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
   <text x="72" y="582" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>__ECOSYSTEM_COUNT__ ecosystems<tspan fill="#828282"> &#183; </tspan>Python __PY_PCT__% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>Android DEX __DEX_CLEAN__/__DEX_TOTAL__ verifier-presented classes clean</text>
-  <text x="72" y="608" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>containers: __FMT_COUNT__ declared in-tree extractors<tspan fill="#828282"> &#183; </tspan>__FMT_EXERCISED__ exercised by committed inputs</text>
+  <text x="72" y="608" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>containers: __FMT_COUNT__ detected formats<tspan fill="#828282"> &#183; </tspan>__FMT_EXERCISED__ generic routes exercised by committed inputs</text>
 </svg>
 "##;
 
@@ -474,7 +474,7 @@ mod tests {
         let rendered: String = render(&stats);
 
         assert!(rendered.contains("15 ecosystems"));
-        assert!(rendered.contains("101 declared in-tree extractors"));
+        assert!(rendered.contains("102 detected formats"));
         assert!(rendered.contains("41 exercised by committed inputs"));
         assert!(rendered.contains("with deterministic output ordering."));
         assert!(!rendered.contains("20+ ecosystems"));

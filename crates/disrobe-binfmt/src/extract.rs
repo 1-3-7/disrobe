@@ -251,7 +251,9 @@ pub fn extract_to_with_quota(
         | ContainerKind::FwInstarBneg
         | ContainerKind::FwInstarHd
         | ContainerKind::FwAiroha => extract_firmware(kind, bytes, out_dir, quota),
-        ContainerKind::None => Err(Error::UnsupportedContainer(kind.label())),
+        ContainerKind::Luks1 | ContainerKind::None => {
+            Err(Error::UnsupportedContainer(kind.label()))
+        }
     }
 }
 

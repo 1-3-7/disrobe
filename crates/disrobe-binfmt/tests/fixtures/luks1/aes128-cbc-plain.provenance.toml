@@ -1,0 +1,11 @@
+format = "LUKS1 aes-cbc-plain with a raw 128-bit volume key"
+specification = "https://gitlab.com/cryptsetup/cryptsetup/-/wikis/LUKS-standard/on-disk-format.pdf"
+reference_crypto = "Python cryptography 50.0.0 backed by OpenSSL 3.6.3"
+reference_plaintext = "corpus/binfmt/disk/fat-dynamic.vhd"
+reference_plaintext_sha256 = "1c2d448598cd844d5f778064ae60f832b9ae6483c03964008d68b9959deffa86"
+fixture_sha256 = "ceda7131fe521c1d092a8df374e55c2c83d38ac935b1ecf2b45032b687eaee4d"
+raw_volume_key_hex = "000102030405060708090a0b0c0d0e0f"
+mk_digest_salt_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+mk_digest_iterations = 1000
+payload_offset_sectors = 8
+reference_method = "PBKDF2-HMAC-SHA256 produces the 20-byte header digest. AES-128-CBC encrypts each 512-byte plaintext sector independently with PKCS padding disabled and a 16-byte IV whose first four bytes are the zero-based sector number in little-endian order."

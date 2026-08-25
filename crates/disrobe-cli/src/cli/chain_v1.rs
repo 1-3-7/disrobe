@@ -575,12 +575,30 @@ pub(crate) fn run_with_disk(
     };
     let spec: ChainSpec = ChainSpec::parse(&spec_raw)
         .map_err(|e| miette::miette!("DR-CLI-0291: --chain parse error: {e}"))?;
-    let bytes: Vec<u8> = std::fs::read(&input).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0292: chain cannot read input {}: {e}",
-            input.display()
-        )
-    })?;
+    let luks1_probe: Option<super::luks1_input::Luks1FileProbe> = super::luks1_input::probe(&input)
+        .map_err(|error: super::luks1_input::Luks1ProbeError| match error {
+            super::luks1_input::Luks1ProbeError::Input(error) => miette::miette!(
+                "DR-CLI-0292: chain cannot read input {}: {error}",
+                input.display()
+            ),
+            super::luks1_input::Luks1ProbeError::Refused(error) => miette::miette!(
+                "DR-CLI-0844: LUKS1 input {} was refused before payload allocation: {error}",
+                input.display()
+            ),
+        })?;
+    let bytes: Vec<u8> = luks1_probe.map_or_else(
+        || {
+            std::fs::read(&input).map_err(|error: std::io::Error| {
+                miette::miette!(
+                    "DR-CLI-0292: chain cannot read input {}: {error}",
+                    input.display()
+                )
+            })
+        },
+        |probe: super::luks1_input::Luks1FileProbe| {
+            super::luks1_input::read_luks1_bounded(&input, &probe)
+        },
+    )?;
     let registry: PassRegistry = build_registry();
     validate_explicit_passes(&spec, &registry)?;
     let progress: ChainProgress = ChainProgress::for_chain("disrobe auto");
