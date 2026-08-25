@@ -827,6 +827,24 @@ fn every_file_of_a_batch_run_leaves_its_own_citable_report() {
         out.to_str().unwrap(),
     ]);
     assert_eq!(r.code, 0, "batch setup; stderr={}", r.stderr);
+    let written: PathBuf = out.join("report.json");
+    assert!(
+        written.is_file(),
+        "a batch auto run must leave {} beside manifest.json",
+        written.display()
+    );
+    let left: Value =
+        serde_json::from_slice(&std::fs::read(&written).expect("read batch report.json"))
+            .expect("batch report.json");
+    assert_eq!(left["report_kind"], serde_json::json!("batch"));
+    assert_eq!(left["processed"], serde_json::json!(2));
+    let rendered: Run = run_disrobe(&["report", out.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(rendered.code, 0, "stderr={}", rendered.stderr);
+    let right: Value = serde_json::from_str(&rendered.stdout).expect("batch report JSON");
+    assert_eq!(
+        left, right,
+        "the batch report `auto` writes and the report command renders must agree"
+    );
     for relative in ["a.bin", "b.bin"] {
         let written: PathBuf = out.join(relative).join("report.json");
         assert!(

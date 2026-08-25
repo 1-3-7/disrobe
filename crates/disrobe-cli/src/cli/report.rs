@@ -1022,6 +1022,22 @@ fn build_batch(manifest: &BatchManifest, source_dir: &Path) -> BatchReport {
     }
 }
 
+pub(crate) fn write_batch_forensic(
+    manifest: &BatchManifest,
+    out_dir: &Path,
+    redact: bool,
+) -> miette::Result<()> {
+    let document: ReportDocument = ReportDocument::Batch(Box::new(build_batch(manifest, out_dir)));
+    let report_path: PathBuf = out_dir.join("report.json");
+    std::fs::write(
+        &report_path,
+        render_json_document(&document, redact)?.into_bytes(),
+    )
+    .map_err(|e: std::io::Error| {
+        miette::miette!("DR-CLI-0360: cannot write {}: {e}", report_path.display())
+    })
+}
+
 fn read_chain_doc(dir: &Path) -> miette::Result<ChainDocument> {
     let path: PathBuf = dir.join("chain.json");
     let bytes: Vec<u8> = std::fs::read(&path)
@@ -1639,18 +1655,7 @@ pub(crate) fn run(
             Ok(())
         }
         ReportFormat::Json => {
-            let s: String = if redact {
-                let mut value: serde_json::Value = serde_json::to_value(&document)
-                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
-                Redactor::new()
-                    .redact_json_value(&mut value)
-                    .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))?;
-                serde_json::to_string_pretty(&value)
-                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?
-            } else {
-                serde_json::to_string_pretty(&document)
-                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?
-            };
+            let s: String = render_json_document(&document, redact)?;
             println!("{s}");
             Ok(())
         }
@@ -1682,6 +1687,21 @@ pub(crate) fn run(
             print!("{}", redact_rendered(html, redact)?);
             Ok(())
         }
+    }
+}
+
+fn render_json_document(document: &ReportDocument, redact: bool) -> miette::Result<String> {
+    if redact {
+        let mut value: serde_json::Value = serde_json::to_value(document)
+            .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
+        Redactor::new()
+            .redact_json_value(&mut value)
+            .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))?;
+        serde_json::to_string_pretty(&value)
+            .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))
+    } else {
+        serde_json::to_string_pretty(document)
+            .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))
     }
 }
 

@@ -328,6 +328,7 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
         .map_err(|e| miette::miette!("DR-CLI-0341: manifest.json serialize: {e}"))?;
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0342: cannot write manifest.json: {e}"))?;
+    super::report::write_batch_forensic(&manifest, &opts.out_root, opts.redact)?;
     Ok(manifest)
 }
 

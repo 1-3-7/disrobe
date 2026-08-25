@@ -43,7 +43,7 @@ A run document that is missing, unreadable, or truncated stops the command with 
 
 `disrobe auto` and `disrobe chain` write `report.json` into the output directory, beside `chain.json`, `recovery.json`, and `anti-analysis.json`. It holds the single-run document described below, so a run is citable without a second command. The document `auto` writes and the document `disrobe report <out-dir> --format json` prints are the same, except that the command's JSON adds a `report_kind` discriminator.
 
-Each file of a batch run leaves its own `report.json` in its own per-file output directory.
+A batch run writes an aggregate `report.json` beside `manifest.json`; it is the same JSON document that `disrobe report <batch-out> --format json` prints. Each file also leaves its own single-run `report.json` in its per-file output directory.
 
 ## Formats
 
