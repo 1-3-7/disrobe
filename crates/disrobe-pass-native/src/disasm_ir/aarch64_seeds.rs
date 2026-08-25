@@ -25,6 +25,7 @@ pub(super) enum SeedOrigin {
     SymbolTable,
     DynamicSymbol,
     UnwindEntry,
+    ElfEhFrameHeader,
     InitArray,
     ThreadInit,
     FiniArray,
@@ -46,6 +47,7 @@ impl SeedOrigin {
             Self::SymbolTable => "symtab",
             Self::DynamicSymbol => "dynsym",
             Self::UnwindEntry => "eh-frame",
+            Self::ElfEhFrameHeader => "eh-frame-hdr",
             Self::InitArray => "init-array",
             Self::ThreadInit => "thread-init",
             Self::FiniArray => "fini-array",
@@ -848,6 +850,132 @@ fn collect_unwind_entries(view: &ImageView<'_>, seeds: &mut SeedSet) {
             seeds.admit(address, SeedOrigin::UnwindEntry);
         }
     }
+}
+
+fn decode_elf_eh_frame_hdr(
+    data: &[u8],
+    header_address: u64,
+    eh_frame_start: u64,
+    eh_frame_end: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+) {
+    const VERSION: u8 = 1;
+    const EH_FRAME_POINTER_ENCODING: u8 = 0x1b;
+    const FDE_COUNT_ENCODING: u8 = 0x03;
+    const TABLE_ENCODING: u8 = 0x3b;
+    const EH_FRAME_POINTER_OFFSET: u64 = 4;
+
+    if eh_frame_end <= eh_frame_start {
+        return;
+    }
+    let mut reader: ByteReader<'_> = ByteReader::new(data);
+    let Ok(version): core::result::Result<u8, disrobe_bytes::ByteReadError> = reader.read_u8()
+    else {
+        return;
+    };
+    let Ok(eh_frame_encoding): core::result::Result<u8, disrobe_bytes::ByteReadError> =
+        reader.read_u8()
+    else {
+        return;
+    };
+    let Ok(count_encoding): core::result::Result<u8, disrobe_bytes::ByteReadError> =
+        reader.read_u8()
+    else {
+        return;
+    };
+    let Ok(table_encoding): core::result::Result<u8, disrobe_bytes::ByteReadError> =
+        reader.read_u8()
+    else {
+        return;
+    };
+    if version != VERSION
+        || eh_frame_encoding != EH_FRAME_POINTER_ENCODING
+        || count_encoding != FDE_COUNT_ENCODING
+        || table_encoding != TABLE_ENCODING
+    {
+        return;
+    }
+    let Ok(eh_frame_delta): core::result::Result<i32, disrobe_bytes::ByteReadError> =
+        reader.read_i32_le()
+    else {
+        return;
+    };
+    let Some(eh_frame_pointer_base): Option<u64> =
+        header_address.checked_add(EH_FRAME_POINTER_OFFSET)
+    else {
+        return;
+    };
+    if eh_frame_pointer_base.checked_add_signed(i64::from(eh_frame_delta)) != Some(eh_frame_start) {
+        return;
+    }
+    let Ok(declared_count): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        reader.read_u32_le()
+    else {
+        return;
+    };
+    let Ok(declared_count): core::result::Result<usize, core::num::TryFromIntError> =
+        usize::try_from(declared_count)
+    else {
+        return;
+    };
+    let row_limit: usize = declared_count.min(MAX_UNWIND_ENTRIES);
+    let mut previous_start: Option<u64> = None;
+    for _ in 0..row_limit {
+        let Ok(start_delta): core::result::Result<i32, disrobe_bytes::ByteReadError> =
+            reader.read_i32_le()
+        else {
+            return;
+        };
+        let Ok(fde_delta): core::result::Result<i32, disrobe_bytes::ByteReadError> =
+            reader.read_i32_le()
+        else {
+            return;
+        };
+        let (Some(start), Some(fde)): (Option<u64>, Option<u64>) = (
+            header_address.checked_add_signed(i64::from(start_delta)),
+            header_address.checked_add_signed(i64::from(fde_delta)),
+        ) else {
+            return;
+        };
+        if !view.is_candidate(start)
+            || previous_start.is_some_and(|previous: u64| start <= previous)
+            || fde < eh_frame_start
+            || fde >= eh_frame_end
+        {
+            return;
+        }
+        seeds.admit(start, SeedOrigin::ElfEhFrameHeader);
+        previous_start = Some(start);
+    }
+}
+
+fn collect_elf_eh_frame_hdr(view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
+        return;
+    };
+    let Some(header): Option<object::Section<'_, '_>> = parsed.section_by_name(".eh_frame_hdr")
+    else {
+        return;
+    };
+    let Some(eh_frame): Option<object::Section<'_, '_>> = parsed.section_by_name(".eh_frame")
+    else {
+        return;
+    };
+    let Ok(data): core::result::Result<&[u8], object::Error> = header.data() else {
+        return;
+    };
+    let Some(eh_frame_end): Option<u64> = eh_frame.address().checked_add(eh_frame.size()) else {
+        return;
+    };
+    decode_elf_eh_frame_hdr(
+        data,
+        header.address(),
+        eh_frame.address(),
+        eh_frame_end,
+        view,
+        seeds,
+    );
 }
 
 fn collect_data_pointers(view: &ImageView<'_>, seeds: &mut SeedSet) {
@@ -1736,6 +1864,7 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
     if view.has_linked_addresses() {
         collect_initializer_tables(&view, &mut seeds, MAX_POINTER_SLOTS, None);
     }
+    collect_elf_eh_frame_hdr(&view, &mut seeds);
     collect_unwind_entries(&view, &mut seeds);
     collect_data_pointers(&view, &mut seeds);
     report_seeds(&seeds);
@@ -1759,9 +1888,9 @@ mod tests {
         MAX_AARCH64_PLT_ENTRIES, MAX_PE_TLS_CALLBACKS, MAX_SEEDS, MAX_UNWIND_ENTRIES,
         PE_ARM64_PDATA_RECORD_BYTES, PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES, R_AARCH64_JUMP_SLOT,
         SeedOrigin, SeedSet, canonical_plt_stub_slot, canonical_plt0, collect,
-        collect_elf_plt_entries, collect_initializer_tables, decode_macho_compact_unwind,
-        decode_macho_function_starts, decode_pe_arm64_pdata, decode_pe_arm64_tls_callbacks,
-        is_boundary_word, is_prologue_word,
+        collect_elf_plt_entries, collect_initializer_tables, decode_elf_eh_frame_hdr,
+        decode_macho_compact_unwind, decode_macho_function_starts, decode_pe_arm64_pdata,
+        decode_pe_arm64_tls_callbacks, is_boundary_word, is_prologue_word,
     };
 
     use std::collections::{BTreeMap, BTreeSet};
@@ -1978,6 +2107,83 @@ mod tests {
                     fixture.stripped
                 );
             }
+        }
+    }
+
+    fn canonical_eh_frame_header(count: u32, entries: &[(i32, i32)]) -> Vec<u8> {
+        let mut data: Vec<u8> = vec![1, 0x1b, 0x03, 0x3b];
+        data.extend_from_slice(&0xfc_i32.to_le_bytes());
+        data.extend_from_slice(&count.to_le_bytes());
+        for (start, fde) in entries {
+            data.extend_from_slice(&start.to_le_bytes());
+            data.extend_from_slice(&fde.to_le_bytes());
+        }
+        data
+    }
+
+    fn eh_frame_header_view() -> ImageView<'static> {
+        ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
+        }
+    }
+
+    #[test]
+    fn elf_eh_frame_header_retains_the_valid_prefix_of_a_truncated_table() {
+        let mut data: Vec<u8> = canonical_eh_frame_header(3, &[(-0x1000, 0x100), (-0xffc, 0x110)]);
+        data.extend_from_slice(&(-0xff8_i32).to_le_bytes());
+        let view: ImageView<'_> = eh_frame_header_view();
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_elf_eh_frame_hdr(&data, 0x2000, 0x2100, 0x2200, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1000, 0x1004]);
+        assert_eq!(
+            seeds.origins_of(0x1000),
+            BTreeSet::from([SeedOrigin::ElfEhFrameHeader])
+        );
+    }
+
+    #[test]
+    fn elf_eh_frame_header_bounds_an_oversized_declared_count() {
+        let data: Vec<u8> = canonical_eh_frame_header(u32::MAX, &[(-0x1000, 0x100)]);
+        let view: ImageView<'_> = eh_frame_header_view();
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_elf_eh_frame_hdr(&data, 0x2000, 0x2100, 0x2200, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1000]);
+    }
+
+    #[test]
+    fn elf_eh_frame_header_stops_after_the_first_invalid_row() {
+        let data: Vec<u8> =
+            canonical_eh_frame_header(3, &[(-0x1000, 0x100), (-0xffd, 0x110), (-0xff8, 0x120)]);
+        let view: ImageView<'_> = eh_frame_header_view();
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_elf_eh_frame_hdr(&data, 0x2000, 0x2100, 0x2200, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1000]);
+    }
+
+    #[test]
+    fn elf_eh_frame_header_rejects_unsupported_pointer_encodings() {
+        for index in 0..3 {
+            let mut data: Vec<u8> = canonical_eh_frame_header(1, &[(-0x1000, 0x100)]);
+            data[index + 1] = 0xff;
+            let view: ImageView<'_> = eh_frame_header_view();
+            let mut seeds: SeedSet = SeedSet::default();
+
+            decode_elf_eh_frame_hdr(&data, 0x2000, 0x2100, 0x2200, &view, &mut seeds);
+
+            assert!(seeds.addresses().is_empty(), "encoding index {index}");
         }
     }
 

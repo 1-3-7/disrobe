@@ -11,6 +11,12 @@ use disrobe_ir::payload::{DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_pass_native::build_disasm_payload;
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
 
+#[cfg(feature = "chain")]
+use disrobe_core::chain::Pass as _;
+
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
+
 const STATIC_STRIPPED: &[u8] =
     include_bytes!("../../../corpus/native/discovery/disc_aarch64.stripped.elf");
 
@@ -49,6 +55,20 @@ extern long external_beta(long);
 
 __attribute__((noinline, visibility("hidden"))) long plt_caller(long value) {
     return external_alpha(value) + external_beta(value + 1);
+}
+"#;
+
+const ELF_EH_FRAME_HDR_SOURCE: &str = r#"
+__attribute__((noinline, visibility("hidden"))) long header_alpha(long value) {
+    return value + 3;
+}
+
+__attribute__((noinline, visibility("hidden"))) long header_beta(long value) {
+    return value * 5;
+}
+
+__attribute__((noinline, visibility("hidden"))) long header_gamma(long value) {
+    return value ^ 7;
 }
 "#;
 
@@ -156,6 +176,66 @@ fn stripped_aarch64_plt_image() -> Vec<u8> {
         String::from_utf8_lossy(&compiled.stderr)
     );
     fs::read(output).expect("read linked fixture")
+}
+
+fn aarch64_eh_frame_hdr_images() -> (Vec<u8>, Vec<u8>) {
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary directory");
+    let source: PathBuf = directory.path().join("eh_frame_hdr.c");
+    let reference: PathBuf = directory.path().join("eh_frame_hdr.reference.so");
+    let stripped: PathBuf = directory.path().join("eh_frame_hdr.stripped.so");
+    fs::write(&source, ELF_EH_FRAME_HDR_SOURCE).expect("write fixture source");
+    let arguments: Vec<OsString> = vec![
+        OsString::from("--target=aarch64-unknown-linux-gnu"),
+        OsString::from("-O1"),
+        OsString::from("-fPIC"),
+        OsString::from("-fuse-ld=lld"),
+        OsString::from("-nostdlib"),
+        OsString::from("-shared"),
+        OsString::from("-Wl,--eh-frame-hdr"),
+        OsString::from("-o"),
+        reference.as_os_str().to_os_string(),
+        source.as_os_str().to_os_string(),
+    ];
+    let compiled: CapturedOutput = run_captured(
+        Path::new("clang"),
+        &arguments,
+        TOOL_TIMEOUT,
+        TOOL_CAPTURE_LIMIT,
+    )
+    .expect("start the AArch64 eh-frame-header fixture compiler")
+    .expect("the AArch64 eh-frame-header fixture compiler exceeded its timeout");
+    assert_eq!(
+        compiled.exit_code,
+        Some(0),
+        "clang failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let strip_arguments: Vec<OsString> = vec![
+        OsString::from("--strip-all"),
+        OsString::from("-o"),
+        stripped.as_os_str().to_os_string(),
+        reference.as_os_str().to_os_string(),
+    ];
+    let stripped_output: CapturedOutput = run_captured(
+        Path::new("llvm-strip"),
+        &strip_arguments,
+        TOOL_TIMEOUT,
+        TOOL_CAPTURE_LIMIT,
+    )
+    .expect("start the AArch64 fixture stripper")
+    .expect("the AArch64 fixture stripper exceeded its timeout");
+    assert_eq!(
+        stripped_output.exit_code,
+        Some(0),
+        "llvm-strip failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stripped_output.stdout),
+        String::from_utf8_lossy(&stripped_output.stderr)
+    );
+    (
+        fs::read(reference).expect("read unstripped eh-frame-header fixture"),
+        fs::read(stripped).expect("read stripped eh-frame-header fixture"),
+    )
 }
 
 fn aarch64_plt_starts(bytes: &[u8]) -> BTreeSet<u64> {
@@ -415,5 +495,70 @@ fn stripped_elf_jump_slots_seed_each_aarch64_plt_entry() {
     assert!(
         expected.is_subset(&recovered),
         "every .rela.plt JUMP_SLOT must seed its corresponding PLT entry; expected {expected:?}, recovered {recovered:?}"
+    );
+}
+
+#[test]
+fn stripped_elf_eh_frame_header_starts_reach_disassembly_without_fde_contents() {
+    let (reference, mut stripped): (Vec<u8>, Vec<u8>) = aarch64_eh_frame_hdr_images();
+    let expected: BTreeMap<u64, String> = reference_starts(&reference)
+        .into_iter()
+        .filter(|(_, name): &(u64, String)| name.starts_with("header_"))
+        .collect();
+    assert_eq!(
+        expected.len(),
+        3,
+        "the compiler reference must retain the three hidden functions"
+    );
+    erase_section_contents(&mut stripped, ".eh_frame");
+    let recovered: BTreeSet<u64> = recovered_starts(&stripped);
+    let missing: BTreeMap<u64, String> = expected
+        .into_iter()
+        .filter(|(address, _): &(u64, String)| !recovered.contains(address))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the stripped .eh_frame_hdr must seed every independently named function, missing {missing:?}"
+    );
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn stripped_elf_eh_frame_header_starts_reach_the_auto_native_pass() {
+    let (reference, mut stripped): (Vec<u8>, Vec<u8>) = aarch64_eh_frame_hdr_images();
+    let expected: BTreeSet<u64> = reference_starts(&reference)
+        .into_iter()
+        .filter(|(_, name): &(u64, String)| name.starts_with("header_"))
+        .map(|(address, _): (u64, String)| address)
+        .collect();
+    assert_eq!(expected.len(), 3, "the compiler reference changed shape");
+    erase_section_contents(&mut stripped, ".eh_frame");
+    let artifact: Artifact = Artifact::new(Rung::Raw, stripped, [0_u8; 32]);
+    let children: Vec<disrobe_core::chain::ChildArtifact> =
+        disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS
+            .extract_children(&artifact)
+            .expect("the registered native pass must process the stripped image");
+    let pseudo: &disrobe_core::chain::ChildArtifact = children
+        .iter()
+        .find(|child: &&disrobe_core::chain::ChildArtifact| {
+            child.handle.relative_path == "pseudo-source.json"
+        })
+        .expect("the auto native output must include pseudo-source.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&pseudo.bytes).expect("the pseudo-source report must be json");
+    assert_eq!(report["run"].as_bool(), Some(true));
+    let presented: BTreeSet<u64> = ["recovered", "unrecovered"]
+        .into_iter()
+        .flat_map(|field: &str| {
+            report[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|function: &serde_json::Value| function["address"].as_u64())
+        })
+        .collect();
+    assert!(
+        expected.is_subset(&presented),
+        "the auto pass must present every header-indexed start; expected {expected:?}, presented {presented:?}"
     );
 }
