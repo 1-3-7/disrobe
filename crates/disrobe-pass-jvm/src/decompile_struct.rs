@@ -1057,6 +1057,82 @@ impl<'a> Structurer<'a> {
         u32::try_from(i64::from(pc) + i64::from(offset)).ok()
     }
 
+    fn finally_control_target_matches(
+        identity: &FinallyCopyIndex,
+        body_len: usize,
+        exit_pc: &mut Option<u32>,
+        body_target: u32,
+        copy_target: u32,
+    ) -> bool {
+        let body_index: Option<usize> = identity.body_position(body_target);
+        let copy_index: Option<usize> = identity.copy_position(copy_target);
+        if body_index == Some(body_len) {
+            if copy_index.is_some_and(|index: usize| index < body_len)
+                || identity
+                    .body_position(copy_target)
+                    .is_some_and(|index: usize| index < body_len)
+            {
+                return false;
+            }
+            match *exit_pc {
+                Some(previous) if previous != copy_target => false,
+                _ => {
+                    *exit_pc = Some(copy_target);
+                    true
+                }
+            }
+        } else {
+            matches!(
+                (body_index, copy_index),
+                (Some(body_position), Some(copy_position)) if body_position == copy_position
+            ) || matches!((body_index, copy_index), (None, None)) && body_target == copy_target
+        }
+    }
+
+    fn finally_switch_targets_match<BodyOffsets, CopyOffsets>(
+        identity: &FinallyCopyIndex,
+        body_len: usize,
+        exit_pc: &mut Option<u32>,
+        body: FinallySwitchTargets<BodyOffsets>,
+        copy: FinallySwitchTargets<CopyOffsets>,
+        work: &mut usize,
+        work_budget: usize,
+    ) -> Option<()>
+    where
+        BodyOffsets: ExactSizeIterator<Item = i32>,
+        CopyOffsets: ExactSizeIterator<Item = i32>,
+    {
+        if body.offsets.len() != copy.offsets.len() {
+            return None;
+        }
+        for (body_offset, copy_offset) in std::iter::once(body.default)
+            .chain(body.offsets)
+            .zip(std::iter::once(copy.default).chain(copy.offsets))
+        {
+            FinallyCopyIndex::claim_work(work, work_budget)?;
+            if !Self::finally_control_target_matches(
+                identity,
+                body_len,
+                exit_pc,
+                Self::relative_target(body.pc, body_offset)?,
+                Self::relative_target(copy.pc, copy_offset)?,
+            ) {
+                return None;
+            }
+        }
+        Some(())
+    }
+
+    fn table_switch_count(low: i32, high: i32) -> Option<usize> {
+        let count: usize = usize::try_from(
+            i64::from(high)
+                .checked_sub(i64::from(low))?
+                .checked_add(1)?,
+        )
+        .ok()?;
+        (count > 0).then_some(count)
+    }
+
     fn finally_copy_match(
         &mut self,
         body: &[Instruction],
@@ -1118,9 +1194,17 @@ impl<'a> Structurer<'a> {
             if a.opcode != b.opcode {
                 return None;
             }
-            let targets: Option<Vec<(u32, u32)>> = match (&a.operands, &b.operands) {
+            match (&a.operands, &b.operands) {
                 (Operands::Branch(_), Operands::Branch(_)) => {
-                    Some(vec![(branch_target(a)?, branch_target(b)?)])
+                    if !Self::finally_control_target_matches(
+                        &identity,
+                        body.len(),
+                        &mut exit_pc,
+                        branch_target(a)?,
+                        branch_target(b)?,
+                    ) {
+                        return None;
+                    }
                 }
                 (
                     Operands::LookupSwitch {
@@ -1137,49 +1221,68 @@ impl<'a> Structurer<'a> {
                         .zip(copy_pairs)
                         .all(|((body_key, _), (copy_key, _))| body_key == copy_key) =>
                 {
-                    let capacity: usize = body_pairs.len().checked_add(1)?;
-                    let mut targets: Vec<(u32, u32)> = Vec::with_capacity(capacity);
-                    targets.push((
-                        Self::relative_target(a.pc, *body_default)?,
-                        Self::relative_target(b.pc, *copy_default)?,
-                    ));
-                    for ((_, body_offset), (_, copy_offset)) in body_pairs.iter().zip(copy_pairs) {
-                        targets.push((
-                            Self::relative_target(a.pc, *body_offset)?,
-                            Self::relative_target(b.pc, *copy_offset)?,
-                        ));
-                    }
-                    Some(targets)
+                    Self::finally_switch_targets_match(
+                        &identity,
+                        body.len(),
+                        &mut exit_pc,
+                        FinallySwitchTargets {
+                            pc: a.pc,
+                            default: *body_default,
+                            offsets: body_pairs.iter().map(|(_, offset): &(i32, i32)| *offset),
+                        },
+                        FinallySwitchTargets {
+                            pc: b.pc,
+                            default: *copy_default,
+                            offsets: copy_pairs.iter().map(|(_, offset): &(i32, i32)| *offset),
+                        },
+                        &mut self.work,
+                        MAX_STRUCTURE_WORK,
+                    )?;
                 }
-                _ => None,
-            };
-            let Some(targets): Option<Vec<(u32, u32)>> = targets else {
-                if a.operands != b.operands {
-                    return None;
-                }
-                continue;
-            };
-            for (a_target, b_target) in targets {
-                let a_index: Option<usize> = identity.body_position(a_target);
-                let b_index: Option<usize> = identity.copy_position(b_target);
-                if a_index == Some(body.len()) {
-                    if b_index.is_some_and(|index: usize| index < copy.len())
-                        || identity
-                            .body_position(b_target)
-                            .is_some_and(|index: usize| index < body.len())
+                (
+                    Operands::TableSwitch {
+                        default: body_default,
+                        low: body_low,
+                        high: body_high,
+                        offsets: body_offsets,
+                    },
+                    Operands::TableSwitch {
+                        default: copy_default,
+                        low: copy_low,
+                        high: copy_high,
+                        offsets: copy_offsets,
+                    },
+                ) => {
+                    let declared_count: usize = Self::table_switch_count(*body_low, *body_high)?;
+                    if *body_low != *copy_low
+                        || *body_high != *copy_high
+                        || body_offsets.len() != declared_count
+                        || copy_offsets.len() != declared_count
                     {
                         return None;
                     }
-                    match exit_pc {
-                        Some(previous) if previous != b_target => return None,
-                        _ => exit_pc = Some(b_target),
-                    }
-                    continue;
+                    Self::finally_switch_targets_match(
+                        &identity,
+                        body.len(),
+                        &mut exit_pc,
+                        FinallySwitchTargets {
+                            pc: a.pc,
+                            default: *body_default,
+                            offsets: body_offsets.iter().copied(),
+                        },
+                        FinallySwitchTargets {
+                            pc: b.pc,
+                            default: *copy_default,
+                            offsets: copy_offsets.iter().copied(),
+                        },
+                        &mut self.work,
+                        MAX_STRUCTURE_WORK,
+                    )?;
                 }
-                match (a_index, b_index) {
-                    (Some(a_idx), Some(b_idx)) if a_idx == b_idx => {}
-                    (None, None) if a_target == b_target => {}
-                    _ => return None,
+                _ => {
+                    if a.operands != b.operands {
+                        return None;
+                    }
                 }
             }
         }
@@ -1209,7 +1312,7 @@ impl<'a> Structurer<'a> {
             .iter()
             .enumerate()
             .any(|(index, ins): (usize, &Instruction)| {
-                matches!(ins.opcode, 0xA8..=0xAA | 0xAC..=0xB1 | 0xC9)
+                matches!(ins.opcode, 0xA8..=0xA9 | 0xAC..=0xB1 | 0xC9)
                     || (ins.opcode == 0xBF
                         && index
                             .checked_sub(1)
@@ -2025,7 +2128,7 @@ impl<'a> Structurer<'a> {
                         .finally_body_instructions(&chain)
                         .is_some_and(|body: Vec<Instruction>| {
                             body.iter().any(|instruction: &Instruction| {
-                                matches!(instruction.opcode, 0x99..=0xA7 | 0xAB | 0xC6..=0xC8)
+                                matches!(instruction.opcode, 0x99..=0xA7 | 0xAA..=0xAB | 0xC6..=0xC8)
                             })
                         });
                     let multi_folds: Option<Vec<(BlockId, BlockId, u16)>> =
@@ -2847,6 +2950,12 @@ struct FinallyCopyMatch {
     catch_parameter_slots: BTreeSet<u16>,
 }
 
+struct FinallySwitchTargets<Offsets> {
+    pc: u32,
+    default: i32,
+    offsets: Offsets,
+}
+
 type FinallyHandlerShape = BTreeSet<(String, usize, usize)>;
 type FinallyHandlerShapes = BTreeMap<u32, Option<FinallyHandlerShape>>;
 
@@ -3105,6 +3214,75 @@ mod finally_copy_index_tests {
             "the third comparison must exhaust the shared budget"
         );
         assert_eq!(work, work_budget + 1);
+    }
+
+    #[test]
+    fn table_switch_domains_and_targets_are_bounded_before_matching() -> Result<(), &'static str> {
+        assert_eq!(Structurer::table_switch_count(0, 2), Some(3));
+        assert_eq!(Structurer::table_switch_count(1, 0), None);
+        assert_eq!(Structurer::table_switch_count(i32::MAX, i32::MIN), None);
+
+        let body: Vec<Instruction> = vec![instruction(10), instruction(20), instruction(30)];
+        let copy: Vec<Instruction> = vec![instruction(110), instruction(120), instruction(130)];
+        let mut preprocessing_work: usize = 0;
+        let identity: FinallyCopyIndex = FinallyCopyIndex::build(
+            &body,
+            &copy,
+            Some(40),
+            Some(140),
+            &[],
+            &mut preprocessing_work,
+            MAX_STRUCTURE_WORK,
+        )
+        .ok_or("bounded switch identity must build")?;
+        let mut exit_pc: Option<u32> = None;
+        let mut work: usize = 0;
+        assert!(
+            Structurer::finally_switch_targets_match(
+                &identity,
+                body.len(),
+                &mut exit_pc,
+                FinallySwitchTargets {
+                    pc: 10,
+                    default: 10,
+                    offsets: [10, 20].into_iter(),
+                },
+                FinallySwitchTargets {
+                    pc: 110,
+                    default: 10,
+                    offsets: [10, 20].into_iter(),
+                },
+                &mut work,
+                2,
+            )
+            .is_none(),
+            "default plus two dense targets must exceed a two-unit shared budget"
+        );
+        assert_eq!(work, 3);
+        work = 0;
+        assert!(
+            Structurer::finally_switch_targets_match(
+                &identity,
+                body.len(),
+                &mut exit_pc,
+                FinallySwitchTargets {
+                    pc: 10,
+                    default: 10,
+                    offsets: [10, 20].into_iter(),
+                },
+                FinallySwitchTargets {
+                    pc: 110,
+                    default: 10,
+                    offsets: [10, 20].into_iter(),
+                },
+                &mut work,
+                3,
+            )
+            .is_some(),
+            "the exact shared budget must admit every dense target"
+        );
+        assert_eq!(work, 3);
+        Ok(())
     }
 
     #[test]

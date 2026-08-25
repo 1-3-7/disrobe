@@ -14,8 +14,8 @@ use std::time::Duration;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_jvm::{
     Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, DecompiledClass, Dex2JarResult,
-    ExceptionEntry, MethodInfo, decompile_class, decompile_classfile_bytes, parse_classfile,
-    parse_code_attribute, translate_dex_bytes,
+    ExceptionEntry, Instruction, MethodInfo, Operands, decompile_class, decompile_classfile_bytes,
+    disassemble, parse_classfile, parse_code_attribute, translate_dex_bytes,
 };
 
 const D8_FINALLY_NESTED_DEX: &[u8] =
@@ -666,10 +666,42 @@ fn finally_with_a_lookup_switch_recompiles_to_equivalent_bytecode() {
 }
 
 #[test]
-fn finally_with_a_table_switch_remains_a_named_refusal() {
-    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
+fn finally_with_a_table_switch_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyTableSwitch", FINALLY_TABLE_SWITCH_SRC);
+    assert!(
+        recompiled.original_javap.contains("tableswitch"),
+        "the dense-switch recovery fixture did not compile to tableswitch:\n{}",
+        recompiled.original_javap
+    );
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(body.contains("switch ("), "finally switch missing:\n{body}");
+    for key in [0, 1, 2] {
+        assert!(
+            body.contains(&format!("case {key}:")),
+            "finally switch key {key} missing:\n{body}"
+        );
+    }
+    assert!(
+        body.contains("default:"),
+        "finally default missing:\n{body}"
+    );
+    assert!(
+        body.contains("return "),
+        "finally continuation missing:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled finally-switch bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+fn compiled_table_switch_fixture() -> Vec<u8> {
+    let (javac, _): (PathBuf, PathBuf) = require_jdk_tools();
     let scratch: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create("disrobe_finally_table_switch").expect("scratch");
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_table_switch_mutation")
+            .expect("scratch");
     let directory: PathBuf = scratch.path().join("orig");
     std::fs::create_dir_all(&directory).expect("fixture directory");
     let source_path: PathBuf = directory.join("FinallyTableSwitch.java");
@@ -686,24 +718,89 @@ fn finally_with_a_table_switch_remains_a_named_refusal() {
         "fixture failed to compile: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    let original_javap: String = javap_code(&javap, &directory, "FinallyTableSwitch");
-    assert!(
-        original_javap.contains("tableswitch"),
-        "the dense-switch boundary fixture did not compile to tableswitch:\n{original_javap}"
-    );
-    let class_bytes: Vec<u8> =
-        std::fs::read(directory.join("FinallyTableSwitch.class")).expect("fixture class");
-    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    std::fs::read(directory.join("FinallyTableSwitch.class")).expect("fixture class")
+}
+
+fn table_switch_header(code_offset: usize, pc: u32) -> usize {
+    let pc: usize = usize::try_from(pc).expect("tableswitch pc");
+    let padding: usize = (4 - ((pc + 1) % 4)) % 4;
+    code_offset + pc + 1 + padding
+}
+
+fn table_switch_sites(table: &MethodTableSite) -> Vec<Instruction> {
+    disassemble(&table.code)
+        .expect("fixture bytecode")
+        .into_iter()
+        .filter(|instruction: &Instruction| instruction.opcode == 0xAA)
+        .collect()
+}
+
+fn assert_mutated_table_switch_refused(class_bytes: &[u8]) {
+    let class_file: ClassFile = parse_classfile(class_bytes).expect("parse mutated fixture");
     let decompiled: DecompiledClass = decompile_class(&class_file);
-    let body: String = method_body(&decompiled.source, " run(").expect("recovered run method");
+    let body: String = method_body(&decompiled.source, " run(").expect("mutated run method");
     assert!(
         body.contains("not recovered:"),
-        "a tableswitch finally crossed the lookup-switch recovery boundary:\n{body}"
+        "a mismatched tableswitch copy was recovered:\n{body}"
     );
     assert!(
         !body.contains("catch (Throwable"),
-        "a tableswitch finally became a Throwable catch:\n{body}"
+        "a mismatched tableswitch finally became a Throwable catch:\n{body}"
     );
+}
+
+#[test]
+fn finally_table_switch_rejects_mismatched_dense_domains() {
+    let mut class_bytes: Vec<u8> = compiled_table_switch_fixture();
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    let switches: Vec<Instruction> = table_switch_sites(&table);
+    let [_, copy]: [&Instruction; 2] = switches
+        .iter()
+        .collect::<Vec<&Instruction>>()
+        .try_into()
+        .expect("one tableswitch per finally copy");
+    let header: usize = table_switch_header(table.code_offset, copy.pc);
+    let low_offset: usize = header + 4;
+    let high_offset: usize = header + 8;
+    let low: i32 = i32::from_be_bytes(
+        class_bytes[low_offset..low_offset + 4]
+            .try_into()
+            .expect("tableswitch low"),
+    );
+    let high: i32 = i32::from_be_bytes(
+        class_bytes[high_offset..high_offset + 4]
+            .try_into()
+            .expect("tableswitch high"),
+    );
+    class_bytes[low_offset..low_offset + 4]
+        .copy_from_slice(&low.checked_add(1).expect("shifted low").to_be_bytes());
+    class_bytes[high_offset..high_offset + 4]
+        .copy_from_slice(&high.checked_add(1).expect("shifted high").to_be_bytes());
+    assert_mutated_table_switch_refused(&class_bytes);
+}
+
+#[test]
+fn finally_table_switch_rejects_ambiguous_case_targets() {
+    let mut class_bytes: Vec<u8> = compiled_table_switch_fixture();
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    let switches: Vec<Instruction> = table_switch_sites(&table);
+    let [_, copy]: [&Instruction; 2] = switches
+        .iter()
+        .collect::<Vec<&Instruction>>()
+        .try_into()
+        .expect("one tableswitch per finally copy");
+    let Operands::TableSwitch { offsets, .. } = &copy.operands else {
+        panic!("dense switch operand missing")
+    };
+    assert_ne!(offsets[0], offsets[1], "fixture case targets must differ");
+    let first_target: usize = table_switch_header(table.code_offset, copy.pc) + 12;
+    let second_target: [u8; 4] = class_bytes[first_target + 4..first_target + 8]
+        .try_into()
+        .expect("second case target");
+    class_bytes[first_target..first_target + 4].copy_from_slice(&second_target);
+    assert_mutated_table_switch_refused(&class_bytes);
 }
 
 const FINALLY_THROW_SRC: &str = "public class FinallyThrow {\n\
@@ -948,6 +1045,7 @@ struct MethodTableSite {
     code_offset: usize,
     entries_offset: usize,
     entries: Vec<ExceptionEntry>,
+    code: Vec<u8>,
 }
 
 fn method_exception_table(bytes: &[u8], class_file: &ClassFile, name: &str) -> MethodTableSite {
@@ -978,6 +1076,7 @@ fn method_exception_table(bytes: &[u8], class_file: &ClassFile, name: &str) -> M
         code_offset: info_offset + 2 + 2 + 4,
         entries_offset: info_offset + 2 + 2 + 4 + code.code.len() + 2,
         entries: code.exception_table,
+        code: code.code,
     }
 }
 
