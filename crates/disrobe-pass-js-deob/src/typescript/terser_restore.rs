@@ -93,6 +93,7 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
             if let Some(member) = member_access_on_reference(nodes, node_id) {
                 ctx.member_accesses.insert(member);
             }
+            ctx.indexed_elements_called |= indexed_element_called_on_reference(nodes, node_id);
             if let Some((member, literals)) =
                 static_member_call_literals_on_reference(nodes, node_id)
                 && !literals.is_empty()
@@ -301,6 +302,25 @@ fn member_access_on_reference(nodes: &AstNodes<'_>, reference_node: NodeId) -> O
         return None;
     };
     member.static_property_name().map(str::to_owned)
+}
+
+fn indexed_element_called_on_reference(nodes: &AstNodes<'_>, reference_node: NodeId) -> bool {
+    let Some(member_node) = nodes.parent_node(reference_node) else {
+        return false;
+    };
+    let AstKind::MemberExpression(member) = member_node.kind() else {
+        return false;
+    };
+    if member.static_property_name().is_some() {
+        return false;
+    }
+    let Some(call_node) = nodes.parent_node(member_node.id()) else {
+        return false;
+    };
+    let AstKind::CallExpression(call) = call_node.kind() else {
+        return false;
+    };
+    call.callee.span() == member.span()
 }
 
 fn static_member_call_literals_on_reference(

@@ -62,6 +62,13 @@ impl HeuristicNameSource {
         {
             return Some(("query", Confidence::MEDIUM));
         }
+        if context.indexed_elements_called
+            && context.member_accesses.contains("push")
+            && context.member_accesses.contains("indexOf")
+            && context.member_accesses.contains("splice")
+        {
+            return Some(("listeners", Confidence::MEDIUM));
+        }
         let mut tally: BTreeMap<&'static str, (Confidence, usize)> = BTreeMap::new();
         for member in &context.member_accesses {
             if let Some(&(name, conf)) = self.member_keywords.get(member.as_str()) {
@@ -228,6 +235,35 @@ mod tests {
                     .or_default()
                     .insert(delimiter.to_owned());
             }
+            let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("list resolves");
+            assert_eq!(s.name, "list");
+        }
+    }
+
+    #[test]
+    fn callable_identity_removed_elements_are_medium_confidence_listeners() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        ctx.indexed_elements_called = true;
+        ctx.member_accesses
+            .extend(["push", "indexOf", "splice"].into_iter().map(str::to_owned));
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("listeners resolve");
+        assert_eq!(s.name, "listeners");
+        assert_eq!(s.confidence, Confidence::MEDIUM);
+    }
+
+    #[test]
+    fn incomplete_callable_collection_evidence_remains_a_list() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        for (called, members) in [
+            (false, &["push", "indexOf", "splice"][..]),
+            (true, &["push", "splice"][..]),
+            (true, &["push", "indexOf"][..]),
+        ] {
+            let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+            ctx.indexed_elements_called = called;
+            ctx.member_accesses
+                .extend(members.iter().copied().map(str::to_owned));
             let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("list resolves");
             assert_eq!(s.name, "list");
         }

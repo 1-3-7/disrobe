@@ -261,6 +261,8 @@ const QUERY_DIRECT_EVAL: &str =
     "function build(){var a=[];a.push('x=1');return eval(\"a.join('&')\");}";
 const QUERY_WITH: &str =
     "function build(){var a=[];a.push('x=1');with({a:['y=2']}){return a.join('&');}}";
+const LISTENERS_DIRECT_EVAL: &str = "function fire(){var a=[];function f(){}a.push(f);a[0]();var p=a.indexOf(f);a.splice(p,1);return eval(\"a.length\");}";
+const LISTENERS_WITH: &str = "function fire(){var a=[];function f(){}a.push(f);a[0]();var p=a.indexOf(f);a.splice(p,1);with({a:[f]}){return a.length;}}";
 
 #[test]
 fn dynamic_name_scopes_refuse_semantic_role_inference() {
@@ -271,6 +273,8 @@ fn dynamic_name_scopes_refuse_semantic_role_inference() {
         SLICE_WITH,
         QUERY_DIRECT_EVAL,
         QUERY_WITH,
+        LISTENERS_DIRECT_EVAL,
+        LISTENERS_WITH,
     ] {
         let report: TerserRestoreReport = restore_terser_mangled(source);
         assert_eq!(report.rewritten, source);
@@ -389,6 +393,85 @@ fn other_or_nonliteral_join_delimiters_remain_lists() {
         );
         assert!(!report.rewritten.contains("query"));
         assert_behavior_preserved("non-query-components", source, &report.rewritten);
+        assert_eq!(node_capture(&report.rewritten), node_capture(source));
+    }
+}
+
+const LISTENER_COLLECTION: &str = r#"
+function cycle() {
+  var a = [];
+  function handler(value) { print(value); }
+  a.push(handler);
+  a[0]("ready");
+  var p = a.indexOf(handler);
+  if (p >= 0) a.splice(p, 1);
+  print(a.length);
+}
+cycle();
+"#;
+
+#[test]
+fn callable_identity_removed_elements_receive_the_listeners_role_deterministically() {
+    let first: TerserRestoreReport = restore_terser_mangled(LISTENER_COLLECTION);
+    let second: TerserRestoreReport = restore_terser_mangled(LISTENER_COLLECTION);
+    assert!(
+        first.rewritten.contains("var listeners = []"),
+        "combined append, invocation, lookup, and removal evidence must name listeners:\n{}",
+        first.rewritten
+    );
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved("listener-collection", LISTENER_COLLECTION, &first.rewritten);
+    assert_eq!(
+        node_capture(&first.rewritten),
+        node_capture(LISTENER_COLLECTION)
+    );
+}
+
+const LISTENER_CAPTURE: &str = r#"
+var listeners = 7;
+function cycle() {
+  var a = [];
+  function handler(value) { print(value); }
+  a.push(handler);
+  a[0]("ready");
+  var p = a.indexOf(handler);
+  a.splice(p, 1);
+  return listeners;
+}
+print(cycle());
+"#;
+
+#[test]
+fn listeners_role_does_not_shadow_an_outer_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(LISTENER_CAPTURE);
+    assert!(
+        report.rewritten.contains("var listeners_2 = []"),
+        "the semantic role must be suffixed rather than shadow the outer listeners:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("listener-capture", LISTENER_CAPTURE, &report.rewritten);
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(LISTENER_CAPTURE)
+    );
+}
+
+const MUTABLE_VALUES: &str =
+    "function edit(a){a.push(3);var p=a.indexOf(2);a.splice(p,1);print(a.join(','));}edit([1,2]);";
+const CALLED_VALUES: &str = "function run(a){a.push(function(){print('x');});a[0]();}run([]);";
+
+#[test]
+fn incomplete_listener_evidence_remains_a_list() {
+    for source in [MUTABLE_VALUES, CALLED_VALUES] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert!(
+            report.rewritten.contains("function edit(list")
+                || report.rewritten.contains("function run(list"),
+            "every listener signal is required before selecting the role:\n{}",
+            report.rewritten
+        );
+        assert!(!report.rewritten.contains("listeners"));
+        assert_behavior_preserved("non-listener-collection", source, &report.rewritten);
         assert_eq!(node_capture(&report.rewritten), node_capture(source));
     }
 }
