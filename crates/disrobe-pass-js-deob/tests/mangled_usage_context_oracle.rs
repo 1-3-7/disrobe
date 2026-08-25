@@ -257,6 +257,10 @@ const INDEX_OF_WITH: &str =
 const SLICE_DIRECT_EVAL: &str =
     "function copy(a){var b=a.slice(1);return eval(\"a.length+b.length\");}";
 const SLICE_WITH: &str = "function copy(a){with({a:[9]}){return a.slice(1);}}";
+const QUERY_DIRECT_EVAL: &str =
+    "function build(){var a=[];a.push('x=1');return eval(\"a.join('&')\");}";
+const QUERY_WITH: &str =
+    "function build(){var a=[];a.push('x=1');with({a:['y=2']}){return a.join('&');}}";
 
 #[test]
 fn dynamic_name_scopes_refuse_semantic_role_inference() {
@@ -265,6 +269,8 @@ fn dynamic_name_scopes_refuse_semantic_role_inference() {
         INDEX_OF_WITH,
         SLICE_DIRECT_EVAL,
         SLICE_WITH,
+        QUERY_DIRECT_EVAL,
+        QUERY_WITH,
     ] {
         let report: TerserRestoreReport = restore_terser_mangled(source);
         assert_eq!(report.rewritten, source);
@@ -314,4 +320,75 @@ fn slice_receiver_role_does_not_shadow_an_outer_binding() {
     );
     assert_behavior_preserved("slice-capture", SLICE_CAPTURE, &report.rewritten);
     assert_eq!(node_capture(&report.rewritten), node_capture(SLICE_CAPTURE));
+}
+
+const QUERY_COMPONENTS: &str = r#"
+function build() {
+  var a = [];
+  a.push("left=1");
+  a.push("right=2");
+  print(a.join("&"));
+  return a;
+}
+build();
+"#;
+
+#[test]
+fn ampersand_joined_components_receive_the_query_role_deterministically() {
+    let first: TerserRestoreReport = restore_terser_mangled(QUERY_COMPONENTS);
+    let second: TerserRestoreReport = restore_terser_mangled(QUERY_COMPONENTS);
+    assert!(
+        first.rewritten.contains("var query = []"),
+        "the combined push/join/ampersand evidence must name query components:\n{}",
+        first.rewritten
+    );
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved("query-components", QUERY_COMPONENTS, &first.rewritten);
+    assert_eq!(
+        node_capture(&first.rewritten),
+        node_capture(QUERY_COMPONENTS)
+    );
+}
+
+const QUERY_CAPTURE: &str = r#"
+var query = 7;
+function build() {
+  var a = [];
+  a.push("left=1");
+  print(a.join("&"));
+  return query;
+}
+build();
+"#;
+
+#[test]
+fn query_role_does_not_shadow_an_outer_binding() {
+    let report: TerserRestoreReport = restore_terser_mangled(QUERY_CAPTURE);
+    assert!(
+        report.rewritten.contains("var query_2 = []"),
+        "the semantic role must be suffixed rather than shadow the outer query:\n{}",
+        report.rewritten
+    );
+    assert_behavior_preserved("query-capture", QUERY_CAPTURE, &report.rewritten);
+    assert_eq!(node_capture(&report.rewritten), node_capture(QUERY_CAPTURE));
+}
+
+const COMMA_JOINED_COMPONENTS: &str =
+    "function collect(a){a.push('x');print(a.join(','));}collect([]);";
+const DYNAMIC_JOINED_COMPONENTS: &str =
+    "function collect(a,d){a.push('x');print(a.join(d));}collect([],'&');";
+
+#[test]
+fn other_or_nonliteral_join_delimiters_remain_lists() {
+    for source in [COMMA_JOINED_COMPONENTS, DYNAMIC_JOINED_COMPONENTS] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert!(
+            report.rewritten.contains("function collect(list"),
+            "only a direct ampersand literal may select the query role:\n{}",
+            report.rewritten
+        );
+        assert!(!report.rewritten.contains("query"));
+        assert_behavior_preserved("non-query-components", source, &report.rewritten);
+        assert_eq!(node_capture(&report.rewritten), node_capture(source));
+    }
 }

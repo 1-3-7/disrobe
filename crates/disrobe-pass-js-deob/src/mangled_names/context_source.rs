@@ -131,6 +131,7 @@ mod tests {
             callees: BTreeSet::new(),
             callers: BTreeSet::new(),
             member_accesses: BTreeSet::new(),
+            member_call_literals: std::collections::BTreeMap::new(),
             nearby_strings: BTreeSet::new(),
             assigned_from: BTreeSet::new(),
         };

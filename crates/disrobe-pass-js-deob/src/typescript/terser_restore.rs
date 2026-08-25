@@ -10,7 +10,7 @@ use oxc_parser::Parser;
 use oxc_semantic::{
     AstNodes, NodeId, ScopeId, ScopeTree, Semantic, SemanticBuilder, SymbolId, SymbolTable,
 };
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 use serde::Serialize;
 
 use crate::mangled_names::{
@@ -92,6 +92,19 @@ pub fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
             }
             if let Some(member) = member_access_on_reference(nodes, node_id) {
                 ctx.member_accesses.insert(member);
+            }
+            if let Some((member, literals)) =
+                static_member_call_literals_on_reference(nodes, node_id)
+                && !literals.is_empty()
+            {
+                let stored: usize = ctx.member_call_literals.values().map(BTreeSet::len).sum();
+                let remaining: usize = MAX_MEMBER_CALL_LITERALS.saturating_sub(stored);
+                if remaining > 0 {
+                    ctx.member_call_literals
+                        .entry(member)
+                        .or_default()
+                        .extend(literals.into_iter().take(remaining));
+                }
             }
         }
         if let Some(name) = assigned_from_name(symbol_id, symbols, nodes)
@@ -290,6 +303,35 @@ fn member_access_on_reference(nodes: &AstNodes<'_>, reference_node: NodeId) -> O
     member.static_property_name().map(str::to_owned)
 }
 
+fn static_member_call_literals_on_reference(
+    nodes: &AstNodes<'_>,
+    reference_node: NodeId,
+) -> Option<(String, Vec<String>)> {
+    let member_node: &oxc_semantic::AstNode<'_> = nodes.parent_node(reference_node)?;
+    let AstKind::MemberExpression(member) = member_node.kind() else {
+        return None;
+    };
+    let member_name: String = member.static_property_name()?.to_owned();
+    let call_node: &oxc_semantic::AstNode<'_> = nodes.parent_node(member_node.id())?;
+    let AstKind::CallExpression(call) = call_node.kind() else {
+        return None;
+    };
+    if call.callee.span() != member.span() {
+        return None;
+    }
+    let literals: Vec<String> = call
+        .arguments
+        .iter()
+        .filter_map(|argument| argument.as_expression())
+        .filter_map(|argument| match argument.get_inner_expression() {
+            Expression::StringLiteral(literal) => Some(literal.value.as_str().to_owned()),
+            _ => None,
+        })
+        .take(MAX_NEARBY_STRINGS)
+        .collect();
+    Some((member_name, literals))
+}
+
 fn assigned_from_name(
     symbol_id: SymbolId,
     symbols: &SymbolTable,
@@ -390,6 +432,7 @@ fn is_usable_inferred_name(candidate: &str) -> bool {
 }
 
 const MAX_NEARBY_STRINGS: usize = 4;
+const MAX_MEMBER_CALL_LITERALS: usize = 8;
 const MAX_STRING_SEARCH_DEPTH: usize = 8;
 
 fn declaration_string_literals(

@@ -34,6 +34,7 @@ pub struct Context {
     pub callees: BTreeSet<String>,
     pub callers: BTreeSet<String>,
     pub member_accesses: BTreeSet<String>,
+    pub member_call_literals: BTreeMap<String, BTreeSet<String>>,
     pub nearby_strings: BTreeSet<String>,
     pub assigned_from: BTreeSet<String>,
 }
@@ -48,6 +49,7 @@ impl Context {
             callees: BTreeSet::new(),
             callers: BTreeSet::new(),
             member_accesses: BTreeSet::new(),
+            member_call_literals: BTreeMap::new(),
             nearby_strings: BTreeSet::new(),
             assigned_from: BTreeSet::new(),
         }

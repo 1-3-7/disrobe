@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Confidence, Context, NameSource, ScopeKey, Suggestion};
 
@@ -53,6 +53,15 @@ impl HeuristicNameSource {
     }
 
     fn lookup_member_hint(&self, context: &Context) -> Option<(&'static str, Confidence)> {
+        if context.member_accesses.contains("push")
+            && context.member_accesses.contains("join")
+            && context
+                .member_call_literals
+                .get("join")
+                .is_some_and(|literals: &BTreeSet<String>| literals.contains("&"))
+        {
+            return Some(("query", Confidence::MEDIUM));
+        }
         let mut tally: BTreeMap<&'static str, (Confidence, usize)> = BTreeMap::new();
         for member in &context.member_accesses {
             if let Some(&(name, conf)) = self.member_keywords.get(member.as_str()) {
@@ -189,5 +198,38 @@ mod tests {
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("slice resolves");
         assert_eq!(s.name, "source");
         assert_eq!(s.confidence, Confidence::LOW);
+    }
+
+    #[test]
+    fn ampersand_joined_pushes_are_medium_confidence_query_components() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+        ctx.member_accesses.insert("join".to_owned());
+        ctx.member_accesses.insert("push".to_owned());
+        ctx.member_call_literals
+            .entry("join".to_owned())
+            .or_default()
+            .insert("&".to_owned());
+        let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("query resolves");
+        assert_eq!(s.name, "query");
+        assert_eq!(s.confidence, Confidence::MEDIUM);
+    }
+
+    #[test]
+    fn other_or_unknown_join_delimiters_remain_lists() {
+        let src: HeuristicNameSource = HeuristicNameSource::new();
+        for delimiter in [Some(","), None] {
+            let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
+            ctx.member_accesses.insert("join".to_owned());
+            ctx.member_accesses.insert("push".to_owned());
+            if let Some(delimiter) = delimiter {
+                ctx.member_call_literals
+                    .entry("join".to_owned())
+                    .or_default()
+                    .insert(delimiter.to_owned());
+            }
+            let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("list resolves");
+            assert_eq!(s.name, "list");
+        }
     }
 }
