@@ -35,6 +35,48 @@ fn add_zero_identity_commutative_left_const_matches_hardcoded() {
 }
 
 #[test]
+fn sub_zero_identity_matches_hardcoded() {
+    let input: Expr = Expr::sub(Expr::var(0), Expr::konst(0));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 1);
+}
+
+#[test]
+fn mul_one_identity_matches_hardcoded() {
+    let input: Expr = Expr::mul(Expr::var(0), Expr::konst(1));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 1);
+}
+
+#[test]
+fn double_negation_matches_hardcoded() {
+    let input: Expr = Expr::neg(Expr::neg(Expr::var(0)));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 1);
+}
+
+#[test]
+fn negated_not_matches_hardcoded() {
+    let input: Expr = Expr::neg(Expr::not(Expr::var(0)));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 1);
+}
+
+#[test]
+fn not_negated_matches_hardcoded() {
+    let input: Expr = Expr::not(Expr::neg(Expr::var(0)));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 1);
+}
+
+#[test]
+fn add_negated_operand_matches_hardcoded() {
+    let input: Expr = Expr::add(Expr::var(0), Expr::neg(Expr::var(1)));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 2);
+}
+
+#[test]
+fn sub_negated_operand_matches_hardcoded() {
+    let input: Expr = Expr::sub(Expr::var(0), Expr::neg(Expr::var(1)));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 2);
+}
+
+#[test]
 fn mul_zero_annihilates_matches_hardcoded() {
     let input: Expr = Expr::mul(Expr::var(0), Expr::konst(0));
     assert_dsl_matches_hardcoded(&input, Width::W8, 1);

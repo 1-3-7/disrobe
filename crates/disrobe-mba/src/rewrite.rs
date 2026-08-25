@@ -106,12 +106,7 @@ fn rewrite_unary(op: UnOp, inner: Expr, width: Width) -> Expr {
         unreachable!("node was constructed as a unary expression")
     };
     let inner: Expr = *inner;
-    match (op, &inner) {
-        (UnOp::Neg, Expr::Unary(UnOp::Neg, deep)) => (**deep).clone(),
-        (UnOp::Neg, Expr::Unary(UnOp::Not, deep)) => Expr::add((**deep).clone(), Expr::konst(1)),
-        (UnOp::Not, Expr::Unary(UnOp::Neg, deep)) => Expr::sub((**deep).clone(), Expr::konst(1)),
-        _ => Expr::Unary(op, Box::new(inner)),
-    }
+    Expr::Unary(op, Box::new(inner))
 }
 
 fn rewrite_binary(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
@@ -382,32 +377,14 @@ fn fold_const(op: BinOp, lhs: u64, rhs: u64, width: Width) -> u64 {
 }
 
 fn rewrite_add(left: Expr, right: Expr, _width: Width) -> Expr {
-    if let Expr::Unary(UnOp::Neg, inner) = &right {
-        return Expr::sub(left, (**inner).clone());
-    }
-    if let Expr::Unary(UnOp::Neg, inner) = &left {
-        return Expr::sub(right, (**inner).clone());
-    }
     Expr::add(left, right)
 }
 
 fn rewrite_sub(left: Expr, right: Expr, _width: Width) -> Expr {
-    if is_zero(&right) {
-        return left;
-    }
-    if let Expr::Unary(UnOp::Neg, inner) = &right {
-        return Expr::add(left, (**inner).clone());
-    }
     Expr::sub(left, right)
 }
 
 fn rewrite_mul(left: Expr, right: Expr, _width: Width) -> Expr {
-    if is_one(&left) {
-        return right;
-    }
-    if is_one(&right) {
-        return left;
-    }
     Expr::mul(left, right)
 }
 
@@ -456,10 +433,6 @@ fn rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
 
 const fn is_zero(expr: &Expr) -> bool {
     matches!(expr, Expr::Const(0))
-}
-
-const fn is_one(expr: &Expr) -> bool {
-    matches!(expr, Expr::Const(1))
 }
 
 fn absorbs(inner_op: BinOp, outer: &Expr, candidate: &Expr) -> bool {

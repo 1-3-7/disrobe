@@ -10,6 +10,15 @@ when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "use", expr = "x" }
 
 [[rules]]
+name = "sub_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive identity over fixed-width bitvectors"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
 name = "mul_zero_annihilates"
 widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
@@ -17,6 +26,15 @@ source = "multiplicative annihilator over fixed-width bitvectors"
 pattern = { kind = "binary", op = "mul", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
 when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "mul_one_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "multiplicative identity over fixed-width bitvectors"
+pattern = { kind = "binary", op = "mul", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "o" } }
+when = [{ check = "is_one", expr = "o" }]
+rewrite = { build = "use", expr = "x" }
 
 [[rules]]
 name = "sub_self_is_zero"
@@ -52,6 +70,46 @@ proof = "shared_equivalence"
 source = "Boolean algebra involution"
 pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
 rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "double_negation_cancels"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive inverse over fixed-width bitvectors"
+pattern = { kind = "unary", op = "neg", operand = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "negated_not_is_add_one"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "two's-complement negation over fixed-width bitvectors"
+pattern = { kind = "unary", op = "neg", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 1 } }
+
+[[rules]]
+name = "not_negated_is_sub_one"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "two's-complement negation over fixed-width bitvectors"
+pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "const", value = 1 } }
+
+[[rules]]
+name = "add_negated_is_sub"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "subtraction as addition of additive inverse over fixed-width bitvectors"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "y" } } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "use", expr = "y" } }
+
+[[rules]]
+name = "sub_negated_is_add"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "subtraction of additive inverse over fixed-width bitvectors"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "y" } } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "use", expr = "y" } }
 
 [[rules]]
 name = "and_zero_annihilates"
