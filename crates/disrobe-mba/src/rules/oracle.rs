@@ -14,7 +14,7 @@ pub(super) fn grade(rule: &Rule) -> Result<(), LoadError> {
                 width: *bits,
             });
         };
-        let Some(input): Option<Expr> = witness_input(rule, width) else {
+        let Some(inputs): Option<Vec<Expr>> = witness_inputs(rule, width) else {
             return Err(LoadError::EquivalenceRejected {
                 rule: rule.name.clone(),
                 width: *bits,
@@ -24,20 +24,59 @@ pub(super) fn grade(rule: &Rule) -> Result<(), LoadError> {
             commutative_match: false,
             rules: vec![rule.clone()],
         };
-        let Some(hit) = apply_root(&one_rule, &input, width) else {
-            return Err(LoadError::EquivalenceRejected {
-                rule: rule.name.clone(),
-                width: *bits,
-            });
-        };
-        if !verify_equivalent(&input, &hit.result, width).is_proven() {
-            return Err(LoadError::EquivalenceRejected {
-                rule: rule.name.clone(),
-                width: *bits,
-            });
+        for input in inputs {
+            let Some(hit) = apply_root(&one_rule, &input, width) else {
+                return Err(LoadError::EquivalenceRejected {
+                    rule: rule.name.clone(),
+                    width: *bits,
+                });
+            };
+            if !verify_equivalent(&input, &hit.result, width).is_proven() {
+                return Err(LoadError::EquivalenceRejected {
+                    rule: rule.name.clone(),
+                    width: *bits,
+                });
+            }
         }
     }
     Ok(())
+}
+
+fn witness_inputs(rule: &Rule, width: Width) -> Option<Vec<Expr>> {
+    match &rule.pattern {
+        Pattern::AnyConstUnary { .. } => Some(vec![
+            Expr::neg(Expr::konst(0xA5)),
+            Expr::not(Expr::konst(0xA5)),
+        ]),
+        Pattern::AnyConstBinary { .. } => Some(
+            [
+                crate::expr::BinOp::Add,
+                crate::expr::BinOp::Sub,
+                crate::expr::BinOp::Mul,
+                crate::expr::BinOp::And,
+                crate::expr::BinOp::Or,
+                crate::expr::BinOp::Xor,
+                crate::expr::BinOp::Shl,
+                crate::expr::BinOp::Shr,
+            ]
+            .into_iter()
+            .map(|op| Expr::Binary(op, Box::new(Expr::konst(0xA5)), Box::new(Expr::konst(3))))
+            .collect(),
+        ),
+        Pattern::AnyConstSlice { .. } => Some(
+            [(0, 1), (1, 2), (3, 7), (0, 8), (63, 64)]
+                .into_iter()
+                .map(|(lo, hi)| Expr::slice(Expr::konst(0xA5A5), lo, hi))
+                .collect(),
+        ),
+        Pattern::AnyConstCompose { .. } => Some(
+            [0, 1, 8, 63, 64]
+                .into_iter()
+                .map(|low_bits| Expr::compose(Expr::konst(0xA5), Expr::konst(0x5A), low_bits))
+                .collect(),
+        ),
+        _ => Some(vec![witness_input(rule, width)?]),
+    }
 }
 
 fn witness_input(rule: &Rule, width: Width) -> Option<Expr> {

@@ -75,6 +75,30 @@ impl Pass for WasmDeobPass {
         }
     }
 
+    fn chain_metadata(
+        &self,
+        input: &Artifact,
+    ) -> CoreResult<std::collections::BTreeMap<String, String>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        if bytes.len() < 8 || &bytes[..4] != WASM_MAGIC.as_slice() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let detection: WasmDetection = detect_wasm(bytes).map_err(|e: crate::error::Error| {
+            CoreError::PassFailure(format!("DR-WASM-0921: wasm metadata parse: {e}"))
+        })?;
+        let recovered: Option<RecoveredModule> = recover_for_detection(bytes, &detection)?;
+        let mut metadata: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        if recovered.is_some_and(|module: RecoveredModule| module.report.mba_expressions_folded > 0)
+        {
+            metadata.insert(
+                disrobe_mba::rules::MBA_PEEPHOLE_RULE_PACK_METADATA_KEY.to_string(),
+                disrobe_mba::mba_peephole_rule_pack_id(),
+            );
+        }
+        Ok(metadata)
+    }
+
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
         if bytes.len() < 8 || &bytes[..4] != WASM_MAGIC.as_slice() {
@@ -534,6 +558,13 @@ mod tests {
             OutputKind::Source { language, .. } => assert_eq!(language, Language::Wat),
             other => panic!("expected Source, got {other:?}"),
         }
+        let metadata: std::collections::BTreeMap<String, String> = WASM_DEOB_PASS
+            .chain_metadata(&a)
+            .expect("chain metadata must recover");
+        assert_eq!(
+            metadata.get(disrobe_mba::rules::MBA_PEEPHOLE_RULE_PACK_METADATA_KEY),
+            Some(&disrobe_mba::mba_peephole_rule_pack_id())
+        );
     }
 
     #[test]
