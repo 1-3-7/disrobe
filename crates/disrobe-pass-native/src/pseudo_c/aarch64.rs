@@ -1,15 +1,16 @@
+#[cfg(feature = "chain")]
+use super::LifterInstructionCoverage;
 use super::return_channel;
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, CrcPolynomial, Error, ExtSource, FP_ARG_ORDER,
     Flags, FnReturn, FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpRoundKind,
     FpRoundRange, FpToIntRound, FpUnaryOp, FpUnorderedModel, FpWidth, FrameShape, IndexExtend,
-    IndexOperand, Item, ItemKind, LeafRecovery, LifterCoverageTrace, LifterInstructionCoverage,
-    MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode,
-    ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
-    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
-    infer_fp_params, infer_params, mark_instruction_modelled, plan_frame, stmt_writes_rax_int,
-    structure_items,
+    IndexOperand, Item, ItemKind, LeafRecovery, LifterCoverageTrace, MemRef, Node,
+    RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
+    SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
+    VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi, collect_call_targets,
+    condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_fp_params,
+    infer_params, mark_instruction_modelled, plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -445,6 +446,7 @@ pub(super) fn recover_with_calls(
     )
 }
 
+#[cfg(feature = "chain")]
 pub(super) fn recover_with_coverage(
     machine_code: &[u8],
     base: u64,
