@@ -99,6 +99,8 @@ pub enum Condition {
     IsNonZero { expr: String },
     IsOne { expr: String },
     IsAllOnes { expr: String },
+    ShiftCountBelowWidth { expr: String },
+    ShiftCountAtLeastWidth { expr: String },
     Equal { left: String, right: String },
     Complement { left: String, right: String },
 }
@@ -132,6 +134,18 @@ pub enum Template {
         low: String,
         high: String,
         low_bits: u32,
+    },
+    FoldShlConst {
+        value: String,
+        amount: String,
+    },
+    FoldShrConst {
+        value: String,
+        amount: String,
+    },
+    ShlConstAsMul {
+        expr: String,
+        amount: String,
     },
 }
 

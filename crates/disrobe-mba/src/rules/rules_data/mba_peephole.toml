@@ -238,60 +238,47 @@ when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
-name = "shl_width_one_is_zero"
-widths = [1]
+name = "shl_constant_folds"
+widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 1 } }
+source = "SMT-LIB fixed-size bit-vector bvshl constant evaluation"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_const", bind = "value" }, right = { kind = "any_const", bind = "amount" } }
+rewrite = { build = "fold_shl_const", value = "value", amount = "amount" }
+
+[[rules]]
+name = "shr_constant_folds"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvlshr constant evaluation"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_const", bind = "value" }, right = { kind = "any_const", bind = "amount" } }
+rewrite = { build = "fold_shr_const", value = "value", amount = "amount" }
+
+[[rules]]
+name = "shl_count_at_or_above_width_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvshl with a count at least the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_at_least_width", expr = "amount" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
-name = "shl_width_two_is_zero"
-widths = [2]
+name = "shr_count_at_or_above_width_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 2 } }
+source = "SMT-LIB fixed-size bit-vector bvlshr with a count at least the operand width"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_at_least_width", expr = "amount" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
-name = "shl_width_four_is_zero"
-widths = [4]
+name = "shl_in_range_count_normalizes_to_multiplication"
+widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 4 } }
-rewrite = { build = "const", value = 0 }
-
-[[rules]]
-name = "shl_width_eight_is_zero"
-widths = [8]
-proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 8 } }
-rewrite = { build = "const", value = 0 }
-
-[[rules]]
-name = "shl_width_sixteen_is_zero"
-widths = [16]
-proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 16 } }
-rewrite = { build = "const", value = 0 }
-
-[[rules]]
-name = "shl_width_thirty_two_is_zero"
-widths = [32]
-proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 32 } }
-rewrite = { build = "const", value = 0 }
-
-[[rules]]
-name = "shl_width_sixty_four_is_zero"
-widths = [64]
-proof = "shared_equivalence"
-source = "fixed-width logical shift at the operand width"
-pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 64 } }
-rewrite = { build = "const", value = 0 }
+source = "fixed-width logical left shift as multiplication by two to the count"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_below_width", expr = "amount" }]
+rewrite = { build = "shl_const_as_mul", expr = "x", amount = "amount" }
 
 [[rules]]
 name = "ite_zero_selects_otherwise"

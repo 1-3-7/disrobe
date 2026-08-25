@@ -55,6 +55,15 @@ fn witness_input(rule: &Rule, width: Width) -> Option<Expr> {
             Condition::IsAllOnes { expr } => {
                 captures.insert(expr.clone(), Expr::konst(width.mask()));
             }
+            Condition::ShiftCountBelowWidth { expr } => {
+                captures.insert(
+                    expr.clone(),
+                    Expr::konst(u64::from(width.bits()).saturating_sub(1)),
+                );
+            }
+            Condition::ShiftCountAtLeastWidth { expr } => {
+                captures.insert(expr.clone(), Expr::konst(u64::from(width.bits())));
+            }
             Condition::Equal { left, right } => {
                 let value: Expr = captures.get(left)?.clone();
                 captures.insert(right.clone(), value);

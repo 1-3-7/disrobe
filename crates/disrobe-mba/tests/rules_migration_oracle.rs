@@ -258,6 +258,43 @@ fn left_shift_at_its_width_matches_hardcoded_at_every_supported_width() {
 }
 
 #[test]
+fn shift_constant_class_matches_hardcoded_at_every_supported_width_and_hostile_amount() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        let bits: u64 = u64::from(width.bits());
+        for amount in [
+            0,
+            bits.saturating_sub(1),
+            bits,
+            bits.saturating_add(1),
+            u64::MAX,
+        ] {
+            for input in [
+                Expr::shl(Expr::var(0), Expr::konst(amount)),
+                Expr::shr(Expr::var(0), Expr::konst(amount)),
+                Expr::shl(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), Expr::konst(amount)),
+                Expr::shr(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), Expr::konst(amount)),
+            ] {
+                let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+                assert_eq!(dsl, canonicalize(&input, width), "{input} at {width:?}");
+                if equivalent_exhaustive_runnable(width, 1) {
+                    assert!(equivalent_exhaustive(&input, &dsl, width, 1));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn constant_ite_matches_hardcoded_at_every_supported_width() {
     let widths: [Width; 7] = [
         Width::W1,

@@ -110,12 +110,14 @@ fn rewrite_unary(op: UnOp, inner: Expr, width: Width) -> Expr {
 }
 
 fn rewrite_binary(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
-    if let (Expr::Const(lhs), Expr::Const(rhs)) = (&left, &right) {
-        return Expr::Const(fold_const(op, *lhs, *rhs, width) & width.mask());
-    }
     let node: Expr = Expr::Binary(op, Box::new(left), Box::new(right));
     if let Some(rewritten) = apply_migrated(&node, width) {
         return rewritten;
+    }
+    if let Expr::Binary(op, left, right) = &node
+        && let (Expr::Const(lhs), Expr::Const(rhs)) = (&**left, &**right)
+    {
+        return Expr::Const(fold_const(*op, *lhs, *rhs, width) & width.mask());
     }
     let Expr::Binary(op, left, right): Expr = node else {
         unreachable!("node was constructed as a binary expression")
@@ -144,8 +146,7 @@ fn rewrite_binary(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
         BinOp::And => rewrite_and(left, right, width),
         BinOp::Or => rewrite_or(left, right, width),
         BinOp::Xor => rewrite_xor(left, right, width),
-        BinOp::Shl => rewrite_shift(BinOp::Shl, left, right, width),
-        BinOp::Shr => rewrite_shift(BinOp::Shr, left, right, width),
+        BinOp::Shl | BinOp::Shr => Expr::Binary(op, Box::new(left), Box::new(right)),
     }
 }
 
@@ -410,19 +411,6 @@ fn rewrite_or(left: Expr, right: Expr, _width: Width) -> Expr {
 
 fn rewrite_xor(left: Expr, right: Expr, _width: Width) -> Expr {
     Expr::xor(left, right)
-}
-
-fn rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
-    if op == BinOp::Shl
-        && let Expr::Const(amount) = right
-    {
-        if amount > u64::from(width.bits()) {
-            return Expr::konst(0);
-        }
-        let factor: u64 = (1u64 << amount) & width.mask();
-        return Expr::mul(Expr::konst(factor), left);
-    }
-    Expr::Binary(op, Box::new(left), Box::new(right))
 }
 
 fn absorbs(inner_op: BinOp, outer: &Expr, candidate: &Expr) -> bool {

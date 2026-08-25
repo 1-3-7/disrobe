@@ -246,6 +246,21 @@ fn template_shape_into(template: &Template, captures: &BTreeMap<String, usize>) 
             captures[low.as_str()],
             captures[high.as_str()]
         ),
+        Template::FoldShlConst { value, amount } => format!(
+            "fold_shl_const(capture:{},capture:{})",
+            captures[value.as_str()],
+            captures[amount.as_str()]
+        ),
+        Template::FoldShrConst { value, amount } => format!(
+            "fold_shr_const(capture:{},capture:{})",
+            captures[value.as_str()],
+            captures[amount.as_str()]
+        ),
+        Template::ShlConstAsMul { expr, amount } => format!(
+            "shl_const_as_mul(capture:{},capture:{})",
+            captures[expr.as_str()],
+            captures[amount.as_str()]
+        ),
     }
 }
 
@@ -319,7 +334,9 @@ fn check_condition_refs(
         Condition::IsZero { expr }
         | Condition::IsNonZero { expr }
         | Condition::IsOne { expr }
-        | Condition::IsAllOnes { expr } => [expr.as_str(), expr.as_str()],
+        | Condition::IsAllOnes { expr }
+        | Condition::ShiftCountBelowWidth { expr }
+        | Condition::ShiftCountAtLeastWidth { expr } => [expr.as_str(), expr.as_str()],
         Condition::Equal { left, right } | Condition::Complement { left, right } => {
             [left.as_str(), right.as_str()]
         }
@@ -362,6 +379,15 @@ fn check_template_refs(
                 validate_compose_low_bits(rule, *low_bits)?;
                 require_bound(low, bound, rule)?;
                 require_bound(high, bound, rule)?;
+            }
+            Template::FoldShlConst { value, amount }
+            | Template::FoldShrConst { value, amount }
+            | Template::ShlConstAsMul {
+                expr: value,
+                amount,
+            } => {
+                require_bound(value, bound, rule)?;
+                require_bound(amount, bound, rule)?;
             }
             Template::Const { .. } | Template::AllOnes => {}
             Template::Unary { operand, .. } => {

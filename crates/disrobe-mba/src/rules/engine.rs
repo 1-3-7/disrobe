@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::expr::{Expr, Width};
+use crate::expr::{Expr, Width, shift_left, shift_right};
 use crate::rules::error::ApplyError;
 use crate::rules::schema::{Binary, Condition, Pattern, Rule, RuleSet, Template};
 
@@ -279,6 +279,10 @@ fn condition_holds(condition: &Condition, bindings: &Bindings, width: Width) -> 
             .is_some_and(|value: u64| (value & width.mask()) == 1),
         Condition::IsAllOnes { expr } => const_or_subtree_const(expr, bindings, width)
             .is_some_and(|value: u64| (value & width.mask()) == width.mask()),
+        Condition::ShiftCountBelowWidth { expr } => const_or_subtree_const(expr, bindings, width)
+            .is_some_and(|value: u64| value < u64::from(width.bits())),
+        Condition::ShiftCountAtLeastWidth { expr } => const_or_subtree_const(expr, bindings, width)
+            .is_some_and(|value: u64| value >= u64::from(width.bits())),
         Condition::Equal { left, right } => match (bindings.any(left), bindings.any(right)) {
             (Some(a), Some(b)) => a == b,
             _ => false,
@@ -381,6 +385,48 @@ fn instantiate_bounded(
             Ok(Expr::Const(compose_constant(
                 low_value, high_value, *low_bits, width,
             )))
+        }
+        Template::FoldShlConst { value, amount } => {
+            let value: u64 =
+                bindings
+                    .const_value(value)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: value.clone(),
+                    })?;
+            let amount: u64 =
+                bindings
+                    .const_value(amount)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: amount.clone(),
+                    })?;
+            Ok(Expr::Const(shift_left(value, amount, width)))
+        }
+        Template::FoldShrConst { value, amount } => {
+            let value: u64 =
+                bindings
+                    .const_value(value)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: value.clone(),
+                    })?;
+            let amount: u64 =
+                bindings
+                    .const_value(amount)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: amount.clone(),
+                    })?;
+            Ok(Expr::Const(shift_right(value, amount, width)))
+        }
+        Template::ShlConstAsMul { expr, amount } => {
+            let value: Expr = bindings
+                .any(expr)
+                .ok_or_else(|| ApplyError::MissingCapture(expr.clone()))?;
+            let amount: u64 =
+                bindings
+                    .const_value(amount)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: amount.clone(),
+                    })?;
+            Ok(Expr::mul(Expr::Const(shift_left(1, amount, width)), value))
         }
     }
 }
