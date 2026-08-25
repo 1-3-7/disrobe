@@ -530,6 +530,12 @@ fn itanium_set_field(memory: &mut [u8], position: usize, count: u32, value: u32)
 
 fn filter_itanium(memory: &mut [u8], length: u32, file_offset: u32) -> Result<usize> {
     let len: usize = length as usize;
+    if len < ITANIUM_BUNDLE_SPAN {
+        return Err(refuse(
+            StandardFilter::Itanium,
+            &format!("block length {len} is below the minimum {ITANIUM_BUNDLE_SPAN}"),
+        ));
+    }
     if len > PROGRAM_WORK_SIZE {
         return Err(refuse(
             StandardFilter::Itanium,
@@ -909,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn random_blocks_never_panic_the_itanium_transform() {
+    fn random_blocks_have_bounded_itanium_outcomes() {
         let mut state: u64 = 0x4954_414e_4955_4d21;
         let mut next = move || -> u64 {
             state ^= state << 13;
@@ -929,11 +935,18 @@ mod tests {
                 *slot = (next() >> 24) as u8;
             }
             let file_offset: u32 = (next() >> 16) as u32;
-            assert_eq!(
-                filter_itanium(&mut memory, len, file_offset).unwrap(),
-                0,
-                "a block of {len} bytes at offset {file_offset} must transform in place"
-            );
+            let outcome: Result<usize> = filter_itanium(&mut memory, len, file_offset);
+            if len < ITANIUM_BUNDLE_SPAN as u32 {
+                assert!(
+                    matches!(outcome, Err(Error::Decompression(_))),
+                    "a block of {len} bytes must receive the typed short-block refusal"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, Ok(0)),
+                    "a block of {len} bytes at offset {file_offset} must transform in place"
+                );
+            }
         }
     }
 
@@ -943,6 +956,29 @@ mod tests {
         let error: Error = filter_itanium(&mut memory, 0x0003_ffff, 0).unwrap_err();
         assert!(
             error.to_string().contains("itanium") && error.to_string().contains("block length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_filter_caller_refuses_an_itanium_block_shorter_than_the_canonical_minimum() {
+        let mut set: FilterSet = FilterSet::default();
+        set.pending.push(FilterInvocation {
+            block_start: 0,
+            block_end: 20,
+            block_length: 20,
+            filter: StandardFilter::Itanium,
+            registers: [0, 0, 0, 0, 20, 0, 0, 0],
+        });
+        let window: Vec<u8> = vec![0u8; 20];
+        let error: Error = match set.emit(&window, window.len()) {
+            Err(error) => error,
+            Ok(bytes) => panic!("the short Itanium block was published as {bytes:?}"),
+        };
+        assert!(
+            error.to_string().contains("itanium")
+                && error.to_string().contains("block length 20")
+                && error.to_string().contains("minimum 21"),
             "{error}"
         );
     }
