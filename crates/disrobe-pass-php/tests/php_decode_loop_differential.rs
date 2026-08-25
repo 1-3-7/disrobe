@@ -381,6 +381,48 @@ fn canonical_rc4_ord_and_raw_prga_paths_runtime_equivalent() {
 }
 
 #[test]
+fn rc4_short_array_destructuring_swaps_runtime_equivalent() {
+    let key: &[u8] = b"destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let blob: Vec<u8> = format!(
+        "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; [$s[$i], $s[$j]] = [$s[$j], $s[$i]]; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; [$s[$i], $s[$j]] = [$s[$j], $s[$i]]; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+    )
+    .into_bytes();
+
+    recover_and_grade("rc4-short-array-destructuring-swaps", &blob);
+}
+
+#[test]
+fn a_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
+    let graded: String = String::from("the destructuring count-mismatch refusal");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let encoded: String = b64(payload().as_bytes());
+    let blob: Vec<u8> = format!(
+        "<?php $parts = [base64_decode('{encoded}'), 'extra']; $body = ''; for ($i = 0; $i < 1; $i++) {{ [$body] = $parts; }} ev\x61l($body);"
+    )
+    .into_bytes();
+    let loader_stdout: Vec<u8> = php.stdout_of("destructuring-count-mismatch", &blob);
+    assert_eq!(
+        String::from_utf8_lossy(&loader_stdout),
+        MARKER,
+        "the reference loader must execute before its conservative refusal can be graded"
+    );
+
+    let report: RecoveryReport =
+        recover_php(&blob, None).expect("recover mismatched destructuring");
+    assert!(
+        !report.output.contains(MARKER),
+        "a destructuring assignment outside the evaluator's exact-count subset must abstain rather \
+         than emit a partially assigned body; got:\n{}",
+        report.output
+    );
+}
+
+#[test]
 fn rc4_helper_with_chained_state_initialization_runtime_equivalent() {
     let key: &[u8] = b"chained_rc4_state";
     let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());

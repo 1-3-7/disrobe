@@ -173,6 +173,10 @@ enum LStmt {
         op: AssignOp,
         value: LExpr,
     },
+    Destructure {
+        targets: Vec<LValue>,
+        value: LExpr,
+    },
     IncDec {
         target: LValue,
         delta: i64,
@@ -716,6 +720,11 @@ impl<'a> LoopParser<'a> {
             let target: LValue = self.parse_lvalue()?;
             return Some(LStmt::IncDec { target, delta: -1 });
         }
+        let destructure_start: usize = self.pos;
+        if let Some(stmt) = self.parse_destructure() {
+            return Some(stmt);
+        }
+        self.pos = destructure_start;
         let save: usize = self.pos;
         self.skip_trivia();
         if self.peek() == Some(b'$') && self.peek_at(1).is_some_and(is_ident_start) {
@@ -735,6 +744,39 @@ impl<'a> LoopParser<'a> {
             self.pos = save;
         }
         Some(LStmt::Expr(self.parse_expr()?))
+    }
+
+    fn parse_destructure(&mut self) -> Option<LStmt> {
+        self.skip_trivia();
+        if self.peek() != Some(b'[') {
+            return None;
+        }
+        self.pos += 1;
+        let mut targets: Vec<LValue> = Vec::new();
+        loop {
+            if targets.len() >= MAX_STATEMENTS {
+                return None;
+            }
+            let target: LValue = self.parse_lvalue()?;
+            if matches!(target, LValue::Index { idx: None, .. }) {
+                return None;
+            }
+            targets.push(target);
+            self.skip_trivia();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        if !self.eat(b"=") || self.peek() == Some(b'=') {
+            return None;
+        }
+        let value: LExpr = self.parse_expr()?;
+        Some(LStmt::Destructure { targets, value })
     }
 
     fn match_assign_op(&mut self) -> Option<AssignOp> {
@@ -1447,6 +1489,25 @@ impl Interp {
             LStmt::Assign { target, op, value } => {
                 let rhs: Val = self.eval(value, 0)?;
                 self.assign(target, *op, rhs)?;
+                Ok(Flow::Normal)
+            }
+            LStmt::Destructure { targets, value } => {
+                let rhs: Val = self.eval(value, 0)?;
+                let Val::Arr(mut values) = rhs else {
+                    return Err(Abstain::TypeMismatch);
+                };
+                if values.len() != targets.len() {
+                    return Err(Abstain::Unsupported);
+                }
+                let mut snapshot: Vec<Val> = Vec::with_capacity(targets.len());
+                for index in 0..targets.len() {
+                    let key: i64 = i64::try_from(index).map_err(|_| Abstain::OutOfRange)?;
+                    snapshot.push(values.remove(&key).ok_or(Abstain::Unsupported)?);
+                }
+                for (target, assigned) in targets.iter().zip(snapshot) {
+                    self.tick()?;
+                    self.assign(target, AssignOp::Set, assigned)?;
+                }
                 Ok(Flow::Normal)
             }
             LStmt::IncDec { target, delta } => {
