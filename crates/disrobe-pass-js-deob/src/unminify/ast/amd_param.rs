@@ -50,6 +50,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
     let symbols: &SymbolTable = semantic.symbols();
     let scopes: &ScopeTree = semantic.scopes();
     let nodes: &AstNodes<'_> = semantic.nodes();
+    let root_has_unresolved_eval: bool = scopes.root_unresolved_references().contains_key("eval");
     let safety: RenameSafety<'_> = RenameSafety {
         symbols,
         scopes,
@@ -160,7 +161,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
         }
     }
 
-    for factory in parcel_factories(nodes, symbols) {
+    for factory in parcel_factories(nodes, symbols, root_has_unresolved_eval) {
         let mut reserved: IndexSet<String> = root_reserved.clone();
         let mut next_suffixes: IndexMap<String, u32> = IndexMap::new();
         for ((parameter, preferred), live) in factory
@@ -288,13 +289,17 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
 fn parcel_factories<'a>(
     nodes: &'a AstNodes<'a>,
     symbols: &'a SymbolTable,
+    root_has_unresolved_eval: bool,
 ) -> Vec<ParcelFactory<'a>> {
     let mut factories: Vec<ParcelFactory<'_>> = Vec::new();
+    let aliases: IndexSet<SymbolId> =
+        parcel_register_aliases(nodes, symbols, root_has_unresolved_eval);
     for node in nodes.iter() {
         let AstKind::CallExpression(call) = node.kind() else {
             continue;
         };
-        if !is_parcel_register_call(call, symbols)
+        if !parcel_call_has_static_scope(node, nodes)
+            || !is_parcel_register_call(call, symbols, &aliases)
             || call.optional
             || call.type_parameters.is_some()
         {
@@ -352,12 +357,76 @@ fn parcel_factories<'a>(
     factories
 }
 
-fn is_parcel_register_call(call: &CallExpression<'_>, symbols: &SymbolTable) -> bool {
+fn parcel_register_aliases(
+    nodes: &AstNodes<'_>,
+    symbols: &SymbolTable,
+    root_has_unresolved_eval: bool,
+) -> IndexSet<SymbolId> {
+    let mut aliases: IndexSet<SymbolId> = IndexSet::new();
+    if root_has_unresolved_eval {
+        return aliases;
+    }
+    for node in nodes.iter() {
+        let AstKind::VariableDeclarator(declarator) = node.kind() else {
+            continue;
+        };
+        let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+            continue;
+        };
+        let Some(symbol_id): Option<SymbolId> = binding.symbol_id.get() else {
+            continue;
+        };
+        let Some(initializer): Option<&Expression<'_>> = declarator.init.as_ref() else {
+            continue;
+        };
+        let Expression::StaticMemberExpression(register) = initializer.get_inner_expression()
+        else {
+            continue;
+        };
+        if !parcel_call_has_static_scope(node, nodes)
+            || symbols.symbol_is_mutated(symbol_id)
+            || !symbols.get_redeclarations(symbol_id).is_empty()
+            || !is_parcel_register_member(register, symbols)
+        {
+            continue;
+        }
+        aliases.insert(symbol_id);
+    }
+    aliases
+}
+
+fn parcel_call_has_static_scope(node: &oxc_semantic::AstNode<'_>, nodes: &AstNodes<'_>) -> bool {
+    nodes
+        .ancestors(node.id())
+        .all(|ancestor| match ancestor.kind() {
+            AstKind::WithStatement(_) => false,
+            AstKind::Function(function) => function
+                .body
+                .as_deref()
+                .is_some_and(|body: &FunctionBody<'_>| !body_has_dynamic_scope(body)),
+            AstKind::ArrowFunctionExpression(function) => !body_has_dynamic_scope(&function.body),
+            _ => true,
+        })
+}
+
+fn is_parcel_register_call(
+    call: &CallExpression<'_>,
+    symbols: &SymbolTable,
+    aliases: &IndexSet<SymbolId>,
+) -> bool {
     let Some(register): Option<&oxc_ast::ast::StaticMemberExpression<'_>> =
         parcel_register_member(&call.callee)
     else {
-        return false;
+        return parcel_register_alias(&call.callee, symbols)
+            .is_some_and(|symbol_id: SymbolId| aliases.contains(&symbol_id));
     };
+    is_parcel_register_member(register, symbols)
+}
+
+fn is_parcel_register_member(
+    register: &oxc_ast::ast::StaticMemberExpression<'_>,
+    symbols: &SymbolTable,
+) -> bool {
     if register.optional || register.property.name.as_str() != "register" {
         return false;
     }
@@ -373,6 +442,30 @@ fn is_parcel_register_call(call: &CallExpression<'_>, symbols: &SymbolTable) -> 
     ["globalThis", "self", "window"]
         .into_iter()
         .any(|name: &str| unresolved_identifier_is(global, name, symbols))
+}
+
+fn parcel_register_alias(callee: &Expression<'_>, symbols: &SymbolTable) -> Option<SymbolId> {
+    let identifier = match callee.get_inner_expression() {
+        Expression::Identifier(identifier) => identifier,
+        Expression::SequenceExpression(sequence) => {
+            let [prefix, identifier] = sequence.expressions.as_slice() else {
+                return None;
+            };
+            let Expression::NumericLiteral(prefix) = prefix.get_inner_expression() else {
+                return None;
+            };
+            if prefix.value != 0.0 {
+                return None;
+            }
+            let Expression::Identifier(identifier) = identifier.get_inner_expression() else {
+                return None;
+            };
+            identifier
+        }
+        _ => return None,
+    };
+    let reference_id: ReferenceId = identifier.reference_id.get()?;
+    symbols.get_reference(reference_id).symbol_id()
 }
 
 fn parcel_register_member<'a>(

@@ -348,6 +348,48 @@ fn direct_parcel_register_factory_recovers_the_same_roles() {
 }
 
 #[test]
+fn immutable_parcel_register_alias_recovers_live_roles_without_capture() {
+    let source: &str = r#"const module=10;var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};const r=globalThis.parcelRequire7a05.register;var held={r};r("entry",function(a,b){a.exports.answer=__require("./math-utils").sum(module,4);b.value=a.exports.answer;print(b.value);});(0,r)("secondary",function(c,d){c.exports.answer=__require("./math-utils").sum(module,5);d.value=c.exports.answer;print(d.value);});"#;
+    let (first, stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+    assert_eq!(
+        first, second,
+        "Parcel alias recovery must be byte-identical"
+    );
+    assert!(
+        first.matches("function(module_1,exports)").count() == 2,
+        "an immutable Parcel register alias must expose collision-safe roles:\n{first}"
+    );
+    assert!(
+        first.contains("module_1.exports.answer") && first.contains("sum(module,4)"),
+        "the recovered binding and outer collision must remain distinct:\n{first}"
+    );
+    assert_eq!(stats.parcel_parameters_renamed, 4);
+    assert_runtime_parity(source, &first);
+}
+
+#[test]
+fn parcel_register_alias_recovery_rejects_mutation_ambiguity_and_dynamic_scope() {
+    let sources: [&str; 7] = [
+        r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};let r=globalThis.parcelRequire7a05.register;var held={r};r=function(){};r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};var r=globalThis.parcelRequire7a05.register;var r=globalThis.parcelRequire7a05.register;var held={r};r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r#"function load(){var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};const r=globalThis.parcelRequire7a05.register;var held={r};with({}){r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});}}load();"#,
+        r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};let r=globalThis.parcelRequire7a05.register;var held={r};eval("r=function(){}");r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r#"const globalThis={parcelRequire7a05:{register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}}};const r=globalThis.parcelRequire7a05.register;var held={r};r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};const r=globalThis.parcelRequire7a05.register;var held={r};r(dynamicId,function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});",
+        r#"globalThis.otherRuntime={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};const r=globalThis.otherRuntime.register;var held={r};r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+    ];
+    for source in sources {
+        let (unchanged, stats) = unminify_ast(source);
+        assert!(
+            unchanged.contains("function(a,b)"),
+            "only a single immutable alias of the unresolved Parcel runtime may rename roles:\n{unchanged}"
+        );
+        assert_eq!(stats.parcel_parameters_renamed, 0);
+    }
+}
+
+#[test]
 fn parcel_register_recovery_avoids_capture_and_rejects_near_misses() {
     let collision: &str = r#"const module=10;var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};(0,globalThis.parcelRequire7a05.register)("entry",function(a,b){a.exports.answer=__require("./math-utils").sum(module,4);b.value=a.exports.answer;print(b.value);});"#;
     let (recovered, _) = unminify_ast(collision);
