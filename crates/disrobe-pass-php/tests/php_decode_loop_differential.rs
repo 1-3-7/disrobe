@@ -473,6 +473,34 @@ fn rc4_trailing_comma_destructuring_targets_runtime_equivalent() {
 }
 
 #[test]
+fn rc4_one_level_nested_destructuring_swaps_runtime_equivalent() {
+    let key: &[u8] = b"nested_destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 2] = [
+        (
+            "rc4-short-one-level-nested-destructuring",
+            "[[$s[$i]], [$s[$j]]]",
+            "[[$s[$j]], [$s[$i]]]",
+        ),
+        (
+            "rc4-list-one-level-nested-destructuring",
+            "list(list($s[$i]), list($s[$j]))",
+            "array(array($s[$j]), array($s[$i]))",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade(label, &blob);
+    }
+}
+
+#[test]
 fn a_destructuring_count_mismatch_is_refused_through_the_eval_sink() {
     let graded: String = String::from("the destructuring count-mismatch refusal");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {
@@ -604,6 +632,84 @@ fn all_empty_destructuring_targets_are_refused() {
             report.output
         );
     }
+}
+
+#[test]
+fn unsupported_nested_destructuring_forms_are_refused() {
+    let graded: String = String::from("the unsupported nested destructuring refusals");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let encoded: String = b64(payload().as_bytes());
+    let valid_cases: [(&str, String); 5] = [
+        (
+            "nested-width-mismatch",
+            format!(
+                "<?php $parts=[[base64_decode('{encoded}'),'extra']];$body='';for($i=0;$i<1;$i++){{[[$body]]=$parts;}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "nested-depth-two",
+            format!(
+                "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{[[[$body]]]=[[[$parts[0]]]];}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "nested-keyed-target",
+            format!(
+                "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{[['payload'=>$body]]=[['payload'=>$parts[0]]];}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "nested-append-target",
+            format!(
+                "<?php $parts=[base64_decode('{encoded}')];$body=[];for($i=0;$i<1;$i++){{[[$body[]]]=[[$parts[0]]];}}ev\x61l($body[0]);"
+            ),
+        ),
+        (
+            "nested-reference-target",
+            format!(
+                "<?php $parts=[base64_decode('{encoded}')];$body='';$inner=[&$parts[0]];$outer=[$inner];for($i=0;$i<1;$i++){{[[&$body]]=$outer;}}ev\x61l($body);"
+            ),
+        ),
+    ];
+    for (label, source) in valid_cases {
+        let reference: Vec<u8> = php.stdout_of(label, source.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&reference),
+            MARKER,
+            "the real PHP caller must execute the {label} form before its refusal can be graded"
+        );
+        let report: RecoveryReport = recover_php(source.as_bytes(), None)
+            .unwrap_or_else(|error| panic!("recover unsupported {label} form: {error}"));
+        assert!(
+            !report.output.contains(MARKER),
+            "the unsupported {label} form must abstain instead of recovering a body; got:\n{}",
+            report.output
+        );
+    }
+
+    let mixed: Vec<u8> = format!(
+        "<?php $parts=[base64_decode('{encoded}')];$body='';for($i=0;$i<1;$i++){{list([$body])=[[$parts[0]]];$body=$parts[0];}}ev\x61l($body);"
+    )
+    .into_bytes();
+    let reference: php_toolchain::PhpRun =
+        php.run_reporting_errors("mixed-nested-destructuring-style", &mixed);
+    assert!(
+        !reference.exited_clean && reference.stderr.contains("Cannot mix [] and list()"),
+        "PHP must reject mixed nested destructuring styles before the refusal is graded; got \
+         stdout {:?}, stderr {:?}",
+        String::from_utf8_lossy(&reference.stdout),
+        reference.stderr
+    );
+    let report: RecoveryReport =
+        recover_php(&mixed, None).expect("recover mixed nested destructuring styles");
+    assert!(
+        !report.output.contains(MARKER),
+        "mixed nested destructuring styles must be refused before the following assignment; \
+         got:\n{}",
+        report.output
+    );
 }
 
 #[test]

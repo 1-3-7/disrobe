@@ -163,9 +163,21 @@ enum LValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DestructureTarget {
+enum DestructureLeaf {
     Assign(LValue),
     Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DestructureTarget {
+    Leaf(DestructureLeaf),
+    Nested(Vec<DestructureLeaf>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestructureSyntax {
+    Short,
+    List,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -753,14 +765,37 @@ impl<'a> LoopParser<'a> {
     }
 
     fn parse_destructure(&mut self) -> Option<LStmt> {
-        self.skip_trivia();
-        let close: u8 = if self.peek() == Some(b'[') {
-            self.pos += 1;
-            b']'
-        } else if self.eat_keyword(b"list") && self.eat(b"(") {
-            b')'
-        } else {
+        let syntax: DestructureSyntax = self.parse_destructure_open()?;
+        let mut remaining: usize = MAX_STATEMENTS;
+        let targets: Vec<DestructureTarget> =
+            self.parse_destructure_targets(syntax, &mut remaining)?;
+        if !self.eat(b"=") || self.peek() == Some(b'=') {
             return None;
+        }
+        let value: LExpr = self.parse_expr()?;
+        Some(LStmt::Destructure { targets, value })
+    }
+
+    fn parse_destructure_open(&mut self) -> Option<DestructureSyntax> {
+        self.skip_trivia();
+        if self.peek() == Some(b'[') {
+            self.pos += 1;
+            return Some(DestructureSyntax::Short);
+        }
+        if self.eat_keyword(b"list") && self.eat(b"(") {
+            return Some(DestructureSyntax::List);
+        }
+        None
+    }
+
+    fn parse_destructure_targets(
+        &mut self,
+        syntax: DestructureSyntax,
+        remaining: &mut usize,
+    ) -> Option<Vec<DestructureTarget>> {
+        let close: u8 = match syntax {
+            DestructureSyntax::Short => b']',
+            DestructureSyntax::List => b')',
         };
         let mut targets: Vec<DestructureTarget> = Vec::new();
         let mut has_assignment: bool = false;
@@ -773,19 +808,28 @@ impl<'a> LoopParser<'a> {
                 self.pos += 1;
                 break;
             }
-            if targets.len() >= MAX_STATEMENTS {
+            if *remaining == 0 {
                 return None;
             }
+            *remaining -= 1;
             if self.peek() == Some(b',') {
                 self.pos += 1;
-                targets.push(DestructureTarget::Skip);
+                targets.push(DestructureTarget::Leaf(DestructureLeaf::Skip));
                 continue;
             }
-            let target: LValue = self.parse_lvalue()?;
-            if matches!(target, LValue::Index { idx: None, .. }) {
-                return None;
-            }
-            targets.push(DestructureTarget::Assign(target));
+            let nested_start: usize = self.pos;
+            let target: DestructureTarget = if let Some(nested_syntax) =
+                self.parse_destructure_open()
+            {
+                if nested_syntax != syntax {
+                    return None;
+                }
+                DestructureTarget::Nested(self.parse_destructure_leaves(syntax, remaining)?)
+            } else {
+                self.pos = nested_start;
+                DestructureTarget::Leaf(DestructureLeaf::Assign(self.parse_destructure_lvalue()?))
+            };
+            targets.push(target);
             has_assignment = true;
             self.skip_trivia();
             match self.peek() {
@@ -797,11 +841,64 @@ impl<'a> LoopParser<'a> {
                 _ => return None,
             }
         }
-        if !self.eat(b"=") || self.peek() == Some(b'=') {
+        Some(targets)
+    }
+
+    fn parse_destructure_leaves(
+        &mut self,
+        syntax: DestructureSyntax,
+        remaining: &mut usize,
+    ) -> Option<Vec<DestructureLeaf>> {
+        let close: u8 = match syntax {
+            DestructureSyntax::Short => b']',
+            DestructureSyntax::List => b')',
+        };
+        let mut leaves: Vec<DestructureLeaf> = Vec::new();
+        let mut has_assignment: bool = false;
+        loop {
+            self.skip_trivia();
+            if self.peek() == Some(close) {
+                if !has_assignment {
+                    return None;
+                }
+                self.pos += 1;
+                break;
+            }
+            if *remaining == 0 {
+                return None;
+            }
+            *remaining -= 1;
+            if self.peek() == Some(b',') {
+                self.pos += 1;
+                leaves.push(DestructureLeaf::Skip);
+                continue;
+            }
+            let nested_start: usize = self.pos;
+            if self.parse_destructure_open().is_some() {
+                return None;
+            }
+            self.pos = nested_start;
+            leaves.push(DestructureLeaf::Assign(self.parse_destructure_lvalue()?));
+            has_assignment = true;
+            self.skip_trivia();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(candidate) if candidate == close => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        Some(leaves)
+    }
+
+    fn parse_destructure_lvalue(&mut self) -> Option<LValue> {
+        let target: LValue = self.parse_lvalue()?;
+        if matches!(target, LValue::Index { idx: None, .. }) {
             return None;
         }
-        let value: LExpr = self.parse_expr()?;
-        Some(LStmt::Destructure { targets, value })
+        Some(target)
     }
 
     fn match_assign_op(&mut self) -> Option<AssignOp> {
@@ -1518,20 +1615,28 @@ impl Interp {
             }
             LStmt::Destructure { targets, value } => {
                 let rhs: Val = self.eval(value, 0)?;
-                let Val::Arr(mut values) = rhs else {
-                    return Err(Abstain::TypeMismatch);
-                };
-                if values.len() != targets.len() {
-                    return Err(Abstain::Unsupported);
+                let leaf_count: usize = targets
+                    .iter()
+                    .map(|target: &DestructureTarget| match target {
+                        DestructureTarget::Leaf(_) => 1,
+                        DestructureTarget::Nested(leaves) => leaves.len(),
+                    })
+                    .sum();
+                if targets.iter().any(|target: &DestructureTarget| {
+                    matches!(target, DestructureTarget::Nested(_))
+                }) {
+                    let snapshot_bytes: usize =
+                        leaf_count.saturating_mul(size_of::<(Option<&'static LValue>, Val)>());
+                    let transient_bytes: usize = val_size(&rhs).saturating_add(snapshot_bytes);
+                    if self.live_bytes.saturating_add(transient_bytes) > self.budget.heap_bytes {
+                        return Err(Abstain::HeapBudget);
+                    }
                 }
-                let mut snapshot: Vec<Val> = Vec::with_capacity(targets.len());
-                for index in 0..targets.len() {
-                    let key: i64 = i64::try_from(index).map_err(|_| Abstain::OutOfRange)?;
-                    snapshot.push(values.remove(&key).ok_or(Abstain::Unsupported)?);
-                }
-                for (target, assigned) in targets.iter().zip(snapshot) {
+                let mut snapshot: Vec<(Option<&LValue>, Val)> = Vec::with_capacity(leaf_count);
+                self.snapshot_destructure(targets, rhs, &mut snapshot)?;
+                for (destination, assigned) in snapshot {
                     self.tick()?;
-                    if let DestructureTarget::Assign(destination) = target {
+                    if let Some(destination) = destination {
                         self.assign(destination, AssignOp::Set, assigned)?;
                     }
                 }
@@ -1621,6 +1726,59 @@ impl Interp {
                 Flow::Return(value) => return Ok(Flow::Return(value)),
             }
         }
+    }
+
+    fn snapshot_destructure<'a>(
+        &mut self,
+        targets: &'a [DestructureTarget],
+        rhs: Val,
+        snapshot: &mut Vec<(Option<&'a LValue>, Val)>,
+    ) -> Eval<()> {
+        let Val::Arr(mut values) = rhs else {
+            return Err(Abstain::TypeMismatch);
+        };
+        if values.len() != targets.len() {
+            return Err(Abstain::Unsupported);
+        }
+        for (index, target) in targets.iter().enumerate() {
+            let key: i64 = i64::try_from(index).map_err(|_| Abstain::OutOfRange)?;
+            let assigned: Val = values.remove(&key).ok_or(Abstain::Unsupported)?;
+            match target {
+                DestructureTarget::Leaf(leaf) => {
+                    Self::snapshot_destructure_leaf(leaf, assigned, snapshot);
+                }
+                DestructureTarget::Nested(leaves) => {
+                    self.tick()?;
+                    let Val::Arr(mut nested_values) = assigned else {
+                        return Err(Abstain::TypeMismatch);
+                    };
+                    if nested_values.len() != leaves.len() {
+                        return Err(Abstain::Unsupported);
+                    }
+                    for (nested_index, leaf) in leaves.iter().enumerate() {
+                        let nested_key: i64 =
+                            i64::try_from(nested_index).map_err(|_| Abstain::OutOfRange)?;
+                        let nested_assigned: Val = nested_values
+                            .remove(&nested_key)
+                            .ok_or(Abstain::Unsupported)?;
+                        Self::snapshot_destructure_leaf(leaf, nested_assigned, snapshot);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn snapshot_destructure_leaf<'a>(
+        leaf: &'a DestructureLeaf,
+        assigned: Val,
+        snapshot: &mut Vec<(Option<&'a LValue>, Val)>,
+    ) {
+        let destination: Option<&LValue> = match leaf {
+            DestructureLeaf::Assign(target) => Some(target),
+            DestructureLeaf::Skip => None,
+        };
+        snapshot.push((destination, assigned));
     }
 
     fn exec_do_while(&mut self, body: &LStmt, cond: &LExpr) -> Eval<Flow> {
@@ -3428,6 +3586,39 @@ mod tests {
     }
 
     #[test]
+    fn nested_destructuring_charges_its_rhs_snapshot_to_the_heap_budget() {
+        let budget: Budget = Budget {
+            heap_bytes: 96,
+            ..Budget::default()
+        };
+        let src: &str = "$x=str_repeat('a',32);[[$a]]=[[$x]];";
+        assert_eq!(abstain_under(budget, src), Some(Abstain::HeapBudget));
+    }
+
+    #[test]
+    fn nested_destructuring_charges_structure_and_leaf_steps() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"[[$o]]=[[$v]];");
+        let program: Vec<LStmt> = parser.parse_program().expect("nested assignment parses");
+        let mut bounded: Interp = seeded(
+            Budget {
+                steps: 5,
+                ..Budget::default()
+            },
+            &[("v", b"A")],
+        );
+        assert_eq!(bounded.exec_all(&program).err(), Some(Abstain::StepBudget));
+
+        let mut exact: Interp = seeded(
+            Budget {
+                steps: 6,
+                ..Budget::default()
+            },
+            &[("v", b"A")],
+        );
+        assert!(exact.exec_all(&program).is_ok());
+    }
+
+    #[test]
     fn heap_accounting_releases_bytes_when_a_slot_is_overwritten() {
         let budget: Budget = Budget {
             heap_bytes: 64 * 1024,
@@ -3575,6 +3766,27 @@ mod tests {
                 .parse_program()
                 .is_none(),
             "a trailing delimiter must not let a real target exceed the existing parser limit"
+        );
+    }
+
+    #[test]
+    fn one_level_nested_destructuring_shares_the_target_limit() {
+        let within: String = (0..(MAX_STATEMENTS - 1))
+            .map(|index: usize| format!("$a{index}"))
+            .collect::<Vec<String>>()
+            .join(",");
+        let at_limit: String = format!("[[{within}]] = [[]];");
+        assert!(
+            LoopParser::new(at_limit.as_bytes())
+                .parse_program()
+                .is_some()
+        );
+
+        let over_limit: String = format!("[[{within},$overflow]] = [[]];");
+        assert!(
+            LoopParser::new(over_limit.as_bytes())
+                .parse_program()
+                .is_none()
         );
     }
 
