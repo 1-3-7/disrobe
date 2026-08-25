@@ -369,6 +369,51 @@ fn immutable_parcel_register_alias_recovers_live_roles_without_capture() {
 }
 
 #[test]
+fn parcel_register_variants_recover_static_alias_chains_and_invocations() {
+    let source: &str = r#"const module=10;var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};globalThis["parcelRequire7a05"]["register"](7,function(a,b){a.exports.answer=__require("./math-utils").sum(module,2);b.value=a.exports.answer;print(b.value);});const first=globalThis.parcelRequire7a05.register;const second=first;second.call(void 0,"call",function(c,d){c.exports.answer=__require("./math-utils").sum(3,4);d.value=c.exports.answer;print(d.value);});let assigned;assigned=second;assigned.apply(void 0,["apply",function(e,f){e.exports.answer=__require("./math-utils").sum(5,6);f.value=e.exports.answer;print(f.value);}]);(0,assigned)("sequence",function(g,h){g.exports.answer=__require("./math-utils").sum(7,8);h.value=g.exports.answer;print(h.value);});"#;
+    let (first, stats) = unminify_ast(source);
+    let (second, _) = unminify_ast(source);
+
+    assert_eq!(
+        first, second,
+        "Parcel variant recovery must be byte-identical"
+    );
+    assert_eq!(
+        first.matches("function(module_1,exports)").count(),
+        4,
+        "each proven static Parcel registration must expose its live roles:\n{first}"
+    );
+    assert!(first.contains("sum(module,2)"));
+    assert_eq!(stats.parcel_parameters_renamed, 8);
+    assert_runtime_parity(source, &first);
+}
+
+#[test]
+fn parcel_register_variants_refuse_unproven_aliases_and_dynamic_scope() {
+    let sources: [&str; 7] = [
+        r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};let assigned;assigned=globalThis.parcelRequire7a05.register;assigned=globalThis.parcelRequire7a05.register;assigned("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
+        r#"const globalThis={parcelRequire7a05:{register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}}};const first=globalThis["parcelRequire7a05"]["register"];const second=first;second("entry",function(a,b){a.exports.answer=2;b.value=a.exports.answer;print(b.value);});"#,
+        r#"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};globalThis.parcelRequire7a05["reg"+"ister"]("entry",function(a,b){a.exports.answer=3;b.value=a.exports.answer;print(b.value);});"#,
+        r#"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};const register=globalThis.parcelRequire7a05.register;const id="entry";register.call(void 0,id,function(a,b){a.exports.answer=4;b.value=a.exports.answer;print(b.value);});"#,
+        r#"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};const register=globalThis.parcelRequire7a05.register;const args=["entry",function(a,b){a.exports.answer=5;b.value=a.exports.answer;print(b.value);}];register.apply(void 0,args);"#,
+        r#"globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};let assigned;assigned=globalThis.parcelRequire7a05.register;eval("assigned=assigned");assigned("entry",function(a,b){a.exports.answer=6;b.value=a.exports.answer;print(b.value);});"#,
+        r#"function load(){globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);}};const register=globalThis.parcelRequire7a05.register;with({}){register("entry",function(a,b){a.exports.answer=7;b.value=a.exports.answer;print(b.value);});}}load();"#,
+    ];
+    for source in sources {
+        let (first, stats) = unminify_ast(source);
+        let (second, _) = unminify_ast(source);
+
+        assert_eq!(first, second, "Parcel refusal must be byte-identical");
+        assert!(
+            first.contains("function(a,b)"),
+            "unproven Parcel variants must preserve factory bindings:\n{first}"
+        );
+        assert_eq!(stats.parcel_parameters_renamed, 0);
+        assert_runtime_parity(source, &first);
+    }
+}
+
+#[test]
 fn parcel_register_alias_recovery_rejects_mutation_ambiguity_and_dynamic_scope() {
     let sources: [&str; 7] = [
         r#"var registry={};globalThis.parcelRequire7a05={register:function(id,factory){var runtimeModule={exports:{}};factory(runtimeModule,runtimeModule.exports);registry[id]=runtimeModule.exports;}};let r=globalThis.parcelRequire7a05.register;var held={r};r=function(){};r("entry",function(a,b){a.exports.answer=1;b.value=a.exports.answer;print(b.value);});"#,
