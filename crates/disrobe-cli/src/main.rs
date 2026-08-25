@@ -1729,6 +1729,9 @@ fn main() -> miette::Result<()> {
     let auto_default_depth: Option<u8> = resolved.config.execution.max_depth;
     #[cfg(feature = "chain")]
     let auto_default_emit: Option<Vec<String>> = resolved.config.output.emit;
+    #[cfg(feature = "chain")]
+    let auto_default_engine_symbol_map: Option<PathBuf> =
+        resolved.config.execution.engine_symbol_map;
     let llm_flags: LlmFlags = cli.llm.clone();
 
     match cli.command {
@@ -2067,7 +2070,7 @@ fn main() -> miette::Result<()> {
                     redact: redact || eff.redact,
                     capture_stages,
                     backend_export: format,
-                    engine_symbol_map,
+                    engine_symbol_map: engine_symbol_map.or(auto_default_engine_symbol_map),
                     i_have_authorization: llm_flags.i_have_authorization,
                 },
                 auto::BatchArgs {

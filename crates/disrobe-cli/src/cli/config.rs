@@ -104,6 +104,7 @@ pub(crate) struct ExecutionConfig {
     pub(crate) cache_dir: Option<PathBuf>,
     pub(crate) dry_run: Option<bool>,
     pub(crate) max_depth: Option<u8>,
+    pub(crate) engine_symbol_map: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,7 +156,18 @@ impl DisrobeConfig {
                 path.display()
             )
         })?;
-        Self::parse_str(&text, path)
+        let mut config: Self = Self::parse_str(&text, path)?;
+        config.resolve_relative_paths(path);
+        Ok(config)
+    }
+
+    fn resolve_relative_paths(&mut self, origin: &Path) {
+        let config_dir: &Path = origin.parent().unwrap_or_else(|| Path::new("."));
+        if let Some(path) = &mut self.execution.engine_symbol_map
+            && path.is_relative()
+        {
+            *path = config_dir.join(&path);
+        }
     }
 }
 
@@ -235,6 +247,9 @@ const TEMPLATE: &str = r#"# .disrobe.toml - disrobe project configuration
 # dry_run = false
 # Default maximum chain depth for `auto`.
 # max_depth = 8
+# Validated Flutter engine symbol map for a matching direct-root ELF `auto` input.
+# Relative paths are resolved from this config file's directory.
+# engine_symbol_map = "maps/flutter-engine-symbols.json"
 
 [backends]
 # Preferred external decompiler per language when a pass exposes --backend.
@@ -365,6 +380,13 @@ fn run_show(explicit: Option<&Path>, fmt: OutputFormat) -> miette::Result<()> {
             "    max_depth",
             c.execution.max_depth.map(|v: u8| v.to_string()),
         );
+        print_opt(
+            "    engine_symbol_map",
+            c.execution
+                .engine_symbol_map
+                .as_ref()
+                .map(|p: &PathBuf| p.display().to_string()),
+        );
         println!("  [backends]");
         print_opt("    py", c.backends.py.clone());
         print_opt("    jvm", c.backends.jvm.clone());
@@ -463,6 +485,7 @@ mod tests {
             threads = 4
             force = true
             max_depth = 16
+            engine_symbol_map = "maps/flutter-engine-symbols.json"
 
             [backends]
             py = "native"
@@ -485,6 +508,10 @@ mod tests {
         assert_eq!(cfg.execution.threads, Some(4));
         assert_eq!(cfg.execution.force, Some(true));
         assert_eq!(cfg.execution.max_depth, Some(16));
+        assert_eq!(
+            cfg.execution.engine_symbol_map.as_deref(),
+            Some(Path::new("maps/flutter-engine-symbols.json"))
+        );
         assert_eq!(cfg.backends.py.as_deref(), Some("native"));
         assert_eq!(
             cfg.passes.disable.as_deref(),

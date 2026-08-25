@@ -173,6 +173,165 @@ fn auto_applies_a_build_id_matched_external_engine_map_deterministically() {
 }
 
 #[test]
+fn auto_reads_a_relative_engine_map_from_config_and_command_line_wins() {
+    let fixture: PathBuf = fixture_path();
+    let bytes: Vec<u8> = std::fs::read(&fixture).expect("read Flutter fixture");
+    let layout: disrobe_pass_mobile::flutter::LibAppLayout =
+        disrobe_pass_mobile::parse_libapp_so(&bytes).expect("parse Flutter image");
+    let address: u64 = layout
+        .function_symbols
+        .first()
+        .expect("tracked Flutter function symbol")
+        .address;
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-flutter-config-engine-map");
+    let maps: PathBuf = scratch.path().join("maps");
+    std::fs::create_dir_all(&maps).expect("create map directory");
+    let config_map: PathBuf = maps.join("config.json");
+    let flag_map: PathBuf = maps.join("flag.json");
+    for (path, name) in [(&config_map, "FromConfig"), (&flag_map, "FromFlag")] {
+        let map: serde_json::Value = serde_json::json!({
+            "format": "disrobe.flutter.engine-symbol-map",
+            "version": 1,
+            "identity": {
+                "kind": "elf-build-id",
+                "value": "b71885094a73117bf90d3cfa05824129"
+            },
+            "symbols": [{ "address": address, "name": name }]
+        });
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&map).expect("serialize engine map"),
+        )
+        .expect("write engine map");
+    }
+    let config: PathBuf = scratch.path().join("disrobe.toml");
+    std::fs::write(
+        &config,
+        "[execution]\nengine_symbol_map = \"maps/config.json\"\n",
+    )
+    .expect("write config");
+    let config_arg: String = config.to_string_lossy().into_owned();
+    let fixture_arg: String = fixture.to_string_lossy().into_owned();
+    let config_out: PathBuf = scratch.path().join("config-out");
+    let config_out_arg: String = config_out.to_string_lossy().into_owned();
+
+    let from_config: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &fixture_arg,
+        "--out",
+        &config_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        from_config.code, 0,
+        "config map failed: {}",
+        from_config.stderr
+    );
+    let config_export: String =
+        std::fs::read_to_string(config_out.join("exports/flutter/symbols.json"))
+            .expect("read config export");
+    assert!(config_export.contains("FromConfig"), "{config_export}");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&config_export).expect("parse config export");
+    let config_source: PathBuf = PathBuf::from(
+        config_json["provenance"][0]["source"]
+            .as_str()
+            .expect("config map source"),
+    );
+    assert_eq!(
+        config_source
+            .canonicalize()
+            .expect("canonicalize config source"),
+        config_map.canonicalize().expect("canonicalize config map")
+    );
+
+    let flag_out: PathBuf = scratch.path().join("flag-out");
+    let flag_out_arg: String = flag_out.to_string_lossy().into_owned();
+    let flag_arg: String = flag_map.to_string_lossy().into_owned();
+    let from_flag: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &fixture_arg,
+        "--out",
+        &flag_out_arg,
+        "--format",
+        "json",
+        "--engine-symbol-map",
+        &flag_arg,
+    ]);
+    assert_eq!(
+        from_flag.code, 0,
+        "explicit map failed: {}",
+        from_flag.stderr
+    );
+    let flag_export: String =
+        std::fs::read_to_string(flag_out.join("exports/flutter/symbols.json"))
+            .expect("read explicit-map export");
+    assert!(flag_export.contains("FromFlag"), "{flag_export}");
+    assert!(!flag_export.contains("FromConfig"), "{flag_export}");
+    let flag_json: serde_json::Value =
+        serde_json::from_str(&flag_export).expect("parse flag export");
+    let flag_source: PathBuf = PathBuf::from(
+        flag_json["provenance"][0]["source"]
+            .as_str()
+            .expect("explicit map source"),
+    );
+    assert_eq!(
+        flag_source
+            .canonicalize()
+            .expect("canonicalize explicit source"),
+        flag_map.canonicalize().expect("canonicalize explicit map")
+    );
+}
+
+#[test]
+fn auto_config_map_rejects_malformed_and_mismatched_maps_before_export() {
+    let fixture: PathBuf = fixture_path();
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-flutter-config-map-errors");
+    let fixture_arg: String = fixture.to_string_lossy().into_owned();
+
+    for (name, contents, error_code) in [
+        ("malformed", b"not json".as_slice(), "DR-MOB-005"),
+        (
+            "mismatched",
+            br#"{"format":"disrobe.flutter.engine-symbol-map","version":1,"identity":{"kind":"elf-build-id","value":"00000000000000000000000000000000"},"symbols":[]}"#,
+            "DR-MOB-0060",
+        ),
+    ] {
+        let case_dir: PathBuf = scratch.path().join(name);
+        std::fs::create_dir_all(&case_dir).expect("create case directory");
+        let map: PathBuf = case_dir.join("map.json");
+        std::fs::write(&map, contents).expect("write invalid map");
+        let config: PathBuf = case_dir.join("disrobe.toml");
+        std::fs::write(&config, "[execution]\nengine_symbol_map = \"map.json\"\n")
+            .expect("write config");
+        let config_arg: String = config.to_string_lossy().into_owned();
+        let out: PathBuf = case_dir.join("out");
+        let out_arg: String = out.to_string_lossy().into_owned();
+        let run: Run = run_disrobe(&[
+            "--config",
+            &config_arg,
+            "auto",
+            &fixture_arg,
+            "--out",
+            &out_arg,
+            "--format",
+            "json",
+        ]);
+        assert_ne!(run.code, 0, "{name} map unexpectedly succeeded");
+        assert!(run.stderr.contains(error_code), "{name}: {}", run.stderr);
+        assert!(
+            !out.join("exports/flutter/symbols.json").exists(),
+            "{name} config map wrote a Flutter symbol export"
+        );
+    }
+}
+
+#[test]
 fn flutter_dump_applies_only_a_build_id_matched_external_engine_map() {
     let fixture: PathBuf = fixture_path();
     let bytes: Vec<u8> = std::fs::read(&fixture).expect("read Flutter fixture");
