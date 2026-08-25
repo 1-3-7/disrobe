@@ -1,4 +1,6 @@
-use super::branches::{CompoundIf, jump_taken_if_true, try_recover_compound_if};
+use super::branches::{
+    CompoundIf, first_jump_value_lo, jump_taken_if_true, try_recover_compound_if,
+};
 use super::exprs::{
     build_linear_stmts_sim, inner_short_circuit_polarity, is_chain_compare_jump,
     is_chain_cond_jump, local_name_at, local_target, name_at, recover_chain_target,
@@ -17,9 +19,9 @@ use super::stmts::{
     trailing_loop_jump_stmt,
 };
 use super::{
-    DecodedStream, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard, ThenArmEndCapGuard,
-    active_version, fallthrough_cond_test, loop_break_target, loop_continue_target,
-    loop_frame_depth, none_jump_test, structure_hi_cap, then_arm_end_cap,
+    DecodedStream, LoopFrameGuard, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard,
+    ThenArmEndCapGuard, active_version, fallthrough_cond_test, loop_break_target,
+    loop_continue_target, loop_frame_depth, none_jump_test, structure_hi_cap, then_arm_end_cap,
 };
 use crate::ast::node::{BoolOpKind, ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
 use crate::bytecode::opcode::CanonicalOp;
@@ -2736,17 +2738,6 @@ fn try_structure_table_era_plain_try_loop(
     let Some(exit): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
         return Ok(None);
     };
-    if (guard + 1..region.try_start).any(|index: usize| {
-        !matches!(
-            stream.ops[index],
-            CanonicalOp::Resume(_)
-                | CanonicalOp::Nop
-                | CanonicalOp::Cache
-                | CanonicalOp::ExtendedArg(_)
-        )
-    }) {
-        return Ok(None);
-    }
     let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
     else {
         return Ok(None);
@@ -2766,6 +2757,22 @@ fn try_structure_table_era_plain_try_loop(
         return Ok(None);
     }
     let test: Expr = fallthrough_cond_test(stream, guard, raw_test.clone());
+    let loop_reentry: usize =
+        first_significant(stream, test_start.saturating_add(1), guard).unwrap_or(test_start);
+    let guarded_prelude: Option<(Vec<Stmt>, Expr, usize)> =
+        table_era_or_guard_before_try(code, stream, guard + 1, region.try_start, loop_reentry)?;
+    let header_to_try_is_plain: bool = (guard + 1..region.try_start).all(|index: usize| {
+        matches!(
+            stream.ops[index],
+            CanonicalOp::Resume(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    });
+    if !header_to_try_is_plain && guarded_prelude.is_none() {
+        return Ok(None);
+    }
     let Some(handler_reentry): Option<usize> =
         plain_handler_backjump_target(stream, region.handler_start, region.region_end())
     else {
@@ -2796,15 +2803,20 @@ fn try_structure_table_era_plain_try_loop(
         });
     let body_end: usize = if direct_header_reentry {
         normal_latch
-    } else if normal_target > guard
-        && normal_target <= region.try_start
-        && (normal_target..region.try_start).all(|index: usize| {
-            matches!(
-                stream.ops[index],
-                CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
-            )
-        })
-        && handler_reentry == protected_end
+    } else if handler_reentry == protected_end
+        && ((normal_target > guard
+            && normal_target <= region.try_start
+            && (normal_target..region.try_start).all(|index: usize| {
+                matches!(
+                    stream.ops[index],
+                    CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+                )
+            }))
+            || guarded_prelude.as_ref().is_some_and(
+                |(_, _, body_start): &(Vec<Stmt>, Expr, usize)| {
+                    normal_target > guard && normal_target <= *body_start
+                },
+            ))
     {
         let Some(bottom_guard): Option<usize> =
             (protected_end..normal_latch).find(|&index: &usize| {
@@ -2849,6 +2861,7 @@ fn try_structure_table_era_plain_try_loop(
     {
         return Ok(None);
     }
+    let frame_guard: LoopFrameGuard = LoopFrameGuard::enter(test_start, exit);
     let handlers: Vec<ExceptHandler> =
         parse_except_handlers(code, stream, region.handler_start, region.region_end())?;
     let [handler]: &[ExceptHandler] = handlers.as_slice() else {
@@ -2867,19 +2880,42 @@ fn try_structure_table_era_plain_try_loop(
         return Ok(None);
     }
     let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    drop(frame_guard);
     if try_body.is_empty() {
         return Ok(None);
     }
+    let mut body: Vec<Stmt> = Vec::new();
+    if let Some((leading_prelude, prelude_test, prelude_start)) = guarded_prelude {
+        body.extend(leading_prelude);
+        let mut prelude_body: Vec<Stmt> =
+            structure_stmts(code, stream, prelude_start, region.try_start)?;
+        if prelude_body.is_empty() {
+            return Ok(None);
+        }
+        if !matches!(
+            prelude_body.last(),
+            Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+        ) {
+            prelude_body.push(Stmt::Continue);
+        }
+        body.push(Stmt::If {
+            test: prelude_test,
+            body: non_empty(prelude_body),
+            orelse: Vec::new(),
+            line: None,
+        });
+    }
+    body.push(Stmt::Try {
+        body: try_body,
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
     let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
     out.push(Stmt::While {
         test,
-        body: vec![Stmt::Try {
-            body: try_body,
-            handlers,
-            orelse: Vec::new(),
-            finalbody: Vec::new(),
-            line: None,
-        }],
+        body,
         orelse: Vec::new(),
         line: None,
     });
@@ -2899,6 +2935,84 @@ fn is_direct_zero_argument_name_call(expr: &Expr) -> bool {
             && keywords.is_empty()
             && matches!(func.as_ref(), Expr::Name { ctx: ExprCtx::Load, .. })
     )
+}
+
+fn table_era_or_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    try_start: usize,
+    loop_reentry: usize,
+) -> Result<Option<(Vec<Stmt>, Expr, usize)>> {
+    let Some(first): Option<usize> = (lo..try_start).find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && jump_taken_if_true(stream, index)
+    }) else {
+        return Ok(None);
+    };
+    let Some(body_start): Option<usize> = resolve_jump_target(stream, first, &stream.ops[first])
+        .filter(|target: &usize| *target > first && *target < try_start)
+    else {
+        return Ok(None);
+    };
+    let Some(prelude_end): Option<usize> = leading_guard_prelude_split(stream, lo, first) else {
+        return Ok(None);
+    };
+    let leading_prelude: Vec<Stmt> = structure_stmts(code, stream, lo, prelude_end)?;
+    if !leading_prelude.iter().all(is_simple_guard_prelude_stmt) {
+        return Ok(None);
+    }
+    let Some(second): Option<usize> = (first + 1..body_start).find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && !jump_taken_if_true(stream, index)
+            && resolve_jump_target(stream, index, &stream.ops[index]).is_some_and(
+                |target: usize| {
+                    target <= try_start
+                        && (target..try_start).all(|padding: usize| {
+                            matches!(
+                                stream.ops[padding],
+                                CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+                            )
+                        })
+                },
+            )
+    }) else {
+        return Ok(None);
+    };
+    let Some(latch): Option<usize> = last_significant_back(stream, body_start, try_start) else {
+        return Ok(None);
+    };
+    if !is_back_edge(&stream.ops[latch])
+        || resolve_jump_target(stream, latch, &stream.ops[latch])
+            .is_none_or(|target: usize| target > loop_reentry)
+    {
+        return Ok(None);
+    }
+    let first_value_lo: usize = first_jump_value_lo(stream, prelude_end, first);
+    let second_value_lo: usize = first_significant(stream, first + 1, second).unwrap_or(first + 1);
+    let (first_head, first_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[first_value_lo..first])?;
+    let (second_head, second_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[second_value_lo..second])?;
+    let [first_value]: &[Expr] = first_values.as_slice() else {
+        return Ok(None);
+    };
+    let [second_value]: &[Expr] = second_values.as_slice() else {
+        return Ok(None);
+    };
+    if !first_head.is_empty() || !second_head.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        leading_prelude,
+        Expr::BoolOp {
+            op: BoolOpKind::Or,
+            values: vec![first_value.clone(), second_value.clone()],
+        },
+        body_start,
+    )))
 }
 
 fn plain_handler_backjump_target(

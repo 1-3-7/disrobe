@@ -85,6 +85,49 @@ def guarded_read(active, primary, secondary, read, sink):
     return None
 ";
 
+const WHILE_OR_GUARD_BEFORE_TRY: &str = r"
+def guarded_read(active, primary, secondary, read, sink):
+    while active():
+        if primary() or secondary():
+            sink('guarded')
+            continue
+        try:
+            sink(read())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
+const WHILE_OR_GUARD_PRELUDE_BEFORE_TRY: &str = r"
+def guarded_read(active, audit, primary, secondary, read, sink):
+    while active():
+        if audit():
+            sink('prelude')
+        if primary() or secondary():
+            sink('guarded')
+            continue
+        try:
+            sink(read())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
+const WHILE_OR_GUARD_BODY_BREAK: &str = r"
+def guarded_read(active, stop, primary, secondary, read, sink):
+    while active():
+        if primary() or secondary():
+            sink('guarded')
+            continue
+        try:
+            if stop():
+                break
+            sink(read())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
 const WHILE_TRY_HANDLER_FALLTHROUGH: &str = r"
 def retain_handler_fallthrough(active, next_item, sink):
     while active():
@@ -768,5 +811,88 @@ fn post311_while_or_guard_try_continue_recompiles_equivalently() {
             recovered.contains("sink(\"ready\")"),
             "the false arm must stay in the loop body:\n{recovered}"
         );
+    }
+}
+
+#[test]
+fn post311_while_or_guard_before_try_recompiles_equivalently() {
+    for interpreter in
+        required_post311_interpreters()
+            .into_iter()
+            .filter(|interpreter: &BandInterpreter| {
+                matches!(interpreter.alias, "3.12" | "3.14" | "3.15")
+            })
+    {
+        let label: String = format!("while_or_guard_before_try_{}", interpreter.alias);
+        let recovered: String =
+            assert_recompile_equivalence(&interpreter, WHILE_OR_GUARD_BEFORE_TRY, &label);
+
+        assert_eq!(
+            recovered.matches("while active():").count(),
+            1,
+            "the loop header must remain outside the guard and try:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("if primary() or secondary():").count(),
+            1,
+            "the OR guard must precede the protected body:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("except LookupError:").count(),
+            1,
+            "the protected body must retain its handler:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("continue").count(),
+            1,
+            "the guard body must retain its loop edge:\n{recovered}"
+        );
+        assert!(
+            recovered.contains("sink(\"done\")"),
+            "the post-loop tail must remain reachable:\n{recovered}"
+        );
+    }
+}
+
+#[test]
+fn post311_while_or_guard_prelude_and_exit_placements_recompile_equivalently() {
+    let fixtures: [(&str, &str, &str); 2] = [
+        (
+            "prelude",
+            WHILE_OR_GUARD_PRELUDE_BEFORE_TRY,
+            "sink(\"prelude\")",
+        ),
+        ("body_break", WHILE_OR_GUARD_BODY_BREAK, "break"),
+    ];
+    for interpreter in
+        required_post311_interpreters()
+            .into_iter()
+            .filter(|interpreter: &BandInterpreter| {
+                matches!(interpreter.alias, "3.12" | "3.14" | "3.15")
+            })
+    {
+        for (fixture_name, fixture, expected_exit) in fixtures {
+            let label: String = format!("while_or_guard_{fixture_name}_{}_", interpreter.alias);
+            let recovered: String = assert_recompile_equivalence(&interpreter, fixture, &label);
+            assert_eq!(
+                recovered.matches("while active():").count(),
+                1,
+                "{label} lost the loop header:\n{recovered}"
+            );
+            assert_eq!(
+                recovered.matches("if primary() or secondary():").count(),
+                1,
+                "{label} incorrectly split the OR guard:\n{recovered}"
+            );
+            assert_eq!(
+                recovered.matches("except LookupError:").count(),
+                1,
+                "{label} detached the handler:\n{recovered}"
+            );
+            assert!(
+                recovered.contains(expected_exit),
+                "{label} lost its guarded-loop exit `{expected_exit}`:\n{recovered}"
+            );
+        }
     }
 }

@@ -1397,6 +1397,26 @@ fn pop_loop_frame() {
     });
 }
 
+pub(super) struct LoopFrameGuard;
+
+impl LoopFrameGuard {
+    pub(super) fn enter(header: usize, exit: usize) -> Self {
+        push_loop_frame(LoopFrame {
+            header,
+            exit,
+            exit_return: None,
+            exit_tail_range: None,
+        });
+        Self
+    }
+}
+
+impl Drop for LoopFrameGuard {
+    fn drop(&mut self) {
+        pop_loop_frame();
+    }
+}
+
 fn loop_break_target() -> Option<usize> {
     LOOP_FRAMES
         .with(|slot: &std::cell::RefCell<Vec<LoopFrame>>| slot.borrow().last().map(|f| f.exit))
