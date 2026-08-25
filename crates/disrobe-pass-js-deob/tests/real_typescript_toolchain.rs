@@ -8,7 +8,7 @@ use std::time::Duration;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{
-    ClosureAdvancedReport, PresetEnvUndoResult, TerserRestoreReport, restore_terser_mangled,
+    ClosureAdvancedReport, Error, PresetEnvUndoResult, TerserRestoreReport, restore_terser_mangled,
     undo_closure_advanced, undo_preset_env,
 };
 
@@ -245,8 +245,19 @@ fn real_terser_megafile_restore_runs_without_panic() {
     let Some(src): Option<String> = load("terser/obfuscated.megafile.js") else {
         return;
     };
-    let report: TerserRestoreReport = restore_terser_mangled(&src);
-    let _ = report;
+    match restore_terser_mangled(&src) {
+        Ok(report) => {
+            let _: TerserRestoreReport = report;
+        }
+        Err(error) => assert!(matches!(
+            error,
+            Error::SyntaxLimit {
+                kind: "JavaScript source bytes",
+                observed,
+                maximum: 1_048_576,
+            } if observed == src.len()
+        )),
+    }
 }
 
 #[test]

@@ -1,5 +1,11 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use disrobe_pass_js_deob::{TerserRestoreReport, restore_terser_mangled};
+use disrobe_pass_js_deob::{
+    TerserRestoreReport, restore_terser_mangled as restore_terser_mangled_result,
+};
+
+fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
+    restore_terser_mangled_result(source).expect("fixture must be within the source limit")
+}
 
 #[test]
 fn restores_short_function_name() {

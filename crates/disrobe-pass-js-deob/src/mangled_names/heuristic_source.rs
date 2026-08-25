@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Confidence, Context, NameSource, ScopeKey, Suggestion};
+use super::{Confidence, Context, NameSource, ScopeKey, SemanticRole, Suggestion};
 
 #[derive(Debug, Clone)]
 pub struct HeuristicNameSource {
@@ -13,9 +13,6 @@ impl Default for HeuristicNameSource {
             BTreeMap::new();
         member_keywords.insert("push", ("list", Confidence::MEDIUM));
         member_keywords.insert("slice", ("source", Confidence::LOW));
-        member_keywords.insert("then", ("promise", Confidence::HIGH));
-        member_keywords.insert("catch", ("promise", Confidence::HIGH));
-        member_keywords.insert("finally", ("promise", Confidence::HIGH));
         member_keywords.insert("addEventListener", ("target", Confidence::HIGH));
         member_keywords.insert("removeEventListener", ("target", Confidence::HIGH));
         member_keywords.insert("dispatchEvent", ("target", Confidence::HIGH));
@@ -53,6 +50,19 @@ impl HeuristicNameSource {
     }
 
     fn lookup_member_hint(&self, context: &Context) -> Option<(&'static str, Confidence)> {
+        if context.semantic_roles.len() == 1 {
+            let role: SemanticRole = *context.semantic_roles.first()?;
+            return Some(match role {
+                SemanticRole::Cache => ("cache", Confidence::HIGH),
+                SemanticRole::Error => ("error", Confidence::HIGH),
+                SemanticRole::Key => ("key", Confidence::HIGH),
+                SemanticRole::Params => ("params", Confidence::HIGH),
+                SemanticRole::Promise => ("promise", Confidence::HIGH),
+                SemanticRole::Response => ("response", Confidence::HIGH),
+                SemanticRole::Transport => ("transport", Confidence::HIGH),
+                SemanticRole::Url => ("url", Confidence::HIGH),
+            });
+        }
         if context.called_as_predicate {
             return Some(("predicate", Confidence::MEDIUM));
         }

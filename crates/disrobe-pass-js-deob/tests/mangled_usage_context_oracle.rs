@@ -5,13 +5,19 @@ use std::time::Duration;
 
 use boa_engine::{Context, Source};
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
-use disrobe_pass_js_deob::{TerserRestoreReport, restore_terser_mangled};
+use disrobe_pass_js_deob::{
+    Error, TerserRestoreReport, restore_terser_mangled as restore_terser_mangled_result,
+};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
 const NODE_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_CAPTURE: usize = 1usize << 18;
+
+fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
+    restore_terser_mangled_result(source).expect("caller fixture must be within the source limit")
+}
 
 fn eval_capture(program: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -106,11 +112,11 @@ print(chain(fake));
 ";
 
 #[test]
-fn a_param_that_calls_then_is_named_promise() {
+fn a_param_with_user_defined_chain_members_is_not_named_promise() {
     let r: TerserRestoreReport = restore_terser_mangled(PROMISE_LIKE);
     assert!(
-        r.rewritten.contains("promise.then") || r.rewritten.contains("promise\n"),
-        "the `.then`/`.catch` usage must rename `p`->`promise`:\n{}",
+        !has_heuristic_role(&r, "promise"),
+        "user-defined `.then` and `.catch` members do not prove a native promise:\n{}",
         r.rewritten
     );
     assert_behavior_preserved("promise", PROMISE_LIKE, &r.rewritten);
@@ -560,4 +566,469 @@ fn calls_consumed_as_values_refuse_the_predicate_role() {
     );
     assert_behavior_preserved("value-call", VALUE_CALL, &report.rewritten);
     assert_eq!(node_capture(&report.rewritten), node_capture(VALUE_CALL));
+}
+
+const HTTP_ROLE_FAMILY: &str = r#"
+function m(a, b) {
+  var c = {};
+  function d(e, f) {
+    var g = [];
+    for (var h in f) {
+      if (Object.prototype.hasOwnProperty.call(f, h)) {
+        g.push(encodeURIComponent(h) + "=" + encodeURIComponent(f[h]));
+      }
+    }
+    return a + "/" + e + (g.length ? "?" + g.join("&") : "");
+  }
+  function i(e, f) {
+    var g = d(e, f);
+    if (c[g]) return c[g];
+    var h = b(g).then(function (j) {
+      if (!j.ok) throw new Error("request failed");
+      return j.json();
+    }).catch(function (k) {
+      delete c[g];
+      throw k;
+    });
+    c[g] = h;
+    return h;
+  }
+  return i;
+}
+var calls = 0;
+var client = m("https://service.invalid", function (url) {
+  calls += 1;
+  return Promise.resolve({ ok: true, json: function () { return url; } });
+});
+var first = client("users", { page: 2 });
+print(first instanceof Promise);
+print(client("users", { page: 2 }) === first);
+print(calls);
+"#;
+
+#[test]
+fn correlated_http_and_promise_evidence_recovers_the_complete_defensible_role_family() {
+    let first: TerserRestoreReport = restore_terser_mangled(HTTP_ROLE_FAMILY);
+    let second: TerserRestoreReport = restore_terser_mangled(HTTP_ROLE_FAMILY);
+    for expected in [
+        "function map(args, transport)",
+        "var cache = {}",
+        "function data(event, params)",
+        "for (var key in params)",
+        "function index(event, params)",
+        "var url = data(event, params)",
+        "var promise = transport(url).then(function (response)",
+        ").catch(function (error)",
+    ] {
+        assert!(
+            first.rewritten.contains(expected),
+            "missing `{expected}` from the correlated role family:\n{}",
+            first.rewritten
+        );
+    }
+    for ambiguous in ["baseUrl", "resource", "prefix", "removed", "buildUrl"] {
+        assert!(
+            !first.rewritten.contains(ambiguous),
+            "the caller does not prove the more specific `{ambiguous}` spelling:\n{}",
+            first.rewritten
+        );
+    }
+    assert_eq!(first.rewritten, second.rewritten);
+    assert_behavior_preserved("http-role-family", HTTP_ROLE_FAMILY, &first.rewritten);
+    assert_eq!(
+        node_capture(&first.rewritten),
+        node_capture(HTTP_ROLE_FAMILY)
+    );
+}
+
+const HTTP_ROLE_COLLISIONS: &str = r#"
+var transport = 1, cache = 2, params = 3, key = 4, url = 5;
+var promise = 6, response = 7, error = 8;
+function m(a, b) {
+  var c = {};
+  function d(e, f) {
+    var g = [];
+    for (var h in f) {
+      if (Object.prototype.hasOwnProperty.call(f, h)) {
+        g.push(encodeURIComponent(h) + "=" + encodeURIComponent(f[h]));
+      }
+    }
+    return a + "/" + e + (g.length ? "?" + g.join("&") : "");
+  }
+  function i(e, f) {
+    var g = d(e, f);
+    if (c[g]) return c[g];
+    var h = b(g).then(function (j) { return j.ok ? j.json() : null; })
+      .catch(function (k) { delete c[g]; throw k; });
+    c[g] = h;
+    return h;
+  }
+  print(transport + cache + params + key + url + promise + response + error);
+  return i;
+}
+var client = m("base", function (requestUrl) {
+  return Promise.resolve({ ok: true, json: function () { return requestUrl; } });
+});
+print(client("item", { q: 1 }) instanceof Promise);
+"#;
+
+#[test]
+fn http_role_family_suffixes_every_outer_collision() {
+    let report: TerserRestoreReport = restore_terser_mangled(HTTP_ROLE_COLLISIONS);
+    let second: TerserRestoreReport = restore_terser_mangled(HTTP_ROLE_COLLISIONS);
+    for expected in [
+        "function map(args, transport_2)",
+        "var cache_2 = {}",
+        "function data(event, params_2)",
+        "for (var key_2 in params_2)",
+        "var url_2 = data(event, params_2)",
+        "var promise_2 = transport_2(url_2).then(function (response_2)",
+        ".catch(function (error_2)",
+    ] {
+        assert!(
+            report.rewritten.contains(expected),
+            "missing collision-safe `{expected}`:\n{}",
+            report.rewritten
+        );
+    }
+    assert_eq!(report.rewritten, second.rewritten);
+    assert_behavior_preserved(
+        "http-role-collisions",
+        HTTP_ROLE_COLLISIONS,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(HTTP_ROLE_COLLISIONS)
+    );
+}
+
+const HTTP_ROLE_DIRECT_EVAL: &str = "function f(a){var b=a('/').then(function(c){return c.ok?c.json():0;}).catch(function(d){throw d;});return eval('b');}";
+const HTTP_ROLE_WITH: &str = "function f(a){with({a:function(){}}){var b=a('/').then(function(c){return c.ok?c.json():0;}).catch(function(d){throw d;});return b;}}";
+
+#[test]
+fn dynamic_scopes_refuse_the_entire_http_role_family() {
+    for source in [HTTP_ROLE_DIRECT_EVAL, HTTP_ROLE_WITH] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert_eq!(report.rewritten, source);
+        assert!(report.renames.is_empty());
+    }
+}
+
+const RESPONSE_NEAR_MISS: &str = "function inspect(a){return a.ok?a.json():null;}print(inspect({ok:true,json:function(){return 1;}}));";
+const ERROR_NEAR_MISS: &str =
+    "function run(a){return a().catch(function(b){throw new Error('masked');});}";
+const CACHE_NEAR_MISS: &str = "function table(a,b){var c={};if(c[a])return c[a];c[a]=b;delete c[a];return b;}print(table('x',1));";
+const PARAMS_NEAR_MISS: &str = "function values(a){for(var b in a){print(a[b]);}}values({x:1});";
+const MEMOIZED_PROMISE_NEAR_MISS: &str = r"
+function memo(a, b) {
+  var c = {};
+  if (c[b]) return c[b];
+  var d = a(b).then(function (e) { return e; }).catch(function (e) {
+    delete c[b];
+    throw e;
+  });
+  c[b] = d;
+  return d;
+}
+";
+
+const ARBITRARY_CHAIN_NEAR_MISS: &str = r#"
+function chain(a) {
+  var b = {};
+  function load(c, d) {
+    if (b[c]) return b[c];
+    var e = d(c).then(function (f) {
+      if (!f.ok) throw new Error("not ok");
+      return f.json();
+    }).catch(function (g) {
+      delete b[c];
+      throw g;
+    });
+    b[c] = e;
+    return e;
+  }
+  return load;
+}
+var fake = {
+  then: function (callback) {
+    callback({ ok: true, json: function () { return 1; } });
+    return { catch: function () { return "not a promise"; } };
+  }
+};
+var load = chain("unused");
+print(load("x", function () { return fake; }));
+"#;
+
+const NESTED_RETURN_THENABLE_NEAR_MISS: &str = r#"
+function chain(a) {
+  var b = {};
+  function load(c) {
+    if (b[c]) return b[c];
+    var d = a(c).then(function (e) {
+      if (!e.ok) throw new Error("not ok");
+      return e.json();
+    }).catch(function (f) {
+      delete b[c];
+      throw f;
+    });
+    b[c] = d;
+    return d;
+  }
+  return load;
+}
+var fake = {
+  then: function (callback) {
+    callback({ ok: true, json: function () { return 1; } });
+    return { catch: function () { return "not a promise"; } };
+  }
+};
+var load = chain(function (url) {
+  if (url === "fake") return fake;
+  return Promise.resolve({ ok: true, json: function () { return url; } });
+});
+print(load("fake"));
+"#;
+
+const GENERATOR_TRANSPORT_NEAR_MISS: &str = r#"
+function chain(a) {
+  var b = {};
+  function load(c) {
+    if (b[c]) return b[c];
+    var d = a(c).then(function (e) {
+      if (!e.ok) throw new Error("not ok");
+      return e.json();
+    }).catch(function (f) {
+      delete b[c];
+      throw f;
+    });
+    b[c] = d;
+    return d;
+  }
+  return load;
+}
+var load = chain(function* (url) {
+  return Promise.resolve({ ok: true, json: function () { return url; } });
+});
+print(typeof load);
+"#;
+
+const REASSIGNED_CALLEE_NEAR_MISS: &str = r#"
+function outer(a, b) {
+  function build(c, d) {
+    var e = [];
+    for (var f in d) {
+      if (Object.prototype.hasOwnProperty.call(d, f)) {
+        e.push(encodeURIComponent(f) + "=" + encodeURIComponent(d[f]));
+      }
+    }
+    return e.join("&");
+  }
+  build = function (c, d) { return String(c) + String(d); };
+  return build(a, b);
+}
+print(outer("x", "y"));
+"#;
+
+const REDECLARED_CALLEE_NEAR_MISS: &str = r#"
+function outer(a, b) {
+  function build(c, d) {
+    var e = [];
+    for (var f in d) {
+      if (Object.prototype.hasOwnProperty.call(d, f)) {
+        e.push(encodeURIComponent(f) + "=" + encodeURIComponent(d[f]));
+      }
+    }
+    return e.join("&");
+  }
+  function build(c, d) { return String(c) + String(d); }
+  return build(a, b);
+}
+print(outer("x", "y"));
+"#;
+
+const DISCARDED_ENCODING_NEAR_MISS: &str = r"
+function inspect(a) {
+  for (var b in a) {
+    if (Object.prototype.hasOwnProperty.call(a, b)) {
+      encodeURIComponent(b);
+      encodeURIComponent(a[b]);
+    }
+  }
+  return 1;
+}
+print(inspect({ x: 1 }));
+";
+
+const NESTED_CACHE_NEAR_MISS: &str = r#"
+function memo(a, b) {
+  var c = {};
+  function unrelated() {
+    if (c[a]) return c[a];
+    delete c[a];
+  }
+  var d = b(a).then(function (e) {
+    return e.ok ? e.json() : null;
+  }).catch(function (f) {
+    unrelated();
+    throw f;
+  });
+  c[a] = d;
+  return d;
+}
+var result = memo("x", function (url) {
+  return Promise.resolve({ ok: true, json: function () { return url; } });
+});
+print(result instanceof Promise);
+"#;
+
+fn has_heuristic_role(report: &TerserRestoreReport, role: &str) -> bool {
+    report
+        .renames
+        .iter()
+        .any(|rename| rename.source_label == "heuristic" && rename.restored.starts_with(role))
+}
+
+#[test]
+fn incomplete_or_uncorrelated_http_shapes_refuse_specific_roles() {
+    for (source, refused) in [
+        (RESPONSE_NEAR_MISS, "response"),
+        (ERROR_NEAR_MISS, "error"),
+        (CACHE_NEAR_MISS, "cache"),
+        (PARAMS_NEAR_MISS, "params"),
+        (MEMOIZED_PROMISE_NEAR_MISS, "transport"),
+        (MEMOIZED_PROMISE_NEAR_MISS, "cache"),
+        (MEMOIZED_PROMISE_NEAR_MISS, "url"),
+        (MEMOIZED_PROMISE_NEAR_MISS, "promise"),
+        (MEMOIZED_PROMISE_NEAR_MISS, "error"),
+    ] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert!(
+            !report.rewritten.contains(refused),
+            "uncorrelated evidence must not infer `{refused}`:\n{}",
+            report.rewritten
+        );
+        assert_behavior_preserved("http-role-near-miss", source, &report.rewritten);
+        assert_eq!(node_capture(&report.rewritten), node_capture(source));
+    }
+}
+
+#[test]
+fn cached_arbitrary_thenable_does_not_prove_http_or_promise_roles() {
+    let report: TerserRestoreReport = restore_terser_mangled(ARBITRARY_CHAIN_NEAR_MISS);
+    for role in ["transport", "cache", "url", "promise", "response", "error"] {
+        assert!(!has_heuristic_role(&report, role), "{}", report.rewritten);
+    }
+    assert_behavior_preserved(
+        "arbitrary-chain",
+        ARBITRARY_CHAIN_NEAR_MISS,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(ARBITRARY_CHAIN_NEAR_MISS)
+    );
+}
+
+#[test]
+fn nested_arbitrary_return_does_not_prove_native_promise_roles() {
+    let report: TerserRestoreReport = restore_terser_mangled(NESTED_RETURN_THENABLE_NEAR_MISS);
+    for role in ["transport", "cache", "url", "promise", "response", "error"] {
+        assert!(!has_heuristic_role(&report, role), "{}", report.rewritten);
+    }
+    assert_behavior_preserved(
+        "nested-promise-return",
+        NESTED_RETURN_THENABLE_NEAR_MISS,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(NESTED_RETURN_THENABLE_NEAR_MISS)
+    );
+}
+
+#[test]
+fn generator_transport_does_not_prove_native_promise_roles() {
+    let report: TerserRestoreReport = restore_terser_mangled(GENERATOR_TRANSPORT_NEAR_MISS);
+    for role in ["transport", "cache", "url", "promise", "response", "error"] {
+        assert!(!has_heuristic_role(&report, role), "{}", report.rewritten);
+    }
+    assert_behavior_preserved(
+        "generator-promise-return",
+        GENERATOR_TRANSPORT_NEAR_MISS,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(GENERATOR_TRANSPORT_NEAR_MISS)
+    );
+}
+
+#[test]
+fn reassigned_callees_do_not_propagate_parameter_roles() {
+    for source in [REASSIGNED_CALLEE_NEAR_MISS, REDECLARED_CALLEE_NEAR_MISS] {
+        let report: TerserRestoreReport = restore_terser_mangled(source);
+        assert!(
+            !report.renames.iter().any(|rename| {
+                rename.original == "b"
+                    && rename.source_label == "heuristic"
+                    && rename.restored.starts_with("params")
+            }),
+            "{}",
+            report.rewritten
+        );
+        assert_behavior_preserved("ambiguous-callee", source, &report.rewritten);
+        assert_eq!(node_capture(&report.rewritten), node_capture(source));
+    }
+}
+
+#[test]
+fn discarded_encoding_calls_do_not_prove_parameter_roles() {
+    let report: TerserRestoreReport = restore_terser_mangled(DISCARDED_ENCODING_NEAR_MISS);
+    assert!(
+        !has_heuristic_role(&report, "params"),
+        "{}",
+        report.rewritten
+    );
+    assert!(!has_heuristic_role(&report, "key"), "{}", report.rewritten);
+    assert_behavior_preserved(
+        "discarded-encoding",
+        DISCARDED_ENCODING_NEAR_MISS,
+        &report.rewritten,
+    );
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(DISCARDED_ENCODING_NEAR_MISS)
+    );
+}
+
+#[test]
+fn nested_cache_operations_do_not_prove_loader_storage_roles() {
+    let report: TerserRestoreReport = restore_terser_mangled(NESTED_CACHE_NEAR_MISS);
+    for role in ["transport", "cache", "url"] {
+        assert!(!has_heuristic_role(&report, role), "{}", report.rewritten);
+    }
+    assert_behavior_preserved("nested-cache", NESTED_CACHE_NEAR_MISS, &report.rewritten);
+    assert_eq!(
+        node_capture(&report.rewritten),
+        node_capture(NESTED_CACHE_NEAR_MISS)
+    );
+}
+
+#[test]
+fn oversized_name_analysis_abstains_without_panicking() {
+    let source: String = format!(
+        "function f(a){{{}return a.length;}}",
+        "a.push(0);".repeat(110_000)
+    );
+    let error: Error =
+        restore_terser_mangled_result(&source).expect_err("oversized source must fail");
+    assert!(matches!(
+        error,
+        Error::SyntaxLimit {
+            kind: "JavaScript source bytes",
+            observed,
+            maximum: 1_048_576,
+        } if observed == source.len()
+    ));
 }

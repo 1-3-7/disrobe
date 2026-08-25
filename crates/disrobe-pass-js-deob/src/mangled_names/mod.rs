@@ -39,6 +39,7 @@ pub struct Context {
     pub called_as_predicate: bool,
     pub nearby_strings: BTreeSet<String>,
     pub assigned_from: BTreeSet<String>,
+    pub(crate) semantic_roles: BTreeSet<SemanticRole>,
 }
 
 impl Context {
@@ -56,8 +57,21 @@ impl Context {
             called_as_predicate: false,
             nearby_strings: BTreeSet::new(),
             assigned_from: BTreeSet::new(),
+            semantic_roles: BTreeSet::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub(crate) enum SemanticRole {
+    Cache,
+    Error,
+    Key,
+    Params,
+    Promise,
+    Response,
+    Transport,
+    Url,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

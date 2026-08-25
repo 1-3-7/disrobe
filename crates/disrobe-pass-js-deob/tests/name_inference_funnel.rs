@@ -61,7 +61,8 @@ fn load(relative: &str) -> Fixture {
     let bindings: Vec<RenamedBinding> = renamed_bindings(&map, &source);
     Fixture {
         label: relative.to_owned(),
-        report: restore_terser_mangled(&source),
+        report: restore_terser_mangled(&source)
+            .expect("funnel fixture must be within the source limit"),
         bindings,
     }
 }

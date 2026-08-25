@@ -136,6 +136,7 @@ mod tests {
             called_as_predicate: false,
             nearby_strings: BTreeSet::new(),
             assigned_from: BTreeSet::new(),
+            semantic_roles: BTreeSet::new(),
         };
         assert!(src.suggest(ScopeKey(0), &ctx).is_none());
     }

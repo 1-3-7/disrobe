@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_js_deob::{
     MangledRestoredName, OriginalPosition, PositionResolver, TerserRestoreReport,
-    restore_terser_mangled,
+    restore_terser_mangled as restore_terser_mangled_result,
 };
 
 const FIXTURES: &[(&str, &str)] = &[
@@ -31,6 +31,11 @@ const CORPUS_ROOT: &str = "corpus/unminify/symbolized";
 
 const MINIMUM_GRADED_SLOTS: usize = 40;
 const MINIMUM_HOLDOUT_SLOTS: usize = 20;
+
+fn restore_terser_mangled(source: &str) -> TerserRestoreReport {
+    restore_terser_mangled_result(source)
+        .expect("precision fixture must be within the source limit")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct GradedSlot {
@@ -552,8 +557,8 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/loader|a|args|baseUrl|low|corpus",
     "esbuild/loader|c|context|load|low|corpus",
     "esbuild/loader|d|data|invalidate|low|corpus",
-    "esbuild/loader|e|event|params|low|corpus",
     "esbuild/loader|e|event|prefix|low|corpus",
+    "esbuild/loader|e|params|params|high|heuristic",
     "esbuild/loader|f|fn|transport|low|corpus",
     "esbuild/loader|i|index|error|low|corpus",
     "esbuild/loader|i|index|response|low|corpus",
@@ -562,7 +567,7 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "esbuild/loader|n|node|removed|low|corpus",
     "esbuild/loader|n|node|url|low|corpus",
     "esbuild/loader|o|options|resource|low|corpus",
-    "esbuild/loader|r|result|key|low|corpus",
+    "esbuild/loader|r|key|key|high|heuristic",
     "esbuild/loader|r|result|promise|low|corpus",
     "esbuild/loader|r|result|url|low|corpus",
     "esbuild/loader|t|target|cache|low|corpus",
@@ -606,17 +611,17 @@ const PINNED_MEMBERSHIP: &[&str] = &[
     "terser/collection|u|utils|bucket|low|corpus",
     "terser/collection|u|utils|name|low|corpus",
     "terser/loader|a|args|url|low|corpus",
-    "terser/loader|e|event_2|params|low|corpus",
     "terser/loader|e|event|cache|low|corpus",
+    "terser/loader|e|params|params|high|heuristic",
     "terser/loader|i|index|promise|low|corpus",
     "terser/loader|n|node_2|error|low|corpus",
     "terser/loader|n|node_2|response|low|corpus",
     "terser/loader|n|node|baseUrl|low|corpus",
-    "terser/loader|o|options_2|key|low|corpus",
+    "terser/loader|o|key|key|high|heuristic",
     "terser/loader|o|options|params|low|corpus",
     "terser/loader|o|options|removed|low|corpus",
-    "terser/loader|r|result_2|resource|low|corpus",
     "terser/loader|r|result|transport|low|corpus",
+    "terser/loader|r|result_2|resource|low|corpus",
     "terser/loader|t|query|query|medium|heuristic",
     "terser/loader|t|target|prefix|low|corpus",
     "terser/loader|t|target|resource|low|corpus",
