@@ -3968,22 +3968,23 @@ fn bounded_diff_report(
     report: &disrobe_pass_native::BinDiffReport,
     limit: Option<usize>,
 ) -> DiffReport<'_> {
-    let total: usize = report.added.len() + report.removed.len() + report.changed.len();
-    let ceiling: usize = limit.unwrap_or(usize::MAX);
-    let added_count: usize = report.added.len().min(ceiling);
-    let after_added: usize = ceiling.saturating_sub(added_count);
-    let removed_count: usize = report.removed.len().min(after_added);
-    let after_removed: usize = after_added.saturating_sub(removed_count);
-    let changed_count: usize = report.changed.len().min(after_removed);
-    let shown: usize = added_count + removed_count + changed_count;
+    let total: usize = report
+        .added_total
+        .saturating_add(report.removed_total)
+        .saturating_add(report.changed_total);
+    let shown: usize = report
+        .added
+        .len()
+        .saturating_add(report.removed.len())
+        .saturating_add(report.changed.len());
     DiffReport {
         schema: report.schema,
         total_a: report.total_a,
         total_b: report.total_b,
         identical: report.identical,
-        added: &report.added[..added_count],
-        removed: &report.removed[..removed_count],
-        changed: &report.changed[..changed_count],
+        added: &report.added,
+        removed: &report.removed,
+        changed: &report.changed,
         similarity: report.similarity,
         listing: DiffListing {
             limit,
@@ -3999,16 +4000,17 @@ pub(crate) fn diff(
     fmt: OutputFormat,
     limit: Option<usize>,
 ) -> miette::Result<()> {
-    use disrobe_pass_native::{BinDiffReport, ChangedFunction, FunctionPrint, bindiff};
+    use disrobe_pass_native::{BinDiffReport, ChangedFunction, FunctionPrint};
 
     let bytes_a: Vec<u8> = std::fs::read(&a)
         .map_err(|e| miette::miette!("DR-NATIVE-0180: cannot read {}: {e}", a.display()))?;
     let bytes_b: Vec<u8> = std::fs::read(&b)
         .map_err(|e| miette::miette!("DR-NATIVE-0181: cannot read {}: {e}", b.display()))?;
-    let report: BinDiffReport = bindiff(&bytes_a, &bytes_b)
-        .map_err(|e| miette::miette!("DR-NATIVE-0182: diff failed: {e}"))?;
     let effective_limit: Option<usize> =
         limit.or_else(|| (!fmt.is_machine()).then_some(DIFF_DEFAULT_LISTING_LIMIT));
+    let report: BinDiffReport =
+        BinDiffReport::bounded(&bytes_a, &bytes_b, effective_limit.unwrap_or(usize::MAX))
+            .map_err(|e| miette::miette!("DR-NATIVE-0182: diff failed: {e}"))?;
     let view: DiffReport<'_> = bounded_diff_report(&report, effective_limit);
     output::emit(fmt, &view, || {
         println!("native diff: OK");

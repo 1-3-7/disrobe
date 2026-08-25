@@ -76,6 +76,12 @@ pub struct BinDiffReport {
     pub removed: Vec<FunctionPrint>,
     pub changed: Vec<ChangedFunction>,
     pub similarity: f64,
+    #[serde(skip)]
+    pub added_total: usize,
+    #[serde(skip)]
+    pub removed_total: usize,
+    #[serde(skip)]
+    pub changed_total: usize,
 }
 
 pub const BINDIFF_SCHEMA: &str = "disrobe.native.bindiff/v1";
@@ -321,6 +327,36 @@ pub fn diff(image_a: &[u8], image_b: &[u8]) -> Result<BinDiffReport> {
 
     let funcs_a: Vec<FunctionPrint> = function_partition(&payload_a, isa_a, arch_a);
     let funcs_b: Vec<FunctionPrint> = function_partition(&payload_b, isa_b, arch_b);
+    Ok(diff_functions(&funcs_a, &funcs_b, usize::MAX))
+}
+
+impl BinDiffReport {
+    pub fn bounded(image_a: &[u8], image_b: &[u8], limit: usize) -> Result<Self> {
+        let payload_a: DisasmPayload = build_disasm_payload(image_a).map_err(wrap_a)?;
+        let payload_b: DisasmPayload = build_disasm_payload(image_b).map_err(wrap_b)?;
+        let arch_a: DiffArch = diff_arch(image_a);
+        let arch_b: DiffArch = diff_arch(image_b);
+        let Some(isa_a): Option<Arch> = image_arch(image_a) else {
+            return Err(wrap_a(Error::UnsupportedArch(
+                "image names no architecture the disassembler maps".to_owned(),
+            )));
+        };
+        let Some(isa_b): Option<Arch> = image_arch(image_b) else {
+            return Err(wrap_b(Error::UnsupportedArch(
+                "image names no architecture the disassembler maps".to_owned(),
+            )));
+        };
+        let funcs_a: Vec<FunctionPrint> = function_partition(&payload_a, isa_a, arch_a);
+        let funcs_b: Vec<FunctionPrint> = function_partition(&payload_b, isa_b, arch_b);
+        Ok(diff_functions(&funcs_a, &funcs_b, limit))
+    }
+}
+
+fn diff_functions(
+    funcs_a: &[FunctionPrint],
+    funcs_b: &[FunctionPrint],
+    limit: usize,
+) -> BinDiffReport {
     let total_a: usize = funcs_a.len();
     let total_b: usize = funcs_b.len();
 
@@ -341,10 +377,10 @@ pub fn diff(image_a: &[u8], image_b: &[u8]) -> Result<BinDiffReport> {
 
     let mut matched_b: Vec<bool> = vec![false; funcs_b.len()];
     let mut identical: usize = 0;
-    let mut changed: Vec<ChangedFunction> = Vec::new();
-    let mut removed: Vec<FunctionPrint> = Vec::new();
+    let mut changed_total: usize = 0;
+    let mut removed_total: usize = 0;
 
-    for fa in &funcs_a {
+    for fa in funcs_a {
         if let Some(bi) = take_match(&content_index_b, &fa.content_hash, &matched_b) {
             matched_b[bi] = true;
             identical += 1;
@@ -355,33 +391,74 @@ pub fn diff(image_a: &[u8], image_b: &[u8]) -> Result<BinDiffReport> {
         match candidate {
             Some(bi) => {
                 matched_b[bi] = true;
+                changed_total += 1;
+            }
+            None => removed_total += 1,
+        }
+    }
+    let added_total: usize = matched_b
+        .iter()
+        .filter(|matched: &&bool| !**matched)
+        .count();
+    let mut budget: usize = limit;
+    let mut added: Vec<FunctionPrint> = Vec::with_capacity(added_total.min(budget));
+    for (index, function) in funcs_b.iter().enumerate() {
+        if !matched_b[index] && budget > 0 {
+            added.push(function.clone());
+            budget -= 1;
+        }
+    }
+    let mut removed: Vec<FunctionPrint> = Vec::with_capacity(removed_total.min(budget));
+    let mut listing_matched_b: Vec<bool> = vec![false; funcs_b.len()];
+    for fa in funcs_a {
+        if let Some(bi) = take_match(&content_index_b, &fa.content_hash, &listing_matched_b) {
+            listing_matched_b[bi] = true;
+            continue;
+        }
+        let candidate: Option<usize> = take_match(&name_index_b, &fa.name, &listing_matched_b)
+            .or_else(|| take_match(&masked_index_b, &fa.masked_hash, &listing_matched_b));
+        match candidate {
+            Some(bi) => {
+                listing_matched_b[bi] = true;
+            }
+            None if budget > 0 => {
+                removed.push(fa.clone());
+                budget -= 1;
+            }
+            None => {}
+        }
+    }
+    let mut changed: Vec<ChangedFunction> = Vec::with_capacity(changed_total.min(budget));
+    let mut listing_matched_b: Vec<bool> = vec![false; funcs_b.len()];
+    for fa in funcs_a {
+        if let Some(bi) = take_match(&content_index_b, &fa.content_hash, &listing_matched_b) {
+            listing_matched_b[bi] = true;
+            continue;
+        }
+        let candidate: Option<usize> = take_match(&name_index_b, &fa.name, &listing_matched_b)
+            .or_else(|| take_match(&masked_index_b, &fa.masked_hash, &listing_matched_b));
+        if let Some(bi) = candidate {
+            listing_matched_b[bi] = true;
+            if budget > 0 {
                 let fb: &FunctionPrint = &funcs_b[bi];
-                let kind: ChangeKind = classify_change(fa, fb);
                 changed.push(ChangedFunction {
                     name_a: fa.name.clone(),
                     name_b: fb.name.clone(),
                     address_a: fa.address,
                     address_b: fb.address,
-                    kind,
+                    kind: classify_change(fa, fb),
                     cfg_a: fa.cfg.clone(),
                     cfg_b: fb.cfg.clone(),
                 });
+                budget -= 1;
             }
-            None => removed.push(fa.clone()),
         }
     }
-
-    let added: Vec<FunctionPrint> = funcs_b
-        .iter()
-        .enumerate()
-        .filter(|(idx, _): &(usize, &FunctionPrint)| !matched_b[*idx])
-        .map(|(_, f): (usize, &FunctionPrint)| f.clone())
-        .collect();
 
     let denom: usize = total_a.max(total_b).max(1);
     let similarity: f64 = identical as f64 / denom as f64;
 
-    Ok(BinDiffReport {
+    BinDiffReport {
         schema: BINDIFF_SCHEMA,
         total_a,
         total_b,
@@ -390,7 +467,10 @@ pub fn diff(image_a: &[u8], image_b: &[u8]) -> Result<BinDiffReport> {
         removed,
         changed,
         similarity,
-    })
+        added_total,
+        removed_total,
+        changed_total,
+    }
 }
 
 fn take_match(index: &BTreeMap<String, Vec<usize>>, key: &str, matched: &[bool]) -> Option<usize> {
@@ -508,6 +588,82 @@ mod tests {
             pe64_text_base() + 0x1000 + SECOND_FN_OFFSET as u64,
             "the changed function must be the second one (the imm32 mov), not the first"
         );
+    }
+
+    #[test]
+    fn bounded_diff_collects_only_the_listing_window_and_counts_the_rest() {
+        const ENTRIES: usize = 200_000;
+        const LIMIT: usize = 8;
+        let function: FunctionPrint = FunctionPrint {
+            name: "f".to_owned(),
+            address: 0x1000,
+            byte_length: 1,
+            is_export: false,
+            content_hash: "content".to_owned(),
+            masked_hash: "masked".to_owned(),
+            flirt_crc16: 0,
+            cfg: CfgFingerprint {
+                block_count: 1,
+                edge_count: 0,
+                cyclomatic: 1,
+                instruction_count: 1,
+                block_sizes: vec![1],
+            },
+        };
+        let a: Vec<FunctionPrint> = vec![function; ENTRIES];
+        let b: Vec<FunctionPrint> = Vec::new();
+
+        let report: BinDiffReport = diff_functions(&a, &b, LIMIT);
+
+        assert_eq!(report.removed.len(), LIMIT);
+        assert!(report.removed.capacity() <= LIMIT);
+        assert!(report.added.is_empty());
+        assert!(report.changed.is_empty());
+        assert_eq!(report.removed_total, ENTRIES);
+        assert_eq!(report.removed_total - report.removed.len(), ENTRIES - LIMIT);
+    }
+
+    #[test]
+    fn bounded_diff_applies_its_window_in_render_order() {
+        let base: FunctionPrint = FunctionPrint {
+            name: "changed".to_owned(),
+            address: 0x1000,
+            byte_length: 1,
+            is_export: false,
+            content_hash: "a".to_owned(),
+            masked_hash: "same".to_owned(),
+            flirt_crc16: 0,
+            cfg: CfgFingerprint {
+                block_count: 1,
+                edge_count: 0,
+                cyclomatic: 1,
+                instruction_count: 1,
+                block_sizes: vec![1],
+            },
+        };
+        let mut removed: FunctionPrint = base.clone();
+        removed.name = "removed".to_owned();
+        removed.address = 0x1010;
+        removed.content_hash = "removed".to_owned();
+        removed.masked_hash = "removed".to_owned();
+        let mut changed: FunctionPrint = base.clone();
+        changed.content_hash = "b".to_owned();
+        let mut added: FunctionPrint = base.clone();
+        added.name = "added".to_owned();
+        added.address = 0x1020;
+        added.content_hash = "added".to_owned();
+        added.masked_hash = "added".to_owned();
+
+        let report: BinDiffReport = diff_functions(&[base, removed], &[changed, added], 2);
+
+        assert_eq!(report.added.len(), 1);
+        assert_eq!(report.added[0].name, "added");
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].name, "removed");
+        assert!(report.changed.is_empty());
+        assert_eq!(report.added_total, 1);
+        assert_eq!(report.removed_total, 1);
+        assert_eq!(report.changed_total, 1);
     }
 
     #[test]
