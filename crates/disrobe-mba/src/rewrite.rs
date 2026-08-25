@@ -413,12 +413,6 @@ fn rewrite_xor(left: Expr, right: Expr, _width: Width) -> Expr {
 }
 
 fn rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
-    if is_zero(&right) {
-        return left;
-    }
-    if is_zero(&left) {
-        return Expr::konst(0);
-    }
     if op == BinOp::Shl
         && let Expr::Const(amount) = right
     {
@@ -429,10 +423,6 @@ fn rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
         return Expr::mul(Expr::konst(factor), left);
     }
     Expr::Binary(op, Box::new(left), Box::new(right))
-}
-
-const fn is_zero(expr: &Expr) -> bool {
-    matches!(expr, Expr::Const(0))
 }
 
 fn absorbs(inner_op: BinOp, outer: &Expr, candidate: &Expr) -> bool {

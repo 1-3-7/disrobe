@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_mba::rules::{RuleHit, RuleSet, apply_root, mba_peephole_rules, rewrite_fixpoint};
-use disrobe_mba::{Expr, Width, canonicalize, equivalent_exhaustive};
+use disrobe_mba::{
+    Expr, Width, canonicalize, equivalent_exhaustive, equivalent_exhaustive_runnable,
+};
 
 const FIXPOINT_PASSES: u32 = 64;
 
@@ -201,6 +203,34 @@ fn xor_const_sweep_fires_only_on_zero_or_all_ones_and_matches_hardcoded_identity
                 hit.is_none(),
                 "no migrated rule should fire for xor(v0, {value})"
             );
+        }
+    }
+}
+
+#[test]
+fn shift_identities_match_hardcoded_at_every_declared_width() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        for input in [
+            Expr::shl(Expr::var(0), Expr::konst(0)),
+            Expr::shr(Expr::var(0), Expr::konst(0)),
+            Expr::shl(Expr::konst(0), Expr::var(0)),
+            Expr::shr(Expr::konst(0), Expr::var(0)),
+        ] {
+            let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, canonicalize(&input, width));
+            if equivalent_exhaustive_runnable(width, 1) {
+                assert!(equivalent_exhaustive(&input, &dsl, width, 1));
+            }
         }
     }
 }

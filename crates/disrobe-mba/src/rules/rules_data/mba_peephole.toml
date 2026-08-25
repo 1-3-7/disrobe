@@ -200,3 +200,39 @@ source = "Boolean complement law"
 pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
 when = [{ check = "complement", left = "x", right = "y" }]
 rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "shl_zero_count_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift identity"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "shr_zero_count_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift identity"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "shl_zero_input_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift annihilator"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_const", bind = "z" }, right = { kind = "any_expr", bind = "x" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shr_zero_input_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift annihilator"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_const", bind = "z" }, right = { kind = "any_expr", bind = "x" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
