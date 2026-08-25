@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::expr::Width;
 use crate::rules::error::LoadError;
 use crate::rules::schema::{Condition, Pattern, Rule, RuleSet, Template};
 
@@ -45,10 +46,12 @@ fn validate(set: &RuleSet) -> Result<(), LoadError> {
         }
         validate_rule(rule)?;
     }
+    reject_unconditional_cycles(&set.rules)?;
     Ok(())
 }
 
 fn validate_rule(rule: &Rule) -> Result<(), LoadError> {
+    validate_metadata(rule)?;
     let condition_count: usize = rule.when.len();
     if condition_count > MAX_CONDITIONS_PER_RULE {
         return Err(LoadError::TooManyConditions {
@@ -64,6 +67,147 @@ fn validate_rule(rule: &Rule) -> Result<(), LoadError> {
     }
     check_template_refs(&rule.rewrite, &bound, rule)?;
     Ok(())
+}
+
+fn validate_metadata(rule: &Rule) -> Result<(), LoadError> {
+    if rule.widths.is_empty() {
+        return Err(LoadError::MissingWidths {
+            rule: rule.name.clone(),
+        });
+    }
+    let mut seen: BTreeSet<u8> = BTreeSet::new();
+    for width in &rule.widths {
+        if Width::from_bits(u32::from(*width)).is_none() {
+            return Err(LoadError::UnsupportedWidth {
+                rule: rule.name.clone(),
+                width: *width,
+            });
+        }
+        if !seen.insert(*width) {
+            return Err(LoadError::DuplicateWidth {
+                rule: rule.name.clone(),
+                width: *width,
+            });
+        }
+    }
+    if rule.proof != "shared_equivalence" {
+        return Err(LoadError::MissingProofRoute {
+            rule: rule.name.clone(),
+        });
+    }
+    if rule.source.trim().is_empty() {
+        return Err(LoadError::MissingSource {
+            rule: rule.name.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn reject_unconditional_cycles(rules: &[Rule]) -> Result<(), LoadError> {
+    let patterns: Vec<String> = rules
+        .iter()
+        .map(|rule: &Rule| pattern_shape(&rule.pattern))
+        .collect();
+    let rewrites: Vec<Option<String>> = rules
+        .iter()
+        .map(|rule: &Rule| rule.when.is_empty().then(|| template_shape(rule)))
+        .collect();
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); rules.len()];
+    for (source, rewrite) in rewrites.iter().enumerate() {
+        let Some(rewrite) = rewrite else { continue };
+        for (target, pattern) in patterns.iter().enumerate() {
+            if rewrite == pattern && rules[target].when.is_empty() {
+                edges[source].push(target);
+            }
+        }
+    }
+    let mut states: Vec<u8> = vec![0; rules.len()];
+    for index in 0..rules.len() {
+        if states[index] == 0 {
+            visit_cycle(index, &edges, &mut states, rules)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_cycle(
+    index: usize,
+    edges: &[Vec<usize>],
+    states: &mut [u8],
+    rules: &[Rule],
+) -> Result<(), LoadError> {
+    states[index] = 1;
+    for target in &edges[index] {
+        match states[*target] {
+            0 => visit_cycle(*target, edges, states, rules)?,
+            1 => {
+                return Err(LoadError::RewriteCycle {
+                    rule: rules[*target].name.clone(),
+                });
+            }
+            2 => {}
+            _ => unreachable!(),
+        }
+    }
+    states[index] = 2;
+    Ok(())
+}
+
+fn pattern_shape(pattern: &Pattern) -> String {
+    let mut captures: BTreeMap<String, usize> = BTreeMap::new();
+    let mut next_capture: usize = 0;
+    pattern_shape_into(pattern, &mut captures, &mut next_capture)
+}
+
+fn pattern_shape_into(
+    pattern: &Pattern,
+    captures: &mut BTreeMap<String, usize>,
+    next_capture: &mut usize,
+) -> String {
+    match pattern {
+        Pattern::AnyExpr { bind } | Pattern::AnyConst { bind } => {
+            let index: usize = *captures.entry(bind.clone()).or_insert_with(|| {
+                let index: usize = *next_capture;
+                *next_capture += 1;
+                index
+            });
+            format!("capture:{index}")
+        }
+        Pattern::Const { value } => format!("const:{value}"),
+        Pattern::Var { index } => format!("var:{index}"),
+        Pattern::Unary { op, operand } => format!(
+            "unary:{op:?}({})",
+            pattern_shape_into(operand, captures, next_capture)
+        ),
+        Pattern::Binary { op, left, right } => format!(
+            "binary:{op:?}({},{})",
+            pattern_shape_into(left, captures, next_capture),
+            pattern_shape_into(right, captures, next_capture)
+        ),
+    }
+}
+
+fn template_shape(rule: &Rule) -> String {
+    let mut captures: BTreeMap<String, usize> = BTreeMap::new();
+    let mut next_capture: usize = 0;
+    let _: String = pattern_shape_into(&rule.pattern, &mut captures, &mut next_capture);
+    template_shape_into(&rule.rewrite, &captures)
+}
+
+fn template_shape_into(template: &Template, captures: &BTreeMap<String, usize>) -> String {
+    match template {
+        Template::Use { expr } => format!("capture:{}", captures[expr.as_str()]),
+        Template::Const { value } => format!("const:{value}"),
+        Template::AllOnes => "all_ones".to_owned(),
+        Template::Unary { op, operand } => {
+            format!("unary:{op:?}({})", template_shape_into(operand, captures))
+        }
+        Template::Binary { op, left, right } => format!(
+            "binary:{op:?}({},{})",
+            template_shape_into(left, captures),
+            template_shape_into(right, captures)
+        ),
+    }
 }
 
 fn collect_pattern_binds<'a>(
@@ -220,6 +364,9 @@ mod tests {
     fn minimal_rule(name: &str) -> Rule {
         Rule {
             name: name.to_owned(),
+            widths: vec![8],
+            proof: "shared_equivalence".to_owned(),
+            source: "test".to_owned(),
             pattern: Pattern::AnyExpr {
                 bind: "x".to_owned(),
             },
@@ -268,6 +415,9 @@ mod tests {
             commutative_match: false,
             rules: vec![Rule {
                 name: "bad_capture".to_owned(),
+                widths: vec![8],
+                proof: "shared_equivalence".to_owned(),
+                source: "test".to_owned(),
                 pattern: Pattern::AnyExpr {
                     bind: String::new(),
                 },
@@ -301,6 +451,9 @@ mod tests {
             commutative_match: false,
             rules: vec![Rule {
                 name: "deep_template".to_owned(),
+                widths: vec![8],
+                proof: "shared_equivalence".to_owned(),
+                source: "test".to_owned(),
                 pattern: Pattern::AnyExpr {
                     bind: "x".to_owned(),
                 },

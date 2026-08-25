@@ -58,6 +58,9 @@ pub struct RuleHit {
 #[must_use]
 pub fn apply_root(rules: &RuleSet, expr: &Expr, width: Width) -> Option<RuleHit> {
     for rule in &rules.rules {
+        if !rule.widths.contains(&(width.bits() as u8)) {
+            continue;
+        }
         if let Some(result) = try_rule(rule, expr, width, rules.commutative_match) {
             return Some(RuleHit {
                 rule: rule.name.clone(),
@@ -328,6 +331,9 @@ mod tests {
             commutative_match: true,
             rules: vec![Rule {
                 name: "sub_zero".to_owned(),
+                widths: vec![8],
+                proof: "shared_equivalence".to_owned(),
+                source: "test".to_owned(),
                 pattern: Pattern::Binary {
                     op: Binary::Sub,
                     left: Box::new(Pattern::AnyExpr {
@@ -344,5 +350,32 @@ mod tests {
         let input: Expr = Expr::sub(Expr::konst(0), Expr::var(0));
         let hit: Option<RuleHit> = apply_root(&rules, &input, Width::W8);
         assert!(hit.is_none());
+    }
+
+    #[test]
+    fn rule_does_not_apply_outside_its_declared_widths() {
+        let rules: RuleSet = RuleSet {
+            commutative_match: false,
+            rules: vec![Rule {
+                name: "add_zero".to_owned(),
+                widths: vec![8],
+                proof: "shared_equivalence".to_owned(),
+                source: "test".to_owned(),
+                pattern: Pattern::Binary {
+                    op: Binary::Add,
+                    left: Box::new(Pattern::AnyExpr {
+                        bind: "x".to_owned(),
+                    }),
+                    right: Box::new(Pattern::Const { value: 0 }),
+                },
+                when: Vec::new(),
+                rewrite: Template::Use {
+                    expr: "x".to_owned(),
+                },
+            }],
+        };
+        let input: Expr = Expr::add(Expr::var(0), Expr::konst(0));
+        assert!(apply_root(&rules, &input, Width::W16).is_none());
+        assert!(apply_root(&rules, &input, Width::W8).is_some());
     }
 }

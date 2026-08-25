@@ -19,6 +19,9 @@ fn unbound_capture_in_rewrite_is_rejected() {
     let text: &str = r#"
 [[rules]]
 name = "broken"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
 pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
 rewrite = { build = "use", expr = "y" }
 "#;
@@ -36,6 +39,9 @@ fn unbound_capture_in_condition_is_rejected() {
     let text: &str = r#"
 [[rules]]
 name = "broken_cond"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
 pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
 when = [{ check = "equal", left = "x", right = "z" }]
 rewrite = { build = "use", expr = "x" }
@@ -51,6 +57,9 @@ fn duplicate_capture_binding_is_rejected() {
     let text: &str = r#"
 [[rules]]
 name = "dup_bind"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
 pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "x" } }
 rewrite = { build = "use", expr = "x" }
 "#;
@@ -65,17 +74,93 @@ fn duplicate_rule_name_is_rejected() {
     let text: &str = r#"
 [[rules]]
 name = "twin"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
 pattern = { kind = "var", index = 0 }
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
 name = "twin"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
 pattern = { kind = "var", index = 1 }
 rewrite = { build = "const", value = 1 }
 "#;
     assert!(matches!(
         load_str(text),
         Err(LoadError::DuplicateRuleName { .. })
+    ));
+}
+
+#[test]
+fn unconditional_rule_cycle_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "add_to_sub"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+
+[[rules]]
+name = "sub_to_add"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::RewriteCycle { .. })
+    ));
+}
+
+#[test]
+fn exact_self_rewrite_cycle_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "self_cycle"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::RewriteCycle { .. })
+    ));
+}
+
+#[test]
+fn ungraded_rule_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "ungraded"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(load_str(text).is_err());
+}
+
+#[test]
+fn non_shared_proof_route_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "wrong_proof_route"
+widths = [8]
+proof = "per_rule"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::MissingProofRoute { .. })
     ));
 }
 

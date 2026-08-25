@@ -51,6 +51,18 @@ pub enum LoadError {
     DuplicateCapture { rule: String, capture: String },
     #[error("rule {rule:?} has a duplicate name")]
     DuplicateRuleName { rule: String },
+    #[error("rule {rule:?} has no declared valid widths")]
+    MissingWidths { rule: String },
+    #[error("rule {rule:?} declares unsupported width {width}")]
+    UnsupportedWidth { rule: String, width: u8 },
+    #[error("rule {rule:?} declares width {width} more than once")]
+    DuplicateWidth { rule: String, width: u8 },
+    #[error("rule {rule:?} has no shared-oracle proof route")]
+    MissingProofRoute { rule: String },
+    #[error("rule {rule:?} has no source reference")]
+    MissingSource { rule: String },
+    #[error("unconditional rewrite rules form a cycle through {rule:?}")]
+    RewriteCycle { rule: String },
 }
 
 #[derive(Debug, Error)]

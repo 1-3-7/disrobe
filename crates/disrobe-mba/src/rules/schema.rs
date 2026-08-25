@@ -113,6 +113,9 @@ pub enum Template {
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub name: String,
+    pub widths: Vec<u8>,
+    pub proof: String,
+    pub source: String,
     pub pattern: Pattern,
     #[serde(default)]
     pub when: Vec<Condition>,

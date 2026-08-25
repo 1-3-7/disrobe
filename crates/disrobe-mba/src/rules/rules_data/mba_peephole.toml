@@ -2,35 +2,53 @@ commutative_match = true
 
 [[rules]]
 name = "add_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive identity over fixed-width bitvectors"
 pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
 when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "use", expr = "x" }
 
 [[rules]]
 name = "mul_zero_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "multiplicative annihilator over fixed-width bitvectors"
 pattern = { kind = "binary", op = "mul", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
 when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
 name = "sub_self_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive inverse over fixed-width bitvectors"
 pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
 when = [{ check = "equal", left = "x", right = "y" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
 name = "xor_self_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
 pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
 when = [{ check = "equal", left = "x", right = "y" }]
 rewrite = { build = "const", value = 0 }
 
 [[rules]]
 name = "xor_all_ones_is_not"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "complement law over fixed-width bitvectors"
 pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
 when = [{ check = "is_all_ones", expr = "m" }]
 rewrite = { build = "unary", op = "not", operand = { build = "use", expr = "x" } }
 
 [[rules]]
 name = "double_not_cancels"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra involution"
 pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
 rewrite = { build = "use", expr = "x" }
