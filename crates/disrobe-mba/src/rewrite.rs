@@ -416,7 +416,7 @@ fn rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
     if op == BinOp::Shl
         && let Expr::Const(amount) = right
     {
-        if amount >= u64::from(width.bits()) {
+        if amount > u64::from(width.bits()) {
             return Expr::konst(0);
         }
         let factor: u64 = (1u64 << amount) & width.mask();

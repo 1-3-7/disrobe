@@ -236,3 +236,59 @@ source = "fixed-width logical shift annihilator"
 pattern = { kind = "binary", op = "shr", left = { kind = "any_const", bind = "z" }, right = { kind = "any_expr", bind = "x" } }
 when = [{ check = "is_zero", expr = "z" }]
 rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_one_is_zero"
+widths = [1]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 1 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_two_is_zero"
+widths = [2]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 2 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_four_is_zero"
+widths = [4]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 4 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_eight_is_zero"
+widths = [8]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 8 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_sixteen_is_zero"
+widths = [16]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 16 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_thirty_two_is_zero"
+widths = [32]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 32 } }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_width_sixty_four_is_zero"
+widths = [64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift at the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 64 } }
+rewrite = { build = "const", value = 0 }
