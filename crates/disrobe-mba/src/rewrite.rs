@@ -33,7 +33,7 @@ fn rewrite_once(expr: &Expr, width: Width) -> Expr {
             let cond: Expr = rewrite_once(cond, width);
             let then: Expr = rewrite_once(then, width);
             let otherwise: Expr = rewrite_once(otherwise, width);
-            rewrite_ite(cond, then, otherwise)
+            rewrite_ite(cond, then, otherwise, width)
         }
         Expr::Slice(inner, lo, hi) => {
             let inner: Expr = rewrite_once(inner, width);
@@ -48,14 +48,12 @@ fn rewrite_once(expr: &Expr, width: Width) -> Expr {
     }
 }
 
-fn rewrite_ite(cond: Expr, then: Expr, otherwise: Expr) -> Expr {
-    if let Expr::Const(value) = cond {
-        return if value != 0 { then } else { otherwise };
+fn rewrite_ite(cond: Expr, then: Expr, otherwise: Expr, width: Width) -> Expr {
+    let node: Expr = Expr::ite(cond, then, otherwise);
+    if let Some(rewritten) = apply_migrated(&node, width) {
+        return rewritten;
     }
-    if then == otherwise {
-        return then;
-    }
-    Expr::ite(cond, then, otherwise)
+    node
 }
 
 fn rewrite_slice(inner: Expr, lo: u32, hi: u32, width: Width) -> Expr {

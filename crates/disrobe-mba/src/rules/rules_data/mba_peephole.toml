@@ -299,6 +299,15 @@ when = [{ check = "is_non_zero", expr = "c" }]
 rewrite = { build = "use", expr = "then" }
 
 [[rules]]
+name = "ite_equal_branches"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "conditional branch identity when both outcomes are equal"
+pattern = { kind = "ite", cond = { kind = "any_expr", bind = "cond" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "equal", left = "then", right = "otherwise" }]
+rewrite = { build = "use", expr = "then" }
+
+[[rules]]
 name = "slice_const_low_bit"
 widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"

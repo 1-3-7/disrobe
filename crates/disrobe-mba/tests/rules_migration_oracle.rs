@@ -79,6 +79,12 @@ fn sub_negated_operand_matches_hardcoded() {
 }
 
 #[test]
+fn ite_matching_branches_matches_hardcoded() {
+    let input: Expr = Expr::ite(Expr::var(0), Expr::var(1), Expr::var(1));
+    assert_dsl_matches_hardcoded(&input, Width::W8, 2);
+}
+
+#[test]
 fn mul_zero_annihilates_matches_hardcoded() {
     let input: Expr = Expr::mul(Expr::var(0), Expr::konst(0));
     assert_dsl_matches_hardcoded(&input, Width::W8, 1);
