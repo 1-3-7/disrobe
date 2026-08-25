@@ -962,6 +962,19 @@ const FINALLY_LOOP_SRC: &str = "public class FinallyLoop {\n\
     }\n\
 }\n";
 
+const FINALLY_SPIN_SRC: &str = "public class FinallySpin {\n\
+    static int CTR = 0;\n\
+    static int ALT = 0;\n\
+    static int alt() { return ALT; }\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            while (true) { CTR++; }\n\
+        }\n\
+    }\n\
+}\n";
+
 const FINALLY_NESTED_TRY_SRC: &str = "public class FinallyNestedTry {\n\
     static int CTR = 0;\n\
     static int run(int a, int b) {\n\
@@ -1105,6 +1118,30 @@ fn class_constant_index(class_file: &ClassFile, name: &str) -> u16 {
             _ => None,
         })
         .expect("fixture class constant")
+}
+
+fn class_field_index(class_file: &ClassFile, name: &str) -> u16 {
+    class_file
+        .constant_pool
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry): (usize, &ConstantPoolEntry)| match entry {
+            ConstantPoolEntry::Fieldref {
+                name_and_type_index,
+                ..
+            } => {
+                let ConstantPoolEntry::NameAndType { name_index, .. } = class_file
+                    .constant_pool
+                    .get(usize::from(*name_and_type_index))?
+                else {
+                    return None;
+                };
+                (class_file.utf8_at(*name_index).ok() == Some(name))
+                    .then(|| u16::try_from(index).ok())?
+            }
+            _ => None,
+        })
+        .expect("fixture field constant")
 }
 
 struct RecompiledClass {
@@ -1336,6 +1373,68 @@ fn finally_with_a_counted_loop_recompiles_to_equivalent_bytecode() {
         recompiled.original, recompiled.recovered,
         "recompiled loop-in-finally bytecode differs from the original:\n{}",
         recompiled.source
+    );
+}
+
+#[test]
+fn finally_with_an_infinite_loop_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass = recompile_recovered_class("FinallySpin", FINALLY_SPIN_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("while (true)"),
+        "the infinite loop is missing from the finally body:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled infinite-loop finally bytecode differs from the original:\n{}\n--- original javap ---\n{}\n--- recovered javap ---\n{}",
+        recompiled.source, recompiled.original_javap, recompiled.recovered_javap
+    );
+}
+
+#[test]
+fn a_mismatched_infinite_finally_copy_is_refused() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_spin_mismatch")
+            .expect("scratch");
+    let directory: PathBuf = scratch.path().join("orig");
+    std::fs::create_dir_all(&directory).expect("fixture directory");
+    let source_path: PathBuf = directory.join("FinallySpin.java");
+    std::fs::write(&source_path, FINALLY_SPIN_SRC).expect("fixture source");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&directory)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let mut class_bytes: Vec<u8> =
+        std::fs::read(directory.join("FinallySpin.class")).expect("fixture class");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    assert_eq!(
+        table.code.get(2),
+        Some(&0xB2),
+        "the javac layout this mutation targets changed"
+    );
+    let alternate_field: u16 = class_field_index(&class_file, "ALT");
+    class_bytes[table.code_offset + 3..table.code_offset + 5]
+        .copy_from_slice(&alternate_field.to_be_bytes());
+    let mutated: ClassFile = parse_classfile(&class_bytes).expect("parse mutated fixture");
+    let decompiled: DecompiledClass = decompile_class(&mutated);
+    let body: String = method_body(&decompiled.source, " run(").expect("mutated run method");
+    assert!(
+        body.contains("not recovered:"),
+        "unequal non-returning finally copies were folded:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "unequal non-returning finally copies became a Throwable catch:\n{body}"
     );
 }
 
@@ -1750,10 +1849,7 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[(&str, &str)] = &[(
-    "finallySpins",
-    "a compiler-inserted finally handler forms no foldable chain",
-)];
+const UNMODELLED_FINALLY_METHODS: &[(&str, &str)] = &[];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {

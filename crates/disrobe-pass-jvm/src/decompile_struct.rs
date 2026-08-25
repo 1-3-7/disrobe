@@ -970,7 +970,7 @@ impl<'a> Structurer<'a> {
                 {
                     let result: FinallyChain = FinallyChain {
                         blocks: chain,
-                        trim: 2,
+                        termination: FinallyTermination::Rethrow,
                     };
                     return self
                         .finally_chain_is_closed(&result.blocks)
@@ -982,12 +982,18 @@ impl<'a> Structurer<'a> {
                 {
                     let result: FinallyChain = FinallyChain {
                         blocks: chain,
-                        trim: 0,
+                        termination: FinallyTermination::Return,
                     };
                     return self
                         .finally_chain_is_closed(&result.blocks)
                         .then_some(result);
                 }
+            }
+            if self.finally_chain_diverges(&chain, slot) {
+                return Some(FinallyChain {
+                    blocks: chain,
+                    termination: FinallyTermination::Diverge,
+                });
             }
             let next: BlockId = self.next_block_by_pc(cur)?;
             if chain.contains(&next) {
@@ -1023,7 +1029,19 @@ impl<'a> Structurer<'a> {
                     .predecessors
                     .iter()
                     .all(|predecessor: &BlockId| chain.contains(predecessor));
-            if !exception_only_predecessors_admitted && !normal_predecessors_admitted {
+            let closed_self_loop_admitted: bool = rethrow_tail_pc.is_none()
+                && normal_predecessors.iter().all(|predecessor: &BlockId| {
+                    chain.contains(predecessor) || *predecessor == next
+                })
+                && self.cfg.blocks[next.0 as usize]
+                    .successors
+                    .iter()
+                    .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                    .all(|edge: &Edge| edge.target == next);
+            if !exception_only_predecessors_admitted
+                && !normal_predecessors_admitted
+                && !closed_self_loop_admitted
+            {
                 return None;
             }
             chain.push(next);
@@ -1047,6 +1065,52 @@ impl<'a> Structurer<'a> {
                             })
                 })
         })
+    }
+
+    fn finally_chain_diverges(&self, chain: &[BlockId], slot: u16) -> bool {
+        if chain.len() < 2
+            || self.slot_total_uses(slot) != 1
+            || self.chain_reloads_slot(chain, slot)
+            || !self.finally_chain_is_closed(chain)
+        {
+            return false;
+        }
+        self.normal_chain_diverges(chain)
+    }
+
+    fn normal_chain_diverges(&self, chain: &[BlockId]) -> bool {
+        let blocks: BTreeSet<BlockId> = chain.iter().copied().collect();
+        let positions: BTreeMap<BlockId, usize> = chain
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(position, block): (usize, BlockId)| (block, position))
+            .collect();
+        let mut cycles: bool = false;
+        chain.iter().all(|bid: &BlockId| {
+            let successors: Vec<BlockId> = self.cfg.blocks[bid.0 as usize]
+                .successors
+                .iter()
+                .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+                .map(|edge: &Edge| edge.target)
+                .collect();
+            if successors
+                .iter()
+                .any(|successor: &BlockId| blocks.contains(successor))
+            {
+                cycles |= successors.iter().any(|successor: &BlockId| {
+                    matches!(
+                        (positions.get(successor), positions.get(bid)),
+                        (Some(successor_position), Some(position))
+                            if successor_position <= position
+                    )
+                });
+            }
+            !successors.is_empty()
+                && successors
+                    .iter()
+                    .all(|successor: &BlockId| blocks.contains(successor))
+        }) && cycles
     }
 
     fn self_protecting_spans(&self, head: BlockId) -> Vec<(u32, u32)> {
@@ -1083,7 +1147,7 @@ impl<'a> Structurer<'a> {
             let insns: &[Instruction] = self.block_instructions(bid);
             let lo: usize = usize::from(bid == first);
             let hi: usize = if bid == last {
-                insns.len().checked_sub(chain.trim)?
+                insns.len().checked_sub(chain.termination.trim())?
             } else {
                 insns.len()
             };
@@ -1397,7 +1461,7 @@ impl<'a> Structurer<'a> {
         }
         let exception_slot: u16 =
             astore_slot(self.block_instructions(*chain.blocks.first()?).first()?)?;
-        let tail_return: usize = usize::from(chain.trim == 0);
+        let tail_return: usize = usize::from(chain.termination == FinallyTermination::Return);
         let scanned: &[Instruction] = body.get(..body.len() - tail_return)?;
         if scanned
             .iter()
@@ -1477,6 +1541,50 @@ impl<'a> Structurer<'a> {
             None => None,
         };
         Some((blocks, exit))
+    }
+
+    fn finally_diverging_copy_blocks(
+        &mut self,
+        chain: &FinallyChain,
+        start: BlockId,
+    ) -> Option<Vec<BlockId>> {
+        if chain.termination != FinallyTermination::Diverge {
+            return None;
+        }
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let mut copy: Vec<Instruction> = Vec::new();
+        let mut blocks: Vec<BlockId> = Vec::new();
+        let mut current: BlockId = start;
+        while copy.len() < body.len() {
+            if blocks.len() >= MAX_BLOCKS || blocks.contains(&current) {
+                return None;
+            }
+            let instructions: &[Instruction] = self.block_instructions(current);
+            let remaining: usize = body.len().checked_sub(copy.len())?;
+            if instructions.is_empty() || instructions.len() > remaining {
+                return None;
+            }
+            copy.extend_from_slice(instructions);
+            blocks.push(current);
+            if copy.len() < body.len() {
+                current = self.next_block_by_pc(current)?;
+            }
+        }
+        let FinallyCopyMatch {
+            exit_pc,
+            catch_parameter_slots,
+            scoped_local_slots,
+        }: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
+        if exit_pc.is_some()
+            || !self.finally_chain_is_closed(&blocks)
+            || !self.normal_chain_diverges(&blocks)
+        {
+            return None;
+        }
+        self.finally_catch_parameter_slots
+            .extend(catch_parameter_slots);
+        self.finally_scoped_local_slots.extend(scoped_local_slots);
+        Some(blocks)
     }
 
     fn finally_nested_return_fold(
@@ -2248,7 +2356,16 @@ impl<'a> Structurer<'a> {
                             }
                         }
                         if has_internal_control_flow && let Some(copy_head) = after_try {
-                            if let Some((blocks, predecessor, slot)) =
+                            if let Some(blocks) =
+                                self.finally_diverging_copy_blocks(&chain, copy_head)
+                            {
+                                for block in blocks {
+                                    self.finally_inline_skips
+                                        .insert(block, self.block_instructions(block).len());
+                                    self.visited.insert(block);
+                                }
+                                after_try = None;
+                            } else if let Some((blocks, predecessor, slot)) =
                                 self.finally_nested_return_fold(&try_group, &chain, copy_head)
                             {
                                 for block in blocks {
@@ -2298,7 +2415,10 @@ impl<'a> Structurer<'a> {
                             }
                         }
                     }
-                    let expected_exc_uses: usize = if chain.trim == 0 { 1 } else { 2 };
+                    let expected_exc_uses: usize = match chain.termination {
+                        FinallyTermination::Rethrow => 2,
+                        FinallyTermination::Return | FinallyTermination::Diverge => 1,
+                    };
                     if handlers_out.is_empty()
                         && let Some(&first) = chain.blocks.first()
                         && let Some(entry) = self.block_instructions(first).first()
@@ -2307,7 +2427,7 @@ impl<'a> Structurer<'a> {
                     {
                         self.finally_exception_slots.insert(exc_slot);
                     }
-                    if chain.trim == 0
+                    if chain.termination == FinallyTermination::Return
                         && let Some(cont) = after_try
                         && self.finally_return_copy(&chain, cont)
                         && !self.visited.contains(&cont)
@@ -2375,7 +2495,7 @@ impl<'a> Structurer<'a> {
                             );
                         }
                     }
-                    if chain.trim == 0 && after_try.is_some() {
+                    if chain.termination == FinallyTermination::Return && after_try.is_some() {
                         self.unmodelled_finally.get_or_insert(
                             "a finally that returns still leaves a reachable continuation, so the \
                              recovered try would run code the class cannot reach",
@@ -2385,9 +2505,10 @@ impl<'a> Structurer<'a> {
                         self.finally_inline_skips.entry(head).or_insert(1);
                     }
                     if let Some(&tail) = chain.blocks.last()
-                        && chain.trim > 0
+                        && chain.termination.trim() > 0
                     {
-                        self.finally_tail_trims.insert(tail, chain.trim);
+                        self.finally_tail_trims
+                            .insert(tail, chain.termination.trim());
                     }
                     let finally_body: Region =
                         match (chain.blocks.first().copied(), chain.blocks.last().copied()) {
@@ -2406,7 +2527,10 @@ impl<'a> Structurer<'a> {
                                     }
                                 }
                                 self.finally_body_depth += 1;
-                                let body: Region = self.structure_at(head, Some(tail));
+                                let stop: Option<BlockId> = (chain.termination
+                                    != FinallyTermination::Diverge)
+                                    .then_some(tail);
+                                let body: Region = self.structure_at(head, stop);
                                 self.finally_body_depth -= 1;
                                 for span in &reentrant {
                                     self.suppressed_spans.remove(span);
@@ -2427,7 +2551,8 @@ impl<'a> Structurer<'a> {
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
                         handlers: handlers_out,
-                        finally_completes_normally: chain.trim == 2,
+                        finally_completes_normally: chain.termination
+                            == FinallyTermination::Rethrow,
                         finally_body: Box::new(finally_body),
                     });
                 } else {
@@ -3044,7 +3169,23 @@ struct TwrResult {
 #[derive(Debug, Clone)]
 struct FinallyChain {
     blocks: Vec<BlockId>,
-    trim: usize,
+    termination: FinallyTermination,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinallyTermination {
+    Rethrow,
+    Return,
+    Diverge,
+}
+
+impl FinallyTermination {
+    const fn trim(self) -> usize {
+        match self {
+            Self::Rethrow => 2,
+            Self::Return | Self::Diverge => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
