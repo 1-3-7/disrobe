@@ -70,6 +70,7 @@ fn elidable_state_cells(module: &Module) -> BTreeMap<FunctionId, ElidableCells> 
                 memories.get(&fid).cloned().unwrap_or_default();
             let fixed_memories: BTreeSet<MemoryId> = function_memories
                 .difference(&exported_memories)
+                .filter(|memory: &&MemoryId| !module.memories.get(**memory).shared)
                 .copied()
                 .collect();
             let cells: ElidableCells = ElidableCells {

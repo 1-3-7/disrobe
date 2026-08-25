@@ -91,12 +91,13 @@ fn try_reloop_root(
     elidable: &ElidableCells,
     root: RootCandidate,
 ) -> ReloopOutcome {
-    let Some(disp): Option<Dispatcher> = detect(func, root) else {
+    let Some(mut disp): Option<Dispatcher> = detect(func, root) else {
         return ReloopOutcome::NotApplicable;
     };
     if !cell_is_elidable(func, &disp, elidable) {
         return wall(WallReason::ObservableStateCell);
     }
+    disp.remove_address_setup();
     let Some(graph): Option<Graph> = build_graph(func, &disp) else {
         return wall(WallReason::UnsupportedTransition);
     };
@@ -179,6 +180,7 @@ enum StateCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryAddress {
     Local(LocalId),
+    LocalOffset { local: LocalId, offset: u32 },
     Fixed(i32),
 }
 
@@ -188,6 +190,28 @@ impl MemoryAddress {
         end: usize,
     ) -> Option<(Self, usize)> {
         let last_index: usize = end.checked_sub(1)?;
+        if matches!(&body.get(last_index)?.0, Instr::Binop(binary) if matches!(binary.op, BinaryOp::I32Add))
+        {
+            let constant_index: usize = last_index.checked_sub(1)?;
+            let local_index: usize = constant_index.checked_sub(1)?;
+            let Instr::Const(constant) = &body.get(constant_index)?.0 else {
+                return None;
+            };
+            let Value::I32(offset) = constant.value else {
+                return None;
+            };
+            let offset: u32 = u32::try_from(offset).ok()?;
+            let Instr::LocalGet(get) = &body.get(local_index)?.0 else {
+                return None;
+            };
+            return Some((
+                Self::LocalOffset {
+                    local: get.local,
+                    offset,
+                },
+                local_index,
+            ));
+        }
         if let Instr::LocalGet(get) = &body.get(last_index)?.0 {
             return Some((Self::Local(get.local), last_index));
         }
@@ -280,6 +304,7 @@ struct Dispatcher {
     suffix: Body,
     entry_state: i32,
     cell: StateCell,
+    address_setup: Option<std::ops::Range<usize>>,
     local_address_in_bounds: bool,
     transition_cell: StateCell,
     latch_work: Body,
@@ -287,6 +312,14 @@ struct Dispatcher {
     case_count: u32,
     default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
+}
+
+impl Dispatcher {
+    fn remove_address_setup(&mut self) {
+        if let Some(range) = self.address_setup.take() {
+            drop(self.preamble.drain(range));
+        }
+    }
 }
 
 fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &ElidableCells) -> bool {
@@ -379,6 +412,26 @@ fn state_cell_is_elidable(
                         },
                     )
             }
+            MemoryAddress::LocalOffset {
+                local,
+                offset: address_offset,
+            } => {
+                let Some((base, _setup)): Option<(i32, std::ops::Range<usize>)> =
+                    constant_local_setup(&disp.preamble, local)
+                else {
+                    return false;
+                };
+                disp.address_setup.is_some()
+                    && elidable.fixed_memories.contains(&memory)
+                    && memory_address_with_offset_is_in_bounds(
+                        base,
+                        address_offset,
+                        offset,
+                        &elidable.memory_min_bytes,
+                        memory,
+                    )
+                    && local_offset_accesses_are_exclusive(func, cell, base)
+            }
             MemoryAddress::Fixed(value) => {
                 elidable.fixed_memories.contains(&memory)
                     && memory_address_is_in_bounds(
@@ -428,6 +481,200 @@ fn memory_address_is_in_bounds(
         .checked_add(u64::from(offset))
         .and_then(|effective: u64| effective.checked_add(4))
         .is_some_and(|end: u64| minimums.get(&memory).is_some_and(|limit| end <= *limit))
+}
+
+fn memory_address_with_offset_is_in_bounds(
+    base: i32,
+    address_offset: u32,
+    memory_offset: u32,
+    minimums: &BTreeMap<MemoryId, u64>,
+    memory: MemoryId,
+) -> bool {
+    let base: u32 = u32::from_ne_bytes(base.to_ne_bytes());
+    base.checked_add(address_offset)
+        .and_then(|address: u32| address.checked_add(memory_offset))
+        .and_then(|effective: u32| effective.checked_add(4))
+        .is_some_and(|end: u32| {
+            minimums
+                .get(&memory)
+                .is_some_and(|limit: &u64| u64::from(end) <= *limit)
+        })
+}
+
+fn constant_local_setup(
+    preamble: &[(Instr, walrus::ir::InstrLocId)],
+    local: LocalId,
+) -> Option<(i32, std::ops::Range<usize>)> {
+    preamble.iter().enumerate().find_map(
+        |(index, (instruction, _location)): (usize, &(Instr, walrus::ir::InstrLocId))| {
+            if !matches!(instruction, Instr::LocalSet(set) if set.local == local) {
+                return None;
+            }
+            let constant_index: usize = index.checked_sub(1)?;
+            let Instr::Const(constant) = &preamble.get(constant_index)?.0 else {
+                return None;
+            };
+            let Value::I32(value) = constant.value else {
+                return None;
+            };
+            Some((value, constant_index..index.checked_add(1)?))
+        },
+    )
+}
+
+struct MemoryAccess {
+    memory: MemoryId,
+    offset: u32,
+    exact_kind: bool,
+    expression: Option<(MemoryAddress, usize)>,
+}
+
+fn local_offset_accesses_are_exclusive(func: &LocalFunction, cell: StateCell, base: i32) -> bool {
+    let StateCell::MemorySlot {
+        address:
+            MemoryAddress::LocalOffset {
+                local,
+                offset: address_offset,
+            },
+        memory,
+        offset: memory_offset,
+    } = cell
+    else {
+        return false;
+    };
+    let Some(target): Option<u32> = effective_address(base, address_offset, memory_offset) else {
+        return false;
+    };
+    let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut definitions: usize = 0;
+    let mut remaining: usize = RENDER_GUARD;
+    while let Some(sequence) = pending.pop() {
+        if !seen.insert(sequence) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT {
+            return false;
+        }
+        let body: &Body = &func.block(sequence).instrs;
+        let mut admitted_gets: BTreeSet<usize> = BTreeSet::new();
+        for (index, (instruction, _location)) in body.iter().enumerate() {
+            let Some(next_remaining): Option<usize> = remaining.checked_sub(1) else {
+                return false;
+            };
+            remaining = next_remaining;
+            if matches!(instruction, Instr::LocalSet(set) if set.local == local)
+                || matches!(instruction, Instr::LocalTee(tee) if tee.local == local)
+            {
+                definitions = definitions.saturating_add(1);
+                if definitions > 1 {
+                    return false;
+                }
+            }
+            let access: Option<MemoryAccess> = match instruction {
+                Instr::Load(load) => Some(MemoryAccess {
+                    memory: load.memory,
+                    offset: load.arg.offset,
+                    exact_kind: matches!(load.kind, LoadKind::I32 { atomic: false }),
+                    expression: MemoryAddress::expression_suffix(body, index),
+                }),
+                Instr::Store(store) => {
+                    let address_end: Option<usize> = stack_expression_start(body, index);
+                    Some(MemoryAccess {
+                        memory: store.memory,
+                        offset: store.arg.offset,
+                        exact_kind: matches!(store.kind, StoreKind::I32 { atomic: false }),
+                        expression: address_end
+                            .and_then(|end: usize| MemoryAddress::expression_suffix(body, end)),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(MemoryAccess {
+                memory: access_memory,
+                offset: access_offset,
+                exact_kind,
+                expression,
+            }) = access
+                && access_memory == memory
+            {
+                let Some((candidate, start)): Option<(MemoryAddress, usize)> = expression else {
+                    return false;
+                };
+                let Some(effective): Option<u32> =
+                    candidate.effective_address(base, local, access_offset)
+                else {
+                    return false;
+                };
+                if candidate.uses_local(local) {
+                    if candidate
+                        != (MemoryAddress::LocalOffset {
+                            local,
+                            offset: address_offset,
+                        })
+                        || access_offset != memory_offset
+                        || !exact_kind
+                    {
+                        return false;
+                    }
+                    admitted_gets.insert(start);
+                }
+                if effective == target
+                    && (candidate
+                        != (MemoryAddress::LocalOffset {
+                            local,
+                            offset: address_offset,
+                        })
+                        || access_offset != memory_offset
+                        || !exact_kind)
+                {
+                    return false;
+                }
+            }
+            let node_capacity: usize = NODE_LIMIT.saturating_sub(seen.len());
+            if !push_nested_sequences(instruction, &mut pending, node_capacity) {
+                return false;
+            }
+        }
+        if body
+            .iter()
+            .enumerate()
+            .any(|(index, (instruction, _location))| {
+                matches!(instruction, Instr::LocalGet(get) if get.local == local)
+                    && !admitted_gets.contains(&index)
+            })
+        {
+            return false;
+        }
+    }
+    definitions == 1
+}
+
+fn effective_address(base: i32, address_offset: u32, memory_offset: u32) -> Option<u32> {
+    u32::from_ne_bytes(base.to_ne_bytes())
+        .checked_add(address_offset)?
+        .checked_add(memory_offset)
+}
+
+impl MemoryAddress {
+    fn uses_local(self, local: LocalId) -> bool {
+        matches!(self, Self::Local(candidate) if candidate == local)
+            || matches!(self, Self::LocalOffset { local: candidate, .. } if candidate == local)
+    }
+
+    fn effective_address(self, base: i32, local: LocalId, memory_offset: u32) -> Option<u32> {
+        match self {
+            Self::Local(candidate) if candidate == local => {
+                effective_address(base, 0, memory_offset)
+            }
+            Self::LocalOffset {
+                local: candidate,
+                offset,
+            } if candidate == local => effective_address(base, offset, memory_offset),
+            Self::Fixed(value) => effective_address(value, 0, memory_offset),
+            Self::Local(_) | Self::LocalOffset { .. } => None,
+        }
+    }
 }
 
 fn stable_local_address(
@@ -871,6 +1118,24 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
     let (entry_state, entry_write): (i32, Option<std::ops::Range<usize>>) =
         initial_state(func, &preamble, cell)?;
+    let address_setup: Option<std::ops::Range<usize>> = match cell {
+        StateCell::MemorySlot {
+            address: MemoryAddress::LocalOffset { local, .. },
+            ..
+        } => constant_local_setup(&preamble, local)
+            .map(|(_value, range): (i32, std::ops::Range<usize>)| range)
+            .filter(|range: &std::ops::Range<usize>| {
+                entry_write
+                    .as_ref()
+                    .is_some_and(|write: &std::ops::Range<usize>| range.end <= write.start)
+            }),
+        StateCell::Local(_)
+        | StateCell::Global(_)
+        | StateCell::MemorySlot {
+            address: MemoryAddress::Local(_) | MemoryAddress::Fixed(_),
+            ..
+        } => None,
+    };
     let local_address_in_bounds: bool = match (cell, entry_write.as_ref()) {
         (
             StateCell::MemorySlot {
@@ -884,7 +1149,7 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
             StateCell::Local(_)
             | StateCell::Global(_)
             | StateCell::MemorySlot {
-                address: MemoryAddress::Fixed(_),
+                address: MemoryAddress::LocalOffset { .. } | MemoryAddress::Fixed(_),
                 ..
             },
             _,
@@ -904,6 +1169,7 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
         suffix,
         entry_state,
         cell,
+        address_setup,
         local_address_in_bounds,
         transition_cell,
         latch_work,
