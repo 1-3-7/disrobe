@@ -2,23 +2,17 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use serde::ser::{SerializeSeq, Serializer};
 
 use super::globals;
 use super::output::{self, OutputFormat};
 use super::progress_ui::StageSpinner;
-use disrobe_pass_native::extract_function_features;
+use disrobe_pass_native::{NativeMatchOptions, analyze_native_images};
 use disrobe_similarity::{
-    AnchorStrength, CallRelation, DataReference, FunctionFeatures, FunctionId, FunctionVerdict,
-    InstructionCategory, InstructionMix, MatchReport, MatchStage, StructuralKey, UnmatchedCause,
-    Verdict, match_functions,
+    DEFAULT_LISTING_LIMIT, ListingStage as SharedListingStage, MatchSummary, MixRow, ReferenceRow,
+    Selector, SideSummary, StreamingMatchSummary, VerdictBody, VerdictRow,
 };
 
-const SCHEMA: &str = "disrobe.native.match/v2";
-
 const LITERAL_PREVIEW_LIMIT: usize = 64;
-
-const DEFAULT_LISTING_LIMIT: usize = 25;
 
 pub(crate) const LIMIT_HELP: &str = "maximum listing rows to show, 25 by default; 0 shows counts only; a limit given here also bounds the machine report";
 
@@ -35,6 +29,17 @@ pub(crate) enum ListingStage {
     Refused,
 }
 
+impl From<ListingStage> for SharedListingStage {
+    fn from(stage: ListingStage) -> Self {
+        match stage {
+            ListingStage::DataReference => Self::DataReference,
+            ListingStage::ControlFlow => Self::ControlFlow,
+            ListingStage::Propagation => Self::Propagation,
+            ListingStage::Refused => Self::Refused,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListingOptions {
     pub(crate) limit: Option<usize>,
@@ -42,229 +47,11 @@ pub(crate) struct ListingOptions {
     pub(crate) stage: Option<ListingStage>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Side {
-    A,
-    B,
-}
-
-impl Side {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::A => "a",
-            Self::B => "b",
-        }
-    }
-
-    const fn other(self) -> Self {
-        match self {
-            Self::A => Self::B,
-            Self::B => Self::A,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Selector {
-    Function(u64),
-    Stage(ListingStage),
-    Listing,
-    All,
-}
-
-impl Selector {
-    const fn admits(self, verdict: &Verdict, subject: u64, side: Side) -> bool {
-        match self {
-            Self::Function(address) => subject == address,
-            Self::Stage(stage) => admits_stage(verdict, Some(stage), side),
-            Self::Listing => admits_stage(verdict, None, side),
-            Self::All => true,
-        }
-    }
-
-    const fn lists(self, verdict: &Verdict, side: Side) -> bool {
-        match self {
-            Self::Function(_) => true,
-            Self::Stage(stage) => admits_stage(verdict, Some(stage), side),
-            Self::Listing | Self::All => admits_stage(verdict, None, side),
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-enum ReferenceRow {
-    StringLiteral { value: String },
-    UnusualConstant { value: u64 },
-    ImportedCall { name: String },
-}
-
-#[derive(Debug, Serialize)]
-struct MixRow {
-    category: &'static str,
-    count: u32,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "verdict", rename_all = "kebab-case")]
-enum VerdictBody {
-    DataReference {
-        counterpart: u64,
-        anchor_strength: &'static str,
-        shared_references: Vec<ReferenceRow>,
-    },
-    ControlFlow {
-        counterpart: u64,
-        fingerprint: u64,
-        instructions: u64,
-        instruction_mix: Vec<MixRow>,
-    },
-    Propagation {
-        counterpart: u64,
-        anchor: u64,
-        anchor_counterpart: u64,
-        relation: &'static str,
-        hops: u32,
-        fingerprint: u64,
-        instructions: u64,
-    },
-    Ambiguous {
-        candidates: Vec<u64>,
-        own_side: usize,
-        other_side: usize,
-    },
-    Unmatched {
-        cause: &'static str,
-    },
-}
-
-#[derive(Debug, Serialize)]
-struct VerdictRow {
-    side: Side,
-    subject: u64,
-    #[serde(skip)]
-    listed: bool,
-    #[serde(flatten)]
-    verdict: VerdictBody,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct StageCounts {
-    data_reference: usize,
-    control_flow: usize,
-    propagation: usize,
-}
-
-impl StageCounts {
-    const fn total(&self) -> usize {
-        self.data_reference + self.control_flow + self.propagation
-    }
-}
-
-#[derive(Debug, Default, Serialize)]
-struct SideSummary {
-    functions: usize,
-    refused: usize,
-    ambiguous: usize,
-    no_anchor: usize,
-    no_candidate: usize,
-    duplicate_function_id: usize,
-    without_evidence: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct ListingWindow {
-    limit: Option<usize>,
-    stage: Option<&'static str>,
-    function: Option<u64>,
-    shown: usize,
-    withheld: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct MatchSummary {
-    schema: &'static str,
-    a: String,
-    b: String,
-    pairs: usize,
-    by_stage: StageCounts,
-    a_side: SideSummary,
-    b_side: SideSummary,
-    listing: ListingWindow,
-    a_verdicts: Vec<VerdictRow>,
-    b_verdicts: Vec<VerdictRow>,
-}
-
-#[derive(Debug)]
-struct VerdictStream<'a> {
-    entries: &'a [FunctionVerdict],
-    selector: Selector,
-    side: Side,
-}
-
-impl Serialize for VerdictStream<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut sequence: S::SerializeSeq = serializer.serialize_seq(None)?;
-        for entry in self.entries {
-            let entry: &FunctionVerdict = entry;
-            if !self
-                .selector
-                .admits(&entry.verdict, entry.subject.0, self.side)
-            {
-                continue;
-            }
-            let row: VerdictRow = VerdictRow {
-                side: self.side,
-                subject: entry.subject.0,
-                listed: self.selector.lists(&entry.verdict, self.side),
-                verdict: body_of(&entry.verdict),
-            };
-            sequence.serialize_element(&row)?;
-            if matches!(self.selector, Selector::Function(_)) {
-                break;
-            }
-        }
-        sequence.end()
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct StreamingMatchSummary<'a> {
-    schema: &'static str,
-    a: String,
-    b: String,
-    pairs: usize,
-    by_stage: StageCounts,
-    a_side: SideSummary,
-    b_side: SideSummary,
-    listing: ListingWindow,
-    a_verdicts: VerdictStream<'a>,
-    b_verdicts: VerdictStream<'a>,
-}
-
 #[derive(Debug)]
 enum Written {
     NotRequested,
     Skipped(PathBuf),
     Wrote(PathBuf),
-}
-
-#[derive(Debug)]
-struct Listing {
-    limit: Option<usize>,
-    stage: Option<&'static str>,
-    function: Option<u64>,
-    a: Vec<VerdictRow>,
-    b: Vec<VerdictRow>,
-    withheld: usize,
-}
-
-#[derive(Debug)]
-struct Budget {
-    ceiling: usize,
-    taken: usize,
-    withheld: usize,
 }
 
 pub(crate) fn run(
@@ -275,78 +62,70 @@ pub(crate) fn run(
     options: ListingOptions,
 ) -> miette::Result<()> {
     let bytes_a: Vec<u8> = std::fs::read(&a)
-        .map_err(|e| miette::miette!("DR-NATIVE-0200: cannot read {}: {e}", a.display()))?;
+        .map_err(|error| miette::miette!("DR-NATIVE-0200: cannot read {}: {error}", a.display()))?;
     let bytes_b: Vec<u8> = std::fs::read(&b)
-        .map_err(|e| miette::miette!("DR-NATIVE-0201: cannot read {}: {e}", b.display()))?;
-
-    let spinner: StageSpinner = StageSpinner::start("native match", "extracting function features");
-    let left: Vec<FunctionFeatures> = extract_function_features(&bytes_a).map_err(|e| {
-        miette::miette!(
-            "DR-NATIVE-0202: cannot read functions from {}: {e}",
-            a.display()
-        )
-    })?;
-    let right: Vec<FunctionFeatures> = extract_function_features(&bytes_b).map_err(|e| {
-        miette::miette!(
-            "DR-NATIVE-0203: cannot read functions from {}: {e}",
-            b.display()
-        )
-    })?;
-    spinner.set_message("matching functions");
-    if left.is_empty() || right.is_empty() {
-        return Err(miette::miette!(
-            "DR-NATIVE-0204: no function to match: {} carries {} function(s), {} carries {}",
-            a.display(),
-            left.len(),
-            b.display(),
-            right.len()
-        ));
-    }
-    let report: MatchReport = match_functions(&left, &right);
+        .map_err(|error| miette::miette!("DR-NATIVE-0201: cannot read {}: {error}", b.display()))?;
+    let spinner: StageSpinner = StageSpinner::start("native match", "matching functions");
     let (selector, ceiling): (Selector, Option<usize>) = plan(options, fmt, out.as_deref());
+    let a_label: String = a.display().to_string();
+    let b_label: String = b.display().to_string();
+    let analysis = analyze_native_images(&a_label, &bytes_a, &b_label, &bytes_b)
+        .map_err(|error| miette::miette!("{error}"))?;
     if ceiling.is_none() && !matches!(selector, Selector::Function(_)) {
-        let summary: StreamingMatchSummary<'_> =
-            streaming_summary(&a, &b, &left, &right, &report, selector);
+        let stage: Option<SharedListingStage> = match selector {
+            Selector::Stage(stage) => Some(stage),
+            Selector::Function(_) | Selector::Listing | Selector::All => None,
+        };
+        let summary: StreamingMatchSummary<'_> = analysis.present_streaming(stage);
         spinner.finish(&format!("{} pair(s)", summary.pairs));
         let written: Written = write_report(&summary, out)?;
         if matches!(fmt, OutputFormat::Text) {
-            let text_selector: Selector = match selector {
-                Selector::Stage(stage) => Selector::Stage(stage),
-                Selector::Function(address) => Selector::Function(address),
-                Selector::Listing | Selector::All => Selector::Listing,
+            let text_options: NativeMatchOptions = NativeMatchOptions {
+                limit: Some(DEFAULT_LISTING_LIMIT),
+                function: None,
+                stage,
             };
-            let listing: Listing =
-                collect_listing(&report, text_selector, Some(DEFAULT_LISTING_LIMIT));
-            let text_summary: MatchSummary = summarize(&a, &b, &left, &right, &report, listing);
+            let text_summary: MatchSummary = analysis
+                .present(text_options)
+                .map_err(|error| miette::miette!("{error}"))?;
             return output::emit(fmt, &summary, || {
-                render(
-                    &text_summary,
-                    &written,
-                    options.limit.unwrap_or(DEFAULT_LISTING_LIMIT),
-                );
+                render(&text_summary, &written, DEFAULT_LISTING_LIMIT);
             });
         }
         return output::emit(fmt, &summary, || {});
     }
-    let listing: Listing = collect_listing(&report, selector, ceiling);
-    let summary: MatchSummary = summarize(&a, &b, &left, &right, &report, listing);
+    let match_options: NativeMatchOptions = match selector {
+        Selector::Function(address) => NativeMatchOptions {
+            limit: None,
+            function: Some(address),
+            stage: None,
+        },
+        Selector::Stage(stage) => NativeMatchOptions {
+            limit: ceiling,
+            function: None,
+            stage: Some(stage),
+        },
+        Selector::Listing => NativeMatchOptions {
+            limit: ceiling,
+            function: None,
+            stage: None,
+        },
+        Selector::All => NativeMatchOptions {
+            limit: None,
+            function: None,
+            stage: None,
+        },
+    };
+    let summary: MatchSummary = analysis
+        .present(match_options)
+        .map_err(|error| miette::miette!("{error}"))?;
     spinner.finish(&format!("{} pair(s)", summary.pairs));
-
-    if let Some(address) = summary.listing.function
-        && summary.a_verdicts.is_empty()
-        && summary.b_verdicts.is_empty()
-    {
-        return Err(miette::miette!(
-            "DR-NATIVE-0208: no function at address {address:#x} in either input"
-        ));
-    }
-
     let written: Written = write_report(&summary, out)?;
     let display: usize = options.limit.unwrap_or(DEFAULT_LISTING_LIMIT);
     output::emit(fmt, &summary, || render(&summary, &written, display))
 }
 
-const fn plan(
+fn plan(
     options: ListingOptions,
     fmt: OutputFormat,
     out: Option<&Path>,
@@ -356,9 +135,9 @@ const fn plan(
     }
     let complete: bool = fmt.is_machine() || out.is_some();
     match (options.stage, options.limit) {
-        (Some(stage), Some(limit)) => (Selector::Stage(stage), Some(limit)),
-        (Some(stage), None) if complete => (Selector::Stage(stage), None),
-        (Some(stage), None) => (Selector::Stage(stage), Some(DEFAULT_LISTING_LIMIT)),
+        (Some(stage), Some(limit)) => (Selector::Stage(stage.into()), Some(limit)),
+        (Some(stage), None) if complete => (Selector::Stage(stage.into()), None),
+        (Some(stage), None) => (Selector::Stage(stage.into()), Some(DEFAULT_LISTING_LIMIT)),
         (None, Some(limit)) => (Selector::Listing, Some(limit)),
         (None, None) if complete => (Selector::All, None),
         (None, None) => (Selector::Listing, Some(DEFAULT_LISTING_LIMIT)),
@@ -391,399 +170,6 @@ fn write_report<T: Serialize>(summary: &T, out: Option<PathBuf>) -> miette::Resu
         miette::miette!("DR-NATIVE-0207: cannot write match report: {error}")
     })?;
     Ok(Written::Wrote(path))
-}
-
-fn streaming_summary<'a>(
-    a: &Path,
-    b: &Path,
-    left: &[FunctionFeatures],
-    right: &[FunctionFeatures],
-    report: &'a MatchReport,
-    selector: Selector,
-) -> StreamingMatchSummary<'a> {
-    let by_stage: StageCounts = stage_counts(&report.left);
-    let pairs: usize = by_stage.total();
-    let shown: usize = stream_count(&report.left, selector, Side::A)
-        + stream_count(&report.right, selector, Side::B);
-    StreamingMatchSummary {
-        schema: SCHEMA,
-        a: a.display().to_string(),
-        b: b.display().to_string(),
-        pairs,
-        by_stage,
-        a_side: side_summary(left, &report.left),
-        b_side: side_summary(right, &report.right),
-        listing: ListingWindow {
-            limit: None,
-            stage: match selector {
-                Selector::Stage(stage) => Some(stage_label(stage)),
-                Selector::Function(_) | Selector::Listing | Selector::All => None,
-            },
-            function: match selector {
-                Selector::Function(address) => Some(address),
-                Selector::Stage(_) | Selector::Listing | Selector::All => None,
-            },
-            shown,
-            withheld: 0,
-        },
-        a_verdicts: VerdictStream {
-            entries: &report.left,
-            selector,
-            side: Side::A,
-        },
-        b_verdicts: VerdictStream {
-            entries: &report.right,
-            selector,
-            side: Side::B,
-        },
-    }
-}
-
-fn stream_count(entries: &[FunctionVerdict], selector: Selector, side: Side) -> usize {
-    let count: usize = entries
-        .iter()
-        .filter(|entry: &&FunctionVerdict| selector.admits(&entry.verdict, entry.subject.0, side))
-        .count();
-    if matches!(selector, Selector::Function(_)) {
-        count.min(1)
-    } else {
-        count
-    }
-}
-
-fn summarize(
-    a: &Path,
-    b: &Path,
-    left: &[FunctionFeatures],
-    right: &[FunctionFeatures],
-    report: &MatchReport,
-    listing: Listing,
-) -> MatchSummary {
-    let by_stage: StageCounts = stage_counts(&report.left);
-    let pairs: usize = by_stage.total();
-    let window: ListingWindow = ListingWindow {
-        limit: listing.limit,
-        stage: listing.stage,
-        function: listing.function,
-        shown: listing.a.len() + listing.b.len(),
-        withheld: listing.withheld,
-    };
-    MatchSummary {
-        schema: SCHEMA,
-        a: a.display().to_string(),
-        b: b.display().to_string(),
-        pairs,
-        by_stage,
-        a_side: side_summary(left, &report.left),
-        b_side: side_summary(right, &report.right),
-        listing: window,
-        a_verdicts: listing.a,
-        b_verdicts: listing.b,
-    }
-}
-
-fn collect_listing(report: &MatchReport, selector: Selector, limit: Option<usize>) -> Listing {
-    if let Selector::Function(address) = selector {
-        let a: Vec<VerdictRow> = report
-            .left
-            .iter()
-            .find(|entry: &&FunctionVerdict| entry.subject.0 == address)
-            .map(|entry: &FunctionVerdict| {
-                vec![VerdictRow {
-                    side: Side::A,
-                    subject: entry.subject.0,
-                    listed: true,
-                    verdict: body_of(&entry.verdict),
-                }]
-            })
-            .unwrap_or_default();
-        let b: Vec<VerdictRow> = report
-            .right
-            .iter()
-            .find(|entry: &&FunctionVerdict| entry.subject.0 == address)
-            .map(|entry: &FunctionVerdict| {
-                vec![VerdictRow {
-                    side: Side::B,
-                    subject: entry.subject.0,
-                    listed: true,
-                    verdict: body_of(&entry.verdict),
-                }]
-            })
-            .unwrap_or_default();
-        return Listing {
-            limit,
-            stage: None,
-            function: Some(address),
-            a,
-            b,
-            withheld: 0,
-        };
-    }
-    let mut budget: Budget = Budget {
-        ceiling: limit.unwrap_or(usize::MAX),
-        taken: 0,
-        withheld: 0,
-    };
-    let mut a: Vec<VerdictRow> = Vec::with_capacity(budget.ceiling.min(report.left.len()));
-    collect_side(&mut a, &mut budget, Side::A, &report.left, selector);
-    let mut b: Vec<VerdictRow> = Vec::with_capacity(
-        budget
-            .ceiling
-            .saturating_sub(budget.taken)
-            .min(report.right.len()),
-    );
-    collect_side(&mut b, &mut budget, Side::B, &report.right, selector);
-    Listing {
-        limit,
-        stage: match selector {
-            Selector::Stage(stage) => Some(stage_label(stage)),
-            Selector::Listing | Selector::All | Selector::Function(_) => None,
-        },
-        function: match selector {
-            Selector::Function(address) => Some(address),
-            Selector::Stage(_) | Selector::Listing | Selector::All => None,
-        },
-        a,
-        b,
-        withheld: budget.withheld,
-    }
-}
-
-fn collect_side(
-    into: &mut Vec<VerdictRow>,
-    budget: &mut Budget,
-    side: Side,
-    entries: &[FunctionVerdict],
-    selector: Selector,
-) {
-    for entry in entries {
-        let entry: &FunctionVerdict = entry;
-        if !selector.admits(&entry.verdict, entry.subject.0, side) {
-            continue;
-        }
-        if budget.taken < budget.ceiling {
-            into.push(VerdictRow {
-                side,
-                subject: entry.subject.0,
-                listed: selector.lists(&entry.verdict, side),
-                verdict: body_of(&entry.verdict),
-            });
-            budget.taken += 1;
-        } else {
-            budget.withheld += 1;
-        }
-    }
-}
-
-const fn admits_stage(verdict: &Verdict, stage: Option<ListingStage>, side: Side) -> bool {
-    match stage {
-        None => match side {
-            Side::A => !matches!(verdict, Verdict::Unmatched { .. }),
-            Side::B => matches!(verdict, Verdict::Ambiguous { .. }),
-        },
-        Some(ListingStage::DataReference) => {
-            matches!(side, Side::A) && matches!(verdict, Verdict::Exact { .. })
-        }
-        Some(ListingStage::ControlFlow) => {
-            matches!(side, Side::A) && matches!(verdict, Verdict::Structural { .. })
-        }
-        Some(ListingStage::Propagation) => {
-            matches!(side, Side::A) && matches!(verdict, Verdict::Propagated { .. })
-        }
-        Some(ListingStage::Refused) => {
-            matches!(
-                verdict,
-                Verdict::Ambiguous { .. } | Verdict::Unmatched { .. }
-            )
-        }
-    }
-}
-
-const fn stage_label(stage: ListingStage) -> &'static str {
-    match stage {
-        ListingStage::DataReference => "data-reference",
-        ListingStage::ControlFlow => "control-flow",
-        ListingStage::Propagation => "propagation",
-        ListingStage::Refused => "refused",
-    }
-}
-
-fn body_of(verdict: &Verdict) -> VerdictBody {
-    match verdict {
-        Verdict::Exact {
-            counterpart,
-            shared_references,
-            strength,
-        } => VerdictBody::DataReference {
-            counterpart: counterpart.0,
-            anchor_strength: strength_label(*strength),
-            shared_references: shared_references.iter().map(reference_row).collect(),
-        },
-        Verdict::Structural {
-            counterpart,
-            fingerprint,
-            instruction_mix,
-        } => VerdictBody::ControlFlow {
-            counterpart: counterpart.0,
-            fingerprint: fingerprint.value(),
-            instructions: instruction_mix.total(),
-            instruction_mix: mix_rows(instruction_mix),
-        },
-        Verdict::Propagated {
-            counterpart,
-            anchor,
-            anchor_counterpart,
-            relation,
-            hops,
-            agreement,
-        } => propagation_body(
-            *counterpart,
-            *anchor,
-            *anchor_counterpart,
-            *relation,
-            *hops,
-            *agreement,
-        ),
-        Verdict::Ambiguous {
-            candidates,
-            own_side,
-            other_side,
-        } => VerdictBody::Ambiguous {
-            candidates: candidates.iter().map(|id: &FunctionId| id.0).collect(),
-            own_side: *own_side,
-            other_side: *other_side,
-        },
-        Verdict::Unmatched { cause } => VerdictBody::Unmatched {
-            cause: cause_label(*cause),
-        },
-    }
-}
-
-fn propagation_body(
-    counterpart: FunctionId,
-    anchor: FunctionId,
-    anchor_counterpart: FunctionId,
-    relation: CallRelation,
-    hops: u32,
-    agreement: StructuralKey,
-) -> VerdictBody {
-    VerdictBody::Propagation {
-        counterpart: counterpart.0,
-        anchor: anchor.0,
-        anchor_counterpart: anchor_counterpart.0,
-        relation: relation_label(relation),
-        hops,
-        fingerprint: agreement.fingerprint.value(),
-        instructions: agreement.instruction_mix.total(),
-    }
-}
-
-fn reference_row(reference: &DataReference) -> ReferenceRow {
-    match reference {
-        DataReference::StringLiteral(value) => ReferenceRow::StringLiteral {
-            value: value.clone(),
-        },
-        DataReference::UnusualConstant(value) => ReferenceRow::UnusualConstant { value: *value },
-        DataReference::ImportedCall(name) => ReferenceRow::ImportedCall { name: name.clone() },
-    }
-}
-
-fn mix_rows(mix: &InstructionMix) -> Vec<MixRow> {
-    InstructionCategory::ALL
-        .into_iter()
-        .filter_map(|category: InstructionCategory| {
-            let count: u32 = mix.count(category);
-            (count > 0).then(|| MixRow {
-                category: category_label(category),
-                count,
-            })
-        })
-        .collect()
-}
-
-const fn strength_label(strength: AnchorStrength) -> &'static str {
-    match strength {
-        AnchorStrength::Distinctive => "distinctive",
-        AnchorStrength::SingleImportedCall => "single-imported-call",
-    }
-}
-
-const fn relation_label(relation: CallRelation) -> &'static str {
-    match relation {
-        CallRelation::Callee => "callee",
-        CallRelation::Caller => "caller",
-    }
-}
-
-const fn cause_label(cause: UnmatchedCause) -> &'static str {
-    match cause {
-        UnmatchedCause::NoAnchor => "no-anchor",
-        UnmatchedCause::NoCandidate => "no-candidate",
-        UnmatchedCause::DuplicateFunctionId => "duplicate-function-id",
-    }
-}
-
-const fn category_label(category: InstructionCategory) -> &'static str {
-    match category {
-        InstructionCategory::Arithmetic => "arithmetic",
-        InstructionCategory::Logic => "logic",
-        InstructionCategory::Shift => "shift",
-        InstructionCategory::Move => "move",
-        InstructionCategory::Compare => "compare",
-        InstructionCategory::Load => "load",
-        InstructionCategory::Store => "store",
-        InstructionCategory::Branch => "branch",
-        InstructionCategory::Call => "call",
-        InstructionCategory::Return => "return",
-        InstructionCategory::Stack => "stack",
-        InstructionCategory::FloatingPoint => "floating-point",
-        InstructionCategory::Vector => "vector",
-        InstructionCategory::System => "system",
-        InstructionCategory::Other => "other",
-    }
-}
-
-fn stage_counts(entries: &[FunctionVerdict]) -> StageCounts {
-    let mut counts: StageCounts = StageCounts::default();
-    for entry in entries {
-        match entry.verdict.stage() {
-            Some(MatchStage::DataReference) => counts.data_reference += 1,
-            Some(MatchStage::ControlFlow) => counts.control_flow += 1,
-            Some(MatchStage::Propagation) => counts.propagation += 1,
-            None => {}
-        }
-    }
-    counts
-}
-
-fn side_summary(features: &[FunctionFeatures], entries: &[FunctionVerdict]) -> SideSummary {
-    let mut side: SideSummary = SideSummary {
-        functions: features.len(),
-        without_evidence: without_evidence(features),
-        ..SideSummary::default()
-    };
-    for entry in entries {
-        match &entry.verdict {
-            Verdict::Ambiguous { .. } => side.ambiguous += 1,
-            Verdict::Unmatched { cause } => match cause {
-                UnmatchedCause::NoAnchor => side.no_anchor += 1,
-                UnmatchedCause::NoCandidate => side.no_candidate += 1,
-                UnmatchedCause::DuplicateFunctionId => side.duplicate_function_id += 1,
-            },
-            Verdict::Exact { .. } | Verdict::Structural { .. } | Verdict::Propagated { .. } => {}
-        }
-    }
-    side.refused = side.ambiguous + side.no_anchor + side.no_candidate + side.duplicate_function_id;
-    side
-}
-
-fn without_evidence(features: &[FunctionFeatures]) -> usize {
-    features
-        .iter()
-        .filter(|entry: &&FunctionFeatures| {
-            !entry.has_anchor() && entry.corroborating_key().is_none()
-        })
-        .count()
 }
 
 fn render(summary: &MatchSummary, written: &Written, display: usize) {
@@ -981,7 +367,12 @@ mod tests {
 
     use std::collections::BTreeSet;
 
-    use disrobe_similarity::{BasicBlock, ControlFlowGraph};
+    use disrobe_similarity::{
+        AnchorStrength, BasicBlock, CallRelation, ControlFlowGraph, DataReference,
+        FunctionFeatures, FunctionId, FunctionVerdict, InstructionCategory, Listing, MatchReport,
+        Side, StructuralKey, UnmatchedCause, Verdict, admits_stage, body_of, collect_listing,
+        streaming_summary, without_evidence,
+    };
 
     fn no_references() -> [DataReference; 0] {
         []
@@ -1211,7 +602,7 @@ mod tests {
         ];
         let verdicts: [Verdict; 5] = every_verdict();
         for (stage, on_a, on_b) in TABLE {
-            let stage: Option<ListingStage> = stage;
+            let stage: Option<SharedListingStage> = stage.map(Into::into);
             for (index, verdict) in verdicts.iter().enumerate() {
                 let verdict: &Verdict = verdict;
                 assert_eq!(
@@ -1242,7 +633,7 @@ mod tests {
         let report: MatchReport = report_of(repeated(&anchored, ENTRIES), Vec::new());
         let listing: Listing = collect_listing(
             &report,
-            Selector::Stage(ListingStage::DataReference),
+            Selector::Stage(SharedListingStage::DataReference),
             Some(LIMIT),
         );
         assert_eq!(listing.a.len(), LIMIT);
@@ -1267,14 +658,8 @@ mod tests {
             strength: AnchorStrength::Distinctive,
         };
         let report: MatchReport = report_of(repeated(&anchored, ENTRIES), Vec::new());
-        let summary: StreamingMatchSummary<'_> = streaming_summary(
-            Path::new("a"),
-            Path::new("b"),
-            &[],
-            &[],
-            &report,
-            Selector::All,
-        );
+        let summary: StreamingMatchSummary<'_> =
+            streaming_summary("a", "b", &[], &[], &report, Selector::All);
         assert_eq!(summary.listing.shown, ENTRIES);
         assert_eq!(summary.listing.withheld, 0);
         assert!(
@@ -1295,8 +680,11 @@ mod tests {
         };
         let report: MatchReport =
             report_of(repeated(&refusal, PER_SIDE), repeated(&refusal, PER_SIDE));
-        let listing: Listing =
-            collect_listing(&report, Selector::Stage(ListingStage::Refused), Some(LIMIT));
+        let listing: Listing = collect_listing(
+            &report,
+            Selector::Stage(SharedListingStage::Refused),
+            Some(LIMIT),
+        );
         assert_eq!(listing.a.len(), LIMIT);
         assert!(listing.b.is_empty());
         assert_eq!(listing.withheld, PER_SIDE * 2 - LIMIT);
@@ -1308,8 +696,11 @@ mod tests {
         let verdicts: [Verdict; 5] = every_verdict();
         let refusal: &Verdict = &verdicts[3];
         let report: MatchReport = report_of(repeated(refusal, 12), repeated(refusal, 7));
-        let listing: Listing =
-            collect_listing(&report, Selector::Stage(ListingStage::Refused), Some(0));
+        let listing: Listing = collect_listing(
+            &report,
+            Selector::Stage(SharedListingStage::Refused),
+            Some(0),
+        );
         assert!(listing.a.is_empty());
         assert!(listing.b.is_empty());
         assert_eq!(listing.withheld, 19);
@@ -1324,7 +715,7 @@ mod tests {
         let report: MatchReport = report_of(repeated(unmatched, 40), repeated(unmatched, 40));
         let listing: Listing = collect_listing(
             &report,
-            Selector::Stage(ListingStage::DataReference),
+            Selector::Stage(SharedListingStage::DataReference),
             Some(25),
         );
         assert!(listing.a.is_empty());
@@ -1463,7 +854,7 @@ mod tests {
                 OutputFormat::Json,
                 None
             ),
-            (Selector::Stage(ListingStage::Refused), None)
+            (Selector::Stage(SharedListingStage::Refused), None)
         );
         assert_eq!(
             plan(
@@ -1472,7 +863,7 @@ mod tests {
                 None
             ),
             (
-                Selector::Stage(ListingStage::Refused),
+                Selector::Stage(SharedListingStage::Refused),
                 Some(DEFAULT_LISTING_LIMIT)
             )
         );

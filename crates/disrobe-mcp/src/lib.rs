@@ -72,6 +72,41 @@ pub struct VerifyOut {
     pub root_hash_blake3: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(crate = "rmcp::schemars")]
+pub enum NativeMatchStage {
+    DataReference,
+    ControlFlow,
+    Propagation,
+    Refused,
+}
+
+impl From<NativeMatchStage> for disrobe_pass_native::NativeMatchStage {
+    fn from(stage: NativeMatchStage) -> Self {
+        match stage {
+            NativeMatchStage::DataReference => Self::DataReference,
+            NativeMatchStage::ControlFlow => Self::ControlFlow,
+            NativeMatchStage::Propagation => Self::Propagation,
+            NativeMatchStage::Refused => Self::Refused,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct NativeMatchParams {
+    pub a_bytes_b64: String,
+    pub b_bytes_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<NativeMatchStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
@@ -600,6 +635,43 @@ fn renames_schema() -> String {
 #[allow(clippy::unused_self)]
 impl DisrobeMcp {
     #[rmcp::tool(
+        name = "native_match",
+        description = "Match functions across two inline base64 native images. Optional stage, function address, and row limit select a bounded disrobe.native.match/v2 report. The tool never reads disk or executes either image."
+    )]
+    fn native_match(
+        &self,
+        Parameters(p): Parameters<NativeMatchParams>,
+    ) -> Result<Json<serde_json::Value>, ErrorData> {
+        let a: Vec<u8> = decode_inline_bytes(&p.a_bytes_b64)?;
+        let b: Vec<u8> = decode_inline_bytes(&p.b_bytes_b64)?;
+        let report = disrobe_pass_native::match_native_images(
+            "a",
+            &a,
+            "b",
+            &b,
+            disrobe_pass_native::NativeMatchOptions {
+                limit: Some(
+                    p.limit
+                        .unwrap_or(disrobe_pass_native::NATIVE_MATCH_DEFAULT_LIMIT),
+                ),
+                function: p.function,
+                stage: p.stage.map(Into::into),
+            },
+        )
+        .map_err(|error: disrobe_pass_native::NativeMatchError| {
+            ErrorData::invalid_params(error.to_string(), None)
+        })?;
+        serde_json::to_value(report)
+            .map(Json)
+            .map_err(|error: serde_json::Error| {
+                ErrorData::internal_error(
+                    format!("DR-MCP-0680: native match report serialization failed: {error}"),
+                    None,
+                )
+            })
+    }
+
+    #[rmcp::tool(
         name = "verify",
         description = "Verify a disrobe .dr envelope (blake3 root hash, rung, hot/cold sizes) from inline base64 bytes; never reads disk."
     )]
@@ -963,11 +1035,11 @@ impl rmcp::ServerHandler for DisrobeMcp {
             .enable_tools()
             .build();
         #[cfg(feature = "wasm")]
-        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         #[cfg(all(feature = "chain", not(feature = "wasm")))]
-        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         #[cfg(not(feature = "chain"))]
-        let analysis_tools: &str = "extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        let analysis_tools: &str = "match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         info.instructions = Some(format!(
             "disrobe MCP companion: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Analysis tools take inline base64 or inline JSON and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root."
         ));
@@ -1440,6 +1512,7 @@ mod tests {
             "xrefs",
             "function_summary",
             "neighborhood",
+            "native_match",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -1453,7 +1526,7 @@ mod tests {
             "missing WebAssembly lift tool"
         );
         let expected_count: usize =
-            13 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
+            14 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
@@ -1481,6 +1554,71 @@ mod tests {
             .unwrap();
         assert!(plk.input_schema["properties"].get("line").is_some());
         assert!(plk.input_schema["properties"].get("map_json").is_some());
+        let native_match: &rmcp::model::Tool = tools
+            .iter()
+            .find(|tool: &&rmcp::model::Tool| tool.name == "native_match")
+            .unwrap();
+        assert!(
+            native_match.input_schema["properties"]
+                .get("a_bytes_b64")
+                .is_some()
+        );
+        assert!(
+            native_match.input_schema["properties"]
+                .get("b_bytes_b64")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn native_match_returns_the_shared_report_for_two_real_inputs() {
+        const SAMPLE: &[u8] =
+            include_bytes!("../../../corpus/native/obfuscators/guardian-rs/sample.clean.exe");
+        let encoded: String = BASE64_STANDARD.encode(SAMPLE);
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let Json(actual): Json<serde_json::Value> = mcp
+            .native_match(Parameters(NativeMatchParams {
+                a_bytes_b64: encoded.clone(),
+                b_bytes_b64: encoded,
+                stage: None,
+                function: None,
+                limit: Some(5),
+            }))
+            .unwrap();
+        let expected = disrobe_pass_native::match_native_images(
+            "a",
+            SAMPLE,
+            "b",
+            SAMPLE,
+            disrobe_pass_native::NativeMatchOptions {
+                limit: Some(5),
+                function: None,
+                stage: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(actual, serde_json::to_value(expected).unwrap());
+    }
+
+    #[test]
+    fn native_match_returns_the_exact_native_refusal_reason() {
+        const SAMPLE: &[u8] =
+            include_bytes!("../../../corpus/native/obfuscators/guardian-rs/sample.clean.exe");
+        let encoded: String = BASE64_STANDARD.encode(SAMPLE);
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let error: ErrorData = expect_err(mcp.native_match(Parameters(NativeMatchParams {
+            a_bytes_b64: encoded.clone(),
+            b_bytes_b64: encoded,
+            stage: None,
+            function: Some(u64::MAX),
+            limit: None,
+        })));
+
+        assert_eq!(
+            error.message,
+            "DR-NATIVE-0208: no function at address 0xffffffffffffffff in either input"
+        );
     }
 
     #[test]

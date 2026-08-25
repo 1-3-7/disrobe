@@ -50,6 +50,7 @@ disrobe-core = { workspace = true, features = ["chain"] }
 disrobe-binfmt = { workspace = true }
 disrobe-pass-pyarmor = { workspace = true }
 disrobe-pass-native = { workspace = true }
+disrobe-similarity = { workspace = true }
 disrobe-pass-js-deob = { workspace = true }
 disrobe-pass-py-deob = { workspace = true }
 disrobe-pass-sourcedefender = { workspace = true }
@@ -78,6 +79,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 walkdir = "2.5.0"
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

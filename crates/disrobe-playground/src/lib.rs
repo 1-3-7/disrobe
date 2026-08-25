@@ -3,6 +3,7 @@
 #![cfg(feature = "chain")]
 pub mod circular;
 pub mod manifest;
+pub mod native_match;
 pub mod oracle;
 pub mod report;
 pub mod runner;
@@ -10,6 +11,7 @@ pub mod wasm;
 
 pub use circular::{CircularityFinding, CircularityKind, CircularityReport, scan_circularity};
 pub use manifest::{ManifestIndex, OracleFixture};
+pub use native_match::{NativeMatchRequest, NativeMatchUploadError, match_native_uploads};
 pub use oracle::{OracleKind, OracleVerdict};
 pub use report::{OracleKindRow, PlaygroundReport, render_json, render_tsv};
 pub use runner::{Runner, RunnerConfig};

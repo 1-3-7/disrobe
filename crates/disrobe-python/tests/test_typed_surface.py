@@ -242,6 +242,36 @@ def test_native_diff_and_sigmaker() -> None:
     assert diff.changed == 0
 
 
+def test_native_match_returns_the_shared_bounded_report() -> None:
+    report: disrobe.NativeMatch = disrobe.native_match(
+        SAMPLE_ELF, SAMPLE_ELF, limit=4
+    )
+    assert isinstance(report, disrobe.NativeMatch)
+    assert report.schema == "disrobe.native.match/v2"
+    assert report.pairs > 0
+    assert report.shown == 4
+    assert report.withheld > 0
+    assert report.raw["a"] == "a"
+    assert report.raw["b"] == "b"
+    assert all(
+        row.get("counterpart") == row["subject"]
+        for row in report.raw["a_verdicts"]
+        if "counterpart" in row
+    )
+
+
+def test_native_match_refusals_keep_the_native_reason_codes() -> None:
+    with pytest.raises(disrobe.DisrobeError) as empty_excinfo:
+        disrobe.native_match(SAMPLE_ELF, b"")
+    assert "DR-NATIVE-0203" in str(empty_excinfo.value)
+
+    with pytest.raises(disrobe.DisrobeError) as function_excinfo:
+        disrobe.native_match(SAMPLE_ELF, SAMPLE_ELF, function=(1 << 64) - 1)
+    assert str(function_excinfo.value) == (
+        "DR-NATIVE-0208: no function at address 0xffffffffffffffff in either input"
+    )
+
+
 def test_yara_generate_typed() -> None:
     rule = disrobe.yara_generate(SAMPLE_ELF, name="elf_sample")
     assert isinstance(rule, disrobe.YaraReport)

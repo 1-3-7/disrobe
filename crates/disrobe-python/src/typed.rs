@@ -1321,6 +1321,18 @@ typed_report!(
     }
 );
 
+typed_report!(
+    NativeMatch,
+    "NativeMatch",
+    "Bounded function correspondence report for two native images.",
+    accessors {
+        schema -> Option<String> : |d| field_str(d, "schema"),
+        pairs -> usize : |d| field_u64(d, "pairs").map_or(0, u64_to_usize),
+        shown -> usize : |d| nested_u64(d, "listing", "shown").map_or(0, u64_to_usize),
+        withheld -> usize : |d| nested_u64(d, "listing", "withheld").map_or(0, u64_to_usize),
+    }
+);
+
 fn version_label(value: &Json) -> String {
     let major: u64 = field_u64(value, "major").map_or(0, |value: u64| value);
     let minor: u64 = field_u64(value, "minor").map_or(0, |value: u64| value);
@@ -1415,6 +1427,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PickleTrace>()?;
     m.add_class::<PicklePolyglot>()?;
     m.add_class::<PickleMlReport>()?;
+    m.add_class::<NativeMatch>()?;
     Ok(())
 }
 

@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use disrobe_pass_native::{
-    BogusBranch, CffUnflattenReport, DecompilerBackend, DeobfBits, DetectedFormat, ObfuscatorHit,
-    Probe, SubstitutionResult, detect_format, detect_obfuscators, probe_all, strip_ollvm_bcf,
-    undo_ollvm_substitution, unflatten_ollvm,
+    BogusBranch, CffUnflattenReport, DecompilerBackend, DeobfBits, DetectedFormat,
+    NativeMatchOptions, NativeMatchStage, ObfuscatorHit, Probe, SubstitutionResult, detect_format,
+    detect_obfuscators, match_native_images, probe_all, strip_ollvm_bcf, undo_ollvm_substitution,
+    unflatten_ollvm,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -13,7 +14,7 @@ use crate::convert::to_value;
 use crate::err::{DisrobeError, map};
 use crate::llm::null_bundled_value;
 use crate::typed::{
-    BackendList, DetectionList, NativeDeobfuscation, NativeFormat as PyNativeFormat,
+    BackendList, DetectionList, NativeDeobfuscation, NativeFormat as PyNativeFormat, NativeMatch,
 };
 
 #[pyfunction]
@@ -28,6 +29,44 @@ fn native_format(binary_bytes: &[u8]) -> PyResult<PyNativeFormat> {
 fn native_detect(binary_bytes: &[u8]) -> PyResult<DetectionList> {
     let hits: Vec<ObfuscatorHit> = detect_obfuscators(binary_bytes);
     Ok(DetectionList::from_value(to_value(&hits)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (a, b, *, stage = None, function = None, limit = None))]
+#[pyo3(text_signature = "(a, b, *, stage=None, function=None, limit=None)")]
+fn native_match(
+    a: &[u8],
+    b: &[u8],
+    stage: Option<&str>,
+    function: Option<u64>,
+    limit: Option<usize>,
+) -> PyResult<NativeMatch> {
+    let stage: Option<NativeMatchStage> = stage.map(parse_match_stage).transpose()?;
+    let report = match_native_images(
+        "a",
+        a,
+        "b",
+        b,
+        NativeMatchOptions {
+            limit: Some(limit.unwrap_or(disrobe_pass_native::NATIVE_MATCH_DEFAULT_LIMIT)),
+            function,
+            stage,
+        },
+    )
+    .map_err(|error| DisrobeError::new_err(error.to_string()))?;
+    NativeMatch::from_serialize(&report)
+}
+
+fn parse_match_stage(stage: &str) -> PyResult<NativeMatchStage> {
+    match stage {
+        "data-reference" => Ok(NativeMatchStage::DataReference),
+        "control-flow" => Ok(NativeMatchStage::ControlFlow),
+        "propagation" => Ok(NativeMatchStage::Propagation),
+        "refused" => Ok(NativeMatchStage::Refused),
+        other => Err(DisrobeError::new_err(format!(
+            "DR-NATIVE-0209: unsupported stage `{other}`; expected data-reference, control-flow, propagation, or refused"
+        ))),
+    }
 }
 
 #[pyfunction]
@@ -107,6 +146,7 @@ fn native_deobfuscate(
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_format, m)?)?;
     m.add_function(wrap_pyfunction!(native_detect, m)?)?;
+    m.add_function(wrap_pyfunction!(native_match, m)?)?;
     m.add_function(wrap_pyfunction!(native_probe_backends, m)?)?;
     m.add_function(wrap_pyfunction!(native_deobfuscate, m)?)?;
     Ok(())

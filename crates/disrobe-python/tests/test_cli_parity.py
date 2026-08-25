@@ -49,6 +49,7 @@ CLI_VERB_TO_BINDING: dict[str, str] = {
     "native patch": "native_patch",
     "native sigmaker": "native_sigmaker",
     "native diff": "native_diff",
+    "native match": "native_match",
     "jvm": "jvm_decompile_class",
     "apk": "apk_resources",
     "dotnet": "dotnet_decompile",

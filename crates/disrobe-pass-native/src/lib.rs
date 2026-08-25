@@ -53,6 +53,7 @@ pub mod identify;
 pub mod lang;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
+mod native_match;
 pub mod obfuscators;
 pub mod packers;
 pub mod pass;
@@ -186,6 +187,10 @@ pub use lang::{LanguageHit, NativeLanguage, detect as detect_languages};
 pub use llm::{
     METADATA_CAPABILITY as NATIVE_METADATA_CAPABILITY, NativeImport, NativeInstr, NativeLlmInput,
     NativeSymbol,
+};
+pub use native_match::{
+    NATIVE_MATCH_DEFAULT_LIMIT, NativeMatchAnalysis, NativeMatchError, NativeMatchOptions,
+    NativeMatchStage, analyze_native_images, match_native_images,
 };
 pub use obfuscators::{
     AMICE_XOR_KEY, CffUnflattenReport, ObfuscatorFamily, ObfuscatorHit, StringDecryptHit,
