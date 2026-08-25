@@ -169,7 +169,12 @@ fn pattern_shape_into(
     next_capture: &mut usize,
 ) -> String {
     match pattern {
-        Pattern::AnyExpr { bind } | Pattern::AnyConst { bind } => {
+        Pattern::AnyExpr { bind }
+        | Pattern::AnyConst { bind }
+        | Pattern::AnyConstSlice { bind }
+        | Pattern::AnyConstUnary { bind }
+        | Pattern::AnyConstBinary { bind }
+        | Pattern::AnyConstCompose { bind } => {
             let index: usize = *captures.entry(bind.clone()).or_insert_with(|| {
                 let index: usize = *next_capture;
                 *next_capture += 1;
@@ -237,6 +242,18 @@ fn template_shape_into(template: &Template, captures: &BTreeMap<String, usize>) 
         Template::SliceConst { expr, lo, hi } => {
             format!("slice_const:{lo}:{hi}(capture:{})", captures[expr.as_str()])
         }
+        Template::FoldConstSlice { expr } => {
+            format!("fold_const_slice(capture:{})", captures[expr.as_str()])
+        }
+        Template::FoldConstUnary { expr } => {
+            format!("fold_const_unary(capture:{})", captures[expr.as_str()])
+        }
+        Template::FoldConstBinary { expr } => {
+            format!("fold_const_binary(capture:{})", captures[expr.as_str()])
+        }
+        Template::FoldConstCompose { expr } => {
+            format!("fold_const_compose(capture:{})", captures[expr.as_str()])
+        }
         Template::ComposeConst {
             low,
             high,
@@ -281,7 +298,12 @@ fn collect_pattern_binds<'a>(
             });
         }
         match current {
-            Pattern::AnyExpr { bind } | Pattern::AnyConst { bind } => {
+            Pattern::AnyExpr { bind }
+            | Pattern::AnyConst { bind }
+            | Pattern::AnyConstSlice { bind }
+            | Pattern::AnyConstUnary { bind }
+            | Pattern::AnyConstBinary { bind }
+            | Pattern::AnyConstCompose { bind } => {
                 validate_capture_name(bind, rule)?;
                 if !bound.insert(bind.as_str()) {
                     return Err(LoadError::DuplicateCapture {
@@ -364,7 +386,11 @@ fn check_template_refs(
             });
         }
         match current {
-            Template::Use { expr } => {
+            Template::Use { expr }
+            | Template::FoldConstSlice { expr }
+            | Template::FoldConstUnary { expr }
+            | Template::FoldConstBinary { expr }
+            | Template::FoldConstCompose { expr } => {
                 require_bound(expr, bound, rule)?;
             }
             Template::SliceConst { expr, lo, hi } => {

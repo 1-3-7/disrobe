@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::expr::{Expr, Width, shift_left, shift_right};
+use crate::expr::{BinOp, Expr, UnOp, Width, shift_left, shift_right};
 use crate::rules::error::ApplyError;
 use crate::rules::schema::{Binary, Condition, Pattern, Rule, RuleSet, Template};
 
@@ -10,6 +10,10 @@ const MAX_TEMPLATE_NODES: usize = 4096;
 enum Capture {
     Subtree(Expr),
     Const(u64),
+    ConstSlice { value: u64, lo: u32, hi: u32 },
+    ConstUnary { op: UnOp, value: u64 },
+    ConstBinary { op: BinOp, left: u64, right: u64 },
+    ConstCompose { low: u64, high: u64, low_bits: u32 },
 }
 
 #[derive(Debug, Default)]
@@ -44,7 +48,59 @@ impl Bindings {
         match self.map.get(name) {
             Some(Capture::Subtree(expr)) => Some(expr.clone()),
             Some(Capture::Const(value)) => Some(Expr::Const(*value)),
+            Some(Capture::ConstSlice { value, lo, hi }) => {
+                Some(Expr::slice(Expr::Const(*value), *lo, *hi))
+            }
+            Some(Capture::ConstUnary { op, value }) => {
+                Some(Expr::Unary(*op, Box::new(Expr::Const(*value))))
+            }
+            Some(Capture::ConstBinary { op, left, right }) => Some(Expr::Binary(
+                *op,
+                Box::new(Expr::Const(*left)),
+                Box::new(Expr::Const(*right)),
+            )),
+            Some(Capture::ConstCompose {
+                low,
+                high,
+                low_bits,
+            }) => Some(Expr::compose(
+                Expr::Const(*low),
+                Expr::Const(*high),
+                *low_bits,
+            )),
             None => None,
+        }
+    }
+
+    fn const_slice(&self, name: &str) -> Option<(u64, u32, u32)> {
+        match self.map.get(name) {
+            Some(Capture::ConstSlice { value, lo, hi }) => Some((*value, *lo, *hi)),
+            _ => None,
+        }
+    }
+
+    fn const_unary(&self, name: &str) -> Option<(UnOp, u64)> {
+        match self.map.get(name) {
+            Some(Capture::ConstUnary { op, value }) => Some((*op, *value)),
+            _ => None,
+        }
+    }
+
+    fn const_binary(&self, name: &str) -> Option<(BinOp, u64, u64)> {
+        match self.map.get(name) {
+            Some(Capture::ConstBinary { op, left, right }) => Some((*op, *left, *right)),
+            _ => None,
+        }
+    }
+
+    fn const_compose(&self, name: &str) -> Option<(u64, u64, u32)> {
+        match self.map.get(name) {
+            Some(Capture::ConstCompose {
+                low,
+                high,
+                low_bits,
+            }) => Some((*low, *high, *low_bits)),
+            _ => None,
         }
     }
 }
@@ -167,6 +223,61 @@ fn match_pattern(
         Pattern::AnyExpr { bind } => bindings.bind(bind, Capture::Subtree(expr.clone())),
         Pattern::AnyConst { bind } => match expr {
             Expr::Const(value) => bindings.bind(bind, Capture::Const(value & width.mask())),
+            _ => false,
+        },
+        Pattern::AnyConstSlice { bind } => match expr {
+            Expr::Slice(inner, lo, hi) if *lo < *hi && *hi <= 64 => match &**inner {
+                Expr::Const(value) => bindings.bind(
+                    bind,
+                    Capture::ConstSlice {
+                        value: value & width.mask(),
+                        lo: *lo,
+                        hi: *hi,
+                    },
+                ),
+                _ => false,
+            },
+            _ => false,
+        },
+        Pattern::AnyConstUnary { bind } => match expr {
+            Expr::Unary(op, inner) => match &**inner {
+                Expr::Const(value) => bindings.bind(
+                    bind,
+                    Capture::ConstUnary {
+                        op: *op,
+                        value: value & width.mask(),
+                    },
+                ),
+                _ => false,
+            },
+            _ => false,
+        },
+        Pattern::AnyConstBinary { bind } => match expr {
+            Expr::Binary(op, left, right) => match (&**left, &**right) {
+                (Expr::Const(lhs), Expr::Const(rhs)) => bindings.bind(
+                    bind,
+                    Capture::ConstBinary {
+                        op: *op,
+                        left: lhs & width.mask(),
+                        right: rhs & width.mask(),
+                    },
+                ),
+                _ => false,
+            },
+            _ => false,
+        },
+        Pattern::AnyConstCompose { bind } => match expr {
+            Expr::Compose(low, high, low_bits) => match (&**low, &**high) {
+                (Expr::Const(lo), Expr::Const(hi)) => bindings.bind(
+                    bind,
+                    Capture::ConstCompose {
+                        low: lo & width.mask(),
+                        high: hi & width.mask(),
+                        low_bits: *low_bits,
+                    },
+                ),
+                _ => false,
+            },
             _ => false,
         },
         Pattern::Const { value } => {
@@ -364,6 +475,56 @@ fn instantiate_bounded(
                         capture: expr.clone(),
                     })?;
             Ok(Expr::Const(slice_constant(value, *lo, *hi, width)))
+        }
+        Template::FoldConstSlice { expr } => {
+            let (value, lo, hi): (u64, u32, u32) =
+                bindings
+                    .const_slice(expr)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: expr.clone(),
+                    })?;
+            Ok(Expr::Const(slice_constant(value, lo, hi, width)))
+        }
+        Template::FoldConstUnary { expr } => {
+            let (op, value): (UnOp, u64) =
+                bindings
+                    .const_unary(expr)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: expr.clone(),
+                    })?;
+            let folded: u64 = match op {
+                UnOp::Neg => value.wrapping_neg(),
+                UnOp::Not => !value,
+            };
+            Ok(Expr::Const(folded & width.mask()))
+        }
+        Template::FoldConstBinary { expr } => {
+            let (op, left, right): (BinOp, u64, u64) =
+                bindings
+                    .const_binary(expr)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: expr.clone(),
+                    })?;
+            let folded: u64 = match op {
+                BinOp::Add => left.wrapping_add(right),
+                BinOp::Sub => left.wrapping_sub(right),
+                BinOp::Mul => left.wrapping_mul(right),
+                BinOp::And => left & right,
+                BinOp::Or => left | right,
+                BinOp::Xor => left ^ right,
+                BinOp::Shl => shift_left(left, right, width),
+                BinOp::Shr => shift_right(left & width.mask(), right, width),
+            };
+            Ok(Expr::Const(folded & width.mask()))
+        }
+        Template::FoldConstCompose { expr } => {
+            let (low, high, low_bits): (u64, u64, u32) =
+                bindings
+                    .const_compose(expr)
+                    .ok_or_else(|| ApplyError::CaptureKindMismatch {
+                        capture: expr.clone(),
+                    })?;
+            Ok(Expr::Const(compose_constant(low, high, low_bits, width)))
         }
         Template::ComposeConst {
             low,

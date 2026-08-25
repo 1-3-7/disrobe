@@ -83,6 +83,7 @@ pub struct ProvenanceHeader {
     pub language: &'static str,
     pub version: String,
     pub style: CommentStyle,
+    pub rule_pack_id: Option<String>,
 }
 
 impl ProvenanceHeader {
@@ -101,7 +102,14 @@ impl ProvenanceHeader {
             language,
             version,
             style,
+            rule_pack_id: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_rule_pack_id(mut self, rule_pack_id: impl Into<String>) -> Self {
+        self.rule_pack_id = Some(rule_pack_id.into());
+        self
     }
 
     #[must_use]
@@ -174,6 +182,7 @@ impl ProvenanceHeader {
             "repo": REPO_URL,
             "tool": "disrobe",
             "tool_version": env!("CARGO_PKG_VERSION"),
+            "rule_pack_id": self.rule_pack_id,
         })
     }
 
@@ -585,7 +594,9 @@ mod tests {
             "1.0",
         );
         let v: serde_json::Value = serde_json::json!({"foo": 1, "bar": [1, 2, 3]});
-        let injected: serde_json::Value = h.inject_into_json(v);
+        let injected: serde_json::Value = h
+            .with_rule_pack_id("mba-peephole/fnv1a64-0000000000000000")
+            .inject_into_json(v);
         let obj: &serde_json::Map<String, serde_json::Value> =
             injected.as_object().expect("object");
         assert!(obj.contains_key("foo"));
@@ -601,6 +612,10 @@ mod tests {
             Some("WebAssembly")
         );
         assert_eq!(prov.get("version").and_then(|x| x.as_str()), Some("1.0"));
+        assert_eq!(
+            prov.get("rule_pack_id").and_then(|x| x.as_str()),
+            Some("mba-peephole/fnv1a64-0000000000000000")
+        );
         assert_eq!(
             prov.get("schema").and_then(|x| x.as_str()),
             Some(PROVENANCE_SCHEMA)

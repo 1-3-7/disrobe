@@ -13,6 +13,22 @@ pub use loader::load_str;
 pub use schema::{Binary, Condition, Pattern, Rule, RuleSet, Template, Unary};
 
 pub const MBA_PEEPHOLE_RULES: &str = include_str!("rules_data/mba_peephole.toml");
+pub const MBA_PEEPHOLE_AUDIT: &str = include_str!("rules_data/mba_peephole_audit.toml");
+pub const MBA_PEEPHOLE_RULE_PACK_METADATA_KEY: &str = "mba.rule_pack_id";
+
+#[must_use]
+pub fn mba_peephole_rule_pack_id() -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in MBA_PEEPHOLE_RULES
+        .bytes()
+        .chain([0].into_iter())
+        .chain(MBA_PEEPHOLE_AUDIT.bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("mba-peephole/fnv1a64-{hash:016x}")
+}
 
 pub fn mba_peephole_rules() -> Result<RuleSet, LoadError> {
     loader::load_str(MBA_PEEPHOLE_RULES)

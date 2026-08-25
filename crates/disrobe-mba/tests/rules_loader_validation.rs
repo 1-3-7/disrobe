@@ -1,11 +1,46 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Audit {
+    classes: Vec<AuditClass>,
+}
+
+#[derive(Deserialize)]
+struct AuditClass {
+    name: String,
+    status: String,
+    reason: Option<String>,
+}
 
 #[test]
-fn shipped_rules_load_and_have_thirty_nine_migrated_rules() {
+fn shipped_rules_load_and_have_forty_three_migrated_rules() {
     let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
-    assert_eq!(set.len(), 39);
+    assert_eq!(set.len(), 43);
     assert!(set.commutative_match);
+}
+
+#[test]
+fn identity_class_audit_is_complete_and_explains_every_absence() {
+    let audit: Audit = toml::from_str(include_str!(
+        "../src/rules/rules_data/mba_peephole_audit.toml"
+    ))
+    .expect("audit parses");
+    assert_eq!(audit.classes.len(), 15);
+    for class in audit.classes {
+        assert!(!class.name.is_empty());
+        assert!(matches!(class.status.as_str(), "present" | "absent"));
+        if class.status == "absent" {
+            assert!(
+                class
+                    .reason
+                    .is_some_and(|reason: String| !reason.is_empty())
+            );
+        } else {
+            assert!(class.reason.is_none());
+        }
+    }
 }
 
 #[test]

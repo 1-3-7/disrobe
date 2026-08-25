@@ -95,6 +95,26 @@ fn collect_captures(
                 .entry(bind.clone())
                 .or_insert_with(|| Expr::konst(0));
         }
+        Pattern::AnyConstSlice { bind } => {
+            captures
+                .entry(bind.clone())
+                .or_insert_with(|| Expr::slice(Expr::konst(0), 3, 7));
+        }
+        Pattern::AnyConstUnary { bind } => {
+            captures
+                .entry(bind.clone())
+                .or_insert_with(|| Expr::not(Expr::konst(0)));
+        }
+        Pattern::AnyConstBinary { bind } => {
+            captures
+                .entry(bind.clone())
+                .or_insert_with(|| Expr::add(Expr::konst(0), Expr::konst(0)));
+        }
+        Pattern::AnyConstCompose { bind } => {
+            captures
+                .entry(bind.clone())
+                .or_insert_with(|| Expr::compose(Expr::konst(0), Expr::konst(0), 1));
+        }
         Pattern::Const { .. } | Pattern::Var { .. } => {}
         Pattern::Unary { operand, .. } => collect_captures(operand, captures, next_variable),
         Pattern::Binary { left, right, .. } => {
@@ -128,6 +148,24 @@ fn instantiate_pattern(
         Pattern::AnyConst { bind } => captures
             .get(bind)
             .filter(|expr: &&Expr| matches!(expr, Expr::Const(_)))
+            .cloned(),
+        Pattern::AnyConstSlice { bind } => captures
+            .get(bind)
+            .filter(|expr: &&Expr| {
+                matches!(expr, Expr::Slice(inner, lo, hi) if matches!(&**inner, Expr::Const(_)) && lo < hi && *hi <= 64)
+            })
+            .cloned(),
+        Pattern::AnyConstUnary { bind } => captures
+            .get(bind)
+            .filter(|expr: &&Expr| matches!(expr, Expr::Unary(_, inner) if matches!(&**inner, Expr::Const(_))))
+            .cloned(),
+        Pattern::AnyConstBinary { bind } => captures
+            .get(bind)
+            .filter(|expr: &&Expr| matches!(expr, Expr::Binary(_, left, right) if matches!(&**left, Expr::Const(_)) && matches!(&**right, Expr::Const(_))))
+            .cloned(),
+        Pattern::AnyConstCompose { bind } => captures
+            .get(bind)
+            .filter(|expr: &&Expr| matches!(expr, Expr::Compose(low, high, _) if matches!(&**low, Expr::Const(_)) && matches!(&**high, Expr::Const(_))))
             .cloned(),
         Pattern::Const { value } => Some(Expr::konst(*value & width.mask())),
         Pattern::Var { index } => Some(Expr::var(*index)),

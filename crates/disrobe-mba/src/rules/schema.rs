@@ -59,6 +59,18 @@ pub enum Pattern {
     AnyConst {
         bind: String,
     },
+    AnyConstSlice {
+        bind: String,
+    },
+    AnyConstUnary {
+        bind: String,
+    },
+    AnyConstBinary {
+        bind: String,
+    },
+    AnyConstCompose {
+        bind: String,
+    },
     Const {
         value: u64,
     },
@@ -129,6 +141,18 @@ pub enum Template {
         expr: String,
         lo: u32,
         hi: u32,
+    },
+    FoldConstSlice {
+        expr: String,
+    },
+    FoldConstUnary {
+        expr: String,
+    },
+    FoldConstBinary {
+        expr: String,
+    },
+    FoldConstCompose {
+        expr: String,
     },
     ComposeConst {
         low: String,

@@ -67,7 +67,8 @@ pub use poly_mba::{MAX_POLY_MBA_VARS, solve_polynomial_mba};
 pub use rewrite::canonicalize;
 pub use rules::{
     ApplyError, Binary, Condition, LoadError, MBA_PEEPHOLE_RULES, Pattern, Rule, RuleHit, RuleSet,
-    Template, Unary, apply_root, load_str, mba_peephole_rules, rewrite_fixpoint,
+    Template, Unary, apply_root, load_str, mba_peephole_rule_pack_id, mba_peephole_rules,
+    rewrite_fixpoint,
 };
 pub use simplify::{
     PredicateSimplification, Simplification, Verification, simplify, simplify_predicate,

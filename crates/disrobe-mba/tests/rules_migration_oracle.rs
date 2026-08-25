@@ -358,6 +358,110 @@ fn constant_slice_bits_match_hardcoded_at_every_supported_width() {
 }
 
 #[test]
+fn constant_slice_ranges_match_hardcoded_at_every_supported_width() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let set: RuleSet = rules();
+    for width in widths {
+        for (lo, hi) in [(0, 1), (1, 2), (0, 8), (3, 7), (16, 64)] {
+            let input: Expr = Expr::slice(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), lo, hi);
+            let expected: Expr = Expr::konst(input.eval(&[], width));
+            assert_eq!(canonicalize(&input, width), expected);
+            let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, expected);
+            if equivalent_exhaustive_runnable(width, 0) {
+                assert!(equivalent_exhaustive(&input, &dsl, width, 0));
+            }
+        }
+    }
+}
+
+#[test]
+fn constant_slice_legacy_out_of_table_bounds_preserve_hardcoded_behavior() {
+    let widths: [Width; 7] = [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ];
+    let value: u64 = 0xA5A5_A5A5_A5A5_A5A5;
+    for width in widths {
+        let high_end: Expr = Expr::slice(Expr::konst(value), 3, 65);
+        let expected_high_end: Expr =
+            Expr::konst((((value & width.mask()) >> 3) & ((1u64 << 62) - 1)) & width.mask());
+        assert_eq!(canonicalize(&high_end, width), expected_high_end);
+        let empty: Expr = Expr::slice(Expr::konst(value), 5, 5);
+        assert_eq!(canonicalize(&empty, width), Expr::konst(0));
+        let reversed: Expr = Expr::slice(Expr::konst(value), 7, 3);
+        assert_eq!(canonicalize(&reversed, width), Expr::konst(0));
+        let beyond_word: Expr = Expr::slice(Expr::konst(value), 64, 65);
+        assert!(std::panic::catch_unwind(|| canonicalize(&beyond_word, width)).is_err());
+    }
+}
+
+#[test]
+fn absorption_matches_hardcoded_at_every_supported_width() {
+    let set: RuleSet = rules();
+    for width in [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ] {
+        for input in [
+            Expr::and(Expr::var(0), Expr::or(Expr::var(0), Expr::var(1))),
+            Expr::and(Expr::or(Expr::var(1), Expr::var(0)), Expr::var(0)),
+            Expr::or(Expr::var(0), Expr::and(Expr::var(0), Expr::var(1))),
+            Expr::or(Expr::and(Expr::var(1), Expr::var(0)), Expr::var(0)),
+        ] {
+            let dsl: Expr = rewrite_fixpoint(&set, &input, width, FIXPOINT_PASSES);
+            assert_eq!(dsl, canonicalize(&input, width));
+            if equivalent_exhaustive_runnable(width, 2) {
+                assert!(equivalent_exhaustive(&input, &dsl, width, 2));
+            }
+        }
+    }
+}
+
+#[test]
+fn rewrite_table_is_deterministic_across_two_runs() {
+    let set: RuleSet = rules();
+    let inputs: [Expr; 3] = [
+        Expr::and(Expr::var(0), Expr::or(Expr::var(0), Expr::var(1))),
+        Expr::slice(Expr::konst(0xA5A5_A5A5_A5A5_A5A5), 3, 7),
+        Expr::compose(Expr::konst(0xA5), Expr::konst(0x5A), 13),
+    ];
+    for width in [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ] {
+        for input in &inputs {
+            let first: Expr = rewrite_fixpoint(&set, input, width, FIXPOINT_PASSES);
+            let second: Expr = rewrite_fixpoint(&set, input, width, FIXPOINT_PASSES);
+            assert_eq!(first, second);
+        }
+    }
+}
+
+#[test]
 fn constant_compose_layouts_match_hardcoded_at_every_supported_width() {
     let widths: [Width; 7] = [
         Width::W1,

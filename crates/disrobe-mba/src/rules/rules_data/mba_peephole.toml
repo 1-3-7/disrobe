@@ -308,33 +308,69 @@ when = [{ check = "equal", left = "then", right = "otherwise" }]
 rewrite = { build = "use", expr = "then" }
 
 [[rules]]
-name = "slice_const_low_bit"
+name = "slice_const"
 widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width extraction of bit zero from a constant"
-pattern = { kind = "slice", inner = { kind = "any_const", bind = "c" }, lo = 0, hi = 1 }
-rewrite = { build = "slice_const", expr = "c", lo = 0, hi = 1 }
+source = "bounded fixed-width extraction from a constant"
+pattern = { kind = "any_const_slice", bind = "slice" }
+rewrite = { build = "fold_const_slice", expr = "slice" }
 
 [[rules]]
-name = "slice_const_next_bit"
-widths = [2, 4, 8, 16, 32, 64]
-proof = "shared_equivalence"
-source = "fixed-width extraction of bit one from a constant"
-pattern = { kind = "slice", inner = { kind = "any_const", bind = "c" }, lo = 1, hi = 2 }
-rewrite = { build = "slice_const", expr = "c", lo = 1, hi = 2 }
-
-[[rules]]
-name = "compose_const_low_bit"
+name = "const_unary"
 widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width composition with a one-bit low constant field"
-pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, high = { kind = "any_const", bind = "high" }, low_bits = 1 }
-rewrite = { build = "compose_const", low = "low", high = "high", low_bits = 1 }
+source = "fixed-width unary operation on a constant"
+pattern = { kind = "any_const_unary", bind = "unary" }
+rewrite = { build = "fold_const_unary", expr = "unary" }
 
 [[rules]]
-name = "compose_const_low_byte"
+name = "const_binary"
 widths = [1, 2, 4, 8, 16, 32, 64]
 proof = "shared_equivalence"
-source = "fixed-width composition with an eight-bit low constant field"
-pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, high = { kind = "any_const", bind = "high" }, low_bits = 8 }
-rewrite = { build = "compose_const", low = "low", high = "high", low_bits = 8 }
+source = "fixed-width binary operation on constants"
+pattern = { kind = "any_const_binary", bind = "binary" }
+rewrite = { build = "fold_const_binary", expr = "binary" }
+
+[[rules]]
+name = "const_compose"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width composition of constants"
+pattern = { kind = "any_const_compose", bind = "compose" }
+rewrite = { build = "fold_const_compose", expr = "compose" }
+
+[[rules]]
+name = "and_absorption_left"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x and (x or y)"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "same" }, right = { kind = "any_expr", bind = "other" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_absorption_right"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x and (y or x)"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "other" }, right = { kind = "any_expr", bind = "same" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_absorption_left"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x or (x and y)"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "same" }, right = { kind = "any_expr", bind = "other" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_absorption_right"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x or (y and x)"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "other" }, right = { kind = "any_expr", bind = "same" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }

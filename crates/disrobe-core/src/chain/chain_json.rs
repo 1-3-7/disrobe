@@ -94,6 +94,7 @@ pub struct NodeDoc {
     pub detector_picks: Vec<DetectorPickDoc>,
     pub artifacts: Vec<String>,
     pub metadata: BTreeMap<String, String>,
+    pub rule_pack_id: Option<String>,
     pub verdict: VerdictDoc,
     pub error: Option<String>,
 }
@@ -330,6 +331,7 @@ impl From<&Node> for NodeDoc {
                 .collect(),
             artifacts: n.artifacts.clone(),
             metadata: n.metadata.clone(),
+            rule_pack_id: n.metadata.get("mba.rule_pack_id").cloned(),
             verdict: VerdictDoc::from(&n.verdict),
             error,
         }

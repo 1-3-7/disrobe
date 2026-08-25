@@ -57,16 +57,32 @@ fn rewrite_ite(cond: Expr, then: Expr, otherwise: Expr, width: Width) -> Expr {
 }
 
 fn rewrite_slice(inner: Expr, lo: u32, hi: u32, width: Width) -> Expr {
-    if let Expr::Const(value) = inner {
+    let fallback: Option<u64> = match &inner {
+        Expr::Const(value) => Some(*value),
+        _ => None,
+    };
+    let node: Expr = Expr::slice(inner, lo, hi);
+    if let Some(rewritten) = apply_migrated(&node, width) {
+        return rewritten;
+    }
+    if let Some(value) = fallback {
         let span: u32 = hi.saturating_sub(lo);
         let mask: u64 = sub_mask(span);
         return Expr::Const(((value >> lo) & mask) & width.mask());
     }
-    Expr::slice(inner, lo, hi)
+    node
 }
 
 fn rewrite_compose(low: Expr, high: Expr, low_bits: u32, width: Width) -> Expr {
-    if let (Expr::Const(lo_val), Expr::Const(hi_val)) = (&low, &high) {
+    let fallback: Option<(u64, u64)> = match (&low, &high) {
+        (Expr::Const(lo_val), Expr::Const(hi_val)) => Some((*lo_val, *hi_val)),
+        _ => None,
+    };
+    let node: Expr = Expr::compose(low, high, low_bits);
+    if let Some(rewritten) = apply_migrated(&node, width) {
+        return rewritten;
+    }
+    if let Some((lo_val, hi_val)) = fallback {
         let lo_part: u64 = lo_val & sub_mask(low_bits);
         let hi_part: u64 = if low_bits >= 64 {
             0
@@ -75,7 +91,7 @@ fn rewrite_compose(low: Expr, high: Expr, low_bits: u32, width: Width) -> Expr {
         };
         return Expr::Const((lo_part | hi_part) & width.mask());
     }
-    Expr::compose(low, high, low_bits)
+    node
 }
 
 const fn sub_mask(bits: u32) -> u64 {
@@ -89,16 +105,20 @@ const fn sub_mask(bits: u32) -> u64 {
 }
 
 fn rewrite_unary(op: UnOp, inner: Expr, width: Width) -> Expr {
-    if let Expr::Const(value) = inner {
+    let fallback: Option<u64> = match &inner {
+        Expr::Const(value) => Some(*value),
+        _ => None,
+    };
+    let node: Expr = Expr::Unary(op, Box::new(inner));
+    if let Some(rewritten) = apply_migrated(&node, width) {
+        return rewritten;
+    }
+    if let Some(value) = fallback {
         let folded: u64 = match op {
             UnOp::Neg => value.wrapping_neg(),
             UnOp::Not => !value,
         };
         return Expr::Const(folded & width.mask());
-    }
-    let node: Expr = Expr::Unary(op, Box::new(inner));
-    if let Some(rewritten) = apply_migrated(&node, width) {
-        return rewritten;
     }
     let Expr::Unary(op, inner): Expr = node else {
         unreachable!("node was constructed as a unary expression")
@@ -108,14 +128,16 @@ fn rewrite_unary(op: UnOp, inner: Expr, width: Width) -> Expr {
 }
 
 fn rewrite_binary(op: BinOp, left: Expr, right: Expr, width: Width) -> Expr {
+    let fallback: Option<(u64, u64)> = match (&left, &right) {
+        (Expr::Const(lhs), Expr::Const(rhs)) => Some((*lhs, *rhs)),
+        _ => None,
+    };
     let node: Expr = Expr::Binary(op, Box::new(left), Box::new(right));
     if let Some(rewritten) = apply_migrated(&node, width) {
         return rewritten;
     }
-    if let Expr::Binary(op, left, right) = &node
-        && let (Expr::Const(lhs), Expr::Const(rhs)) = (&**left, &**right)
-    {
-        return Expr::Const(fold_const(*op, *lhs, *rhs, width) & width.mask());
+    if let Some((lhs, rhs)) = fallback {
+        return Expr::Const(fold_const(op, lhs, rhs, width) & width.mask());
     }
     let Expr::Binary(op, left, right): Expr = node else {
         unreachable!("node was constructed as a binary expression")
@@ -388,35 +410,15 @@ fn rewrite_mul(left: Expr, right: Expr, _width: Width) -> Expr {
 }
 
 fn rewrite_and(left: Expr, right: Expr, _width: Width) -> Expr {
-    if absorbs(BinOp::Or, &left, &right) {
-        return left;
-    }
-    if absorbs(BinOp::Or, &right, &left) {
-        return right;
-    }
     Expr::and(left, right)
 }
 
 fn rewrite_or(left: Expr, right: Expr, _width: Width) -> Expr {
-    if absorbs(BinOp::And, &left, &right) {
-        return left;
-    }
-    if absorbs(BinOp::And, &right, &left) {
-        return right;
-    }
     Expr::or(left, right)
 }
 
 fn rewrite_xor(left: Expr, right: Expr, _width: Width) -> Expr {
     Expr::xor(left, right)
-}
-
-fn absorbs(inner_op: BinOp, outer: &Expr, candidate: &Expr) -> bool {
-    matches!(
-        candidate,
-        Expr::Binary(op, left, right)
-            if *op == inner_op && (outer == &**left || outer == &**right)
-    )
 }
 
 #[cfg(test)]

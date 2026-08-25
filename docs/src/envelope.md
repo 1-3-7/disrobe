@@ -10,7 +10,7 @@ A `.dr` envelope has three parts:
 2. **Cold sidecar (postcard).** Secondary metadata serialized with postcard, kept out of the hot path so the common case stays fast.
 3. **BLAKE3 root hash.** A content hash over both the hot and cold bytes. Equal roots identify equal payload and sidecar bytes. The root does not include the header fields, so it is not by itself a claim that two complete envelope files are byte-identical.
 
-The fixed header also carries the schema **version**, IR **rung** ([see the ladder](./ir-ladder.md)), flags, hot and cold lengths, and root hash. The postcard sidecar stores the producer, producer version, capability set, and string provenance map.
+The fixed header also carries the schema **version**, IR **rung** ([see the ladder](./ir-ladder.md)), flags, hot and cold lengths, and root hash. The postcard sidecar stores the producer, producer version, capability set, and string provenance map. MBA outputs that use the peephole table record its deterministic rule-pack content ID in provenance and in the corresponding chain artifact record; this identifies the exact table and audit data used for that result.
 
 ## Why content-addressed, not timestamp-addressed
 
