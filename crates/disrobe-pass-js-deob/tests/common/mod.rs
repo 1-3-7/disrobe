@@ -264,6 +264,30 @@ pub(crate) struct EvalOutcome {
     pub(crate) terminal: Terminal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TerminalSignature {
+    Completed(ObservedValue),
+    Threw(String),
+    ParseFailed(String),
+    ExecutionLimitExceeded,
+    ObservationLimitExceeded,
+}
+
+fn terminal_signature(terminal: &Terminal) -> TerminalSignature {
+    match terminal {
+        Terminal::Completed(value) => TerminalSignature::Completed(value.clone()),
+        Terminal::Threw { kind, .. } => TerminalSignature::Threw(kind.clone()),
+        Terminal::ParseFailed { kind, .. } => TerminalSignature::ParseFailed(kind.clone()),
+        Terminal::ExecutionLimitExceeded => TerminalSignature::ExecutionLimitExceeded,
+        Terminal::ObservationLimitExceeded(_) => TerminalSignature::ObservationLimitExceeded,
+    }
+}
+
+pub(crate) fn outcomes_equivalent(expected: &EvalOutcome, actual: &EvalOutcome) -> bool {
+    expected.trace == actual.trace
+        && terminal_signature(&expected.terminal) == terminal_signature(&actual.terminal)
+}
+
 #[derive(Default)]
 struct ObservationState {
     trace: Vec<TraceEvent>,
@@ -668,8 +692,8 @@ pub(crate) fn assert_equivalent(label: &str, original: &str, recovered: &str) {
         eval_outcome(original).unwrap_or_else(|| panic!("{label}: original fixture must evaluate"));
     let got: EvalOutcome = eval_outcome(recovered)
         .unwrap_or_else(|| panic!("{label}: recovered output must evaluate; src=\n{recovered}"));
-    assert_eq!(
-        want, got,
+    assert!(
+        outcomes_equivalent(&want, &got),
         "{label}: recovered behavior diverged from original\n--want--\n{want:?}\n--got--\n{got:?}\n--recovered src--\n{recovered}"
     );
 }

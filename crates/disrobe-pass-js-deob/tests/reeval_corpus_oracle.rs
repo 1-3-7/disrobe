@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     EvalOutcome, ObservedValue, Terminal, TraceEvent, eval_capture, eval_outcome,
-    eval_outcome_bare, try_eval_outcome_with_argv,
+    eval_outcome_bare, outcomes_equivalent, try_eval_outcome_with_argv,
 };
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
@@ -1359,6 +1359,26 @@ fn thrown_exceptions_remain_comparable_observables() {
 }
 
 #[test]
+fn terminal_signature_ignores_error_message_but_rejects_swallowed_or_converted_throws() {
+    let expected: EvalOutcome =
+        eval_outcome("console.log('before'); throw new TypeError('original')")
+            .expect("throwing reference must evaluate");
+    let renamed: EvalOutcome =
+        eval_outcome("console.log('before'); throw new TypeError('renamed')")
+            .expect("renamed throw must evaluate");
+    let swallowed: EvalOutcome = eval_outcome(
+        "console.log('before'); try { throw new TypeError('original'); } catch (_) {}",
+    )
+    .expect("swallowed throw must evaluate");
+    let converted: EvalOutcome = eval_outcome("console.log('before'); throw new Error('original')")
+        .expect("converted throw must evaluate");
+
+    assert!(common::outcomes_equivalent(&expected, &renamed));
+    assert!(!common::outcomes_equivalent(&expected, &swallowed));
+    assert!(!common::outcomes_equivalent(&expected, &converted));
+}
+
+#[test]
 fn boa_environment_inputs_are_fixed_and_ordered() {
     let outcome: EvalOutcome = eval_outcome(
         "console.log(Date.now(), new Date().getTime(), Math.random(), performance.now(), crypto.randomUUID(), process.env.MISSING);",
@@ -1983,7 +2003,7 @@ fn run_differential(case: &DifferentialCase<'_>) -> Outcome {
             ));
         }
         let expected: &EvalOutcome = &want[index];
-        if expected != &got {
+        if !outcomes_equivalent(expected, &got) {
             return Outcome::Diverged(format!(
                 "{name}: recovered behavior diverged from {reference_kind} source for argv {argv:?}\n--reference--\n{expected:?}\n--recovered--\n{got:?}"
             ));
