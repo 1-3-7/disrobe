@@ -205,32 +205,29 @@ fn split_text(text: &str) -> (String, String) {
 fn disasm_yaxpeax_aarch64(bytes: &[u8], base: u64) -> Result<Vec<DisasmInsn>> {
     let decoder: yaxpeax_arm::armv8::a64::InstDecoder =
         yaxpeax_arm::armv8::a64::InstDecoder::default();
-    let mut reader: yaxpeax_arch::U8Reader<'_> = yaxpeax_arch::U8Reader::new(bytes);
     let mut out: Vec<DisasmInsn> = Vec::new();
-    let mut addr: u64 = base;
     let mut idx: usize = 0;
     while idx + 4 <= bytes.len() {
+        let Some(window): Option<&[u8]> = bytes.get(idx..) else {
+            break;
+        };
+        let mut reader: yaxpeax_arch::U8Reader<'_> = yaxpeax_arch::U8Reader::new(window);
+        let address: u64 = base.wrapping_add(idx as u64);
         match decoder.decode(&mut reader) {
             Ok(inst) => {
                 let text: String = inst.to_string();
                 let (m, ops): (String, String) = split_text(&text);
                 let raw: Vec<u8> = bytes[idx..idx + 4].to_vec();
                 out.push(DisasmInsn {
-                    address: addr,
+                    address,
                     bytes: raw,
                     mnemonic: m,
                     operands: ops,
                 });
-                addr = addr.wrapping_add(4);
-                idx += 4;
             }
-            Err(e) => {
-                return Err(Error::Disasm {
-                    engine: "yaxpeax-aarch64",
-                    message: e.to_string(),
-                });
-            }
+            Err(_) => out.push(undecodable_arm_word(bytes, idx, 4, address)),
         }
+        idx += 4;
     }
     Ok(out)
 }
@@ -878,6 +875,24 @@ mod tests {
         let out: Vec<DisasmInsn> = disassemble(Arch::Aarch64, 0, &bytes).expect("disasm");
         assert_eq!(out.len(), 1);
         assert!(out[0].mnemonic.starts_with("ret"));
+    }
+
+    #[test]
+    fn an_undecodable_aarch64_word_becomes_a_gap_and_decoding_continues_after_it() {
+        let bytes: [u8; 12] = [
+            0x1f, 0x20, 0x03, 0xd5, 0xff, 0xff, 0xff, 0xff, 0xc0, 0x03, 0x5f, 0xd6,
+        ];
+        let out: Vec<DisasmInsn> = disassemble(Arch::Aarch64, 0x1000, &bytes).expect("disasm");
+        assert_eq!(out.len(), 3, "an undecodable word must not end the section");
+        assert_eq!(out[1].address, 0x1004);
+        assert_eq!(out[1].mnemonic, UNDECODABLE_ARM_MNEMONIC);
+        assert_eq!(out[1].bytes, [0xff, 0xff, 0xff, 0xff]);
+        assert_eq!(out[2].address, 0x1008);
+        assert!(
+            out[2].mnemonic.starts_with("ret"),
+            "the instruction after the gap must still decode: {:?}",
+            out[2]
+        );
     }
 
     #[test]
