@@ -403,6 +403,66 @@ fn is_increment_twenty(name: &str) -> bool {
     INCREMENT_TWENTY_FUNCTIONS.contains(&name)
 }
 
+fn case_seed(opt: &str, name: &str) -> u64 {
+    let mut seed: u64 = 0xCBF2_9CE4_8422_2325;
+    for byte in opt.bytes().chain(std::iter::once(0xff)).chain(name.bytes()) {
+        seed ^= u64::from(byte);
+        seed = seed.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    if seed == 0 {
+        0xDEAD_BEEF_CAFE_F00D
+    } else {
+        seed
+    }
+}
+
+fn ordered_case_seeds<'a>(cases: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<u64> {
+    cases
+        .into_iter()
+        .map(|(opt, name): (&str, &str)| case_seed(opt, name))
+        .collect()
+}
+
+fn generated_case_inputs(seed: u64, draws: usize) -> Vec<u8> {
+    let mut state: u64 = seed;
+    let mut inputs: Vec<u8> = Vec::with_capacity(draws * std::mem::size_of::<u64>());
+    for _ in 0..draws {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        inputs.extend_from_slice(&state.to_le_bytes());
+    }
+    inputs
+}
+
+#[test]
+fn case_inputs_are_unchanged_when_an_unrelated_case_precedes_them() {
+    let fixed_cases: [(&str, &str); 3] = [
+        ("O0", "fs_sqrt_sum_d"),
+        ("O2", "fp_id_f"),
+        ("Os", "nested_sum"),
+    ];
+    let before: Vec<(&str, &str)> = fixed_cases.to_vec();
+    let after: Vec<(&str, &str)> = [
+        ("O0", "fp_mixed_unrelated"),
+        fixed_cases[0],
+        fixed_cases[1],
+        fixed_cases[2],
+    ]
+    .to_vec();
+    let before_inputs: Vec<Vec<u8>> = ordered_case_seeds(before.iter().copied())
+        .into_iter()
+        .map(|seed: u64| generated_case_inputs(seed, 16))
+        .collect();
+    let after_inputs: Vec<Vec<u8>> = ordered_case_seeds(after.iter().copied())
+        .into_iter()
+        .skip(1)
+        .map(|seed: u64| generated_case_inputs(seed, 16))
+        .collect();
+
+    assert_eq!(before_inputs, after_inputs);
+}
+
 fn increment_twenty_compare_block(
     opt: &str,
     name: &str,
@@ -861,7 +921,12 @@ fn corpus_grade_report() {
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
 
-    for (index, (opt, name, bytes)) in CASES.iter().enumerate() {
+    let seeds: Vec<u64> = ordered_case_seeds(
+        CASES
+            .iter()
+            .map(|(opt, name, _): &(&str, &str, &[u8])| (*opt, *name)),
+    );
+    for ((opt, name, bytes), seed) in CASES.iter().zip(seeds) {
         attempted += 1;
         let required_increment_two: bool = is_increment_two_fp(name);
         let required_increment_three: bool = is_increment_three_fp(name);
@@ -1022,15 +1087,6 @@ fn corpus_grade_report() {
         }
 
         let rec_symbol: String = format!("rec_{opt}_{name}");
-        let seed: u64 = 0x9E37_79B9_7F4A_7C15u64
-            ^ (index as u64)
-                .wrapping_add(1)
-                .wrapping_mul(0x0000_0100_0000_01B3);
-        let seed: u64 = if seed == 0 {
-            0xDEAD_BEEF_CAFE_F00D
-        } else {
-            seed
-        };
         let block: Option<String> = if required_increment_twenty {
             increment_twenty_compare_block(opt, name, &rec_symbol, seed)
         } else {
@@ -1255,6 +1311,7 @@ fn corpus_grade_report() {
         .checked_sub(increment_twenty_driven)
         .expect("NAT-001 driven count cannot exceed the integer total");
     eprintln!("================ AARCH64 CORPUS GRADE ================");
+    eprintln!("seed scheme          fnv1a64(opt || 0xff || name)");
     eprintln!("attempted            {attempted}");
     eprintln!("recovered            {recovered}   (non-rejection; NOT a correctness claim)");
     eprintln!("driven (graded)      {driven}");
