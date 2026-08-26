@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::bytecode::{
     self, CodeAttribute, Instruction, Operands, branch_target, disassemble, parse_code_attribute,
@@ -8074,6 +8075,343 @@ thread_local! {
     static ANON_INLINE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
+struct ApiOutlineKey {
+    owner: String,
+    name: String,
+    descriptor: String,
+    fingerprint: [u8; 32],
+}
+
+#[derive(Clone)]
+struct ApiOutlineProjection {
+    owner: String,
+    name: String,
+}
+
+thread_local! {
+    static API_OUTLINE_PROJECTIONS: RefCell<BTreeMap<ApiOutlineKey, ApiOutlineProjection>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+fn with_api_outline_projections<T>(
+    projections: BTreeMap<ApiOutlineKey, ApiOutlineProjection>,
+    body: impl FnOnce() -> T,
+) -> T {
+    let previous: BTreeMap<ApiOutlineKey, ApiOutlineProjection> = API_OUTLINE_PROJECTIONS.with(
+        |slot: &RefCell<BTreeMap<ApiOutlineKey, ApiOutlineProjection>>| slot.replace(projections),
+    );
+    let result: T = body();
+    API_OUTLINE_PROJECTIONS.with(
+        |slot: &RefCell<BTreeMap<ApiOutlineKey, ApiOutlineProjection>>| slot.replace(previous),
+    );
+    result
+}
+
+fn api_outline_projection(
+    owner: &str,
+    name: &str,
+    descriptor: &str,
+) -> Option<ApiOutlineProjection> {
+    API_OUTLINE_PROJECTIONS.with(
+        |slot: &RefCell<BTreeMap<ApiOutlineKey, ApiOutlineProjection>>| {
+            let borrowed: std::cell::Ref<'_, BTreeMap<ApiOutlineKey, ApiOutlineProjection>> =
+                slot.borrow();
+            let mut matching = borrowed.iter().filter_map(
+                |(key, projection): (&ApiOutlineKey, &ApiOutlineProjection)| {
+                    (key.owner == owner && key.name == name && key.descriptor == descriptor)
+                        .then_some(projection)
+                },
+            );
+            let projection: ApiOutlineProjection = matching.next()?.clone();
+            matching.next().is_none().then_some(projection)
+        },
+    )
+}
+
+const API_OUTLINE_MAX_CLASSES: usize = 512;
+const API_OUTLINE_MAX_METHODS: usize = 512;
+const API_OUTLINE_MAX_INSTRUCTIONS: usize = 512;
+const API_OUTLINE_MAX_DEPTH: usize = 16;
+const API_OUTLINE_MAX_PROJECTIONS: usize = 32;
+
+struct KnownApiOutline {
+    descriptor: &'static str,
+    fingerprint: [u8; 32],
+    owner: &'static str,
+    name: &'static str,
+}
+
+const KNOWN_API_OUTLINES: [KnownApiOutline; 6] = [
+    KnownApiOutline {
+        descriptor: "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+        fingerprint: [
+            41, 47, 23, 222, 141, 57, 83, 159, 84, 126, 25, 32, 136, 173, 85, 241, 216, 69, 209,
+            160, 189, 113, 3, 153, 187, 214, 143, 1, 216, 211, 86, 242,
+        ],
+        owner: "java/util/Map",
+        name: "of",
+    },
+    KnownApiOutline {
+        descriptor: "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+        fingerprint: [
+            221, 73, 203, 135, 154, 68, 153, 25, 19, 4, 110, 191, 177, 6, 214, 252, 243, 254, 27,
+            140, 168, 34, 73, 204, 192, 141, 219, 178, 220, 195, 93, 132,
+        ],
+        owner: "java/util/List",
+        name: "of",
+    },
+    KnownApiOutline {
+        descriptor: "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+        fingerprint: [
+            121, 183, 103, 63, 203, 134, 135, 200, 63, 146, 135, 217, 3, 126, 162, 160, 126, 101,
+            249, 190, 51, 116, 12, 13, 159, 146, 65, 136, 93, 33, 91, 52,
+        ],
+        owner: "java/util/Set",
+        name: "of",
+    },
+    KnownApiOutline {
+        descriptor: "(Ljava/util/function/ToIntFunction;)Ljava/util/Comparator;",
+        fingerprint: [
+            206, 62, 114, 158, 85, 96, 89, 109, 168, 84, 187, 69, 197, 139, 204, 41, 23, 33, 177,
+            175, 153, 39, 235, 92, 192, 132, 100, 102, 92, 83, 135, 71,
+        ],
+        owner: "java/util/Comparator",
+        name: "comparingInt",
+    },
+    KnownApiOutline {
+        descriptor: "(Ljava/lang/Object;)Z",
+        fingerprint: [
+            37, 120, 140, 251, 243, 135, 222, 20, 7, 253, 201, 179, 44, 149, 20, 37, 156, 204, 51,
+            219, 237, 214, 142, 150, 176, 83, 237, 255, 156, 215, 20, 146,
+        ],
+        owner: "java/util/Objects",
+        name: "nonNull",
+    },
+    KnownApiOutline {
+        descriptor: "(II)Ljava/util/stream/IntStream;",
+        fingerprint: [
+            142, 226, 192, 159, 74, 124, 80, 41, 20, 26, 152, 98, 25, 128, 172, 54, 228, 100, 63,
+            178, 120, 210, 46, 114, 187, 113, 52, 87, 108, 8, 13, 126,
+        ],
+        owner: "java/util/stream/IntStream",
+        name: "range",
+    },
+];
+
+fn api_outline_plan<'a>(
+    classes: impl Iterator<Item = &'a ClassFile>,
+) -> BTreeMap<ApiOutlineKey, ApiOutlineProjection> {
+    let classes: Vec<&ClassFile> = classes.take(API_OUTLINE_MAX_CLASSES + 1).collect();
+    if classes.len() > API_OUTLINE_MAX_CLASSES {
+        return BTreeMap::new();
+    }
+    let mut projections: BTreeMap<ApiOutlineKey, ApiOutlineProjection> = BTreeMap::new();
+    for class in classes {
+        if class.access_flags & (ACC_SYNTHETIC | ACC_FINAL) != (ACC_SYNTHETIC | ACC_FINAL)
+            || !class.fields.is_empty()
+            || class.methods.len() > API_OUTLINE_MAX_METHODS
+            || class.methods.iter().any(|method: &MethodInfo| {
+                method.access_flags & ACC_STATIC == 0
+                    || class.utf8_at(method.name_index).is_err()
+                    || class.utf8_at(method.descriptor_index).is_err()
+            })
+        {
+            continue;
+        }
+        let Ok(owner) = class.this_class_name() else {
+            continue;
+        };
+        for method in &class.methods {
+            let Ok(name) = class.utf8_at(method.name_index) else {
+                continue;
+            };
+            let Ok(descriptor) = class.utf8_at(method.descriptor_index) else {
+                continue;
+            };
+            let Some(known) = KNOWN_API_OUTLINES
+                .iter()
+                .find(|known: &&KnownApiOutline| known.descriptor == descriptor)
+            else {
+                continue;
+            };
+            let mut active: BTreeSet<(String, String)> = BTreeSet::new();
+            let Some(fingerprint) =
+                api_outline_method_fingerprint(class, name, descriptor, &mut active, 0)
+            else {
+                continue;
+            };
+            if fingerprint != known.fingerprint {
+                continue;
+            }
+            let key: ApiOutlineKey = ApiOutlineKey {
+                owner: owner.to_owned(),
+                name: name.to_owned(),
+                descriptor: descriptor.to_owned(),
+                fingerprint,
+            };
+            let projection: ApiOutlineProjection = ApiOutlineProjection {
+                owner: known.owner.to_owned(),
+                name: known.name.to_owned(),
+            };
+            projections.insert(key, projection);
+            if projections.len() > API_OUTLINE_MAX_PROJECTIONS {
+                return BTreeMap::new();
+            }
+        }
+    }
+    projections
+}
+
+fn api_outline_method_fingerprint(
+    class: &ClassFile,
+    name: &str,
+    descriptor: &str,
+    active: &mut BTreeSet<(String, String)>,
+    depth: usize,
+) -> Option<[u8; 32]> {
+    if depth >= API_OUTLINE_MAX_DEPTH || !active.insert((name.to_owned(), descriptor.to_owned())) {
+        return None;
+    }
+    let matching: Vec<&MethodInfo> = class
+        .methods
+        .iter()
+        .filter(|method: &&MethodInfo| {
+            class.utf8_at(method.name_index).ok() == Some(name)
+                && class.utf8_at(method.descriptor_index).ok() == Some(descriptor)
+        })
+        .collect();
+    let [method]: [&MethodInfo; 1] = matching.try_into().ok()?;
+    if method.access_flags & ACC_STATIC == 0 {
+        active.remove(&(name.to_owned(), descriptor.to_owned()));
+        return None;
+    }
+    let MethodCode::Decoded(code): MethodCode = find_code(class, method) else {
+        active.remove(&(name.to_owned(), descriptor.to_owned()));
+        return None;
+    };
+    if !code.exception_table.is_empty() || code.dropped_exception_entries != 0 {
+        active.remove(&(name.to_owned(), descriptor.to_owned()));
+        return None;
+    }
+    let instructions: Vec<Instruction> = validate_code_attribute(class, &code).ok()?;
+    if instructions.len() > API_OUTLINE_MAX_INSTRUCTIONS {
+        active.remove(&(name.to_owned(), descriptor.to_owned()));
+        return None;
+    }
+    let mut hasher: Sha256 = Sha256::new();
+    hasher.update(descriptor.as_bytes());
+    hasher.update([0]);
+    for instruction in &instructions {
+        hasher.update([instruction.opcode, u8::from(instruction.wide)]);
+        api_outline_operand_fingerprint(
+            class,
+            &instructions,
+            instruction,
+            active,
+            depth,
+            &mut hasher,
+        )?;
+        hasher.update([0xff]);
+    }
+    active.remove(&(name.to_owned(), descriptor.to_owned()));
+    Some(hasher.finalize().into())
+}
+
+fn api_outline_operand_fingerprint(
+    class: &ClassFile,
+    instructions: &[Instruction],
+    instruction: &Instruction,
+    active: &mut BTreeSet<(String, String)>,
+    depth: usize,
+    hasher: &mut Sha256,
+) -> Option<()> {
+    match &instruction.operands {
+        Operands::None => {}
+        Operands::Byte(value) | Operands::Short(value) => hasher.update(value.to_be_bytes()),
+        Operands::Local(index) => hasher.update(index.to_be_bytes()),
+        Operands::Branch(_) => {
+            let target: u32 = branch_target(instruction)?;
+            let index: usize = instructions
+                .iter()
+                .position(|item: &Instruction| item.pc == target)?;
+            hasher.update(u32::try_from(index).ok()?.to_be_bytes());
+        }
+        Operands::ConstPool(index) => {
+            api_outline_pool_fingerprint(class, *index, active, depth, hasher)?;
+        }
+        Operands::Iinc { index, delta } => {
+            hasher.update(index.to_be_bytes());
+            hasher.update(delta.to_be_bytes());
+        }
+        Operands::NewArray(kind) => hasher.update([*kind]),
+        Operands::InvokeInterface { index, count } => {
+            hasher.update([*count]);
+            api_outline_pool_fingerprint(class, *index, active, depth, hasher)?;
+        }
+        Operands::InvokeDynamic(_) => return None,
+        Operands::MultiANewArray { index, dimensions } => {
+            hasher.update([*dimensions]);
+            api_outline_pool_fingerprint(class, *index, active, depth, hasher)?;
+        }
+        Operands::TableSwitch {
+            default,
+            low,
+            high,
+            offsets,
+        } => {
+            hasher.update(low.to_be_bytes());
+            hasher.update(high.to_be_bytes());
+            api_outline_switch_target(instructions, instruction.pc, *default, hasher)?;
+            for offset in offsets {
+                api_outline_switch_target(instructions, instruction.pc, *offset, hasher)?;
+            }
+        }
+        Operands::LookupSwitch { default, pairs } => {
+            api_outline_switch_target(instructions, instruction.pc, *default, hasher)?;
+            for (key, offset) in pairs {
+                hasher.update(key.to_be_bytes());
+                api_outline_switch_target(instructions, instruction.pc, *offset, hasher)?;
+            }
+        }
+    }
+    Some(())
+}
+
+fn api_outline_switch_target(
+    instructions: &[Instruction],
+    pc: u32,
+    offset: i32,
+    hasher: &mut Sha256,
+) -> Option<()> {
+    let target: u32 = pc.checked_add_signed(offset)?;
+    let index: usize = instructions
+        .iter()
+        .position(|item: &Instruction| item.pc == target)?;
+    hasher.update(u32::try_from(index).ok()?.to_be_bytes());
+    Some(())
+}
+
+fn api_outline_pool_fingerprint(
+    class: &ClassFile,
+    index: u16,
+    active: &mut BTreeSet<(String, String)>,
+    depth: usize,
+    hasher: &mut Sha256,
+) -> Option<()> {
+    let reference: String = bytecode::resolve_ref(class, index)?;
+    if let Some((owner, name, descriptor)) = split_member(&reference)
+        && class.this_class_name().ok() == Some(owner.as_str())
+    {
+        let nested: [u8; 32] =
+            api_outline_method_fingerprint(class, &name, &descriptor, active, depth + 1)?;
+        hasher.update(nested);
+    } else {
+        hasher.update(reference.as_bytes());
+    }
+    Some(())
+}
+
 thread_local! {
     static RECORD_ARITIES: RefCell<BTreeMap<String, usize>> =
         const { RefCell::new(BTreeMap::new()) };
@@ -9229,7 +9567,20 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
         }
     }
 
-    let owner_src: String = descriptor::binary_to_source(&owner);
+    let projection: Option<ApiOutlineProjection> = is_static
+        .then(|| api_outline_projection(&owner, &name, &desc))
+        .flatten();
+    let projected_owner: &str = projection
+        .as_ref()
+        .map_or(owner.as_str(), |projected: &ApiOutlineProjection| {
+            projected.owner.as_str()
+        });
+    let projected_name: &str = projection
+        .as_ref()
+        .map_or(name.as_str(), |projected: &ApiOutlineProjection| {
+            projected.name.as_str()
+        });
+    let owner_src: String = descriptor::binary_to_source(projected_owner);
     let virtual_dispatch: bool = matches!(op, 0xB6 | 0xB9);
     let typed_receiver: Option<Expr> =
         receiver.map(|r: Expr| narrow_invoke_receiver(r, &owner_src, virtual_dispatch));
@@ -9238,7 +9589,7 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
     let call: Expr = Expr::Invoke {
         receiver: typed_receiver.map(Box::new),
         owner: owner_src,
-        method: name,
+        method: projected_name.to_owned(),
         args,
         returns_bool: matches!(parsed.returns, JavaType::Boolean),
     };
@@ -9788,6 +10139,8 @@ fn decompile_class_with_inners_scoped(
     cf: &ClassFile,
     inners: &std::collections::BTreeMap<String, ClassFile>,
 ) -> DecompiledClass {
+    let api_outlines: BTreeMap<ApiOutlineKey, ApiOutlineProjection> =
+        api_outline_plan(std::iter::once(cf).chain(inners.values()));
     let anon: BTreeMap<String, ClassFile> = inners
         .iter()
         .filter_map(|(key, inner): (&String, &ClassFile)| {
@@ -9820,7 +10173,9 @@ fn decompile_class_with_inners_scoped(
     }
     let mut d: DecompiledClass = with_enum_metadata(enum_constants, switchmaps, || {
         with_record_arities(record_arities, || {
-            with_anon_inners(anon, || decompile_class(cf))
+            with_anon_inners(anon, || {
+                with_api_outline_projections(api_outlines, || decompile_class(cf))
+            })
         })
     });
     let inner_stubs: String = build_inner_class_stubs(cf, inners);
