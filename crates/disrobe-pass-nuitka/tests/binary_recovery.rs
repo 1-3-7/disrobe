@@ -187,6 +187,22 @@ fn onefile_decompile_recovers_inner_module_constants() {
 }
 
 #[test]
+fn automatic_onefile_decompile_runs_reassembly_planning() {
+    let decomp: NuitkaDecompilation =
+        decompile_binary(&corpus("onefile/hello.exe")).expect("decompile onefile");
+    let planned: Option<&String> = decomp.notes.iter().find(|note: &&String| {
+        note.starts_with("onefile reassembly plan:")
+            && note.contains(&format!("{} entry/entries", ONEFILE_ENTRY_NAMES.len()))
+    });
+
+    assert!(
+        planned.is_some(),
+        "automatic onefile decompile must run plan_reassembly; notes = {:?}",
+        decomp.notes
+    );
+}
+
+#[test]
 fn compiled_module_blob_recovery_is_self_contained() {
     let module: Vec<u8> = onefile_inner_module();
     let scan: BlobScan = scan_constants_blob(&module).expect("blob constants present");

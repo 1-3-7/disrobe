@@ -132,7 +132,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-nuitka",
-        13,
+        12,
         "manifest, surface and constant-blob builders proven by their own test but not yet called \
          from the crate's extraction entry point, plus one provenance-header renderer never \
          spliced into the `--emit` output path",

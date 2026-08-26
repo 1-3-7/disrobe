@@ -25,7 +25,8 @@ use crate::limits::{MAX_BINARY_INPUT_BYTES, MAX_C_SOURCE_BYTES, validate_binary_
 use crate::name_map::{NativeNameMap, map_names};
 use crate::native_body::{NativeBodyRecovery, lift_native_bodies};
 use crate::native_disasm::{NativeDisasm, disassemble_module_stats};
-use crate::onefile::{StreamedEntry, extract_onefile_streaming};
+use crate::onefile::{OnefilePayload, StreamedEntry, extract_onefile};
+use crate::reassembly::{ReassemblyPlan, plan_reassembly};
 use crate::skeleton::{NuitkaSkeleton, SkeletonModule, reconstruct};
 use crate::surface::{
     SurfaceModule, build_surface_names_only_with_skeleton, build_surface_with_optional_python_abi,
@@ -611,19 +612,19 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
     let python_abi: Option<(u8, u8)> = python_abi_from_binary(bytes);
     let version: NuitkaVersionReport = detect_nuitka_version(bytes, None, python_abi);
     let abi: Option<(u8, u8)> = python_abi.or(version.python_abi);
+    let extracted: OnefilePayload = extract_onefile(bytes, offset)?;
+    let reassembly: ReassemblyPlan = plan_reassembly(&extracted.entries)?;
     let mut payload: OnefileDecompilePayload = OnefileDecompilePayload::default();
-    let mut collection_error: Option<Error> = None;
-    let extraction = extract_onefile_streaming(bytes, offset, &mut |entry: &StreamedEntry<'_>| {
-        if collection_error.is_none()
-            && let Err(error) = payload.collect(entry, abi)
-        {
-            collection_error = Some(error);
-        }
-        Ok(())
-    });
-    extraction?;
-    if let Some(error) = collection_error {
-        return Err(error);
+    for entry in &extracted.entries {
+        let streamed: StreamedEntry<'_> = StreamedEntry {
+            filename: entry.filename.clone(),
+            size: entry.size,
+            permissions: entry.permissions,
+            crc32: entry.crc32,
+            symlink_target: entry.symlink_target.clone(),
+            data: &entry.data,
+        };
+        payload.collect(&streamed, abi)?;
     }
 
     let mut notes: Vec<String> = Vec::new();
@@ -671,6 +672,12 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
             .iter()
             .filter(|d: &&DataFileEntry| matches!(d.kind, DataFileKind::SharedLibrary))
             .count(),
+    ));
+    notes.push(format!(
+        "onefile reassembly plan: {} entry/entries, {} byte(s), {} directory/directories",
+        reassembly.tree.len(),
+        reassembly.stats.total_bytes,
+        reassembly.directories.len(),
     ));
 
     let bytecode: Option<BytecodeTable> =
