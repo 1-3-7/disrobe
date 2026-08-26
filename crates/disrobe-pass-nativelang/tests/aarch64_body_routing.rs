@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::crate_fixture_or_fail;
+use common::{NIM_ELF, crate_fixture_or_fail, fixture_or_fail};
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::Pass;
@@ -38,6 +38,34 @@ fn automatic_nativelang_recovery_exposes_aarch64_zig_bodies() {
                     .is_some_and(|source: &str| source.contains("dr_mix"))
         }),
         "the automatic route must expose the recovered AArch64 dr_mix body"
+    );
+}
+
+#[test]
+fn automatic_nativelang_recovery_exposes_nim_fib_bodies() {
+    let bytes: Vec<u8> = fixture_or_fail(NIM_ELF);
+    let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0_u8; 32]);
+    let output: Artifact = NATIVELANG_PASS
+        .run(&artifact)
+        .expect("the committed Nim fixture must reach automatic nativelang recovery");
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.envelope).expect("the automatic nativelang report is json");
+    let bodies: &[serde_json::Value] = report["bodies"]["bodies"]
+        .as_array()
+        .expect("the automatic nativelang report retains the carved body outcomes");
+
+    assert!(
+        bodies.iter().any(|body: &serde_json::Value| {
+            body["name"].as_str() == Some("hello.fib")
+                && body["status"]["state"].as_str() == Some("recovered")
+                && body["status"]["pseudo_c"]
+                    .as_str()
+                    .is_some_and(|source: &str| source.contains("return"))
+                && body["status"]["pseudo_rust"]["source"]
+                    .as_str()
+                    .is_some_and(|source: &str| source.contains("return"))
+        }),
+        "the automatic route must expose recovered pseudo-C and pseudo-Rust for Nim hello.fib"
     );
 }
 

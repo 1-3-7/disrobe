@@ -13235,6 +13235,56 @@ fn sysv_setcc_battery() -> Vec<SysvSetccCase> {
                 .to_owned(),
             driver_call: "sc_ult".to_owned(),
         },
+        SysvSetccCase {
+            name: "sc_dec_overflow",
+            machine_code: assemble_sysv_leaf(&[
+                0x48, 0x89, 0xf8, 0x48, 0x89, 0xf6, 0x48, 0xff, 0xc8, 0x0f, 0x90, 0xc0, 0x0f,
+                0xb6, 0xc0,
+            ]),
+            ground_truth: "long long sc_dec_overflow(long long a, long long b){ long long out; (void)b; return __builtin_sub_overflow(a, 1LL, &out); }".to_owned(),
+            prototype: "extern long long sc_dec_overflow(long long, long long);".to_owned(),
+            driver_call: "sc_dec_overflow".to_owned(),
+        },
+        SysvSetccCase {
+            name: "sc_sub8_overflow",
+            machine_code: assemble_sysv_leaf(&[
+                0x48, 0x89, 0xf6, 0x40, 0x88, 0xf8, 0x2c, 0x01, 0x0f, 0x90, 0xc0, 0x0f,
+                0xb6, 0xc0,
+            ]),
+            ground_truth: "long long sc_sub8_overflow(long long a, long long b){ signed char out; (void)b; return __builtin_sub_overflow((signed char)a, (signed char)1, &out); }".to_owned(),
+            prototype: "extern long long sc_sub8_overflow(long long, long long);".to_owned(),
+            driver_call: "sc_sub8_overflow".to_owned(),
+        },
+        SysvSetccCase {
+            name: "sc_sub16_overflow",
+            machine_code: assemble_sysv_leaf(&[
+                0x48, 0x89, 0xf6, 0x66, 0x89, 0xf8, 0x66, 0x2d, 0x02, 0x00, 0x0f, 0x90,
+                0xc0, 0x0f, 0xb6, 0xc0,
+            ]),
+            ground_truth: "long long sc_sub16_overflow(long long a, long long b){ short out; (void)b; return __builtin_sub_overflow((short)a, (short)2, &out); }".to_owned(),
+            prototype: "extern long long sc_sub16_overflow(long long, long long);".to_owned(),
+            driver_call: "sc_sub16_overflow".to_owned(),
+        },
+        SysvSetccCase {
+            name: "sc_sub32_overflow",
+            machine_code: assemble_sysv_leaf(&[
+                0x48, 0x89, 0xf6, 0x89, 0xf8, 0x2d, 0x03, 0x00, 0x00, 0x00, 0x0f, 0x90,
+                0xc0, 0x0f, 0xb6, 0xc0,
+            ]),
+            ground_truth: "long long sc_sub32_overflow(long long a, long long b){ int out; (void)b; return __builtin_sub_overflow((int)a, 3, &out); }".to_owned(),
+            prototype: "extern long long sc_sub32_overflow(long long, long long);".to_owned(),
+            driver_call: "sc_sub32_overflow".to_owned(),
+        },
+        SysvSetccCase {
+            name: "sc_sub64_overflow",
+            machine_code: assemble_sysv_leaf(&[
+                0x48, 0x89, 0xf8, 0x48, 0x89, 0xf6, 0x48, 0x83, 0xe8, 0x05, 0x0f, 0x90,
+                0xc0, 0x0f, 0xb6, 0xc0,
+            ]),
+            ground_truth: "long long sc_sub64_overflow(long long a, long long b){ long long out; (void)b; return __builtin_sub_overflow(a, 5LL, &out); }".to_owned(),
+            prototype: "extern long long sc_sub64_overflow(long long, long long);".to_owned(),
+            driver_call: "sc_sub64_overflow".to_owned(),
+        },
     ]
 }
 
@@ -13293,6 +13343,55 @@ fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
             case.name,
             recovery.source
         );
+        let rust_source: String = recovery
+            .rust_source
+            .clone()
+            .unwrap_or_else(|| panic!("sysv {} must emit Rust", case.name));
+        let rust_driver: String = format!(
+            "{rust_source}\n\
+             unsafe extern \"C\" {{ fn {}(a: i64, b: i64) -> i64; }}\n\
+             fn main() {{\n\
+             \x20   let inputs: [i64; 18] = [0, 1, -1, 127, -128, -127, 32767, -32768, -32766, 2147483647, -2147483648, -2147483645, i64::MAX, i64::MIN, i64::MIN + 5, 100, -100, 42];\n\
+             \x20   for a in inputs {{\n\
+             \x20       let want: u64 = unsafe {{ {}(a, 0) }} as u64;\n\
+             \x20       let got: u64 = recovered(a as u64, 0);\n\
+             \x20       assert_eq!(got, want, \"{} a={{a}}\");\n\
+             \x20   }}\n\
+             }}\n",
+            case.name, case.name, case.name
+        );
+        let rust_driver_path: PathBuf = dir.join(format!("{}_rust.rs", case.name));
+        std::fs::write(&rust_driver_path, rust_driver.as_bytes())
+            .expect("write sysv setcc Rust driver");
+        let rust_executable_path: PathBuf = dir.join(if cfg!(windows) {
+            format!("{}_rust.exe", case.name)
+        } else {
+            format!("{}_rust", case.name)
+        });
+        let rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition=2024", "-O"])
+            .arg(&rust_driver_path)
+            .arg("-C")
+            .arg(format!("link-arg={}", ground_o.display()))
+            .args(["-o"])
+            .arg(&rust_executable_path)
+            .output()
+            .expect("compile recovered sysv setcc Rust");
+        assert!(
+            rust_build.status.success(),
+            "sysv {} recovered Rust compile failed: {}\n{rust_driver}",
+            case.name,
+            String::from_utf8_lossy(&rust_build.stderr)
+        );
+        let rust_run: std::process::Output = Command::new(&rust_executable_path)
+            .output()
+            .expect("run recovered sysv setcc Rust");
+        assert!(
+            rust_run.status.success(),
+            "sysv {} recovered Rust diverged: {}",
+            case.name,
+            String::from_utf8_lossy(&rust_run.stderr)
+        );
         let recovered_name: String = format!("rec_{}", case.name);
         recovered_decls.push_str(&rename_recovered(&recovery.source, &recovered_name));
         recovered_decls.push('\n');
@@ -13328,8 +13427,11 @@ fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
          int main(void) {{\n\
          \x20   long long inputs[][2] = {{\n\
          \x20       {{0,0}},{{1,1}},{{-1,-1}},{{7,3}},{{-7,3}},{{3,7}},{{-3,-7}},\n\
-         \x20       {{123456,-654321}},{{2147483647,1}},{{-2147483648,-1}},\n\
-         \x20       {{0x7fffffffffffffffLL,2}},{{100,200}},{{-100,50}},{{42,42}}\n\
+         \x20       {{123456,-654321}},{{127,0}},{{-128,0}},{{-127,0}},\n\
+         \x20       {{32767,0}},{{-32768,0}},{{-32766,0}},\n\
+         \x20       {{2147483647,1}},{{-2147483648,-1}},{{-2147483645,0}},\n\
+         \x20       {{0x7fffffffffffffffLL,2}},{{(-9223372036854775807LL - 1LL),0}},\n\
+         \x20       {{(-9223372036854775807LL + 4LL),0}},{{100,200}},{{-100,50}},{{42,42}}\n\
          \x20   }};\n\
          \x20   size_t n_inputs = sizeof(inputs)/sizeof(inputs[0]);\n\
          {driver_body}\

@@ -643,6 +643,8 @@ impl CondKind {
             "be" | "na" => Some(Self::Be),
             "s" => Some(Self::S),
             "ns" => Some(Self::Ns),
+            "o" => Some(Self::Vs),
+            "no" => Some(Self::Vc),
             "p" | "pe" => Some(Self::P),
             "np" | "po" => Some(Self::Np),
             _ => None,
@@ -3883,10 +3885,43 @@ fn build_leaf_items(
                     flags = None;
                 }
             }
-            Stmt::BinAssign { dest, op, .. } => {
-                flags = match flag_effect_bin(*op) {
-                    FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
-                    FlagEffect::Clobber => None,
+            Stmt::BinAssign { dest, op, src } => {
+                flags = if *op == BinOp::Add && insn.mnemonic == "add" {
+                    flags_mark = items.len();
+                    Some(Flags::Add {
+                        lhs: *dest,
+                        rhs: src.clone(),
+                    })
+                } else if *op == BinOp::Sub
+                    && matches!(src, Source::Imm(amount) if *amount > 0 && *amount <= signed_max(dest.width))
+                    && insns
+                        .get(instruction_index + 1)
+                        .is_some_and(|next: &DisasmInsn| next.mnemonic == "seto")
+                {
+                    let amount: i64 = match src {
+                        Source::Imm(amount) => *amount,
+                        Source::Reg(_) | Source::Lea { .. } | Source::Mem(_) => unreachable!(),
+                    };
+                    let threshold: i64 = signed_min(dest.width) + amount;
+                    let var: u32 = next_sel;
+                    next_sel += 1;
+                    items.push(Item {
+                        address: insn.address,
+                        kind: ItemKind::Stmt(Stmt::FlagSnapshot {
+                            var,
+                            kind: CondKind::L,
+                            flags: Flags::Cmp {
+                                lhs: *dest,
+                                rhs: Source::Imm(threshold),
+                            },
+                        }),
+                    });
+                    Some(Flags::Snapshot { var })
+                } else {
+                    match flag_effect_bin(*op) {
+                        FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
+                        FlagEffect::Clobber => None,
+                    }
                 };
             }
             Stmt::UnAssign { dest, op } => {
@@ -22526,6 +22561,24 @@ fn signed_operand(expr: &str, width: Width) -> String {
         let narrowed: CExpr = c_cast(cx, &format!("int{bits}_t"), opaque);
         c_cast(cx, "int64_t", narrowed)
     })
+}
+
+const fn signed_max(width: Width) -> i64 {
+    match width {
+        Width::W8 => i8::MAX as i64,
+        Width::W16 => i16::MAX as i64,
+        Width::W32 => i32::MAX as i64,
+        Width::W64 => i64::MAX,
+    }
+}
+
+const fn signed_min(width: Width) -> i64 {
+    match width {
+        Width::W8 => i8::MIN as i64,
+        Width::W16 => i16::MIN as i64,
+        Width::W32 => i32::MIN as i64,
+        Width::W64 => i64::MIN,
+    }
 }
 
 fn unsigned_operand(expr: &str, width: Width) -> String {

@@ -962,7 +962,10 @@ fn a_function_the_decompiler_cannot_lift_abstains_with_a_named_reason() {
         text.contains("rol"),
         "the abstention must name what stopped the lift, got {text}"
     );
+}
 
+#[test]
+fn nim_fib_recovers_pseudo_c_and_pseudo_rust() {
     let nim: NativeLangAnalysis = analyze_origin(Origin::Corpus(NIM_ELF));
     let fib: &FunctionBody = nim
         .bodies
@@ -970,15 +973,23 @@ fn a_function_the_decompiler_cannot_lift_abstains_with_a_named_reason() {
         .iter()
         .find(|body: &&FunctionBody| body.name == "hello.fib")
         .expect("corpus/native/nim/hello.nim declares fib, so hello.fib must be carved");
-    let BodyStatus::Rejected { ref reason } = fib.status else {
+    let BodyStatus::Recovered {
+        ref pseudo_c,
+        pseudo_rust: RustBody::Emitted(ref pseudo_rust),
+    } = fib.status
+    else {
         panic!(
-            "hello.fib must abstain rather than publish a partial body, got {:?}",
+            "hello.fib must recover pseudo-C and pseudo-Rust through nativelang analysis, got {:?}",
             fib.status
         );
     };
     assert!(
-        format!("{reason:?}").contains("seto"),
-        "the abstention must name the instruction that stopped the lift, got {reason:?}"
+        pseudo_c.contains("return"),
+        "the recovered Nim pseudo-C body must expose an executable return path, got {pseudo_c}"
+    );
+    assert!(
+        pseudo_rust.contains("return"),
+        "the recovered Nim pseudo-Rust body must expose an executable return path, got {pseudo_rust}"
     );
 }
 
@@ -1099,8 +1110,8 @@ const MODE_RATES: &[ModeRate] = &[
         toolchain: "nim 2.0.8",
         origin: Origin::Corpus(NIM_ELF),
         functions: 183,
-        recovered: 75,
-        rust: 75,
+        recovered: 83,
+        rust: 83,
     },
     ModeRate {
         language: "nim",
@@ -1171,8 +1182,8 @@ const MODE_RATES: &[ModeRate] = &[
         toolchain: "zig 0.13.0",
         origin: Origin::Corpus(ZIG_ELF),
         functions: 1356,
-        recovered: 312,
-        rust: 309,
+        recovered: 339,
+        rust: 335,
     },
     ModeRate {
         language: "zig",
@@ -1189,8 +1200,8 @@ const MODE_RATES: &[ModeRate] = &[
         toolchain: "crystal (version not recorded in the artifact)",
         origin: Origin::Corpus(CRYSTAL_PE),
         functions: 314,
-        recovered: 19,
-        rust: 19,
+        recovered: 24,
+        rust: 24,
     },
 ];
 
