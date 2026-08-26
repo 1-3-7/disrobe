@@ -136,6 +136,43 @@ fn make_dex() -> Vec<u8> {
     builder.build()
 }
 
+fn make_reference_return_mismatch_dex() -> Vec<u8> {
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt11n(0x12, 0, 1));
+    units.push(0x38);
+    units.push(3);
+    units.extend(insn::fmt11n(0x12, 0, 2));
+    units.extend(insn::fmt11x(0x11, 0));
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class: "LReferenceReturnMismatch;".to_owned(),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![EncodedMethod {
+            tries: Vec::new(),
+            method: MethodRef {
+                class: "LReferenceReturnMismatch;".to_owned(),
+                proto: ProtoRef {
+                    return_type: "Ljava/lang/String;".to_owned(),
+                    params: Vec::new(),
+                },
+                name: "bad".to_owned(),
+            },
+            access_flags: 0x9,
+            is_direct: true,
+            registers_size: 1,
+            ins_size: 0,
+            outs_size: 0,
+            insns: units,
+            relocations: Vec::new(),
+        }],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
 fn cp_utf8(cf: &ClassFile, idx: u16) -> Option<&str> {
     match cf.constant_pool.get(usize::from(idx)) {
         Some(ConstantPoolEntry::Utf8(s)) => Some(s.as_str()),
@@ -216,6 +253,25 @@ fn sample_class() -> ClassFile {
         .get("Sample.class")
         .expect("Sample.class present in translation");
     parse_classfile(sample).expect("parse Sample.class")
+}
+
+#[test]
+fn a_nonzero_integer_cannot_be_recovered_as_a_null_reference_return() {
+    let result: Dex2JarResult = translate_dex_bytes(&make_reference_return_mismatch_dex())
+        .expect("translate crafted mismatch dex");
+    assert_eq!(result.bodies_recovered, 0);
+    assert_eq!(result.stubbed_body_count, 1);
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.class == "ReferenceReturnMismatch"
+                && diagnostic.method.as_deref() == Some("bad()Ljava/lang/String;")
+                && diagnostic.reason
+                    == "DR-JVM-0093: control-flow JVM emitter refusal: \
+                        reference-return-type-mismatch"
+        }),
+        "{:?}",
+        result.diagnostics
+    );
 }
 
 #[test]

@@ -2029,7 +2029,9 @@ impl Emitter<'_> {
             .cfg
             .as_ref()
             .is_some_and(|c: &CfgEmit| c.block_leaders.contains(&insn.pc));
-        if is_leader {
+        let preserves_pending_result: bool =
+            is_leader && matches!(insn.op, 0x0A..=0x0C) && self.pending_result.is_some();
+        if is_leader && !preserves_pending_result {
             self.discard_pending_result();
         }
         let off: usize = self.code.len();
@@ -2087,8 +2089,10 @@ impl Emitter<'_> {
             }
             self.array_elem_desc = entry_descs;
             self.const_zero.clear();
-            self.pending_result = None;
-            self.cur_stack = 0;
+            if !preserves_pending_result {
+                self.pending_result = None;
+                self.cur_stack = 0;
+            }
             if is_handler {
                 self.cur_stack = 1;
                 if self.cur_stack > self.max_stack {
@@ -2813,9 +2817,21 @@ impl Emitter<'_> {
             self.move_uninitialized_alias(dest, src, marker);
             return;
         }
-        let slot: Slot = self.reg_slot(src);
-        self.emit_load(src);
+        let source_is_zero: bool = self.const_zero.contains(&src);
+        let slot: Slot = if source_is_zero && is_move_object(op) {
+            Slot::Ref
+        } else {
+            self.reg_slot(src)
+        };
+        if source_is_zero && matches!(slot, Slot::Ref) {
+            self.emit_zero_operand(Slot::Ref);
+        } else {
+            self.emit_load(src);
+        }
         self.emit_store(dest, slot);
+        if source_is_zero {
+            self.const_zero.insert(dest);
+        }
         match self.reg_array_elem.get(&src).copied() {
             Some(elem) => {
                 self.reg_array_elem.insert(dest, elem);
@@ -2877,7 +2893,17 @@ impl Emitter<'_> {
     fn return_value(&mut self, regs: &[u16], parsed: &MethodDescriptor) {
         let slot: Slot = Slot::from_java(&parsed.returns);
         if let Some(&src) = regs.first() {
-            self.emit_value_operand(src, slot);
+            if matches!(slot, Slot::Ref) {
+                if !self.const_zero.contains(&src) && !matches!(self.reg_slot(src), Slot::Ref) {
+                    record_bail_kind("reference-return-type-mismatch");
+                    self.bail();
+                    return;
+                }
+                let formal: String = java_type_descriptor(&parsed.returns);
+                self.emit_ref_param(src, &formal);
+            } else {
+                self.emit_value_operand(src, slot);
+            }
         }
         let op: u8 = match slot {
             Slot::Int => 0xAC,
@@ -5078,6 +5104,22 @@ fn build_descriptor(params: &[String], return_type: &str) -> String {
     out.push(')');
     out.push_str(return_type);
     out
+}
+
+fn java_type_descriptor(ty: &JavaType) -> String {
+    match ty {
+        JavaType::Byte => "B".to_owned(),
+        JavaType::Char => "C".to_owned(),
+        JavaType::Double => "D".to_owned(),
+        JavaType::Float => "F".to_owned(),
+        JavaType::Int => "I".to_owned(),
+        JavaType::Long => "J".to_owned(),
+        JavaType::Short => "S".to_owned(),
+        JavaType::Boolean => "Z".to_owned(),
+        JavaType::Void => "V".to_owned(),
+        JavaType::Object(internal) => internal.clone(),
+        JavaType::Array(inner) => format!("[{}", java_type_descriptor(inner)),
+    }
 }
 
 fn primitive_atype(descriptor: &str) -> Option<u8> {

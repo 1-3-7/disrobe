@@ -273,6 +273,18 @@ fn recovered_classes_from_a_real_blackobfuscator_dex_pass_the_real_jvm_verifier(
             result.classes.len(),
             parse_metric(&stdout, "link_skipped_classes=")
         );
+        assert_eq!(
+            body_fail,
+            0,
+            "{label} still has a verifier-rejected recovered method body:\n{}",
+            lines_with_prefix(&stdout, "BODYVERIFY ").join("\n")
+        );
+        assert_eq!(
+            lifter_fail,
+            0,
+            "{label} still has a verifier-rejected recovered class:\n{}",
+            lines_with_prefix(&stdout, "VERIFY ").join("\n")
+        );
         total_clean += clean;
         total_lifter_fail += lifter_fail;
         total_body_clean += body_clean;
