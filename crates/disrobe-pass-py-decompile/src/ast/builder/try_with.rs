@@ -6819,6 +6819,65 @@ fn finally_inline_copy_end(
     (matched == fin_ops.len()).then_some(k)
 }
 
+#[must_use]
+fn finally_arm_return_copies_match(
+    stream: &DecodedStream,
+    inline_start: usize,
+    inline_end: usize,
+    handler_start: usize,
+    handler_end: usize,
+) -> bool {
+    let inline_ops: Vec<&CanonicalOp> = significant_ops(stream, inline_start, inline_end);
+    let handler_ops: Vec<&CanonicalOp> = significant_ops(stream, handler_start, handler_end);
+    let Some(inline_return): Option<&&CanonicalOp> = inline_ops.last() else {
+        return false;
+    };
+    let Some(handler_return): Option<&&CanonicalOp> = handler_ops.last() else {
+        return false;
+    };
+    if !finally_copy_op_eq(inline_return, handler_return) {
+        return false;
+    }
+    match inline_return {
+        CanonicalOp::ReturnConst(_) => matches!(
+            (inline_ops.as_slice(), handler_ops.as_slice()),
+            (
+                [CanonicalOp::ReturnConst(_)],
+                [
+                    CanonicalOp::Pop,
+                    CanonicalOp::PopExcept,
+                    CanonicalOp::ReturnConst(_)
+                ]
+            )
+        ),
+        CanonicalOp::Return => {
+            if inline_ops.len() < 2 || handler_ops.len() != inline_ops.len() + 4 {
+                return false;
+            }
+            let cleanup_start: usize = handler_ops.len() - 5;
+            if !matches!(
+                &handler_ops[cleanup_start..],
+                [
+                    CanonicalOp::Swap(2),
+                    CanonicalOp::Pop,
+                    CanonicalOp::Swap(2),
+                    CanonicalOp::PopExcept,
+                    CanonicalOp::Return
+                ]
+            ) {
+                return false;
+            }
+            inline_ops[..inline_ops.len() - 1]
+                .iter()
+                .zip(&handler_ops[..cleanup_start])
+                .all(|(inline, handler): (&&CanonicalOp, &&CanonicalOp)| {
+                    finally_copy_op_eq(inline, handler)
+                })
+        }
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FinallyArmReturnLoop {
     try_start: usize,
@@ -6900,18 +6959,12 @@ fn finally_arm_return_loop(
     let inline_resume: usize =
         resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
             .filter(|target: &usize| *target > *inline_guard && *target < loop_region.back_edge)?;
-    let inline_return_ops: Vec<&CanonicalOp> =
-        significant_ops(stream, *inline_guard + 1, inline_resume);
-    let [inline_return]: &[&CanonicalOp] = inline_return_ops.as_slice() else {
-        return None;
-    };
-    let inline_return_index: usize = first_significant(stream, *inline_guard + 1, inline_resume)?;
+    let inline_return_index: usize =
+        last_significant_back(stream, *inline_guard + 1, inline_resume)?;
     if !matches!(
-        inline_return,
+        stream.ops[inline_return_index],
         CanonicalOp::Return | CanonicalOp::ReturnConst(_)
-    ) || last_significant_back(stream, *inline_guard + 1, inline_resume)
-        != Some(inline_return_index)
-    {
+    ) {
         return None;
     }
     let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
@@ -6962,19 +7015,19 @@ fn finally_arm_return_loop(
     let handler_resume: usize =
         resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
             .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
-    let handler_return_ops: Vec<&CanonicalOp> =
-        significant_ops(stream, *handler_guard + 1, handler_resume);
-    let [CanonicalOp::Pop, CanonicalOp::PopExcept, handler_return]: &[&CanonicalOp] =
-        handler_return_ops.as_slice()
-    else {
-        return None;
-    };
     let handler_return_index: usize =
         last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    let copies_match: bool = finally_arm_return_copies_match(
+        stream,
+        *inline_guard + 1,
+        inline_resume,
+        *handler_guard + 1,
+        handler_resume,
+    );
     if !matches!(
-        handler_return,
+        stream.ops[handler_return_index],
         CanonicalOp::Return | CanonicalOp::ReturnConst(_)
-    ) || !finally_copy_op_eq(inline_return, handler_return)
+    ) || !copies_match
         || handler_return_index.checked_sub(1) != Some(first_cleanup_end)
         || second_cleanup_start != handler_resume
     {
