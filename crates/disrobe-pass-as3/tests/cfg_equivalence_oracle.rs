@@ -1462,6 +1462,138 @@ fn backward_entry_into_loose_forward_dispatch_is_explicitly_refused() {
 }
 
 #[test]
+fn backward_entry_into_tail_dispatch_is_explicitly_refused() {
+    let mut code: Vec<u8> = vec![0x10];
+    let dispatch_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let first_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let dispatch: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x19]);
+    let first_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD1, 0x24, 0x01, 0x19]);
+    let second_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x28, 0xD6]);
+
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0x27, 0x11]);
+    let backward_entry_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, dispatch_operand, dispatch);
+    patch_branch_target(&mut code, first_break_operand, merge);
+    patch_branch_target(&mut code, second_break_operand, merge);
+    patch_branch_target(&mut code, first_case_operand, first_case);
+    patch_branch_target(&mut code, second_case_operand, second_case);
+    patch_branch_target(&mut code, backward_entry_operand, first_case);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw tail-dispatch lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("tail-dispatch lift");
+
+    assert!(
+        lifted.statements.iter().any(|statement: &Stmt| {
+            matches!(statement, Stmt::Comment(reason) if reason == "switch dispatch has a mid-region entry")
+        }),
+        "a backward predecessor into a tail-dispatch case must expose the refusal: {lifted:#?}"
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
+fn backward_exit_from_tail_dispatch_is_explicitly_refused() {
+    let mut code: Vec<u8> = vec![0x10];
+    let dispatch_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let first_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let backward_exit_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let dispatch: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x19]);
+    let first_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD1, 0x24, 0x01, 0x19]);
+    let second_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.push(0x10);
+    let default_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, dispatch_operand, dispatch);
+    patch_branch_target(&mut code, backward_exit_operand, 0);
+    patch_branch_target(&mut code, second_break_operand, merge);
+    patch_branch_target(&mut code, first_case_operand, first_case);
+    patch_branch_target(&mut code, second_case_operand, second_case);
+    patch_branch_target(&mut code, default_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw backward-exit lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("backward-exit lift");
+
+    assert!(
+        lifted.statements.windows(2).any(|window: &[Stmt]| {
+            matches!(
+                window,
+                [Stmt::Comment(reason), Stmt::Jump { target_label }]
+                    if reason == "switch dispatch is backward or mixed"
+                        && *target_label == dispatch
+            )
+        }),
+        "the tail matcher must refuse immediately before its entry jump rather than relying on a later matcher: {lifted:#?}"
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
 fn dense_forward_if_dispatch_preserves_shared_and_fallthrough_edges() {
     let mut code: Vec<u8> = Vec::new();
     let mut case_operands: Vec<usize> = Vec::new();

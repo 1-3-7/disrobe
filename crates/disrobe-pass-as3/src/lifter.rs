@@ -4533,28 +4533,40 @@ fn forward_dispatch_follow(
     follow
 }
 
-fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn try_match_tail_dispatch(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    index: usize,
+    depth: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<Option<(usize, Stmt)>, &'static str> {
     if depth == 0 {
-        return None;
+        return Ok(None);
     }
     let Stmt::Jump {
         target_label: dispatch_label,
     }: &Stmt = &stmts[index]
     else {
-        return None;
+        return Ok(None);
     };
     let dispatch_label: usize = *dispatch_label;
-    let dispatch_position: usize = stmts[index + 1..]
+    let Some(dispatch_position): Option<usize> = stmts[index + 1..]
         .iter()
         .position(
             |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == dispatch_label),
         )
-        .map(|position: usize| index + 1 + position)?;
+        .map(|position: usize| index + 1 + position)
+    else {
+        return Ok(None);
+    };
     if dispatch_position <= index + 1 {
-        return None;
+        return Ok(None);
     }
-    let (selector, tests, after_tests): (Expr, Vec<DispatchTest>, usize) =
-        collect_dispatch_tests(stmts, dispatch_position + 1)?;
+    let Some((selector, tests, after_tests)): Option<(Expr, Vec<DispatchTest>, usize)> =
+        collect_dispatch_tests(stmts, dispatch_position + 1)
+    else {
+        return Ok(None);
+    };
     if tests.iter().any(|test: &DispatchTest| {
         !matches!(
             &test.condition,
@@ -4563,7 +4575,7 @@ fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option
                     && forward_dispatch_operand_is_stable(rhs)
         )
     }) {
-        return None;
+        return Ok(None);
     }
     let region: &[Stmt] = &stmts[index + 1..dispatch_position];
     let mut target_consts: BTreeMap<usize, Vec<Expr>> = BTreeMap::new();
@@ -4571,7 +4583,7 @@ fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option
         if !region.iter().any(
             |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == test.target),
         ) {
-            return None;
+            return Ok(None);
         }
         target_consts
             .entry(test.target)
@@ -4587,27 +4599,38 @@ fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option
         })
         .collect();
     if case_label_positions.is_empty() || case_label_positions[0].0 != 0 {
-        return None;
+        return Ok(None);
     }
     for (_, label) in &case_label_positions {
         if !target_consts.contains_key(label) {
-            return None;
+            return Ok(None);
         }
     }
     let merge_label: usize = match stmts.get(after_tests) {
         Some(Stmt::Label(label)) => *label,
         Some(Stmt::Jump { target_label }) => *target_label,
-        _ => forward_dispatch_follow(region, &case_label_positions)?,
+        _ => {
+            let Some(follow): Option<usize> =
+                forward_dispatch_follow(region, &case_label_positions)
+            else {
+                return Ok(None);
+            };
+            follow
+        }
     };
     if target_consts.contains_key(&merge_label) {
-        return None;
+        return Ok(None);
     }
-    let end: usize = stmts[after_tests..]
+    let Some(end): Option<usize> = stmts[after_tests..]
         .iter()
         .position(
             |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == merge_label),
         )
-        .map(|position: usize| after_tests + position)?;
+        .map(|position: usize| after_tests + position)
+    else {
+        return Ok(None);
+    };
+    validate_tail_dispatch_region(stmts, cfg, index, end, fuel)?;
     let mut cases: Vec<SwitchCase> = Vec::with_capacity(case_label_positions.len() + 1);
     for (case_index, (label_pos, label)) in case_label_positions.iter().enumerate() {
         let body_start: usize = label_pos + 1;
@@ -4621,27 +4644,35 @@ fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option
             }
             _ => (segment, false),
         };
-        let body: Vec<Stmt> =
-            structure_forward_dispatch_body(stmts, body_slice, merge_label, depth)?;
-        let labels: Vec<CaseLabel> = target_consts
-            .get(label)?
-            .iter()
-            .map(const_to_case_label)
-            .collect();
+        let Some(body): Option<Vec<Stmt>> =
+            structure_forward_dispatch_body(stmts, body_slice, merge_label, depth)
+        else {
+            return Ok(None);
+        };
+        let Some(case_constants): Option<&Vec<Expr>> = target_consts.get(label) else {
+            return Ok(None);
+        };
+        let labels: Vec<CaseLabel> = case_constants.iter().map(const_to_case_label).collect();
         cases.push(SwitchCase {
             labels,
             body,
             breaks,
         });
     }
-    let default_body: Vec<Stmt> =
-        structure_forward_dispatch_body(stmts, &stmts[after_tests..end], merge_label, depth)?;
+    let Some(default_body): Option<Vec<Stmt>> =
+        structure_forward_dispatch_body(stmts, &stmts[after_tests..end], merge_label, depth)
+    else {
+        return Ok(None);
+    };
     cases.push(SwitchCase {
         labels: vec![CaseLabel::Default],
         body: default_body,
         breaks: false,
     });
-    Some((end - index, Stmt::StructuredSwitch { selector, cases }))
+    Ok(Some((
+        end - index,
+        Stmt::StructuredSwitch { selector, cases },
+    )))
 }
 
 fn forward_dispatch_segment(
@@ -4737,6 +4768,58 @@ fn validate_forward_dispatch_region(
         .any(|statement: &Stmt| statement_has_invalid_target(statement, &cfg.label_positions))
     {
         return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    }
+    Ok(())
+}
+
+fn validate_tail_dispatch_region(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    dispatch_start: usize,
+    merge_pos: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<(), &'static str> {
+    if stmts[dispatch_start..merge_pos]
+        .iter()
+        .any(|statement: &Stmt| statement_has_invalid_target(statement, &cfg.label_positions))
+    {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    }
+    for target in dispatch_start.saturating_add(1)..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let predecessors: &BTreeSet<usize> = cfg
+            .predecessors
+            .get(target)
+            .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+        if !fuel.charge(predecessors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        if predecessors
+            .iter()
+            .any(|source: &usize| *source < dispatch_start || *source >= merge_pos)
+        {
+            return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
+        }
+    }
+    for source in dispatch_start..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let successors: &BTreeSet<usize> = cfg
+            .successors
+            .get(source)
+            .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+        if !fuel.charge(successors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        if successors
+            .iter()
+            .any(|target: &usize| *target <= dispatch_start || *target > merge_pos)
+        {
+            return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+        }
     }
     Ok(())
 }
@@ -5157,7 +5240,7 @@ fn try_match_forward_dispatch(
     if let Some(matched) = try_match_inverted_forward_dispatch(stmts, cfg, index, depth, fuel)? {
         return Ok(Some(matched));
     }
-    Ok(try_match_tail_dispatch(stmts, index, depth))
+    try_match_tail_dispatch(stmts, cfg, index, depth, fuel)
 }
 
 fn structure_forward_dispatch(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
