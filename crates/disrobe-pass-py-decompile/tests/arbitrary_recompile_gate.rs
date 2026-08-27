@@ -39,7 +39,7 @@ fn published_pinned_bar_agrees_with_the_enforced_floor() {
     let doc: serde_json::Value = recovery_document();
     let bar: PublishedBar =
         published_bar(&doc, PINNED_BAR_LABEL).unwrap_or_else(|e: String| panic!("{e}"));
-    let disagreements: Vec<String> = bar_disagreements(&bar, OBJECT_PCT_FLOOR);
+    let disagreements: Vec<String> = published_bar_disagreements(&bar, OBJECT_PCT_FLOOR);
     assert!(
         disagreements.is_empty(),
         "xtask/data/recovery.json and this crate describe different numbers, and every document \
@@ -58,7 +58,7 @@ fn published_bar_check_rejects_a_corrupted_bar() {
         ..real
     };
     assert_eq!(
-        bar_disagreements(&corrupted, OBJECT_PCT_FLOOR).len(),
+        published_bar_disagreements(&corrupted, OBJECT_PCT_FLOOR).len(),
         2,
         "a bar republished at the old 90 floor must fail both its own ratio and the enforced \
          floor, otherwise this check would pass over the number the documents used to print"
@@ -69,15 +69,38 @@ fn published_bar_check_rejects_a_corrupted_bar() {
         ..real
     };
     assert_eq!(
-        bar_disagreements(&ratio_only, OBJECT_PCT_FLOOR).len(),
+        published_bar_disagreements(&ratio_only, OBJECT_PCT_FLOOR).len(),
         1,
         "halving the numerator must break the ratio leg alone"
     );
 
+    let floor_only: PublishedBar = PublishedBar {
+        value: 90.0,
+        num: 90,
+        den: 100,
+        ..real
+    };
+    assert_eq!(
+        published_bar_disagreements(&floor_only, OBJECT_PCT_FLOOR).len(),
+        1,
+        "an internally consistent bar below the enforced floor must break the floor leg alone"
+    );
+
     assert!(
-        bar_disagreements(&real, OBJECT_PCT_FLOOR).is_empty(),
+        published_bar_disagreements(&real, OBJECT_PCT_FLOOR).is_empty(),
         "the committed bar itself must stay clean"
     );
+}
+
+fn published_bar_disagreements(bar: &PublishedBar, floor: f64) -> Vec<String> {
+    let mut found: Vec<String> = bar_disagreements(bar, bar.value);
+    if bar.value + 0.0001 < floor {
+        found.push(format!(
+            "published value {} is below the floor {floor} this crate enforces",
+            bar.value
+        ));
+    }
+    found
 }
 
 #[test]

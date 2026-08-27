@@ -720,7 +720,7 @@ See also [Python decompiler](./languages/python.md) for the full decompiler desi
 
 Decompiles a `.pyc` (with header) to source. Full CPython 3.14 stdlib coverage is
 <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object recompile equivalence (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->); the pinned
-200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.51%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6067 of 6286<!-- /m -->, CI floor 96.51%). Legacy CPython
+200-module corpus is <!-- m:py_stdlib_pinned_pct -->96.53%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6068 of 6286<!-- /m -->, CI floor 96.51%). Legacy CPython
 1.0-3.7: <!-- m:py_legacy_pct -->78.5%<!-- /m --> proven-correct (CI floor <!-- m:py_legacy_count -->150 of 191<!-- /m -->; <!-- m:py_legacy_local_count -->166 of 191<!-- /m --> with the full
 interpreter zoo present).
 

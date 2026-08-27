@@ -116,8 +116,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "README.md",
-        figures: 36,
-        digest: "8eb5e6ae28256bb0",
+        figures: 35,
+        digest: "3b7c824c145dc7c4",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -126,8 +126,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "benches/decompile-quality/results.md",
-        figures: 185,
-        digest: "351c3029bda83cca",
+        figures: 184,
+        digest: "337e7b077efd67f2",
     },
     FigureBudget {
         path: "benches/head-to-head/results.md",
@@ -196,8 +196,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "docs/src/architecture/whitepaper.md",
-        figures: 47,
-        digest: "0a870e3a38d946ba",
+        figures: 48,
+        digest: "bbe2b1173b3be7cf",
     },
     FigureBudget {
         path: "docs/src/catalog.md",

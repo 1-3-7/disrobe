@@ -5,7 +5,7 @@
     {
       "ecosystem": "Python",
       "oracle": "recompile to equivalent bytecode",
-      "result": "96.51% of 6286 objects",
+      "result": "96.53% of 6286 objects",
       "ci": true,
       "source": "arbitrary_recompile_gate.rs, CI floor 96.51%"
     },
