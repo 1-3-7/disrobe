@@ -17,9 +17,7 @@ mod ops;
 mod spec;
 mod varnode;
 
-pub use arch::{
-    ArchLift, LiftGap, LiftGaps, PcodeArch, block_gaps, lower_arch, lower_for_arch_with_provenance,
-};
+pub use arch::{ArchLift, LiftGap, LiftGaps, PcodeArch, block_gaps, lower_arch};
 use spec::{SpecRegisterMap, SpecRegisters};
 pub use varnode::RegisterCell;
 use varnode::VarnodeLowerer;
@@ -300,15 +298,6 @@ pub fn lower_x86_64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunctio
         .functions
         .pop()
         .ok_or(LiftError::Empty)
-}
-
-pub fn lower_x86_64_with_provenance(
-    bytes: &[u8],
-    address: u64,
-    name: &str,
-) -> ProvenanceResult<NirArtifact> {
-    let block: DecodedBlock = decode_block_x86(bytes, address, 64);
-    lower_owned_pcode_block_with_provenance(block, name, &PcodeLiftConfig::x86_64())
 }
 
 pub fn lower_aarch64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunction> {

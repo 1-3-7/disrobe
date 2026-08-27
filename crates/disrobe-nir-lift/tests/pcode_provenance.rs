@@ -1,54 +1,10 @@
 #![allow(clippy::expect_used)]
 
 use disrobe_lift_x86::decode_block_x86;
-use disrobe_nir::{NirArtifact, NirFunction, NirOp, SourceLang, SourceOffset};
-use disrobe_nir_lift::{
-    PcodeArch, PcodeLiftConfig, ProvenanceLiftError, lower_for_arch_with_provenance,
-    lower_pcode_block_with_provenance, lower_x86_64, lower_x86_64_with_provenance,
-};
+use disrobe_nir::{NirArtifact, NirFunction, NirOp, SourceLang};
+use disrobe_nir_lift::{PcodeLiftConfig, ProvenanceLiftError, lower_pcode_block_with_provenance};
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
-
-#[test]
-fn variable_length_native_instructions_reemit_once_with_memory_image_offsets() {
-    let bytes: [u8; 6] = [0x48, 0x39, 0xc8, 0x7e, 0x02, 0xc3];
-    let artifact: NirArtifact =
-        lower_x86_64_with_provenance(&bytes, 0x1400, "probe").expect("lift with provenance");
-
-    assert_eq!(
-        artifact.reemit_original_bytes(0).expect("original bytes"),
-        bytes
-    );
-    assert_eq!(artifact.source_units().len(), 3);
-    assert_eq!(
-        artifact.source_units()[0].offset(),
-        SourceOffset::MemoryImage(0x1400)
-    );
-    assert_eq!(
-        artifact.source_units()[1].offset(),
-        SourceOffset::MemoryImage(0x1403)
-    );
-    assert_eq!(
-        artifact.source_units()[2].offset(),
-        SourceOffset::MemoryImage(0x1405)
-    );
-    assert!(artifact.source_units()[0].instruction_count() > 1);
-}
-
-#[test]
-fn fixed_native_encodings_reemit_through_the_architecture_table() {
-    let aarch64: [u8; 4] = 0xd65f_03c0_u32.to_le_bytes();
-    let aarch64_artifact: NirArtifact =
-        lower_for_arch_with_provenance(PcodeArch::AArch64, &aarch64, 0x2000, "fixed")
-            .expect("fixed-width provenance");
-    assert_eq!(
-        aarch64_artifact
-            .reemit_original_bytes(0)
-            .expect("aarch64 bytes"),
-        aarch64
-    );
-    assert_eq!(aarch64_artifact.source_units().len(), 1);
-}
 
 #[test]
 fn overlapping_source_addresses_fail_closed_until_decoder_identity_is_available() {
@@ -265,24 +221,5 @@ fn folded_condition_codes_remain_mapped_to_source_instructions() {
     assert_eq!(
         artifact.reemit_original_bytes(0).expect("original bytes"),
         bytes
-    );
-}
-
-#[test]
-fn legacy_x86_result_matches_the_artifact_consumer_contract() {
-    let bytes: [u8; 6] = [0x48, 0x39, 0xc8, 0x7e, 0x02, 0xc3];
-    let block: DecodedBlock = decode_block_x86(&bytes, 0x1400, 64);
-    let direct: NirFunction =
-        disrobe_nir_lift::lower_pcode_block(&block, "probe", &PcodeLiftConfig::x86_64())
-            .expect("direct compatibility result");
-    let legacy: NirFunction = lower_x86_64(&bytes, 0x1400, "probe").expect("legacy lift");
-    let artifact: NirArtifact =
-        lower_x86_64_with_provenance(&bytes, 0x1400, "probe").expect("artifact lift");
-
-    assert_eq!(legacy, direct);
-    assert_eq!(artifact.module().functions, [legacy]);
-    assert_eq!(
-        artifact.module().source_hash,
-        *blake3::hash(&bytes).as_bytes()
     );
 }

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use disrobe_nir::{NirArtifact, NirInstr, NirOp, SourceOffset, SourceUnit, ValueOp};
 use disrobe_nir_lift::{
-    ArchLift, LiftError, PcodeArch, PcodeLiftConfig, lower_arch, lower_for_arch_with_provenance,
-    lower_pcode_block,
+    ArchLift, LiftError, PcodeArch, PcodeLiftConfig, lower_arch, lower_pcode_block,
+    lower_pcode_block_with_provenance,
 };
 use disrobe_sleigh::lifter::DecodedBlock;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
@@ -103,9 +103,14 @@ fn bounded_provenance(
     arch: PcodeArch,
 ) -> (NirArtifact, Vec<u8>) {
     within_bound(label, LOWERING_BOUND, move || {
-        let artifact: NirArtifact =
-            lower_for_arch_with_provenance(arch, text, IMAGE_BASE, "recovered")
-                .unwrap_or_else(|error| panic!("{label} must lift with provenance: {error}"));
+        let config: PcodeLiftConfig = arch
+            .config()
+            .unwrap_or_else(|error| panic!("{label} must select a lift configuration: {error}"));
+        let block: DecodedBlock = arch
+            .decode(text, IMAGE_BASE)
+            .unwrap_or_else(|error| panic!("{label} must decode for provenance: {error}"));
+        let artifact: NirArtifact = lower_pcode_block_with_provenance(&block, "recovered", &config)
+            .unwrap_or_else(|error| panic!("{label} must lift with provenance: {error}"));
         let reemitted: Vec<u8> = artifact
             .reemit_original_bytes(0)
             .unwrap_or_else(|error| panic!("{label} must re-emit its source bytes: {error}"));
