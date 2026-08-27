@@ -780,10 +780,13 @@ fn infer_arg_registers(func: &Arm64Function) -> u8 {
     let mut written: u32 = 0;
     let mut highest: Option<usize> = None;
     for insn in func.instructions.iter().take(WINDOW_INSNS) {
-        if insn.flow == Arm64FlowKind::Return {
+        if insn.flow != Arm64FlowKind::Sequential {
             break;
         }
         let operands: IntegerOperands = integer_operands(insn.bytes);
+        if operands == IntegerOperands::default() {
+            break;
+        }
         for source in operands.reads() {
             if written & (1_u32 << source) != 0 {
                 continue;
@@ -797,12 +800,6 @@ fn infer_arg_registers(func: &Arm64Function) -> u8 {
         }
         if let Some(destination) = operands.destination {
             written |= 1_u32 << destination;
-        }
-        if matches!(
-            insn.flow,
-            Arm64FlowKind::DirectCall | Arm64FlowKind::IndirectCall
-        ) {
-            break;
         }
     }
     highest.map_or(0, |position: usize| {

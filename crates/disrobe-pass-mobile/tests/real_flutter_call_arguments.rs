@@ -366,6 +366,47 @@ fn structured_signature_uses_pinned_snapshot_parameter_metadata() {
 }
 
 #[test]
+fn stream_drain_keeps_unknown_register_inference_distinct_from_declared_arity() {
+    let report: AotLiftReport = primary_report();
+    let function: &DartLiftedFunction = report
+        .functions
+        .iter()
+        .find(|function: &&DartLiftedFunction| {
+            function.name.as_deref() == Some("Stream.drain") && function.is_structured()
+        })
+        .expect("Stream.drain must lift to structured pseudocode");
+    let dart: String = function.best_pseudo_dart();
+
+    assert_eq!(
+        function.declared_parameter_count,
+        Some(1),
+        "the pinned snapshot must declare one Stream.drain parameter"
+    );
+    assert_eq!(
+        function.inferred_parameter_count, 0,
+        "control-flow-dependent scratch reads must leave register inference unknown"
+    );
+    assert_eq!(
+        function.arg_registers, 1,
+        "declared snapshot arity must render the one-parameter signature"
+    );
+    assert!(
+        dart.starts_with("Stream.drain(arg0) {"),
+        "the rendered signature must preserve the declared arity, got:\n{dart}"
+    );
+
+    #[cfg(feature = "chain")]
+    {
+        let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
+        let structured: String = mobile_pass_body(bytes, "Stream.drain");
+        assert_eq!(
+            structured, dart,
+            "MOBILE_PASS must expose the same structured Stream.drain body"
+        );
+    }
+}
+
+#[test]
 fn pool_name_and_null_register_inline_at_a_real_call_site() {
     let report: AotLiftReport = primary_report();
     let dart: String = body(&report, "WarehouseLedger.countBackordered");
