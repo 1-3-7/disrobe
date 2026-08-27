@@ -9,7 +9,7 @@
     "stubbed classpath: no original-jar leak (the section-0.4 #1 defect is fixed)",
     "a tool that produces no EdgeCases source at all is a miss, never an excluded sample"
   ],
-  "honest_note": "DEX leg: `disrobe` recovers 57 clean of 163 emitted (35.0%), beside 3 compiler defects outside any method; `jadx` (1.5.5) recovers 295 emitted methods, none of them certified (jadx exited nonzero after emitting 295 methods). No lead is stated, because the compiler did not certify both sides. JAR leg: `disrobe` recovers 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152) recovers 152 clean of 166 emitted (91.6%). `disrobe` leads by 29 clean methods; `disrobe` leads on clean rate, 100.0% to 91.6%. All rows use the same stubbed real-`javac` oracle and are recompile-only. The scorer compiles the complete recovered source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Methods inside isolated method or type regions are unclean; peer methods are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. The scorer receives source only, so the same rule binds `disrobe` and every competitor. A leg states no lead unless both sides are certified.",
+  "honest_note": "DEX leg: `disrobe` recovers 60 clean of 163 emitted (36.8%), beside 3 compiler defects outside any method; `jadx` (1.5.5) recovers 295 emitted methods, none of them certified (jadx exited nonzero after emitting 295 methods). No lead is stated, because the compiler did not certify both sides. JAR leg: `disrobe` recovers 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152) recovers 152 clean of 166 emitted (91.6%). `disrobe` leads by 29 clean methods; `disrobe` leads on clean rate, 100.0% to 91.6%. All rows use the same stubbed real-`javac` oracle and are recompile-only. The scorer compiles the complete recovered source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Methods inside isolated method or type regions are unclean; peer methods are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. The scorer receives source only, so the same rule binds `disrobe` and every competitor. A leg states no lead unless both sides are certified.",
   "id": "apk-jadx-cfr",
   "metric": "clean / emitted methods across the recovered source set. The original main class declares 114 methods (counted at runtime); each decompiler also emits nested, sibling, synthetic accessor, lambda, and bridge methods, so each tool's emitted count differs by design. The result reports both the recompile-clean rate and absolute clean-method count. A source set whose parse failure cannot be isolated reports its emitted-method count without a rate.",
   "oracle": "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes. The scorer first compiles the complete recovered source set. If a parse failure prevents attribution, it isolates only the implicated balanced method, field-initializer, or type region and reruns javac under a 64-round ceiling. A method in an isolated method or type region is unclean. Every other method is scored from the compiler diagnostics after attribution resumes. An unmapped parse failure certifies nothing.",
@@ -19,9 +19,9 @@
   "tools": [
     {
       "class_level_defects": 3,
-      "clean": 57,
-      "detail": "57 of 163 emitted methods compile clean under javac after source-region parse failures are isolated with the same bounded rule for every tool (the original main class declares 114 methods)",
-      "display": "57 clean / 163 emitted (35.0%)",
+      "clean": 60,
+      "detail": "60 of 163 emitted methods compile clean under javac after source-region parse failures are isolated with the same bounded rule for every tool (the original main class declares 114 methods)",
+      "display": "60 clean / 163 emitted (36.8%)",
       "emitted": 163,
       "leg": "dex",
       "metric": "recompile-clean emitted methods (clean / emitted)",
@@ -29,7 +29,7 @@
       "original_methods": 114,
       "role": "disrobe",
       "status": "ok",
-      "value": 34.969325153374236,
+      "value": 36.809815950920246,
       "version": "n/a (in-process)"
     },
     {

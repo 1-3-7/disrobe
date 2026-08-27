@@ -84,10 +84,10 @@
         },
         {
           "label": "CPython 3.13 (190 of the pinned modules)",
-          "value": 95.79,
-          "num": 5715,
+          "value": 95.80,
+          "num": 5716,
           "den": 5966,
-          "detail": "5715 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5716 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.13.14 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs",
