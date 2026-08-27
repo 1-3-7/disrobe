@@ -1358,6 +1358,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Capabilities>()?;
     m.add_class::<ExtractionResult>()?;
     m.add_class::<OverlayReport>()?;
+    m.add_class::<ByteCoverage>()?;
     m.add_class::<EntropyReport>()?;
     m.add_class::<StringsReport>()?;
     m.add_class::<IocReport>()?;
