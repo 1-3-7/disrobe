@@ -16,6 +16,7 @@ use disrobe_pass_native::pseudo_c::{
     recover_program_with_naming,
 };
 use disrobe_pass_native::sig_engine::{FunctionNameSubject, exported_function_names};
+use object::{Object, ObjectSymbol};
 
 const PE: &[u8] = include_bytes!("../../../corpus/native/formats/hello.pe64.exe");
 const FUNCTION_ADDRESS: u64 = 0x1_4000_16d0;
@@ -23,6 +24,15 @@ const FUNCTION_FILE_START: usize = 0xad0;
 const FUNCTION_FILE_END: usize = 0xadc;
 const EXPORT_NAME_START: usize = 0x4441;
 const EXPORT_NAME_END: usize = 0x4450;
+const ELF_STRIPPED: &[u8] =
+    include_bytes!("../../disrobe-typerec/tests/fixtures/heap_corpus.stripped.so");
+const ELF_UNSTRIPPED: &[u8] =
+    include_bytes!("../../disrobe-typerec/tests/fixtures/heap_corpus.unstripped.so");
+const ELF_FILL_ADDRESS: u64 = 0x13d0;
+const ELF_FILL_FILE_START: usize = 0x3d0;
+const ELF_FILL_FILE_END: usize = 0x43a;
+const ELF_FILL_NAME_START: usize = 0x335;
+const ELF_FILL_NAME_END: usize = 0x339;
 
 fn subject(name: &str) -> ProgramFunction {
     ProgramFunction {
@@ -281,4 +291,103 @@ fn invalid_export_evidence_abstains() {
         .map(FunctionNameSubject::from)
         .collect();
     assert!(exported_function_names(&addressless, &addressless_subject).is_empty());
+}
+
+#[test]
+fn stripped_elf_dynamic_export_recovers_the_unstripped_function_name() {
+    assert_eq!(&ELF_STRIPPED[..6], b"\x7fELF\x02\x01");
+    assert_eq!(&ELF_STRIPPED[18..20], &[0x3e, 0x00]);
+    assert_eq!(
+        &ELF_STRIPPED[ELF_FILL_NAME_START..ELF_FILL_NAME_END],
+        b"fill"
+    );
+    assert_eq!(
+        &ELF_STRIPPED[ELF_FILL_FILE_START..ELF_FILL_FILE_START + 16],
+        &[
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x89, 0x7d, 0xf8, 0xbf, 0x10, 0x00,
+            0x00, 0x00,
+        ]
+    );
+
+    let stripped_file: object::File<'_> =
+        object::File::parse(ELF_STRIPPED).expect("tracked stripped ELF must parse");
+    let unstripped_file: object::File<'_> =
+        object::File::parse(ELF_UNSTRIPPED).expect("tracked unstripped ELF must parse");
+    assert_eq!(stripped_file.format(), object::BinaryFormat::Elf);
+    assert_eq!(stripped_file.architecture(), object::Architecture::X86_64);
+    assert!(stripped_file.is_little_endian());
+    assert!(stripped_file.section_by_name(".dynsym").is_some());
+    assert!(stripped_file.section_by_name(".dynstr").is_some());
+    assert!(stripped_file.section_by_name(".symtab").is_none());
+    assert!(unstripped_file.section_by_name(".symtab").is_some());
+    let unstripped_fill: object::Symbol<'_, '_> = unstripped_file
+        .symbols()
+        .find(|symbol: &object::Symbol<'_, '_>| {
+            symbol.name().is_ok_and(|name: &str| name == "fill")
+        })
+        .expect("unstripped ground truth must contain fill");
+    assert_eq!(unstripped_fill.address(), ELF_FILL_ADDRESS);
+    assert_eq!(unstripped_fill.size(), 106);
+    assert_eq!(unstripped_fill.kind(), object::SymbolKind::Text);
+
+    let stripped_function: ProgramFunction = ProgramFunction {
+        name: "sub_13d0".to_owned(),
+        address: ELF_FILL_ADDRESS,
+        code: ELF_STRIPPED[ELF_FILL_FILE_START..ELF_FILL_FILE_END].to_vec(),
+    };
+    let first: NamedRecoveredProgram = recover_program_with_naming(
+        ELF_STRIPPED,
+        core::slice::from_ref(&stripped_function),
+        Abi::SysV,
+    );
+    let second: NamedRecoveredProgram =
+        recover_program_with_naming(ELF_STRIPPED, &[stripped_function], Abi::SysV);
+    assert_eq!(first, second);
+    assert_eq!(first.names.len(), 1);
+    let recovered_name = &first.names[0];
+    assert_eq!(recovered_name.function_address, ELF_FILL_ADDRESS);
+    assert_eq!(recovered_name.name, "fill");
+    assert_eq!(
+        recovered_name.evidence.confidence,
+        FunctionNameConfidence::High
+    );
+    assert_eq!(
+        recovered_name.evidence.source,
+        FunctionNameEvidenceSource::ExportedName
+    );
+    assert_eq!(
+        recovered_name.evidence.input_bytes,
+        InputByteRange {
+            start: ELF_FILL_NAME_START as u64,
+            end: ELF_FILL_NAME_END as u64,
+        }
+    );
+    assert_eq!(
+        &ELF_STRIPPED[usize::try_from(recovered_name.evidence.input_bytes.start)
+            .expect("evidence start fits")
+            ..usize::try_from(recovered_name.evidence.input_bytes.end).expect("evidence end fits")],
+        recovered_name.evidence.identity.as_bytes()
+    );
+    assert_eq!(recovered_name.evidence.identity, "fill");
+    assert_eq!(recovered_name.evidence.target_address, ELF_FILL_ADDRESS);
+    assert!(!recovered_name.evidence.target_is_indirect);
+    assert_eq!(
+        serde_json::to_vec(&first.names).expect("first result must serialize"),
+        serde_json::to_vec(&second.names).expect("second result must serialize")
+    );
+
+    let unstripped_function: ProgramFunction = ProgramFunction {
+        name: "sub_13d0".to_owned(),
+        address: ELF_FILL_ADDRESS,
+        code: ELF_UNSTRIPPED[ELF_FILL_FILE_START..ELF_FILL_FILE_END].to_vec(),
+    };
+    let unstripped_subject: FunctionNameSubject<'_> =
+        FunctionNameSubject::from(&unstripped_function);
+    assert!(exported_function_names(ELF_UNSTRIPPED, &[unstripped_subject]).is_empty());
+
+    let duplicate_subjects: [FunctionNameSubject<'_>; 2] = [
+        FunctionNameSubject::from(&unstripped_function),
+        FunctionNameSubject::from(&unstripped_function),
+    ];
+    assert!(exported_function_names(ELF_STRIPPED, &duplicate_subjects).is_empty());
 }
