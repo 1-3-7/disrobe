@@ -1,10 +1,14 @@
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 use regex::Regex;
 
 use super::sandbox::{
-    RotationSearchOutcome, probe_expressions, probe_rotation_to_match, probe_with_rotation_search,
+    MAX_PROBE_EXPRESSIONS, MAX_SCRIPT_BYTES, ProbeRefusal, RotationSearchOutcome,
+    probe_expressions, probe_rotation_to_match, probe_with_rotation_search,
+    validate_batched_expression_lengths,
 };
+use super::{executable_code_exclusions, resolved_reference_starts};
 use crate::scan_utils::{
     find_brace_close, find_paren_close, find_statement_end, regex_can_follow, skip_regex_literal,
     skip_string,
@@ -17,14 +21,17 @@ pub(super) struct ModernRecovery {
     pub(super) call_sites_total: usize,
     pub(super) call_sites_inlined: usize,
     pub(super) rotation_count: u32,
+    pub(super) scaffolding_removed: bool,
     pub(super) rewritten_source: String,
 }
 
-const MAX_CALL_SITES: usize = 65_536;
-
-pub(super) fn recover_modern(source: &str) -> Option<ModernRecovery> {
-    let provider: ProviderFn = find_provider(source)?;
-    let decoder: DecoderFn = find_decoder(source, &provider.name)?;
+pub(super) fn recover_modern(source: &str) -> Result<Option<ModernRecovery>, ProbeRefusal> {
+    let Some(provider): Option<ProviderFn> = find_provider(source) else {
+        return Ok(None);
+    };
+    let Some(decoder): Option<DecoderFn> = find_decoder(source, &provider.name) else {
+        return Ok(None);
+    };
     let toplevel_aliases: Vec<AliasDecl> = find_aliases(source, &decoder.name);
     let iife: Option<Range<usize>> = find_rotation_iife(source, &provider.name);
 
@@ -38,9 +45,33 @@ pub(super) fn recover_modern(source: &str) -> Option<ModernRecovery> {
         }
     }
 
-    let call_sites: Vec<CallSite> = find_call_sites(source, &callable_names, &proxies);
-    if call_sites.is_empty() || call_sites.len() > MAX_CALL_SITES {
-        return None;
+    let alias_removals: Vec<Range<usize>> = find_inbody_alias_edits(source, &accessor_names);
+    let removal_ranges: Vec<Range<usize>> = candidate_removal_ranges(
+        source,
+        &provider,
+        &decoder,
+        iife.as_ref(),
+        &toplevel_aliases,
+        &proxies,
+        &alias_removals,
+    );
+    let inventory: CallInventory =
+        find_call_sites(source, &callable_names, &provider.name, &removal_ranges)?;
+    let call_sites: Vec<CallSite> = inventory.call_sites;
+    if call_sites.is_empty() {
+        return if inventory.has_unresolved_use {
+            Ok(Some(ModernRecovery {
+                provider_name: provider.name,
+                decoder_name: decoder.name,
+                call_sites_total: 0,
+                call_sites_inlined: 0,
+                rotation_count: 0,
+                scaffolding_removed: false,
+                rewritten_source: source.to_owned(),
+            }))
+        } else {
+            Ok(None)
+        };
     }
 
     let prelude_with_iife: String = build_prelude(
@@ -51,12 +82,21 @@ pub(super) fn recover_modern(source: &str) -> Option<ModernRecovery> {
         &accessor_names,
         &proxies,
         iife.as_ref(),
-    );
+    )?;
 
-    let expressions: Vec<String> = call_sites
-        .iter()
-        .map(|c| source[c.range.clone()].to_owned())
-        .collect();
+    validate_batched_expression_lengths(
+        call_sites.iter().map(|site: &CallSite| site.range.len()),
+        call_sites.len(),
+    )?;
+    let mut expressions: Vec<String> = Vec::new();
+    expressions
+        .try_reserve_exact(call_sites.len())
+        .map_err(|_| ProbeRefusal::BoundExceeded)?;
+    expressions.extend(
+        call_sites
+            .iter()
+            .map(|site: &CallSite| source[site.range.clone()].to_owned()),
+    );
     let (decoded, rotation_count): (Vec<Option<String>>, u32) = if iife.is_some() {
         resolve_with_rotation(
             source,
@@ -67,19 +107,24 @@ pub(super) fn recover_modern(source: &str) -> Option<ModernRecovery> {
             &proxies,
             &prelude_with_iife,
             &expressions,
-        )
+        )?
     } else {
-        (probe_expressions(&prelude_with_iife, &expressions), 0)
+        match probe_expressions(&prelude_with_iife, &expressions) {
+            Ok(decoded) => (decoded, 0),
+            Err(refusal) => {
+                return Err(refusal);
+            }
+        }
     };
     if decoded.iter().all(Option::is_none) {
-        return None;
+        return Err(ProbeRefusal::EvaluationFailed);
     }
 
-    let alias_removals: Vec<Range<usize>> = find_inbody_alias_edits(source, &accessor_names);
-    let (rewritten, inlined): (String, usize) = inline_sites(
+    let (rewritten, inlined, scaffolding_removed): (String, usize, bool) = inline_sites(
         source,
         &call_sites,
         &decoded,
+        inventory.has_unresolved_use,
         &provider,
         iife.as_ref(),
         &decoder,
@@ -88,14 +133,15 @@ pub(super) fn recover_modern(source: &str) -> Option<ModernRecovery> {
         &alias_removals,
     );
 
-    Some(ModernRecovery {
+    Ok(Some(ModernRecovery {
         provider_name: provider.name,
         decoder_name: decoder.name,
         call_sites_total: call_sites.len(),
         call_sites_inlined: inlined,
         rotation_count,
+        scaffolding_removed,
         rewritten_source: rewritten,
-    })
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -108,7 +154,7 @@ fn resolve_with_rotation(
     proxies: &[ProxyFn],
     prelude_with_iife: &str,
     expressions: &[String],
-) -> (Vec<Option<String>>, u32) {
+) -> Result<(Vec<Option<String>>, u32), ProbeRefusal> {
     let prelude_no_iife: String = build_prelude(
         source,
         provider,
@@ -117,9 +163,9 @@ fn resolve_with_rotation(
         accessor_names,
         proxies,
         None,
-    );
+    )?;
     let array_len: usize = provider_array_len(source, provider).unwrap_or(0);
-    let reference: Vec<Option<String>> = probe_expressions(prelude_with_iife, expressions);
+    let reference: Vec<Option<String>> = probe_expressions(prelude_with_iife, expressions)?;
     if reference.iter().any(Option::is_some) {
         let count: u32 = probe_rotation_to_match(
             &prelude_no_iife,
@@ -127,15 +173,14 @@ fn resolve_with_rotation(
             expressions,
             &reference,
             array_len,
-        )
-        .unwrap_or(0);
-        return (reference, count);
+        )?;
+        return Ok((reference, count));
     }
-    let search: Option<RotationSearchOutcome> =
+    let search: Result<RotationSearchOutcome, ProbeRefusal> =
         probe_with_rotation_search(&prelude_no_iife, &provider.name, expressions, array_len);
     match search {
-        Some(rotation) => (rotation.decoded, rotation.rotation),
-        None => (reference, 0),
+        Ok(rotation) => Ok((rotation.decoded, rotation.rotation)),
+        Err(refusal) => Err(refusal),
     }
 }
 
@@ -269,6 +314,20 @@ struct ProxyFn {
 #[derive(Debug, Clone)]
 struct CallSite {
     range: Range<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct CallInventory {
+    call_sites: Vec<CallSite>,
+    has_unresolved_use: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IdentifierUse {
+    start: usize,
+    end: usize,
+    is_callable: bool,
+    is_provider: bool,
 }
 
 fn function_header_re() -> Option<Regex> {
@@ -477,11 +536,53 @@ fn build_prelude(
     accessor_names: &[String],
     proxies: &[ProxyFn],
     iife: Option<&Range<usize>>,
-) -> String {
-    let proxy_len: usize = proxies.iter().map(|p| p.range.len()).sum();
-    let mut prelude: String = String::with_capacity(
-        provider.range.len() + decoder.range.len() + proxy_len + iife.map_or(0, Range::len) + 256,
-    );
+) -> Result<String, ProbeRefusal> {
+    let mut capacity: usize = 0;
+    {
+        let mut include = |additional: usize| -> Result<(), ProbeRefusal> {
+            capacity = capacity
+                .checked_add(additional)
+                .ok_or(ProbeRefusal::InputTooLarge)?;
+            if capacity > MAX_SCRIPT_BYTES {
+                return Err(ProbeRefusal::InputTooLarge);
+            }
+            Ok(())
+        };
+        include(provider.range.len())?;
+        include(1)?;
+        include(decoder.range.len())?;
+        include(1)?;
+        for alias in toplevel_aliases {
+            include(alias.range.len())?;
+            include(2)?;
+        }
+        for name in accessor_names {
+            if name == &decoder.name
+                || toplevel_aliases
+                    .iter()
+                    .any(|alias: &AliasDecl| &alias.name == name)
+            {
+                continue;
+            }
+            include(4)?;
+            include(name.len())?;
+            include(1)?;
+            include(decoder.name.len())?;
+            include(2)?;
+        }
+        for proxy in proxies {
+            include(proxy.range.len())?;
+            include(1)?;
+        }
+        if let Some(iife_range) = iife {
+            include(iife_range.len())?;
+            include(1)?;
+        }
+    }
+    let mut prelude: String = String::new();
+    prelude
+        .try_reserve_exact(capacity)
+        .map_err(|_| ProbeRefusal::BoundExceeded)?;
     prelude.push_str(&source[provider.range.clone()]);
     prelude.push('\n');
     prelude.push_str(&source[decoder.range.clone()]);
@@ -508,7 +609,7 @@ fn build_prelude(
         prelude.push_str(&source[iife_range.clone()]);
         prelude.push('\n');
     }
-    prelude
+    Ok(prelude)
 }
 
 fn find_proxy_functions(source: &str, accessor_names: &[String]) -> Vec<ProxyFn> {
@@ -557,42 +658,171 @@ fn find_proxy_functions(source: &str, accessor_names: &[String]) -> Vec<ProxyFn>
     out
 }
 
-fn find_call_sites(source: &str, callable_names: &[String], proxies: &[ProxyFn]) -> Vec<CallSite> {
-    let alternation: String = callable_names
-        .iter()
-        .map(|n| regex::escape(n))
-        .collect::<Vec<String>>()
-        .join("|");
-    if alternation.is_empty() {
-        return Vec::new();
-    }
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(&format!(r"\b(?:{alternation})\s*\("))
-    else {
-        return Vec::new();
-    };
+fn find_call_sites(
+    source: &str,
+    callable_names: &[String],
+    provider_name: &str,
+    removal_ranges: &[Range<usize>],
+) -> Result<CallInventory, ProbeRefusal> {
+    let callable: BTreeSet<&str> = callable_names.iter().map(String::as_str).collect();
+    let mut excluded: Vec<Range<usize>> = executable_code_exclusions(source)?;
+    excluded.extend(removal_ranges.iter().cloned());
+    excluded.sort_by_key(|range: &Range<usize>| range.start);
+    let excluded: Vec<Range<usize>> = merge_ranges(excluded);
     let bytes: &[u8] = source.as_bytes();
-    let proxy_ranges: Vec<&Range<usize>> = proxies.iter().map(|p| &p.range).collect();
-    let mut out: Vec<CallSite> = Vec::new();
-    for m in re.find_iter(source) {
-        let open_paren: usize = m.end() - 1;
-        if proxy_ranges
-            .iter()
-            .any(|r| m.start() >= r.start && m.start() < r.end)
+    let mut identifiers: Vec<IdentifierUse> = Vec::new();
+    let mut excluded_index: usize = 0;
+    let mut cursor: usize = 0;
+    while cursor < bytes.len() {
+        while excluded_index < excluded.len() && excluded[excluded_index].end <= cursor {
+            excluded_index += 1;
+        }
+        if let Some(range) = excluded.get(excluded_index)
+            && range.start <= cursor
         {
+            cursor = range.end;
+            continue;
+        }
+        if !is_ident_start(bytes[cursor]) {
+            cursor += 1;
+            continue;
+        }
+        let start: usize = cursor;
+        cursor += 1;
+        while cursor < bytes.len() && is_ident_byte(bytes[cursor]) {
+            cursor += 1;
+        }
+        let name: &str = &source[start..cursor];
+        let is_callable: bool = callable.contains(name);
+        let is_provider: bool = name == provider_name;
+        if !is_callable && !is_provider {
+            continue;
+        }
+        if identifiers.len() == MAX_PROBE_EXPRESSIONS {
+            return Err(ProbeRefusal::BoundExceeded);
+        }
+        identifiers
+            .try_reserve(1)
+            .map_err(|_| ProbeRefusal::BoundExceeded)?;
+        identifiers.push(IdentifierUse {
+            start,
+            end: cursor,
+            is_callable,
+            is_provider,
+        });
+    }
+    let mut resolved_names: Vec<&str> = callable_names.iter().map(String::as_str).collect();
+    resolved_names.push(provider_name);
+    let Some(resolved_starts): Option<BTreeSet<usize>> =
+        resolved_reference_starts(source, &resolved_names, removal_ranges)
+    else {
+        return Ok(CallInventory {
+            call_sites: Vec::new(),
+            has_unresolved_use: true,
+        });
+    };
+    let mut out: Vec<CallSite> = Vec::new();
+    out.try_reserve(identifiers.len())
+        .map_err(|_| ProbeRefusal::BoundExceeded)?;
+    let scanned_starts: BTreeSet<usize> = identifiers
+        .iter()
+        .map(|identifier: &IdentifierUse| identifier.start)
+        .collect();
+    let mut has_unresolved_use: bool = resolved_starts.iter().any(|start: &usize| {
+        !removal_ranges
+            .iter()
+            .any(|range: &Range<usize>| range.contains(start))
+            && !scanned_starts.contains(start)
+    });
+    for identifier in identifiers {
+        if is_property_access(bytes, identifier.start) {
+            has_unresolved_use = true;
+            continue;
+        }
+        if !resolved_starts.contains(&identifier.start) {
+            continue;
+        }
+        let mut open_paren: usize = identifier.end;
+        while bytes
+            .get(open_paren)
+            .is_some_and(|byte: &u8| byte.is_ascii_whitespace())
+        {
+            open_paren += 1;
+        }
+        if !identifier.is_callable || identifier.is_provider || bytes.get(open_paren) != Some(&b'(')
+        {
+            has_unresolved_use = true;
             continue;
         }
         let Some(close_paren): Option<usize> = find_paren_close(bytes, open_paren + 1) else {
+            has_unresolved_use = true;
             continue;
         };
         let args: &str = &source[open_paren + 1..close_paren];
         if !args_are_inlineable(args) {
+            has_unresolved_use = true;
             continue;
         }
         out.push(CallSite {
-            range: m.start()..close_paren + 1,
+            range: identifier.start..close_paren + 1,
         });
     }
-    out
+    Ok(CallInventory {
+        call_sites: out,
+        has_unresolved_use,
+    })
+}
+
+fn merge_ranges(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+#[allow(clippy::too_many_arguments)]
+fn candidate_removal_ranges(
+    source: &str,
+    provider: &ProviderFn,
+    decoder: &DecoderFn,
+    iife: Option<&Range<usize>>,
+    aliases: &[AliasDecl],
+    proxies: &[ProxyFn],
+    alias_removals: &[Range<usize>],
+) -> Vec<Range<usize>> {
+    let mut ranges: Vec<Range<usize>> = Vec::with_capacity(
+        aliases.len() + proxies.len() + alias_removals.len() + usize::from(iife.is_some()) + 2,
+    );
+    ranges.push(provider.range.clone());
+    ranges.push(decoder.range.clone());
+    if let Some(iife_range) = iife {
+        ranges.push(iife_range.clone());
+    }
+    ranges.extend(aliases.iter().map(|alias: &AliasDecl| {
+        alias.range.start..trim_decl_end_inclusive(source, alias.range.end)
+    }));
+    ranges.extend(proxies.iter().map(|proxy: &ProxyFn| proxy.range.clone()));
+    ranges.extend(alias_removals.iter().cloned());
+    ranges
+}
+
+const fn is_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+fn is_property_access(bytes: &[u8], start: usize) -> bool {
+    let mut cursor: usize = start;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    cursor > 0 && bytes[cursor - 1] == b'.'
 }
 
 fn args_are_inlineable(args: &str) -> bool {
@@ -647,13 +877,14 @@ fn inline_sites(
     source: &str,
     call_sites: &[CallSite],
     decoded: &[Option<String>],
+    has_unresolved_use: bool,
     provider: &ProviderFn,
     iife: Option<&Range<usize>>,
     decoder: &DecoderFn,
     aliases: &[AliasDecl],
     proxies: &[ProxyFn],
     alias_removals: &[Range<usize>],
-) -> (String, usize) {
+) -> (String, usize, bool) {
     enum Event {
         Remove(Range<usize>),
         Call(Range<usize>, Option<String>),
@@ -661,21 +892,26 @@ fn inline_sites(
     let mut events: Vec<Event> = Vec::with_capacity(
         call_sites.len() + aliases.len() + proxies.len() + alias_removals.len() + 3,
     );
-    events.push(Event::Remove(provider.range.clone()));
-    events.push(Event::Remove(decoder.range.clone()));
-    if let Some(iife_range) = iife {
-        events.push(Event::Remove(iife_range.clone()));
-    }
-    for alias in aliases {
-        events.push(Event::Remove(
-            alias.range.start..trim_decl_end_inclusive(source, alias.range.end),
-        ));
-    }
-    for proxy in proxies {
-        events.push(Event::Remove(proxy.range.clone()));
-    }
-    for removal in alias_removals {
-        events.push(Event::Remove(removal.clone()));
+    let every_call_decoded: bool = !has_unresolved_use
+        && decoded.len() == call_sites.len()
+        && decoded.iter().all(|value: &Option<String>| value.is_some());
+    if every_call_decoded {
+        events.push(Event::Remove(provider.range.clone()));
+        events.push(Event::Remove(decoder.range.clone()));
+        if let Some(iife_range) = iife {
+            events.push(Event::Remove(iife_range.clone()));
+        }
+        for alias in aliases {
+            events.push(Event::Remove(
+                alias.range.start..trim_decl_end_inclusive(source, alias.range.end),
+            ));
+        }
+        for proxy in proxies {
+            events.push(Event::Remove(proxy.range.clone()));
+        }
+        for removal in alias_removals {
+            events.push(Event::Remove(removal.clone()));
+        }
     }
     for (site, value) in call_sites.iter().zip(decoded.iter()) {
         events.push(Event::Call(site.range.clone(), value.clone()));
@@ -714,7 +950,7 @@ fn inline_sites(
         cursor = end;
     }
     rewritten.push_str(&source[cursor..]);
-    (rewritten, inlined)
+    (rewritten, inlined, every_call_decoded)
 }
 
 fn find_inbody_alias_edits(source: &str, accessor_names: &[String]) -> Vec<Range<usize>> {
@@ -961,7 +1197,9 @@ mod tests {
 
     #[test]
     fn end_to_end_modern_recovery() {
-        let rec: ModernRecovery = recover_modern(MODERN_SAMPLE).expect("recovery");
+        let rec: ModernRecovery = recover_modern(MODERN_SAMPLE)
+            .expect("probe")
+            .expect("recovery");
         assert_eq!(rec.provider_name, "p");
         assert_eq!(rec.decoder_name, "d");
         assert!(
@@ -983,6 +1221,27 @@ mod tests {
     }
 
     #[test]
+    fn modern_consumer_refuses_environment_dependent_values() {
+        let source: &str = "function p(){const a=['log'];p=function(){return a;};return p();}function d(i,_){const a=p();return a[i]+Math.random();}console.log(d(0x0));";
+        assert_eq!(
+            recover_modern(source).expect_err("unstable value"),
+            ProbeRefusal::EnvironmentDisagreement
+        );
+    }
+
+    #[test]
+    fn partial_modern_recovery_keeps_required_scaffolding() {
+        let source: &str = "function p(){const a=['zero','one','two'];p=function(){return a;};return p();}function d(i,_){const a=p();if(i===1){throw new Error('missing');}return a[i];}console.log(d(0x0),d(0x1),d(0x2));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 2);
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains("d(0x1)"));
+        assert!(recovery.rewritten_source.contains("'zero'"));
+        assert!(recovery.rewritten_source.contains("'two'"));
+    }
+
+    #[test]
     fn parse_int_handles_hex_and_negative() {
         assert_eq!(parse_int("0x1f"), Some(31));
         assert_eq!(parse_int("-0x2"), Some(-2));
@@ -1000,7 +1259,9 @@ mod tests {
 
     #[test]
     fn end_to_end_proxy_recovery() {
-        let rec: ModernRecovery = recover_modern(PROXY_SAMPLE).expect("proxy recovery");
+        let rec: ModernRecovery = recover_modern(PROXY_SAMPLE)
+            .expect("probe")
+            .expect("proxy recovery");
         assert!(
             rec.call_sites_inlined >= 2,
             "proxy call sites must inline, got {}",
@@ -1033,5 +1294,78 @@ mod tests {
     fn split_top_level_args_respects_nesting() {
         let parts: Vec<&str> = split_top_level_args("0x1, f(0x2, 0x3), 'a,b'");
         assert_eq!(parts.len(), 3);
+    }
+
+    #[test]
+    fn dynamic_only_modern_call_keeps_all_required_scaffolding() {
+        let source: &str = "function p(){const a=['zero','one'];p=function(){return a;};return p();}function d(i,_){const a=p();return a[i];}console.log(d(index));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 0);
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains("d(index)"));
+    }
+
+    #[test]
+    fn mixed_modern_calls_inline_literals_without_removing_scaffolding() {
+        let source: &str = "function p(){const a=['zero','one'];p=function(){return a;};return p();}const a=d;function d(i,_){const v=p();return v[i];}function w(i){return a(i);}console.log(d(0),w(index));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 1);
+        assert!(recovery.rewritten_source.contains("'zero'"));
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains("const a=d"));
+        assert!(recovery.rewritten_source.contains("function w("));
+        assert!(recovery.rewritten_source.contains("w(index)"));
+    }
+
+    #[test]
+    fn escaped_modern_decoder_reference_keeps_scaffolding() {
+        let source: &str = r"function p(){const a=['zero','one'];p=function(){return a;};return p();}function d(i,_){const v=p();return v[i];}console.log(d(0),\u0064(1));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 1);
+        assert!(recovery.rewritten_source.contains("'zero'"));
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains(r"\u0064(1)"));
+    }
+
+    #[test]
+    fn modern_template_expression_keeps_scaffolding_while_text_is_ignored() {
+        let source: &str = "function p(){const a=['zero'];p=function(){return a;};return p();}function d(i,_){const v=p();return v[i];}console.log('d(index)',`${d(index)}`);";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 0);
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains("${d(index)}"));
+    }
+
+    #[test]
+    fn shadowed_modern_decoder_call_is_not_inlined_as_the_outer_binding() {
+        let source: &str = "function p(){const a=['zero','one'];p=function(){return a;};return p();}function d(i,_){const v=p();return v[i];}function invoke(d){const value=d(0);return value;}console.log(d(1),invoke(function(value){return value;}));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 1);
+        assert!(recovery.rewritten_source.contains("const value=d(0)"));
+        assert!(recovery.rewritten_source.contains("'one'"));
+    }
+
+    #[test]
+    fn semantic_failure_does_not_inline_ambiguous_modern_references() {
+        let source: &str = "function p(){const a=['zero'];p=function(){return a;};return p();}function d(i,_){const v=p();return v[i];}function invoke(d){const value=d(0);return value;}const =;";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 0);
+        assert!(recovery.rewritten_source.contains("const value=d(0)"));
+        assert!(recovery.rewritten_source.contains("function d("));
+    }
+
+    #[test]
+    fn global_object_proxy_use_keeps_modern_scaffolding() {
+        let source: &str = "function p(){const a=['zero'];p=function(){return a;};return p();}const alias=d;function d(i,_){const v=p();return v[i];}function w(i){return alias(i);}console.log(d(0),globalThis.w(index));";
+        let recovery: ModernRecovery = recover_modern(source).expect("shape").expect("recovery");
+        assert_eq!(recovery.call_sites_inlined, 1);
+        assert!(recovery.rewritten_source.contains("function p("));
+        assert!(recovery.rewritten_source.contains("function d("));
+        assert!(recovery.rewritten_source.contains("function w("));
+        assert!(recovery.rewritten_source.contains("globalThis.w(index)"));
     }
 }

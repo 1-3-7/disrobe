@@ -1,6 +1,8 @@
 use miette::Diagnostic;
 use thiserror::Error;
 
+use crate::string_array::ProbeRefusal;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug, Error, Diagnostic)]
@@ -23,6 +25,9 @@ pub enum Error {
         observed: usize,
         maximum: usize,
     },
+
+    #[error("DR-JSDEOB-0006: string-array probe refused recovery: {reason:?}")]
+    StringArrayProbe { reason: ProbeRefusal },
 
     #[error(
         "DR-JSDEOB-0010: transform `{transform}` requires `--i-have-authorization`; \

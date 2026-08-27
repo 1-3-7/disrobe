@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use regex::Regex;
 use serde::Serialize;
 
-use super::sandbox::{DecoderProbe, DecoderSample, probe_decoder};
+use super::sandbox::{
+    DecoderProbe, DecoderSample, MAX_PROBE_EXPRESSIONS, ProbeRefusal, probe_decoder,
+};
+use super::{executable_code_exclusions, resolved_reference_starts};
+use crate::scan_utils::find_paren_close;
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct InlineResult {
@@ -12,6 +16,7 @@ pub(super) struct InlineResult {
     pub(super) call_sites_total: usize,
     pub(super) call_sites_inlined: usize,
     pub(super) probe: Option<DecoderProbe>,
+    pub(super) probe_refusal: Option<ProbeRefusal>,
     pub(super) rewritten_source: String,
 }
 
@@ -22,7 +27,20 @@ pub(super) fn inline_decoder_calls(source: &str, array_id: &str) -> InlineResult
         return empty_result(source);
     };
 
-    let call_sites: Vec<CallSite> = find_call_sites(source, &decoder_name);
+    let inventory: CallInventory = match find_call_sites(source, &decoder_name, &decoder_range) {
+        Ok(inventory) => inventory,
+        Err(refusal) => {
+            return InlineResult {
+                decoder_name: Some(decoder_name),
+                call_sites_total: 0,
+                call_sites_inlined: 0,
+                probe: None,
+                probe_refusal: Some(refusal),
+                rewritten_source: source.to_owned(),
+            };
+        }
+    };
+    let call_sites: Vec<CallSite> = inventory.call_sites;
     let unique_indices: Vec<i64> = {
         let mut v: Vec<i64> = call_sites.iter().map(|c| c.index).collect();
         v.sort_unstable();
@@ -37,11 +55,15 @@ pub(super) fn inline_decoder_calls(source: &str, array_id: &str) -> InlineResult
         .and_then(|re| re.find(source))
         .map_or_else(String::new, |m| m.as_str().to_owned());
 
-    let probe: Option<DecoderProbe> = if !array_decl.is_empty() && !unique_indices.is_empty() {
-        probe_decoder(&decoder_src, &array_decl, &decoder_name, &unique_indices)
-    } else {
-        None
-    };
+    let (probe, probe_refusal): (Option<DecoderProbe>, Option<ProbeRefusal>) =
+        if !array_decl.is_empty() && !unique_indices.is_empty() {
+            match probe_decoder(&decoder_src, &array_decl, &decoder_name, &unique_indices) {
+                Ok(probe) => (Some(probe), None),
+                Err(refusal) => (None, Some(refusal)),
+            }
+        } else {
+            (None, None)
+        };
 
     let lookup: BTreeMap<i64, String> = probe.as_ref().map_or_else(BTreeMap::new, |p| {
         p.samples
@@ -55,9 +77,15 @@ pub(super) fn inline_decoder_calls(source: &str, array_id: &str) -> InlineResult
     let mut inlined: usize = 0;
 
     let mut events: Vec<Event> = Vec::with_capacity(call_sites.len() + 1);
-    events.push(Event::DecoderDecl {
-        range: decoder_range,
-    });
+    let every_call_decoded: bool = !inventory.has_unresolved_use
+        && call_sites
+            .iter()
+            .all(|site: &CallSite| lookup.contains_key(&site.index));
+    if every_call_decoded {
+        events.push(Event::DecoderDecl {
+            range: decoder_range,
+        });
+    }
     for site in &call_sites {
         events.push(Event::Call {
             range: site.range.clone(),
@@ -92,6 +120,7 @@ pub(super) fn inline_decoder_calls(source: &str, array_id: &str) -> InlineResult
         call_sites_total: call_sites.len(),
         call_sites_inlined: inlined,
         probe,
+        probe_refusal,
         rewritten_source: rewritten,
     }
 }
@@ -102,6 +131,7 @@ fn empty_result(source: &str) -> InlineResult {
         call_sites_total: 0,
         call_sites_inlined: 0,
         probe: None,
+        probe_refusal: None,
         rewritten_source: source.to_owned(),
     }
 }
@@ -110,6 +140,12 @@ fn empty_result(source: &str) -> InlineResult {
 struct CallSite {
     range: Range<usize>,
     index: i64,
+}
+
+#[derive(Debug, Clone)]
+struct CallInventory {
+    call_sites: Vec<CallSite>,
+    has_unresolved_use: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -153,28 +189,114 @@ fn find_decoder(source: &str, array_id: &str) -> Option<(String, String, Range<u
     Some((name, whole.as_str().to_owned(), whole.start()..whole.end()))
 }
 
-fn find_call_sites(source: &str, decoder_name: &str) -> Vec<CallSite> {
+fn find_call_sites(
+    source: &str,
+    decoder_name: &str,
+    decoder_range: &Range<usize>,
+) -> Result<CallInventory, ProbeRefusal> {
     let escaped: String = regex::escape(decoder_name);
-    let pattern: String = format!(r"\b{escaped}\s*\(\s*(0x[0-9a-fA-F]+|\d+)\s*\)");
+    let pattern: String = escaped;
     let Ok(re): Result<Regex, regex::Error> = Regex::new(&pattern) else {
-        return Vec::new();
+        return Ok(CallInventory {
+            call_sites: Vec::new(),
+            has_unresolved_use: true,
+        });
+    };
+    let non_code: Vec<Range<usize>> = executable_code_exclusions(source)?;
+    let bytes: &[u8] = source.as_bytes();
+    let mut identifiers: Vec<Range<usize>> = Vec::new();
+    let mut non_code_index: usize = 0;
+    for whole in re.find_iter(source) {
+        while non_code_index < non_code.len() && non_code[non_code_index].end <= whole.start() {
+            non_code_index += 1;
+        }
+        if non_code
+            .get(non_code_index)
+            .is_some_and(|range: &Range<usize>| range.start <= whole.start())
+            || (decoder_range.start <= whole.start() && whole.start() < decoder_range.end)
+            || !identifier_is_bounded(bytes, whole.start(), whole.end())
+        {
+            continue;
+        }
+        if identifiers.len() == MAX_PROBE_EXPRESSIONS {
+            return Err(ProbeRefusal::BoundExceeded);
+        }
+        identifiers
+            .try_reserve(1)
+            .map_err(|_| ProbeRefusal::BoundExceeded)?;
+        identifiers.push(whole.start()..whole.end());
+    }
+    let Some(resolved_starts): Option<std::collections::BTreeSet<usize>> =
+        resolved_reference_starts(source, &[decoder_name], std::slice::from_ref(decoder_range))
+    else {
+        return Ok(CallInventory {
+            call_sites: Vec::new(),
+            has_unresolved_use: true,
+        });
     };
     let mut out: Vec<CallSite> = Vec::new();
-    for cap in re.captures_iter(source) {
-        let Some(whole): Option<regex::Match<'_>> = cap.get(0) else {
+    out.try_reserve(identifiers.len())
+        .map_err(|_| ProbeRefusal::BoundExceeded)?;
+    let scanned_starts: BTreeSet<usize> = identifiers
+        .iter()
+        .map(|identifier: &Range<usize>| identifier.start)
+        .collect();
+    let mut has_unresolved_use: bool = resolved_starts
+        .iter()
+        .any(|start: &usize| !decoder_range.contains(start) && !scanned_starts.contains(start));
+    for whole in identifiers {
+        if is_property_access(bytes, whole.start) {
+            has_unresolved_use = true;
+            continue;
+        }
+        if !resolved_starts.contains(&whole.start) {
+            continue;
+        }
+        let mut open_paren: usize = whole.end;
+        while bytes
+            .get(open_paren)
+            .is_some_and(|byte: &u8| byte.is_ascii_whitespace())
+        {
+            open_paren += 1;
+        }
+        if bytes.get(open_paren) != Some(&b'(') {
+            has_unresolved_use = true;
+            continue;
+        }
+        let Some(close_paren): Option<usize> = find_paren_close(bytes, open_paren + 1) else {
+            has_unresolved_use = true;
             continue;
         };
-        let Some(arg): Option<regex::Match<'_>> = cap.get(1) else {
-            continue;
-        };
-        if let Some(idx) = parse_int(arg.as_str()) {
+        if let Some(idx) = parse_int(source[open_paren + 1..close_paren].trim()) {
             out.push(CallSite {
-                range: whole.start()..whole.end(),
+                range: whole.start..close_paren + 1,
                 index: idx,
             });
+        } else {
+            has_unresolved_use = true;
         }
     }
-    out
+    Ok(CallInventory {
+        call_sites: out,
+        has_unresolved_use,
+    })
+}
+
+const fn identifier_is_bounded(bytes: &[u8], start: usize, end: usize) -> bool {
+    (start == 0 || !is_ident_byte(bytes[start - 1]))
+        && (end >= bytes.len() || !is_ident_byte(bytes[end]))
+}
+
+fn is_property_access(bytes: &[u8], start: usize) -> bool {
+    let mut cursor: usize = start;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+    }
+    cursor > 0 && bytes[cursor - 1] == b'.'
+}
+
+const fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
 }
 
 fn parse_int(s: &str) -> Option<i64> {
@@ -221,12 +343,15 @@ mod tests {
 
     #[test]
     fn finds_call_sites_with_hex_index() {
-        let src: &str = "_dec(0x0); _dec(0x1); _dec(2);";
-        let sites: Vec<CallSite> = find_call_sites(src, "_dec");
-        assert_eq!(sites.len(), 3);
-        assert_eq!(sites[0].index, 0);
-        assert_eq!(sites[1].index, 1);
-        assert_eq!(sites[2].index, 2);
+        let src: &str = "var _arr=['zero','one','two'];var _dec=function(i){return _arr[i];};_dec(0x0);_dec(0x1);_dec(2);";
+        let (_, _, decoder_range): (String, String, Range<usize>) =
+            find_decoder(src, "_arr").expect("decoder");
+        let inventory: CallInventory =
+            find_call_sites(src, "_dec", &decoder_range).expect("inventory");
+        assert_eq!(inventory.call_sites.len(), 3);
+        assert_eq!(inventory.call_sites[0].index, 0);
+        assert_eq!(inventory.call_sites[1].index, 1);
+        assert_eq!(inventory.call_sites[2].index, 2);
     }
 
     #[test]
@@ -252,5 +377,119 @@ console.log(_0xdec(0x0), _0xdec(0x1));
             "decoder declaration should be removed: {}",
             result.rewritten_source
         );
+    }
+
+    #[test]
+    fn inline_consumer_retains_environment_refusal() {
+        let src: &str = r"var _0xab = ['hi'];
+var _0xdec = function (i) { return _0xab[i] + Math.random(); };
+console.log(_0xdec(0x0));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(
+            result.probe_refusal,
+            Some(ProbeRefusal::EnvironmentDisagreement)
+        );
+        assert_eq!(result.call_sites_inlined, 0);
+        assert!(result.rewritten_source.contains("_0xdec(0x0)"));
+        assert!(result.rewritten_source.contains("var _0xdec"));
+    }
+
+    #[test]
+    fn partial_inline_keeps_decoder_for_unresolved_calls() {
+        let src: &str = r"var _0xab = ['zero', 'one', 'two'];
+var _0xdec = function (i) { return i === 1 ? null.missing : _0xab[i]; };
+console.log(_0xdec(0x0), _0xdec(0x1), _0xdec(0x2));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 2);
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains("_0xdec(0x1)"));
+        assert!(result.rewritten_source.contains("'zero'"));
+        assert!(result.rewritten_source.contains("'two'"));
+    }
+
+    #[test]
+    fn dynamic_only_call_keeps_decoder_declaration() {
+        let src: &str = r"var _0xab = ['zero', 'one'];
+var _0xdec = function (i) { return _0xab[i]; };
+console.log(_0xdec(index));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 0);
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains("_0xdec(index)"));
+    }
+
+    #[test]
+    fn mixed_literal_and_dynamic_calls_keep_decoder_declaration() {
+        let src: &str = r"var _0xab = ['zero', 'one'];
+var _0xdec = function (i) { return _0xab[i]; };
+console.log(_0xdec(0), _0xdec(index));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 1);
+        assert!(result.rewritten_source.contains("'zero'"));
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains("_0xdec(index)"));
+    }
+
+    #[test]
+    fn escaped_decoder_reference_keeps_decoder_declaration() {
+        let src: &str = r"var _0xab = ['zero', 'one'];
+var _0xdec = function (i) { return _0xab[i]; };
+console.log(_0xdec(0), _0x\u0064ec(1));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 1);
+        assert!(result.rewritten_source.contains("'zero'"));
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains(r"_0x\u0064ec(1)"));
+    }
+
+    #[test]
+    fn template_expression_is_live_but_template_text_is_not() {
+        let src: &str = r"var _0xab = ['zero'];
+var _0xdec = function (i) { return _0xab[i]; };
+console.log('_0xdec(index)', `${_0xdec(index)}`);
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 0);
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains("${_0xdec(index)}"));
+    }
+
+    #[test]
+    fn shadowed_decoder_call_is_not_inlined_as_the_outer_binding() {
+        let src: &str = r"var _0xab = ['zero', 'one'];
+var _0xdec = function (i) { return _0xab[i]; };
+function invoke(_0xdec) { return _0xdec(0); }
+console.log(_0xdec(1), invoke(function (value) { return value; }));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 1);
+        assert!(result.rewritten_source.contains("return _0xdec(0)"));
+        assert!(result.rewritten_source.contains("'one'"));
+    }
+
+    #[test]
+    fn semantic_failure_does_not_inline_ambiguous_legacy_references() {
+        let src: &str = "var _0xab=['zero'];var _0xdec=function(i){return _0xab[i];};function invoke(_0xdec){return _0xdec(0);}const =;";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 0);
+        assert!(result.rewritten_source.contains("return _0xdec(0)"));
+        assert!(result.rewritten_source.contains("var _0xdec=function"));
+    }
+
+    #[test]
+    fn global_object_decoder_use_keeps_the_outer_binding() {
+        let src: &str = r"var _0xab = ['zero'];
+var _0xdec = function (i) { return _0xab[i]; };
+console.log(_0xdec(0), globalThis._0xdec(index));
+";
+        let result: InlineResult = inline_decoder_calls(src, "_0xab");
+        assert_eq!(result.call_sites_inlined, 1);
+        assert!(result.rewritten_source.contains("var _0xdec"));
+        assert!(result.rewritten_source.contains("globalThis._0xdec(index)"));
     }
 }
