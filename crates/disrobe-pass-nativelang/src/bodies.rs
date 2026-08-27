@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_pass_native::pseudo_c::{
+    SiblingExternPolicy, recover_program_with_sibling_extern_policy,
+};
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction as NativeRecoveredFunction, RecoveredProgram,
-    UnrecoveredFunction, recover_aarch64_program, recover_program,
+    UnrecoveredFunction, recover_aarch64_program,
 };
 use serde::{Deserialize, Serialize};
 
@@ -292,7 +295,12 @@ pub(crate) fn recover_bodies_within(
     });
     let program_result: RecoveredProgram = match abi {
         BodyAbi::Aapcs64 => recover_aarch64_program(image.raw),
-        BodyAbi::MsX64 | BodyAbi::SysV => recover_program(image.raw, &program, abi.to_native()),
+        BodyAbi::MsX64 | BodyAbi::SysV => recover_program_with_sibling_extern_policy(
+            image.raw,
+            &program,
+            abi.to_native(),
+            SiblingExternPolicy::Retain,
+        ),
     };
     let recovered_by_address: BTreeMap<u64, &NativeRecoveredFunction> = program_result
         .recovered
@@ -428,11 +436,8 @@ fn body_status(found: &NativeRecoveredFunction, retained: &mut u64, budget: u64)
     let rust: RustBody = match found.rust_source.as_ref() {
         None => RustBody::NotEmitted,
         Some(source) if source.trim().is_empty() => RustBody::Rejected(BodyRejection::EmptySource),
-        Some(source) => match complete_rust_declarations(source) {
-            Err(rejection) => RustBody::Rejected(rejection),
-            Ok(completed) => first_undeclared_rust_call(&completed)
-                .map_or(RustBody::Emitted(completed), RustBody::Rejected),
-        },
+        Some(source) => first_undeclared_rust_call(source)
+            .map_or_else(|| RustBody::Emitted(source.clone()), RustBody::Rejected),
     };
     let c_bytes: u64 = found.source.len() as u64;
     let rust_bytes: u64 = match &rust {
@@ -878,28 +883,6 @@ fn call_arity(tokens: &[CToken], open_paren: usize) -> Option<usize> {
     None
 }
 
-fn complete_rust_declarations(source: &str) -> Result<String, BodyRejection> {
-    let calls: Vec<SiblingCall> = undeclared_rust_calls(source)?;
-    if calls.is_empty() {
-        return Ok(source.to_owned());
-    }
-    let mut block: String = String::from("extern \"C\" {\n");
-    for call in &calls {
-        let params: String = (0..call.arity)
-            .map(|index: usize| format!("a{index}: u64"))
-            .collect::<Vec<String>>()
-            .join(", ");
-        block.push_str("    fn ");
-        block.push_str(&call.name);
-        block.push('(');
-        block.push_str(&params);
-        block.push_str(") -> u64;\n");
-    }
-    block.push_str("}\n");
-    block.push_str(source);
-    Ok(block)
-}
-
 fn emitted_identifier(name: &str, address: u64, used: &mut BTreeSet<String>) -> String {
     let mut candidate: String = String::with_capacity(name.len().min(MAX_EMITTED_NAME_CHARS));
     for ch in name.chars().take(MAX_EMITTED_NAME_CHARS) {
@@ -1282,62 +1265,6 @@ mod tests {
     }
 
     #[test]
-    fn dropped_sibling_declarations_are_restored_before_the_rust_gate() {
-        let source: &str = "#[allow(dead_code)]\npub fn caller(a0: u64) -> u64 {\n    let mut \
-                            r_rax: u64 = a0;\n    r_rax = unsafe { nimCopyMem(r_rax, a0, a0, a0, \
-                            a0) };\n    r_rax = unsafe { nimZeroMem(r_rax, a0) };\n    r_rax = \
-                            unsafe { nimCopyMem(r_rax, a0, a0, a0, a0) };\n    r_rax\n}\n";
-        let completed: String =
-            complete_rust_declarations(source).expect("the sibling arities agree");
-        assert!(
-            completed.starts_with(
-                "extern \"C\" {\n    fn nimCopyMem(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) \
-                 -> u64;\n    fn nimZeroMem(a0: u64, a1: u64) -> u64;\n}\n"
-            ),
-            "{completed}"
-        );
-        assert!(completed.ends_with(source), "{completed}");
-        assert_eq!(first_undeclared_rust_call(&completed), None);
-    }
-
-    #[test]
-    fn a_sibling_called_at_two_arities_is_refused_rather_than_guessed() {
-        let source: &str = "pub fn caller(a0: u64) -> u64 {\n    let mut r_rax: u64 = unsafe { \
-                            helper(a0) };\n    r_rax = unsafe { helper(a0, r_rax) };\n    \
-                            r_rax\n}\n";
-        assert_eq!(
-            complete_rust_declarations(source),
-            Err(BodyRejection::UnboundIdentifier("helper".to_owned()))
-        );
-    }
-
-    #[test]
-    fn nested_call_arguments_do_not_inflate_the_restored_arity() {
-        let source: &str = "pub fn caller(a0: u64) -> u64 {\n    unsafe { outer(inner(a0, a0), \
-                            a0) }\n}\n";
-        let completed: String = complete_rust_declarations(source).expect("arities are consistent");
-        assert!(
-            completed.contains("fn outer(a0: u64, a1: u64) -> u64;"),
-            "{completed}"
-        );
-        assert!(
-            completed.contains("fn inner(a0: u64, a1: u64) -> u64;"),
-            "{completed}"
-        );
-    }
-
-    #[test]
-    fn a_body_with_no_undeclared_call_is_left_byte_identical() {
-        let source: &str = "extern \"C\" {\n    fn sub_10(a0: u64) -> u64;\n}\npub fn caller(a0: \
-                            u64) -> u64 {\n    unsafe { sub_10(a0) }\n}\n";
-        assert_eq!(
-            complete_rust_declarations(source).as_deref(),
-            Ok(source),
-            "an already self-contained body must not be rewritten"
-        );
-    }
-
-    #[test]
     fn rust_gate_rejects_an_undeclared_sibling_call() {
         let source: &str = "pub fn caller(a0: u64) -> u64 {\n    let mut r_rax: u64 = a0;\n    \
                             r_rax = unsafe { system_osTryAllocPages_1009d50(r_rax) };\n    \
@@ -1473,6 +1400,46 @@ mod tests {
         assert_eq!(
             recovery.retained_source_bytes,
             (pseudo_c.len() + rust.len()) as u64
+        );
+    }
+
+    #[test]
+    fn standalone_body_keeps_sibling_externs_for_both_emitted_languages() {
+        let code: &'static [u8] = &[
+            0x48, 0x89, 0xf8, 0xc3, 0x48, 0x83, 0xec, 0x08, 0xe8, 0xf3, 0xff, 0xff, 0xff, 0x48,
+            0x83, 0xc4, 0x08, 0xc3,
+        ];
+        let image: NativeImage<'static> =
+            image_with_text(ImageKind::Elf, CodeArch::X86_64, 0x1000, code);
+        let recovery: BodyRecovery = recover_bodies(
+            &image,
+            NativeLang::Zig,
+            &[
+                func("callee", 0x1000, Some(0x1004)),
+                func("caller", 0x1004, Some(0x1012)),
+            ],
+        );
+        let caller: &FunctionBody = recovery
+            .bodies
+            .iter()
+            .find(|body: &&FunctionBody| body.emitted_name == "caller")
+            .expect("the caller body must be present");
+        let BodyStatus::Recovered {
+            pseudo_c,
+            pseudo_rust: RustBody::Emitted(pseudo_rust),
+        } = &caller.status
+        else {
+            panic!("expected a recovered caller body, got {:?}", caller.status);
+        };
+        assert_eq!(first_unbound_identifier(pseudo_c), None, "{pseudo_c}");
+        assert_eq!(
+            first_undeclared_rust_call(pseudo_rust),
+            None,
+            "{pseudo_rust}"
+        );
+        assert!(
+            pseudo_rust.contains("fn callee(a0: u64) -> u64;"),
+            "{pseudo_rust}"
         );
     }
 

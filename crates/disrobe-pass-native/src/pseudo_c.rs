@@ -2942,7 +2942,27 @@ pub struct RecoveredProgram {
     pub unrecovered: Vec<UnrecoveredFunction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiblingExternPolicy {
+    DropResolved,
+    Retain,
+}
+
 pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -> RecoveredProgram {
+    recover_program_with_sibling_extern_policy(
+        object,
+        functions,
+        abi,
+        SiblingExternPolicy::DropResolved,
+    )
+}
+
+pub fn recover_program_with_sibling_extern_policy(
+    object: &[u8],
+    functions: &[ProgramFunction],
+    abi: Abi,
+    sibling_extern_policy: SiblingExternPolicy,
+) -> RecoveredProgram {
     let by_addr: BTreeMap<u64, &ProgramFunction> = functions
         .iter()
         .map(|f: &ProgramFunction| (f.address, f))
@@ -2980,7 +3000,7 @@ pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -
             });
             continue;
         }
-        match recover_program_function(object, f, &by_addr, abi) {
+        match recover_program_function(object, f, &by_addr, abi, sibling_extern_policy) {
             Ok(rec) => recovered.push(rec),
             Err(reason) => unrecovered.push(UnrecoveredFunction {
                 name: f.name.clone(),
@@ -3091,6 +3111,7 @@ fn recover_program_function(
     f: &ProgramFunction,
     by_addr: &BTreeMap<u64, &ProgramFunction>,
     abi: Abi,
+    sibling_extern_policy: SiblingExternPolicy,
 ) -> core::result::Result<RecoveredFunction, String> {
     let proven_integer64_tail_targets: BTreeSet<u64> =
         proven_program_integer64_tail_targets(object, f, by_addr, abi);
@@ -3150,10 +3171,14 @@ fn recover_program_function(
         .filter_map(|c: &ResolvedCall| c.name.clone())
         .collect();
     let source: String = rename_recovered_c_symbol(&rec.source, &f.name);
-    let rust_source: Option<String> = rec
-        .rust_source
-        .as_deref()
-        .map(|body: &str| rename_recovered_rust_symbol(body, &f.name, &resolved_names));
+    let rust_source: Option<String> = rec.rust_source.as_deref().map(|body: &str| {
+        rename_recovered_rust_symbol_with_policy(
+            body,
+            &f.name,
+            &resolved_names,
+            sibling_extern_policy,
+        )
+    });
     Ok(RecoveredFunction {
         name: f.name.clone(),
         address: f.address,
@@ -3209,7 +3234,24 @@ fn rename_recovered_c_symbol(source: &str, name: &str) -> String {
 }
 
 fn rename_recovered_rust_symbol(source: &str, name: &str, resolved_names: &[String]) -> String {
-    let filtered: String = drop_resolved_sibling_externs(source, resolved_names);
+    rename_recovered_rust_symbol_with_policy(
+        source,
+        name,
+        resolved_names,
+        SiblingExternPolicy::DropResolved,
+    )
+}
+
+fn rename_recovered_rust_symbol_with_policy(
+    source: &str,
+    name: &str,
+    resolved_names: &[String],
+    sibling_extern_policy: SiblingExternPolicy,
+) -> String {
+    let filtered: String = match sibling_extern_policy {
+        SiblingExternPolicy::DropResolved => drop_resolved_sibling_externs(source, resolved_names),
+        SiblingExternPolicy::Retain => source.to_owned(),
+    };
     filtered.replacen("pub fn recovered(", &format!("pub fn {name}("), 1)
 }
 
@@ -27280,6 +27322,40 @@ mod tests {
             rust.contains("r_rax = unsafe { helper(r_rcx) };"),
             "rust output must emit the call inside an unsafe block: {rust}"
         );
+    }
+
+    #[test]
+    fn standalone_program_output_retains_resolved_sibling_externs() {
+        let program: RecoveredProgram = recover_program_with_sibling_extern_policy(
+            &[],
+            &[
+                ProgramFunction {
+                    name: "callee".to_owned(),
+                    address: 0x1000,
+                    code: vec![0x48, 0x89, 0xf8, 0xc3],
+                },
+                ProgramFunction {
+                    name: "caller".to_owned(),
+                    address: 0x1004,
+                    code: vec![
+                        0x48, 0x83, 0xec, 0x08, 0xe8, 0xf3, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc4,
+                        0x08, 0xc3,
+                    ],
+                },
+            ],
+            Abi::SysV,
+            SiblingExternPolicy::Retain,
+        );
+        let caller: &RecoveredFunction = program
+            .recovered
+            .iter()
+            .find(|function: &&RecoveredFunction| function.name == "caller")
+            .expect("the caller must recover");
+        let rust: &str = caller
+            .rust_source
+            .as_deref()
+            .expect("the caller must emit pseudo-Rust");
+        assert!(rust.contains("fn callee(a0: u64) -> u64;"), "{rust}");
     }
 
     #[test]
