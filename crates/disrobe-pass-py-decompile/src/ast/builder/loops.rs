@@ -11,11 +11,12 @@ use super::stmts::{
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, find_try_region, handler_chain_end, handler_join,
-    is_async_cleanup_throw_back_edge, is_async_send_back_edge, is_back_edge, is_cond_back_edge,
-    is_cond_jump_with_backward_target, is_forward_cond_jump, is_pure_finally_handler_shape,
-    is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt, is_value_boundary,
-    is_value_form_shortcircuit, leading_guard_prelude_split, offset_is_unprotected,
-    structure_for_bare_except_continue_epilogue, structure_for_typed_except_continue_epilogue,
+    inline_finally_break_exit, is_async_cleanup_throw_back_edge, is_async_send_back_edge,
+    is_back_edge, is_cond_back_edge, is_cond_jump_with_backward_target, is_forward_cond_jump,
+    is_pure_finally_handler_shape, is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt,
+    is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
+    offset_is_unprotected, structure_for_bare_except_continue_epilogue,
+    structure_for_typed_except_continue_epilogue, structure_infinite_while_split_finally_body,
     structure_try,
 };
 use super::{
@@ -612,6 +613,9 @@ fn infinite_break_exit(
     back_edge: usize,
     hi: usize,
 ) -> usize {
+    if let Some(exit) = inline_finally_break_exit(stream, lo, hi_block, back_edge, hi) {
+        return exit;
+    }
     let only_jump: bool = (lo..hi_block).all(|k: usize| {
         matches!(
             stream.ops[k],
@@ -2522,6 +2526,7 @@ pub(super) fn structure_loop(
     };
     let ownership_guard: LoopOwnershipGuard = LoopOwnershipGuard::enter(ownership);
     let mut cold_handler_exit_tail: Vec<Stmt> = Vec::new();
+    let mut infinite_tail_end: Option<usize> = None;
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let loop_stmt: Stmt = match region.kind {
             LoopKind::For => {
@@ -2570,7 +2575,10 @@ pub(super) fn structure_loop(
                     .clone()
                     .unwrap_or_else(|| recover_while_test(code, stream, region));
                 let body: Vec<Stmt> = if region.infinite {
-                    structure_infinite_while_body(code, stream, region)?
+                    let (body, tail_end): (Vec<Stmt>, Option<usize>) =
+                        structure_infinite_while_body(code, stream, region)?;
+                    infinite_tail_end = tail_end;
+                    body
                 } else {
                     structure_while_body_absorbing_break_handler(code, stream, region, hi, &test)?
                 };
@@ -2595,13 +2603,16 @@ pub(super) fn structure_loop(
     let mut out: Vec<Stmt> = head;
     out.push(loop_stmt);
     out.extend(cold_handler_exit_tail);
-    let tail_start: usize = if region.infinite {
+    let tail_start: usize = if infinite_tail_end.is_some() {
+        region.exit.min(hi)
+    } else if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
         loop_tail_start(stream, region, hi)
     };
-    if tail_start < hi {
-        out.extend(structure_stmts(code, stream, tail_start, hi)?);
+    let tail_end: usize = infinite_tail_end.unwrap_or(hi).min(hi);
+    if tail_start < tail_end {
+        out.extend(structure_stmts(code, stream, tail_start, tail_end)?);
     }
     Ok(out)
 }
@@ -2715,15 +2726,20 @@ fn structure_infinite_while_body(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &LoopRegion,
-) -> Result<Vec<Stmt>> {
+) -> Result<(Vec<Stmt>, Option<usize>)> {
+    if let Some((body, tail_end)) =
+        structure_infinite_while_split_finally_body(code, stream, region)?
+    {
+        return Ok((body, Some(tail_end)));
+    }
     let body_end: usize = infinite_body_end(stream, region);
     let body_entry: usize = infinite_body_entry(stream, region, body_end);
     let Some((_, body_label)): Option<(usize, usize)> = infinite_exit_block(stream, region) else {
-        return structure_stmts(code, stream, body_entry, body_end);
+        return Ok((structure_stmts(code, stream, body_entry, body_end)?, None));
     };
     let first_cond: usize = infinite_first_cond(stream, region);
     if inline_exit_splits_try(stream, region, first_cond, body_end) {
-        return structure_stmts(code, stream, body_entry, body_end);
+        return Ok((structure_stmts(code, stream, body_entry, body_end)?, None));
     }
     let (head, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[region.header..first_cond])?;
@@ -2749,7 +2765,7 @@ fn structure_infinite_while_body(
         line: None,
     });
     out.extend(structure_stmts(code, stream, body_label, body_end)?);
-    Ok(out)
+    Ok((out, None))
 }
 
 fn infinite_body_entry(stream: &DecodedStream, region: &LoopRegion, body_end: usize) -> usize {

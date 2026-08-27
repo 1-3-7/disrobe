@@ -6819,6 +6819,110 @@ fn finally_inline_copy_end(
     (matched == fin_ops.len()).then_some(k)
 }
 
+#[derive(Clone, Copy)]
+struct SplitFinallyLoopExit {
+    protected_end: usize,
+    resumed_end: usize,
+    break_jump: usize,
+    exit: usize,
+    handler_start: usize,
+    handler_end: usize,
+}
+
+fn split_finally_loop_exit(
+    stream: &DecodedStream,
+    copy_start: usize,
+    body_resume: usize,
+    back_edge: usize,
+    hi: usize,
+) -> Option<SplitFinallyLoopExit> {
+    if stream.is_pre_311() || copy_start >= body_resume || body_resume >= back_edge {
+        return None;
+    }
+    let jump: usize = last_significant_back(stream, copy_start, body_resume)?;
+    if !matches!(
+        stream.ops[jump],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) {
+        return None;
+    }
+    let exit: usize = resolve_jump_target(stream, jump, &stream.ops[jump])?;
+    if exit <= back_edge || exit > hi {
+        return None;
+    }
+    for entry in &stream.exception_table {
+        let handler_start: usize = stream.index_for_offset(entry.target)?;
+        if handler_start <= back_edge || handler_start > hi || exit >= handler_start {
+            continue;
+        }
+        let mut ranges: Vec<(usize, usize)> = stream
+            .exception_table
+            .iter()
+            .filter(|candidate: &&crate::bytecode::flow::ExceptionTableEntry| {
+                candidate.target == entry.target && candidate.length != 0
+            })
+            .filter_map(
+                |candidate: &crate::bytecode::flow::ExceptionTableEntry| -> Option<(usize, usize)> {
+                    Some((
+                        stream.index_for_offset(candidate.start)?,
+                        stream.index_for_offset_ceil(candidate.end())?,
+                    ))
+                },
+            )
+            .collect();
+        ranges.sort_unstable();
+        let [first, second]: &[(usize, usize)] = ranges.as_slice() else {
+            continue;
+        };
+        if first.1 > copy_start || second.0 != body_resume || second.1 > back_edge {
+            continue;
+        }
+        let handler_end: usize = handler_join(stream, handler_start, hi);
+        if !is_pure_finally_handler_shape(stream, handler_start, handler_end, false) {
+            continue;
+        }
+        let final_start: usize = handler_body_first(stream, handler_start);
+        let final_end: usize = finally_body_end(stream, final_start, handler_end);
+        let break_copy_end: usize =
+            finally_inline_copy_end(stream, copy_start, jump, final_start, final_end)?;
+        if first_significant(stream, break_copy_end, body_resume) != Some(jump) {
+            continue;
+        }
+        let normal_copy_end: usize =
+            finally_inline_copy_end(stream, second.1, back_edge, final_start, final_end)?;
+        if first_significant(stream, normal_copy_end, back_edge + 1) != Some(back_edge) {
+            continue;
+        }
+        let tail_terminal: usize = last_significant_back(stream, exit, handler_start)?;
+        if !matches!(
+            stream.ops[tail_terminal],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        ) {
+            continue;
+        }
+        return Some(SplitFinallyLoopExit {
+            protected_end: first.1,
+            resumed_end: second.1,
+            break_jump: jump,
+            exit,
+            handler_start,
+            handler_end,
+        });
+    }
+    None
+}
+
+pub(super) fn inline_finally_break_exit(
+    stream: &DecodedStream,
+    copy_start: usize,
+    body_resume: usize,
+    back_edge: usize,
+    hi: usize,
+) -> Option<usize> {
+    split_finally_loop_exit(stream, copy_start, body_resume, back_edge, hi)
+        .map(|split: SplitFinallyLoopExit| split.exit)
+}
+
 fn slice_significant_contains_finally(
     stream: &DecodedStream,
     lo: usize,
@@ -7010,6 +7114,92 @@ fn structure_finally_protected_body(
         }
     }
     structure_stmts(code, stream, try_start, protected_end)
+}
+
+pub(super) fn structure_infinite_while_split_finally_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+    {
+        return Ok(None);
+    }
+    let Some(first_cond): Option<usize> =
+        (loop_region.header..loop_region.back_edge).find(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+    else {
+        return Ok(None);
+    };
+    let Some(body_resume): Option<usize> =
+        resolve_jump_target(stream, first_cond, &stream.ops[first_cond])
+            .filter(|target: &usize| *target > first_cond && *target < loop_region.back_edge)
+    else {
+        return Ok(None);
+    };
+    let Some(copy_start): Option<usize> = first_significant(stream, first_cond + 1, body_resume)
+    else {
+        return Ok(None);
+    };
+    let Some(split): Option<SplitFinallyLoopExit> = split_finally_loop_exit(
+        stream,
+        copy_start,
+        body_resume,
+        loop_region.back_edge,
+        stream.ops.len(),
+    ) else {
+        return Ok(None);
+    };
+    if split.exit != loop_region.exit {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> =
+        find_try_region(stream, loop_region.header, split.handler_end)
+    else {
+        return Ok(None);
+    };
+    let kind_matches: bool = region.is_finally && !region.is_with;
+    let start_matches: bool =
+        (loop_region.header..loop_region.back_edge).contains(&region.try_start);
+    let bounds_match: bool = region.protected_end == split.protected_end;
+    let handler_matches: bool = region.handler_start == split.handler_start;
+    if !kind_matches || !start_matches || !bounds_match || !handler_matches {
+        return Ok(None);
+    }
+    let matching_guards: usize = (region.try_start..split.protected_end)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && !is_chain_cond_jump(&stream.ops, index)
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(body_resume)
+        })
+        .count();
+    if matching_guards != 1 {
+        return Ok(None);
+    }
+    let mut logical: DecodedStream = stream.clone();
+    logical.ops[split.protected_end..split.break_jump].fill(CanonicalOp::Nop);
+    logical.ops[split.exit..split.handler_start].fill(CanonicalOp::Nop);
+    let Some(logical_region): Option<TryRegion> =
+        find_try_region(&logical, loop_region.header, split.handler_end)
+    else {
+        return Ok(None);
+    };
+    if !logical_region.is_finally || logical_region.protected_end != split.resumed_end {
+        return Ok(None);
+    }
+    let body: Vec<Stmt> = structure_try(
+        code,
+        &logical,
+        loop_region.header,
+        logical_region.region_end,
+        &logical_region,
+    )?;
+    Ok(Some((body, split.handler_start)))
 }
 
 fn trailing_value_run_start(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
