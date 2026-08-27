@@ -62,8 +62,6 @@ pub use cordova::{
     is_webview_asset, mime_hint_for,
 };
 pub use error::{Error, Result};
-#[cfg(feature = "native-image")]
-pub use flutter::FlutterEngineSymbolCache;
 pub use flutter::{
     AotLiftReport, Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction,
     Arm64TraversalReport, Arm64Unresolved, Arm64UnresolvedKind, CidTableMatch,
@@ -115,6 +113,8 @@ pub use flutter::{
     recovery_counts as dart_recovery_counts, resolve_pool_literals, traverse_arm64,
     vm_data_bytes as dart_vm_data_bytes, vm_instruction_bytes as dart_vm_instruction_bytes,
 };
+#[cfg(feature = "native-image")]
+pub use flutter::{FLUTTER_ENGINE_SYMBOL_CACHE_FORMAT, FlutterEngineSymbolCache};
 #[cfg(feature = "native-image")]
 pub use flutter::{
     flutter_engine_identity_for_elf, validate_cached_flutter_engine_symbols_for_elf,

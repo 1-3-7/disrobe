@@ -279,6 +279,64 @@ def test_flutter_engine_symbol_map_refuses_mismatched_build_id() -> None:
         )
 
 
+def test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries(
+    tmp_path: pathlib.Path,
+) -> None:
+    cache_dir: pathlib.Path = tmp_path / "flutter-engine-symbols"
+    seeded: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT,
+        FLUTTER_ENGINE_MAP,
+        source="analyst-map.json",
+        cache_dir=cache_dir,
+    )
+    assert seeded.symbol_count == 1
+
+    hit: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT, cache_dir=cache_dir
+    )
+    assert hit.raw["symbols"] == [{"address": 0, "name": "FlutterEngineExternal"}]
+    assert hit.raw["provenance"] == [
+        {
+            "source": "cache",
+            "kind": "disrobe.flutter.engine-symbol-cache",
+            "identity": "b71885094a73117bf90d3cfa05824129",
+        }
+    ]
+
+    [entry] = cache_dir.glob("*.json")
+    record: dict[str, object] = json.loads(entry.read_text(encoding="utf-8"))
+    record["identity"] = {
+        "kind": "elf-build-id",
+        "value": "00000000000000000000000000000000",
+    }
+    entry.write_text(json.dumps(record), encoding="utf-8")
+    mismatch: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT, cache_dir=cache_dir
+    )
+    assert mismatch.symbol_count == 0
+    assert mismatch.raw["provenance"] == []
+
+    record["identity"] = {
+        "kind": "elf-build-id",
+        "value": "b71885094a73117bf90d3cfa05824129",
+    }
+    record["symbols"] = [{"address": 1 << 63, "name": "OutsideImage"}]
+    entry.write_text(json.dumps(record), encoding="utf-8")
+    invalid: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT, cache_dir=cache_dir
+    )
+    assert invalid.symbol_count == 0
+    assert invalid.raw["provenance"] == []
+
+    record["symbols"] = [{"address": 0, "name": "FlutterEngineExternal"}]
+    entry.write_text(json.dumps(record), encoding="utf-8")
+    no_cache: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
+        FLUTTER_AOT, cache_dir=cache_dir, no_cache=True
+    )
+    assert no_cache.symbol_count == 0
+    assert no_cache.raw["provenance"] == []
+
+
 def test_native_diff_and_sigmaker() -> None:
     diff = disrobe.native_diff(SAMPLE_ELF, SAMPLE_ELF)
     assert isinstance(diff, disrobe.DiffReport)
