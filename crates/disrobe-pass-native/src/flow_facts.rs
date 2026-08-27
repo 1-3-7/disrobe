@@ -37,6 +37,7 @@ pub(crate) enum DirectTrap {
 pub(crate) enum NoreturnParameter {
     SignedInt,
     UnsignedInt,
+    UnsignedPointerSized,
     ConstCharPointer,
     VoidPointer,
 }
@@ -46,6 +47,7 @@ impl NoreturnParameter {
         match self {
             Self::SignedInt => "int",
             Self::UnsignedInt => "unsigned int",
+            Self::UnsignedPointerSized => "uintptr_t",
             Self::ConstCharPointer => "const char *",
             Self::VoidPointer => "void *",
         }
@@ -55,6 +57,7 @@ impl NoreturnParameter {
         match self {
             Self::SignedInt => "i32",
             Self::UnsignedInt => "u32",
+            Self::UnsignedPointerSized => "usize",
             Self::ConstCharPointer => "*const u8",
             Self::VoidPointer => "*mut u8",
         }
@@ -112,6 +115,14 @@ const NORETURN_LIBRARY_PROTOTYPES: &[NoreturnLibraryFunction] = &[
     NoreturnLibraryFunction {
         name: "__stack_chk_fail",
         parameters: &[],
+    },
+    NoreturnLibraryFunction {
+        name: "___report_gsfailure",
+        parameters: &[],
+    },
+    NoreturnLibraryFunction {
+        name: "__report_gsfailure",
+        parameters: &[NoreturnParameter::UnsignedPointerSized],
     },
     NoreturnLibraryFunction {
         name: "__assert_fail",
@@ -911,6 +922,20 @@ mod tests {
                 .map(|entry: &NoreturnLibraryFunction| entry.name),
             Some("__stack_chk_fail")
         );
+        let x64_gsfailure: &NoreturnLibraryFunction =
+            noreturn_import_evidence("__report_gsfailure")
+                .expect("x64 gsfailure is a declared non-returning import")
+                .function();
+        assert_eq!(
+            x64_gsfailure.parameters,
+            &[NoreturnParameter::UnsignedPointerSized]
+        );
+        let x86_gsfailure: &NoreturnLibraryFunction =
+            noreturn_import_evidence("__imp____report_gsfailure")
+                .expect("decorated x86 gsfailure is a declared non-returning import")
+                .function();
+        assert_eq!(x86_gsfailure.name, "___report_gsfailure");
+        assert!(x86_gsfailure.parameters.is_empty());
     }
 
     #[test]

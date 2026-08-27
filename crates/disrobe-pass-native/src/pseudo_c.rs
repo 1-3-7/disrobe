@@ -2383,6 +2383,8 @@ struct ObjectTransferFacts {
     relocated_branch_targets: BTreeMap<u64, u64>,
     relocated_lea_values: BTreeMap<u64, u64>,
     stack_guard_sequence_sites: BTreeSet<u64>,
+    msvc_cookie_load_sites: BTreeSet<u64>,
+    msvc_cookie_check_sites: BTreeSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2528,6 +2530,15 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         }) {
             facts.stack_guard_sequence_sites.insert(load.address);
         }
+        if symbol.is_undefined()
+            && name == Some("__security_cookie")
+            && let Some(load) = insns.iter().find(|candidate: &&DisasmInsn| {
+                direct_transfer_displacement_field(candidate)
+                    .is_some_and(|(start, end): (u64, u64)| span.exactly(start, end))
+            })
+        {
+            facts.msvc_cookie_load_sites.insert(load.address);
+        }
         let Some(insn): Option<&&DisasmInsn> = transfers.iter().find(|insn: &&&DisasmInsn| {
             direct_transfer_displacement_field(insn)
                 .is_some_and(|(start, end): (u64, u64)| span.exactly(start, end))
@@ -2554,6 +2565,9 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         let Some(name): Option<&str> = name else {
             continue;
         };
+        if name == "__security_check_cookie" && insn.mnemonic == "call" {
+            facts.msvc_cookie_check_sites.insert(insn.address);
+        }
         let exit: Option<NoreturnCallSite> = relocated_noreturn_evidence(name);
         if let Some(entry) = exit
             && leaves_unconditionally(insn)
@@ -2612,6 +2626,161 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         &facts.noreturn_exit_sites,
     );
     facts
+        .stack_guard_sequence_sites
+        .extend(msvc_cookie_guard_sequence_sites(
+            insns,
+            &facts.msvc_cookie_load_sites,
+            &facts.msvc_cookie_check_sites,
+        ));
+    facts
+}
+
+fn msvc_cookie_guard_sequence_sites(
+    insns: &[DisasmInsn],
+    cookie_load_sites: &BTreeSet<u64>,
+    cookie_check_sites: &BTreeSet<u64>,
+) -> BTreeSet<u64> {
+    let mut sequence_sites: BTreeSet<u64> = BTreeSet::new();
+    for (load_index, load) in insns.iter().enumerate() {
+        if !cookie_load_sites.contains(&load.address) {
+            continue;
+        }
+        let Some(cookie_register): Option<RegRef> = mov_register_destination(load) else {
+            continue;
+        };
+        if !insns
+            .get(load_index + 1)
+            .is_some_and(|mix: &DisasmInsn| xor_register_rsp(mix, cookie_register))
+        {
+            continue;
+        }
+        let Some((saved_cookie, saved_register)): Option<(MemRef, RegRef)> =
+            insns.get(load_index + 2).and_then(mov_mem_reg)
+        else {
+            continue;
+        };
+        if saved_register != cookie_register
+            || saved_cookie.base != Some(Reg::Rsp)
+            || saved_cookie.index.is_some()
+        {
+            continue;
+        }
+        let mut check: Option<(usize, RegRef)> = None;
+        for (index, candidate) in insns.iter().enumerate().skip(load_index + 3) {
+            if let Some((register, memory)) = mov_reg_mem(candidate)
+                && memory == saved_cookie
+            {
+                check = Some((index, register));
+                break;
+            }
+            if candidate.mnemonic.starts_with('j') || candidate.mnemonic == "ret" {
+                break;
+            }
+        }
+        let Some((check_index, check_register)): Option<(usize, RegRef)> = check else {
+            continue;
+        };
+        let Some(mix): Option<&DisasmInsn> = insns.get(check_index + 1) else {
+            continue;
+        };
+        let Some(call): Option<&DisasmInsn> = insns.get(check_index + 2) else {
+            continue;
+        };
+        if check_register.reg != Reg::Rcx
+            || !xor_register_rsp(mix, check_register)
+            || !cookie_check_sites.contains(&call.address)
+        {
+            continue;
+        }
+        sequence_sites.extend([
+            load.address,
+            insns[load_index + 1].address,
+            insns[load_index + 2].address,
+            insns[check_index].address,
+            mix.address,
+            call.address,
+        ]);
+        if let Some((spill, reload)) = msvc_cookie_home_pair(insns, load_index, check_index) {
+            sequence_sites.insert(spill);
+            sequence_sites.insert(reload);
+        }
+    }
+    sequence_sites
+}
+
+fn msvc_cookie_home_pair(
+    insns: &[DisasmInsn],
+    cookie_load_index: usize,
+    cookie_reload_index: usize,
+) -> Option<(u64, u64)> {
+    let spill_index: usize = cookie_load_index.checked_sub(2)?;
+    let allocation_index: usize = cookie_load_index.checked_sub(1)?;
+    let spill: &DisasmInsn = insns.get(spill_index)?;
+    let allocation: &DisasmInsn = insns.get(allocation_index)?;
+    let (home, argument): (MemRef, RegRef) = mov_mem_reg(spill)?;
+    if home.base != Some(Reg::Rsp) || home.index.is_some() || argument.width != Width::W64 {
+        return None;
+    }
+    let (allocation_dest, allocation_bytes): (&str, &str) = allocation.operands.split_once(',')?;
+    if allocation.mnemonic != "sub" || parse_reg(allocation_dest.trim())?.reg != Reg::Rsp {
+        return None;
+    }
+    let allocation_bytes: i64 = parse_imm(allocation_bytes.trim())?;
+    let expected_reload_disp: i64 = home.disp.checked_add(allocation_bytes)?;
+    for reload in insns
+        .iter()
+        .take(cookie_reload_index)
+        .skip(cookie_load_index + 3)
+    {
+        let Some((reloaded, memory)): Option<(RegRef, MemRef)> = movzx_reg_mem(reload) else {
+            continue;
+        };
+        if reloaded.reg != argument.reg
+            || memory.base != Some(Reg::Rsp)
+            || memory.index.is_some()
+            || memory.disp != expected_reload_disp
+        {
+            continue;
+        }
+        if insns
+            .iter()
+            .take_while(|candidate: &&DisasmInsn| candidate.address != reload.address)
+            .skip(spill_index + 1)
+            .any(|candidate: &DisasmInsn| instruction_writes_register(candidate, argument.reg))
+        {
+            return None;
+        }
+        return Some((spill.address, reload.address));
+    }
+    None
+}
+
+fn movzx_reg_mem(insn: &DisasmInsn) -> Option<(RegRef, MemRef)> {
+    if insn.mnemonic != "movzx" {
+        return None;
+    }
+    let (left, right): (&str, &str) = insn.operands.split_once(',')?;
+    let register: RegRef = parse_reg(left.trim())?;
+    let memory: MemRef = parse_mem_access(right.trim(), None)?;
+    if !matches!(memory.width, Width::W8 | Width::W16) {
+        return None;
+    }
+    Some((register, memory))
+}
+
+fn xor_register_rsp(insn: &DisasmInsn, register: RegRef) -> bool {
+    if insn.mnemonic != "xor" {
+        return false;
+    }
+    let Some((left, right)): Option<(&str, &str)> = insn.operands.split_once(',') else {
+        return false;
+    };
+    parse_reg(left.trim()) == Some(register)
+        && parse_reg(right.trim())
+            == Some(RegRef {
+                reg: Reg::Rsp,
+                width: Width::W64,
+            })
 }
 
 fn stack_guard_sequence_sites(
@@ -8206,7 +8375,7 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
         };
     }
     if stack_pointer_break.is_none()
-        && let Some(allocated) = rsp_frame_allocation(&real)
+        && let Some(allocated) = rsp_frame_allocation(&real, abi)
     {
         let red_zone_below: i64 =
             if abi == Abi::SysV && bytes_below_the_stack_pointer_stay_private(insns) {
@@ -8393,12 +8562,47 @@ fn sysv_red_zone_frame(insns: &[DisasmInsn]) -> bool {
     saw_slot
 }
 
-fn rsp_frame_allocation(real: &[&DisasmInsn]) -> Option<i64> {
-    let first: &&DisasmInsn = real.first()?;
-    if first.mnemonic != "sub" {
+fn ms_x64_entry_home_spill(insn: &DisasmInsn, index: usize) -> bool {
+    let Some((memory, source)): Option<(MemRef, RegRef)> = mov_mem_reg(insn) else {
+        return false;
+    };
+    let Some((register, displacement)): Option<(Reg, i64)> = [
+        (Reg::Rcx, 8_i64),
+        (Reg::Rdx, 16_i64),
+        (Reg::R8, 24_i64),
+        (Reg::R9, 32_i64),
+    ]
+    .get(index)
+    .copied() else {
+        return false;
+    };
+    memory.base == Some(Reg::Rsp)
+        && memory.index.is_none()
+        && memory.disp == displacement
+        && memory.width == Width::W64
+        && source
+            == RegRef {
+                reg: register,
+                width: Width::W64,
+            }
+}
+
+fn rsp_frame_allocation(real: &[&DisasmInsn], abi: Abi) -> Option<i64> {
+    let allocation_index: usize = if abi == Abi::MsX64 {
+        real.iter()
+            .enumerate()
+            .take_while(|(index, insn): &(usize, &&DisasmInsn)| {
+                ms_x64_entry_home_spill(insn, *index)
+            })
+            .count()
+    } else {
+        0
+    };
+    let allocation: &&DisasmInsn = real.get(allocation_index)?;
+    if allocation.mnemonic != "sub" {
         return None;
     }
-    let alloc: i64 = rsp_delta_imm("sub", &first.operands)?;
+    let alloc: i64 = rsp_delta_imm("sub", &allocation.operands)?;
     let stack_pointer_stays_constant: bool =
         real.iter()
             .enumerate()
@@ -8409,7 +8613,9 @@ fn rsp_frame_allocation(real: &[&DisasmInsn]) -> Option<i64> {
                         .operands
                         .split_once(',')
                         .is_none_or(|(lhs, _): (&str, &str)| lhs.trim() != "rsp"),
-                    "sub" if rsp_delta_imm("sub", &insn.operands).is_some() => idx == 0,
+                    "sub" if rsp_delta_imm("sub", &insn.operands).is_some() => {
+                        idx == allocation_index
+                    }
                     "add" => rsp_delta_imm("add", &insn.operands).map_or(true, |delta: i64| {
                         delta == alloc
                             && real
@@ -18857,18 +19063,23 @@ struct FrameScanState {
 }
 
 const fn masked_index_bound(stmt: &Stmt) -> Option<(Reg, u64)> {
-    let Stmt::BinAssign {
-        dest,
-        op: BinOp::And,
-        src: Source::Imm(mask),
-    } = stmt
-    else {
-        return None;
-    };
-    match dest.width {
-        Width::W64 => Some((dest.reg, *mask as u64)),
-        Width::W32 => Some((dest.reg, (*mask as u64) & 0xffff_ffff)),
-        Width::W16 | Width::W8 => None,
+    match stmt {
+        Stmt::BinAssign {
+            dest,
+            op: BinOp::And,
+            src: Source::Imm(mask),
+        } => match dest.width {
+            Width::W64 => Some((dest.reg, *mask as u64)),
+            Width::W32 => Some((dest.reg, (*mask as u64) & 0xffff_ffff)),
+            Width::W16 | Width::W8 => None,
+        },
+        Stmt::BinAssign {
+            dest,
+            op: BinOp::Imul,
+            src: Source::Imm(0),
+        }
+        | Stmt::MulImm { dest, imm: 0, .. } => Some((dest.reg, 0)),
+        _ => None,
     }
 }
 
@@ -19036,6 +19247,9 @@ impl FrameScan {
         match mem.base {
             Some(b) if Some(b) == self.frame_base => match mem.index {
                 None => state.slots.push((mem.disp, mem.width)),
+                Some(idx) if state.bounds.get(&idx.reg) == Some(&0) => {
+                    state.slots.push((mem.disp, mem.width));
+                }
                 Some(idx) => {
                     if let Some(refusal) = self.indexed.refusal() {
                         state.indexed_refusal.get_or_insert(refusal);

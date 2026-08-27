@@ -600,6 +600,7 @@ const NORETURN_IMPORT_NAMES: &[&str] = &[
     "_longjmp",
     "siglongjmp",
     "__stack_chk_fail",
+    "__report_gsfailure",
     "__assert_fail",
     "__cxa_throw",
     "_Unwind_Resume",
