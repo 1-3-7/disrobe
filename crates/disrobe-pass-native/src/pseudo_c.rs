@@ -4126,6 +4126,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     if !rewrote_items {
         rewrite_incoming_stack_arguments(&mut structured.body, frame_shape)?;
     }
+    normalize_fastfail_guards(&mut structured.body);
     let fp_return: Option<FpWidth> = scalar_fp_return_channel(&structured.body)?;
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
@@ -20965,6 +20966,106 @@ fn node_never_returns(node: &Node) -> bool {
             ..
         })
     )
+}
+
+fn negate_cond(cond: Cond) -> Cond {
+    match cond {
+        Cond::Leaf { kind, flags } => Cond::leaf(kind.negate(), flags),
+        Cond::And(lhs, rhs) => Cond::Or(Box::new(negate_cond(*lhs)), Box::new(negate_cond(*rhs))),
+        Cond::Or(lhs, rhs) => Cond::And(Box::new(negate_cond(*lhs)), Box::new(negate_cond(*rhs))),
+    }
+}
+
+fn block_ends_in_fastfail(body: &Block) -> bool {
+    body.iter()
+        .rev()
+        .find(|node: &&Node| !matches!(node, Node::Return))
+        .is_some_and(|node: &Node| {
+            matches!(
+                node,
+                Node::Stmt(Stmt::Call {
+                    target: CallTarget::DirectTrap(DirectTrap::FastFail),
+                    ..
+                })
+            )
+        })
+}
+
+fn normalize_fastfail_guards(body: &mut Block) {
+    let original: Block = std::mem::take(body);
+    let mut normalized: Block = Vec::with_capacity(original.len());
+    let mut index: usize = 0;
+    while let Some(node) = original.get(index).cloned() {
+        index += 1;
+        match node {
+            Node::If {
+                cond,
+                mut then_body,
+                else_body: Some(mut else_body),
+            } => {
+                normalize_fastfail_guards(&mut then_body);
+                normalize_fastfail_guards(&mut else_body);
+                if block_terminates(&then_body) && block_ends_in_fastfail(&else_body) {
+                    normalized.push(Node::If {
+                        cond: negate_cond(cond),
+                        then_body: else_body,
+                        else_body: None,
+                    });
+                    normalized.extend(then_body);
+                    if original
+                        .get(index)
+                        .is_some_and(|next: &Node| matches!(next, Node::Return))
+                    {
+                        index += 1;
+                    }
+                } else {
+                    normalized.push(Node::If {
+                        cond,
+                        then_body,
+                        else_body: Some(else_body),
+                    });
+                }
+            }
+            mut node => {
+                normalize_fastfail_guard_children(&mut node);
+                normalized.push(node);
+            }
+        }
+    }
+    *body = normalized;
+}
+
+fn normalize_fastfail_guard_children(node: &mut Node) {
+    match node {
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            normalize_fastfail_guards(then_body);
+            if let Some(else_body) = else_body {
+                normalize_fastfail_guards(else_body);
+            }
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => normalize_fastfail_guards(body),
+        Node::Switch { cases, default, .. } => {
+            for case in cases {
+                normalize_fastfail_guards(&mut case.body);
+            }
+            normalize_fastfail_guards(default);
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => {}
+    }
 }
 
 fn braced_block(

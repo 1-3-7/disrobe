@@ -888,6 +888,46 @@ fn direct_instruction_trap_arm_recovers_as_a_guard() {
 }
 
 #[test]
+fn windows_x64_fastfail_guard_recovers_from_a_compiler_artifact() {
+    let compiler: String = clang().expect("clang");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-windows-fastfail-guard");
+    let object_path: PathBuf = scratch.path().join("fastfail_guard.obj");
+    let source: &str = "void __fastfail(unsigned int); __declspec(noinline) long long fastfail_guard(long long x){ if (x < 0) __fastfail(7); return x + 1; }";
+    let flags: [&str; 3] = ["--target=x86_64-pc-windows-msvc", "-fms-extensions", "-c"];
+    let object: Vec<u8> = compile_object_opt(&compiler, "-O1", &flags, source, &object_path)
+        .expect("Windows x64 fastfail fixture compiles");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object, "fastfail_guard").expect("fastfail caller symbol");
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("fastfail disassembly");
+    assert!(
+        instructions
+            .iter()
+            .any(|instruction: &DisasmInsn| instruction.bytes == [0xcd, 0x29]),
+        "the Windows-targeted compiler must emit int 0x29: {instructions:?}"
+    );
+    let recovered: LeafRecovery =
+        recover_leaf_function_in_object(&object, &code, base, PseudoAbi::MsX64, &[])
+            .expect("recover Windows x64 fastfail guard");
+    assert!(recovered.source.contains("if ("), "{}", recovered.source);
+    assert!(
+        recovered.source.contains("__builtin_trap();"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        !recovered.source.contains("goto "),
+        "the fastfail trap side must not remain woven into the main path: {}",
+        recovered.source
+    );
+    assert!(
+        !recovered.source.contains("} else {"),
+        "the fastfail trap side must be an early-exit guard, not the alternate main path: {}",
+        recovered.source
+    );
+}
+
+#[test]
 fn imported_stack_failure_guard_recovers_through_the_whole_program_consumer() {
     if !cfg!(target_arch = "x86_64") {
         eprintln!(
