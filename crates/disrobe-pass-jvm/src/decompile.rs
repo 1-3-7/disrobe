@@ -1603,7 +1603,7 @@ struct MethodBody {
     fully_lifted: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Expr {
     Const(String),
     Local(String),
@@ -9131,10 +9131,32 @@ fn lift_one_inner(
         0x47..=0x4A => store_indexed(stack, u16::from(op - 0x47), params, insn.pc),
         0x4B..=0x4E => store_indexed(stack, u16::from(op - 0x4B), params, insn.pc),
         0x4F..=0x56 => array_store(stack),
-        0x57 => match stack.pop().as_ref().and_then(Expr::discarded_side_effect) {
-            Some(call) => LiftResult::Statement(call),
-            None => LiftResult::Pushed,
-        },
+        0x57 => {
+            let Some(discarded): Option<Expr> = stack.pop() else {
+                return LiftResult::Pushed;
+            };
+            if let Expr::Invoke {
+                receiver: Some(receiver),
+                owner,
+                method,
+                ..
+            } = &discarded
+                && matches!(owner.as_str(), "StringBuilder" | "StringBuffer")
+                && method == "append"
+                && stack
+                    .last()
+                    .is_some_and(|retained: &Expr| retained == receiver.as_ref())
+            {
+                stack.pop();
+                stack.push(discarded);
+                LiftResult::Pushed
+            } else {
+                match discarded.discarded_side_effect() {
+                    Some(call) => LiftResult::Statement(call),
+                    None => LiftResult::Pushed,
+                }
+            }
+        }
         0x58 => {
             let top: Option<Expr> = stack.pop();
             stack.pop();
@@ -12096,5 +12118,87 @@ mod tests {
         let d: DecompiledClass = decompile_class(&cf);
         assert!(d.source.contains("interface Service"), "{}", d.source);
         assert!(d.source.contains("void run();"), "{}", d.source);
+    }
+
+    #[test]
+    fn popped_fluent_call_updates_the_duplicated_allocation_used_by_return() {
+        let cp: Vec<ConstantPoolEntry> = vec![
+            ConstantPoolEntry::Placeholder,
+            cp_utf8("DuplicateConstruction"),
+            ConstantPoolEntry::Class { name_index: 1 },
+            cp_utf8("java/lang/Object"),
+            ConstantPoolEntry::Class { name_index: 3 },
+            cp_utf8("build"),
+            cp_utf8("(Ljava/lang/String;)Ljava/lang/String;"),
+            cp_utf8("Code"),
+            cp_utf8("java/lang/StringBuilder"),
+            ConstantPoolEntry::Class { name_index: 8 },
+            cp_utf8("<init>"),
+            cp_utf8("()V"),
+            ConstantPoolEntry::NameAndType {
+                name_index: 10,
+                descriptor_index: 11,
+            },
+            ConstantPoolEntry::Methodref {
+                class_index: 9,
+                name_and_type_index: 12,
+            },
+            cp_utf8("append"),
+            cp_utf8("(Ljava/lang/String;)Ljava/lang/StringBuilder;"),
+            ConstantPoolEntry::NameAndType {
+                name_index: 14,
+                descriptor_index: 15,
+            },
+            ConstantPoolEntry::Methodref {
+                class_index: 9,
+                name_and_type_index: 16,
+            },
+            cp_utf8("toString"),
+            ConstantPoolEntry::NameAndType {
+                name_index: 18,
+                descriptor_index: 21,
+            },
+            ConstantPoolEntry::Methodref {
+                class_index: 9,
+                name_and_type_index: 19,
+            },
+            cp_utf8("()Ljava/lang/String;"),
+        ];
+        let code: Vec<u8> = vec![
+            0xBB, 0x00, 0x09, 0x59, 0xB7, 0x00, 0x0D, 0x59, 0x2A, 0xB6, 0x00, 0x11, 0x57, 0xB6,
+            0x00, 0x14, 0xB0,
+        ];
+        let cf: ClassFile = ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: cp,
+            access_flags: ACC_PUBLIC,
+            this_class: 2,
+            super_class: 4,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: vec![MethodInfo {
+                access_flags: ACC_PUBLIC | ACC_STATIC,
+                name_index: 5,
+                descriptor_index: 6,
+                attributes: vec![Attribute {
+                    name_index: 7,
+                    info: code_info(&code, &[], &[]),
+                }],
+            }],
+            attributes: Vec::new(),
+        };
+
+        let source: String = decompile_class(&cf).source;
+
+        assert_eq!(source.matches("new StringBuilder()").count(), 1, "{source}");
+        assert!(
+            source.contains("return new StringBuilder().append(arg0).toString();"),
+            "{source}"
+        );
+        assert!(
+            !source.contains("new StringBuilder().append(arg0);"),
+            "{source}"
+        );
     }
 }
