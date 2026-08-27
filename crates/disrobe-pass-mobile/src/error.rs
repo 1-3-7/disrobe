@@ -274,7 +274,7 @@ pub enum Error {
     FlutterEngineSymbolMapIdentityUnavailable,
 
     #[error(
-        "DR-MOB-0060: Flutter engine symbol map identity {map} does not match input build ID {input}"
+        "DR-MOB-0060: Flutter engine symbol map identity {map} does not match input identity {input}"
     )]
     FlutterEngineSymbolMapIdentityMismatch { map: String, input: String },
 

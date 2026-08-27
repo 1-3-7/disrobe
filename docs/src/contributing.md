@@ -24,12 +24,14 @@ build. Name the feature to run them:
 ```sh
 cargo test -p disrobe-pass-lua --features chain
 cargo test -p disrobe-cli --no-default-features --features chain --test auto_dalvik_feature_gate
+cargo test -p disrobe-pass-mobile --features native-image --test flutter_engine_fallback_identity
 cargo test -p disrobe-pass-wasm-deob --features chain,sandbox --test linear_memory_local_offset
 ```
 
 The second form covers a refusal that exists only when `chain` is enabled and `jvm` is disabled.
-The WebAssembly differential requires `sandbox` for Wasmtime execution and `chain` for the
-registered-pass assertion.
+The Flutter engine identity test requires `native-image` for ELF parsing. The WebAssembly
+differential requires `sandbox` for Wasmtime execution and `chain` for the registered-pass
+assertion.
 
 `cargo run -p xtask -- health` enforces this. It reads every crate's default feature set, finds
 every test-bearing file the default set removes, and fails when a crate hides tests that no entry in

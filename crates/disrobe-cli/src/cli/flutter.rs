@@ -483,7 +483,7 @@ fn render_flutter_symbol_export_with_engine_map(
         provenance: engine_symbol_map.map_or_else(Vec::new, |map| {
             vec![SymbolMapProvenance {
                 source: map.source.clone(),
-                kind: FLUTTER_ENGINE_SYMBOL_MAP_FORMAT.to_owned(),
+                kind: flutter_engine_symbol_provenance_kind(map.map.identity()),
                 identity: Some(map.map.identity().value.clone()),
             }]
         }),
@@ -495,6 +495,17 @@ fn render_flutter_symbol_export_with_engine_map(
             .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}")),
         ExportFormat::Json => render_symbol_map_json(&symbol_map)
             .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}")),
+    }
+}
+
+fn flutter_engine_symbol_provenance_kind(
+    identity: &disrobe_pass_mobile::FlutterEngineIdentity,
+) -> String {
+    match identity.kind {
+        disrobe_pass_mobile::FlutterEngineSymbolMapIdentityKind::ElfExecutableTextBlake3 => {
+            "fallback-elf-executable-text-blake3".to_owned()
+        }
+        _ => FLUTTER_ENGINE_SYMBOL_MAP_FORMAT.to_owned(),
     }
 }
 
@@ -983,7 +994,7 @@ mod tests {
         let error: disrobe_pass_mobile::Error =
             validate_flutter_engine_symbol_map_for_elf(&input, map).expect_err("identity mismatch");
 
-        assert!(error.to_string().contains("does not match input build ID"));
+        assert!(error.to_string().contains("does not match input identity"));
     }
 
     fn encode_uint(value: u64) -> Vec<u8> {

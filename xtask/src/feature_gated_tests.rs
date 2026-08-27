@@ -41,7 +41,7 @@ const HIDDEN_TEST_SURFACE: &[(&str, &[&str])] = &[
     ("disrobe-pass-js-deob", &["chain"]),
     ("disrobe-pass-jvm", &["chain", "lifter-diag"]),
     ("disrobe-pass-lua", &["chain"]),
-    ("disrobe-pass-mobile", &["chain"]),
+    ("disrobe-pass-mobile", &["chain", "native-image"]),
     ("disrobe-pass-native", &["chain", "smt-solver"]),
     ("disrobe-pass-nativelang", &["chain"]),
     ("disrobe-pass-nuitka", &["chain"]),

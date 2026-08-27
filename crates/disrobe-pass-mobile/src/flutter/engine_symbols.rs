@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use disrobe_binfmt::rewrite::{DerivedKind, ImagePlan, plan_native_image};
 #[cfg(feature = "native-image")]
 use disrobe_binfmt::{NativeFile, parse_native};
+#[cfg(feature = "native-image")]
+use object::read::File as ObjFile;
+#[cfg(feature = "native-image")]
+use object::{Object as _, ObjectSection as _, SectionKind};
 
 use crate::error::{Error, Result};
 
@@ -22,6 +26,7 @@ pub enum FlutterEngineSymbolMapIdentityKind {
     MachOUuid,
     PePdbGuidAge,
     TextSectionSha256,
+    ElfExecutableTextBlake3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +194,9 @@ fn validate_identity(mut identity: FlutterEngineIdentity) -> Result<FlutterEngin
         FlutterEngineSymbolMapIdentityKind::TextSectionSha256 => {
             value.len() == 64 && value.bytes().all(|byte: u8| byte.is_ascii_hexdigit())
         }
+        FlutterEngineSymbolMapIdentityKind::ElfExecutableTextBlake3 => {
+            value.len() == 64 && value.bytes().all(|byte: u8| byte.is_ascii_hexdigit())
+        }
     };
     if !valid {
         return Err(Error::FlutterEngineSymbolMapMalformed(
@@ -223,9 +231,6 @@ pub fn validate_flutter_engine_symbol_map_for_elf(
     let identity: FlutterEngineIdentity = validate_identity(identity)?;
     validate_symbols(&entries)?;
     entries.sort_unstable_by_key(|symbol: &FlutterEngineSymbol| symbol.address);
-    if identity.kind != FlutterEngineSymbolMapIdentityKind::ElfBuildId {
-        return Err(Error::FlutterEngineSymbolMapIdentityKind);
-    }
     let input_identity: FlutterEngineIdentity = flutter_engine_identity_for_elf(input_bytes)?;
     if identity != input_identity {
         return Err(Error::FlutterEngineSymbolMapIdentityMismatch {
@@ -250,7 +255,7 @@ pub fn flutter_engine_identity_for_elf(input_bytes: &[u8]) -> Result<FlutterEngi
         .collect();
     let [(start, end)] = ranges.as_slice() else {
         if ranges.is_empty() {
-            return Err(Error::FlutterEngineSymbolMapIdentityUnavailable);
+            return flutter_engine_fallback_identity_for_elf(input_bytes);
         }
         return Err(Error::FlutterEngineSymbolMapImage(
             "ELF contains multiple GNU build-ID notes".to_owned(),
@@ -282,6 +287,64 @@ pub fn flutter_engine_identity_for_elf(input_bytes: &[u8]) -> Result<FlutterEngi
 }
 
 #[cfg(feature = "native-image")]
+fn flutter_engine_fallback_identity_for_elf(input_bytes: &[u8]) -> Result<FlutterEngineIdentity> {
+    let file: ObjFile<'_> = ObjFile::parse(input_bytes)
+        .map_err(|error: object::Error| Error::FlutterEngineSymbolMapImage(error.to_string()))?;
+    let mut text_sections: Vec<(u64, u64, &[u8])> = Vec::new();
+    for section in file.sections() {
+        let name: &str = section.name().map_err(|error: object::Error| {
+            Error::FlutterEngineSymbolMapImage(error.to_string())
+        })?;
+        if name != ".text" || section.kind() != SectionKind::Text {
+            continue;
+        }
+        let Some((offset, size)): Option<(u64, u64)> = section.file_range() else {
+            return Err(Error::FlutterEngineSymbolMapImage(
+                "ELF fallback text section has no file range".to_owned(),
+            ));
+        };
+        if size == 0 {
+            return Err(Error::FlutterEngineSymbolMapImage(
+                "ELF fallback text section is empty".to_owned(),
+            ));
+        }
+        let end: u64 = offset.checked_add(size).ok_or_else(|| {
+            Error::FlutterEngineSymbolMapImage("ELF fallback text range overflows".to_owned())
+        })?;
+        let end_index: usize = usize::try_from(end).map_err(|_error| {
+            Error::FlutterEngineSymbolMapImage("ELF fallback text range overflows usize".to_owned())
+        })?;
+        if end_index > input_bytes.len() {
+            return Err(Error::FlutterEngineSymbolMapImage(
+                "ELF fallback text range exceeds input".to_owned(),
+            ));
+        }
+        let data: &[u8] = section.data().map_err(|error: object::Error| {
+            Error::FlutterEngineSymbolMapImage(error.to_string())
+        })?;
+        if u64::try_from(data.len()).ok() != Some(size) {
+            return Err(Error::FlutterEngineSymbolMapImage(
+                "ELF fallback text data does not match its file range".to_owned(),
+            ));
+        }
+        text_sections.push((offset, size, data));
+    }
+    let [(offset, size, data)] = text_sections.as_slice() else {
+        return Err(Error::FlutterEngineSymbolMapImage(
+            "ELF fallback requires exactly one non-empty executable .text section".to_owned(),
+        ));
+    };
+    let mut hasher: blake3::Hasher = blake3::Hasher::new();
+    hasher.update(&offset.to_le_bytes());
+    hasher.update(&size.to_le_bytes());
+    hasher.update(data);
+    Ok(FlutterEngineIdentity {
+        kind: FlutterEngineSymbolMapIdentityKind::ElfExecutableTextBlake3,
+        value: hasher.finalize().to_hex().to_string(),
+    })
+}
+
+#[cfg(feature = "native-image")]
 pub fn validate_cached_flutter_engine_symbols_for_elf(
     input_bytes: &[u8],
     identity: FlutterEngineIdentity,
@@ -289,9 +352,6 @@ pub fn validate_cached_flutter_engine_symbols_for_elf(
 ) -> Result<ValidatedFlutterEngineSymbolMap> {
     let identity: FlutterEngineIdentity = validate_identity(identity)?;
     validate_symbols(&entries)?;
-    if identity.kind != FlutterEngineSymbolMapIdentityKind::ElfBuildId {
-        return Err(Error::FlutterEngineSymbolMapIdentityKind);
-    }
     let input_identity: FlutterEngineIdentity = flutter_engine_identity_for_elf(input_bytes)?;
     if identity != input_identity {
         return Err(Error::FlutterEngineSymbolMapIdentityMismatch {
