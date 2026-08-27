@@ -815,18 +815,28 @@ fn prev_is_compound_if_returning(body: &[Stmt]) -> bool {
     let Some(prev): Option<&Stmt> = body.len().checked_sub(2).map(|i: usize| &body[i]) else {
         return false;
     };
-    let Stmt::If {
-        test,
-        body: b,
-        orelse,
-        ..
-    }: &Stmt = prev
-    else {
-        return false;
-    };
-    orelse.is_empty()
-        && matches!(test, Expr::BoolOp { .. })
-        && matches!(b.last(), Some(Stmt::Return(_)))
+    compound_if_finally_returns(prev)
+}
+
+fn compound_if_finally_returns(mut stmt: &Stmt) -> bool {
+    loop {
+        let Stmt::If {
+            test, body, orelse, ..
+        }: &Stmt = stmt
+        else {
+            return false;
+        };
+        if !orelse.is_empty() || !matches!(test, Expr::BoolOp { .. }) {
+            return false;
+        }
+        let Some(last): Option<&Stmt> = body.last() else {
+            return false;
+        };
+        if matches!(last, Stmt::Return(_)) {
+            return true;
+        }
+        stmt = last;
+    }
 }
 
 fn strip_trailing_implicit_return(body: &mut Vec<Stmt>) {
