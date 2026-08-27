@@ -7478,14 +7478,42 @@ fn tail_prefix_writes_stack_pointer(insn: &DisasmInsn) -> bool {
 fn frame_pointer_anchor(real: &[&DisasmInsn]) -> Option<FramePointerAnchor> {
     let mut delta: i64 = 0;
     let mut saved: i64 = 0;
-    for insn in real {
+    let mut anchor: Option<(i64, FramePointerAnchor)> = None;
+    let mut prologue_open: bool = false;
+    let mut allocation_count: usize = 0;
+    let mut lower_bound_proven: bool = true;
+    for (index, insn) in real.iter().enumerate() {
+        if anchor.is_some() {
+            if prologue_open {
+                match insn.mnemonic.as_str() {
+                    "push" => {
+                        delta = delta.checked_sub(RETURN_ADDRESS_BYTES)?;
+                        continue;
+                    }
+                    "sub" if writes_stack_pointer(insn) => {
+                        let allocation: i64 = rsp_delta_imm("sub", &insn.operands)?;
+                        delta = delta.checked_sub(allocation)?;
+                        allocation_count = allocation_count.checked_add(1)?;
+                        continue;
+                    }
+                    _ => prologue_open = false,
+                }
+            }
+            if (writes_stack_pointer(insn)
+                || matches!(insn.mnemonic.as_str(), "push" | "pop" | "leave"))
+                && !frame_pointer_epilogue_starts(real, index)
+            {
+                lower_bound_proven = false;
+            }
+            continue;
+        }
         match insn.mnemonic.as_str() {
             "push" => {
                 delta = delta.checked_sub(RETURN_ADDRESS_BYTES)?;
                 saved = saved.checked_add(RETURN_ADDRESS_BYTES)?;
             }
             "mov" if is_stack_pointer_move(&insn.operands) => {
-                return insn
+                let frame_pointer: FramePointerAnchor = insn
                     .operands
                     .split_once(',')
                     .filter(|(dest, _): &(&str, &str)| dest.trim() == "rbp")
@@ -7493,14 +7521,23 @@ fn frame_pointer_anchor(real: &[&DisasmInsn]) -> Option<FramePointerAnchor> {
                         Some(FramePointerAnchor {
                             entry_disp: delta.checked_neg()?,
                             saved_bytes: saved,
+                            allocation_start: None,
                         })
-                    });
+                    })?;
+                anchor = Some((delta, frame_pointer));
+                prologue_open = true;
             }
             "lea" if let Some(disp) = rbp_lea_displacement(&insn.operands) => {
-                return Some(FramePointerAnchor {
-                    entry_disp: delta.checked_add(disp)?.checked_neg()?,
-                    saved_bytes: saved,
-                });
+                let anchor_delta: i64 = delta.checked_add(disp)?;
+                anchor = Some((
+                    anchor_delta,
+                    FramePointerAnchor {
+                        entry_disp: anchor_delta.checked_neg()?,
+                        saved_bytes: saved,
+                        allocation_start: None,
+                    },
+                ));
+                prologue_open = true;
             }
             "sub" | "add" if writes_stack_pointer(insn) => {
                 let imm: i64 = rsp_delta_imm(&insn.mnemonic, &insn.operands)?;
@@ -7516,7 +7553,25 @@ fn frame_pointer_anchor(real: &[&DisasmInsn]) -> Option<FramePointerAnchor> {
             _ => {}
         }
     }
-    None
+    let (anchor_delta, mut anchor): (i64, FramePointerAnchor) = anchor?;
+    if lower_bound_proven && allocation_count <= 1 {
+        anchor.allocation_start = Some(delta.checked_sub(anchor_delta)?);
+    }
+    Some(anchor)
+}
+
+fn frame_pointer_epilogue_starts(real: &[&DisasmInsn], index: usize) -> bool {
+    let Some((last, prefix)): Option<(&&DisasmInsn, &[&DisasmInsn])> = real.split_last() else {
+        return false;
+    };
+    if last.mnemonic != "ret" || index >= prefix.len() {
+        return false;
+    }
+    prefix[index..].iter().all(|insn: &&DisasmInsn| {
+        matches!(insn.mnemonic.as_str(), "leave" | "pop")
+            || (insn.mnemonic == "add" && rsp_delta_imm("add", &insn.operands).is_some())
+            || (insn.mnemonic == "mov" && is_stack_pointer_move(&insn.operands))
+    })
 }
 
 fn preceding_real_insn<'a>(real: &[&'a DisasmInsn], index: usize) -> Option<&'a DisasmInsn> {
@@ -7604,9 +7659,16 @@ impl StackFrameExtent {
         }
     }
 
-    fn x86_frame_pointer(anchor: FramePointerAnchor, home_bytes: i64) -> Option<Self> {
+    fn x86_frame_pointer(
+        anchor: FramePointerAnchor,
+        red_zone_below: i64,
+        home_bytes: i64,
+    ) -> Option<Self> {
         Some(Self {
-            owned_start: None,
+            owned_start: match anchor.allocation_start {
+                Some(start) => Some(start.checked_sub(red_zone_below)?),
+                None => None,
+            },
             private_end: anchor.entry_disp.checked_sub(anchor.saved_bytes)?,
             boundary: StackFrameBoundary::ReturnAddress {
                 linkage_bytes: anchor.saved_bytes.checked_add(RETURN_ADDRESS_BYTES)?,
@@ -7712,6 +7774,7 @@ impl StackFrameExtent {
 struct FramePointerAnchor {
     entry_disp: i64,
     saved_bytes: i64,
+    allocation_start: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7828,12 +7891,22 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
     });
     let stack_pointer_break: Option<StackPointerBreak> = stack_pointer_break(&real, rbp_is_frame);
     if rbp_is_frame {
+        let red_zone_below: i64 = if abi == Abi::SysV && frame_pointer_red_zone_stays_private(insns)
+        {
+            SYSV_RED_ZONE_BYTES
+        } else {
+            0
+        };
         return FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
             red_zone: false,
             stack_extent: frame_pointer_anchor(&real).and_then(|anchor: FramePointerAnchor| {
-                StackFrameExtent::x86_frame_pointer(anchor, home_space_above_return(abi))
+                StackFrameExtent::x86_frame_pointer(
+                    anchor,
+                    red_zone_below,
+                    home_space_above_return(abi),
+                )
             }),
             stack_pointer_break,
         };
@@ -7875,6 +7948,38 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
         stack_extent: None,
         stack_pointer_break,
     }
+}
+
+fn frame_pointer_red_zone_stays_private(insns: &[DisasmInsn]) -> bool {
+    let real: Vec<&DisasmInsn> = insns
+        .iter()
+        .filter(|insn: &&DisasmInsn| !matches!(insn.mnemonic.as_str(), "nop" | "endbr64"))
+        .collect();
+    let Some(anchor_index): Option<usize> = real.iter().position(|insn: &&DisasmInsn| {
+        (insn.mnemonic == "mov" && is_stack_pointer_move(&insn.operands))
+            || (insn.mnemonic == "lea" && is_rbp_lea_frame(&insn.operands))
+    }) else {
+        return false;
+    };
+    let mut body_start: usize = anchor_index.checked_add(1).unwrap_or(real.len());
+    while let Some(insn) = real.get(body_start) {
+        if insn.mnemonic == "push" || (insn.mnemonic == "sub" && writes_stack_pointer(insn)) {
+            body_start = match body_start.checked_add(1) {
+                Some(next) => next,
+                None => return false,
+            };
+        } else {
+            break;
+        }
+    }
+    let body_end: usize = (body_start..real.len())
+        .find(|index: &usize| frame_pointer_epilogue_starts(&real, *index))
+        .unwrap_or(real.len());
+    let body: Vec<DisasmInsn> = real[body_start..body_end]
+        .iter()
+        .map(|insn: &&DisasmInsn| (*insn).clone())
+        .collect();
+    bytes_below_the_stack_pointer_stay_private(&body)
 }
 
 const fn stack_depth_changing_mnemonic(mnemonic: &str) -> bool {
@@ -30280,8 +30385,81 @@ mod tests {
         );
         let message: String = frame_plan_rejection(&FIRST_SAVED, 0x9440, Abi::SysV);
         assert!(
-            message.contains("8-byte slot at 0 is outside the (-inf, 0) bytes"),
+            message.contains("8-byte slot at 0 is outside the [-128, 0) bytes"),
             "the byte on the boundary holds the saved frame pointer, not data: {message}"
+        );
+    }
+
+    #[test]
+    fn a_frame_pointer_allocation_proves_its_lower_edge_and_keeps_the_sysv_red_zone() {
+        const RED_ZONE: [u8; 17] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x85, 0x60, 0xff, 0xff,
+            0xff, 0xc9, 0xc3,
+        ];
+        const BELOW_FRAME: [u8; 17] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x85, 0x58, 0xff, 0xff,
+            0xff, 0xc9, 0xc3,
+        ];
+        const MOVED_AFTER_PROLOGUE: [u8; 20] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0x48, 0x89, 0xf8, 0x48, 0x83, 0xec,
+            0x08, 0x48, 0x8b, 0x45, 0xf8, 0xc3,
+        ];
+        const PUSH_ONLY: [u8; 11] = [
+            0x55, 0x48, 0x89, 0xe5, 0x53, 0x48, 0x8b, 0x45, 0xf8, 0x5b, 0xc3,
+        ];
+        const WITH_CALL: [u8; 15] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x20, 0xe8, 0x00, 0x00, 0x00, 0x00, 0xc9,
+            0xc3,
+        ];
+        let red_zone_insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x9460, &RED_ZONE).expect("disassemble red-zone probe");
+        assert_eq!(
+            classify_frame(&red_zone_insns, Abi::SysV)
+                .stack_extent
+                .and_then(|extent: StackFrameExtent| extent.owned_start),
+            Some(-160),
+            "the 32-byte allocation and 128-byte System V red zone start at rbp-160"
+        );
+        assert_eq!(
+            classify_frame(&red_zone_insns, Abi::MsX64)
+                .stack_extent
+                .and_then(|extent: StackFrameExtent| extent.owned_start),
+            Some(-32),
+            "the Microsoft x64 frame owns only its explicit 32-byte allocation"
+        );
+        recover_leaf_function_abi(&RED_ZONE, 0x9460, Abi::SysV)
+            .expect("the lowest System V red-zone slot remains private to the leaf");
+        let message: String = frame_plan_rejection(&BELOW_FRAME, 0x9480, Abi::SysV);
+        assert!(
+            message.contains("8-byte slot at -168 is outside the [-160, 0) bytes"),
+            "the first byte below the frame and red zone must name its offset: {message}"
+        );
+        let moved_insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, 0x94a0, &MOVED_AFTER_PROLOGUE)
+            .expect("disassemble post-prologue stack movement probe");
+        assert_eq!(
+            classify_frame(&moved_insns, Abi::SysV)
+                .stack_extent
+                .and_then(|extent: StackFrameExtent| extent.owned_start),
+            None,
+            "stack movement after the prologue leaves the lower edge unproven"
+        );
+        let push_only_insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, 0x94c0, &PUSH_ONLY)
+            .expect("disassemble push-only allocation probe");
+        assert_eq!(
+            classify_frame(&push_only_insns, Abi::MsX64)
+                .stack_extent
+                .and_then(|extent: StackFrameExtent| extent.owned_start),
+            Some(-8),
+            "a saved register after the anchor is the complete push-only allocation"
+        );
+        let call_insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, 0x94e0, &WITH_CALL)
+            .expect("disassemble frame-pointer call probe");
+        assert_eq!(
+            classify_frame(&call_insns, Abi::SysV)
+                .stack_extent
+                .and_then(|extent: StackFrameExtent| extent.owned_start),
+            Some(-32),
+            "a call prevents the System V red zone from extending the allocation"
         );
     }
 
@@ -32114,7 +32292,9 @@ mod tests {
                 FramePointerAnchor {
                     entry_disp: 8,
                     saved_bytes: 8,
+                    allocation_start: None,
                 },
+                0,
                 0,
             )
             .expect("the frame-pointer extent is representable")
@@ -32126,7 +32306,9 @@ mod tests {
                 FramePointerAnchor {
                     entry_disp: 392,
                     saved_bytes: 8,
+                    allocation_start: None,
                 },
+                0,
                 0,
             )
             .expect("the displaced frame-pointer extent is representable")
@@ -32355,7 +32537,9 @@ mod tests {
                 FramePointerAnchor {
                     entry_disp: 8,
                     saved_bytes: 8,
+                    allocation_start: None,
                 },
+                0,
                 0,
             ),
             stack_pointer_break: None,
@@ -34526,7 +34710,9 @@ mod forward_join_scope {
                 super::FramePointerAnchor {
                     entry_disp: 8,
                     saved_bytes: 8,
+                    allocation_start: None,
                 },
+                0,
                 0,
             ),
             stack_pointer_break: None,
