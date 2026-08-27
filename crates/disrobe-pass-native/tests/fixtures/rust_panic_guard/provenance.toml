@@ -1,0 +1,17 @@
+compiler = "rustc 1.96.1 (31fca3adb 2026-06-26)"
+target = "x86_64-pc-windows-msvc"
+options = ["--crate-type=lib", "--emit=obj", "-Copt-level=1", "-Cpanic=abort", "-Coverflow-checks=off"]
+
+[[artifact]]
+crate_name = "rust_bounds_guard_fixture"
+source = "rust_bounds_guard.rs"
+object = "rust_bounds_guard.obj"
+source_sha256 = "db52cd971cb96b1981c9149c7218f37691beb2b8aa10fadb5c6bbc1fb63b4c5"
+object_sha256 = "e06139fc94e049e63b9a8ee8a65c0d518110b2ff8cdac2fceb9c1b37e1bf7bd7"
+
+[[artifact]]
+crate_name = "returning_panic_lookalike_fixture"
+source = "returning_panic_lookalike.rs"
+object = "returning_panic_lookalike.obj"
+source_sha256 = "531d61c5a64e51b7ea20db245d033d1396ce2666f3a7fa8b782d65a2564cd9b4"
+object_sha256 = "310d27a413a68717cb3b43b5c13ea5e0f67b3f3ffb6334cbba11ab3f008e86e4"

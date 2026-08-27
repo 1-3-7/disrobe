@@ -610,11 +610,31 @@ const NORETURN_IMPORT_NAMES: &[&str] = &[
 
 #[must_use]
 pub fn is_noreturn_import_name(name: &str) -> bool {
+    if is_rust_panic_bounds_check_name(name) {
+        return true;
+    }
     let trimmed: &str = name.strip_prefix("__imp_").unwrap_or(name);
     let trimmed: &str = trimmed.strip_prefix('_').unwrap_or(trimmed);
     NORETURN_IMPORT_NAMES.iter().any(|known: &&str| {
         let canon: &str = known.strip_prefix('_').unwrap_or(known);
         trimmed == *known || trimmed == canon
+    })
+}
+
+#[must_use]
+pub(crate) fn is_rust_panic_bounds_check_name(name: &str) -> bool {
+    rustc_demangle::try_demangle(name).is_ok_and(|symbol: rustc_demangle::Demangle<'_>| {
+        let rendered: String = format!("{symbol:#}");
+        let Some(after_core): Option<&str> = rendered.strip_prefix("core") else {
+            return false;
+        };
+        let path: Option<&str> = after_core.strip_prefix("::").or_else(|| {
+            after_core
+                .strip_prefix('[')
+                .and_then(|rest: &str| rest.split_once("]::"))
+                .map(|(_, path): (&str, &str)| path)
+        });
+        path == Some("panicking::panic_bounds_check")
     })
 }
 

@@ -17,6 +17,7 @@ use iced_x86::{InstructionInfoFactory, OpAccess, Register};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::arch::{Arch, DisasmInsn, decode_one_x86, disassemble};
+use crate::desync::is_rust_panic_bounds_check_name;
 use crate::error::{Error, Result};
 use crate::flow_facts::{
     DirectTrap, NoreturnImportEvidence, NoreturnLibraryFunction, NoreturnParameter,
@@ -1106,6 +1107,7 @@ enum CallTarget {
     Address(u64),
     DirectTrap(DirectTrap),
     NoreturnLibrary(&'static NoreturnLibraryFunction),
+    RustPanicBoundsCheck,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2128,23 +2130,25 @@ fn recover_leaf_function_in_object_with_tail_proofs(
         }
         return Ok(recovery);
     }
+    let transfers: ObjectTransferFacts = disassemble(Arch::X86_64, base, machine_code).map_or_else(
+        |_: Error| ObjectTransferFacts::default(),
+        |insns: Vec<DisasmInsn>| object_transfer_facts(object, base, &insns),
+    );
     let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
     let rip_relative_lea_policy: RipRelativeLeaPolicy =
         match disassemble(Arch::X86_64, base, machine_code) {
             Ok(insns)
                 if detect_switch_dispatch(&insns).is_some()
                     || detect_value_table_switch(&insns).is_some()
-                    || detect_value_table_dispatch_setup(&insns)
-                    || object_has_relocated_rip_relative_lea(object, base, &insns) =>
+                    || detect_value_table_dispatch_setup(&insns) =>
             {
                 RipRelativeLeaPolicy::Refuse
             }
+            Ok(insns) if object_has_relocated_rip_relative_lea(object, base, &insns) => {
+                RipRelativeLeaPolicy::Relocated
+            }
             _ => RipRelativeLeaPolicy::Allow,
         };
-    let transfers: ObjectTransferFacts = disassemble(Arch::X86_64, base, machine_code).map_or_else(
-        |_: Error| ObjectTransferFacts::default(),
-        |insns: Vec<DisasmInsn>| object_transfer_facts(object, base, &insns),
-    );
     let object_facts: ObjectCallFacts<'_> =
         ObjectCallFacts::new(proven_integer64_tail_targets, &transfers);
     let straight_err: Error = match recover_leaf_function_calls_with_tail_proofs(
@@ -2364,13 +2368,20 @@ fn unique_bound_text_section<'data, 'file>(
     Ok(code_section)
 }
 
-type NoreturnCallSites = BTreeMap<u64, NoreturnImportEvidence>;
+#[derive(Debug, Clone, Copy)]
+enum NoreturnCallSite {
+    Library(NoreturnImportEvidence),
+    RustPanicBoundsCheck,
+}
+
+type NoreturnCallSites = BTreeMap<u64, NoreturnCallSite>;
 
 #[derive(Debug, Default)]
 struct ObjectTransferFacts {
     noreturn_exit_sites: NoreturnCallSites,
     relocated_branch_sites: BTreeSet<u64>,
     relocated_branch_targets: BTreeMap<u64, u64>,
+    relocated_lea_values: BTreeMap<u64, u64>,
     stack_guard_sequence_sites: BTreeSet<u64>,
 }
 
@@ -2412,6 +2423,14 @@ impl EmptyObjectCallFacts {
 
 const NORETURN_DISPLACEMENT_BYTES: u64 = 4;
 
+fn relocated_noreturn_evidence(name: &str) -> Option<NoreturnCallSite> {
+    noreturn_import_evidence(name)
+        .map(NoreturnCallSite::Library)
+        .or_else(|| {
+            is_rust_panic_bounds_check_name(name).then_some(NoreturnCallSite::RustPanicBoundsCheck)
+        })
+}
+
 fn noreturn_argument_registers(exit: &'static NoreturnLibraryFunction, abi: Abi) -> Vec<Reg> {
     let order: &[Reg] = abi.arg_order();
     let taken: usize = exit.parameters.len().min(order.len());
@@ -2452,19 +2471,19 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
     if transfers.is_empty() {
         return facts;
     }
-    let resolved_imports: BTreeMap<u64, NoreturnImportEvidence> = resolve_elf_plt_imports(object)
+    let resolved_imports: BTreeMap<u64, NoreturnCallSite> = resolve_elf_plt_imports(object)
         .into_iter()
         .chain(resolve_pe_iat_imports(object))
         .filter_map(|import| {
-            noreturn_import_evidence(&import.name)
-                .map(|evidence: NoreturnImportEvidence| (import.stub_address, evidence))
+            relocated_noreturn_evidence(&import.name)
+                .map(|evidence: NoreturnCallSite| (import.stub_address, evidence))
         })
         .collect();
     for transfer in &transfers {
         let Some(target): Option<u64> = parse_branch_target(&transfer.operands) else {
             continue;
         };
-        let Some(evidence): Option<NoreturnImportEvidence> = resolved_imports.get(&target).copied()
+        let Some(evidence): Option<NoreturnCallSite> = resolved_imports.get(&target).copied()
         else {
             continue;
         };
@@ -2535,13 +2554,57 @@ fn object_transfer_facts(object: &[u8], base: u64, insns: &[DisasmInsn]) -> Obje
         let Some(name): Option<&str> = name else {
             continue;
         };
-        let exit: Option<NoreturnImportEvidence> = noreturn_import_evidence(name);
+        let exit: Option<NoreturnCallSite> = relocated_noreturn_evidence(name);
         if let Some(entry) = exit
             && leaves_unconditionally(insn)
         {
             facts.noreturn_exit_sites.insert(insn.address, entry);
             facts.relocated_branch_sites.remove(&insn.address);
         }
+    }
+    for (index, insn) in insns.iter().enumerate() {
+        let Some(Stmt::Assign { dest, .. }): Option<Stmt> = lift_rip_relative_lea(insn) else {
+            continue;
+        };
+        if dest.reg != Reg::R8
+            || !insns.get(index + 1).is_some_and(|next: &DisasmInsn| {
+                matches!(
+                    facts.noreturn_exit_sites.get(&next.address),
+                    Some(NoreturnCallSite::RustPanicBoundsCheck)
+                )
+            })
+        {
+            continue;
+        }
+        let Some(displacement_field): Option<u64> = insn
+            .address
+            .checked_add(insn.bytes.len() as u64)
+            .and_then(|end: u64| end.checked_sub(NORETURN_DISPLACEMENT_BYTES))
+        else {
+            continue;
+        };
+        let Ok((target_section_index, target_offset)): Result<(object::SectionIndex, u64)> =
+            resolve_lea_table(&file, &code_section, displacement_field)
+        else {
+            continue;
+        };
+        let Ok(target_section): core::result::Result<object::Section<'_, '_>, object::Error> =
+            file.section_by_index(target_section_index)
+        else {
+            continue;
+        };
+        let target_base: u64 = if target_section.address() == 0 {
+            let Some((file_offset, _)): Option<(u64, u64)> = target_section.file_range() else {
+                continue;
+            };
+            file_offset
+        } else {
+            target_section.address()
+        };
+        let Some(target): Option<u64> = target_base.checked_add(target_offset) else {
+            continue;
+        };
+        facts.relocated_lea_values.insert(insn.address, target);
     }
     facts.stack_guard_sequence_sites = stack_guard_sequence_sites(
         insns,
@@ -2621,7 +2684,7 @@ fn stack_guard_sequence_sites(
         else {
             continue;
         };
-        let Some(failure_evidence): Option<&NoreturnImportEvidence> =
+        let Some(NoreturnCallSite::Library(failure_evidence)): Option<&NoreturnCallSite> =
             noreturn_exit_sites.get(&failure.address)
         else {
             continue;
@@ -3500,6 +3563,7 @@ struct LeafItems {
 enum RipRelativeLeaPolicy {
     Allow,
     Refuse,
+    Relocated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3755,16 +3819,36 @@ fn build_leaf_items(
                 .noreturn_exit_sites
                 .get(&insn.address)
                 .copied()
-                .map(NoreturnImportEvidence::function)
         {
+            let (target, args): (CallTarget, Vec<Reg>) = match exit {
+                NoreturnCallSite::Library(evidence) => {
+                    let function: &'static NoreturnLibraryFunction = evidence.function();
+                    (
+                        CallTarget::NoreturnLibrary(function),
+                        noreturn_argument_registers(function, abi),
+                    )
+                }
+                NoreturnCallSite::RustPanicBoundsCheck => {
+                    let args: Vec<Reg> = abi
+                        .arg_order()
+                        .get(..3)
+                        .ok_or_else(|| {
+                            Error::LlvmIr(
+                                "Rust bounds panic ABI has fewer than three registers".to_owned(),
+                            )
+                        })?
+                        .to_vec();
+                    (CallTarget::RustPanicBoundsCheck, args)
+                }
+            };
             flags = None;
             dividend_high = None;
             saw_ret = true;
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(Stmt::Call {
-                    target: CallTarget::NoreturnLibrary(exit),
-                    args: noreturn_argument_registers(exit, abi),
+                    target,
+                    args,
                     name: None,
                 }),
             });
@@ -4074,9 +4158,16 @@ fn build_leaf_items(
             mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
-        if matches!(rip_relative_lea_policy, RipRelativeLeaPolicy::Allow)
-            && let Some(stmt) = lift_rip_relative_lea(insn)
-        {
+        let rip_relative_lea: Option<Stmt> = match rip_relative_lea_policy {
+            RipRelativeLeaPolicy::Allow => lift_rip_relative_lea(insn),
+            RipRelativeLeaPolicy::Refuse => None,
+            RipRelativeLeaPolicy::Relocated => object_facts
+                .transfers
+                .relocated_lea_values
+                .get(&insn.address)
+                .and_then(|target: &u64| lift_relocated_rip_relative_lea(insn, *target)),
+        };
+        if let Some(stmt) = rip_relative_lea {
             if let Stmt::Assign { dest, .. } = &stmt
                 && dest.reg == Reg::Rax
             {
@@ -4319,7 +4410,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     if !rewrote_items {
         rewrite_incoming_stack_arguments(&mut structured.body, frame_shape)?;
     }
-    normalize_fastfail_guards(&mut structured.body);
+    normalize_noreturn_guards(&mut structured.body);
     let fp_return: Option<FpWidth> = scalar_fp_return_channel(&structured.body)?;
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&structured.body, &mut call_targets);
@@ -6713,6 +6804,16 @@ fn lift_rip_relative_lea(insn: &DisasmInsn) -> Option<Stmt> {
             width: Width::W64,
         },
         src: Source::Imm(i64::from_le_bytes(address.target().to_le_bytes())),
+    })
+}
+
+fn lift_relocated_rip_relative_lea(insn: &DisasmInsn, target: u64) -> Option<Stmt> {
+    let Stmt::Assign { dest, .. } = lift_rip_relative_lea(insn)? else {
+        return None;
+    };
+    Some(Stmt::Assign {
+        dest,
+        src: Source::Imm(i64::from_le_bytes(target.to_le_bytes())),
     })
 }
 
@@ -16628,6 +16729,7 @@ fn call_display_name(target: u64, name: Option<&str>) -> String {
 enum CallDecl {
     Generic { arity: usize },
     NoreturnLibrary(&'static NoreturnLibraryFunction),
+    RustPanicBoundsCheck,
 }
 
 fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, CallDecl>) {
@@ -16643,6 +16745,13 @@ fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, CallDecl>) {
             }) => {
                 acc.entry(exit.name.to_owned())
                     .or_insert(CallDecl::NoreturnLibrary(exit));
+            }
+            Node::Stmt(Stmt::Call {
+                target: CallTarget::RustPanicBoundsCheck,
+                ..
+            }) => {
+                acc.entry("panic_bounds_check".to_owned())
+                    .or_insert(CallDecl::RustPanicBoundsCheck);
             }
             Node::Stmt(Stmt::Call {
                 target: CallTarget::Address(address),
@@ -19911,6 +20020,12 @@ fn emit_c(
                 };
                 let _ = writeln!(out, "extern void {display_name}({params});");
             }
+            CallDecl::RustPanicBoundsCheck => {
+                let _ = writeln!(
+                    out,
+                    "extern _Noreturn void panic_bounds_check(uint64_t, uint64_t, const void *);"
+                );
+            }
         }
     }
 
@@ -21260,7 +21375,9 @@ fn node_never_returns(node: &Node) -> bool {
     matches!(
         node,
         Node::Stmt(Stmt::Call {
-            target: CallTarget::DirectTrap(_) | CallTarget::NoreturnLibrary(_),
+            target: CallTarget::DirectTrap(_)
+                | CallTarget::NoreturnLibrary(_)
+                | CallTarget::RustPanicBoundsCheck,
             ..
         })
     )
@@ -21274,22 +21391,14 @@ fn negate_cond(cond: Cond) -> Cond {
     }
 }
 
-fn block_ends_in_fastfail(body: &Block) -> bool {
+fn block_ends_in_noreturn(body: &Block) -> bool {
     body.iter()
         .rev()
         .find(|node: &&Node| !matches!(node, Node::Return))
-        .is_some_and(|node: &Node| {
-            matches!(
-                node,
-                Node::Stmt(Stmt::Call {
-                    target: CallTarget::DirectTrap(DirectTrap::FastFail),
-                    ..
-                })
-            )
-        })
+        .is_some_and(|node: &Node| node_never_returns(node))
 }
 
-fn normalize_fastfail_guards(body: &mut Block) {
+fn normalize_noreturn_guards(body: &mut Block) {
     let original: Block = std::mem::take(body);
     let mut normalized: Block = Vec::with_capacity(original.len());
     let mut index: usize = 0;
@@ -21301,9 +21410,9 @@ fn normalize_fastfail_guards(body: &mut Block) {
                 mut then_body,
                 else_body: Some(mut else_body),
             } => {
-                normalize_fastfail_guards(&mut then_body);
-                normalize_fastfail_guards(&mut else_body);
-                if block_terminates(&then_body) && block_ends_in_fastfail(&else_body) {
+                normalize_noreturn_guards(&mut then_body);
+                normalize_noreturn_guards(&mut else_body);
+                if block_terminates(&then_body) && block_ends_in_noreturn(&else_body) {
                     normalized.push(Node::If {
                         cond: negate_cond(cond),
                         then_body: else_body,
@@ -21325,7 +21434,7 @@ fn normalize_fastfail_guards(body: &mut Block) {
                 }
             }
             mut node => {
-                normalize_fastfail_guard_children(&mut node);
+                normalize_noreturn_guard_children(&mut node);
                 normalized.push(node);
             }
         }
@@ -21333,24 +21442,24 @@ fn normalize_fastfail_guards(body: &mut Block) {
     *body = normalized;
 }
 
-fn normalize_fastfail_guard_children(node: &mut Node) {
+fn normalize_noreturn_guard_children(node: &mut Node) {
     match node {
         Node::If {
             then_body,
             else_body,
             ..
         } => {
-            normalize_fastfail_guards(then_body);
+            normalize_noreturn_guards(then_body);
             if let Some(else_body) = else_body {
-                normalize_fastfail_guards(else_body);
+                normalize_noreturn_guards(else_body);
             }
         }
-        Node::DoWhile { body, .. } | Node::While { body, .. } => normalize_fastfail_guards(body),
+        Node::DoWhile { body, .. } | Node::While { body, .. } => normalize_noreturn_guards(body),
         Node::Switch { cases, default, .. } => {
             for case in cases {
-                normalize_fastfail_guards(&mut case.body);
+                normalize_noreturn_guards(&mut case.body);
             }
-            normalize_fastfail_guards(default);
+            normalize_noreturn_guards(default);
         }
         Node::Stmt(_)
         | Node::CondSnapshot { .. }
@@ -22671,6 +22780,19 @@ fn call_cstmt(cx: &mut Cx<'_>, target: &CallTarget, args: &[Reg], name: Option<&
         let arg_exprs: Vec<CExpr> = noreturn_argument_cexprs(cx, exit, args);
         return CStmt::Expr(cx.call(exit.name, arg_exprs));
     }
+    if matches!(target, CallTarget::RustPanicBoundsCheck) {
+        let mut arg_exprs: Vec<CExpr> = args
+            .iter()
+            .take(2)
+            .map(|reg: &Reg| cx.var(reg_var(*reg)))
+            .collect();
+        if let Some(location) = args.get(2) {
+            let value: CExpr = cx.var(reg_var(*location));
+            let address: CExpr = c_cast(cx, "uintptr_t", value);
+            arg_exprs.push(c_cast(cx, "const void *", address));
+        }
+        return CStmt::Expr(cx.call("panic_bounds_check", arg_exprs));
+    }
     let CallTarget::Address(address) = target else {
         return CStmt::Expr(cx.call("__builtin_trap", Vec::new()));
     };
@@ -23856,6 +23978,12 @@ fn emit_rust(
                         .join(", ");
                     let _ = writeln!(out, "    fn {display_name}({params}) -> !;");
                 }
+                CallDecl::RustPanicBoundsCheck => {
+                    let _ = writeln!(
+                        out,
+                        "    fn panic_bounds_check(index: u64, len: u64, location: *const u8) -> !;"
+                    );
+                }
             }
         }
         let _ = writeln!(out, "}}");
@@ -24396,6 +24524,16 @@ fn rs_call_stmt(
             .collect::<Vec<String>>()
             .join(", ");
         let _ = writeln!(out, "{indent}unsafe {{ {}({arg_list}) }};", exit.name);
+        return;
+    }
+    if matches!(target, CallTarget::RustPanicBoundsCheck) {
+        let index: &'static str = args.first().map_or("0", |reg: &Reg| reg_var(*reg));
+        let len: &'static str = args.get(1).map_or("0", |reg: &Reg| reg_var(*reg));
+        let location: &'static str = args.get(2).map_or("0", |reg: &Reg| reg_var(*reg));
+        let _ = writeln!(
+            out,
+            "{indent}unsafe {{ panic_bounds_check({index}, {len}, {location} as usize as *const u8) }};"
+        );
         return;
     }
     let CallTarget::Address(address) = target else {
