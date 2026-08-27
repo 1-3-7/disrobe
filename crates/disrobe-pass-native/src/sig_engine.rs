@@ -26,8 +26,173 @@ const VERSION_TAIL_CAP: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionNameSubject<'a> {
+    pub name: &'a str,
     pub address: u64,
     pub code: &'a [u8],
+}
+
+fn subject_has_address_placeholder(subject: &FunctionNameSubject<'_>) -> bool {
+    subject.name == format!("sub_{:x}", subject.address)
+        || subject.name == format!("sub_{:X}", subject.address)
+}
+
+fn borrowed_input_range(bytes: &[u8], evidence: &[u8]) -> Option<InputByteRange> {
+    if evidence.is_empty() {
+        return None;
+    }
+    let base: usize = bytes.as_ptr() as usize;
+    let start_index: usize = (evidence.as_ptr() as usize).checked_sub(base)?;
+    let end_index: usize = start_index.checked_add(evidence.len())?;
+    if bytes.get(start_index..end_index)? != evidence {
+        return None;
+    }
+    Some(InputByteRange {
+        start: u64::try_from(start_index).ok()?,
+        end: u64::try_from(end_index).ok()?,
+    })
+}
+
+fn address_is_text(file: &object::File<'_>, address: u64) -> bool {
+    file.sections().any(|section| {
+        let start: u64 = section.address();
+        let Some(end): Option<u64> = start.checked_add(section.size()) else {
+            return false;
+        };
+        section.kind() == object::SectionKind::Text && address >= start && address < end
+    })
+}
+
+fn static_function_symbols(file: &object::File<'_>) -> (BTreeSet<u64>, BTreeSet<String>) {
+    let mut addresses: BTreeSet<u64> = BTreeSet::new();
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for symbol in file.symbols() {
+        if symbol.is_undefined()
+            || symbol.address() == 0
+            || symbol.kind() != object::SymbolKind::Text
+        {
+            continue;
+        }
+        let Ok(raw_name): core::result::Result<&str, object::Error> = symbol.name() else {
+            continue;
+        };
+        if raw_name.is_empty() {
+            continue;
+        }
+        let _: bool = addresses.insert(symbol.address());
+        if let Some(name) = sanitize_function_name(raw_name) {
+            let _: bool = names.insert(name);
+        }
+    }
+    (addresses, names)
+}
+
+#[must_use]
+pub fn exported_function_names(
+    bytes: &[u8],
+    subjects: &[FunctionNameSubject<'_>],
+) -> Vec<RecoveredFunctionName> {
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return Vec::new();
+    };
+    let Ok(exports): core::result::Result<Vec<object::Export<'_>>, object::Error> = file.exports()
+    else {
+        return Vec::new();
+    };
+    let (real_addresses, mut reserved_names): (BTreeSet<u64>, BTreeSet<String>) =
+        static_function_symbols(&file);
+    for subject in subjects {
+        if !subject_has_address_placeholder(subject)
+            && let Some(name) = sanitize_function_name(subject.name)
+        {
+            let _: bool = reserved_names.insert(name);
+        }
+    }
+    let mut subjects_by_address: BTreeMap<u64, Vec<&FunctionNameSubject<'_>>> = BTreeMap::new();
+    for subject in subjects {
+        subjects_by_address
+            .entry(subject.address)
+            .or_default()
+            .push(subject);
+    }
+    let mut exports_by_address: BTreeMap<u64, Vec<(String, String, InputByteRange)>> =
+        BTreeMap::new();
+    for export in exports {
+        let address: u64 = export.address();
+        if address == 0
+            || address == file.relative_address_base()
+            || !address_is_text(&file, address)
+        {
+            continue;
+        }
+        let raw_name_bytes: &[u8] = export.name();
+        let Ok(raw_name): core::result::Result<&str, core::str::Utf8Error> =
+            core::str::from_utf8(raw_name_bytes)
+        else {
+            continue;
+        };
+        let Some(name): Option<String> = sanitize_function_name(raw_name) else {
+            continue;
+        };
+        let Some(input_bytes): Option<InputByteRange> = borrowed_input_range(bytes, raw_name_bytes)
+        else {
+            continue;
+        };
+        exports_by_address.entry(address).or_default().push((
+            raw_name.to_owned(),
+            name,
+            input_bytes,
+        ));
+    }
+    let mut candidates: BTreeMap<String, Vec<RecoveredFunctionName>> = BTreeMap::new();
+    for (address, exports_at_address) in exports_by_address {
+        let [(identity, name, input_bytes)]: &[(String, String, InputByteRange)] =
+            exports_at_address.as_slice()
+        else {
+            continue;
+        };
+        let Some([subject]): Option<&[&FunctionNameSubject<'_>; 1]> =
+            subjects_by_address.get(&address).and_then(
+                |at_address: &Vec<&FunctionNameSubject<'_>>| at_address.as_slice().try_into().ok(),
+            )
+        else {
+            continue;
+        };
+        if real_addresses.contains(&address)
+            || !subject_has_address_placeholder(subject)
+            || reserved_names.contains(name)
+            || input_byte_range(bytes, &file, subject).is_none()
+        {
+            continue;
+        }
+        candidates
+            .entry(name.clone())
+            .or_default()
+            .push(RecoveredFunctionName {
+                function_address: address,
+                name: name.clone(),
+                evidence: FunctionNameEvidence {
+                    confidence: FunctionNameConfidence::High,
+                    source: FunctionNameEvidenceSource::ExportedName,
+                    input_bytes: *input_bytes,
+                    identity: identity.clone(),
+                    target_address: address,
+                    target_is_indirect: false,
+                },
+            });
+    }
+    let mut recovered: Vec<RecoveredFunctionName> = candidates
+        .into_values()
+        .filter_map(|mut proposals: Vec<RecoveredFunctionName>| {
+            if proposals.len() != 1 {
+                return None;
+            }
+            proposals.pop()
+        })
+        .collect();
+    recovered.sort_by_key(|proposal: &RecoveredFunctionName| proposal.function_address);
+    recovered
 }
 
 fn insert_unique_import(imports: &mut BTreeMap<u64, Option<String>>, address: u64, name: &str) {

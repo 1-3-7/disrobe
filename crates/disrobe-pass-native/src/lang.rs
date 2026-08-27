@@ -56,6 +56,7 @@ impl FunctionNameConfidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FunctionNameEvidenceSource {
+    ExportedName,
     ImportThunk,
 }
 
@@ -63,6 +64,7 @@ impl FunctionNameEvidenceSource {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::ExportedName => "exported-name",
             Self::ImportThunk => "import-thunk",
         }
     }
