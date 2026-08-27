@@ -33,6 +33,8 @@ FORMS: tuple[tuple[str, int], ...] = (
     ("unsigned_zero", 0),
 )
 
+RELEASE_OFFSETS: tuple[int, ...] = (-256, 0, 255)
+
 
 def indexed_word(size: int, opc: int, imm9: int, mode: int, rn: int, rt: int, /) -> int:
     encoded: int = imm9 & 0x1FF
@@ -63,6 +65,18 @@ def unsigned_word(size: int, opc: int, imm12: int, rn: int, rt: int, /) -> int:
     ) & MASK32
 
 
+def release_word(size: int, opc: int, imm9: int, rn: int, rt: int, /) -> int:
+    return (
+        (size << 30)
+        | (0b11101 << 24)
+        | (opc << 22)
+        | ((imm9 & 0x1FF) << 12)
+        | (0b10 << 10)
+        | (rn << 5)
+        | rt
+    ) & MASK32
+
+
 def matrix_words() -> list[int]:
     words: list[int] = []
     index: int = 0
@@ -78,6 +92,12 @@ def matrix_words() -> list[int]:
                 else:
                     words.append(unsigned_word(size, opc, immediate, rn, rt))
                 index += 1
+    for _, size, _, store_opc in WIDTHS:
+        for immediate in RELEASE_OFFSETS:
+            rt = (index * 7) % 32
+            rn = (index * 11 + 3) % 32
+            words.append(release_word(size, store_opc, immediate, rn, rt))
+            index += 1
     return words
 
 
@@ -112,7 +132,7 @@ def normalize(body: str, /) -> str:
 def disassemble(clang: Path, objdump: Path, words: list[int], scratch: Path, /) -> list[str]:
     source: Path = scratch / "matrix.s"
     obj: Path = scratch / "matrix.o"
-    lines: list[str] = [".text"]
+    lines: list[str] = [".text", ".arch_extension rcpc3"]
     lines.extend(f".inst 0x{word:08x}" for word in words)
     source.write_text("\n".join(lines) + "\n", encoding="ascii")
     subprocess.run(

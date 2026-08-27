@@ -24,8 +24,8 @@ const TOOL_CAPTURE_LIMIT: usize = 32 * 1024 * 1024;
 const REFERENCE_FILE: &str = "aarch64_word_sweep.llvm";
 const UNKNOWN: &str = "<unknown>";
 const SWEEP_WORDS: usize = 2830;
-const ACCEPTED_WORDS: usize = 1381;
-const AGREEING_WORDS: usize = 1372;
+const ACCEPTED_WORDS: usize = 1382;
+const AGREEING_WORDS: usize = 1373;
 const TARGET_COMPARISONS: usize = 206;
 const CORPUS_MNEMONIC_COMPARISONS: usize = 203;
 const CORPUS_NAMES: [&str; 3] = ["aarch64_forms", "aarch64_oracle_o0", "aarch64_oracle_o2"];
@@ -149,11 +149,11 @@ const GROUP_EXPECTATION: [(&str, GroupCounts); 9] = [
         "load_store",
         GroupCounts {
             seen: 467,
-            accepted: 369,
-            agreeing: 366,
+            accepted: 370,
+            agreeing: 367,
             disagreeing: 0,
             accepted_reference_rejects: 3,
-            declined_reference_accepts: 1,
+            declined_reference_accepts: 0,
             both_reject: 97,
         },
     ),
@@ -682,6 +682,26 @@ fn accepted_words_agree_with_the_llvm_reference_mnemonic() {
         .sum();
     assert_eq!(accepted_total, ACCEPTED_WORDS);
     assert_eq!(agreeing_total, AGREEING_WORDS);
+}
+
+#[test]
+fn llvm_accepted_load_store_words_are_decoded() {
+    let words: Vec<u32> = sweep_words();
+    let reference: Reference = load_reference();
+    let decoded: Vec<PcodeInstr> = decode_sweep(&words);
+    let declined: Vec<String> = reference
+        .entries
+        .iter()
+        .zip(decoded)
+        .filter_map(
+            |((word, rendered), instruction): (&(u32, String), PcodeInstr)| {
+                let mnemonic: &str = reference_mnemonic(rendered)?;
+                (!accepted(instruction.status) && group_of(*word) == "load_store")
+                    .then(|| format!("0x{word:08x} {mnemonic}"))
+            },
+        )
+        .collect();
+    assert_eq!(declined, Vec::<String>::new());
 }
 
 #[test]

@@ -20,7 +20,7 @@ const REFERENCE_FILE: &str = "aarch64_scalar_fp_matrix.llvm";
 const REFERENCE_TRIPLE: &str = "aarch64-none-elf";
 const TOOL_TIMEOUT: Duration = Duration::from_mins(3);
 const TOOL_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
-const MATRIX_WORDS: usize = 60;
+const MATRIX_WORDS: usize = 75;
 const VECTOR_BYTES: u32 = 16;
 
 const WIDTHS: [(u32, u32, u32, u32); 5] = [
@@ -39,6 +39,8 @@ const FORMS: [(IndexMode, i64); 6] = [
     (IndexMode::Offset, 3),
     (IndexMode::Offset, 0),
 ];
+
+const RELEASE_OFFSETS: [i64; 3] = [-256, 0, 255];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IndexMode {
@@ -139,6 +141,14 @@ fn matrix_words() -> Vec<u32> {
             }
         }
     }
+    for (_, size, _, store_opc) in WIDTHS {
+        for immediate in RELEASE_OFFSETS {
+            let rt: u32 = index.wrapping_mul(7) % 32;
+            let rn: u32 = index.wrapping_mul(11).wrapping_add(3) % 32;
+            words.push(release_word(size, store_opc, immediate, rn, rt));
+            index = index.saturating_add(1);
+        }
+    }
     words
 }
 
@@ -162,6 +172,17 @@ fn unsigned_word(size: u32, opcode: u32, immediate: i64, rn: u32, rt: u32) -> u3
         | (0b01 << 24)
         | (opcode << 22)
         | (encoded << 10)
+        | (rn << 5)
+        | rt
+}
+
+fn release_word(size: u32, opcode: u32, immediate: i64, rn: u32, rt: u32) -> u32 {
+    let encoded: u32 = u32::try_from(immediate & 0x1ff).unwrap_or(0);
+    (size << 30)
+        | (0b11101 << 24)
+        | (opcode << 22)
+        | (encoded << 12)
+        | (0b10 << 10)
         | (rn << 5)
         | rt
 }
@@ -568,7 +589,7 @@ fn disassemble(tools: &Tools, words: &[u32]) -> Vec<String> {
     let directory: PathBuf = scratch.path().to_path_buf();
     let source: PathBuf = directory.join("matrix.s");
     let object: PathBuf = directory.join("matrix.o");
-    let mut assembly: String = String::from(".text\n");
+    let mut assembly: String = String::from(".text\n.arch_extension rcpc3\n");
     for word in words {
         writeln!(assembly, ".inst 0x{word:08x}").expect("append an instruction word");
     }

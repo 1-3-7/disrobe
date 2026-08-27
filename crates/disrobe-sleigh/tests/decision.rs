@@ -458,7 +458,7 @@ fn the_constructor_bound_is_raised_only_as_far_as_the_vendored_specification_nee
     }
     let largest: usize = sizes.values().copied().max().unwrap_or_default();
     assert_eq!(
-        largest, 2_801,
+        largest, 2_806,
         "the vendored aarch64 instruction table is the reason the bound moved; if this count          changes, re-measure the bound rather than widening it to fit"
     );
     assert!(

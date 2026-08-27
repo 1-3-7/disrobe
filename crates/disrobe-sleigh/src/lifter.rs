@@ -349,7 +349,7 @@ fn lift_supported(
     {
         return Some(value);
     }
-    if matches!(mnemonic, "ldr" | "str" | "ldur" | "stur")
+    if matches!(mnemonic, "ldr" | "str" | "ldur" | "stur" | "stlur")
         && let Some(value) = lift_scalar_fp_load_store(spec, mnemonic, word, allocator)
     {
         return Some(value);
@@ -772,17 +772,20 @@ fn lift_scalar_fp_load_store(
     allocator: &mut UniqueAllocator,
 ) -> Option<Lifted> {
     let class: u32 = bits(word, 24, 6);
-    if !matches!(class, 0b111_100 | 0b111_101) {
+    if !matches!(class, 0b011_101 | 0b111_100 | 0b111_101) {
         return None;
     }
     let (width, is_load): (u32, bool) = scalar_fp_transfer(bits(word, 30, 2), bits(word, 22, 2))?;
     let index_mode: u32 = bits(word, 10, 2);
+    let release: bool = class == 0b011_101;
     let unscaled: bool = class == 0b111_100 && !bit(word, 21) && index_mode == 0b00;
-    let expected: &str = match (is_load, unscaled) {
-        (true, false) => "ldr",
-        (true, true) => "ldur",
-        (false, false) => "str",
-        (false, true) => "stur",
+    let expected: &str = match (is_load, unscaled, release) {
+        (false, _, true) => "stlur",
+        (true, _, true) => return None,
+        (true, false, false) => "ldr",
+        (true, true, false) => "ldur",
+        (false, false, false) => "str",
+        (false, true, false) => "stur",
     };
     if mnemonic != expected {
         return None;
@@ -792,7 +795,10 @@ fn lift_scalar_fp_load_store(
     let base: Varnode = gpr_input(spec, rn, 8, true)?;
     let mut ops: Vec<PcodeOp> = Vec::new();
     let mut post_index_offset: Option<i64> = None;
-    let pointer: Varnode = if class == 0b111_101 {
+    let pointer: Varnode = if release {
+        let displacement: i64 = signed_bits(word, 12, 9);
+        add_signed_offset(base, displacement, allocator, &mut ops)?
+    } else if class == 0b111_101 {
         let scaled: i64 = i64::from(bits(word, 10, 12)).checked_mul(i64::from(width))?;
         add_signed_offset(base, scaled, allocator, &mut ops)?
     } else if bit(word, 21) {

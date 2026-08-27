@@ -164,7 +164,7 @@ llvm-objdump decodes the extension spaces by default for this container. `190104
 
 Every corpus word is graded as an instruction by two independent disassemblers. The committed GNU objdump 2.45.1 listings and LLVM 19.1.7 agree on all 203 corpus mnemonics, so the committed `.text` files hold no literal pool or jump table that the sweep would count as a decode failure.
 
-At this base the decoder matched a constructor for 1381 of the 2830 words. 1372 of those 1381 mnemonics agree with LLVM 19.1.7 after one declared alias equivalence, 5 disagree in one recorded class, and 4 are encodings that LLVM rejects. A further 169 words that the decoder declines are accepted by LLVM, counted separately from agreement.
+On this candidate the decoder matches a constructor for 1382 of the 2830 words. 1373 of those 1382 mnemonics agree with LLVM 19.1.7 after one declared alias equivalence, 5 disagree in one recorded class, and 4 are encodings that LLVM rejects. A further 168 words that the decoder declines are accepted by LLVM, counted separately from agreement.
 
 Eight of the nine divergence classes recorded before this base were the decoder reporting a constructor's literal display stem where the mnemonic is built by concatenation, for example `tb` for `tbz` and `ld` for `ldursw`. The compiler now resolves the whole concatenated run, including a leading run that names a display subtable, so those classes are gone and the remaining one is a real alias preference. All 206 comparable branch and address targets match exactly.
 
@@ -181,14 +181,14 @@ python tests/fixtures/generate_aarch64_word_sweep.py
 
 # AArch64 scalar floating-point transfer matrix
 
-`aarch64_scalar_fp_matrix.llvm` records the LLVM 19.1.7 disassembly of the 60 declared scalar SIMD and floating-point immediate transfers. The matrix crosses five register widths (`b`, `h`, `s`, `d`, `q`) with six addressing forms (post-index by plus eight, post-index by minus eight, pre-index by plus eight, pre-index by minus eight, unsigned offset with a nonzero scaled immediate, and unsigned offset zero) and both transfer directions. Two cases use the stack pointer as their base register. The same clang 19.1.7 and llvm-objdump 19.1.7 executables recorded in the word sweep section produced this file by the same `.inst` assembly and disassembly route.
+`aarch64_scalar_fp_matrix.llvm` records the LLVM 19.1.7 disassembly of 75 declared scalar SIMD and floating-point memory transfers. The first 60 words cross five register widths (`b`, `h`, `s`, `d`, `q`) with six immediate addressing forms (post-index by plus eight, post-index by minus eight, pre-index by plus eight, pre-index by minus eight, unsigned offset with a nonzero scaled immediate, and unsigned offset zero) and both transfer directions. The remaining 15 words cover RCpc3 `STLUR` stores at all five widths and the signed unscaled offset boundaries `-256`, `0`, and `255`. Two cases use the stack pointer as their base register. The same clang 19.1.7 and llvm-objdump 19.1.7 executables recorded in the word sweep section produced this file through the same `.inst` assembly and disassembly route, with the object declaring the `rcpc3` architecture extension.
 
-LLVM accepts all 60 words. The reference therefore states an expected mnemonic, transfer register, base register, immediate, and index mode for every declared form.
+LLVM accepts all 75 words. The reference therefore states an expected mnemonic, transfer register, base register, immediate, and index mode for every declared form.
 
-`tests/scalar_fp_matrix.rs` regenerates the same 60 words in Rust and fails when the committed reference does not cover exactly those words in the same order. It parses each reference line into its transfer register, base register, immediate, and index mode, then grades the decoder's emitted P-code against those facts: the bytes moved must equal the width the reference register letter implies, a load must land in the destination the reference names and clear the upper half of its vector register, a store must read exactly the register the reference names, an offset form must not write its base register, a post-index form must access before it writes the base, and a pre-index form must write the base before it accesses. When clang and llvm-objdump are installed it also re-derives the disassembly and compares it with the committed file.
+`tests/scalar_fp_matrix.rs` regenerates the same 75 words in Rust and fails when the committed reference does not cover exactly those words in the same order. It parses each reference line into its transfer register, base register, immediate, and index mode, then grades the decoder's emitted P-code against those facts: the bytes moved must equal the width the reference register letter implies, a load must land in the destination the reference names and clear the upper half of its vector register, a store must read exactly the register the reference names, an offset form must not write its base register, a post-index form must access before it writes the base, and a pre-index form must write the base before it accesses. When clang and llvm-objdump are installed it also re-derives the disassembly and compares it with the committed file.
 
-- `generate_aarch64_scalar_fp_matrix.py`: `1AA7260419B7FFF761E4B1E25BB1FDE25E5CC2947343E525773893836C865546`
-- `aarch64_scalar_fp_matrix.llvm`: `D1FB1BAE310CE3DB233D5AA0092961DC209891B0DCE51E19AF1601EBC66D05EE`
+- `generate_aarch64_scalar_fp_matrix.py`: `A14BF18A5973E903419BA12907AE9F987464669AE546A29D2551D0BBA5EA3E49`
+- `aarch64_scalar_fp_matrix.llvm`: `3E0C4C085B29A1727FAFB416621D990016CE5C3C35778066B007A273B20163FD`
 
 The generator is reproducible from the crate directory:
 

@@ -23108,6 +23108,36 @@ is b_3131=0 & q=0 & u=0 & b_2428=0xe & advSIMD3.size=0 & b_2121=1 & Rm_VPR64.8B 
 	zext_zq(Zd); # zero upper 16 bytes of Zd
 }
 
+:stlur Rt_FPR8, addr_SIMM9
+is size.ldstr=0 & b_2729=3 & v=1 & b_2425=1 & b_23=0 & b_2222=0 & b_2121=0 & b_1011=2 & addr_SIMM9 & Rt_FPR8
+{
+	* addr_SIMM9 = Rt_FPR8;
+}
+
+:stlur Rt_FPR16, addr_SIMM9
+is size.ldstr=1 & b_2729=3 & v=1 & b_2425=1 & b_23=0 & b_2222=0 & b_2121=0 & b_1011=2 & addr_SIMM9 & Rt_FPR16
+{
+	* addr_SIMM9 = Rt_FPR16;
+}
+
+:stlur Rt_FPR32, addr_SIMM9
+is size.ldstr=2 & b_2729=3 & v=1 & b_2425=1 & b_23=0 & b_2222=0 & b_2121=0 & b_1011=2 & addr_SIMM9 & Rt_FPR32
+{
+	* addr_SIMM9 = Rt_FPR32;
+}
+
+:stlur Rt_FPR64, addr_SIMM9
+is size.ldstr=3 & b_2729=3 & v=1 & b_2425=1 & b_23=0 & b_2222=0 & b_2121=0 & b_1011=2 & addr_SIMM9 & Rt_FPR64
+{
+	* addr_SIMM9 = Rt_FPR64;
+}
+
+:stlur Rt_FPR128, addr_SIMM9
+is size.ldstr=0 & b_2729=3 & v=1 & b_2425=1 & b_23=1 & b_2222=0 & b_2121=0 & b_1011=2 & addr_SIMM9 & Rt_FPR128
+{
+	* addr_SIMM9 = Rt_FPR128;
+}
+
 # C7.2.329 STNP (SIMD&FP) page C7-2777 line 162166 MATCH x2c000000/mask=x3fc00000
 # CONSTRUCT x2c000000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
 # SMACRO ARG1 ARG3 =store pop ARG2 ARG3 4 +:8 =store pop
