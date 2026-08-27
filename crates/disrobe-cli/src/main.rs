@@ -1717,6 +1717,7 @@ fn main() -> miette::Result<()> {
         eff.force,
         eff.threads,
         eff.no_cache,
+        resolved.config.execution.cache_dir.clone(),
         eff.dry_run,
         progress,
     ));

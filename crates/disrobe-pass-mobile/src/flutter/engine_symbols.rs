@@ -216,7 +216,6 @@ pub fn validate_flutter_engine_symbol_map_for_elf(
     input_bytes: &[u8],
     map: FlutterEngineSymbolMap,
 ) -> Result<ValidatedFlutterEngineSymbolMap> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let FlutterEngineSymbolMap {
         identity,
         mut entries,
@@ -227,6 +226,20 @@ pub fn validate_flutter_engine_symbol_map_for_elf(
     if identity.kind != FlutterEngineSymbolMapIdentityKind::ElfBuildId {
         return Err(Error::FlutterEngineSymbolMapIdentityKind);
     }
+    let input_identity: FlutterEngineIdentity = flutter_engine_identity_for_elf(input_bytes)?;
+    if identity != input_identity {
+        return Err(Error::FlutterEngineSymbolMapIdentityMismatch {
+            map: identity.value,
+            input: input_identity.value,
+        });
+    }
+    validate_flutter_engine_symbols_for_elf(input_bytes, &entries)?;
+    Ok(ValidatedFlutterEngineSymbolMap { identity, entries })
+}
+
+#[cfg(feature = "native-image")]
+pub fn flutter_engine_identity_for_elf(input_bytes: &[u8]) -> Result<FlutterEngineIdentity> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let plan: ImagePlan = plan_native_image(input_bytes)
         .map_err(|error| Error::FlutterEngineSymbolMapImage(error.to_string()))?;
     let ranges: Vec<(u64, u64)> = plan
@@ -257,20 +270,47 @@ pub fn validate_flutter_engine_symbol_map_for_elf(
             "ELF build ID is empty".to_owned(),
         ));
     }
-    let mut input_identity: String = String::with_capacity(build_id.len() * 2);
+    let mut value: String = String::with_capacity(build_id.len() * 2);
     for byte in build_id {
-        input_identity.push(char::from(HEX[usize::from(byte >> 4)]));
-        input_identity.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        value.push(char::from(HEX[usize::from(byte >> 4)]));
+        value.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    if identity.value != input_identity {
+    Ok(FlutterEngineIdentity {
+        kind: FlutterEngineSymbolMapIdentityKind::ElfBuildId,
+        value,
+    })
+}
+
+#[cfg(feature = "native-image")]
+pub fn validate_cached_flutter_engine_symbols_for_elf(
+    input_bytes: &[u8],
+    identity: FlutterEngineIdentity,
+    entries: Vec<FlutterEngineSymbol>,
+) -> Result<ValidatedFlutterEngineSymbolMap> {
+    let identity: FlutterEngineIdentity = validate_identity(identity)?;
+    validate_symbols(&entries)?;
+    if identity.kind != FlutterEngineSymbolMapIdentityKind::ElfBuildId {
+        return Err(Error::FlutterEngineSymbolMapIdentityKind);
+    }
+    let input_identity: FlutterEngineIdentity = flutter_engine_identity_for_elf(input_bytes)?;
+    if identity != input_identity {
         return Err(Error::FlutterEngineSymbolMapIdentityMismatch {
             map: identity.value,
-            input: input_identity,
+            input: input_identity.value,
         });
     }
+    validate_flutter_engine_symbols_for_elf(input_bytes, &entries)?;
+    Ok(ValidatedFlutterEngineSymbolMap { identity, entries })
+}
+
+#[cfg(feature = "native-image")]
+fn validate_flutter_engine_symbols_for_elf(
+    input_bytes: &[u8],
+    entries: &[FlutterEngineSymbol],
+) -> Result<()> {
     let native: NativeFile = parse_native(input_bytes)
         .map_err(|error| Error::FlutterEngineSymbolMapImage(error.to_string()))?;
-    for symbol in &entries {
+    for symbol in entries {
         let inside_segment: bool = native.segments.iter().any(|segment| {
             segment
                 .address
@@ -283,5 +323,5 @@ pub fn validate_flutter_engine_symbol_map_for_elf(
             });
         }
     }
-    Ok(ValidatedFlutterEngineSymbolMap { identity, entries })
+    Ok(())
 }

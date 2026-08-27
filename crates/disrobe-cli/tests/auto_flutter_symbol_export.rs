@@ -52,7 +52,7 @@ fn auto_exports_flutter_symbols_from_the_direct_root_aot_image() {
     ] {
         let scratch: disrobe_core::scratch::ScratchDir = temp_dir("auto-flutter-symbol-export");
         let out: PathBuf = scratch.path().join(format);
-        let run: Run = run_auto(&fixture, &out, format, &[]);
+        let run: Run = run_auto(&fixture, &out, format, &["--no-cache"]);
         assert_eq!(run.code, 0, "{format} export failed: {}", run.stderr);
         assert!(run.stdout.contains("Flutter symbol export written:"));
 
@@ -64,7 +64,7 @@ fn auto_exports_flutter_symbols_from_the_direct_root_aot_image() {
         assert!(text.contains("fibonacciStep"), "{format}: {text}");
 
         let repeat_out: PathBuf = scratch.path().join(format!("{format}-repeat"));
-        let repeat: Run = run_auto(&fixture, &repeat_out, format, &[]);
+        let repeat: Run = run_auto(&fixture, &repeat_out, format, &["--no-cache"]);
         assert_eq!(
             repeat.code, 0,
             "repeated {format} export failed: {}",
@@ -476,4 +476,231 @@ fn auto_refuses_an_engine_map_for_a_non_flutter_root() {
     assert_ne!(run.code, 0, "non-Flutter map unexpectedly succeeded");
     assert!(run.stderr.contains("DR-CLI-0446"), "{}", run.stderr);
     assert!(!out.join("exports/flutter/symbols.json").exists());
+}
+
+#[test]
+fn flutter_engine_map_cache_reuses_only_the_matching_build_and_honors_no_cache() {
+    let fixture: PathBuf = fixture_path();
+    let bytes: Vec<u8> = std::fs::read(&fixture).expect("read Flutter fixture");
+    let layout: disrobe_pass_mobile::flutter::LibAppLayout =
+        disrobe_pass_mobile::parse_libapp_so(&bytes).expect("parse Flutter image");
+    let address: u64 = layout
+        .function_symbols
+        .first()
+        .expect("tracked Flutter function symbol")
+        .address;
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("flutter-engine-map-cache");
+    let map_path: PathBuf = scratch.path().join("engine-symbols.json");
+    let cache_dir: PathBuf = scratch.path().join("cache");
+    let config: PathBuf = scratch.path().join("disrobe.toml");
+    let map: serde_json::Value = serde_json::json!({
+        "format": "disrobe.flutter.engine-symbol-map",
+        "version": 1,
+        "identity": {
+            "kind": "elf-build-id",
+            "value": "b71885094a73117bf90d3cfa05824129"
+        },
+        "symbols": [{ "address": address, "name": "CachedFlutterEngine" }]
+    });
+    std::fs::write(&map_path, serde_json::to_vec(&map).expect("serialize map")).expect("write map");
+    std::fs::write(
+        &config,
+        format!(
+            "[execution]\ncache_dir = {:?}\n",
+            cache_dir.display().to_string()
+        ),
+    )
+    .expect("write config");
+    let fixture_arg: String = fixture.to_string_lossy().into_owned();
+    let map_arg: String = map_path.to_string_lossy().into_owned();
+    let config_arg: String = config.to_string_lossy().into_owned();
+
+    let seeded_out: PathBuf = scratch.path().join("seeded");
+    let seeded_out_arg: String = seeded_out.to_string_lossy().into_owned();
+    let seeded: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &fixture_arg,
+        "--out",
+        &seeded_out_arg,
+        "--format",
+        "json",
+        "--engine-symbol-map",
+        &map_arg,
+    ]);
+    assert_eq!(seeded.code, 0, "seed cache failed: {}", seeded.stderr);
+
+    let cached_out: PathBuf = scratch.path().join("cached");
+    let cached_out_arg: String = cached_out.to_string_lossy().into_owned();
+    let cached: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &fixture_arg,
+        "--out",
+        &cached_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(cached.code, 0, "cached auto failed: {}", cached.stderr);
+    let cached_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(cached_out.join("exports/flutter/symbols.json"))
+            .expect("read cached export"),
+    )
+    .expect("parse cached export");
+    assert_eq!(cached_json["provenance"][0]["source"], "cache");
+    assert!(cached_json["symbols"].as_array().is_some_and(|symbols| {
+        symbols
+            .iter()
+            .any(|symbol| symbol["name"] == "CachedFlutterEngine")
+    }));
+
+    let direct_out: PathBuf = scratch.path().join("direct.json");
+    let direct_out_arg: String = direct_out.to_string_lossy().into_owned();
+    let direct: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "flutter",
+        "dump",
+        &fixture_arg,
+        "--out",
+        &direct_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(direct.code, 0, "cached dump failed: {}", direct.stderr);
+    let direct_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(direct_out.with_extension("symbols.json")).expect("read direct export"),
+    )
+    .expect("parse direct export");
+    assert_eq!(direct_json["provenance"], cached_json["provenance"]);
+
+    let no_cache_out: PathBuf = scratch.path().join("no-cache");
+    let no_cache_out_arg: String = no_cache_out.to_string_lossy().into_owned();
+    let no_cache: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "--no-cache",
+        "auto",
+        &fixture_arg,
+        "--out",
+        &no_cache_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        no_cache.code, 0,
+        "no-cache auto failed: {}",
+        no_cache.stderr
+    );
+    let no_cache_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(no_cache_out.join("exports/flutter/symbols.json"))
+            .expect("read no-cache export"),
+    )
+    .expect("parse no-cache export");
+    assert!(no_cache_json["provenance"].is_null());
+    assert!(no_cache_json["symbols"].as_array().is_some_and(|symbols| {
+        !symbols
+            .iter()
+            .any(|symbol| symbol["name"] == "CachedFlutterEngine")
+    }));
+
+    let altered_input: PathBuf = scratch.path().join("other-build.so");
+    let mut altered_bytes: Vec<u8> = bytes.clone();
+    let old_build_id: &[u8] = b"\xb7\x18\x85\x09\x4a\x73\x11\x7b\xf9\x0d\x3c\xfa\x05\x82\x41\x29";
+    let build_id_offset: usize = altered_bytes
+        .windows(old_build_id.len())
+        .position(|window: &[u8]| window == old_build_id)
+        .expect("find tracked build ID");
+    altered_bytes[build_id_offset..build_id_offset + old_build_id.len()]
+        .copy_from_slice(&[0x11; 16]);
+    std::fs::write(&altered_input, altered_bytes).expect("write altered build");
+    let altered_input_arg: String = altered_input.to_string_lossy().into_owned();
+    let altered_out: PathBuf = scratch.path().join("altered");
+    let altered_out_arg: String = altered_out.to_string_lossy().into_owned();
+    let altered: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &altered_input_arg,
+        "--out",
+        &altered_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(altered.code, 0, "other build failed: {}", altered.stderr);
+    let altered_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(altered_out.join("exports/flutter/symbols.json"))
+            .expect("read other-build export"),
+    )
+    .expect("parse other-build export");
+    assert!(altered_json["provenance"].is_null());
+
+    let no_write_cache: PathBuf = scratch.path().join("no-write-cache");
+    let no_write_config: PathBuf = scratch.path().join("no-write.toml");
+    std::fs::write(
+        &no_write_config,
+        format!(
+            "[execution]\ncache_dir = {:?}\n",
+            no_write_cache.display().to_string()
+        ),
+    )
+    .expect("write no-cache config");
+    let no_write_config_arg: String = no_write_config.to_string_lossy().into_owned();
+    let no_write_out: PathBuf = scratch.path().join("no-write");
+    let no_write_out_arg: String = no_write_out.to_string_lossy().into_owned();
+    let no_write: Run = run_disrobe(&[
+        "--config",
+        &no_write_config_arg,
+        "--no-cache",
+        "auto",
+        &fixture_arg,
+        "--out",
+        &no_write_out_arg,
+        "--format",
+        "json",
+        "--engine-symbol-map",
+        &map_arg,
+    ]);
+    assert_eq!(
+        no_write.code, 0,
+        "no-cache seed failed: {}",
+        no_write.stderr
+    );
+    assert!(!no_write_cache.exists());
+
+    let identity: disrobe_pass_mobile::FlutterEngineIdentity =
+        disrobe_pass_mobile::flutter_engine_identity_for_elf(&bytes).expect("read build identity");
+    let cache = disrobe_pass_mobile::FlutterEngineSymbolCache::new(
+        cache_dir.join("flutter-engine-symbols"),
+    );
+    cache
+        .store(
+            &identity,
+            &[disrobe_pass_mobile::FlutterEngineSymbol {
+                address: u64::MAX,
+                name: "OutsideLoadedImage".to_owned(),
+            }],
+        )
+        .expect("seed invalid cached symbol");
+    let invalid_out: PathBuf = scratch.path().join("invalid-cache");
+    let invalid_out_arg: String = invalid_out.to_string_lossy().into_owned();
+    let invalid: Run = run_disrobe(&[
+        "--config",
+        &config_arg,
+        "auto",
+        &fixture_arg,
+        "--out",
+        &invalid_out_arg,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(invalid.code, 0, "invalid cache failed: {}", invalid.stderr);
+    let invalid_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(invalid_out.join("exports/flutter/symbols.json"))
+            .expect("read invalid-cache export"),
+    )
+    .expect("parse invalid-cache export");
+    assert!(invalid_json["provenance"].is_null());
 }

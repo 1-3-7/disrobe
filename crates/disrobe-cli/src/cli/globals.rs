@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,12 +44,13 @@ impl core::fmt::Display for ProgressMode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Globals {
     pub(crate) in_place: bool,
     pub(crate) force: bool,
     pub(crate) threads: u32,
     pub(crate) no_cache: bool,
+    pub(crate) cache_dir: Option<PathBuf>,
     pub(crate) dry_run: bool,
     pub(crate) progress: ProgressMode,
 }
@@ -60,6 +62,7 @@ impl Globals {
         force: bool,
         threads: Option<u32>,
         no_cache: bool,
+        cache_dir: Option<PathBuf>,
         dry_run: bool,
         progress: ProgressMode,
     ) -> Self {
@@ -69,6 +72,7 @@ impl Globals {
             force,
             threads: resolved_threads,
             no_cache,
+            cache_dir,
             dry_run,
             progress,
         }
@@ -80,7 +84,7 @@ impl Globals {
     }
 
     #[inline]
-    pub(crate) const fn progress_forced(self) -> bool {
+    pub(crate) fn progress_forced(self) -> bool {
         matches!(self.progress, ProgressMode::Always)
     }
 }
@@ -88,15 +92,15 @@ impl Globals {
 static GLOBALS: OnceLock<Globals> = OnceLock::new();
 
 pub(crate) fn install(globals: Globals) -> Globals {
-    let _: Result<_, _> = GLOBALS.set(globals);
-    GLOBALS.get().copied().unwrap_or(globals)
+    let _: Result<_, _> = GLOBALS.set(globals.clone());
+    GLOBALS.get().cloned().unwrap_or(globals)
 }
 
 pub(crate) fn current() -> Globals {
     GLOBALS
         .get()
-        .copied()
-        .unwrap_or_else(|| Globals::new(false, false, None, false, false, ProgressMode::Auto))
+        .cloned()
+        .unwrap_or_else(|| Globals::new(false, false, None, false, None, false, ProgressMode::Auto))
 }
 
 #[inline]
@@ -145,13 +149,21 @@ mod tests {
 
     #[test]
     fn globals_defaults_thread_count_to_at_least_one() {
-        let g: Globals = Globals::new(false, false, None, false, false, ProgressMode::Never);
+        let g: Globals = Globals::new(false, false, None, false, None, false, ProgressMode::Never);
         assert!(g.threads >= 1);
     }
 
     #[test]
     fn globals_honors_explicit_thread_override() {
-        let g: Globals = Globals::new(false, false, Some(4), false, false, ProgressMode::Always);
+        let g: Globals = Globals::new(
+            false,
+            false,
+            Some(4),
+            false,
+            None,
+            false,
+            ProgressMode::Always,
+        );
         assert_eq!(g.threads, 4);
         assert!(g.progress_enabled());
     }

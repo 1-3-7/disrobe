@@ -78,14 +78,17 @@ pub use engine_cache::{
     FLUTTER_ENGINE_SYMBOL_CACHE_FORMAT, FLUTTER_ENGINE_SYMBOL_CACHE_MAX_BYTES,
     FLUTTER_ENGINE_SYMBOL_CACHE_VERSION, FlutterEngineSymbolCache,
 };
-#[cfg(feature = "native-image")]
-pub use engine_symbols::validate_flutter_engine_symbol_map_for_elf;
 pub use engine_symbols::{
     FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FLUTTER_ENGINE_SYMBOL_MAP_MAX_BYTES,
     FLUTTER_ENGINE_SYMBOL_MAP_MAX_ENTRIES, FLUTTER_ENGINE_SYMBOL_MAP_VERSION,
     FlutterEngineIdentity, FlutterEngineSymbol, FlutterEngineSymbolMap,
     FlutterEngineSymbolMapIdentityKind, ValidatedFlutterEngineSymbolMap,
     parse_flutter_engine_symbol_map, parse_flutter_engine_symbol_map_reader,
+};
+#[cfg(feature = "native-image")]
+pub use engine_symbols::{
+    flutter_engine_identity_for_elf, validate_cached_flutter_engine_symbols_for_elf,
+    validate_flutter_engine_symbol_map_for_elf,
 };
 pub use kernel::{
     DART_KERNEL_MAGIC, DartKernel, KernelClass, KernelLibrary, KernelProcedure,

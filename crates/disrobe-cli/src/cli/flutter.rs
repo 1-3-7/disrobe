@@ -5,17 +5,19 @@ use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
 
+use disrobe_core::default_cache_dir;
 use disrobe_pass_mobile::flutter::has_dart_aot_snapshot;
 use disrobe_pass_mobile::{
     AotLiftReport, Arm64Disassembly, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL,
     DART_VM_DATA_SYMBOL, DART_VM_INSTR_SYMBOL, DartAotDecompile, DartGraphObfuscationHint,
     DartGraphRecoveryOptions, DartGraphRecoveryReport, DartKernelDecompile, DartLiftedFunction,
-    DartSnapshotHeader, FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FlutterEngineSymbolMap,
-    FlutterObfuscationMap, LibAppLayout, ValidatedFlutterEngineSymbolMap, decompile_dart_aot,
-    decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel, lift_libapp_aot,
-    parse_dart_snapshot, parse_flutter_engine_symbol_map_reader, parse_flutter_obfuscation_map,
-    parse_libapp_so, recover_dart_pinned_elf, recover_dart_pinned_standalone,
-    validate_flutter_engine_symbol_map_for_elf,
+    DartSnapshotHeader, FLUTTER_ENGINE_SYMBOL_MAP_FORMAT, FlutterEngineSymbolCache,
+    FlutterEngineSymbolMap, FlutterObfuscationMap, LibAppLayout, ValidatedFlutterEngineSymbolMap,
+    decompile_dart_aot, decompile_dart_kernel, disassemble_libapp_so,
+    flutter_engine_identity_for_elf, is_dart_kernel, lift_libapp_aot, parse_dart_snapshot,
+    parse_flutter_engine_symbol_map_reader, parse_flutter_obfuscation_map, parse_libapp_so,
+    recover_dart_pinned_elf, recover_dart_pinned_standalone,
+    validate_cached_flutter_engine_symbols_for_elf, validate_flutter_engine_symbol_map_for_elf,
 };
 use disrobe_pass_native::{
     ExportFormat, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass, SymbolMap, SymbolMapProvenance,
@@ -25,6 +27,7 @@ use disrobe_pass_native::{
 #[cfg(feature = "chain")]
 use super::backend_export::{BackendExportTarget, SupplementalOutput};
 use super::emit::{EmitKind, EmitSpec};
+use super::globals;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum FlutterCmd {
@@ -331,10 +334,8 @@ fn dump(
         .map_err(|e| miette::miette!("DR-CLI-0750: cannot read input: {e}"))?;
     let layout: LibAppLayout =
         parse_libapp_so(&bytes).map_err(|e| miette::miette!("DR-CLI-0751: libapp parse: {e}"))?;
-    let engine_symbol_map: Option<FlutterEngineSymbolInput> = engine_symbol_map_path
-        .as_deref()
-        .map(|path: &Path| load_flutter_engine_symbol_map(path, &bytes))
-        .transpose()?;
+    let engine_symbol_map: Option<FlutterEngineSymbolInput> =
+        resolve_flutter_engine_symbol_map(engine_symbol_map_path.as_deref(), &bytes)?;
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -516,6 +517,52 @@ pub(crate) fn load_flutter_engine_symbol_map(
         map: validated,
         source: path.display().to_string(),
     })
+}
+
+pub(crate) fn resolve_flutter_engine_symbol_map(
+    external_map_path: Option<&Path>,
+    input_bytes: &[u8],
+) -> miette::Result<Option<FlutterEngineSymbolInput>> {
+    if let Some(path) = external_map_path {
+        let map: FlutterEngineSymbolInput = load_flutter_engine_symbol_map(path, input_bytes)?;
+        if let Some(cache) = flutter_engine_symbol_cache() {
+            cache.store_validated(&map.map).map_err(|error| {
+                miette::miette!("DR-CLI-0760: cannot store Flutter engine symbol cache: {error}")
+            })?;
+        }
+        return Ok(Some(map));
+    }
+    let Some(cache): Option<FlutterEngineSymbolCache> = flutter_engine_symbol_cache() else {
+        return Ok(None);
+    };
+    let identity = flutter_engine_identity_for_elf(input_bytes)
+        .map_err(|error| miette::miette!("DR-CLI-0761: Flutter engine cache identity: {error}"))?;
+    let Some(symbols) = cache.load(&identity).map_err(|error| {
+        miette::miette!("DR-CLI-0762: cannot read Flutter engine symbol cache: {error}")
+    })?
+    else {
+        return Ok(None);
+    };
+    let map: ValidatedFlutterEngineSymbolMap =
+        match validate_cached_flutter_engine_symbols_for_elf(input_bytes, identity, symbols) {
+            Ok(map) => map,
+            Err(_) => return Ok(None),
+        };
+    Ok(Some(FlutterEngineSymbolInput {
+        map,
+        source: "cache".to_owned(),
+    }))
+}
+
+fn flutter_engine_symbol_cache() -> Option<FlutterEngineSymbolCache> {
+    let globals = globals::current();
+    if globals.no_cache {
+        return None;
+    }
+    let root: PathBuf = globals.cache_dir.or_else(default_cache_dir)?;
+    Some(FlutterEngineSymbolCache::new(
+        root.join("flutter-engine-symbols"),
+    ))
 }
 
 #[cfg(feature = "chain")]

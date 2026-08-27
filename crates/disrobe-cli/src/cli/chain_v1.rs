@@ -511,9 +511,7 @@ fn prepare_flutter_symbol_export(
     let layout: disrobe_pass_mobile::LibAppLayout = disrobe_pass_mobile::parse_libapp_so(input)
         .map_err(|error| miette::miette!("DR-CLI-0445: requested Flutter symbol export cannot parse the classified root libapp.so: {error}"))?;
     let engine_symbol_map: Option<super::flutter::FlutterEngineSymbolInput> =
-        engine_symbol_map_path
-            .map(|path: &Path| super::flutter::load_flutter_engine_symbol_map(path, input))
-            .transpose()?;
+        super::flutter::resolve_flutter_engine_symbol_map(engine_symbol_map_path, input)?;
     super::flutter::prepare_flutter_symbol_export(
         input_path,
         &layout,

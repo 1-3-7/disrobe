@@ -63,7 +63,7 @@ pub use cordova::{
 };
 pub use error::{Error, Result};
 #[cfg(feature = "native-image")]
-pub use flutter::validate_flutter_engine_symbol_map_for_elf;
+pub use flutter::FlutterEngineSymbolCache;
 pub use flutter::{
     AotLiftReport, Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction,
     Arm64TraversalReport, Arm64Unresolved, Arm64UnresolvedKind, CidTableMatch,
@@ -114,6 +114,11 @@ pub use flutter::{
     recover_dart_static, recover_libapp, recover_object_pool_references, recover_string_pool,
     recovery_counts as dart_recovery_counts, resolve_pool_literals, traverse_arm64,
     vm_data_bytes as dart_vm_data_bytes, vm_instruction_bytes as dart_vm_instruction_bytes,
+};
+#[cfg(feature = "native-image")]
+pub use flutter::{
+    flutter_engine_identity_for_elf, validate_cached_flutter_engine_symbols_for_elf,
+    validate_flutter_engine_symbol_map_for_elf,
 };
 pub use hermes::{
     BigIntTableEntry, BufferKind, DeclineCount, DecompileReport, DecompiledFunction,
