@@ -1,11 +1,20 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
+use object::{Object, ObjectSection, ObjectSymbol};
 use serde::{Deserialize, Serialize};
 
 use disrobe_bytes::read_uleb128_at;
 use disrobe_core::byte_search::find as byte_find;
 
 use crate::entropy::{ENTROPY_WINDOW_4K, EntropyBlock, windowed_entropy};
+use crate::lang::{
+    FunctionNameConfidence, FunctionNameEvidence, FunctionNameEvidenceSource, InputByteRange,
+    RecoveredFunctionName, sanitize_function_name,
+};
 use crate::packers::parse_pe_image;
 use crate::packers::pe_sections::{PeImage, PeSection};
+use crate::plt_resolve::{ImportStub, resolve_elf_plt_imports, resolve_pe_iat_imports};
 
 const PE_MAGIC: &[u8; 2] = b"MZ";
 const ELF_MAGIC: &[u8; 4] = &[0x7F, b'E', b'L', b'F'];
@@ -14,6 +23,219 @@ const MACHO_BE: &[u8; 4] = &[0xFE, 0xED, 0xFA, 0xCF];
 const MACHO_FAT: &[u8; 4] = &[0xCA, 0xFE, 0xBA, 0xBE];
 const SCAN_LIMIT: usize = 16 * 1024 * 1024;
 const VERSION_TAIL_CAP: usize = 64;
+
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionNameSubject<'a> {
+    pub address: u64,
+    pub code: &'a [u8],
+}
+
+fn insert_unique_import(imports: &mut BTreeMap<u64, Option<String>>, address: u64, name: &str) {
+    match imports.get_mut(&address) {
+        Some(identity) if identity.as_deref() != Some(name) => *identity = None,
+        Some(_) => {}
+        None => {
+            let _: Option<Option<String>> = imports.insert(address, Some(name.to_owned()));
+        }
+    }
+}
+
+fn resolved_import_identities(bytes: &[u8]) -> BTreeMap<u64, Option<String>> {
+    let mut imports: BTreeMap<u64, Option<String>> = BTreeMap::new();
+    let resolved: Vec<ImportStub> = resolve_elf_plt_imports(bytes)
+        .into_iter()
+        .chain(resolve_pe_iat_imports(bytes))
+        .collect();
+    for import in resolved {
+        insert_unique_import(&mut imports, import.stub_address, &import.name);
+        insert_unique_import(&mut imports, import.slot_address, &import.name);
+    }
+    imports
+}
+
+fn real_function_symbols(file: &object::File<'_>) -> (BTreeSet<u64>, BTreeSet<String>) {
+    let mut addresses: BTreeSet<u64> = BTreeSet::new();
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut ingest = |symbol: object::Symbol<'_, '_>| {
+        if symbol.is_undefined()
+            || symbol.address() == 0
+            || symbol.kind() != object::SymbolKind::Text
+        {
+            return;
+        }
+        let Ok(raw_name): core::result::Result<&str, object::Error> = symbol.name() else {
+            return;
+        };
+        if raw_name.is_empty() {
+            return;
+        }
+        addresses.insert(symbol.address());
+        if let Some(name) = sanitize_function_name(raw_name) {
+            let _: bool = names.insert(name);
+        }
+    };
+    for symbol in file.symbols() {
+        ingest(symbol);
+    }
+    for symbol in file.dynamic_symbols() {
+        ingest(symbol);
+    }
+    if let Ok(exports) = file.exports() {
+        for export in exports {
+            if export.address() == 0 {
+                continue;
+            }
+            let Ok(raw_name): core::result::Result<&str, core::str::Utf8Error> =
+                core::str::from_utf8(export.name())
+            else {
+                continue;
+            };
+            addresses.insert(export.address());
+            if let Some(name) = sanitize_function_name(raw_name) {
+                let _: bool = names.insert(name);
+            }
+        }
+    }
+    (addresses, names)
+}
+
+fn input_byte_range(
+    bytes: &[u8],
+    file: &object::File<'_>,
+    subject: &FunctionNameSubject<'_>,
+) -> Option<InputByteRange> {
+    let code_len: u64 = u64::try_from(subject.code.len()).ok()?;
+    let address_end: u64 = subject.address.checked_add(code_len)?;
+    for section in file.sections() {
+        let section_start: u64 = section.address();
+        let section_end: u64 = section_start.checked_add(section.size())?;
+        if subject.address < section_start || address_end > section_end {
+            continue;
+        }
+        let relative: u64 = subject.address.checked_sub(section_start)?;
+        let (section_file_start, section_file_size): (u64, u64) = section.file_range()?;
+        let relative_end: u64 = relative.checked_add(code_len)?;
+        if relative_end > section_file_size {
+            continue;
+        }
+        let start: u64 = section_file_start.checked_add(relative)?;
+        let end: u64 = start.checked_add(code_len)?;
+        let start_index: usize = usize::try_from(start).ok()?;
+        let end_index: usize = usize::try_from(end).ok()?;
+        if bytes.get(start_index..end_index)? != subject.code {
+            continue;
+        }
+        return Some(InputByteRange { start, end });
+    }
+    None
+}
+
+fn one_instruction_jump_target(
+    bits: u32,
+    subject: &FunctionNameSubject<'_>,
+) -> Option<(u64, bool)> {
+    if subject.code.is_empty() {
+        return None;
+    }
+    let mut decoder: Decoder<'_> =
+        Decoder::with_ip(bits, subject.code, subject.address, DecoderOptions::NONE);
+    let mut instruction: Instruction = Instruction::default();
+    decoder.decode_out(&mut instruction);
+    if instruction.is_invalid()
+        || instruction.mnemonic() != Mnemonic::Jmp
+        || instruction.len() != subject.code.len()
+    {
+        return None;
+    }
+    match instruction.op0_kind() {
+        OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+            Some((instruction.near_branch_target(), false))
+        }
+        OpKind::Memory if instruction.is_ip_rel_memory_operand() => {
+            Some((instruction.ip_rel_memory_address(), true))
+        }
+        OpKind::Memory
+            if instruction.memory_base() == Register::None
+                && instruction.memory_index() == Register::None =>
+        {
+            Some((instruction.memory_displacement64(), true))
+        }
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn resolved_import_thunk_names(
+    bytes: &[u8],
+    subjects: &[FunctionNameSubject<'_>],
+) -> Vec<RecoveredFunctionName> {
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return Vec::new();
+    };
+    if !file.is_little_endian() {
+        return Vec::new();
+    }
+    let bits: u32 = match file.architecture() {
+        object::Architecture::I386 => 32,
+        object::Architecture::X86_64 => 64,
+        _ => return Vec::new(),
+    };
+    let imports: BTreeMap<u64, Option<String>> = resolved_import_identities(bytes);
+    if imports.is_empty() {
+        return Vec::new();
+    }
+    let (real_addresses, real_names): (BTreeSet<u64>, BTreeSet<String>) =
+        real_function_symbols(&file);
+    let mut candidates: BTreeMap<String, Vec<RecoveredFunctionName>> = BTreeMap::new();
+    for subject in subjects {
+        if real_addresses.contains(&subject.address) {
+            continue;
+        }
+        let Some(input_bytes): Option<InputByteRange> = input_byte_range(bytes, &file, subject)
+        else {
+            continue;
+        };
+        let Some((target, target_is_indirect)): Option<(u64, bool)> =
+            one_instruction_jump_target(bits, subject)
+        else {
+            continue;
+        };
+        let Some(Some(identity)): Option<&Option<String>> = imports.get(&target) else {
+            continue;
+        };
+        let Some(name): Option<String> = sanitize_function_name(identity) else {
+            continue;
+        };
+        let proposal: RecoveredFunctionName = RecoveredFunctionName {
+            function_address: subject.address,
+            name: name.clone(),
+            evidence: FunctionNameEvidence {
+                confidence: FunctionNameConfidence::High,
+                source: FunctionNameEvidenceSource::ImportThunk,
+                input_bytes,
+                identity: identity.clone(),
+                target_address: target,
+                target_is_indirect,
+            },
+        };
+        candidates.entry(name).or_default().push(proposal);
+    }
+    let mut recovered: Vec<RecoveredFunctionName> = candidates
+        .into_iter()
+        .filter_map(
+            |(name, mut proposals): (String, Vec<RecoveredFunctionName>)| {
+                if proposals.len() != 1 || real_names.contains(&name) {
+                    return None;
+                }
+                proposals.pop()
+            },
+        )
+        .collect();
+    recovered.sort_by_key(|proposal: &RecoveredFunctionName| proposal.function_address);
+    recovered
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

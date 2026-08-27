@@ -8,6 +8,7 @@ use crate::cxx_recovery::{CxxDemangled, demangle_auto};
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
 use crate::packers::{Detection as PackerDetection, detect as detect_packers};
+use crate::pseudo_c::{NamedRecoveredProgram, RecoveredProgram};
 use crate::rust_recovery::{DemangledSymbol, demangle as demangle_rust};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +48,7 @@ pub enum SymbolOrigin {
     PackerChain,
     CompilerRuntime,
     DalvikIdentifier,
+    DerivedFunctionName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -189,6 +191,118 @@ impl SymbolExportSource for SymbolMap {
 impl SymbolExportSource for SymbolExport {
     fn to_symbol_export(&self) -> SymbolExport {
         self.clone()
+    }
+}
+
+impl SymbolExportSource for NamedRecoveredProgram {
+    fn to_symbol_export(&self) -> SymbolExport {
+        let symbols: Vec<ExportSymbol> = self
+            .names
+            .iter()
+            .map(|name| ExportSymbol {
+                key: SymbolKey::Address {
+                    address: name.function_address,
+                },
+                name: name.name.clone(),
+                demangled: None,
+                class: SymbolClass::Function,
+                origin: SymbolOrigin::DerivedFunctionName,
+                note: Some(format!(
+                    "{} {} evidence at input bytes {:#x}..{:#x}",
+                    name.evidence.confidence.label(),
+                    name.evidence.source.label(),
+                    name.evidence.input_bytes.start,
+                    name.evidence.input_bytes.end
+                )),
+            })
+            .collect();
+        let provenance: Vec<SymbolMapProvenance> = self
+            .names
+            .iter()
+            .map(|name| SymbolMapProvenance {
+                source: format!("{:#x}:{}", name.function_address, name.name),
+                kind: "function-name-evidence".to_owned(),
+                identity: Some(format!(
+                    "confidence={};source={};input-bytes={:#x}..{:#x};identity={}",
+                    name.evidence.confidence.label(),
+                    name.evidence.source.label(),
+                    name.evidence.input_bytes.start,
+                    name.evidence.input_bytes.end,
+                    name.evidence.identity
+                )),
+            })
+            .collect();
+        SymbolExport {
+            schema: SYMBOL_EXPORT_SCHEMA,
+            source: "native-recovery".to_owned(),
+            format: self.program.format.clone(),
+            image_base: Some(self.program.image_base),
+            original_entry_point: None,
+            symbol_count: symbols.len(),
+            symbols,
+            provenance,
+        }
+    }
+}
+
+impl SymbolExportSource for RecoveredProgram {
+    fn to_symbol_export(&self) -> SymbolExport {
+        let symbols: Vec<ExportSymbol> = self
+            .recovered
+            .iter()
+            .filter_map(|function| {
+                function
+                    .name_evidence
+                    .as_ref()
+                    .map(|evidence| ExportSymbol {
+                        key: SymbolKey::Address {
+                            address: function.address,
+                        },
+                        name: function.name.clone(),
+                        demangled: None,
+                        class: SymbolClass::Function,
+                        origin: SymbolOrigin::DerivedFunctionName,
+                        note: Some(format!(
+                            "{} {} evidence at input bytes {:#x}..{:#x}",
+                            evidence.confidence.label(),
+                            evidence.source.label(),
+                            evidence.input_bytes.start,
+                            evidence.input_bytes.end
+                        )),
+                    })
+            })
+            .collect();
+        let provenance: Vec<SymbolMapProvenance> = self
+            .recovered
+            .iter()
+            .filter_map(|function| {
+                function
+                    .name_evidence
+                    .as_ref()
+                    .map(|evidence| SymbolMapProvenance {
+                        source: format!("{:#x}:{}", function.address, function.name),
+                        kind: "function-name-evidence".to_owned(),
+                        identity: Some(format!(
+                            "confidence={};source={};input-bytes={:#x}..{:#x};identity={}",
+                            evidence.confidence.label(),
+                            evidence.source.label(),
+                            evidence.input_bytes.start,
+                            evidence.input_bytes.end,
+                            evidence.identity
+                        )),
+                    })
+            })
+            .collect();
+        SymbolExport {
+            schema: SYMBOL_EXPORT_SCHEMA,
+            source: "native-recovery".to_owned(),
+            format: self.format.clone(),
+            image_base: Some(self.image_base),
+            original_entry_point: None,
+            symbol_count: symbols.len(),
+            symbols,
+            provenance,
+        }
     }
 }
 

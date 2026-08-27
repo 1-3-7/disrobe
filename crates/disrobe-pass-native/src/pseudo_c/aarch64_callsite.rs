@@ -191,9 +191,12 @@ pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
             }
         }
     }
+    let (image_base, format): (u64, String) = super::naming_object_identity(object_bytes);
     RecoveredProgram {
         recovered,
         unrecovered,
+        image_base,
+        format,
     }
 }
 
@@ -325,6 +328,8 @@ fn object_refusal(reason: String) -> RecoveredProgram {
             address: 0,
             reason,
         }],
+        image_base: 0,
+        format: "unknown".to_owned(),
     }
 }
 
@@ -1449,6 +1454,7 @@ fn recovered_function(function: &FunctionSymbol, recovery: LeafRecovery) -> Reco
         returns_fp: recovery.returns_fp,
         resolved_calls: recovery.call_targets,
         call_site_signature: recovery.call_site_signature,
+        name_evidence: None,
     }
 }
 

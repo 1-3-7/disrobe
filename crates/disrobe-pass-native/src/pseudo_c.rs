@@ -12,6 +12,7 @@ use disrobe_emit::rust::{
     parse_expr, path_expr, ptr_type, render_expr as render_rust_expr, signed_int,
     type_path as rtype_path, unary as runary, unsafe_block, var as rvar,
 };
+use disrobe_typerec::{Abi as TypeRecAbi, SigDb, SigKey, Ty};
 use iced_x86::{InstructionInfoFactory, OpAccess, Register};
 use indexmap::{IndexMap, IndexSet};
 
@@ -21,7 +22,9 @@ use crate::flow_facts::{
     DirectTrap, NoreturnImportEvidence, NoreturnLibraryFunction, NoreturnParameter,
     noreturn_import_evidence, x86_direct_trap,
 };
+use crate::lang::{FunctionNameEvidence, RecoveredFunctionName};
 use crate::plt_resolve::{resolve_elf_plt_imports, resolve_pe_iat_imports};
+use crate::sig_engine::{FunctionNameSubject, resolved_import_thunk_names};
 use crate::structuring;
 
 #[allow(clippy::redundant_pub_crate)]
@@ -2916,6 +2919,15 @@ pub struct ProgramFunction {
     pub code: Vec<u8>,
 }
 
+impl<'a> From<&'a ProgramFunction> for FunctionNameSubject<'a> {
+    fn from(function: &'a ProgramFunction) -> Self {
+        Self {
+            address: function.address,
+            code: &function.code,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredFunction {
     pub name: String,
@@ -2927,6 +2939,7 @@ pub struct RecoveredFunction {
     pub returns_fp: Option<ScalarType>,
     pub resolved_calls: Vec<u64>,
     pub call_site_signature: Option<CallSiteSignatureProof>,
+    pub name_evidence: Option<FunctionNameEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2940,6 +2953,14 @@ pub struct UnrecoveredFunction {
 pub struct RecoveredProgram {
     pub recovered: Vec<RecoveredFunction>,
     pub unrecovered: Vec<UnrecoveredFunction>,
+    pub image_base: u64,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedRecoveredProgram {
+    pub program: RecoveredProgram,
+    pub names: Vec<RecoveredFunctionName>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2949,7 +2970,15 @@ pub enum SiblingExternPolicy {
 }
 
 pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -> RecoveredProgram {
-    recover_program_with_sibling_extern_policy(
+    recover_program_with_naming(object, functions, abi).program
+}
+
+pub fn recover_program_with_naming(
+    object: &[u8],
+    functions: &[ProgramFunction],
+    abi: Abi,
+) -> NamedRecoveredProgram {
+    recover_program_with_naming_and_sibling_extern_policy(
         object,
         functions,
         abi,
@@ -2963,6 +2992,33 @@ pub fn recover_program_with_sibling_extern_policy(
     abi: Abi,
     sibling_extern_policy: SiblingExternPolicy,
 ) -> RecoveredProgram {
+    recover_program_with_naming_and_sibling_extern_policy(
+        object,
+        functions,
+        abi,
+        sibling_extern_policy,
+    )
+    .program
+}
+
+fn recover_program_with_naming_and_sibling_extern_policy(
+    object: &[u8],
+    functions: &[ProgramFunction],
+    abi: Abi,
+    sibling_extern_policy: SiblingExternPolicy,
+) -> NamedRecoveredProgram {
+    let subjects: Vec<FunctionNameSubject<'_>> =
+        functions.iter().map(FunctionNameSubject::from).collect();
+    let names: Vec<RecoveredFunctionName> = resolved_import_thunk_names(object, &subjects);
+    let naming_by_address: BTreeMap<u64, &RecoveredFunctionName> = names
+        .iter()
+        .map(|name: &RecoveredFunctionName| (name.function_address, name))
+        .collect();
+    let names_by_address: BTreeMap<u64, &str> = names
+        .iter()
+        .map(|name: &RecoveredFunctionName| (name.function_address, name.name.as_str()))
+        .collect();
+    let (image_base, format): (u64, String) = naming_object_identity(object);
     let by_addr: BTreeMap<u64, &ProgramFunction> = functions
         .iter()
         .map(|f: &ProgramFunction| (f.address, f))
@@ -2973,16 +3029,25 @@ pub fn recover_program_with_sibling_extern_policy(
         match crate::cxx_recovery::recover_itanium_exception_regions(object) {
             Ok(regions) => regions,
             Err(error) => {
-                return RecoveredProgram {
-                    recovered,
-                    unrecovered: functions
-                        .iter()
-                        .map(|function: &ProgramFunction| UnrecoveredFunction {
-                            name: function.name.clone(),
-                            address: function.address,
-                            reason: error.to_string(),
-                        })
-                        .collect(),
+                return NamedRecoveredProgram {
+                    program: RecoveredProgram {
+                        recovered,
+                        unrecovered: functions
+                            .iter()
+                            .map(|function: &ProgramFunction| UnrecoveredFunction {
+                                name: names_by_address
+                                    .get(&function.address)
+                                    .copied()
+                                    .unwrap_or(function.name.as_str())
+                                    .to_owned(),
+                                address: function.address,
+                                reason: error.to_string(),
+                            })
+                            .collect(),
+                        image_base,
+                        format,
+                    },
+                    names,
                 };
             }
         };
@@ -2994,25 +3059,133 @@ pub fn recover_program_with_sibling_extern_policy(
             });
         if let Some(exception) = exception {
             unrecovered.push(UnrecoveredFunction {
-                name: f.name.clone(),
+                name: names_by_address
+                    .get(&f.address)
+                    .copied()
+                    .unwrap_or(f.name.as_str())
+                    .to_owned(),
                 address: f.address,
                 reason: crate::cxx_recovery::itanium_partial_reason(exception),
             });
             continue;
         }
-        match recover_program_function(object, f, &by_addr, abi, sibling_extern_policy) {
-            Ok(rec) => recovered.push(rec),
+        if let Some(naming) = naming_by_address.get(&f.address)
+            && let Some(function) = recover_typed_import_thunk(f, naming, abi)
+        {
+            recovered.push(function);
+            continue;
+        }
+        match recover_program_function(
+            object,
+            f,
+            &by_addr,
+            &names_by_address,
+            abi,
+            sibling_extern_policy,
+        ) {
+            Ok(mut rec) => {
+                rec.name_evidence = naming_by_address
+                    .get(&f.address)
+                    .map(|naming: &&RecoveredFunctionName| naming.evidence.clone());
+                recovered.push(rec);
+            }
             Err(reason) => unrecovered.push(UnrecoveredFunction {
-                name: f.name.clone(),
+                name: names_by_address
+                    .get(&f.address)
+                    .copied()
+                    .unwrap_or(f.name.as_str())
+                    .to_owned(),
                 address: f.address,
                 reason,
             }),
         }
     }
-    RecoveredProgram {
-        recovered,
-        unrecovered,
+    NamedRecoveredProgram {
+        program: RecoveredProgram {
+            recovered,
+            unrecovered,
+            image_base,
+            format,
+        },
+        names,
     }
+}
+
+fn recover_typed_import_thunk(
+    function: &ProgramFunction,
+    naming: &RecoveredFunctionName,
+    abi: Abi,
+) -> Option<RecoveredFunction> {
+    let type_abi: TypeRecAbi = match abi {
+        Abi::MsX64 => TypeRecAbi::Win64,
+        Abi::SysV => TypeRecAbi::SysV,
+        Abi::Aapcs64 => return None,
+    };
+    let database: SigDb = SigDb::builtin();
+    let matches: Vec<(&SigKey, &disrobe_typerec::Prototype)> = database
+        .entries()
+        .filter(
+            |(key, prototype): &(&SigKey, &disrobe_typerec::Prototype)| {
+                key.abi == type_abi
+                    && key.name == naming.evidence.identity
+                    && prototype.params.is_empty()
+                    && !prototype.varargs
+            },
+        )
+        .collect();
+    let [(_, prototype)]: &[(&SigKey, &disrobe_typerec::Prototype)] = matches.as_slice() else {
+        return None;
+    };
+    let Ty::Int(return_type) = prototype.return_type else {
+        return None;
+    };
+    let return_width_bits: u32 = u32::from(return_type.width().bytes()?).checked_mul(8)?;
+    let target_expression: String = if naming.evidence.target_is_indirect {
+        format!(
+            "(*(uintptr_t*)(uintptr_t){:#x}ULL)",
+            naming.evidence.target_address
+        )
+    } else {
+        format!("(uintptr_t){:#x}ULL", naming.evidence.target_address)
+    };
+    let return_name: &'static str = return_type.c_name();
+    let source: String = format!(
+        "#include <stdint.h>\ntypedef {return_name} (*disrobe_import_target_t)(void);\n{return_name} {name}(void) {{\n    return ((disrobe_import_target_t){target_expression})();\n}}\n",
+        name = naming.name
+    );
+    let signature: RecoveredSignature = RecoveredSignature::from_bindings(abi, Vec::new()).ok()?;
+    Some(RecoveredFunction {
+        name: naming.name.clone(),
+        address: function.address,
+        source,
+        rust_source: None,
+        return_width_bits,
+        signature,
+        returns_fp: None,
+        resolved_calls: vec![naming.evidence.target_address],
+        call_site_signature: None,
+        name_evidence: Some(naming.evidence.clone()),
+    })
+}
+
+pub(super) fn naming_object_identity(object: &[u8]) -> (u64, String) {
+    use object::Object as _;
+
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(object)
+    else {
+        return (0, "unknown".to_owned());
+    };
+    let format: &'static str = match file.format() {
+        object::BinaryFormat::Elf => "elf",
+        object::BinaryFormat::Pe => "pe",
+        object::BinaryFormat::Coff => "coff",
+        object::BinaryFormat::MachO => "macho",
+        object::BinaryFormat::Wasm => "wasm",
+        object::BinaryFormat::Xcoff => "xcoff",
+        _ => "unknown",
+    };
+    (file.relative_address_base(), format.to_owned())
 }
 
 fn straight_line_integer64_return_is_proven(
@@ -3110,6 +3283,7 @@ fn recover_program_function(
     object: &[u8],
     f: &ProgramFunction,
     by_addr: &BTreeMap<u64, &ProgramFunction>,
+    names_by_address: &BTreeMap<u64, &str>,
     abi: Abi,
     sibling_extern_policy: SiblingExternPolicy,
 ) -> core::result::Result<RecoveredFunction, String> {
@@ -3152,7 +3326,13 @@ fn recover_program_function(
         };
         resolved.push(ResolvedCall {
             target,
-            name: Some(callee.name.clone()),
+            name: Some(
+                names_by_address
+                    .get(&callee.address)
+                    .copied()
+                    .unwrap_or(callee.name.as_str())
+                    .to_owned(),
+            ),
             signature,
         });
     }
@@ -3170,17 +3350,21 @@ fn recover_program_function(
         .iter()
         .filter_map(|c: &ResolvedCall| c.name.clone())
         .collect();
-    let source: String = rename_recovered_c_symbol(&rec.source, &f.name);
+    let function_name: &str = names_by_address
+        .get(&f.address)
+        .copied()
+        .unwrap_or(f.name.as_str());
+    let source: String = rename_recovered_c_symbol(&rec.source, function_name);
     let rust_source: Option<String> = rec.rust_source.as_deref().map(|body: &str| {
         rename_recovered_rust_symbol_with_policy(
             body,
-            &f.name,
+            function_name,
             &resolved_names,
             sibling_extern_policy,
         )
     });
     Ok(RecoveredFunction {
-        name: f.name.clone(),
+        name: function_name.to_owned(),
         address: f.address,
         source,
         rust_source,
@@ -3189,6 +3373,7 @@ fn recover_program_function(
         returns_fp: rec.returns_fp,
         resolved_calls: resolved.iter().map(|c: &ResolvedCall| c.target).collect(),
         call_site_signature: rec.call_site_signature,
+        name_evidence: None,
     })
 }
 

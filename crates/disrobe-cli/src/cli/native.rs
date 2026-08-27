@@ -350,7 +350,10 @@ fn decompile_native(
             build_header_comment(format, &f.name, f.address, api_banner.get(&f.address));
         let _ = writeln!(bodies, "{comment}\n{}\n", renamed.trim());
         recovered.push(serde_json::json!({
-            "name": f.name, "address": f.address, "emitted_as": rec.name
+            "name": f.name,
+            "address": f.address,
+            "emitted_as": rec.name,
+            "name_evidence": rec.name_evidence,
         }));
     }
 

@@ -34,6 +34,91 @@ pub struct LanguageHit {
     pub evidence: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FunctionNameConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl FunctionNameConfidence {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FunctionNameEvidenceSource {
+    ImportThunk,
+}
+
+impl FunctionNameEvidenceSource {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ImportThunk => "import-thunk",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct InputByteRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FunctionNameEvidence {
+    pub confidence: FunctionNameConfidence,
+    pub source: FunctionNameEvidenceSource,
+    pub input_bytes: InputByteRange,
+    pub identity: String,
+    pub target_address: u64,
+    pub target_is_indirect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RecoveredFunctionName {
+    pub function_address: u64,
+    pub name: String,
+    pub evidence: FunctionNameEvidence,
+}
+
+#[must_use]
+pub fn sanitize_function_name(raw: &str) -> Option<String> {
+    let mut out: String = String::with_capacity(raw.len());
+    let mut previous_underscore: bool = false;
+    for character in raw.chars() {
+        let sanitized: char = if character.is_ascii_alphanumeric() || character == '_' {
+            character
+        } else {
+            '_'
+        };
+        if sanitized == '_' && previous_underscore {
+            continue;
+        }
+        previous_underscore = sanitized == '_';
+        out.push(sanitized);
+    }
+    while out.ends_with('_') {
+        let _: Option<char> = out.pop();
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if out.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        out.insert(0, '_');
+    }
+    Some(out)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LangSignature {
     lang: NativeLanguage,
