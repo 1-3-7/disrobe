@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_pass_jvm::{DecompiledDex, DexFile, decompile_dex, parse_dex};
+use disrobe_pass_jvm::{
+    BackendPreference, DecompiledDex, DexFile, android_decompile_dex, decompile_dex, parse_dex,
+};
 use sha2::{Digest, Sha256};
 
 pub mod common;
@@ -181,4 +183,41 @@ fn a_temporary_that_crosses_a_join_is_declared_with_its_own_type() {
             "every temporary the unit writes must also be declared, and {target} is not:\n{unit}"
         );
     }
+}
+
+#[test]
+fn classfile_backend_renames_an_int_lifetime_that_reuses_a_boolean_parameter_slot() {
+    let output = android_decompile_dex(DEX, BackendPreference::PreferInHouse)
+        .expect("translate and decompile the real D8 artifact");
+    let unit: &str = output
+        .sources
+        .get(STRUCTURAL_UNIT)
+        .unwrap_or_else(|| panic!("recover {STRUCTURAL_UNIT}, saw {:?}", output.sources.keys()));
+    assert!(unit.contains("boolean arg1"), "{unit}");
+    let fresh: &str = unit
+        .lines()
+        .map(str::trim)
+        .find_map(|line: &str| line.strip_prefix("int ")?.strip_suffix(';'))
+        .expect("the replacement integer lifetime must have a declaration");
+    assert_ne!(fresh, "arg1", "{unit}");
+    assert!(unit.contains(&format!("{fresh} = 7;")), "{unit}");
+    assert!(!unit.contains("arg1 = 7;"), "{unit}");
+
+    let javac: PathBuf =
+        common::find_on_path("javac").expect("the local-naming gate requires javac on PATH");
+    let scratch: ScratchDir =
+        ScratchDir::create("locals-classfile-backend").expect("create Java scratch directory");
+    let source_path: PathBuf = scratch.path().join(STRUCTURAL_UNIT);
+    std::fs::write(&source_path, unit).expect("write recovered LocalProbe");
+    let compiled: Output = Command::new(javac)
+        .arg("-d")
+        .arg(scratch.path())
+        .arg(&source_path)
+        .output()
+        .expect("run javac");
+    assert!(
+        compiled.status.success(),
+        "javac rejected the recovered LocalProbe:\n{}\n----\n{unit}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
 }

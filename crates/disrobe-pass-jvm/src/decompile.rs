@@ -1901,7 +1901,19 @@ fn lift_method_body(
     } else {
         raw_insns
     };
-    split_reused_primitive_ranges(&mut insns, code.max_locals);
+    let boolean_param_slots: BTreeSet<u16> = params
+        .iter()
+        .filter(|(_, name): &&(u16, String)| boolean_params.contains(name))
+        .map(|(slot, _): &(u16, String)| *slot)
+        .collect();
+    let next_fresh: u16 = split_reused_boolean_parameter_ranges(
+        cf,
+        &mut insns,
+        code.max_locals,
+        &code.exception_table,
+        &boolean_param_slots,
+    );
+    split_reused_primitive_ranges(&mut insns, next_fresh);
     if insns.is_empty() {
         return Ok(MethodBody {
             text: String::new(),
@@ -3542,6 +3554,282 @@ fn rebind_slot_to_explicit(insn: &mut Instruction, fresh: u16) {
         return;
     }
     insn.operands = Operands::Local(fresh);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReusedIntValue {
+    Boolean,
+    Integer,
+    Unknown,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReusedLocalLifetime {
+    Parameter,
+    Fresh,
+    Mixed,
+}
+
+fn merge_reused_local_lifetime(
+    current: Option<ReusedLocalLifetime>,
+    incoming: ReusedLocalLifetime,
+) -> ReusedLocalLifetime {
+    match current {
+        None => incoming,
+        Some(existing) if existing == incoming => existing,
+        Some(_) => ReusedLocalLifetime::Mixed,
+    }
+}
+
+fn int_value_store_indices(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    slot: u16,
+    boolean_param_slots: &BTreeSet<u16>,
+) -> Option<BTreeSet<usize>> {
+    let mut stack: Vec<ReusedIntValue> = Vec::new();
+    let mut stores: BTreeSet<usize> = BTreeSet::new();
+    for (index, insn) in insns.iter().enumerate() {
+        let push_int_local = |stack: &mut Vec<ReusedIntValue>, local: Option<u16>| {
+            stack.push(
+                if local.is_some_and(|local| boolean_param_slots.contains(&local)) {
+                    ReusedIntValue::Boolean
+                } else {
+                    ReusedIntValue::Integer
+                },
+            );
+        };
+        match insn.opcode {
+            0x03 | 0x04 => stack.push(ReusedIntValue::Boolean),
+            0x02 | 0x05..=0x08 | 0x10 | 0x11 => stack.push(ReusedIntValue::Integer),
+            0x15 => push_int_local(
+                &mut stack,
+                match &insn.operands {
+                    Operands::Local(local) => Some(*local),
+                    _ => None,
+                },
+            ),
+            0x1A..=0x1D => {
+                push_int_local(&mut stack, Some(u16::from(insn.opcode - 0x1A)));
+            }
+            0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x78 | 0x7A | 0x7C | 0x7E | 0x80 | 0x82 => {
+                let right: ReusedIntValue = stack.pop().unwrap_or(ReusedIntValue::Unknown);
+                let left: ReusedIntValue = stack.pop().unwrap_or(ReusedIntValue::Unknown);
+                stack.push(
+                    if matches!(left, ReusedIntValue::Unknown)
+                        || matches!(right, ReusedIntValue::Unknown)
+                    {
+                        ReusedIntValue::Unknown
+                    } else {
+                        ReusedIntValue::Integer
+                    },
+                );
+            }
+            0x74 | 0x91..=0x93 => {
+                let value: ReusedIntValue = stack.pop().unwrap_or(ReusedIntValue::Unknown);
+                stack.push(if matches!(value, ReusedIntValue::Unknown) {
+                    ReusedIntValue::Unknown
+                } else {
+                    ReusedIntValue::Integer
+                });
+            }
+            0xB2 | 0xB4 => {
+                if insn.opcode == 0xB4 {
+                    stack.pop();
+                }
+                stack.push(if field_descriptor_is_boolean(cf, insn) {
+                    ReusedIntValue::Boolean
+                } else {
+                    ReusedIntValue::Unknown
+                });
+            }
+            0xB6..=0xB9 => {
+                let argc: usize = invoke_pop_count(cf, insn, insn.opcode);
+                for _ in 0..argc {
+                    stack.pop();
+                }
+                let ret: Option<String> = invoke_return_type(cf, insn);
+                if invoke_returns_boolean(cf, insn) {
+                    stack.push(ReusedIntValue::Boolean);
+                } else if !matches!(ret.as_deref(), Some("void")) {
+                    stack.push(ReusedIntValue::Unknown);
+                }
+            }
+            0x36 | 0x3B..=0x3E => {
+                let value: ReusedIntValue = stack.pop().unwrap_or(ReusedIntValue::Unknown);
+                if int_store_slot(insn) == Some(slot) {
+                    if value != ReusedIntValue::Integer {
+                        return None;
+                    }
+                    stores.insert(index);
+                }
+            }
+            _ => stack.clear(),
+        }
+    }
+    (!stores.is_empty()).then_some(stores)
+}
+
+fn instruction_successor_indices(insns: &[Instruction]) -> Option<Vec<Vec<usize>>> {
+    let pc_to_index: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn): (usize, &Instruction)| (insn.pc, index))
+        .collect();
+    if pc_to_index.len() != insns.len() {
+        return None;
+    }
+    let mut successors: Vec<Vec<usize>> = Vec::with_capacity(insns.len());
+    for (index, insn) in insns.iter().enumerate() {
+        if matches!(insn.opcode, 0xA8 | 0xA9 | 0xC9) {
+            return None;
+        }
+        let offsets: Vec<i32> = match &insn.operands {
+            Operands::Branch(offset) => vec![*offset],
+            Operands::TableSwitch {
+                default,
+                low,
+                high,
+                offsets,
+            } => {
+                if high < low {
+                    return None;
+                }
+                let expected: usize =
+                    usize::try_from(i64::from(*high) - i64::from(*low) + 1).ok()?;
+                if offsets.len() != expected {
+                    return None;
+                }
+                let mut all: Vec<i32> = Vec::with_capacity(offsets.len().saturating_add(1));
+                all.push(*default);
+                all.extend(offsets.iter().copied());
+                all
+            }
+            Operands::LookupSwitch { default, pairs } => {
+                if pairs
+                    .windows(2)
+                    .any(|pair: &[(i32, i32)]| pair[0].0 >= pair[1].0)
+                {
+                    return None;
+                }
+                let mut all: Vec<i32> = Vec::with_capacity(pairs.len().saturating_add(1));
+                all.push(*default);
+                all.extend(pairs.iter().map(|(_, offset): &(i32, i32)| *offset));
+                all
+            }
+            _ => Vec::new(),
+        };
+        let mut current: Vec<usize> = offsets
+            .into_iter()
+            .map(|offset: i32| {
+                let pc: u32 =
+                    u32::try_from(i64::from(insn.pc).checked_add(i64::from(offset))?).ok()?;
+                pc_to_index.get(&pc).copied()
+            })
+            .collect::<Option<Vec<usize>>>()?;
+        let has_fallthrough: bool = !matches!(
+            insn.opcode,
+            0xA7..=0xA9 | 0xAA | 0xAB | 0xAC..=0xB1 | 0xBF | 0xC8 | 0xC9
+        );
+        if has_fallthrough
+            && let Some(next) = index.checked_add(1).filter(|next| *next < insns.len())
+        {
+            current.push(next);
+        }
+        current.sort_unstable();
+        current.dedup();
+        successors.push(current);
+    }
+    Some(successors)
+}
+
+fn reused_boolean_parameter_plan(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    slot: u16,
+    boolean_param_slots: &BTreeSet<u16>,
+    successors: &[Vec<usize>],
+) -> Option<BTreeSet<usize>> {
+    if insns.iter().any(
+        |insn: &Instruction| matches!(&insn.operands, Operands::Iinc { index, .. } if *index == slot),
+    ) {
+        return None;
+    }
+    let stores: BTreeSet<usize> = int_value_store_indices(cf, insns, slot, boolean_param_slots)?;
+    let mut incoming: Vec<Option<ReusedLocalLifetime>> = vec![None; insns.len()];
+    incoming[0] = Some(ReusedLocalLifetime::Parameter);
+    let mut pending: Vec<usize> = vec![0];
+    let mut queued: BTreeSet<usize> = BTreeSet::from([0]);
+    while let Some(index) = pending.pop() {
+        queued.remove(&index);
+        let state: ReusedLocalLifetime = incoming[index]?;
+        let outgoing: ReusedLocalLifetime = if stores.contains(&index) {
+            ReusedLocalLifetime::Fresh
+        } else {
+            state
+        };
+        for &successor in &successors[index] {
+            let merged: ReusedLocalLifetime =
+                merge_reused_local_lifetime(incoming[successor], outgoing);
+            if incoming[successor] != Some(merged) {
+                incoming[successor] = Some(merged);
+                if queued.insert(successor) {
+                    pending.push(successor);
+                }
+            }
+        }
+    }
+    let mut rewrite: BTreeSet<usize> = stores;
+    for (index, insn) in insns.iter().enumerate() {
+        if local_slot_operand(insn) != Some(slot) || slot_load_type_index(insn.opcode) != Some(0) {
+            continue;
+        }
+        match incoming[index] {
+            Some(ReusedLocalLifetime::Parameter) => {}
+            Some(ReusedLocalLifetime::Fresh) => {
+                rewrite.insert(index);
+            }
+            Some(ReusedLocalLifetime::Mixed) | None => return None,
+        }
+    }
+    Some(rewrite)
+}
+
+fn split_reused_boolean_parameter_ranges(
+    cf: &ClassFile,
+    insns: &mut [Instruction],
+    max_locals: u16,
+    exception_table: &[bytecode::ExceptionEntry],
+    boolean_param_slots: &BTreeSet<u16>,
+) -> u16 {
+    if insns.is_empty() || boolean_param_slots.is_empty() || !exception_table.is_empty() {
+        return max_locals;
+    }
+    let Some(successors) = instruction_successor_indices(insns) else {
+        return max_locals;
+    };
+    let plans: BTreeMap<u16, BTreeSet<usize>> = boolean_param_slots
+        .iter()
+        .filter_map(|slot: &u16| {
+            reused_boolean_parameter_plan(cf, insns, *slot, boolean_param_slots, &successors)
+                .map(|plan: BTreeSet<usize>| (*slot, plan))
+        })
+        .collect();
+    let Ok(required): core::result::Result<u16, _> = u16::try_from(plans.len()) else {
+        return max_locals;
+    };
+    if max_locals.checked_add(required).is_none() {
+        return max_locals;
+    }
+    let mut next_fresh: u16 = max_locals;
+    for (_, rewrite) in plans {
+        let fresh: u16 = next_fresh;
+        next_fresh += 1;
+        for index in rewrite {
+            rebind_slot_to_explicit(&mut insns[index], fresh);
+        }
+    }
+    next_fresh
 }
 
 fn split_reused_primitive_ranges(insns: &mut [Instruction], max_locals: u16) {
