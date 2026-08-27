@@ -88,6 +88,11 @@ const D_RUNTIME_MARKERS: &[&[u8]] = &[
     b"ModuleInfo",
 ];
 
+const NIM_CONFIDENCE_EVIDENCE_UNITS: u32 = 8;
+const ZIG_CONFIDENCE_EVIDENCE_UNITS: u32 = 15;
+const CRYSTAL_CONFIDENCE_EVIDENCE_UNITS: u32 = 8;
+const D_CONFIDENCE_EVIDENCE_UNITS: u32 = 14;
+
 #[must_use]
 pub const fn runtime_markers(lang: NativeLang) -> &'static [&'static [u8]] {
     match lang {
@@ -101,6 +106,21 @@ pub const fn runtime_markers(lang: NativeLang) -> &'static [&'static [u8]] {
 #[must_use]
 pub fn marker_hits(image: &NativeImage<'_>, lang: NativeLang) -> Vec<String> {
     score(image, runtime_markers(lang)).1
+}
+
+const fn confidence_evidence_units(lang: NativeLang) -> u32 {
+    match lang {
+        NativeLang::Nim => NIM_CONFIDENCE_EVIDENCE_UNITS,
+        NativeLang::Zig => ZIG_CONFIDENCE_EVIDENCE_UNITS,
+        NativeLang::Crystal => CRYSTAL_CONFIDENCE_EVIDENCE_UNITS,
+        NativeLang::D => D_CONFIDENCE_EVIDENCE_UNITS,
+    }
+}
+
+fn confidence_for(lang: NativeLang, hits: u32) -> f32 {
+    let evidence_units: u32 = confidence_evidence_units(lang);
+    let ratio: f32 = hits as f32 / evidence_units as f32;
+    0.4_f32.mul_add(ratio.min(1.0), 0.55)
 }
 
 #[must_use]
@@ -162,11 +182,12 @@ pub fn fingerprint(image: &NativeImage<'_>) -> Option<LangFingerprint> {
 
     best.map(|(lang, hits, markers)| {
         let total: usize = runtime_markers(lang).len();
-        let ratio: f32 = hits as f32 / total as f32;
-        let confidence: f32 = 0.4_f32.mul_add(ratio.min(1.0), 0.55);
+        let evidence_units: u32 = confidence_evidence_units(lang);
+        let confidence: f32 = confidence_for(lang, hits);
         debug::dbg_kv("winner", || {
             format!(
-                "{} hits={hits}/{total} confidence={confidence:.3}",
+                "{} hits={hits}/{total} evidence-units={evidence_units} \
+                 confidence={confidence:.3}",
                 lang.label()
             )
         });
@@ -195,11 +216,69 @@ fn score(image: &NativeImage<'_>, markers: &[&[u8]]) -> (u32, Vec<String>) {
 mod tests {
     use super::*;
 
+    fn read_corpus_fixture(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("corpus/native")
+            .join(relative);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "committed fixture {} is the graded reference for this test and could not be read \
+                 ({error}); restore it from git rather than skipping the measurement",
+                path.display()
+            )
+        })
+    }
+
     #[test]
     fn lang_labels() {
         assert_eq!(NativeLang::Nim.label(), "nim");
         assert_eq!(NativeLang::Zig.label(), "zig");
         assert_eq!(NativeLang::Crystal.label(), "crystal");
         assert_eq!(NativeLang::D.label(), "d");
+    }
+
+    #[test]
+    fn fixture_confidence_uses_stable_all_language_evidence_scales() {
+        let cases: [(NativeLang, &str, u32, f32); 4] = [
+            (NativeLang::Nim, "nim/hello.nim.elf", 7, 0.9000),
+            (NativeLang::Zig, "zig/hello.zig.elf", 12, 0.8700),
+            (NativeLang::Crystal, "crystal/hello.cr.exe", 4, 0.7500),
+            (NativeLang::D, "d/hello.d.exe", 9, 0.807_142_85),
+        ];
+        for (lang, relative, expected_hits, expected_confidence) in cases {
+            let bytes: Vec<u8> = read_corpus_fixture(relative);
+            let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("fixture must parse");
+            let fp: LangFingerprint = fingerprint(&image).expect("fixture must fingerprint");
+            assert_eq!(fp.lang, lang, "{relative}");
+            assert_eq!(fp.markers.len(), expected_hits as usize, "{relative}");
+            let confidence: f32 = confidence_for(lang, expected_hits);
+            assert!(
+                (confidence - expected_confidence).abs() < 0.000_1,
+                "{relative}: calibrated confidence moved to {confidence}"
+            );
+            assert!(
+                (fp.confidence - confidence).abs() < f32::EPSILON,
+                "{relative}: caller returned {} instead of {confidence}",
+                fp.confidence
+            );
+        }
+        for lang in [
+            NativeLang::Nim,
+            NativeLang::Zig,
+            NativeLang::Crystal,
+            NativeLang::D,
+        ] {
+            assert!(
+                confidence_for(lang, 4) < 0.95,
+                "{} must retain evidence headroom after four hits",
+                lang.label()
+            );
+        }
+        let marginal_zig: f32 = confidence_for(NativeLang::Zig, 2);
+        assert!(
+            marginal_zig > 0.60,
+            "two independent zig markers must stay above the chain floor, got {marginal_zig}"
+        );
     }
 }
