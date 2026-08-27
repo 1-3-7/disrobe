@@ -29,6 +29,10 @@ const PLAIN_STRIPPED: &[u8] =
 const PLAIN_REFERENCE: &[u8] =
     include_bytes!("../../../corpus/native/discovery/disc_aarch64_nounwind.unstripped.elf");
 
+const PE_GUARD_CF_STRIPPED: &[u8] = include_bytes!("fixtures/pe_arm64_guard_cf.exe");
+
+const PE_GUARD_CF_REFERENCE: &[u8] = include_bytes!("fixtures/pe_arm64_guard_cf.reference.exe");
+
 const UNWOUND_RECALL_FLOOR_PERMILLE: u64 = 1000;
 
 const PLAIN_RECALL_FLOOR_PERMILLE: u64 = 962;
@@ -38,6 +42,8 @@ const PRECISION_FLOOR_PERMILLE: u64 = 1000;
 const STATIC_REFERENCE_STARTS: usize = 27;
 
 const SHARED_REFERENCE_STARTS: usize = 25;
+
+const PE_GUARD_CF_REFERENCE_STARTS: usize = 4;
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -395,6 +401,18 @@ fn a_stripped_shared_object_recovers_every_reference_start() {
         SHARED_REFERENCE,
         SHARED_REFERENCE_STARTS,
         UNWOUND_RECALL_FLOOR_PERMILLE,
+    );
+    assert_eq!(tally.strays, 0, "no start outside the reference twin");
+}
+
+#[test]
+fn a_stripped_pe_arm64_image_recovers_every_guard_cf_function_start() {
+    let tally: Tally = grade(
+        "pe-guard-cf",
+        PE_GUARD_CF_STRIPPED,
+        PE_GUARD_CF_REFERENCE,
+        PE_GUARD_CF_REFERENCE_STARTS,
+        1000,
     );
     assert_eq!(tally.strays, 0, "no start outside the reference twin");
 }

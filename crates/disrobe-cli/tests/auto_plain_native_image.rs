@@ -33,6 +33,10 @@ const PLAIN_MACHO: &[u8] = include_bytes!("fixtures/native/plain_x86_64.macho");
 const OBJC_MACHO: &[u8] = include_bytes!(
     "../../disrobe-pass-swift-objc/tests/fixtures/objc_dispatch/dispatch_sends_x86_64.macho"
 );
+const PE_GUARD_CF_STRIPPED: &[u8] =
+    include_bytes!("../../disrobe-pass-native/tests/fixtures/pe_arm64_guard_cf.exe");
+const PE_GUARD_CF_REFERENCE: &[u8] =
+    include_bytes!("../../disrobe-pass-native/tests/fixtures/pe_arm64_guard_cf.reference.exe");
 
 const ELF_EH_FRAME_HDR_SOURCE: &str = r#"
 __attribute__((noinline, visibility("hidden"))) long header_alpha(long value) {
@@ -152,6 +156,21 @@ fn eh_frame_header_reference_starts(reference: &[u8]) -> BTreeSet<u64> {
                 && symbol
                     .name()
                     .is_ok_and(|name: &str| name.starts_with("header_"))
+        })
+        .map(|symbol: object::Symbol<'_, '_>| symbol.address())
+        .collect()
+}
+
+fn pe_guard_cf_reference_starts(reference: &[u8]) -> BTreeSet<u64> {
+    let file: object::File<'_> =
+        object::File::parse(reference).expect("the unstripped reference must parse");
+    file.symbols()
+        .filter(|symbol: &object::Symbol<'_, '_>| {
+            matches!(symbol.kind(), ObjSymbolKind::Text)
+                && !symbol.is_undefined()
+                && symbol
+                    .name()
+                    .is_ok_and(|name: &str| name.starts_with("guard_"))
         })
         .map(|symbol: object::Symbol<'_, '_>| symbol.address())
         .collect()
@@ -569,6 +588,59 @@ fn auto_presents_aarch64_eh_frame_header_starts_through_production_registry() {
         .expect("auto chain must contain the native pass");
     assert_eq!(native.verdict, VerdictDoc::FanOut);
 
+    let report_path: PathBuf =
+        find_file_named(&out, "pseudo-source.json").expect("auto must write pseudo-source.json");
+    let report_bytes: Vec<u8> = std::fs::read(report_path).expect("read pseudo-source report");
+    let report: serde_json::Value =
+        serde_json::from_slice(&report_bytes).expect("parse pseudo-source report");
+    assert_eq!(report["run"], true);
+    let presented: BTreeSet<u64> = ["recovered", "unrecovered"]
+        .into_iter()
+        .flat_map(|key: &str| {
+            report[key]
+                .as_array()
+                .expect("function result collection must be an array")
+        })
+        .map(|function: &serde_json::Value| {
+            function["address"]
+                .as_u64()
+                .expect("function result must carry an address")
+        })
+        .collect();
+    assert!(
+        expected.is_subset(&presented),
+        "auto presented {presented:?}, missing compiler starts {expected:?}",
+    );
+}
+
+#[test]
+fn auto_presents_pe_arm64_guard_cf_starts_through_production_registry() {
+    let expected: BTreeSet<u64> = pe_guard_cf_reference_starts(PE_GUARD_CF_REFERENCE);
+    assert_eq!(
+        expected.len(),
+        4,
+        "compiler reference must expose four starts"
+    );
+    assert_eq!(
+        winning_pass_id(PE_GUARD_CF_STRIPPED).as_deref(),
+        Some(NATIVE_IMAGE_PASS_ID),
+        "the production registry must select the native pass for the stripped PE image",
+    );
+    let input: PathBuf = workspace_root()
+        .join("crates")
+        .join("disrobe-pass-native")
+        .join("tests")
+        .join("fixtures")
+        .join("pe_arm64_guard_cf.exe");
+    let out_scratch: disrobe_core::scratch::ScratchDir = tmp_out("pe-arm64-guard-cf");
+    let out: PathBuf = out_scratch.path().to_path_buf();
+    let proc_out: CapturedOutput = run_auto(&input, &out);
+    assert_eq!(
+        proc_out.exit_code,
+        Some(0),
+        "disrobe auto failed: {}",
+        String::from_utf8_lossy(&proc_out.stderr),
+    );
     let report_path: PathBuf =
         find_file_named(&out, "pseudo-source.json").expect("auto must write pseudo-source.json");
     let report_bytes: Vec<u8> = std::fs::read(report_path).expect("read pseudo-source report");

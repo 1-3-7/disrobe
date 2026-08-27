@@ -37,6 +37,7 @@ pub(super) enum SeedOrigin {
     MachCompactUnwind,
     PePdata,
     PeTlsCallback,
+    PeGuardCfFunction,
 }
 
 impl SeedOrigin {
@@ -59,6 +60,7 @@ impl SeedOrigin {
             Self::MachCompactUnwind => "macho-compact-unwind",
             Self::PePdata => "pe-pdata",
             Self::PeTlsCallback => "pe-tls-callback",
+            Self::PeGuardCfFunction => "pe-guard-cf-function",
         }
     }
 }
@@ -80,6 +82,20 @@ const MAX_PE_TLS_CALLBACKS: usize = 1 << 12;
 const PE64_TLS_DIRECTORY_BYTES: usize = 40;
 
 const PE64_POINTER_BYTES: u64 = 8;
+
+const PE64_LOAD_CONFIG_GUARD_CF_BYTES: usize = 148;
+
+const PE64_GUARD_CF_TABLE_OFFSET: usize = 128;
+
+const PE_GUARD_CF_FUNCTION_TABLE_PRESENT: u32 = 0x0000_0400;
+
+const PE_GUARD_CF_ENTRY_BYTES: u64 = 4;
+
+const PE_GUARD_CF_ENTRY_FLAG_MASK: u8 = 0x03;
+
+const PE_GUARD_CF_ENTRY_FID_SUPPRESSED: u8 = 0x01;
+
+const MAX_PE_GUARD_CF_FUNCTIONS: usize = 1 << 17;
 
 const MAX_EXECUTABLE_RANGES: usize = 1 << 12;
 
@@ -434,6 +450,25 @@ impl<'a> ImageView<'a> {
             if let Some(qword) = read_qword(data, offset) {
                 return Some(qword);
             }
+        }
+        None
+    }
+
+    fn mapped_prefix(&self, address: u64, max_len: usize) -> Option<&'a [u8]> {
+        for segment in &self.segments {
+            let Some(offset): Option<u64> = address.checked_sub(segment.virtual_addr) else {
+                continue;
+            };
+            if offset >= segment.file_size {
+                continue;
+            }
+            let file_offset: u64 = segment.file_offset.checked_add(offset)?;
+            let remaining: u64 = segment.file_size.checked_sub(offset)?;
+            let remaining: usize = usize::try_from(remaining).ok()?;
+            let length: usize = remaining.min(max_len);
+            let start: usize = usize::try_from(file_offset).ok()?;
+            let end: usize = start.checked_add(length)?;
+            return self.bytes.get(start..end);
         }
         None
     }
@@ -1783,6 +1818,127 @@ fn collect_pe_arm64_tls_callbacks(bytes: &[u8], view: &ImageView<'_>, seeds: &mu
     decode_pe_arm64_tls_callbacks(data, view, seeds);
 }
 
+fn decode_pe_arm64_guard_cf_functions(
+    data: &[u8],
+    image_base: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+) {
+    let mut reader: ByteReader<'_> = ByteReader::new(data);
+    let Ok(declared_size): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        reader.read_u32_le()
+    else {
+        return;
+    };
+    let Ok(declared_size): core::result::Result<usize, core::num::TryFromIntError> =
+        usize::try_from(declared_size)
+    else {
+        return;
+    };
+    if declared_size < PE64_LOAD_CONFIG_GUARD_CF_BYTES || declared_size > data.len() {
+        return;
+    }
+    if reader.seek(PE64_GUARD_CF_TABLE_OFFSET).is_err() {
+        return;
+    }
+    let Ok(table_address): core::result::Result<u64, disrobe_bytes::ByteReadError> =
+        reader.read_u64_le()
+    else {
+        return;
+    };
+    let Ok(declared_count): core::result::Result<u64, disrobe_bytes::ByteReadError> =
+        reader.read_u64_le()
+    else {
+        return;
+    };
+    let Ok(guard_flags): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        reader.read_u32_le()
+    else {
+        return;
+    };
+    let flag_bytes: usize = match usize::try_from(guard_flags >> 28) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    if table_address == 0
+        || table_address % PE_GUARD_CF_ENTRY_BYTES != 0
+        || guard_flags & PE_GUARD_CF_FUNCTION_TABLE_PRESENT == 0
+    {
+        return;
+    }
+    let declared_count: usize = usize::try_from(declared_count).map_or(usize::MAX, |count| count);
+    let entry_count: usize = declared_count.min(MAX_PE_GUARD_CF_FUNCTIONS);
+    let Some(entry_bytes): Option<usize> = 4_usize.checked_add(flag_bytes) else {
+        return;
+    };
+    let Some(requested_bytes): Option<usize> = entry_count.checked_mul(entry_bytes) else {
+        return;
+    };
+    let Some(table): Option<&[u8]> = view.mapped_prefix(table_address, requested_bytes) else {
+        return;
+    };
+    let available_entries: usize = (table.len() / entry_bytes).min(entry_count);
+    let mut table_reader: ByteReader<'_> = ByteReader::new(table);
+    let mut previous_function_rva: Option<u32> = None;
+    for _ in 0..available_entries {
+        let Ok(function_rva): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+            table_reader.read_u32_le()
+        else {
+            return;
+        };
+        if previous_function_rva.is_some_and(|previous| function_rva <= previous) {
+            return;
+        }
+        previous_function_rva = Some(function_rva);
+        let entry_flags: u8 = if flag_bytes == 0 {
+            0
+        } else {
+            let Ok(flags): core::result::Result<u8, disrobe_bytes::ByteReadError> =
+                table_reader.read_u8()
+            else {
+                return;
+            };
+            let reserved_bytes: usize = flag_bytes - 1;
+            if table_reader.read_bytes(reserved_bytes).is_err() {
+                return;
+            }
+            flags
+        };
+        if entry_flags & !PE_GUARD_CF_ENTRY_FLAG_MASK != 0 {
+            return;
+        }
+        let Some(function_address): Option<u64> = image_base.checked_add(u64::from(function_rva))
+        else {
+            return;
+        };
+        if !view.is_candidate(function_address) {
+            return;
+        }
+        if entry_flags & PE_GUARD_CF_ENTRY_FID_SUPPRESSED == 0 {
+            seeds.admit(function_address, SeedOrigin::PeGuardCfFunction);
+        }
+    }
+}
+
+fn collect_pe_arm64_guard_cf_functions(bytes: &[u8], view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Ok(file): core::result::Result<object::read::pe::PeFile64<'_>, object::Error> =
+        object::read::pe::PeFile64::parse(bytes)
+    else {
+        return;
+    };
+    let Some(directory): Option<&object::pe::ImageDataDirectory> =
+        file.data_directory(object::pe::IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG)
+    else {
+        return;
+    };
+    let Ok(data): core::result::Result<&[u8], object::Error> =
+        directory.data(bytes, &file.section_table())
+    else {
+        return;
+    };
+    decode_pe_arm64_guard_cf_functions(data, file.relative_address_base(), view, seeds);
+}
+
 pub(super) fn is_supported_pe_arm64(bytes: &[u8]) -> bool {
     let Ok(file): core::result::Result<object::read::pe::PeFile64<'_>, object::Error> =
         object::read::pe::PeFile64::parse(bytes)
@@ -1847,6 +2003,7 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
         collect_exports(native, &view, &mut seeds);
         collect_pe_arm64_pdata(bytes, &view, &mut seeds);
         collect_pe_arm64_tls_callbacks(bytes, &view, &mut seeds);
+        collect_pe_arm64_guard_cf_functions(bytes, &view, &mut seeds);
         report_seeds(&seeds);
         return seeds;
     }
@@ -1888,12 +2045,14 @@ fn report_seeds(seeds: &SeedSet) {
 mod tests {
     use super::{
         CompactUnwindError, CompactUnwindOutcome, ExecutableRange, FileSectionReads, ImageView,
-        MAX_AARCH64_PLT_ENTRIES, MAX_PE_TLS_CALLBACKS, MAX_SEEDS, MAX_UNWIND_ENTRIES,
-        PE_ARM64_PDATA_RECORD_BYTES, PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES, R_AARCH64_JUMP_SLOT,
-        SeedOrigin, SeedSet, canonical_plt_stub_slot, canonical_plt0, collect,
+        MAX_AARCH64_PLT_ENTRIES, MAX_PE_GUARD_CF_FUNCTIONS, MAX_PE_TLS_CALLBACKS, MAX_SEEDS,
+        MAX_UNWIND_ENTRIES, PE_ARM64_PDATA_RECORD_BYTES, PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+        PE64_LOAD_CONFIG_GUARD_CF_BYTES, PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES,
+        R_AARCH64_JUMP_SLOT, SeedOrigin, SeedSet, canonical_plt_stub_slot, canonical_plt0, collect,
         collect_elf_plt_entries, collect_initializer_tables, decode_elf_eh_frame_hdr,
-        decode_macho_compact_unwind, decode_macho_function_starts, decode_pe_arm64_pdata,
-        decode_pe_arm64_tls_callbacks, is_boundary_word, is_prologue_word,
+        decode_macho_compact_unwind, decode_macho_function_starts,
+        decode_pe_arm64_guard_cf_functions, decode_pe_arm64_pdata, decode_pe_arm64_tls_callbacks,
+        is_boundary_word, is_prologue_word,
     };
 
     use std::collections::{BTreeMap, BTreeSet};
@@ -3396,6 +3555,282 @@ mod tests {
             seeds.counts().get(&SeedOrigin::MachFunctionStarts).copied(),
             Some(46)
         );
+    }
+
+    fn guard_cf_directory(table_address: u64, count: u64, flags: u32) -> [u8; 148] {
+        let mut directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            [0; PE64_LOAD_CONFIG_GUARD_CF_BYTES];
+        directory[..4].copy_from_slice(&(PE64_LOAD_CONFIG_GUARD_CF_BYTES as u32).to_le_bytes());
+        directory[128..136].copy_from_slice(&table_address.to_le_bytes());
+        directory[136..144].copy_from_slice(&count.to_le_bytes());
+        directory[144..148].copy_from_slice(&flags.to_le_bytes());
+        directory
+    }
+
+    fn guard_cf_view(table: &[u8], table_address: u64) -> ImageView<'_> {
+        ImageView {
+            file: None,
+            bytes: table,
+            executable: vec![ExecutableRange {
+                start: 0x1_4000_1000,
+                end: 0x1_4000_1100,
+            }],
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: table.len() as u64,
+                virtual_addr: table_address,
+                mem_size: table.len() as u64,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 4,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        }
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_table_keeps_only_its_valid_bounded_prefix() {
+        let table_address: u64 = 0x1_4000_2000;
+        let mut table: Vec<u8> = Vec::new();
+        for rva in [0x1000_u32, 0x1004, 0x3000] {
+            table.extend_from_slice(&rva.to_le_bytes());
+        }
+        let view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            guard_cf_directory(table_address, u64::MAX, PE_GUARD_CF_FUNCTION_TABLE_PRESENT);
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1_4000_1000, 0x1_4000_1004]);
+        assert_eq!(
+            seeds.origins_of(0x1_4000_1000),
+            BTreeSet::from([SeedOrigin::PeGuardCfFunction])
+        );
+
+        let partial_view: ImageView<'_> = guard_cf_view(&table[..6], table_address);
+        let mut partial: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &partial_view, &mut partial);
+        assert_eq!(partial.addresses(), vec![0x1_4000_1000]);
+
+        let mut capped_table: Vec<u8> = Vec::with_capacity(
+            MAX_PE_GUARD_CF_FUNCTIONS
+                .saturating_add(1)
+                .saturating_mul(4),
+        );
+        for _ in 0..MAX_PE_GUARD_CF_FUNCTIONS {
+            capped_table.extend_from_slice(&0x1000_u32.to_le_bytes());
+        }
+        capped_table.extend_from_slice(&0x1004_u32.to_le_bytes());
+        let capped_view: ImageView<'_> = guard_cf_view(&capped_table, table_address);
+        let capped_directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = guard_cf_directory(
+            table_address,
+            MAX_PE_GUARD_CF_FUNCTIONS.saturating_add(1) as u64,
+            PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+        );
+        let mut capped: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(
+            &capped_directory,
+            0x1_4000_0000,
+            &capped_view,
+            &mut capped,
+        );
+        assert_eq!(capped.addresses(), vec![0x1_4000_1000]);
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_directory_rejects_invalid_size_flags_and_addresses() {
+        let table_address: u64 = 0x1_4000_2000;
+        let table: [u8; 4] = 0x1000_u32.to_le_bytes();
+        let view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let valid: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            guard_cf_directory(table_address, 1, PE_GUARD_CF_FUNCTION_TABLE_PRESENT);
+        let mut short_size: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = valid;
+        short_size[..4]
+            .copy_from_slice(&(PE64_LOAD_CONFIG_GUARD_CF_BYTES as u32 - 1).to_le_bytes());
+        let missing_flag: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            guard_cf_directory(table_address, 1, 0);
+        let misaligned_table: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            guard_cf_directory(table_address + 1, 1, PE_GUARD_CF_FUNCTION_TABLE_PRESENT);
+        let overflowing_table: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+            guard_cf_directory(u64::MAX - 3, 2, PE_GUARD_CF_FUNCTION_TABLE_PRESENT);
+        for directory in [
+            &valid[..PE64_LOAD_CONFIG_GUARD_CF_BYTES - 1],
+            short_size.as_slice(),
+            missing_flag.as_slice(),
+            misaligned_table.as_slice(),
+            overflowing_table.as_slice(),
+        ] {
+            let mut seeds: SeedSet = SeedSet::default();
+            decode_pe_arm64_guard_cf_functions(directory, 0x1_4000_0000, &view, &mut seeds);
+            assert!(seeds.addresses().is_empty());
+        }
+
+        let misaligned_function: [u8; 4] = 0x1002_u32.to_le_bytes();
+        let misaligned_view: ImageView<'_> = guard_cf_view(&misaligned_function, table_address);
+        let mut misaligned: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(
+            &valid,
+            0x1_4000_0000,
+            &misaligned_view,
+            &mut misaligned,
+        );
+        assert!(misaligned.addresses().is_empty());
+
+        let mut overflowing: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(&valid, u64::MAX - 0x0fff, &view, &mut overflowing);
+        assert!(overflowing.addresses().is_empty());
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_stride_flags_skip_suppressed_targets_and_stop_on_unknown_flags() {
+        let table_address: u64 = 0x1_4000_2000;
+        let mut table: Vec<u8> = Vec::new();
+        for (rva, flags) in [(0x1000_u32, 0_u8), (0x1004, 1), (0x1008, 0)] {
+            table.extend_from_slice(&rva.to_le_bytes());
+            table.push(flags);
+        }
+        let view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = guard_cf_directory(
+            table_address,
+            3,
+            1_u32 << 28 | PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+        );
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1_4000_1000, 0x1_4000_1008]);
+
+        table[9] = 0x80;
+        let invalid_view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let mut invalid: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &invalid_view, &mut invalid);
+        assert_eq!(invalid.addresses(), vec![0x1_4000_1000]);
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_table_stops_on_duplicate_and_descending_rvas() {
+        let table_address: u64 = 0x1_4000_2000;
+        for (rvas, expected) in [
+            (
+                [0x1000_u32, 0x1004, 0x1004, 0x1008],
+                vec![0x1_4000_1000, 0x1_4000_1004],
+            ),
+            (
+                [0x1000_u32, 0x1008, 0x1004, 0x100c],
+                vec![0x1_4000_1000, 0x1_4000_1008],
+            ),
+        ] {
+            let table: Vec<u8> = rvas.into_iter().flat_map(u32::to_le_bytes).collect();
+            let view: ImageView<'_> = guard_cf_view(&table, table_address);
+            let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] =
+                guard_cf_directory(table_address, 4, PE_GUARD_CF_FUNCTION_TABLE_PRESENT);
+            let mut seeds: SeedSet = SeedSet::default();
+
+            decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+            assert_eq!(seeds.addresses(), expected);
+        }
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_suppressed_rvas_participate_in_ordering() {
+        let table_address: u64 = 0x1_4000_2000;
+        let mut table: Vec<u8> = Vec::new();
+        for (rva, flags) in [(0x1000_u32, 0_u8), (0x1004, 0x01), (0x1004, 0), (0x1008, 0)] {
+            table.extend_from_slice(&rva.to_le_bytes());
+            table.push(flags);
+        }
+        let view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = guard_cf_directory(
+            table_address,
+            4,
+            1_u32 << 28 | PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+        );
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1_4000_1000]);
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_rejects_reserved_first_metadata_flags() {
+        let table_address: u64 = 0x1_4000_2000;
+        for reserved_flag in [0x04_u8, 0x08] {
+            let mut table: Vec<u8> = Vec::new();
+            for (rva, flags) in [(0x1000_u32, 0x02_u8), (0x1004, reserved_flag), (0x1008, 0)] {
+                table.extend_from_slice(&rva.to_le_bytes());
+                table.push(flags);
+            }
+            let view: ImageView<'_> = guard_cf_view(&table, table_address);
+            let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = guard_cf_directory(
+                table_address,
+                3,
+                1_u32 << 28 | PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+            );
+            let mut seeds: SeedSet = SeedSet::default();
+
+            decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+            assert_eq!(seeds.addresses(), vec![0x1_4000_1000]);
+        }
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_supports_extended_metadata_stride_and_truncation() {
+        let table_address: u64 = 0x1_4000_2000;
+        let mut table: Vec<u8> = Vec::new();
+        for (rva, metadata) in [
+            (0x1000_u32, [0x02_u8, 0xa5]),
+            (0x1004, [0x01, 0xff]),
+            (0x1008, [0, 0x7e]),
+        ] {
+            table.extend_from_slice(&rva.to_le_bytes());
+            table.extend_from_slice(&metadata);
+        }
+        let directory: [u8; PE64_LOAD_CONFIG_GUARD_CF_BYTES] = guard_cf_directory(
+            table_address,
+            3,
+            2_u32 << 28 | PE_GUARD_CF_FUNCTION_TABLE_PRESENT,
+        );
+        let view: ImageView<'_> = guard_cf_view(&table, table_address);
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_guard_cf_functions(&directory, 0x1_4000_0000, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1_4000_1000, 0x1_4000_1008]);
+
+        let truncated_view: ImageView<'_> = guard_cf_view(&table[..9], table_address);
+        let mut truncated: SeedSet = SeedSet::default();
+        decode_pe_arm64_guard_cf_functions(
+            &directory,
+            0x1_4000_0000,
+            &truncated_view,
+            &mut truncated,
+        );
+        assert_eq!(truncated.addresses(), vec![0x1_4000_1000]);
+    }
+
+    #[test]
+    fn pe_arm64_guard_cf_collection_rejects_arm64ec() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> =
+            include_bytes!("../../tests/fixtures/pe_arm64_guard_cf.exe").to_vec();
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(bytes[0x3c..0x40].try_into()?))?;
+        let machine: usize = pe_offset
+            .checked_add(4)
+            .ok_or_else(|| std::io::Error::other("the machine offset must be bounded"))?;
+        bytes[machine..machine + 2]
+            .copy_from_slice(&object::pe::IMAGE_FILE_MACHINE_ARM64EC.to_le_bytes());
+        let native: NativeFile = parse_native(&bytes)?;
+
+        let seeds: SeedSet = collect(&native, &bytes);
+
+        assert_eq!(seeds.counts().get(&SeedOrigin::PeGuardCfFunction), None);
+        Ok(())
     }
 
     #[test]
