@@ -5015,6 +5015,13 @@ fn trim_inline_finally_from_handlers(
         .collect()
 }
 
+fn stmt_sequences_equal_ignoring_lines(a: &[Stmt], b: &[Stmt]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(left, right): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(left, right))
+}
+
 fn strip_trailing_stmts(body: &mut Vec<Stmt>, suffix: &[Stmt]) {
     if suffix.is_empty() || body.len() < suffix.len() {
         return;
@@ -5023,7 +5030,7 @@ fn strip_trailing_stmts(body: &mut Vec<Stmt>, suffix: &[Stmt]) {
     let tail_matches: bool = body[split..]
         .iter()
         .zip(suffix.iter())
-        .all(|(a, b): (&Stmt, &Stmt)| format!("{a:?}") == format!("{b:?}"));
+        .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
     if tail_matches {
         body.truncate(split);
     }
@@ -5036,7 +5043,7 @@ fn strip_leading_stmts(body: &mut Vec<Stmt>, prefix: &[Stmt]) {
     let head_matches: bool = body[..prefix.len()]
         .iter()
         .zip(prefix.iter())
-        .all(|(a, b): (&Stmt, &Stmt)| format!("{a:?}") == format!("{b:?}"));
+        .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
     if head_matches {
         body.drain(..prefix.len());
     }
@@ -5082,7 +5089,7 @@ fn strip_shared_exit_suffix(
             while match_len < continuation.len() && match_len < h.body.len() {
                 let body_idx: usize = h.body.len() - 1 - match_len;
                 let cont_idx: usize = continuation.len() - 1 - match_len;
-                if format!("{:?}", h.body[body_idx]) == format!("{:?}", continuation[cont_idx]) {
+                if stmts_equal_ignoring_lines(&h.body[body_idx], &continuation[cont_idx]) {
                     match_len += 1;
                 } else {
                     break;
@@ -5176,7 +5183,7 @@ fn strip_shared_exit_return(
         .map(|mut h: ExceptHandler| {
             if h.body
                 .last()
-                .is_some_and(|s: &Stmt| return_stmts_equal_ignoring_lines(s, tail))
+                .is_some_and(|s: &Stmt| stmts_equal_ignoring_lines(s, tail))
             {
                 h.body.pop();
                 h.body = non_empty(h.body);
@@ -5184,14 +5191,6 @@ fn strip_shared_exit_return(
             h
         })
         .collect()
-}
-
-fn return_stmts_equal_ignoring_lines(a: &Stmt, b: &Stmt) -> bool {
-    match (a, b) {
-        (Stmt::Return(Some(a)), Stmt::Return(Some(b))) => exprs_equal_ignoring_lines(a, b),
-        (Stmt::Return(None), Stmt::Return(None)) => true,
-        _ => false,
-    }
 }
 
 fn strip_shared_exit_return_with_loop_ownership(
@@ -5968,7 +5967,7 @@ fn split_construct_tail_after_finally(raw: &mut Vec<Stmt>, finalbody: &[Stmt]) -
         let window_matches: bool = raw[start..start + finalbody.len()]
             .iter()
             .zip(finalbody.iter())
-            .all(|(a, b): (&Stmt, &Stmt)| format!("{a:?}") == format!("{b:?}"));
+            .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
         if window_matches {
             copy_at = Some(start);
             break;
@@ -6556,7 +6555,7 @@ fn try_structure_guard_over_finally(
     };
     let threaded: bool = !normal_cont.is_empty()
         && !guard_exit.is_empty()
-        && stmts_textually_equal(&normal_cont, &guard_exit);
+        && stmt_sequences_equal_ignoring_lines(&normal_cont, &guard_exit);
     let (inside_if, after_if): (Vec<Stmt>, Vec<Stmt>) = if threaded {
         (Vec::new(), normal_cont)
     } else {
@@ -6577,13 +6576,6 @@ fn try_structure_guard_over_finally(
         out.extend(structure_stmts(code, stream, region.region_end, hi)?);
     }
     Ok(Some(out))
-}
-
-fn stmts_textually_equal(a: &[Stmt], b: &[Stmt]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b.iter())
-            .all(|(x, y): (&Stmt, &Stmt)| format!("{x:?}") == format!("{y:?}"))
 }
 
 fn structure_pure_finally(
@@ -6717,7 +6709,7 @@ fn strip_clause_inline_finally(
         let window_matches: bool = clause[start..start + finalbody.len()]
             .iter()
             .zip(finalbody.iter())
-            .all(|(a, b): (&Stmt, &Stmt)| format!("{a:?}") == format!("{b:?}"));
+            .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
         if window_matches {
             copy_at = Some(start);
             break;
@@ -9797,7 +9789,7 @@ mod with_region_bounds {
         SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
         loop_frame_owns_shared_exit_tail, shared_construct_exit_return,
         shared_construct_exit_return_at_range, single_residual, special_method_name,
-        strip_shared_exit_return,
+        strip_shared_exit_return, strip_shared_exit_suffix,
     };
     use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt};
     use crate::bytecode::flow::ExceptionTableEntry;
@@ -9974,6 +9966,44 @@ mod with_region_bounds {
         let stripped: Vec<ExceptHandler> =
             strip_shared_exit_return(vec![handler], std::slice::from_ref(&tail));
         assert_eq!(stripped[0].body, vec![Stmt::Pass]);
+    }
+
+    #[test]
+    fn shared_exit_suffix_strips_two_handler_edges_without_conflating_prefixes() {
+        let handlers: Vec<ExceptHandler> = vec![
+            ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![Stmt::Pass, named_return("value", 29)],
+                line: Some(29),
+            },
+            ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![
+                    Stmt::Expr(Expr::Name {
+                        id: "second".to_owned(),
+                        ctx: ExprCtx::Load,
+                        line: Some(31),
+                    }),
+                    named_return("value", 31),
+                ],
+                line: Some(31),
+            },
+        ];
+        let continuation: Vec<Stmt> = vec![named_return("value", 11)];
+
+        let stripped: Vec<ExceptHandler> = strip_shared_exit_suffix(handlers, &continuation);
+
+        assert_eq!(stripped[0].body, vec![Stmt::Pass]);
+        assert_eq!(
+            stripped[1].body,
+            vec![Stmt::Expr(Expr::Name {
+                id: "second".to_owned(),
+                ctx: ExprCtx::Load,
+                line: Some(31),
+            })]
+        );
     }
 
     #[test]
