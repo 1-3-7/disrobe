@@ -6820,6 +6820,244 @@ fn finally_inline_copy_end(
 }
 
 #[derive(Clone, Copy)]
+struct FinallyArmBreakLoop {
+    try_start: usize,
+    protected_end: usize,
+    back_edge: usize,
+    exit: usize,
+    handler_start: usize,
+}
+
+fn significant_slices_match(
+    stream: &DecodedStream,
+    first_start: usize,
+    first_end: usize,
+    second_start: usize,
+    second_end: usize,
+) -> bool {
+    let first: Vec<&CanonicalOp> = significant_ops(stream, first_start, first_end);
+    let second: Vec<&CanonicalOp> = significant_ops(stream, second_start, second_end);
+    first.len() == second.len()
+        && first
+            .iter()
+            .zip(second)
+            .all(|(left, right): (&&CanonicalOp, &CanonicalOp)| finally_copy_op_eq(left, right))
+}
+
+fn finally_arm_break_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Option<FinallyArmBreakLoop> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+    {
+        return None;
+    }
+    if !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return None;
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && try_start < protected_end
+                && protected_end < loop_region.back_edge
+                && handler_start > loop_region.exit
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return None;
+    };
+    let try_start: usize = stream.index_for_offset(primary.start)?;
+    let protected_end: usize = stream.index_for_offset_ceil(primary.end())?;
+    let handler_start: usize = stream.index_for_offset(primary.target)?;
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) || loop_region.exit <= loop_region.back_edge
+        || loop_region.exit >= handler_start
+        || first_significant(stream, loop_region.back_edge + 1, handler_start)
+            != Some(loop_region.exit)
+    {
+        return None;
+    }
+    let tail_terminal: usize = last_significant_back(stream, loop_region.exit, handler_start)?;
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) {
+        return None;
+    }
+    let inline_guards: Vec<usize> = (protected_end..loop_region.back_edge)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [inline_guard]: &[usize] = inline_guards.as_slice() else {
+        return None;
+    };
+    let inline_resume: usize =
+        resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
+            .filter(|target: &usize| *target > *inline_guard && *target < loop_region.back_edge)?;
+    let inline_break: usize = last_significant_back(stream, *inline_guard + 1, inline_resume)?;
+    if first_significant(stream, *inline_guard + 1, inline_resume) != Some(inline_break)
+        || !matches!(
+            stream.ops[inline_break],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        )
+        || resolve_jump_target(stream, inline_break, &stream.ops[inline_break])
+            != Some(loop_region.exit)
+    {
+        return None;
+    }
+    let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 1 && entry.lasti && entry.start >= primary.target
+        })
+        .collect();
+    cleanup_entries
+        .sort_unstable_by_key(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.start);
+    let [first_cleanup, second_cleanup]: &[&crate::bytecode::flow::ExceptionTableEntry] =
+        cleanup_entries.as_slice()
+    else {
+        return None;
+    };
+    if first_cleanup.target != second_cleanup.target {
+        return None;
+    }
+    let cleanup_start: usize = stream.index_for_offset(first_cleanup.target)?;
+    let first_cleanup_start: usize = stream.index_for_offset(first_cleanup.start)?;
+    let first_cleanup_end: usize = stream.index_for_offset_ceil(first_cleanup.end())?;
+    let second_cleanup_start: usize = stream.index_for_offset(second_cleanup.start)?;
+    let second_cleanup_end: usize = stream.index_for_offset_ceil(second_cleanup.end())?;
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    let cleanup_ops: Vec<&CanonicalOp> = significant_ops(stream, cleanup_start, handler_end);
+    if first_cleanup_start != handler_start
+        || second_cleanup_end != cleanup_start
+        || !matches!(
+            cleanup_ops.as_slice(),
+            [
+                CanonicalOp::Copy(3),
+                CanonicalOp::PopExcept,
+                CanonicalOp::Reraise(1)
+            ]
+        )
+    {
+        return None;
+    }
+    let handler_guards: Vec<usize> = (handler_start + 1..cleanup_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [handler_guard]: &[usize] = handler_guards.as_slice() else {
+        return None;
+    };
+    let handler_resume: usize =
+        resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
+            .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
+    let handler_break_ops: Vec<&CanonicalOp> =
+        significant_ops(stream, *handler_guard + 1, handler_resume);
+    let [CanonicalOp::Pop, CanonicalOp::PopExcept, handler_break]: &[&CanonicalOp] =
+        handler_break_ops.as_slice()
+    else {
+        return None;
+    };
+    let handler_break_index: usize =
+        last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    if !matches!(
+        handler_break,
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) || resolve_jump_target(stream, handler_break_index, handler_break)
+        != Some(loop_region.exit)
+        || handler_break_index.checked_sub(1) != Some(first_cleanup_end)
+        || second_cleanup_start != handler_resume
+    {
+        return None;
+    }
+    let handler_reraise: usize = last_significant_back(stream, handler_resume, cleanup_start)?;
+    if !matches!(stream.ops[handler_reraise], CanonicalOp::Reraise(0))
+        || !significant_slices_match(
+            stream,
+            protected_end,
+            *inline_guard + 1,
+            handler_start + 1,
+            *handler_guard + 1,
+        )
+        || !significant_slices_match(
+            stream,
+            inline_resume,
+            loop_region.back_edge,
+            handler_resume,
+            handler_reraise,
+        )
+    {
+        return None;
+    }
+    Some(FinallyArmBreakLoop {
+        try_start,
+        protected_end,
+        back_edge: loop_region.back_edge,
+        exit: loop_region.exit,
+        handler_start,
+    })
+}
+
+pub(super) fn structure_infinite_while_finally_arm_break_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    let Some(shape): Option<FinallyArmBreakLoop> = finally_arm_break_loop(stream, loop_region)
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> = structure_stmts(code, stream, shape.protected_end, shape.back_edge)?;
+    if body.is_empty() || finalbody.is_empty() || shape.exit != loop_region.exit {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![Stmt::Try {
+            body,
+            handlers: Vec::new(),
+            orelse: Vec::new(),
+            finalbody,
+            line: None,
+        }],
+        shape.handler_start,
+    )))
+}
+
+#[derive(Clone, Copy)]
 struct SplitFinallyLoopExit {
     protected_end: usize,
     resumed_end: usize,

@@ -16,8 +16,8 @@ use super::try_with::{
     is_pure_finally_handler_shape, is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt,
     is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
     offset_is_unprotected, structure_for_bare_except_continue_epilogue,
-    structure_for_typed_except_continue_epilogue, structure_infinite_while_split_finally_body,
-    structure_try,
+    structure_for_typed_except_continue_epilogue, structure_infinite_while_finally_arm_break_body,
+    structure_infinite_while_split_finally_body, structure_try,
 };
 use super::{
     DecodedStream, LoopFrame, MAX_SYNTH_OPERANDS, PY_CO_FLAG_FUNCTION_SCOPE, ScDesc,
@@ -2727,6 +2727,11 @@ fn structure_infinite_while_body(
     stream: &DecodedStream,
     region: &LoopRegion,
 ) -> Result<(Vec<Stmt>, Option<usize>)> {
+    if let Some((body, tail_end)) =
+        structure_infinite_while_finally_arm_break_body(code, stream, region)?
+    {
+        return Ok((body, Some(tail_end)));
+    }
     if let Some((body, tail_end)) =
         structure_infinite_while_split_finally_body(code, stream, region)?
     {
