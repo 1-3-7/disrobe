@@ -28,6 +28,7 @@ docker-image	payload
 dotnet-single-file	payload
 egg	payload
 engenius	payload
+enigma-virtual-box	payload
 erofs	payload
 ext4	payload
 fat	payload
@@ -43,6 +44,7 @@ instar-hd	payload
 iso	payload
 jar	payload
 jffs2	payload
+luks1	metadata-only
 lz	payload
 lz4	payload
 lzh	payload

@@ -103,6 +103,10 @@ fn the_published_detected_count_is_the_roster_counted_by_name() {
         .iter()
         .filter(|row: &&String| row.ends_with("\tpayload"))
         .count();
+    let metadata_only: Vec<&String> = pinned
+        .iter()
+        .filter(|row: &&String| row.ends_with("\tmetadata-only"))
+        .collect();
 
     assert_eq!(
         u64::try_from(pinned.len()).expect("roster length fits u64"),
@@ -111,14 +115,8 @@ fn the_published_detected_count_is_the_roster_counted_by_name() {
          {ROSTER}",
         pinned.len()
     );
-    assert_eq!(
-        payload,
-        pinned.len(),
-        "{ROSTER} names {payload} of its {} formats as declaring a payload extractor; the roster \
-         proves what the binary carries, so any other mode has to be named here rather than \
-         absorbed into a total",
-        pinned.len()
-    );
+    assert_eq!(metadata_only, ["luks1\tmetadata-only"]);
+    assert_eq!(payload + metadata_only.len(), pinned.len());
     assert!(
         published("delivered") <= u64::try_from(payload).expect("payload count fits u64"),
         "recovery.json publishes a delivered count above the {payload} formats {ROSTER} names as \
