@@ -1048,6 +1048,9 @@ mod tests {
             .expect("Inno Setup members")
             .members;
         assert_eq!(members.len(), 94);
+        assert!(members.iter().all(|(path, _data): &(String, Vec<u8>)| path
+            != "setup-headers.bin"
+            && path != "setup-engine.lzma"));
         let compiler: &(String, Vec<u8>) = members
             .iter()
             .find(|(path, _data): &&(String, Vec<u8>)| path == "app/Compil32.exe")

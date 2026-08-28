@@ -2382,7 +2382,7 @@ fn extract_innosetup(
         std::fs::write(&blob_path, &decoded)?;
         encoding.insert(tool_blob_name.clone(), header_compression);
         entries_out.push(ExtractedEntry {
-            origin: ExtractedEntryOrigin::ArchiveMember,
+            origin: ExtractedEntryOrigin::GeneratedSidecar,
             name: tool_blob_name,
             disk_path: Some(blob_path),
             uncompressed_size: decoded_size,
@@ -2526,7 +2526,7 @@ fn extract_innosetup(
             std::fs::write(&disk_path, engine)?;
             encoding.insert(tool_name.clone(), EntryCompression::Stored);
             entries_out.push(ExtractedEntry {
-                origin: ExtractedEntryOrigin::ArchiveMember,
+                origin: ExtractedEntryOrigin::GeneratedSidecar,
                 name: tool_name,
                 disk_path: Some(disk_path),
                 uncompressed_size: loader.exe_uncompressed_size,
@@ -6859,6 +6859,15 @@ mod tests {
             std::fs::read(reserved_scratch.path().join(".disrobe-innosetup-info.json"))
                 .expect("read Inno sidecar");
         assert_ne!(sidecar, b"overwrite");
+        assert_eq!(
+            reserved_result
+                .entries
+                .iter()
+                .find(|entry: &&ExtractedEntry| entry.name == "setup-headers.bin")
+                .expect("decoded setup header")
+                .origin,
+            ExtractedEntryOrigin::GeneratedSidecar
+        );
         assert!(
             reserved_result
                 .integrity_violations
