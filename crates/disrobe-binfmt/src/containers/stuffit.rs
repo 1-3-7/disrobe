@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_forks_and_case_collisions_fail_before_publication() {
+    fn encrypted_forks_fail_and_case_collisions_retain_the_first_member() {
         let mut encrypted: Vec<u8> = build_archive(&[("secret.bin", b"secret")]);
         let method_offset: usize = ARCHIVE_HEADER_LEN + 1;
         encrypted[method_offset] |= FLAG_ENCRYPTED;
@@ -589,24 +589,40 @@ mod tests {
         let directory: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-collision")
                 .expect("create collision directory");
-        assert!(
-            crate::extract::extract_to(
-                crate::container::ContainerKind::StuffIt,
-                &collision,
-                directory.path(),
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to(
+            crate::container::ContainerKind::StuffIt,
+            &collision,
+            directory.path(),
+        )
+        .expect("retain the first non-colliding member");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "Name");
+        assert_eq!(
+            std::fs::read(
+                result.entries[0]
+                    .disk_path
+                    .as_deref()
+                    .expect("retained member path")
             )
-            .is_err()
+            .expect("read retained member"),
+            b"first"
+        );
+        assert_eq!(
+            result.integrity_violations,
+            [
+                "stuffit-path `name`: DR-BINFMT-0063: stuffit archive parse failed: stuffit: case-insensitive path collision at `name`"
+            ]
         );
         assert_eq!(
             std::fs::read_dir(directory.path())
                 .expect("read collision directory")
                 .count(),
-            0
+            1
         );
     }
 
     #[test]
-    fn quota_failure_is_transactional() {
+    fn quota_refusal_is_transactional() {
         let archive: Vec<u8> = build_archive(&[("large.bin", &[7u8; 32])]);
         let directory: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-quota")
@@ -618,14 +634,19 @@ mod tests {
             max_per_entry_ratio: 100,
             max_aggregate_ratio: 100,
         };
-        assert!(
-            crate::extract::extract_to_with_quota(
-                crate::container::ContainerKind::StuffIt,
-                &archive,
-                directory.path(),
-                quota,
-            )
-            .is_err()
+        let result: crate::extract::ExtractionResult = crate::extract::extract_to_with_quota(
+            crate::container::ContainerKind::StuffIt,
+            &archive,
+            directory.path(),
+            quota,
+        )
+        .expect("retain the archive-level recovery result");
+        assert!(result.entries.is_empty());
+        assert_eq!(
+            result.integrity_violations,
+            [
+                "stuffit-quota `large.bin`: DR-BINFMT-0009: extraction quota exceeded on entry `large.bin`: uncompressed=32 exceeds per-entry cap 16"
+            ]
         );
         assert_eq!(
             std::fs::read_dir(directory.path())

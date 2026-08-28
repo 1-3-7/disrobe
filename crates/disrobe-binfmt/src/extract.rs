@@ -6479,7 +6479,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_arc_preflights_declared_size_before_decoding() {
+    fn extract_arc_records_declared_size_refusal_before_decoding() {
         let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-quota-preflight");
         let mut archive: Vec<u8> =
             crate::containers::arc::build_entry(5, "large.bin", &[0xff, 0xff], 1024);
@@ -6488,9 +6488,16 @@ mod tests {
             max_per_entry_uncompressed: 8,
             ..ExtractionQuota::default_safe()
         };
-        let result: Result<ExtractionResult> =
-            extract_to_with_quota(ContainerKind::Arc, &archive, scratch.path(), quota);
-        assert!(matches!(result, Err(Error::QuotaExceeded { entry, .. }) if entry == "large.bin"));
+        let result: ExtractionResult =
+            extract_to_with_quota(ContainerKind::Arc, &archive, scratch.path(), quota)
+                .expect("retain the archive-level recovery result");
+        assert!(result.entries.is_empty());
+        assert_eq!(
+            result.integrity_violations,
+            [
+                "arc-quota `large.bin`: DR-BINFMT-0009: extraction quota exceeded on entry `large.bin`: uncompressed=1024 exceeds per-entry cap 8"
+            ]
+        );
         assert!(
             scratch
                 .path()
@@ -6502,42 +6509,59 @@ mod tests {
     }
 
     #[test]
-    fn extract_arc_rejects_case_collisions_before_output_creation() {
+    fn extract_arc_records_case_collision_and_retains_the_first_member() {
         let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-case-collision");
         let archive: Vec<u8> =
             synth_arc_entries(&[("Case.txt", b"first"), ("case.txt", b"second")]);
-        let result: Result<ExtractionResult> =
-            extract_to(ContainerKind::Arc, &archive, scratch.path());
-        assert!(matches!(result, Err(Error::Arc(message)) if message.contains("collision")));
-        assert!(
-            scratch
-                .path()
-                .read_dir()
-                .expect("read output")
-                .next()
-                .is_none()
+        let result: ExtractionResult = extract_to(ContainerKind::Arc, &archive, scratch.path())
+            .expect("retain the first non-colliding member");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "Case.txt");
+        assert_eq!(
+            std::fs::read(
+                result.entries[0]
+                    .disk_path
+                    .as_deref()
+                    .expect("retained member path")
+            )
+            .expect("read retained member"),
+            b"first"
+        );
+        assert_eq!(
+            result.integrity_violations,
+            ["arc-path `case.txt`: case-insensitive duplicate output path"]
         );
     }
 
     #[test]
-    fn extract_arc_rejects_path_prefix_collisions_before_output_creation() {
-        for files in [
-            [("a", b"first".as_slice()), ("a/b", b"second".as_slice())],
-            [("a/b", b"first".as_slice()), ("a", b"second".as_slice())],
+    fn extract_arc_records_path_prefix_collisions_and_retains_the_first_member() {
+        for (files, expected_violation) in [
+            (
+                [("a", b"first".as_slice()), ("a/b", b"second".as_slice())],
+                "arc-path `a/b`: output path has a materialized file ancestor",
+            ),
+            (
+                [("a/b", b"first".as_slice()), ("a", b"second".as_slice())],
+                "arc-path `a`: output path is an ancestor of a materialized file",
+            ),
         ] {
             let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-prefix-collision");
             let archive: Vec<u8> = synth_arc_entries(&files);
-            let result: Result<ExtractionResult> =
-                extract_to(ContainerKind::Arc, &archive, scratch.path());
-            assert!(matches!(result, Err(Error::Arc(message)) if message.contains("collision")));
-            assert!(
-                scratch
-                    .path()
-                    .read_dir()
-                    .expect("read output")
-                    .next()
-                    .is_none()
+            let result: ExtractionResult = extract_to(ContainerKind::Arc, &archive, scratch.path())
+                .expect("retain the first non-colliding member");
+            assert_eq!(result.entries.len(), 1);
+            assert_eq!(result.entries[0].name, files[0].0);
+            assert_eq!(
+                std::fs::read(
+                    result.entries[0]
+                        .disk_path
+                        .as_deref()
+                        .expect("retained member path")
+                )
+                .expect("read retained member"),
+                files[0].1
             );
+            assert_eq!(result.integrity_violations, [expected_violation]);
         }
     }
 
@@ -6721,7 +6745,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_zip_rejects_bomb_ratio() {
+    fn extract_zip_records_bomb_ratio_refusal() {
         let mut payload: Vec<u8> = Vec::with_capacity(1_000_000);
         payload.extend(std::iter::repeat_n(b'A', 1_000_000));
         let bytes: Vec<u8> = synth_zip(&[("bomb.bin", &payload)]);
@@ -6731,9 +6755,17 @@ mod tests {
             max_per_entry_ratio: 2,
             ..ExtractionQuota::default_safe()
         };
-        let err: Error =
-            extract_to_with_quota(ContainerKind::Zip, &bytes, &out, tight).unwrap_err();
-        assert!(matches!(err, Error::QuotaExceeded { .. }));
+        let result: ExtractionResult =
+            extract_to_with_quota(ContainerKind::Zip, &bytes, &out, tight)
+                .expect("retain the archive-level recovery result");
+        assert!(result.entries.is_empty());
+        assert_eq!(
+            result.integrity_violations,
+            [
+                "zip-quota `bomb.bin`: DR-BINFMT-0009: extraction quota exceeded on entry `bomb.bin`: per-entry expansion ratio 1014 exceeds cap 2"
+            ]
+        );
+        assert!(out.read_dir().expect("read output").next().is_none());
     }
 
     #[test]
@@ -8633,26 +8665,29 @@ mod tests {
     }
 
     #[test]
-    fn zip_names_colliding_only_by_case_stay_under_the_root() {
+    fn zip_names_colliding_only_by_case_retain_the_first_under_the_root() {
         let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-case-collision");
         let out: PathBuf = scratch.path().to_path_buf();
         let bytes: Vec<u8> = synth_zip(&[("Data.TXT", b"upper"), ("data.txt", b"lower")]);
         let result: ExtractionResult =
             extract_to(ContainerKind::Zip, &bytes, &out).expect("extract zip");
-        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "Data.TXT");
         assert_result_stays_inside(&result, &out);
         assert_no_escape_around(&out);
-        let bodies: Vec<Vec<u8>> = result
-            .entries
-            .iter()
-            .filter_map(|e: &ExtractedEntry| e.disk_path.as_ref())
-            .map(|p: &PathBuf| std::fs::read(p).expect("written body"))
-            .collect();
-        assert!(
-            bodies
-                .iter()
-                .all(|b: &Vec<u8>| b == b"upper" || b == b"lower"),
-            "a case collision must resolve to one of the two written bodies"
+        assert_eq!(
+            std::fs::read(
+                result.entries[0]
+                    .disk_path
+                    .as_deref()
+                    .expect("retained member path")
+            )
+            .expect("read retained member"),
+            b"upper"
+        );
+        assert_eq!(
+            result.integrity_violations,
+            ["zip-path `data.txt`: case-insensitive duplicate output path"]
         );
     }
 

@@ -943,8 +943,15 @@ mod tests {
         oversized[33..35].fill(0);
         let crc: u16 = crc16_arc(&oversized[..82]);
         oversized[33..35].copy_from_slice(&crc.to_le_bytes());
-        let error: Error = parse_lzh(&oversized, 1024).expect_err("reject 64-bit size quota");
-        assert!(error.to_string().contains("per-entry cap 1024"));
+        let partial: LzhArchive =
+            parse_lzh(&oversized, 1024).expect("retain the archive-level recovery result");
+        assert!(partial.files.is_empty());
+        assert_eq!(
+            partial.notes,
+            [
+                "lzh-quota `Long Filename.txt`: DR-BINFMT-0009: extraction quota exceeded on entry `Long Filename.txt`: uncompressed=1099511627776 exceeds per-entry cap 1024"
+            ]
+        );
 
         let mut duplicate_crc: Vec<u8> = archive.to_vec();
         duplicate_crc[61] = 0x00;
