@@ -39,6 +39,7 @@ pub enum ContainerKind {
     Squirrel,
     InnoSetup,
     InstallShield,
+    EnigmaVirtualBox,
     Oci,
     DockerImage,
     Squashfs,
@@ -207,6 +208,7 @@ impl ContainerKind {
             Self::Squirrel => "squirrel",
             Self::InnoSetup => "innosetup",
             Self::InstallShield => "installshield",
+            Self::EnigmaVirtualBox => "enigma-virtual-box",
             Self::Oci => "oci",
             Self::DockerImage => "docker-image",
             Self::Squashfs => "squashfs",
@@ -297,7 +299,7 @@ impl ContainerKind {
         )
     }
 
-    pub const ALL: [Self; 102] = [
+    pub const ALL: [Self; 103] = [
         Self::Zip,
         Self::Tar,
         Self::TarGz,
@@ -332,6 +334,7 @@ impl ContainerKind {
         Self::Squirrel,
         Self::InnoSetup,
         Self::InstallShield,
+        Self::EnigmaVirtualBox,
         Self::Oci,
         Self::DockerImage,
         Self::Squashfs,
@@ -481,6 +484,7 @@ impl ContainerKind {
             | Self::UnityFs
             | Self::Flatpak
             | Self::InnoSetup
+            | Self::EnigmaVirtualBox
             | Self::FwDlinkShrs
             | Self::FwDlinkEncrptedImg
             | Self::FwDlinkAlphaV1
@@ -582,6 +586,9 @@ pub fn detect_container_with_hint(bytes: &[u8], path: Option<&Path>) -> Option<C
     }
     if crate::containers::luks1::detect_luks1(bytes) {
         return Some(ContainerKind::Luks1);
+    }
+    if crate::containers::detect_enigma_virtual_box(bytes) {
+        return Some(ContainerKind::EnigmaVirtualBox);
     }
     if crate::containers::detect_appimage(bytes).is_some() {
         return Some(ContainerKind::AppImage);
@@ -1431,9 +1438,9 @@ mod tests {
     }
 
     #[test]
-    fn detected_count_is_one_hundred_and_two() {
-        assert_eq!(ContainerKind::detected_format_count(), 102);
-        assert_eq!(ContainerKind::ALL.len(), 102);
+    fn detected_count_is_one_hundred_and_three() {
+        assert_eq!(ContainerKind::detected_format_count(), 103);
+        assert_eq!(ContainerKind::ALL.len(), 103);
     }
 
     const BREADTH_EVIDENCE: &str = "crates/disrobe-cli/tests/golden/container_breadth.txt";
@@ -1536,7 +1543,7 @@ mod tests {
         assert!(external.is_empty());
         assert_eq!(
             ContainerKind::payload_extractor_count() + metadata_only.len() + external.len(),
-            102,
+            103,
             "this counts what the roster declares, not what any input reached; the delivered figure \
              is measured in {BREADTH_EVIDENCE} and asserted by \
              published_container_counts_match_this_enum"

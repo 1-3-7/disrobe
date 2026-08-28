@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1439,
-    "parse_shaped": 589,
+    "entry_points": 1442,
+    "parse_shaped": 592,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 653,
     "named_by_a_suite_recording_seed_reach": 128,
-    "named_by_neither": 753
+    "named_by_neither": 756
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,8 +22,8 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 251,
-      "parse_shaped": 168,
+      "entry_points": 254,
+      "parse_shaped": 171,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 156,
@@ -47,6 +47,9 @@
         "disrobe-binfmt/src/containers/dotnet_bundle.rs::extract_dotnet_bundle",
         "disrobe-binfmt/src/containers/dotnet_bundle.rs::parse_deps_manifest",
         "disrobe-binfmt/src/containers/dotnet_bundle.rs::write_bundle_file",
+        "disrobe-binfmt/src/containers/enigma.rs::detect_enigma_virtual_box",
+        "disrobe-binfmt/src/containers/enigma.rs::extract_enigma_virtual_box",
+        "disrobe-binfmt/src/containers/enigma.rs::parse_enigma_virtual_box",
         "disrobe-binfmt/src/containers/eszip.rs::extract_eszip",
         "disrobe-binfmt/src/containers/eszip.rs::parse_eszip_at",
         "disrobe-binfmt/src/containers/fat.rs::file_data",

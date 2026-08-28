@@ -1,13 +1,13 @@
 # Containers and archives
 
-Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects every format below. Most use the generic member-byte extractor; LUKS1 uses a dedicated raw-volume-key route and reports a typed key wall when no key is supplied. Auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards remain in effect. A committed input drives 41 generic extractors to member bytes on disk, and the tracked LUKS1 fixture separately proves byte-exact decryption into the VHD extractor.
+Before `disrobe` can decompile anything, it often has to get inside a container. The `disrobe-binfmt` layer detects every format below. Most use the generic member-byte extractor; LUKS1 uses a dedicated raw-volume-key route and reports a typed key wall when no key is supplied. Auto-detection, recursive chaining through nested layers, and shared zip-slip and decompression-bomb guards remain in effect. A committed input drives 42 generic extractors to member bytes on disk, and the tracked LUKS1 fixture separately proves byte-exact decryption into the VHD extractor.
 
 ## At a glance
 
 | Surface | Support |
 |---|---|
-| Formats detected | <!-- roster-breadth:containers-declared -->102<!-- /roster-breadth --> archive, installer, filesystem, firmware, and encrypted-volume formats; 101 use the generic extraction entry point and LUKS1 uses its bounded raw-volume-key entry point |
-| Formats exercised | <!-- roster-breadth:containers-exercised -->41<!-- /roster-breadth --> of them are driven to member bytes on disk by an input this repository commits, measured by `crates/disrobe-cli/tests/container_breadth.rs` and pinned in `crates/disrobe-cli/tests/golden/container_breadth.txt`. The rest carry an extractor that no committed input reaches, so they are unverified rather than shown to fail and the declared roster is a capability list rather than a measurement |
+| Formats detected | <!-- roster-breadth:containers-declared -->103<!-- /roster-breadth --> archive, installer, filesystem, firmware, and encrypted-volume formats; 102 use the generic extraction entry point and LUKS1 uses its bounded raw-volume-key entry point |
+| Formats exercised | <!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> of them are driven to member bytes on disk by an input this repository commits, measured by `crates/disrobe-cli/tests/container_breadth.rs` and pinned in `crates/disrobe-cli/tests/golden/container_breadth.txt`. The committed DMG input reaches detection only, and 59 generic routes have no committed input. The declared roster is a capability list rather than a measurement |
 | Carve engine | A recursive carve-everything scan for every known magic, modeling chunked payloads, recursing by depth, and using entropy to separate code from padding |
 | Nesting | Container-in-container chaining, governed by `--max-depth` (default 8) |
 | Directory input | Batch-processed recursively, bounded by `--batch-max-depth` |
@@ -25,7 +25,7 @@ Before `disrobe` can decompile anything, it often has to get inside a container.
 | Encrypted volumes | LUKS1 with `aes-cbc-plain`, a 128-, 192-, or 256-bit raw volume key, and a SHA-1, SHA-256, or SHA-512 PBKDF2 header digest. The raw key is read from a bounded file or standard input, verified against the header digest, and zeroized after use before the decrypted payload enters the normal container pipeline. Keyless extraction succeeds with a typed wall that names the cipher, mode, digest, iteration count, and missing raw volume key |
 | Apple | `.dmg` (UDIF: koly trailer + blkx mish chunks; ADC / zlib / bzip2 / LZFSE / LZMA chunk decoders; then HFS+ catalog walk extracts individual files, all in-tree), `.pkg` (xar TOC + gzip / bzip2 heap, extracted in-tree) |
 | Vendor firmware | D-Link (SHRS / encrypted-img AES / alpha / fpkg), EnGenius XOR, Autel ECC table, QNAP PC1, plus CRC-verified Netgear (chk / trx), Xiaomi, Tesla, HP, Moxa, INSTAR, and Airoha carves; OTP-AES Airoha firmware is an information-theoretic wall and is carved verbatim |
-| Standalone executables | Bun `--compile` binaries (embedded JS module graph + sourcemaps), Unity AssetBundle (UnityFS), .NET single-file bundles (majors 1, 2 and 6; embedded assemblies routed to the CIL decompiler, native entries to the native pass) |
+| Standalone executables | Bun `--compile` binaries (embedded JS module graph + sourcemaps), Unity AssetBundle (UnityFS), .NET single-file bundles (majors 1, 2 and 6; embedded assemblies routed to the CIL decompiler, native entries to the native pass), Enigma Virtual Box 10.70 Build 20240522 x86 built-in stored-file bundles |
 | App / runtime | Electron `.asar`, Docker image tarball, OCI image manifest + layers, ISO 9660 with Joliet fallback, Rock Ridge names, ordered multi-extent files, and zisofs v1 (extracted in-tree) |
 
 ## Commands

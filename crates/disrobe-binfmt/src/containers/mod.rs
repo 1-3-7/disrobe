@@ -16,6 +16,7 @@ pub mod dmg;
 pub mod docker;
 pub mod dotnet_bundle;
 pub mod elf_overlay;
+pub mod enigma;
 pub mod erofs;
 pub mod eszip;
 pub mod ext4;
@@ -154,6 +155,10 @@ pub use dotnet_bundle::{
 };
 pub use elf_overlay::{
     ElfOverlay, ElfOverlayCarve, carve_elf_overlay, detect_elf_overlay, elf_image_end,
+};
+pub use enigma::{
+    EnigmaBundle, EnigmaEntry, EnigmaVariant, detect_enigma_virtual_box, enigma_member_bytes,
+    extract_enigma_virtual_box, parse_enigma_virtual_box,
 };
 pub use erofs::{ErofsFile, ErofsSuperblock, ErofsWalk, detect_erofs, walk_erofs};
 pub use eszip::{

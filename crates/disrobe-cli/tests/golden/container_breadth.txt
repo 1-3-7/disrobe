@@ -13,6 +13,7 @@ pyz	extract	corpus/python/freezers/shiv/hello.pyz
 appimage	extract	corpus/binfmt/appimage-type1/AppImageAssistant.AppImage
 innosetup	extract	crates/disrobe-binfmt/tests/fixtures/innosetup/codec-matrix/codec-bzip.exe
 installshield	extract	corpus/binfmt/installshield/wireplay-sys1.cab
+enigma-virtual-box	extract	crates/disrobe-binfmt/tests/fixtures/enigma/x86_evb_10_70_20240522.exe
 squashfs	extract	corpus/binfmt/squashfs-lzo/hello-lzo.squashfs
 romfs	extract	corpus/negative/binfmt/romfs-node-next-points-at-itself.bin
 erofs	extract	crates/disrobe-binfmt/tests/fixtures/erofs/lzma-compact-big-xattr.erofs

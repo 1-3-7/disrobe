@@ -174,6 +174,9 @@ pub fn extract_to_with_quota(
         ContainerKind::Squirrel => extract_squirrel(bytes, out_dir, quota),
         ContainerKind::InnoSetup => extract_innosetup(bytes, out_dir, quota),
         ContainerKind::InstallShield => extract_installshield(bytes, out_dir, quota),
+        ContainerKind::EnigmaVirtualBox => {
+            crate::containers::extract_enigma_virtual_box(bytes, out_dir, quota)
+        }
         ContainerKind::Squashfs => extract_squashfs(bytes, out_dir, quota),
         ContainerKind::Cramfs => extract_cramfs(bytes, out_dir, quota),
         ContainerKind::Ext4 => extract_ext4(bytes, out_dir, quota),

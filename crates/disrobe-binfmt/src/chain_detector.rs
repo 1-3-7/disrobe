@@ -132,6 +132,7 @@ const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
 const TAG_UEFI_FV: &str = "uefi-fv";
 const TAG_EROFS: &str = "erofs";
 const TAG_INSTALLSHIELD: &str = "installshield";
+const TAG_ENIGMA: &str = "enigma-virtual-box";
 const TAG_LUKS1: &str = "luks1";
 
 #[derive(Debug)]
@@ -175,6 +176,7 @@ const fn tag_specificity(tag: &str) -> u16 {
             | b"uefi-fv"
             | b"erofs"
             | b"installshield"
+            | b"enigma-virtual-box"
     ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
@@ -190,6 +192,7 @@ const fn tag_marker(tag: &str) -> &'static str {
         b"uefi-fv" => "fv-header+checksum",
         b"erofs" => "superblock+root-inode",
         b"installshield" => "isc-signature+cabinet-descriptor",
+        b"enigma-virtual-box" => "pe-enigma-sections+evb-directory",
         _ => "container-magic",
     }
 }
@@ -366,6 +369,7 @@ fn inventory_entries(tag: &str, bytes: &[u8]) -> Inventory {
         TAG_ARC => arc_inventory(bytes),
         TAG_ARJ => arj_inventory(bytes),
         TAG_INSTALLSHIELD => installshield_inventory(bytes),
+        TAG_ENIGMA => enigma_inventory(bytes),
         _ => Inventory::ExtractionRequired,
     }
 }
@@ -413,6 +417,24 @@ fn installshield_inventory(bytes: &[u8]) -> Inventory {
                 .recovered()
                 .map(|file: &crate::containers::InstallShieldFile| {
                     (file.path.clone(), file.expanded_size)
+                })
+                .collect(),
+        ),
+        Err(error) => Inventory::Unreadable(error.to_string()),
+    }
+}
+
+fn enigma_inventory(bytes: &[u8]) -> Inventory {
+    match crate::containers::parse_enigma_virtual_box(
+        bytes,
+        crate::quota::ExtractionQuota::default_safe(),
+    ) {
+        Ok(bundle) => Inventory::Listed(
+            bundle
+                .entries
+                .into_iter()
+                .map(|entry: crate::containers::EnigmaEntry| {
+                    (entry.name, u64::from(entry.original_size))
                 })
                 .collect(),
         ),
@@ -518,6 +540,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
         | TAG_STUFFIT
         | TAG_INNOSETUP
         | TAG_INSTALLSHIELD
+        | TAG_ENIGMA
         | TAG_APPIMAGE
         | TAG_DOTNET_SINGLE_FILE
         | TAG_UEFI_FV
@@ -548,6 +571,7 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         TAG_STUFFIT => crate::container::ContainerKind::StuffIt,
         TAG_INNOSETUP => crate::container::ContainerKind::InnoSetup,
         TAG_INSTALLSHIELD => crate::container::ContainerKind::InstallShield,
+        TAG_ENIGMA => crate::container::ContainerKind::EnigmaVirtualBox,
         TAG_APPIMAGE => crate::container::ContainerKind::AppImage,
         TAG_DOTNET_SINGLE_FILE => crate::container::ContainerKind::DotnetSingleFile,
         TAG_UEFI_FV => crate::container::ContainerKind::UefiFv,
@@ -737,6 +761,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::detect_installshield(bytes).is_some() {
         return Some(TAG_INSTALLSHIELD);
+    }
+    if crate::containers::detect_enigma_virtual_box(bytes) {
+        return Some(TAG_ENIGMA);
     }
     if crate::containers::detect_uefi_fv(bytes) {
         return Some(TAG_UEFI_FV);

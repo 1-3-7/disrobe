@@ -111,7 +111,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 | **Swift / Obj-C** | Mach-O class-dump plus SwiftShield mapping parser and explicit-key single-byte XOR blob decoding; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 header parse, v76/v84/v96 lift against a real hermesc sample; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm, graded against a self-authored Dart 3.12.2 android-arm64 product-mode corpus and, measured locally, a real RustDesk 1.4.9 `libapp.so` fetched by pinned hash. |
-| **Containers / archives / filesystems / firmware / encrypted volumes** | <!-- m:containers_formats -->102<!-- /m --> formats detected. 101 carry a generic in-tree extractor; LUKS1 carries a bounded raw-volume-key route and a typed keyless wall. <!-- roster-breadth:containers-exercised -->41<!-- /roster-breadth --> generic routes are driven to member bytes by an input this repository commits; LUKS1 is graded separately against tracked plaintext. |
+| **Containers / archives / filesystems / firmware / encrypted volumes** | <!-- m:containers_formats -->103<!-- /m --> formats detected. 102 carry a generic in-tree extractor; LUKS1 carries a bounded raw-volume-key route and a typed keyless wall. <!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> generic routes are driven to member bytes by an input this repository commits; LUKS1 is graded separately against tracked plaintext. |
 
 ## The `disrobe auto` chain
 

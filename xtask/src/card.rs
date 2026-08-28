@@ -474,8 +474,8 @@ mod tests {
         let rendered: String = render(&stats);
 
         assert!(rendered.contains("15 ecosystems"));
-        assert!(rendered.contains("102 detected formats"));
-        assert!(rendered.contains("41 exercised by committed inputs"));
+        assert!(rendered.contains("103 detected formats"));
+        assert!(rendered.contains("42 generic routes exercised by committed inputs"));
         assert!(rendered.contains("with deterministic output ordering."));
         assert!(!rendered.contains("20+ ecosystems"));
         assert!(!rendered.contains("compiled software, deterministically."));

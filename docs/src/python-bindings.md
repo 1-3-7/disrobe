@@ -1382,8 +1382,8 @@ transformation_count: int = ps_deob.transformation_count
 
 ## Containers
 
-<!-- m:containers_formats -->102<!-- /m --> container families are detected. Of these, 101 carry a generic in-tree extractor and LUKS1 carries a bounded raw-volume-key extraction route.
-<!-- roster-breadth:containers-exercised -->41<!-- /roster-breadth --> of them are driven to member
+<!-- m:containers_formats -->103<!-- /m --> container families are detected. Of these, 102 carry a generic in-tree extractor and LUKS1 carries a bounded raw-volume-key extraction route.
+<!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> of them are driven to member
 bytes by an input this repository commits. See [container docs](./languages/containers.md) for the
 full family list.
 
