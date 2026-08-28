@@ -116,8 +116,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "README.md",
-        figures: 35,
-        digest: "fdf2a703b36d57cb",
+        figures: 36,
+        digest: "6a6a45062e5546b2",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -131,8 +131,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "benches/head-to-head/results.md",
-        figures: 14,
-        digest: "57b4b8cd743f4d26",
+        figures: 18,
+        digest: "0984bd036d7655a5",
     },
     FigureBudget {
         path: "benches/native-unpack/results.md",

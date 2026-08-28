@@ -4,7 +4,7 @@
     {
       "ci_attested": true,
       "claim": "On their respective committed EdgeCases inputs, real javac scores every emitted method by one source-only rule. The scorer compiles the complete recovered source set first. If a parse failure blocks attribution, it isolates the implicated balanced method, field-initializer, or type region under a 64-round ceiling and reruns javac. Methods in isolated method or type regions are unclean. Peer methods count only after javac reaches attribution. A leg publishes a lead only when both sides are certified.",
-      "comparison_basis": "no comparison: at least one declared leg has a side the compiler never type-checked",
+      "comparison_basis": "clean-method count within each declared leg",
       "competitors": [
         {
           "clean": 60,
@@ -20,18 +20,16 @@
           "version": "n/a (in-process)"
         },
         {
-          "clean": null,
-          "emitted": 295,
+          "clean": 281,
+          "emitted": 303,
           "is_disrobe": false,
           "leg": "dex",
           "metric": "recompile-clean emitted methods (clean / emitted)",
           "name": "jadx (DEX input)",
-          "producer_exit": true,
-          "result": "not certified: 295 methods emitted",
+          "result": "281 clean / 303 emitted (92.7%)",
           "role": "competitor",
-          "status": "uncertified",
-          "uncertified_stage": "producer",
-          "value": null,
+          "status": "ok",
+          "value": 92.73927392739274,
           "version": "1.5.5"
         },
         {
@@ -61,24 +59,24 @@
           "version": "CFR 0.152"
         }
       ],
-      "disrobe_leads": null,
+      "disrobe_leads": false,
       "ecosystem": "android",
       "external_oracle": "real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; one source-only scorer applies the same complete-compile, bounded region-isolation, and final diagnostic rule to every tool",
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 60 / 163 (36.8%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
+      "measured": "Android DEX: `disrobe` 60 / 163 (36.8%) vs JADX 281 / 303 (92.7%); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
-          "comparison_basis": "none: a side of this leg was never type-checked",
+          "comparison_basis": "clean-method count",
           "competitor": {
-            "certified": false,
-            "emitted": 295,
+            "certified": true,
+            "clean": 281,
+            "emitted": 303,
             "label": "JADX",
             "name": "jadx (DEX input)",
-            "producer_exit": true,
-            "uncertified_stage": "producer",
+            "value": 92.73927392739274,
             "version": "1.5.5"
           },
           "disrobe": {
@@ -659,7 +657,7 @@
       "reproduce": "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox"
     }
   ],
-  "disrobe_loss_count": 0,
+  "disrobe_loss_count": 1,
   "ecosystems": [
     "android",
     "beam",
