@@ -28929,8 +28929,8 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_tail_within_the_clone_budget_is_cloned_onto_every_reaching_arm() {
-        let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET - 1);
+    fn a_seven_link_shared_tail_is_cloned_onto_every_reaching_arm() {
+        let items: Vec<Item> = chained_join_tail_items(7);
         let mut refusal: Option<&'static str> = None;
         let body: Block = structure_reducible_cfg(
             &items,
@@ -28939,7 +28939,7 @@ mod tests {
             &mut refusal,
         )
         .expect("no hard error")
-        .expect("a pure tail shorter than the clone budget must structure");
+        .expect("a seven-link pure tail must structure");
         let first_link: Stmt = Stmt::Assign {
             dest: RegRef {
                 reg: Reg::Rax,
@@ -28955,8 +28955,8 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_tail_longer_than_the_clone_budget_is_refused_rather_than_cloned() {
-        let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET + 1);
+    fn an_eight_link_shared_tail_at_the_clone_budget_is_refused_rather_than_cloned() {
+        let items: Vec<Item> = chained_join_tail_items(8);
         let mut refusal: Option<&'static str> = None;
         let structured: Option<Block> = structure_reducible_cfg(
             &items,
@@ -28967,7 +28967,29 @@ mod tests {
         .expect("no hard error");
         assert!(
             structured.is_none(),
-            "a shared tail longer than the clone budget must not be cloned: {structured:#?}"
+            "an eight-link shared tail at the clone budget must not be cloned: {structured:#?}"
+        );
+        assert_eq!(
+            refusal,
+            Some("a join block is reached from two arms without a common follow"),
+            "the clone-budget edge must name the precondition that failed"
+        );
+    }
+
+    #[test]
+    fn a_nine_link_shared_tail_beyond_the_clone_budget_is_refused_rather_than_cloned() {
+        let items: Vec<Item> = chained_join_tail_items(9);
+        let mut refusal: Option<&'static str> = None;
+        let structured: Option<Block> = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error");
+        assert!(
+            structured.is_none(),
+            "a nine-link shared tail beyond the clone budget must not be cloned: {structured:#?}"
         );
         assert_eq!(
             refusal,
