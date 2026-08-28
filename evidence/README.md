@@ -195,8 +195,11 @@ cargo run -p disrobe-bench-head-to-head -- --check # drift gate on the measured 
 The bench runs `disrobe` and the leading competing tool on the byte-identical input and grades both
 sides with the same external oracle:
 
-- `apk-jadx-cfr.json` - `disrobe` vs JADX (DEX) and CFR (JAR), recompile-clean main-class methods under
-  real `javac` against a stubbed classpath (no original-jar leak).
+- `apk-jadx-cfr.json` - `disrobe` vs JADX (DEX) and CFR (JAR), scoring the full recovered source set
+  under real `javac` against a stubbed classpath (no original-jar leak). On the pinned DEX corpus,
+  JADX 1.5.5 exits with status 1 after producing partial output. The scorer reconciles that exact
+  output against the pinned corpus, counts five explicitly undecompiled methods as unclean, and
+  records 281 of 303 emitted methods as recompilable (92.7%).
 - `frisk-apkleaks.json` - `disrobe frisk` vs apkleaks, secret/IOC recall against the hand-verified
   planted ground truth in `corpus/recon/apk/planted-secrets.apk`.
 - `gate-harvest.json` - real gate oracles with no `recovery.json` number (frisk planted-category

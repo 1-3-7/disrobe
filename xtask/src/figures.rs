@@ -301,8 +301,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 40] = [
     },
     FigureBudget {
         path: "evidence/README.md",
-        figures: 1,
-        digest: "164b090acd56d131",
+        figures: 3,
+        digest: "7138e9af11ec7962",
     },
     FigureBudget {
         path: "evidence/edge-comparison.md",
