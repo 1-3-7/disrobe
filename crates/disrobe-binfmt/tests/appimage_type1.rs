@@ -367,13 +367,22 @@ fn symlinks_are_described_without_materializing_a_host_link() {
 }
 
 #[test]
-fn hostile_and_colliding_rrip_paths_refuse_before_output_creation() {
-    for (iso_name, rr_name) in [
-        (b"ESCAPE.;1".as_slice(), b"../escape".as_slice()),
-        (b"DUP.;1".as_slice(), b"AppRun".as_slice()),
+fn hostile_and_colliding_rrip_paths_report_refusals_and_retain_safe_members() {
+    for (iso_name, rr_name, expected_violation) in [
+        (
+            b"ESCAPE.;1".as_slice(),
+            b"../escape".as_slice(),
+            "iso-slip `../escape`: DR-BINFMT-0008: archive entry path escapes container root: ../escape",
+        ),
+        (
+            b"DUP.;1".as_slice(),
+            b"AppRun".as_slice(),
+            "iso-path `AppRun`: DR-BINFMT-0007: payload decompression failed: iso entry path collision at `AppRun`",
+        ),
         (
             b"SIDECAR.;1".as_slice(),
             b".disrobe-appimage-layout.json".as_slice(),
+            "iso-path `.disrobe-appimage-layout.json`: DR-BINFMT-0007: payload decompression failed: iso entry path collision at `.disrobe-appimage-layout.json`",
         ),
     ] {
         let mut image: Vec<u8> = type1_image(true);
@@ -381,18 +390,53 @@ fn hostile_and_colliding_rrip_paths_refuse_before_output_creation() {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("binfmt-appimage-type1-refuse")
                 .expect("create refusal scratch directory");
-        assert!(extract_to(ContainerKind::AppImage, &image, scratch.path()).is_err());
+        let output: std::path::PathBuf = scratch.path().join("output");
+        let escaped: std::path::PathBuf = scratch.path().join("escape");
+        assert!(!escaped.exists());
+        let result: ExtractionResult = extract_to(ContainerKind::AppImage, &image, &output)
+            .expect("retain safe AppImage members");
+        assert_eq!(result.kind, ContainerKind::AppImage);
         assert_eq!(
-            std::fs::read_dir(scratch.path())
-                .expect("read refusal output")
+            result
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["AppRun", ".disrobe-iso-layout.json"]
+        );
+        assert_eq!(result.integrity_violations, [expected_violation]);
+        assert_eq!(
+            std::fs::read(output.join("AppRun")).expect("read retained AppRun"),
+            b"#!/bin/sh\nprintf type1\n"
+        );
+        let appimage_layout: Vec<u8> = std::fs::read(output.join(".disrobe-appimage-layout.json"))
+            .expect("read generated AppImage layout");
+        let _: serde_json::Value =
+            serde_json::from_slice(&appimage_layout).expect("parse generated AppImage layout");
+        assert!(!escaped.exists());
+        assert_eq!(
+            std::fs::read_dir(&output)
+                .expect("read partial output")
                 .count(),
-            0
+            3
         );
     }
 
-    for entries in [
-        [(b"A.;1".as_slice(), b"a".as_slice()), (b"AB.;1", b"a/b")],
-        [(b"AB.;1".as_slice(), b"a/b".as_slice()), (b"A.;1", b"a")],
+    for (entries, retained, rejected, rejected_is_directory, expected_violation) in [
+        (
+            [(b"A.;1".as_slice(), b"a".as_slice()), (b"AB.;1", b"a/b")],
+            "a",
+            "a/b",
+            false,
+            "iso-path `a/b`: DR-BINFMT-0007: payload decompression failed: iso entry path prefix collision at `a/b`",
+        ),
+        (
+            [(b"AB.;1".as_slice(), b"a/b".as_slice()), (b"A.;1", b"a")],
+            "a/b",
+            "a",
+            true,
+            "iso-path `a`: DR-BINFMT-0007: payload decompression failed: iso entry path prefix collision at `a`",
+        ),
     ] {
         let mut image: Vec<u8> = type1_image(true);
         append_root_file(&mut image, entries[0].0, entries[0].1, 22);
@@ -400,12 +444,32 @@ fn hostile_and_colliding_rrip_paths_refuse_before_output_creation() {
         let scratch: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("binfmt-appimage-type1-prefix-refuse")
                 .expect("create prefix refusal scratch directory");
-        assert!(extract_to(ContainerKind::AppImage, &image, scratch.path()).is_err());
+        let output: std::path::PathBuf = scratch.path().join("output");
+        let result: ExtractionResult = extract_to(ContainerKind::AppImage, &image, &output)
+            .expect("retain the first non-colliding AppImage member");
         assert_eq!(
-            std::fs::read_dir(scratch.path())
-                .expect("read prefix refusal output")
-                .count(),
-            0
+            result
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["AppRun", retained, ".disrobe-iso-layout.json"]
         );
+        assert_eq!(result.integrity_violations, [expected_violation]);
+        assert_eq!(
+            std::fs::read(output.join("AppRun")).expect("read retained AppRun"),
+            b"#!/bin/sh\nprintf type1\n"
+        );
+        assert_eq!(
+            std::fs::read(output.join(retained)).expect("read retained RRIP member"),
+            b"x"
+        );
+        let rejected_path: std::path::PathBuf = output.join(rejected);
+        if rejected_is_directory {
+            assert!(rejected_path.is_dir());
+            assert!(!rejected_path.is_file());
+        } else {
+            assert!(!rejected_path.exists());
+        }
     }
 }
