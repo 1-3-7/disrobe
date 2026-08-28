@@ -453,7 +453,10 @@ fn a_mislabelled_pm1_or_pm2_member_is_refused_without_partial_output() {
             b"-pm1-",
             "-pm1- copy distance 14 exceeds the 10 byte(s) produced",
         ),
-        (b"-pm2-", "decoded CRC 34c1 differs from declared CRC b6d5"),
+        (
+            b"-pm2-",
+            "-pm2- tree leaves part of its prefix space unassigned",
+        ),
     ];
     for (method, message) in expected {
         let mut archive: Vec<u8> = METHOD_FIXTURES[5].0.to_vec();
