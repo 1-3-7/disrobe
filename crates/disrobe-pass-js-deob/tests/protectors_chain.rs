@@ -21,6 +21,9 @@ const ARXAN_FIXTURE: &str =
     include_str!("../../../corpus/js/protectors/arxan/edge_cases_guarded.synth.js");
 const PACE_FIXTURE: &str =
     include_str!("../../../corpus/js/protectors/pace/edge_cases_paced.synth.js");
+const OBFUSCATOR_IO_FIXTURE: &str =
+    include_str!("../../../corpus/js/javascript-obfuscator/browser/obf_base64.js");
+const RECOVERED_CHILD: &str = "js-deob.recovered.js";
 
 const fn ctx(bytes: &[u8]) -> DetectContext<'_> {
     DetectContext {
@@ -245,4 +248,35 @@ fn detection_needs_no_authorization_while_the_peel_does() {
         !recovered.contains("__PACE__"),
         "the asserted run is the only path that may strip the guard: {recovered}",
     );
+}
+
+#[test]
+fn an_outer_protector_does_not_make_an_inner_obfuscator_io_layer_terminal() {
+    let layered: String =
+        format!("{PACE_FIXTURE}\n// obfuscator.io output\n{OBFUSCATOR_IO_FIXTURE}");
+    let outer: DetectVerdict = JsObfDetector
+        .detect(&ctx(layered.as_bytes()))
+        .expect("the outer protector must be detected");
+    assert_eq!(outer.format_tag, "js-pace");
+    let children: Vec<disrobe_core::chain::ChildArtifact> = JS_OBF_PASS
+        .extract_children_with_context(&artifact_from(layered.as_bytes()), asserted())
+        .expect("an asserted outer protector must emit recovered source");
+    let recovered: &disrobe_core::chain::ChildArtifact = children
+        .iter()
+        .find(|child: &&disrobe_core::chain::ChildArtifact| {
+            child.handle.relative_path == RECOVERED_CHILD
+        })
+        .expect("the outer protector must emit its recovered source child");
+    assert_eq!(
+        recovered.handle.hint, None,
+        "the still-obfuscated inner layer must remain eligible for the next pass"
+    );
+    assert!(
+        recovered.bytes.ends_with(OBFUSCATOR_IO_FIXTURE.as_bytes()),
+        "the recovered child must retain the exact inner obfuscator payload"
+    );
+    let inner: DetectVerdict = JsObfDetector
+        .detect(&ctx(recovered.bytes.as_slice()))
+        .expect("the recovered inner layer must remain detectable");
+    assert_eq!(inner.format_tag, "js-javascript-obfuscator");
 }

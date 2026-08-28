@@ -141,6 +141,24 @@ impl Detector for JsObfDetector {
 #[derive(Debug)]
 pub struct JsObfPass;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryRoute {
+    ObfuscatorIo,
+    Other,
+}
+
+impl RecoveryRoute {
+    const fn is_obfuscator_io(self) -> bool {
+        matches!(self, Self::ObfuscatorIo)
+    }
+}
+
+#[derive(Debug)]
+struct SelectedRecovery {
+    artifact: Artifact,
+    route: RecoveryRoute,
+}
+
 impl Pass for JsObfPass {
     #[inline]
     fn meta(&self) -> disrobe_core::chain::PassMeta {
@@ -173,13 +191,13 @@ impl Pass for JsObfPass {
         context: PassContext<'_>,
     ) -> CoreResult<Vec<ChildArtifact>> {
         let mut children: Vec<ChildArtifact> = Vec::new();
-        let detection: Detection = detect_obfuscator(input.envelope.as_slice());
-        if let Ok(recovered) = self.run_with_context(input, context)
-            && recovered.envelope.as_slice() != input.envelope.as_slice()
-            && !recovered.envelope.is_empty()
+        if let Ok(recovered) = Self::run_selected_with_context(input, context)
+            && recovered.artifact.envelope.as_slice() != input.envelope.as_slice()
+            && !recovered.artifact.envelope.is_empty()
         {
-            let bytes: Vec<u8> = recovered_child_bytes(detection.family, recovered.envelope);
-            children.push(recovered_child(bytes));
+            let bytes: Vec<u8> =
+                recovered_child_bytes(recovered.route, recovered.artifact.envelope);
+            children.push(recovered_child(recovered.route, bytes, context));
         }
         children.extend(emit_dedicated_sidecars(input.envelope.as_slice()));
         Ok(children)
@@ -194,28 +212,51 @@ impl Pass for JsObfPass {
         artifact: &Artifact,
         context: PassContext<'_>,
     ) -> CoreResult<Artifact> {
+        Self::run_selected_with_context(artifact, context)
+            .map(|recovered: SelectedRecovery| recovered.artifact)
+    }
+}
+
+impl JsObfPass {
+    fn run_selected_with_context(
+        artifact: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<SelectedRecovery> {
         let bytes: &[u8] = artifact.envelope.as_slice();
         if crate::v8::sea::detect_node_sea_blob(bytes).is_some() {
-            return run_node_sea(bytes, artifact);
+            return run_node_sea(bytes, artifact).map(|artifact: Artifact| SelectedRecovery {
+                artifact,
+                route: RecoveryRoute::Other,
+            });
         }
         if crate::v8::bytenode::looks_like_bytenode(bytes) {
-            return run_bytenode(bytes, artifact);
+            return run_bytenode(bytes, artifact).map(|artifact: Artifact| SelectedRecovery {
+                artifact,
+                route: RecoveryRoute::Other,
+            });
         }
         if let Ok(text) = std::str::from_utf8(bytes) {
             if let Some(out) = run_protector(text, artifact, context.i_have_authorization)? {
-                return Ok(out);
+                return Ok(SelectedRecovery {
+                    artifact: out,
+                    route: RecoveryRoute::Other,
+                });
             }
             let eso: EsotericClassification = classify_esoteric(text);
             if let Some(source) = run_esoteric(&eso, bytes) {
-                return Ok(Artifact::new(
-                    Rung::Surface,
-                    source.into_bytes(),
-                    artifact.root_hash,
-                ));
+                return Ok(SelectedRecovery {
+                    artifact: Artifact::new(Rung::Surface, source.into_bytes(), artifact.root_hash),
+                    route: RecoveryRoute::Other,
+                });
             }
         }
         let det: Detection = detect_obfuscator(bytes);
-        match det.family {
+        let route: RecoveryRoute = if matches!(det.family, JsObfuscator::ObfuscatorIo) {
+            RecoveryRoute::ObfuscatorIo
+        } else {
+            RecoveryRoute::Other
+        };
+        let recovered: Artifact = match det.family {
             JsObfuscator::ObfuscatorIo => run_javascript_obfuscator(bytes, artifact),
             JsObfuscator::JsConfuser => run_jsconfuser(bytes, artifact),
             JsObfuscator::Jscrambler => run_jscrambler(bytes, artifact),
@@ -225,7 +266,11 @@ impl Pass for JsObfPass {
             other => Err(CoreError::PassFailure(format!(
                 "DR-JS-0901: js.deob: family {other:?} not yet wired through chain runner",
             ))),
-        }
+        }?;
+        Ok(SelectedRecovery {
+            artifact: recovered,
+            route,
+        })
     }
 }
 
@@ -801,8 +846,23 @@ fn another_layer_is_claimable(bytes: &[u8]) -> bool {
         .is_some_and(|v: DetectVerdict| v.confidence >= SelectionPolicy::DEFAULT_MIN_CONFIDENCE)
 }
 
-fn recovered_child(bytes: Vec<u8>) -> ChildArtifact {
-    if another_layer_is_claimable(bytes.as_slice()) {
+fn selected_layer_changes(bytes: &[u8], context: PassContext<'_>) -> bool {
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0; 32]);
+    JsObfPass::run_selected_with_context(&input, context)
+        .map(|recovered: SelectedRecovery| {
+            recovered_child_bytes(recovered.route, recovered.artifact.envelope)
+        })
+        .is_ok_and(|recovered: Vec<u8>| !recovered.is_empty() && recovered != bytes)
+}
+
+fn recovered_child(
+    route: RecoveryRoute,
+    bytes: Vec<u8>,
+    context: PassContext<'_>,
+) -> ChildArtifact {
+    let chainable: bool = another_layer_is_claimable(bytes.as_slice())
+        && (!route.is_obfuscator_io() || selected_layer_changes(bytes.as_slice(), context));
+    if chainable {
         chain_sample_child(RECOVERED_CHILD_PATH.to_string(), bytes)
     } else {
         terminal_child(RECOVERED_CHILD_PATH.to_string(), bytes)
@@ -831,8 +891,8 @@ fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
     }
 }
 
-fn recovered_child_bytes(family: JsObfuscator, recovered: Vec<u8>) -> Vec<u8> {
-    if !matches!(family, JsObfuscator::ObfuscatorIo) {
+fn recovered_child_bytes(route: RecoveryRoute, recovered: Vec<u8>) -> Vec<u8> {
+    if !route.is_obfuscator_io() {
         return recovered;
     }
     let Ok(value): Result<serde_json::Value, serde_json::Error> =
@@ -909,7 +969,8 @@ mod tests {
             !another_layer_is_claimable(weak),
             "a claim the chain would reject must not send the payload back for detection"
         );
-        let child: ChildArtifact = recovered_child(weak.to_vec());
+        let child: ChildArtifact =
+            recovered_child(RecoveryRoute::Other, weak.to_vec(), PassContext::default());
         assert_eq!(child.handle.hint.as_deref(), Some(TERMINAL_HINT));
     }
 
@@ -921,9 +982,29 @@ mod tests {
             another_layer_is_claimable(layered),
             "a real packed body must remain a chain sample"
         );
-        let child: ChildArtifact = recovered_child(layered.to_vec());
+        let child: ChildArtifact = recovered_child(
+            RecoveryRoute::Other,
+            layered.to_vec(),
+            PassContext::default(),
+        );
         assert_eq!(child.handle.hint, None);
         assert_eq!(child.handle.relative_path, RECOVERED_CHILD_PATH);
+    }
+
+    #[test]
+    fn an_authorized_protected_inner_layer_remains_chainable() {
+        let protected: &[u8] =
+            include_bytes!("../../../corpus/js/protectors/pace/edge_cases_paced.synth.js");
+        assert!(another_layer_is_claimable(protected));
+        let child: ChildArtifact = recovered_child(
+            RecoveryRoute::ObfuscatorIo,
+            protected.to_vec(),
+            PassContext {
+                path_hint: None,
+                i_have_authorization: true,
+            },
+        );
+        assert_eq!(child.handle.hint, None);
     }
 
     fn detect_bytes(src: &[u8]) -> Option<DetectVerdict> {
@@ -1112,6 +1193,7 @@ mod tests {
             .iter()
             .find(|c: &&ChildArtifact| c.handle.relative_path == "js-deob.recovered.js")
             .expect("source child present");
+        assert_eq!(recovered.handle.hint.as_deref(), Some(TERMINAL_HINT));
         let source: &str = std::str::from_utf8(&recovered.bytes).expect("utf8 source");
         assert!(source.contains("var var_1 = function(){};"));
         assert!(!source.trim_start().starts_with('{'));
