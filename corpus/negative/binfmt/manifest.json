@@ -118,14 +118,14 @@
       "shape": "expansion_ratio_bomb",
       "target": "zip_extract",
       "builder": "zip_declared_ratio_bomb",
-      "authored_reason": "A stored zip entry whose directory declares 1 MiB of output from 64 compressed bytes, an expansion ratio of 16384 against a cap of 100. The lie is in the declared sizes, so the quota rejects it before any byte is decompressed and the member needs no expanding payload.",
+      "authored_reason": "A stored zip entry whose directory declares 1 MiB of output from 64 compressed bytes, an expansion ratio of 16384 against a cap of 100. The lie is in the declared sizes, so the quota drops the member before any byte is decompressed, records the refusal, and publishes no expanding payload.",
       "accepted": [
         {
-          "outcome": "refuse",
-          "error": "quota_exceeded",
-          "reason": {
-            "contains": "per-entry expansion ratio 16384 exceeds cap 100"
-          }
+          "outcome": "partial",
+          "entries": 0,
+          "violations": [
+            "zip-quota `bomb.bin`: DR-BINFMT-0009: extraction quota exceeded on entry `bomb.bin`: per-entry expansion ratio 16384 exceeds cap 100"
+          ]
         }
       ],
       "multiple_outcome_reason": null
@@ -218,7 +218,7 @@
           "outcome": "partial",
           "entries": 0,
           "violations": [
-            "zip-slip: DR-BINFMT-0008: archive entry path escapes container root: ../escape.txt"
+            "zip-slip `../escape.txt`: DR-BINFMT-0008: archive entry path escapes container root: ../escape.txt"
           ]
         }
       ],

@@ -62,15 +62,15 @@ Most `disrobe-binfmt` errors are one variant per format carrying a message, so s
 malformations of the same format share an error variant. Matching the variant alone would let a
 member pass on another member's rejection path. The harness therefore asserts the reason text too.
 
-This is not theoretical. Disabling the per-entry expansion-ratio cap leaves `zip-declared-ratio-bomb`
-still refused, and still refused as `QuotaExceeded`, but by the aggregate-ratio guard instead. A
-check that matched only the variant would have stayed green through that regression. The harness
-reports it:
+This is not theoretical. Disabling the per-entry expansion-ratio cap leaves
+`zip-declared-ratio-bomb` with no recovered member, but moves its violation to the aggregate-ratio
+guard. A check that asserted only the empty output would have stayed green through that regression.
+The harness reports the changed reason:
 
 ```text
 [WRONG OUTCOME] `zip-declared-ratio-bomb` (shape ExpansionRatioBomb, target ZipExtract)
-    declared: [Refuse { error: QuotaExceeded, reason_contains: "per-entry expansion ratio 16384 exceeds cap 100" }]
-    observed: Refused { error: Some(QuotaExceeded), message: "... aggregate expansion ratio 16384 exceeds cap 10" }
+    declared: [Partial { entries: 0, violations: ["... per-entry expansion ratio 16384 exceeds cap 100"] }]
+    observed: Recovered { entries: 0, violations: ["... aggregate expansion ratio 16384 exceeds cap 10"] }
 ```
 
 ## Bounds
@@ -95,7 +95,7 @@ the roster, and an outcome nobody exercises is an unproven claim rather than a p
 | Self-referential offset | `romfs-node-next-points-at-itself` | Partial, exactly 1 file |
 | Cyclic offset | `romfs-directory-child-cycle` | Partial, exactly 0 files |
 | Zero-length member | `zero-length-file` | Refuse, zip, no end-of-central-directory record |
-| Expansion ratio bomb | `zip-declared-ratio-bomb` | Refuse, quota, per-entry ratio 16384 over a cap of 100 |
+| Expansion ratio bomb | `zip-declared-ratio-bomb` | Partial, 0 entries, one quota violation naming per-entry ratio 16384 over a cap of 100 |
 | Declared count near type maximum | `uzip-block-count-near-u32-max` | Refuse, uzip, table of contents runs past end of image |
 | Magic matches, body is another format | `zip-magic-body-is-elf` | Detect only, classified as zip, recovery declines |
 | Valid but empty | `zip-valid-empty-archive` | Partial, exactly 0 entries, no violation |
