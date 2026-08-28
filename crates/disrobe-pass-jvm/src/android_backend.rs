@@ -16,7 +16,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_tool_process::opened_file_matches_path;
 use serde::{Deserialize, Serialize};
 
-use crate::backends::{AndroidBackend, BackendInvocation, invoke_android};
+use crate::backends::{AndroidBackend, BackendInvocation, invoke_android_captured};
 use crate::dalvik_decompile::{DecompiledDex, decompile_dex_bytes};
 use crate::error::{Error, Result};
 
@@ -63,6 +63,22 @@ pub enum JadxOutcome {
         tool: String,
         status: i32,
         stderr: String,
+        emitted_methods: usize,
+    },
+    Refused(JadxRefusal),
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum JadxCapturedOutcome {
+    Recovered(AndroidDecompileOutput),
+    ProducerFailed {
+        tool: String,
+        status: i32,
+        input_path: PathBuf,
+        stdout: String,
+        stderr: String,
+        output: AndroidDecompileOutput,
         emitted_methods: usize,
     },
     Refused(JadxRefusal),
@@ -221,7 +237,7 @@ fn legacy_jadx_outcome(outcome: JadxOutcome) -> Result<AndroidDecompileOutput> {
             tool,
             status,
             stderr,
-            ..
+            emitted_methods: _,
         } => Err(Error::BackendFailed {
             tool,
             status,
@@ -236,23 +252,45 @@ fn legacy_jadx_outcome(outcome: JadxOutcome) -> Result<AndroidDecompileOutput> {
 }
 
 pub fn run_jadx_on_bytes_detailed(input_bytes: &[u8], file_name: &str) -> Result<JadxOutcome> {
+    Ok(match run_jadx_on_bytes_captured(input_bytes, file_name)? {
+        JadxCapturedOutcome::Recovered(output) => JadxOutcome::Recovered(output),
+        JadxCapturedOutcome::ProducerFailed {
+            tool,
+            status,
+            stderr,
+            emitted_methods,
+            ..
+        } => JadxOutcome::ProducerFailed {
+            tool,
+            status,
+            stderr,
+            emitted_methods,
+        },
+        JadxCapturedOutcome::Refused(refusal) => JadxOutcome::Refused(refusal),
+    })
+}
+
+pub fn run_jadx_on_bytes_captured(
+    input_bytes: &[u8],
+    file_name: &str,
+) -> Result<JadxCapturedOutcome> {
     match run_jadx_on_bytes_detailed_inner(input_bytes, file_name) {
         Ok(outcome) => Ok(outcome),
         Err(JadxFailure::Public(error)) => Err(error),
-        Err(JadxFailure::Refusal(refusal)) => Ok(JadxOutcome::Refused(refusal)),
+        Err(JadxFailure::Refusal(refusal)) => Ok(JadxCapturedOutcome::Refused(refusal)),
     }
 }
 
 fn run_jadx_on_bytes_detailed_inner(
     input_bytes: &[u8],
     file_name: &str,
-) -> JadxResult<JadxOutcome> {
+) -> JadxResult<JadxCapturedOutcome> {
     validate_jadx_input_file_name(file_name)?;
     let work: ScratchDir = make_work_dir()?;
     let input_path: PathBuf = work.path().join(file_name);
     std::fs::write(&input_path, input_bytes)?;
     let out_dir: PathBuf = work.path().join("out");
-    let result: JadxResult<JadxOutcome> = run_jadx_on_path_detailed(&input_path, &out_dir);
+    let result: JadxResult<JadxCapturedOutcome> = run_jadx_on_path_detailed(&input_path, &out_dir);
     result
 }
 
@@ -316,38 +354,35 @@ fn validate_jadx_input_file_name(file_name: &str) -> core::result::Result<(), Ja
     Ok(())
 }
 
-fn run_jadx_on_path_detailed(input_path: &Path, out_dir: &Path) -> JadxResult<JadxOutcome> {
+fn run_jadx_on_path_detailed(input_path: &Path, out_dir: &Path) -> JadxResult<JadxCapturedOutcome> {
     let args: Vec<String> = vec![
         "--no-debug-info".to_string(),
+        "--threads-count".to_string(),
+        "1".to_string(),
         "-d".to_string(),
         out_dir.to_string_lossy().into_owned(),
         input_path.to_string_lossy().into_owned(),
     ];
     let invocation: Result<BackendInvocation> =
-        invoke_android(AndroidBackend::Jadx, &args, JADX_TIMEOUT);
-    finalize_jadx_output(invocation, out_dir)
+        invoke_android_captured(AndroidBackend::Jadx, &args, JADX_TIMEOUT);
+    finalize_jadx_output(invocation, input_path, out_dir)
 }
 
 fn finalize_jadx_output(
     invocation: Result<BackendInvocation>,
+    input_path: &Path,
     out_dir: &Path,
-) -> JadxResult<JadxOutcome> {
-    let (failure, stderr): (Option<(String, i32, String)>, String) = match invocation {
-        Ok(value) => (None, String::from_utf8_lossy(&value.stderr).into_owned()),
-        Err(Error::BackendFailed {
-            tool,
-            status,
-            stderr,
-        }) => (Some((tool, status, stderr.clone())), stderr),
-        Err(error) => return Err(error.into()),
-    };
+) -> JadxResult<JadxCapturedOutcome> {
+    let invocation: BackendInvocation = invocation.map_err(JadxFailure::Public)?;
+    let stdout: String = String::from_utf8_lossy(&invocation.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&invocation.stderr).into_owned();
     preflight_jadx_output_tree(
         out_dir,
         MAX_JADX_OUTPUT_TREE_ENTRIES,
         MAX_JADX_OUTPUT_TREE_BYTES,
     )?;
     let sources: BTreeMap<String, String> = collect_java_sources(out_dir)?;
-    if sources.is_empty() && failure.is_none() {
+    if sources.is_empty() && invocation.exit_code == 0 {
         return Err(Error::BackendFailed {
             tool: "jadx".to_string(),
             status: -1,
@@ -359,21 +394,25 @@ fn finalize_jadx_output(
         .values()
         .map(|s: &String| count_method_signatures(s))
         .sum();
-    if let Some((tool, status, stderr)) = failure {
-        return Ok(JadxOutcome::ProducerFailed {
-            tool,
-            status,
-            stderr,
-            emitted_methods: method_count,
-        });
-    }
-    Ok(JadxOutcome::Recovered(AndroidDecompileOutput {
+    let output: AndroidDecompileOutput = AndroidDecompileOutput {
         engine: AndroidDecompiler::Jadx,
         class_count: sources.len(),
         method_count,
         notes: vec!["jadx external backend".to_string()],
         sources,
-    }))
+    };
+    if invocation.exit_code != 0 {
+        return Ok(JadxCapturedOutcome::ProducerFailed {
+            tool: "jadx".to_owned(),
+            status: invocation.exit_code,
+            input_path: input_path.to_owned(),
+            stdout,
+            stderr,
+            output,
+            emitted_methods: method_count,
+        });
+    }
+    Ok(JadxCapturedOutcome::Recovered(output))
 }
 
 fn make_work_dir() -> Result<ScratchDir> {
@@ -911,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_jadx_invocation_cannot_score_partial_sources() -> Result<()> {
+    fn nonzero_jadx_invocation_preserves_streams_and_partial_sources() -> Result<()> {
         let scratch: ScratchDir = ScratchDir::create("disrobe_jadx_partial_failure")?;
         let sources: PathBuf = scratch.path().join("out").join("sources");
         std::fs::create_dir_all(&sources)?;
@@ -919,22 +958,45 @@ mod tests {
             sources.join("EdgeCases.java"),
             b"class EdgeCases {\n  public void recovered() {\n  }\n}",
         )?;
-        let invocation: Result<BackendInvocation> = Err(Error::BackendFailed {
-            tool: "jadx".to_owned(),
-            status: 7,
-            stderr: "partial output".to_owned(),
+        let invocation: Result<BackendInvocation> = Ok(BackendInvocation {
+            stdout: b"producer detail".to_vec(),
+            stderr: b"launcher detail".to_vec(),
+            exit_code: 7,
         });
-        let result: JadxResult<JadxOutcome> =
-            finalize_jadx_output(invocation, scratch.path().join("out").as_path());
-        assert!(matches!(
-            result,
-            Ok(JadxOutcome::ProducerFailed {
-                tool,
-                status: 7,
-                emitted_methods: 1,
-                ..
-            }) if tool == "jadx"
-        ));
+        let outcome: JadxCapturedOutcome = finalize_jadx_output(
+            invocation,
+            scratch.path().join("EdgeCases.dex").as_path(),
+            scratch.path().join("out").as_path(),
+        )
+        .map_err(|failure: JadxFailure| Error::BackendFailed {
+            tool: "test".to_owned(),
+            status: -1,
+            stderr: failure.to_string(),
+        })?;
+        let JadxCapturedOutcome::ProducerFailed {
+            input_path,
+            stdout,
+            stderr,
+            output,
+            tool,
+            status,
+            emitted_methods,
+        } = outcome
+        else {
+            return Err(Error::BackendFailed {
+                tool: "test".to_owned(),
+                status: -1,
+                stderr: "nonzero invocation was not preserved as a producer failure".to_owned(),
+            });
+        };
+        assert_eq!(tool, "jadx");
+        assert_eq!(status, 7);
+        assert_eq!(input_path, scratch.path().join("EdgeCases.dex"));
+        assert_eq!(stdout, "producer detail");
+        assert_eq!(stderr, "launcher detail");
+        assert_eq!(emitted_methods, 1);
+        assert_eq!(output.method_count, 1);
+        assert!(output.sources.contains_key("EdgeCases.java"));
         Ok(())
     }
 
@@ -947,12 +1009,13 @@ mod tests {
             sources.join("EdgeCases.java"),
             b"class EdgeCases {\n  public void recovered() {\n  }\n}",
         )?;
-        let detailed: JadxOutcome = finalize_jadx_output(
-            Err(Error::BackendFailed {
-                tool: "jadx".to_owned(),
-                status: 7,
-                stderr: "partial output".to_owned(),
+        let captured: JadxCapturedOutcome = finalize_jadx_output(
+            Ok(BackendInvocation {
+                stdout: b"producer output".to_vec(),
+                stderr: b"launcher output".to_vec(),
+                exit_code: 7,
             }),
+            scratch.path().join("EdgeCases.dex").as_path(),
             scratch.path().join("out").as_path(),
         )
         .map_err(|failure: JadxFailure| match failure {
@@ -963,6 +1026,21 @@ mod tests {
                 stderr: refusal.to_string(),
             },
         })?;
+        let detailed: JadxOutcome = match captured {
+            JadxCapturedOutcome::ProducerFailed {
+                tool,
+                status,
+                stderr,
+                emitted_methods,
+                ..
+            } => JadxOutcome::ProducerFailed {
+                tool,
+                status,
+                stderr,
+                emitted_methods,
+            },
+            _ => unreachable!("producer failure expected"),
+        };
         let legacy: Error = legacy_jadx_outcome(detailed).expect_err("producer failure expected");
         assert!(matches!(
             legacy,
@@ -970,7 +1048,8 @@ mod tests {
                 tool,
                 status: 7,
                 stderr,
-            } if tool == "jadx" && stderr == "partial output"
+            } if tool == "jadx"
+                && stderr == "launcher output"
         ));
         Ok(())
     }

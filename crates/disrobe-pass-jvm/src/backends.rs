@@ -135,13 +135,32 @@ pub fn invoke_android(
     args: &[String],
     timeout: Duration,
 ) -> Result<BackendInvocation> {
+    let invocation: BackendInvocation = invoke_android_captured(backend, args, timeout)?;
+    require_backend_success(invocation, backend.binary_name())
+}
+
+pub(crate) fn invoke_android_captured(
+    backend: AndroidBackend,
+    args: &[String],
+    timeout: Duration,
+) -> Result<BackendInvocation> {
     let binary: &'static str = backend.binary_name();
     let path: PathBuf =
         which_exists(binary).ok_or_else(|| Error::MissingTool(binary.to_string()))?;
-    spawn_with_timeout(path, args, timeout, binary)
+    spawn_captured_with_timeout(path, args, timeout, binary)
 }
 
 fn spawn_with_timeout(
+    path: PathBuf,
+    args: &[String],
+    timeout: Duration,
+    label: &str,
+) -> Result<BackendInvocation> {
+    let invocation: BackendInvocation = spawn_captured_with_timeout(path, args, timeout, label)?;
+    require_backend_success(invocation, label)
+}
+
+fn spawn_captured_with_timeout(
     path: PathBuf,
     args: &[String],
     timeout: Duration,
@@ -158,25 +177,63 @@ fn spawn_with_timeout(
             timeout.as_millis() as u64,
         ));
     };
-    let exit_code: i32 = captured.exit_code.unwrap_or(-1);
+    Ok(BackendInvocation {
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+        exit_code: captured.exit_code.unwrap_or(-1),
+    })
+}
+
+fn require_backend_success(
+    invocation: BackendInvocation,
+    label: &str,
+) -> Result<BackendInvocation> {
+    let exit_code: i32 = invocation.exit_code;
     if exit_code != 0 {
         return Err(Error::BackendFailed {
             tool: label.to_string(),
             status: exit_code,
-            stderr: String::from_utf8_lossy(&captured.stderr).into_owned(),
+            stderr: String::from_utf8_lossy(&invocation.stderr).into_owned(),
         });
     }
-    Ok(BackendInvocation {
-        stdout: captured.stdout,
-        stderr: captured.stderr,
-        exit_code,
-    })
+    Ok(invocation)
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonzero_process_failure_preserves_both_streams() -> Result<()> {
+        #[cfg(windows)]
+        let (program, args): (PathBuf, Vec<String>) = (
+            PathBuf::from(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())),
+            vec![
+                "/D".to_owned(),
+                "/S".to_owned(),
+                "/C".to_owned(),
+                "echo producer detail & echo launcher detail 1>&2 & exit /b 7".to_owned(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args): (PathBuf, Vec<String>) = (
+            PathBuf::from("/bin/sh"),
+            vec![
+                "-c".to_owned(),
+                "printf 'producer detail'; printf 'launcher detail' >&2; exit 7".to_owned(),
+            ],
+        );
+        let error: Error = spawn_with_timeout(program, &args, Duration::from_secs(5), "test")
+            .expect_err("nonzero process must fail");
+        let Error::BackendFailed { status, stderr, .. } = error else {
+            return Err(error);
+        };
+        assert_eq!(status, 7);
+        assert!(stderr.contains("launcher detail"));
+        assert!(!stderr.contains("producer detail"));
+        Ok(())
+    }
 
     #[test]
     fn detect_available_does_not_panic() {

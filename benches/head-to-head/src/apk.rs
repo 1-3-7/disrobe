@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use std::fmt::Write as _;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_jvm::android_backend::{JadxCapturedOutcome, run_jadx_on_bytes_captured};
 use disrobe_pass_jvm::{
-    AndroidDecompileOutput, BackendPreference, ClassFile, DecompiledClass, JadxOutcome,
-    JadxRefusal, android_decompile_dex, decompile_class_with_inners, parse_classfile,
-    run_jadx_on_bytes_detailed,
+    AndroidDecompileOutput, BackendPreference, ClassFile, DecompiledClass, JadxRefusal,
+    android_decompile_dex, decompile_class_with_inners, parse_classfile, parse_code_items,
+    parse_dex,
 };
 use disrobe_tool_process::opened_file_matches_path;
 use eyre::{Result, WrapErr};
@@ -45,10 +46,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         .join("EdgeCases.java");
 
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        return Ok((
-            id,
-            skipped("javac not on PATH; the shared recompile oracle is unavailable"),
-        ));
+        return missing_javac_result(id, crate::requirement_enabled("DISROBE_REQUIRE_JADX"));
     };
 
     let dex_bytes: Vec<u8> = read_bounded_file(&dex_path, MAX_FIXTURE_BYTES)
@@ -61,7 +59,16 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
     let original: String = read_bounded_string(&original_src, MAX_TEXT_BYTES)
         .wrap_err_with(|| format!("reading {}", original_src.display()))?;
     let denominator: usize = main_class_method_ranges(&original).len().max(1);
+    if denominator != EDGE_CASES_ORIGINAL_METHODS {
+        return Err(eyre::eyre!(
+            "tracked original method population differs from the pinned fixture: {denominator}"
+        ));
+    }
 
+    let (jadx_competitor, jadx_input_integrity): (
+        CompetitorOutcome,
+        std::result::Result<(), String>,
+    ) = jadx_outcome(&javac, &dex_bytes, denominator);
     let dex_leg: Leg = Leg {
         key: "dex",
         label: "DEX leg",
@@ -69,7 +76,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         disrobe: score_disrobe_dex(&javac, &dex_bytes, denominator),
         competitor_name: "jadx (DEX input)",
         competitor_short: "jadx",
-        competitor: jadx_outcome(&javac, &dex_bytes, denominator),
+        competitor: jadx_competitor,
     };
 
     let jar_leg: Leg = Leg {
@@ -85,6 +92,7 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
     if crate::requirement_enabled("DISROBE_REQUIRE_JADX") {
         require_competitor_result("jadx", &dex_leg.competitor)
             .map_err(|error: String| eyre::eyre!(error))?;
+        jadx_input_integrity.map_err(|error: String| eyre::eyre!(error))?;
     }
     if crate::requirement_enabled("DISROBE_REQUIRE_CFR") {
         require_competitor_result("cfr", &jar_leg.competitor)
@@ -115,6 +123,16 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         "honest_note": measured_summary(&legs),
     });
     Ok((id, value))
+}
+
+fn missing_javac_result(id: String, require_jadx: bool) -> Result<(String, Value)> {
+    if require_jadx {
+        return Err(eyre::eyre!("DISROBE_REQUIRE_JADX=1 requires javac on PATH"));
+    }
+    Ok((
+        id,
+        skipped("javac not on PATH; the shared recompile oracle is unavailable"),
+    ))
 }
 
 fn require_competitor_result(
@@ -158,15 +176,52 @@ enum CompetitorOutcome {
     Absent { reason: String },
 }
 
-fn jadx_outcome(javac: &Path, dex_bytes: &[u8], denominator: usize) -> CompetitorOutcome {
+fn jadx_outcome(
+    javac: &Path,
+    dex_bytes: &[u8],
+    denominator: usize,
+) -> (CompetitorOutcome, std::result::Result<(), String>) {
     let Some(jadx): Option<PathBuf> = find_on_path("jadx") else {
-        return CompetitorOutcome::Absent {
-            reason: "jadx is not on PATH".to_owned(),
-        };
+        return (
+            CompetitorOutcome::Absent {
+                reason: "jadx is not on PATH".to_owned(),
+            },
+            Ok(()),
+        );
     };
-    CompetitorOutcome::Scored {
-        version: version_of(&jadx, &["--version"]),
-        score: score_jadx(javac, dex_bytes, denominator),
+    let version: String = version_of(&jadx, &["--version"]);
+    let mut measured: JadxScore = score_jadx(javac, dex_bytes, denominator);
+    let version_integrity: std::result::Result<(), String> = if version.trim() == "1.5.5" {
+        Ok(())
+    } else {
+        Err(format!(
+            "required JADX version is not exactly 1.5.5: {version}"
+        ))
+    };
+    let input_integrity: std::result::Result<(), String> =
+        version_integrity.and(measured.input_integrity);
+    if let Err(reason) = &input_integrity {
+        measured.score = uncertified_jadx_score(measured.score, denominator, reason.clone());
+    }
+    (
+        CompetitorOutcome::Scored {
+            version,
+            score: measured.score,
+        },
+        input_integrity,
+    )
+}
+
+fn uncertified_jadx_score(score: ToolScore, original: usize, detail: String) -> ToolScore {
+    let emitted: usize = match score {
+        ToolScore::Certified { emitted, .. } | ToolScore::Uncertified { emitted, .. } => emitted,
+        ToolScore::Missing { .. } => 0,
+    };
+    ToolScore::Uncertified {
+        emitted,
+        cause: UncertifiedCause::ProducerExit,
+        original,
+        detail,
     }
 }
 
@@ -518,40 +573,32 @@ fn disrobe_jar_source(jar_bytes: &[u8]) -> std::result::Result<String, String> {
     Ok(decompiled.source)
 }
 
-fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
-    let out: AndroidDecompileOutput = match run_jadx_on_bytes_detailed(dex_bytes, "EdgeCases.dex") {
-        Ok(JadxOutcome::Recovered(out)) => out,
-        Ok(JadxOutcome::ProducerFailed {
-            status: _,
+fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> JadxScore {
+    match run_jadx_on_bytes_captured(dex_bytes, "EdgeCases.dex") {
+        Ok(JadxCapturedOutcome::Recovered(output)) => JadxScore {
+            score: score_source_set(javac, &output.sources, denominator),
+            input_integrity: Err(format!(
+                "required JADX 1.5.5 fixture expected producer exit status {JADX_1_5_5_EXIT_STATUS}, but JADX reported success"
+            )),
+        },
+        Ok(JadxCapturedOutcome::ProducerFailed {
+            status,
+            input_path,
+            stdout,
             stderr,
-            emitted_methods,
+            output,
             ..
-        }) if emitted_methods > 0 => {
-            let bounded_stderr: String = bounded_error_text(&stderr);
-            let detail: String = if bounded_stderr.is_empty() {
-                format!("jadx exited nonzero after emitting {emitted_methods} methods")
-            } else {
-                format!(
-                    "jadx exited nonzero after emitting {emitted_methods} methods: {bounded_stderr}"
-                )
-            };
-            return ToolScore::Uncertified {
-                emitted: emitted_methods,
-                cause: UncertifiedCause::ProducerExit,
-                original: denominator,
-                detail,
-            };
-        }
-        Ok(JadxOutcome::ProducerFailed {
-            status: _, stderr, ..
-        }) => {
-            let bounded_stderr: String = bounded_error_text(&stderr);
-            return ToolScore::miss(
-                denominator,
-                format!("jadx exited nonzero before emitting a method: {bounded_stderr}"),
-            );
-        }
-        Ok(JadxOutcome::Refused(refusal)) => {
+        }) => score_partial_jadx_output(
+            javac,
+            dex_bytes,
+            denominator,
+            status,
+            &input_path,
+            &stdout,
+            &stderr,
+            output,
+        ),
+        Ok(JadxCapturedOutcome::Refused(refusal)) => {
             let detail: String = match refusal {
                 JadxRefusal::OutputLimit {
                     kind,
@@ -562,25 +609,477 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
                 JadxRefusal::UnsafeOutputPath { detail } => detail,
                 _ => "jadx refused the input or output".to_owned(),
             };
-            return ToolScore::miss(denominator, detail);
+            JadxScore {
+                score: ToolScore::miss(denominator, detail),
+                input_integrity: Err("JADX did not produce a source set".to_owned()),
+            }
         }
-        Ok(_) => {
-            return ToolScore::miss(
+        Ok(_) => JadxScore {
+            score: ToolScore::miss(
                 denominator,
                 "jadx returned an unsupported detailed outcome".to_owned(),
-            );
-        }
-        Err(error) => {
-            return ToolScore::miss(
+            ),
+            input_integrity: Err("JADX returned an unsupported detailed outcome".to_owned()),
+        },
+        Err(error) => JadxScore {
+            score: ToolScore::miss(
                 denominator,
                 format!("jadx failed: {}", bounded_error_text(&error.to_string())),
-            );
-        }
-    };
-    if main_class_file(&out.sources).is_none() {
-        return ToolScore::miss(denominator, "jadx produced no EdgeCases source".to_owned());
+            ),
+            input_integrity: Err("JADX failed before producing a source set".to_owned()),
+        },
     }
-    score_source_set(javac, &out.sources, denominator)
+}
+
+struct JadxScore {
+    score: ToolScore,
+    input_integrity: std::result::Result<(), String>,
+}
+
+fn score_partial_jadx_output(
+    javac: &Path,
+    dex_bytes: &[u8],
+    denominator: usize,
+    status: i32,
+    input_path: &Path,
+    stdout: &str,
+    stderr: &str,
+    output: AndroidDecompileOutput,
+) -> JadxScore {
+    let regions: Vec<SourceMethodRegion> = source_method_regions(&output.sources);
+    let input_integrity: std::result::Result<(), String> = validate_pinned_jadx_partial_output(
+        dex_bytes, status, input_path, &output, &regions, stdout, stderr,
+    );
+    if let Err(reason) = input_integrity {
+        return JadxScore {
+            score: ToolScore::Uncertified {
+                emitted: regions.len(),
+                cause: UncertifiedCause::ProducerExit,
+                original: denominator,
+                detail: format!(
+                    "{}; partial output failed input integrity: {reason}",
+                    producer_failure_detail(regions.len(), stdout, stderr)
+                ),
+            },
+            input_integrity: Err(reason),
+        };
+    }
+    let source_score: ToolScore = score_source_set(javac, &output.sources, denominator);
+    JadxScore {
+        score: preserve_failed_producer_score(
+            source_score,
+            regions.len(),
+            denominator,
+            stdout,
+            stderr,
+        ),
+        input_integrity: Ok(()),
+    }
+}
+
+fn producer_failure_detail(emitted: usize, stdout: &str, stderr: &str) -> String {
+    let stdout: String = bounded_error_text(stdout);
+    let stderr: String = bounded_error_text(stderr);
+    let streams: String = match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("; stdout: {stdout}"),
+        (true, false) => format!("; stderr: {stderr}"),
+        (false, false) => format!("; stdout: {stdout}; stderr: {stderr}"),
+    };
+    format!("jadx exited nonzero after emitting {emitted} methods{streams}")
+}
+
+fn preserve_failed_producer_score(
+    source_score: ToolScore,
+    emitted: usize,
+    original: usize,
+    stdout: &str,
+    stderr: &str,
+) -> ToolScore {
+    match source_score {
+        ToolScore::Missing { detail, .. } => ToolScore::Uncertified {
+            emitted,
+            cause: UncertifiedCause::ProducerExit,
+            original,
+            detail: format!(
+                "{}; emitted source is unusable: {detail}",
+                producer_failure_detail(emitted, stdout, stderr)
+            ),
+        },
+        score => score,
+    }
+}
+
+const JADX_FAILED_BODY_MARKER: &str = "Method not decompiled:";
+const JADX_FAILED_REGION_MARKER: &str = "JADX ERROR:";
+const JADX_FAILED_STUB_PREFIX: &str =
+    "throw new UnsupportedOperationException(\"Method not decompiled: ";
+const JADX_FAILED_STUB_SUFFIX: &str = "\");";
+const JADX_ERROR_COMMENT_PREFIX: &str =
+    "/*  JADX ERROR: JadxRuntimeException in pass: RegionMakerVisitor";
+const EDGE_CASES_DEX_SHA256: &str =
+    "fdc012bd9b9596256ee2bb319ef3e215a34b6d58c3b0856d7ea8bdb290910e26";
+const JADX_1_5_5_METHOD_IDENTITY_SHA256: &str =
+    "97cb2f68bc582cc9a26eef88e9fb4e8e14cfc9d9dff686fda16f8fe6caa45279";
+const JADX_1_5_5_SOURCE_TREE_SHA256: &str =
+    "9e3ec674ab0b08c0be61b8732e02a317f3764ea99ed645fa57e7803a2dd61fff";
+const JADX_1_5_5_FAILED_BODY_SHA256: &str =
+    "43c2c0e6f7376544f7818e948bbfd17d92ff8a9036d09f41bee28e0f6a6fb6d9";
+const JADX_1_5_5_SOURCE_PATHS: [&str; 2] = [
+    "com/android/tools/r8/RecordTag.java",
+    "defpackage/EdgeCases.java",
+];
+const JADX_1_5_5_EXIT_STATUS: i32 = 1;
+const JADX_1_5_5_METHODS: usize = 303;
+const EDGE_CASES_ORIGINAL_METHODS: usize = 114;
+const EDGE_CASES_DEX_METHODS: usize = 370;
+const JADX_1_5_5_ERROR_REGIONS: usize = 1;
+const JADX_1_5_5_FAILED_METHODS: [&str; 5] = [
+    "defpackage.EdgeCases.AnonymousClass0.switchDispatch(EdgeCases$Shape, int):int",
+    "defpackage.EdgeCases.AnonymousClass0.switchDispatch(java.lang.Number, int):int",
+    "defpackage.EdgeCases.AnonymousClass0.switchDispatch(java.lang.Object, int):int",
+    "defpackage.EdgeCases.maxOrMin(int[], boolean):int",
+    "defpackage.EdgeCases.shapeFacts(java.lang.Object):java.lang.String",
+];
+const MAX_EXPLICIT_FAILURES: usize = 64;
+
+struct ExplicitSourceFailures {
+    regions: BTreeSet<usize>,
+    identities: BTreeSet<String>,
+    error_regions: BTreeSet<usize>,
+    body_sha256: String,
+}
+
+fn validate_pinned_jadx_partial_output(
+    dex_bytes: &[u8],
+    status: i32,
+    input_path: &Path,
+    output: &AndroidDecompileOutput,
+    regions: &[SourceMethodRegion],
+    stdout: &str,
+    stderr: &str,
+) -> std::result::Result<(), String> {
+    if status != JADX_1_5_5_EXIT_STATUS {
+        return Err(format!(
+            "JADX exit status differs from the pinned fixture: {status}"
+        ));
+    }
+    if !stderr.trim().is_empty() {
+        return Err("JADX emitted an unmatched stderr failure".to_owned());
+    }
+    let error_count: usize = parse_jadx_error_count(stdout)?;
+    if error_count != JADX_1_5_5_ERROR_REGIONS {
+        return Err("JADX reported error count differs from the pinned fixture".to_owned());
+    }
+    if sha256_hex(dex_bytes) != EDGE_CASES_DEX_SHA256 {
+        return Err("input DEX does not match the pinned EdgeCases fixture".to_owned());
+    }
+    let actual_paths: Vec<&str> = output.sources.keys().map(String::as_str).collect();
+    if actual_paths != JADX_1_5_5_SOURCE_PATHS {
+        return Err("JADX source-class inventory differs from the pinned fixture".to_owned());
+    }
+    let source_tree_sha256: String = canonical_source_tree_sha256(&output.sources, input_path)?;
+    if source_tree_sha256 != JADX_1_5_5_SOURCE_TREE_SHA256 {
+        let members: Vec<String> = output
+            .sources
+            .iter()
+            .map(|(path, source): (&String, &String)| {
+                format!("{path}={}", sha256_hex(source.as_bytes()))
+            })
+            .collect();
+        return Err(format!(
+            "JADX source tree differs from the pinned fixture: {source_tree_sha256} ({})",
+            members.join(", ")
+        ));
+    }
+    if regions.len() != JADX_1_5_5_METHODS {
+        return Err("JADX emitted an incomplete method inventory".to_owned());
+    }
+    let method_identity_sha256: String = jadx_method_identity_sha256(&output.sources, regions)?;
+    if method_identity_sha256 != JADX_1_5_5_METHOD_IDENTITY_SHA256 {
+        return Err(format!(
+            "JADX method identity inventory differs from the pinned fixture: {method_identity_sha256}"
+        ));
+    }
+    let dex: disrobe_pass_jvm::DexFile =
+        parse_dex(dex_bytes).map_err(|error| format!("tracked DEX inventory failed: {error}"))?;
+    let code: disrobe_pass_jvm::CodeItemsReport = parse_code_items(&dex, dex_bytes);
+    if code.unrecovered_tail().is_some() || code.methods().len() != EDGE_CASES_DEX_METHODS {
+        return Err(format!(
+            "tracked DEX method inventory differs from the pinned fixture: {} methods, tail {}",
+            code.methods().len(),
+            code.unrecovered_tail().is_some()
+        ));
+    }
+    let failures: ExplicitSourceFailures = explicit_source_failures(&output.sources, regions)?;
+    let expected: BTreeSet<String> = JADX_1_5_5_FAILED_METHODS
+        .iter()
+        .map(|identity: &&str| (*identity).to_owned())
+        .collect();
+    if failures.identities != expected || failures.regions.len() != expected.len() {
+        return Err("explicit failed-method identities differ from the pinned fixture".to_owned());
+    }
+    if failures.body_sha256 != JADX_1_5_5_FAILED_BODY_SHA256 {
+        return Err(format!(
+            "explicit failed-method bodies differ from the pinned fixture: {}",
+            failures.body_sha256
+        ));
+    }
+    if failures.error_regions.len() != JADX_1_5_5_ERROR_REGIONS
+        || error_count != failures.error_regions.len()
+        || !failures.error_regions.is_subset(&failures.regions)
+    {
+        return Err("JADX error records do not match explicit failed methods".to_owned());
+    }
+    Ok(())
+}
+
+fn canonical_source_tree_sha256(
+    sources: &BTreeMap<String, String>,
+    input_path: &Path,
+) -> std::result::Result<String, String> {
+    let mut canonical: Vec<u8> = Vec::new();
+    let mut loaded_from_records: usize = 0;
+    for (path, source) in sources {
+        let mut normalized: Vec<String> = Vec::new();
+        for line in source.lines() {
+            if !line.contains("JADX INFO: loaded from:") {
+                normalized.push(line.to_owned());
+                continue;
+            }
+            let loaded_from: &str = line
+                .strip_prefix("/* JADX INFO: loaded from: ")
+                .and_then(|value: &str| value.strip_suffix(" */"))
+                .ok_or_else(|| "JADX loaded-from annotation is malformed".to_owned())?;
+            let expected: &str = input_path
+                .to_str()
+                .ok_or_else(|| "JADX invocation input path is not UTF-8".to_owned())?;
+            if loaded_from != expected || loaded_from.contains("/*") || loaded_from.contains("*/") {
+                return Err("JADX loaded-from annotation does not name the pinned input".to_owned());
+            }
+            loaded_from_records = loaded_from_records.saturating_add(1);
+            normalized.push("/* JADX INFO: loaded from: EdgeCases.dex */".to_owned());
+        }
+        let source: String = normalized.join("\n");
+        canonical.extend_from_slice(&(path.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(path.as_bytes());
+        canonical.extend_from_slice(&(source.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(source.as_bytes());
+    }
+    if loaded_from_records != sources.len() {
+        return Err("JADX source tree has an incomplete loaded-from inventory".to_owned());
+    }
+    Ok(sha256_hex(&canonical))
+}
+
+fn parse_jadx_error_count(stdout: &str) -> std::result::Result<usize, String> {
+    let records: Vec<&str> = stdout
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|record: &&str| !record.is_empty())
+        .collect();
+    let (error, informational): (&&str, &[&str]) = records
+        .split_last()
+        .ok_or_else(|| "JADX nonzero stdout is empty".to_owned())?;
+    validate_jadx_progress_records(informational)?;
+    let count: &str = error
+        .strip_prefix("ERROR - finished with errors, count: ")
+        .ok_or_else(|| "JADX nonzero stdout has an unknown cause".to_owned())?;
+    if count.is_empty() || count.bytes().any(|byte: u8| !byte.is_ascii_digit()) {
+        return Err("JADX nonzero stdout has an invalid error count".to_owned());
+    }
+    count
+        .parse::<usize>()
+        .map_err(|_| "JADX error count exceeds the supported range".to_owned())
+}
+
+fn validate_jadx_progress_records(records: &[&str]) -> std::result::Result<(), String> {
+    const PINNED_RECORDS: [&str; 3] = [
+        "INFO  - loading ...",
+        "INFO  - processing ...",
+        "INFO  - progress: 0 of 2 (0%)",
+    ];
+    if records != PINNED_RECORDS {
+        return Err("JADX progress records differ from the pinned fixture".to_owned());
+    }
+    Ok(())
+}
+
+fn jadx_method_identity_sha256(
+    sources: &BTreeMap<String, String>,
+    regions: &[SourceMethodRegion],
+) -> std::result::Result<String, String> {
+    let mut identities: Vec<String> = Vec::with_capacity(regions.len());
+    let line_starts: BTreeMap<&str, Vec<usize>> = sources
+        .iter()
+        .map(|(path, source): (&String, &String)| {
+            let mut starts: Vec<usize> = vec![0];
+            starts.extend(
+                source
+                    .match_indices('\n')
+                    .map(|(offset, _newline): (usize, &str)| offset.saturating_add(1)),
+            );
+            (path.as_str(), starts)
+        })
+        .collect();
+    for region in regions {
+        let source: &str = sources
+            .get(&region.source)
+            .ok_or_else(|| "method inventory references a missing source".to_owned())?;
+        let starts: &[usize] = line_starts
+            .get(region.source.as_str())
+            .map(Vec::as_slice)
+            .ok_or_else(|| "method inventory lacks a source line index".to_owned())?;
+        let start: usize = source_position_offset(starts, region.start, region.start_column)?;
+        let end: usize = match region.body_start {
+            Some(body_start) => body_start,
+            None => {
+                source_position_offset(starts, region.end.saturating_sub(1), region.end_column)?
+            }
+        };
+        let header: &str = source
+            .get(start..end)
+            .ok_or_else(|| "method inventory declaration range is invalid".to_owned())?;
+        let normalized: String = header.split_whitespace().collect::<Vec<&str>>().join(" ");
+        identities.push(format!("{}\0{normalized}", region.source));
+    }
+    identities.sort_unstable();
+    let mut canonical: Vec<u8> = Vec::new();
+    for identity in identities {
+        canonical.extend_from_slice(&(identity.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(identity.as_bytes());
+    }
+    Ok(sha256_hex(&canonical))
+}
+
+fn source_position_offset(
+    line_starts: &[usize],
+    line: usize,
+    column: usize,
+) -> std::result::Result<usize, String> {
+    line_starts
+        .get(line.saturating_sub(1))
+        .and_then(|start: &usize| start.checked_add(column.saturating_sub(1)))
+        .ok_or_else(|| "method inventory source position is invalid".to_owned())
+}
+
+fn explicit_source_failures(
+    sources: &BTreeMap<String, String>,
+    regions: &[SourceMethodRegion],
+) -> std::result::Result<ExplicitSourceFailures, String> {
+    let mut failed_regions: BTreeSet<usize> = BTreeSet::new();
+    let mut identities: BTreeSet<String> = BTreeSet::new();
+    let mut error_regions: BTreeSet<usize> = BTreeSet::new();
+    let mut raw_stub_markers: usize = 0;
+    let mut parsed_stubs: usize = 0;
+    let mut raw_error_markers: usize = 0;
+    let mut parsed_errors: usize = 0;
+    let mut failed_bodies: Vec<String> = Vec::new();
+    for (source_name, source) in sources {
+        for (line_index, line) in source.lines().enumerate() {
+            raw_stub_markers =
+                raw_stub_markers.saturating_add(line.matches(JADX_FAILED_BODY_MARKER).count());
+            raw_error_markers =
+                raw_error_markers.saturating_add(line.matches(JADX_FAILED_REGION_MARKER).count());
+            let trimmed: &str = line.trim();
+            if let Some(identity) = trimmed
+                .strip_prefix(JADX_FAILED_STUB_PREFIX)
+                .and_then(|rest: &str| rest.strip_suffix(JADX_FAILED_STUB_SUFFIX))
+            {
+                parsed_stubs = parsed_stubs.saturating_add(1);
+                if parsed_stubs > MAX_EXPLICIT_FAILURES || identity.is_empty() {
+                    return Err("JADX explicit failure population exceeds its bound".to_owned());
+                }
+                let line_number: usize = line_index.saturating_add(1);
+                let index: usize = innermost_method_region(regions, source_name, line_number)
+                    .ok_or_else(|| "JADX failed stub is outside a method".to_owned())?;
+                let region: &SourceMethodRegion = &regions[index];
+                let body: &str = method_body(source, region)
+                    .ok_or_else(|| "JADX failed stub has no bounded method body".to_owned())?;
+                let prefix: &str = body
+                    .trim()
+                    .strip_suffix(trimmed)
+                    .ok_or_else(|| "JADX failed stub is not the final method statement".to_owned())?
+                    .trim();
+                if !prefix.starts_with("/*") || !prefix.ends_with("*/") {
+                    return Err(
+                        "JADX failed stub lacks its generated instruction comment".to_owned()
+                    );
+                }
+                if !failed_regions.insert(index) {
+                    return Err("JADX repeated an explicit failure within one method".to_owned());
+                }
+                if !identities.insert(identity.to_owned()) {
+                    return Err("JADX repeated an explicit failed-method identity".to_owned());
+                }
+                failed_bodies.push(format!("{source_name}\0{}", body.trim()));
+            }
+            if trimmed == JADX_ERROR_COMMENT_PREFIX {
+                parsed_errors = parsed_errors.saturating_add(1);
+                if parsed_errors > MAX_EXPLICIT_FAILURES {
+                    return Err("JADX error-region population exceeds its bound".to_owned());
+                }
+                let line_number: usize = line_index.saturating_add(1);
+                let index: usize = next_method_region(regions, source_name, line_number)
+                    .ok_or_else(|| "JADX error comment has no following method".to_owned())?;
+                if !error_regions.insert(index) {
+                    return Err("JADX repeated an error marker for one method".to_owned());
+                }
+            }
+        }
+    }
+    if raw_stub_markers != parsed_stubs || raw_error_markers != parsed_errors {
+        return Err("JADX output contains an unknown failure marker shape".to_owned());
+    }
+    if !error_regions.is_subset(&failed_regions) {
+        return Err("JADX error marker does not identify an explicit failed method".to_owned());
+    }
+    failed_bodies.sort_unstable();
+    let mut canonical: Vec<u8> = Vec::new();
+    for body in failed_bodies {
+        canonical.extend_from_slice(&(body.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(body.as_bytes());
+    }
+    Ok(ExplicitSourceFailures {
+        regions: failed_regions,
+        identities,
+        error_regions,
+        body_sha256: sha256_hex(&canonical),
+    })
+}
+
+fn innermost_method_region(
+    regions: &[SourceMethodRegion],
+    source: &str,
+    line: usize,
+) -> Option<usize> {
+    regions
+        .iter()
+        .enumerate()
+        .filter(|(_index, region): &(usize, &SourceMethodRegion)| {
+            region.source == source && line >= region.start && line < region.end
+        })
+        .min_by_key(|(_index, region): &(usize, &SourceMethodRegion)| {
+            region.end.saturating_sub(region.start)
+        })
+        .map(|(index, _region): (usize, &SourceMethodRegion)| index)
+}
+
+fn next_method_region(regions: &[SourceMethodRegion], source: &str, line: usize) -> Option<usize> {
+    regions
+        .iter()
+        .enumerate()
+        .filter(|(_index, region): &(usize, &SourceMethodRegion)| {
+            region.source == source && region.start > line
+        })
+        .min_by_key(|(_index, region): &(usize, &SourceMethodRegion)| {
+            (region.start, region.end.saturating_sub(region.start))
+        })
+        .map(|(index, _region): (usize, &SourceMethodRegion)| index)
+}
+
+fn method_body<'a>(source: &'a str, region: &SourceMethodRegion) -> Option<&'a str> {
+    source.get(region.body_start?..region.body_end?)
 }
 
 fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize) -> ToolScore {
@@ -676,6 +1175,34 @@ fn score_source_set(
     if let Err(error) = validate_source_set(sources) {
         return ToolScore::miss(original, error);
     }
+    let regions: Vec<SourceMethodRegion> = source_method_regions(sources);
+    let failures: ExplicitSourceFailures = match explicit_source_failures(sources, &regions) {
+        Ok(failures) => failures,
+        Err(error) => {
+            return ToolScore::Uncertified {
+                emitted: regions.len(),
+                cause: UncertifiedCause::Compiler {
+                    first_defect_line: None,
+                },
+                original,
+                detail: format!(
+                    "recovered source contains an invalid explicit failure marker: {error}"
+                ),
+            };
+        }
+    };
+    score_source_set_internal(javac, sources, original, &failures.regions)
+}
+
+fn score_source_set_internal(
+    javac: &Path,
+    sources: &BTreeMap<String, String>,
+    original: usize,
+    forced_failures: &BTreeSet<usize>,
+) -> ToolScore {
+    if let Err(error) = validate_source_set(sources) {
+        return ToolScore::miss(original, error);
+    }
     let Some(main): Option<&String> = main_class_file(sources) else {
         return ToolScore::miss(
             original,
@@ -699,9 +1226,16 @@ fn score_source_set(
             .iter()
             .any(source_diagnostic_is_parse_failure)
     {
-        return score_source_method_regions(original, &regions, &verdict, &BTreeSet::new());
+        return score_source_method_regions(original, &regions, &verdict, forced_failures);
     }
-    score_parse_isolated_source_regions(javac, sources, original, &regions, verdict)
+    score_parse_isolated_source_regions(
+        javac,
+        sources,
+        original,
+        &regions,
+        verdict,
+        forced_failures,
+    )
 }
 
 fn score_initial_javac_failure(original: usize, emitted: usize, error: String) -> ToolScore {
@@ -835,9 +1369,10 @@ fn score_parse_isolated_source_regions(
     original: usize,
     regions: &[SourceMethodRegion],
     mut verdict: OracleVerdict,
+    forced_failures: &BTreeSet<usize>,
 ) -> ToolScore {
     let emitted: usize = regions.len();
-    let mut isolated: BTreeSet<usize> = BTreeSet::new();
+    let mut isolated: BTreeSet<usize> = forced_failures.clone();
     let field_regions: Vec<SourceFieldRegion> = source_field_regions(sources);
     let mut isolated_fields: BTreeSet<usize> = BTreeSet::new();
     let type_regions: Vec<SourceTypeRegion> = source_type_regions(sources);
@@ -3192,6 +3727,281 @@ mod tests {
     }
 
     #[test]
+    fn explicit_jadx_failed_body_is_unclean_while_javac_certifies_its_peer() {
+        let Some(javac): Option<PathBuf> = javac_or_announce("partial JADX producer output") else {
+            return;
+        };
+        let sources: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            "public class EdgeCases {\n    public int failed() {\n        /* instructions */\n        throw new UnsupportedOperationException(\"Method not decompiled: EdgeCases.failed():int\");\n    }\n    public int peer() {\n        return 2;\n    }\n}\n"
+                .to_owned(),
+        )]);
+        let score: ToolScore = score_source_set(&javac, &sources, 2);
+        assert!(matches!(
+            score,
+            ToolScore::Certified {
+                clean: 1,
+                emitted: 2,
+                class_level_defects: 0,
+                ..
+            }
+        ));
+    }
+
+    fn explicit_failure_source(identity: &str, instruction: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "public class EdgeCases {{\n    public int failed() {{\n        /* {instruction} */\n        throw new UnsupportedOperationException(\"Method not decompiled: {identity}\");\n    }}\n}}\n"
+            ),
+        )])
+    }
+
+    #[test]
+    fn explicit_jadx_failure_rejects_duplicate_and_nested_markers() {
+        let identity: &str = "EdgeCases.failed():int";
+        let duplicate: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "public class EdgeCases {{\n    public int failed() {{\n        /* instructions */\n        throw new UnsupportedOperationException(\"Method not decompiled: {identity}\");\n        throw new UnsupportedOperationException(\"Method not decompiled: {identity}\");\n    }}\n}}\n"
+            ),
+        )]);
+        let regions: Vec<SourceMethodRegion> = source_method_regions(&duplicate);
+        assert!(explicit_source_failures(&duplicate, &regions).is_err());
+
+        let nested: BTreeMap<String, String> = explicit_failure_source(
+            identity,
+            "instructions mention Method not decompiled: nested",
+        );
+        let regions: Vec<SourceMethodRegion> = source_method_regions(&nested);
+        assert!(explicit_source_failures(&nested, &regions).is_err());
+    }
+
+    #[test]
+    fn explicit_jadx_failure_pins_body_count_and_identity() -> core::result::Result<(), String> {
+        let identity: &str = "EdgeCases.failed():int";
+        let source: BTreeMap<String, String> = explicit_failure_source(identity, "instructions");
+        let regions: Vec<SourceMethodRegion> = source_method_regions(&source);
+        let failures: ExplicitSourceFailures = explicit_source_failures(&source, &regions)?;
+        assert_eq!(failures.regions.len(), 1);
+        assert_eq!(failures.identities, BTreeSet::from([identity.to_owned()]));
+        let changed: BTreeMap<String, String> = explicit_failure_source(identity, "changed body");
+        let changed_regions: Vec<SourceMethodRegion> = source_method_regions(&changed);
+        let changed_failures: ExplicitSourceFailures =
+            explicit_source_failures(&changed, &changed_regions)?;
+        assert_ne!(failures.body_sha256, changed_failures.body_sha256);
+        let moved_identity: BTreeMap<String, String> =
+            explicit_failure_source("EdgeCases.peer():int", "instructions");
+        let moved_regions: Vec<SourceMethodRegion> = source_method_regions(&moved_identity);
+        let moved: ExplicitSourceFailures =
+            explicit_source_failures(&moved_identity, &moved_regions)?;
+        assert_ne!(failures.identities, moved.identities);
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_jadx_partial_integrity_rejects_non_status_one() {
+        let output: AndroidDecompileOutput = AndroidDecompileOutput {
+            engine: disrobe_pass_jvm::AndroidDecompiler::Jadx,
+            sources: BTreeMap::from([(
+                MAIN_CLASS_FILE.to_owned(),
+                "class EdgeCases { int peer() { return 1; } }\n".to_owned(),
+            )]),
+            class_count: 1,
+            method_count: 1,
+            notes: Vec::new(),
+        };
+        let regions: Vec<SourceMethodRegion> = source_method_regions(&output.sources);
+        let error: String = validate_pinned_jadx_partial_output(
+            &[],
+            7,
+            Path::new("EdgeCases.dex"),
+            &output,
+            &regions,
+            "ERROR - finished with errors, count: 1",
+            "",
+        )
+        .err()
+        .unwrap_or_else(|| unreachable!("only the pinned status-1 route can be reconciled"));
+        assert!(error.contains("exit status differs"));
+    }
+
+    #[test]
+    fn failed_jadx_integrity_always_forces_uncertified_score() {
+        let certified: ToolScore = ToolScore::Certified {
+            clean: 1,
+            emitted: 1,
+            class_level_defects: 0,
+            original: 1,
+            detail: "compiled".to_owned(),
+        };
+        let score: ToolScore = uncertified_jadx_score(
+            certified,
+            1,
+            "status zero is not pinned status one".to_owned(),
+        );
+        assert!(matches!(score, ToolScore::Uncertified { emitted: 1, .. }));
+    }
+
+    #[test]
+    fn required_jadx_makes_missing_javac_a_hard_prerequisite() {
+        let required: Result<(String, Value)> = missing_javac_result("apk".to_owned(), true);
+        assert!(required.is_err());
+        let optional: Result<(String, Value)> = missing_javac_result("apk".to_owned(), false);
+        assert!(optional.is_ok());
+    }
+
+    #[test]
+    fn nonpinned_failed_output_cannot_enter_the_shared_scorer() {
+        let Some(javac): Option<PathBuf> = javac_or_announce("nonpinned JADX output") else {
+            return;
+        };
+        let output: AndroidDecompileOutput = AndroidDecompileOutput {
+            engine: disrobe_pass_jvm::AndroidDecompiler::Jadx,
+            sources: BTreeMap::from([(
+                MAIN_CLASS_FILE.to_owned(),
+                "class EdgeCases { int peer() { return 1; } }\n".to_owned(),
+            )]),
+            class_count: 1,
+            method_count: 1,
+            notes: Vec::new(),
+        };
+        let measured: JadxScore = score_partial_jadx_output(
+            &javac,
+            &[],
+            1,
+            1,
+            Path::new("EdgeCases.dex"),
+            "ERROR - finished with errors, count: 1",
+            "",
+            output,
+        );
+        assert!(matches!(measured.score, ToolScore::Uncertified { .. }));
+        assert!(measured.input_integrity.is_err());
+    }
+
+    #[test]
+    fn malformed_jadx_marker_cannot_certify_source() {
+        let Some(javac): Option<PathBuf> = javac_or_announce("malformed JADX marker") else {
+            return;
+        };
+        let sources: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            "class EdgeCases { String peer() { return \"Method not decompiled: spoof\"; } }\n"
+                .to_owned(),
+        )]);
+        let score: ToolScore = score_source_set(&javac, &sources, 1);
+        assert!(matches!(score, ToolScore::Uncertified { emitted: 1, .. }));
+    }
+
+    #[test]
+    fn jadx_nonzero_stdout_requires_known_records_and_terminal_error_count() {
+        assert_eq!(
+            parse_jadx_error_count(
+                "INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 0 of 2 (0%)\nERROR - finished with errors, count: 5\n"
+            ),
+            Ok(5)
+        );
+        assert!(
+            parse_jadx_error_count("WARNING - unknown\nERROR - finished with errors, count: 5")
+                .is_err()
+        );
+        assert!(parse_jadx_error_count("ERROR - finished with errors, count: five").is_err());
+        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 2 of 1 (200%)\nERROR - finished with errors, count: 1").is_err());
+        assert!(parse_jadx_error_count("INFO  - processing ...\nINFO  - loading ...\nERROR - finished with errors, count: 1").is_err());
+        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nERROR - finished with errors, count: 1").is_err());
+        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 0 of 303 (0%)\nINFO  - progress: 303 of 303 (100%)\nERROR - finished with errors, count: 1").is_err());
+    }
+
+    #[test]
+    fn source_tree_canonicalization_accepts_only_exact_loaded_from_annotations()
+    -> core::result::Result<(), String> {
+        let loaded_from: PathBuf = std::env::current_dir()
+            .map_err(|error: std::io::Error| error.to_string())?
+            .join("EdgeCases.dex");
+        let exact: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "/* JADX INFO: loaded from: {} */\nclass EdgeCases {{}}\n",
+                loaded_from.display()
+            ),
+        )]);
+        assert!(canonical_source_tree_sha256(&exact, &loaded_from).is_ok());
+        let wrong_absolute: PathBuf = loaded_from
+            .parent()
+            .ok_or_else(|| "loaded-from path has no parent".to_owned())?
+            .join("other")
+            .join("EdgeCases.dex");
+        assert!(canonical_source_tree_sha256(&exact, &wrong_absolute).is_err());
+        let spoofed: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "String value = \"/* JADX INFO: loaded from: {} */\";\n",
+                loaded_from.display()
+            ),
+        )]);
+        assert!(canonical_source_tree_sha256(&spoofed, &loaded_from).is_err());
+        let malformed: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "/* JADX INFO: loaded from: {} */ trailing\n",
+                loaded_from.display()
+            ),
+        )]);
+        assert!(canonical_source_tree_sha256(&malformed, &loaded_from).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn required_pinned_jadx_partial_fixture_scores_exact_population()
+    -> core::result::Result<(), String> {
+        if !crate::requirement_enabled("DISROBE_REQUIRE_JADX") {
+            return Ok(());
+        }
+        let root: PathBuf = crate::published::checked_workspace_root();
+        require_pinned_versions(&root)?;
+        let javac: PathBuf = find_on_path("javac")
+            .ok_or_else(|| "DISROBE_REQUIRE_JADX=1 requires javac on PATH".to_owned())?;
+        let dex_bytes: Vec<u8> = read_bounded_file(
+            &root
+                .join("corpus")
+                .join("jvm")
+                .join("dex")
+                .join("EdgeCases.dex"),
+            MAX_FIXTURE_BYTES,
+        )
+        .map_err(|error: eyre::Report| error.to_string())?;
+        let original: String = read_bounded_string(
+            &root
+                .join("corpus")
+                .join("jvm")
+                .join("megafile")
+                .join("EdgeCases.java"),
+            MAX_TEXT_BYTES,
+        )
+        .map_err(|error: eyre::Report| error.to_string())?;
+        let denominator: usize = main_class_method_ranges(&original).len();
+        assert_eq!(denominator, EDGE_CASES_ORIGINAL_METHODS);
+        assert_eq!(JADX_1_5_5_FAILED_METHODS.len(), 5);
+        let measured: JadxScore = score_jadx(&javac, &dex_bytes, denominator);
+        assert!(
+            measured.input_integrity.is_ok(),
+            "{:?}",
+            measured.input_integrity
+        );
+        assert!(matches!(
+            measured.score,
+            ToolScore::Certified {
+                clean: 281,
+                emitted: 303,
+                class_level_defects: 1,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn initial_javac_failure_callsite_preserves_regions() {
         let sources: BTreeMap<String, String> = BTreeMap::from([(
             MAIN_CLASS_FILE.to_owned(),
@@ -4316,6 +5126,7 @@ mod tests {
             3,
             &regions,
             verdict,
+            &BTreeSet::new(),
         );
         assert!(matches!(
             score,
