@@ -395,13 +395,16 @@ impl<'a> Visit<'a> for StringSubjectCollector<'_> {
     }
 
     fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        let unbound_arrays: BTreeMap<EvidenceKey, ArrayEvidence> = BTreeMap::new();
         let evidence: StringEvidence = if self.conditional_depth == 0
             && assignment.operator == AssignmentOperator::Assign
             && matches!(
                 &assignment.left,
                 oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(_)
-            ) {
-            string_evidence(&assignment.right, &self.evidence, self.symbols)
+            )
+            && array_evidence(&assignment.right, &unbound_arrays, self.symbols).proves_plain_array()
+        {
+            StringEvidence::None
         } else {
             StringEvidence::Opaque
         };
@@ -1304,7 +1307,17 @@ fn try_convert(
     materializer_scope: MaterializerScope<'_>,
 ) -> Option<(Edit, String)> {
     let m: Match<'_> = match_loop(for_stmt, source)?;
-    if subject_blocks_index_resugar(m.iterable, string_subjects, array_subjects, symbols) {
+    let snapshot_subject: Option<&str> = snapshot_subject_source(
+        m.iterable,
+        array_subjects,
+        symbols,
+        materializer_scope,
+        m.remaining,
+        source,
+    );
+    if snapshot_subject.is_none()
+        && subject_blocks_index_resugar(m.iterable, string_subjects, array_subjects, symbols)
+    {
         return None;
     }
     if body_uses(m.remaining, m.index_name)
@@ -1319,15 +1332,8 @@ fn try_convert(
         return None;
     }
     let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
-    let iterable_src: &str = snapshot_subject_source(
-        m.iterable,
-        array_subjects,
-        symbols,
-        materializer_scope,
-        m.remaining,
-        source,
-    )
-    .unwrap_or_else(|| m.iterable.span().source_text(source));
+    let iterable_src: &str =
+        snapshot_subject.unwrap_or_else(|| m.iterable.span().source_text(source));
     let body_src: String = remaining_body_source(m.remaining, source);
     let subject: String = iterable_src.to_owned();
     let edit: Edit = Edit {
