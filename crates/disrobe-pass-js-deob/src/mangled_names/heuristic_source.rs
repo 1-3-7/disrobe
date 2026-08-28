@@ -30,7 +30,6 @@ impl Default for HeuristicNameSource {
         member_keywords.insert("getBoundingClientRect", ("element", Confidence::HIGH));
         member_keywords.insert("toISOString", ("date", Confidence::HIGH));
         member_keywords.insert("getTime", ("date", Confidence::HIGH));
-        member_keywords.insert("then", ("promise", Confidence::HIGH));
         member_keywords.insert("pop", ("stack", Confidence::MEDIUM));
         member_keywords.insert("shift", ("queue", Confidence::MEDIUM));
         member_keywords.insert("dispatch", ("store", Confidence::MEDIUM));
@@ -201,10 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn suggests_promise_for_then_caller() {
+    fn suggests_promise_for_precise_semantic_role() {
         let src: HeuristicNameSource = HeuristicNameSource::new();
         let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
         ctx.member_accesses.insert("then".to_owned());
+        ctx.semantic_roles.insert(SemanticRole::Promise);
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("got suggestion");
         assert_eq!(s.name, "promise");
         assert_eq!(s.confidence, Confidence::HIGH);
@@ -221,14 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn then_outranks_generic_receiver_evidence() {
+    fn then_does_not_outrank_generic_receiver_evidence() {
         let src: HeuristicNameSource = HeuristicNameSource::new();
         let mut ctx: Context = Context::new("a", SymbolRole::Variable, ScopeKey(0));
         ctx.member_accesses
             .extend(["push", "then"].into_iter().map(str::to_owned));
         let s: Suggestion = src.suggest(ScopeKey(0), &ctx).expect("push resolves");
-        assert_eq!(s.name, "promise");
-        assert_eq!(s.confidence, Confidence::HIGH);
+        assert_eq!(s.name, "list");
+        assert_eq!(s.confidence, Confidence::MEDIUM);
     }
 
     #[test]
