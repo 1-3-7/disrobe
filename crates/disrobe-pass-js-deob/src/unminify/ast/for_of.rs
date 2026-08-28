@@ -395,8 +395,18 @@ impl<'a> Visit<'a> for StringSubjectCollector<'_> {
     }
 
     fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        let evidence: StringEvidence = if self.conditional_depth == 0
+            && assignment.operator == AssignmentOperator::Assign
+            && matches!(
+                &assignment.left,
+                oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(_)
+            ) {
+            string_evidence(&assignment.right, &self.evidence, self.symbols)
+        } else {
+            StringEvidence::Opaque
+        };
         for symbol_id in written_symbols(&assignment.left, self.symbols) {
-            self.assign(symbol_id, StringEvidence::Opaque);
+            self.assign(symbol_id, evidence);
         }
         oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
     }
@@ -2619,6 +2629,27 @@ mod tests {
         let out: String = apply(source);
         assert!(out.contains("for (var item of arr)"), "got: {out}");
         assert!(!out.contains("arr[_i]"), "got: {out}");
+    }
+
+    #[test]
+    fn reassigned_parameter_array_index_loop_becomes_for_of() {
+        let source: &str = "function get_global(a) { a = [1, 2]; for (var b = 0; b < a.length; ++b) { var c = a[b]; sink(c); } }";
+        let out: String = apply(source);
+        assert!(out.contains("for (var c of a)"), "got: {out}");
+    }
+
+    #[test]
+    fn unreassigned_parameter_index_loop_is_refused() {
+        let source: &str = "function get_global(a) { for (var b = 0; b < a.length; ++b) { var c = a[b]; sink(c); } }";
+        let (outcome, _stats): (RuleOutcome, super::ForOfStats) = recover(source);
+        assert!(outcome.edits.is_empty());
+    }
+
+    #[test]
+    fn destructuring_does_not_copy_whole_rhs_array_evidence_to_each_target() {
+        let source: &str = "function get_global(a, b) { [a, b] = [[1, 2], [3, 4]]; for (var i = 0; i < a.length; ++i) { var value = a[i]; sink(value); } }";
+        let (outcome, _stats): (RuleOutcome, super::ForOfStats) = recover(source);
+        assert!(outcome.edits.is_empty());
     }
 
     #[test]
