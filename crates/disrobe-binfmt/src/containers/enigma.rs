@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use disrobe_bytes::ByteReader;
+use unicode_normalization::UnicodeNormalization as _;
 
 use crate::container::ContainerKind;
 use crate::error::{Error, Result};
@@ -214,12 +215,16 @@ fn joined_path(parent: &str, child: &str) -> Result<String> {
     sanitize_entry_path(&joined)
 }
 
-fn windows_path_key(safe_name: &str) -> String {
-    safe_name.chars().flat_map(char::to_uppercase).collect()
+fn portable_path_key(safe_name: &str) -> String {
+    safe_name
+        .chars()
+        .flat_map(char::to_uppercase)
+        .nfc()
+        .collect()
 }
 
 fn admit_output_path(paths: &mut BTreeSet<String>, safe_name: &str) -> Result<()> {
-    let key: String = windows_path_key(safe_name);
+    let key: String = portable_path_key(safe_name);
     if paths.contains(&key) {
         return Err(Error::UnsafeEntryPath(safe_name.to_owned()));
     }

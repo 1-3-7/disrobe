@@ -71,14 +71,15 @@ fn relocated_overlay_fixture() -> (Vec<u8>, usize, usize) {
     (overlay, overlay_offset, payload_offset - magic_offset)
 }
 
-fn fixture_with_non_ascii_case_aliases() -> Vec<u8> {
+fn fixture_with_alias_names(first_name: &str, second_name: &str) -> Vec<u8> {
     let magic_offset: usize = memchr::memmem::find(FIXTURE, EVB_MAGIC).expect("fixture EVB magic");
     let payload_offset: usize = find_unique(FIXTURE, ORIGINAL_MEMBER);
     let encoded_name: Vec<u8> = utf16le("README.txt");
     let name_offset: usize = find_unique(FIXTURE, &encoded_name);
     let node_offset: usize = name_offset - 16;
     let node_end: usize = name_offset + encoded_name.len() + 2 + 1 + 2 + 4 + 4 + 24 + 15 + 4;
-    let node: &[u8] = &FIXTURE[node_offset..node_end];
+    let node_prefix: &[u8] = &FIXTURE[node_offset..name_offset];
+    let node_suffix: &[u8] = &FIXTURE[name_offset + encoded_name.len()..node_end];
     let encoded_root: Vec<u8> = utf16le("%DEFAULT FOLDER%");
     let root_relative: usize = find_unique(&FIXTURE[magic_offset..payload_offset], &encoded_root);
     let root_node_offset: usize = magic_offset + root_relative - 16;
@@ -88,28 +89,47 @@ fn fixture_with_non_ascii_case_aliases() -> Vec<u8> {
             .try_into()
             .expect("fixture main size"),
     );
-    let upper_name: Vec<u8> = utf16le("ÄEADME.txt");
-    let lower_name: Vec<u8> = utf16le("äEADME.txt");
-    assert_eq!(upper_name.len(), encoded_name.len());
-    assert_eq!(lower_name.len(), encoded_name.len());
-
-    let mut duplicate_node: Vec<u8> = node.to_vec();
-    duplicate_node[16..16 + lower_name.len()].copy_from_slice(&lower_name);
-    let mut aliased: Vec<u8> = FIXTURE[..node_end].to_vec();
-    aliased[name_offset..name_offset + upper_name.len()].copy_from_slice(&upper_name);
+    let build_node = |name: &str| -> Vec<u8> {
+        let encoded: Vec<u8> = utf16le(name);
+        let mut node: Vec<u8> =
+            Vec::with_capacity(node_prefix.len() + encoded.len() + node_suffix.len());
+        node.extend_from_slice(node_prefix);
+        node.extend_from_slice(&encoded);
+        node.extend_from_slice(node_suffix);
+        node
+    };
+    let first_node: Vec<u8> = build_node(first_name);
+    let second_node: Vec<u8> = build_node(second_name);
+    let replacement_size: usize = first_node
+        .len()
+        .checked_add(second_node.len())
+        .expect("test node sizes remain bounded");
+    let size_delta: usize = replacement_size
+        .checked_sub(node_end - node_offset)
+        .expect("two test nodes exceed the replaced node");
+    let mut aliased: Vec<u8> = FIXTURE[..node_offset].to_vec();
+    aliased.extend_from_slice(&first_node);
+    aliased.extend_from_slice(&second_node);
+    aliased.extend_from_slice(&FIXTURE[node_end..payload_offset]);
     aliased[main_size_offset..main_size_offset + 4].copy_from_slice(
         &main_size
-            .checked_add(u32::try_from(node.len()).expect("node size fits u32"))
+            .checked_add(u32::try_from(size_delta).expect("node size delta fits u32"))
             .expect("main size remains bounded")
             .to_le_bytes(),
     );
     aliased[root_node_offset + 12..root_node_offset + 16].copy_from_slice(&2_u32.to_le_bytes());
-    aliased.extend_from_slice(&duplicate_node);
-    aliased.extend_from_slice(&FIXTURE[node_end..payload_offset]);
     aliased.extend_from_slice(ORIGINAL_MEMBER);
     aliased.extend_from_slice(ORIGINAL_MEMBER);
     aliased.extend_from_slice(&FIXTURE[payload_offset + ORIGINAL_MEMBER.len()..]);
     aliased
+}
+
+fn fixture_with_non_ascii_case_aliases() -> Vec<u8> {
+    fixture_with_alias_names("ÄEADME.txt", "äEADME.txt")
+}
+
+fn fixture_with_normalization_aliases() -> Vec<u8> {
+    fixture_with_alias_names("éEADME.txt", "e\u{301}EADME.txt")
 }
 
 fn fixture_with_exact_duplicate_names() -> Vec<u8> {
@@ -371,6 +391,16 @@ fn non_ascii_case_aliases_are_rejected_before_extraction() {
     let result = parse_enigma_virtual_box(&aliased, ExtractionQuota::default_safe());
     assert!(
         matches!(&result, Err(Error::UnsafeEntryPath(path)) if path == "äEADME.txt"),
+        "got {result:?}"
+    );
+}
+
+#[test]
+fn unicode_normalization_aliases_are_rejected_before_extraction() {
+    let aliased: Vec<u8> = fixture_with_normalization_aliases();
+    let result = parse_enigma_virtual_box(&aliased, ExtractionQuota::default_safe());
+    assert!(
+        matches!(&result, Err(Error::UnsafeEntryPath(path)) if path == "e\u{301}EADME.txt"),
         "got {result:?}"
     );
 }

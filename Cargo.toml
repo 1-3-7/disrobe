@@ -296,6 +296,7 @@ tonic-reflection = "0.13.1"
 tower-http = { version = "0.6.11", features = ["cors", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+unicode-normalization = "0.1.25"
 utoipa = "5.5.0"
 wait-timeout = "0.2.1"
 walkdir = "2.5.0"

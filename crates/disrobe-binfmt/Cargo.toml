@@ -58,6 +58,7 @@ subtle = { workspace = true }
 tar = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
+unicode-normalization = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
