@@ -3,6 +3,8 @@
 #[path = "support/object_symbol.rs"]
 #[allow(clippy::redundant_pub_crate)]
 mod object_symbol;
+#[path = "support/oracle_demand.rs"]
+mod oracle_demand;
 
 use disrobe_pass_native::{
     Arch, Error, LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, disassemble,
@@ -46,6 +48,40 @@ fn run_tool(program: &Path, args: Vec<OsString>) -> CapturedOutput {
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn aarch64_c_headers_available(compiler: &Path, scratch: &Path) -> bool {
+    let source_path: PathBuf = scratch.join("aarch64_headers.c");
+    let object_path: PathBuf = scratch.join("aarch64_headers.o");
+    std::fs::write(&source_path, "#include <string.h>\n").expect("write aarch64 header probe");
+    let args: Vec<OsString> = vec![
+        "--target=aarch64-linux-gnu".into(),
+        "-ffreestanding".into(),
+        "-c".into(),
+        source_path.as_os_str().to_owned(),
+        "-o".into(),
+        object_path.as_os_str().to_owned(),
+    ];
+    let result: Result<Option<CapturedOutput>, std::io::Error> =
+        run_captured(compiler, &args, Duration::from_secs(30), 1 << 20);
+    let Some(output): Option<CapturedOutput> = result.expect("spawn aarch64 C header probe") else {
+        oracle_demand::unmeasured(
+            "the aarch64 neon compiler cross-check",
+            "clang timed out while probing its aarch64 C sysroot",
+        );
+        return false;
+    };
+    if output.exit_code == Some(0) {
+        return true;
+    }
+    oracle_demand::unmeasured(
+        "the aarch64 neon compiler cross-check",
+        &format!(
+            "clang's aarch64 target has no usable C sysroot containing string.h: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    );
+    false
 }
 
 fn compiled_crc32_fixture() -> Vec<u8> {
@@ -2401,11 +2437,17 @@ fn neon_out_of_subset_forms_reject_explicitly() {
 #[test]
 fn neon_recovered_sources_recompile_to_matching_words() {
     let Some(clang): Option<PathBuf> = find_program("clang") else {
-        eprintln!("skipping neon recompile: clang is unavailable");
+        oracle_demand::unmeasured(
+            "the aarch64 neon compiler cross-check",
+            "clang is unavailable",
+        );
         return;
     };
     let Some(objdump): Option<PathBuf> = find_program("llvm-objdump") else {
-        eprintln!("skipping neon recompile: llvm-objdump is unavailable");
+        oracle_demand::unmeasured(
+            "the aarch64 neon compiler cross-check",
+            "llvm-objdump is unavailable",
+        );
         return;
     };
     let cases: [(&[u8], &[&str]); 5] = [
@@ -2437,6 +2479,9 @@ fn neon_recovered_sources_recompile_to_matching_words() {
         ),
     ];
     let scratch: tempfile::TempDir = tempfile::tempdir().expect("create neon scratch directory");
+    if !aarch64_c_headers_available(&clang, scratch.path()) {
+        return;
+    }
     for (index, (bytes, expected)) in cases.into_iter().enumerate() {
         let recovered: LeafRecovery =
             recover_aarch64_function(bytes, 0).expect("recover neon function");

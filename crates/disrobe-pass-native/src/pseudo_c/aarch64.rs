@@ -3138,6 +3138,7 @@ fn finish(
             .map(|call: &ResolvedCall| (call.target, call))
             .collect();
         annotate_calls_block_with_abi(&mut structured.body, &call_map, Abi::Aapcs64)?;
+        rewrite_call_arguments(&mut structured.body, outgoing_call_argument);
     }
     let lifted_switch: bool = block_contains_switch(&structured.body);
     let fp_args: Vec<(Xmm, FpWidth)> = if has_scalar_fp {
@@ -3188,12 +3189,14 @@ fn finish(
     let frame = plan_frame(&structured.body, frame_shape)?;
     let aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame.as_ref());
-    let emitted: Block = super::spilled_body(
+    rewrite_call_arguments(&mut structured.body, stack_call_argument);
+    let mut emitted: Block = super::spilled_body(
         &structured.body,
         frame.as_ref(),
         sret_plan.as_ref(),
         &aggregate_plan,
     );
+    rewrite_call_arguments(&mut emitted, outgoing_call_argument);
     let source: String = emit_c(
         &emitted,
         &signature,
@@ -3311,6 +3314,76 @@ fn lower_crc32(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         src: value,
     });
     Ok((dest, stmts))
+}
+
+fn rewrite_call_arguments(body: &mut Block, rewrite: fn(Reg) -> Reg) {
+    for node in body.iter_mut() {
+        match node {
+            Node::Stmt(Stmt::Call { args, .. }) => {
+                for argument in args {
+                    *argument = rewrite(*argument);
+                }
+            }
+            Node::Stmt(_)
+            | Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                rewrite_call_arguments(then_body, rewrite);
+                if let Some(else_body) = else_body {
+                    rewrite_call_arguments(else_body, rewrite);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                rewrite_call_arguments(body, rewrite);
+            }
+            Node::Switch { cases, default, .. } => {
+                for case in cases {
+                    rewrite_call_arguments(&mut case.body, rewrite);
+                }
+                rewrite_call_arguments(default, rewrite);
+            }
+        }
+    }
+}
+
+const fn outgoing_call_argument(argument: Reg) -> Reg {
+    match argument {
+        Reg::A64Stack0 => Reg::A64Outgoing0,
+        Reg::A64Stack1 => Reg::A64Outgoing1,
+        Reg::A64Stack2 => Reg::A64Outgoing2,
+        Reg::A64Stack3 => Reg::A64Outgoing3,
+        Reg::A64Stack4 => Reg::A64Outgoing4,
+        Reg::A64Stack5 => Reg::A64Outgoing5,
+        Reg::A64Stack6 => Reg::A64Outgoing6,
+        Reg::A64Stack7 => Reg::A64Outgoing7,
+        other => other,
+    }
+}
+
+const fn stack_call_argument(argument: Reg) -> Reg {
+    match argument {
+        Reg::A64Outgoing0 => Reg::A64Stack0,
+        Reg::A64Outgoing1 => Reg::A64Stack1,
+        Reg::A64Outgoing2 => Reg::A64Stack2,
+        Reg::A64Outgoing3 => Reg::A64Stack3,
+        Reg::A64Outgoing4 => Reg::A64Stack4,
+        Reg::A64Outgoing5 => Reg::A64Stack5,
+        Reg::A64Outgoing6 => Reg::A64Stack6,
+        Reg::A64Outgoing7 => Reg::A64Stack7,
+        other => other,
+    }
 }
 
 fn lower_arithmetic_rhs(
