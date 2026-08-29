@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1442,
+    "entry_points": 1443,
     "parse_shaped": 592,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 653,
     "named_by_a_suite_recording_seed_reach": 128,
-    "named_by_neither": 756
+    "named_by_neither": 757
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -587,7 +587,7 @@
     },
     {
       "crate": "disrobe-pass-native",
-      "entry_points": 230,
+      "entry_points": 231,
       "parse_shaped": 73,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
@@ -784,6 +784,7 @@
         "disrobe-pass-native/src/pseudo_c.rs::recover_vectorized_reduction",
         "disrobe-pass-native/src/pseudo_c.rs::resolved_int_arity_in_object",
         "disrobe-pass-native/src/rust_recovery.rs::parse_auditable_section",
+        "disrobe-pass-native/src/sig_engine.rs::assert_fail_function_names",
         "disrobe-pass-native/src/sig_engine.rs::exported_function_names",
         "disrobe-pass-native/src/sig_engine.rs::resolved_import_thunk_names",
         "disrobe-pass-native/src/sig_engine.rs::struct_findings",
