@@ -1399,6 +1399,33 @@ fn clang_assembled_framed_multiple_returns_and_callee_saved_pairs_recover() {
 }
 
 #[test]
+fn clang_assembled_scaled_fixed_frame_recovers_and_requires_a_balanced_release() {
+    let object: Vec<u8> = compiled_frame_remainder_fixture();
+    let (reference_code, reference_address): (Vec<u8>, u64) =
+        object_symbol::function_code(&object, "frame_fixed_offset")
+            .expect("unscaled fixed-frame symbol");
+    let reference: LeafRecovery = recover_aarch64_function(&reference_code, reference_address)
+        .expect("unscaled fixed frame recovers");
+    let (scaled_code, scaled_address): (Vec<u8>, u64) =
+        object_symbol::function_code(&object, "frame_scaled_fixed")
+            .expect("scaled fixed-frame symbol");
+    let scaled: LeafRecovery = recover_aarch64_function(&scaled_code, scaled_address)
+        .expect("scaled fixed frame recovers");
+    assert_eq!(scaled.source, reference.source);
+
+    let (mismatch_code, mismatch_address): (Vec<u8>, u64) =
+        object_symbol::function_code(&object, "frame_scaled_mismatch")
+            .expect("scaled mismatched-frame symbol");
+    let error: Error = recover_aarch64_function(&mismatch_code, mismatch_address)
+        .expect_err("a scaled fixed frame must restore the entry stack pointer");
+    assert!(
+        format!("{error:?}")
+            .contains("stack pointer does not return to its entry value before the return"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn clang_assembled_callee_saved_pair_mismatches_refuse() {
     let object: Vec<u8> = compiled_frame_remainder_fixture();
     for symbol in [

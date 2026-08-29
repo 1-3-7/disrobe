@@ -12,6 +12,30 @@ frame_fixed_offset:
     ret
 .size frame_fixed_offset, .-frame_fixed_offset
 
+.globl frame_scaled_fixed
+.type frame_scaled_fixed, %function
+frame_scaled_fixed:
+    sub sp, sp, #2, lsl #12
+    stp x29, x30, [sp, #16]
+    add x29, sp, #16
+    mov x0, x1
+    ldp x29, x30, [sp, #16]
+    add sp, sp, #2, lsl #12
+    ret
+.size frame_scaled_fixed, .-frame_scaled_fixed
+
+.globl frame_scaled_mismatch
+.type frame_scaled_mismatch, %function
+frame_scaled_mismatch:
+    sub sp, sp, #2, lsl #12
+    stp x29, x30, [sp, #16]
+    add x29, sp, #16
+    mov x0, x1
+    ldp x29, x30, [sp, #16]
+    add sp, sp, #1, lsl #12
+    ret
+.size frame_scaled_mismatch, .-frame_scaled_mismatch
+
 .globl frame_multiple_returns
 .type frame_multiple_returns, %function
 frame_multiple_returns:

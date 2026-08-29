@@ -491,9 +491,19 @@ fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
             ("sub", ["sp", "sp", immediate]) if immediate.starts_with('#') => {
                 facts.sp = SpEffect::Delta(parse_immediate(immediate)?);
             }
+            ("sub", ["sp", "sp", immediate, modifier]) if immediate.starts_with('#') => {
+                facts.sp = SpEffect::Delta(scaled_stack_adjustment(insn, immediate, modifier)?);
+            }
             ("add", ["sp", "sp", immediate]) if immediate.starts_with('#') => {
                 facts.sp = SpEffect::Delta(
                     parse_immediate(immediate)?
+                        .checked_neg()
+                        .ok_or_else(|| reject_at(insn, "stack release overflow"))?,
+                );
+            }
+            ("add", ["sp", "sp", immediate, modifier]) if immediate.starts_with('#') => {
+                facts.sp = SpEffect::Delta(
+                    scaled_stack_adjustment(insn, immediate, modifier)?
                         .checked_neg()
                         .ok_or_else(|| reject_at(insn, "stack release overflow"))?,
                 );
@@ -546,6 +556,18 @@ fn stack_facts(insn: &DisasmInsn) -> Result<Facts> {
         facts.written.push(FRAME_POINTER_SLOT);
     }
     Ok(facts)
+}
+
+fn scaled_stack_adjustment(insn: &DisasmInsn, immediate: &str, modifier: &str) -> Result<i64> {
+    if modifier != "lsl #12" {
+        return Err(reject_at(
+            insn,
+            "stack adjustment uses an unsupported immediate modifier",
+        ));
+    }
+    parse_immediate(immediate)?
+        .checked_mul(1_i64 << 12)
+        .ok_or_else(|| reject_at(insn, "stack adjustment overflow"))
 }
 
 fn is_entry_stub_frame_chain_termination(insn: &DisasmInsn) -> bool {
@@ -1237,5 +1259,28 @@ fn record_frame_pointer(
             insn,
             "the frame pointer holds more than one offset from the entry stack pointer",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DisasmInsn, stack_facts};
+
+    #[test]
+    fn unsupported_scaled_stack_adjustment_modifier_refuses() {
+        let instruction: DisasmInsn = DisasmInsn {
+            address: 0x4000,
+            bytes: Vec::new(),
+            mnemonic: "sub".to_owned(),
+            operands: "sp, sp, #1, lsl #8".to_owned(),
+        };
+        let error: Option<String> = stack_facts(&instruction)
+            .err()
+            .map(|error| error.to_string());
+        assert!(
+            error.as_deref().is_some_and(|reason: &str| reason
+                .contains("stack adjustment uses an unsupported immediate modifier")),
+            "{error:?}"
+        );
     }
 }
