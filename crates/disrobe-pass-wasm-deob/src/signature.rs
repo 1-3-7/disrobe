@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValType};
 
-use crate::error::{Error, Result};
-use crate::name_recovery::{
-    BoundaryDirection, BoundaryEvidence, BoundaryIdentitySource, BoundaryRelation,
-    JavaScriptBoundaryIdentity, WebAssemblyBoundaryIdentity, deduplicate_boundary_relations,
+use crate::boundary_links::{
+    BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage, BoundaryLink, BoundaryLinks,
+    BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
 };
+use crate::error::{Error, Result};
 
 pub(crate) const MAX_FUNCTION_LOCALS: usize = 100_000;
 
@@ -54,7 +54,7 @@ pub struct ModuleSignatures {
     type_signatures: Vec<(Vec<ValType>, Vec<ValType>)>,
     imported_function_count: u32,
     export_aliases: Vec<ExportAlias>,
-    boundary_relations: Vec<BoundaryRelation>,
+    boundary_links: BoundaryLinks,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,8 +124,14 @@ impl ModuleSignatures {
 
     #[inline]
     #[must_use]
-    pub fn boundary_relations(&self) -> &[BoundaryRelation] {
-        &self.boundary_relations
+    pub const fn boundary_links(&self) -> &BoundaryLinks {
+        &self.boundary_links
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn boundary_relations(&self) -> &[BoundaryLink] {
+        self.boundary_links.links()
     }
 
     #[inline]
@@ -325,8 +331,9 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     }
 
     let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
-    let boundary_relations: Vec<BoundaryRelation> =
-        direct_boundary_relations(&function_imports, &export_names, &name_by_index);
+    let boundary_links: BoundaryLinks =
+        direct_boundary_links(&function_imports, &export_names, &name_by_index)
+            .map_err(|error: BoundaryLinksError| Error::Parse(error.to_string()))?;
     let type_signatures: Vec<(Vec<ValType>, Vec<ValType>)> = func_types
         .iter()
         .map(|func_type: &RawFuncType| {
@@ -342,31 +349,37 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         type_signatures,
         imported_function_count,
         export_aliases,
-        boundary_relations,
+        boundary_links,
     })
 }
 
-fn direct_boundary_relations(
+fn direct_boundary_links(
     function_imports: &[RawFunctionImport],
     export_names: &[(u32, String)],
     name_by_index: &BTreeMap<u32, &str>,
-) -> Vec<BoundaryRelation> {
+) -> std::result::Result<BoundaryLinks, BoundaryLinksError> {
     let capacity: usize = function_imports.len().saturating_add(export_names.len());
-    let mut candidates: Vec<BoundaryRelation> = Vec::with_capacity(capacity);
+    let mut candidates: Vec<BoundaryLink> = Vec::with_capacity(capacity);
     for (function_index, import) in function_imports.iter().enumerate() {
         let function_index: u32 = u32::try_from(function_index).unwrap_or(u32::MAX);
         let (name, source): (String, BoundaryIdentitySource) =
             boundary_identity(function_index, &import.field, name_by_index);
-        candidates.push(BoundaryRelation {
-            direction: BoundaryDirection::JavaScriptToWebAssembly,
-            javascript: JavaScriptBoundaryIdentity {
+        candidates.push(BoundaryLink {
+            source: BoundarySymbol {
+                language: BoundaryLanguage::javascript(),
+                kind: BoundarySymbolKind::Function,
                 module: Some(import.module.clone()),
                 name: import.field.clone(),
+                index: None,
+                identity_source: BoundaryIdentitySource::BoundaryField,
             },
-            webassembly: WebAssemblyBoundaryIdentity {
-                function_index,
+            target: BoundarySymbol {
+                language: BoundaryLanguage::webassembly(),
+                kind: BoundarySymbolKind::Function,
+                module: None,
                 name,
-                source,
+                index: Some(function_index),
+                identity_source: source,
             },
             evidence: BoundaryEvidence::WasmImport {
                 module: import.module.clone(),
@@ -377,23 +390,29 @@ fn direct_boundary_relations(
     for (function_index, field) in export_names {
         let (name, source): (String, BoundaryIdentitySource) =
             boundary_identity(*function_index, field, name_by_index);
-        candidates.push(BoundaryRelation {
-            direction: BoundaryDirection::WebAssemblyToJavaScript,
-            javascript: JavaScriptBoundaryIdentity {
+        candidates.push(BoundaryLink {
+            source: BoundarySymbol {
+                language: BoundaryLanguage::webassembly(),
+                kind: BoundarySymbolKind::Function,
+                module: None,
+                name,
+                index: Some(*function_index),
+                identity_source: source,
+            },
+            target: BoundarySymbol {
+                language: BoundaryLanguage::javascript(),
+                kind: BoundarySymbolKind::Function,
                 module: None,
                 name: field.clone(),
-            },
-            webassembly: WebAssemblyBoundaryIdentity {
-                function_index: *function_index,
-                name,
-                source,
+                index: None,
+                identity_source: BoundaryIdentitySource::BoundaryField,
             },
             evidence: BoundaryEvidence::WasmExport {
                 field: field.clone(),
             },
         });
     }
-    deduplicate_boundary_relations(candidates)
+    BoundaryLinks::new(candidates)
 }
 
 fn boundary_identity(

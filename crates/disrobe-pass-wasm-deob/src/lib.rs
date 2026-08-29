@@ -23,6 +23,7 @@ pub(crate) fn push_string_line(out: &mut impl std::fmt::Write, args: std::fmt::A
 }
 
 mod analyze;
+pub mod boundary_links;
 mod cfg;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
@@ -68,6 +69,11 @@ mod threads;
 mod types;
 
 pub use analyze::{ModuleSummary, NameInfo, analyze_module};
+pub use boundary_links::{
+    BOUNDARY_LINKS_SCHEMA_VERSION, BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage,
+    BoundaryLink, BoundaryLinks, BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
+    MAX_BOUNDARY_LINK_STRING_BYTES, MAX_BOUNDARY_LINKS, MAX_BOUNDARY_LINKS_JSON_BYTES,
+};
 pub use cfg::{BlockId, CfgBlock, FunctionCfg, TerminatorKind, build_function_cfg};
 pub use custom_page_sizes::{
     CustomPageSizeRecord, CustomPageSizeReport, DEFAULT_PAGE_SIZE_BYTES, DEFAULT_PAGE_SIZE_LOG2,
