@@ -42,6 +42,7 @@ const MAX_IMPORT_BYTES: usize = 4096;
 const MAX_INLINE_BASE64_CHARS: usize = 22 * 1024 * 1024;
 const MAX_INLINE_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INLINE_JSON_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(feature = "wasm")]
 const MAX_WASM_LIFT_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROVENANCE_LINES: usize = 262_144;
 const MAX_RENAME_FIELD_BYTES: usize = 4096;
@@ -631,7 +632,7 @@ fn renames_schema() -> String {
     RENAMES_SCHEMA.to_owned()
 }
 
-#[rmcp::tool_router(vis = "pub")]
+#[rmcp::tool_router(router = base_tool_router, vis = "pub")]
 #[allow(clippy::unused_self)]
 impl DisrobeMcp {
     #[rmcp::tool(
@@ -883,26 +884,6 @@ impl DisrobeMcp {
         }))
     }
 
-    #[cfg(feature = "wasm")]
-    #[rmcp::tool(
-        name = "wasm_lift",
-        description = "Lift inline WebAssembly bytes to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never reads disk or executes the module."
-    )]
-    fn wasm_lift(
-        &self,
-        Parameters(p): Parameters<WasmLiftParams>,
-    ) -> Result<Json<WasmLiftOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
-        wasm::lift(&bytes, p.target, MAX_WASM_LIFT_SOURCE_BYTES)
-            .map(Json)
-            .map_err(|error: wasm::WasmLiftError| {
-                ErrorData::invalid_params(
-                    format!("DR-MCP-0670: WebAssembly lift failed: {error}"),
-                    None,
-                )
-            })
-    }
-
     #[rmcp::tool(
         name = "ioc",
         description = "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants) from inline base64 bytes, decoding one layer of base64/hex. Never reads disk."
@@ -1027,6 +1008,44 @@ impl DisrobeMcp {
         Parameters(p): Parameters<navigation::NeighborhoodParams>,
     ) -> Result<navigation::Json<navigation::NeighborhoodOut>, ErrorData> {
         navigation::neighborhood(p).map(navigation::Json::new)
+    }
+}
+
+#[cfg(feature = "wasm")]
+#[rmcp::tool_router(router = wasm_tool_router)]
+impl DisrobeMcp {
+    #[rmcp::tool(
+        name = "wasm_lift",
+        description = "Lift inline WebAssembly bytes to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never reads disk or executes the module."
+    )]
+    fn wasm_lift(
+        &self,
+        Parameters(p): Parameters<WasmLiftParams>,
+    ) -> Result<Json<WasmLiftOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        wasm::lift(&bytes, p.target, MAX_WASM_LIFT_SOURCE_BYTES)
+            .map(Json)
+            .map_err(|error: wasm::WasmLiftError| {
+                ErrorData::invalid_params(
+                    format!("DR-MCP-0670: WebAssembly lift failed: {error}"),
+                    None,
+                )
+            })
+    }
+}
+
+impl DisrobeMcp {
+    pub fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        let router: rmcp::handler::server::router::tool::ToolRouter<Self> =
+            Self::base_tool_router();
+        #[cfg(feature = "wasm")]
+        {
+            router + Self::wasm_tool_router()
+        }
+        #[cfg(not(feature = "wasm"))]
+        {
+            router
+        }
     }
 }
 

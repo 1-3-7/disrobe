@@ -15,7 +15,7 @@ mod common;
 
 const LSP_ADVERTISED_METHODS: [&str; 2] = ["disrobe/analyze", "disrobe/explain"];
 
-const MCP_TOOL_NAMES: [&str; 17] = [
+const MCP_TOOL_NAMES: [&str; 16] = [
     "annot",
     "auto",
     "behavior",
@@ -31,7 +31,6 @@ const MCP_TOOL_NAMES: [&str; 17] = [
     "secret_scan",
     "strings",
     "verify",
-    "wasm_lift",
     "xrefs",
 ];
 
@@ -54,6 +53,14 @@ fn blake3_hex(bytes: &[u8]) -> String {
 
 fn wire_len(bytes: &[u8]) -> u64 {
     u64::try_from(bytes.len()).expect("a probe payload length fits in u64")
+}
+
+fn mcp_tool_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = MCP_TOOL_NAMES.to_vec();
+    #[cfg(feature = "wasm")]
+    names.push("wasm_lift");
+    names.sort_unstable();
+    names
 }
 
 fn spawn_lsp() -> StdioServer {
@@ -439,9 +446,9 @@ fn mcp_stdio_round_trips_initialize_tools_list_and_a_real_tool_call() {
     names.sort();
     assert_eq!(
         names,
-        MCP_TOOL_NAMES
-            .iter()
-            .map(|t: &&str| (*t).to_owned())
+        mcp_tool_names()
+            .into_iter()
+            .map(str::to_owned)
             .collect::<Vec<String>>(),
         "the advertised tool set must equal the published set exactly, so a dropped or renamed tool fails here"
     );
