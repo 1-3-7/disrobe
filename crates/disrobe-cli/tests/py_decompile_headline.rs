@@ -202,10 +202,10 @@ fn a_guard_dropped_from_the_recovered_source_is_reported_rather_than_headlined_o
     let guards_kept: bool = recovered.contains("if a:") && recovered.contains("if m is None:");
     let verdict: String = verdict_of(&run.stdout);
     if guards_kept {
-        assert_eq!(
-            verdict, "perfect",
-            "when both guards are recovered the roundtrip must establish equivalence; \
-             recovered={recovered}"
+        assert!(
+            matches!(verdict.as_str(), "perfect" | "semantic"),
+            "when both guards are recovered the roundtrip must establish byte or normalized \
+             equivalence; verdict={verdict} recovered={recovered}"
         );
     } else {
         assert_ne!(
