@@ -669,18 +669,70 @@ fn block_breaks_loop(
 }
 
 pub(super) fn leading_guard_if_encloses_loop(
+    code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
     hi: usize,
     region: &LoopRegion,
 ) -> bool {
-    (lo..region.header).any(|guard: usize| {
+    let loop_test: Expr = recover_while_test(code, stream, region);
+    let beyond_exit_guard: bool = (lo..region.header).any(|guard: usize| {
         is_forward_cond_jump(&stream.ops[guard])
             && !is_chain_cond_jump(&stream.ops, guard)
             && !is_value_form_shortcircuit(&stream.ops, guard)
             && resolve_jump_target(stream, guard, &stream.ops[guard])
                 .is_some_and(|t: usize| t > region.header && t > region.exit && t <= hi)
-    })
+    });
+    if beyond_exit_guard {
+        let Some((entry_start, entry_test)): Option<(usize, Expr)> =
+            recover_entry_guard_test(code, stream, lo, hi, region)
+        else {
+            return true;
+        };
+        return entry_start < region.header
+            && entry_test_extends_while_test(&entry_test, &loop_test);
+    }
+    last_significant_back(stream, lo, region.header)
+        .and_then(|last: usize| resolve_jump_target(stream, last, &stream.ops[last]))
+        == Some(region.exit)
+        && recover_entry_guard_test(code, stream, lo, hi, region).is_some_and(
+            |(entry_start, entry_test): (usize, Expr)| {
+                entry_start < region.header
+                    && entry_test_extends_while_test(&entry_test, &loop_test)
+            },
+        )
+}
+
+fn entry_test_extends_while_test(entry_test: &Expr, loop_test: &Expr) -> bool {
+    let Expr::BoolOp {
+        op: BoolOpKind::And,
+        values: entry_values,
+    } = entry_test
+    else {
+        return false;
+    };
+    match loop_test {
+        Expr::BoolOp {
+            op: BoolOpKind::And,
+            values: loop_values,
+        } => entry_values
+            .len()
+            .checked_sub(loop_values.len())
+            .is_some_and(|prefix_len: usize| {
+                prefix_len > 0
+                    && entry_values[prefix_len..].iter().zip(loop_values).all(
+                        |(entry, loop_value): (&Expr, &Expr)| {
+                            exprs_equal_ignoring_lines(entry, loop_value)
+                        },
+                    )
+            }),
+        _ => {
+            entry_values.len() > 1
+                && entry_values
+                    .last()
+                    .is_some_and(|entry: &Expr| exprs_equal_ignoring_lines(entry, loop_test))
+        }
+    }
 }
 
 pub(super) fn loop_is_else_arm_of_leading_if(
@@ -879,7 +931,12 @@ pub(super) fn loop_structure_guarded_loop(
     let if_body: Vec<Stmt> = structure_loop(code, stream, after_guard, false_target, &region)?;
     let tail: Vec<Stmt> = structure_stmts(code, stream, false_target, hi)?;
     let mut out: Vec<Stmt> = prior;
-    if guard_matches_enclosed_while(&if_body, &test) {
+    if guard_matches_enclosed_while(&if_body, &test)
+        && recover_entry_guard_test(code, stream, lo, hi, &region).is_some_and(
+            |(_, entry_test): (usize, Expr)| exprs_equal_ignoring_lines(&entry_test, &test),
+        )
+        && permits_single_entry_guard_jump(stream, &region, false_target, false_target)
+    {
         out.extend(if_body);
         out.extend(tail);
         return Ok(Some(out));
@@ -909,6 +966,54 @@ pub(super) fn guard_matches_enclosed_while(if_body: &[Stmt], guard_test: &Expr) 
     orelse.is_empty()
         && exprs_equal_ignoring_lines(while_test, guard_test)
         && rest.iter().all(is_simple_loop_epilogue_stmt)
+}
+
+pub(super) fn guard_peels_enclosed_while(
+    stream: &DecodedStream,
+    guard: usize,
+    target: usize,
+    hi: usize,
+) -> bool {
+    let Some(after_guard): Option<usize> = guard.checked_add(1) else {
+        return false;
+    };
+    let Some(region): Option<LoopRegion> = find_loop(stream, after_guard, target) else {
+        return false;
+    };
+    let Some(after_exit): Option<usize> = region.exit.checked_add(1) else {
+        return false;
+    };
+    matches!(region.kind, LoopKind::While)
+        && !region.infinite
+        && if stream.is_pre_311() {
+            pre311_terminal_peel(stream, region.exit, target)
+        } else {
+            target == after_exit
+                && terminal_exit_pad_relation(stream, region.exit, target, hi)
+                    != TerminalExitPadRelation::Distinct
+        }
+        && last_significant_back(stream, 0, region.header) == Some(guard)
+}
+
+pub(super) fn compound_guard_is_source_outer_while(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    guard: usize,
+    test: &Expr,
+) -> bool {
+    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
+        return false;
+    };
+    let Some(after_guard): Option<usize> = guard.checked_add(1) else {
+        return false;
+    };
+    let Some(region): Option<LoopRegion> = find_loop(stream, after_guard, target) else {
+        return false;
+    };
+    matches!(region.kind, LoopKind::While)
+        && !region.infinite
+        && last_significant_back(stream, 0, region.header) == Some(guard)
+        && entry_test_extends_while_test(test, &recover_while_test(code, stream, &region))
 }
 
 fn is_simple_loop_epilogue_stmt(stmt: &Stmt) -> bool {
@@ -1874,6 +1979,7 @@ const fn transfers_control(op: &CanonicalOp) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PeeledWhileTestRelation {
     Equivalent,
+    EnclosingGuard,
     Mismatched,
     NonExiting,
 }
@@ -1911,8 +2017,16 @@ pub(super) fn peeled_while_test_relation(
         return None;
     }
     let entry_target: usize = resolve_jump_target(stream, test, &stream.ops[test])?;
+    if entry_target == region.header {
+        return Some(PeeledWhileTestRelation::NonExiting);
+    }
+    if terminal_exit_pad_relation(stream, region.exit, entry_target, hi)
+        == TerminalExitPadRelation::Distinct
+    {
+        return Some(PeeledWhileTestRelation::EnclosingGuard);
+    }
     let (entry_start, entry_test): (usize, Expr) =
-        recover_entry_guard_test(code, stream, lo, &region)?;
+        recover_entry_guard_test(code, stream, lo, hi, &region)?;
     if entry_start > test || last_significant_back(stream, entry_start, region.header) != Some(test)
     {
         return None;
@@ -2308,6 +2422,78 @@ fn while_break_handler_try(
     Some(region_try)
 }
 
+fn permits_single_entry_guard_jump(
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    hi: usize,
+    entry_target: usize,
+) -> bool {
+    if stream.is_pre_311() || entry_target != region.exit || region.body_start >= region.body_end {
+        return false;
+    }
+    let Some(region_try): Option<TryRegion> = while_break_handler_try(stream, region, hi) else {
+        return false;
+    };
+    let handler_end: usize = region_try.region_end();
+    let typed_matches: Vec<usize> = (region_try.handler_start..handler_end)
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::CheckExcMatch))
+        .collect();
+    let [typed_match]: &[usize] = typed_matches.as_slice() else {
+        return false;
+    };
+    let Some(mismatch): Option<usize> = first_significant(stream, *typed_match + 1, handler_end)
+    else {
+        return false;
+    };
+    if !matches!(
+        stream.ops[mismatch],
+        CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::JumpIfNotExcMatch(_)
+    ) {
+        return false;
+    }
+    let Some(mismatch_target): Option<usize> =
+        resolve_jump_target(stream, mismatch, &stream.ops[mismatch])
+    else {
+        return false;
+    };
+    if mismatch_target >= handler_end
+        || !first_significant(stream, mismatch_target, handler_end)
+            .is_some_and(|index: usize| matches!(stream.ops[index], CanonicalOp::Reraise(_)))
+    {
+        return false;
+    }
+    let Some(pop_exception): Option<usize> = first_significant(stream, mismatch + 1, handler_end)
+    else {
+        return false;
+    };
+    if !matches!(stream.ops[pop_exception], CanonicalOp::Pop) {
+        return false;
+    }
+    let Some(pop_handler): Option<usize> =
+        first_significant(stream, pop_exception + 1, handler_end)
+    else {
+        return false;
+    };
+    if !matches!(stream.ops[pop_handler], CanonicalOp::PopExcept) {
+        return false;
+    }
+    let Some(exit_edge): Option<usize> = first_significant(stream, pop_handler + 1, handler_end)
+    else {
+        return false;
+    };
+    matches!(
+        stream.ops[exit_edge],
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) && resolve_jump_target(stream, exit_edge, &stream.ops[exit_edge]) == Some(region.exit)
+}
+
 fn loop_exit_leading_return(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -2530,7 +2716,7 @@ pub(super) fn is_post311_two_call_and_try_break_loop(
         return false;
     }
     let Some((_, entry_test)): Option<(usize, Expr)> =
-        recover_entry_guard_test(code, stream, lo, region)
+        recover_entry_guard_test(code, stream, lo, hi, region)
     else {
         return false;
     };
@@ -2582,7 +2768,7 @@ pub(super) fn structure_loop(
         None
     };
     let entry_guard_start: Option<usize> = match while_test.as_ref() {
-        Some(test) => redundant_entry_guard_start(code, stream, lo, region, test)?,
+        Some(test) => redundant_entry_guard_start(code, stream, lo, hi, region, test)?,
         None => None,
     };
     let has_peeled_entry_test: bool =
@@ -3875,6 +4061,7 @@ fn recover_entry_guard_test(
     code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
+    hi: usize,
     region: &LoopRegion,
 ) -> Option<(usize, Expr)> {
     let body: usize = region.header;
@@ -3902,11 +4089,22 @@ fn recover_entry_guard_test(
         else {
             break;
         };
-        if target != body && target != exit && !(target > prev && target <= region.header) {
+        if target != body
+            && target != exit
+            && !terminal_exit_pad(stream, exit, target, hi)
+            && !(target > prev && target <= region.header)
+        {
             break;
         }
         jump_idxs.push(prev);
         boundary = cond_expr_start(stream, prev, lo);
+    }
+    if jump_idxs.len() < 2 {
+        let entry_jump: usize = *jump_idxs.first()?;
+        let entry_target: usize = resolve_jump_target(stream, entry_jump, &stream.ops[entry_jump])?;
+        if !permits_single_entry_guard_jump(stream, region, hi, entry_target) {
+            return None;
+        }
     }
     jump_idxs.reverse();
     let entry_start: usize = cond_expr_start(stream, jump_idxs[0], lo);
@@ -3921,6 +4119,13 @@ fn recover_entry_guard_test(
         let value: Expr = residual.into_iter().next_back()?;
         let is_jump_if_true: bool = is_pop_cond_jump_if_true(&stream.ops[jump]);
         let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])
+            .map(|target: usize| {
+                if terminal_exit_pad(stream, exit, target, hi) {
+                    exit
+                } else {
+                    target
+                }
+            })
             .filter(|t: &usize| *t == body || *t == exit || (*t > jump && *t <= region.header))?;
         operands.push(CondOperand {
             expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
@@ -3934,15 +4139,100 @@ fn recover_entry_guard_test(
     Some((entry_start, test))
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TerminalExitPadRelation {
+    Equivalent,
+    Distinct,
+    Absent,
+}
+
+fn terminal_exit_pad_relation(
+    stream: &DecodedStream,
+    exit: usize,
+    target: usize,
+    hi: usize,
+) -> TerminalExitPadRelation {
+    if target <= exit || target > hi || target >= stream.ops.len() {
+        return TerminalExitPadRelation::Absent;
+    }
+    let scan_end: usize = hi.saturating_add(1).min(stream.ops.len());
+    let Some((target_value, _)): Option<(usize, usize)> =
+        terminal_constant_return(stream, target, scan_end)
+    else {
+        return TerminalExitPadRelation::Absent;
+    };
+    let mut before_target: usize = 0;
+    let mut distinct: bool = false;
+    let mut cursor: usize = exit;
+    while let Some(value) = first_significant(stream, cursor, target) {
+        let Some((actual_value, actual_return)): Option<(usize, usize)> =
+            terminal_constant_return(stream, value, target)
+        else {
+            return TerminalExitPadRelation::Absent;
+        };
+        before_target += 1;
+        distinct |= !terminal_constants_equal(stream, actual_value, target_value);
+        let Some(next): Option<usize> = actual_return.checked_add(1) else {
+            return TerminalExitPadRelation::Absent;
+        };
+        cursor = next;
+    }
+    if before_target == 0 {
+        TerminalExitPadRelation::Absent
+    } else if distinct {
+        TerminalExitPadRelation::Distinct
+    } else {
+        TerminalExitPadRelation::Equivalent
+    }
+}
+
+fn terminal_constant_return(
+    stream: &DecodedStream,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize)> {
+    let value: usize = first_significant(stream, start, end)?;
+    match &stream.ops[value] {
+        CanonicalOp::ReturnConst(_) => Some((value, value)),
+        CanonicalOp::LoadConst(_) => {
+            let after_value: usize = value.checked_add(1)?;
+            let return_index: usize = first_significant(stream, after_value, end)?;
+            matches!(stream.ops[return_index], CanonicalOp::Return).then_some((value, return_index))
+        }
+        _ => None,
+    }
+}
+
+fn terminal_constants_equal(stream: &DecodedStream, left: usize, right: usize) -> bool {
+    matches!(
+        (&stream.ops[left], &stream.ops[right]),
+        (
+            CanonicalOp::ReturnConst(left_constant) | CanonicalOp::LoadConst(left_constant),
+            CanonicalOp::ReturnConst(right_constant) | CanonicalOp::LoadConst(right_constant)
+        ) if left_constant == right_constant
+    )
+}
+
+fn terminal_exit_pad(stream: &DecodedStream, exit: usize, target: usize, hi: usize) -> bool {
+    terminal_exit_pad_relation(stream, exit, target, hi) == TerminalExitPadRelation::Equivalent
+}
+
+fn pre311_terminal_peel(stream: &DecodedStream, exit: usize, target: usize) -> bool {
+    stream.ops.len().checked_sub(1).is_some_and(|hi: usize| {
+        terminal_exit_pad_relation(stream, exit, target, hi) == TerminalExitPadRelation::Equivalent
+    })
+}
+
 fn redundant_entry_guard_start(
     code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
+    hi: usize,
     region: &LoopRegion,
     loop_test: &Expr,
 ) -> Result<Option<usize>> {
     let Some((start, guard_test)): Option<(usize, Expr)> =
-        recover_entry_guard_test(code, stream, lo, region)
+        recover_entry_guard_test(code, stream, lo, hi, region)
     else {
         return Ok(None);
     };
@@ -3952,7 +4242,9 @@ fn redundant_entry_guard_start(
     let Some(last): Option<usize> = last_significant_back(stream, start, region.header) else {
         return Ok(None);
     };
-    if resolve_jump_target(stream, last, &stream.ops[last]) != Some(region.exit) {
+    if !resolve_jump_target(stream, last, &stream.ops[last]).is_some_and(|target: usize| {
+        target == region.exit || terminal_exit_pad(stream, region.exit, target, hi)
+    }) {
         return Err(DecompileError::AstDesync {
             offset: stream
                 .offsets
@@ -3970,7 +4262,8 @@ mod for_target_bounds {
     use super::super::DecodedStream;
     use super::super::try_with::{LoopKind, LoopRegion};
     use super::{
-        find_for_loop, find_loop, loop_tail_start, recover_for_target, stmts_equal_ignoring_lines,
+        TerminalExitPadRelation, find_for_loop, find_loop, loop_tail_start, recover_for_target,
+        stmts_equal_ignoring_lines, terminal_exit_pad_relation,
     };
     use crate::ast::node::{Arg, Arguments, Expr, ExprCtx, Stmt, TypeParam};
     use crate::bytecode::opcode::CanonicalOp;
@@ -4081,6 +4374,22 @@ mod for_target_bounds {
             exit: body_end,
             infinite: false,
         }
+    }
+
+    #[test]
+    fn py311_terminal_padding_compares_loaded_constants() {
+        let mut stream: DecodedStream = stream_from(vec![
+            CanonicalOp::LoadConst(0),
+            CanonicalOp::Return,
+            CanonicalOp::LoadConst(0),
+            CanonicalOp::Return,
+        ]);
+        stream.version = PyVersion::V3_11;
+        assert!(
+            terminal_exit_pad_relation(&stream, 0, 2, 3) == TerminalExitPadRelation::Equivalent
+        );
+        stream.ops[2] = CanonicalOp::LoadConst(1);
+        assert!(terminal_exit_pad_relation(&stream, 0, 2, 3) == TerminalExitPadRelation::Distinct);
     }
 
     #[test]

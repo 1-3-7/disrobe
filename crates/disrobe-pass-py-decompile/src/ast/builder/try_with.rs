@@ -1729,7 +1729,9 @@ pub(super) fn try_structure_guarded_try(
         peeled_while_test_relation(code, stream, lo, hi, first_cond);
     if let Some(relation) = peeled_relation {
         let reason: &str = match relation {
-            PeeledWhileTestRelation::Equivalent => return Ok(None),
+            PeeledWhileTestRelation::Equivalent | PeeledWhileTestRelation::EnclosingGuard => {
+                return Ok(None);
+            }
             PeeledWhileTestRelation::Mismatched => "peeled and loop-back tests differ",
             PeeledWhileTestRelation::NonExiting => "peeled entry test does not exit the loop",
         };
@@ -1765,6 +1767,12 @@ pub(super) fn try_structure_guarded_try(
     else {
         return Ok(None);
     };
+    if compound.as_ref().is_some_and(|candidate: &CompoundIf| {
+        peeled_while_test_relation(code, stream, lo, hi, candidate.last_jump)
+            == Some(PeeledWhileTestRelation::Mismatched)
+    }) {
+        return Ok(None);
+    }
     let Some(region): Option<TryRegion> =
         find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi).or_else(|| {
             (!stream.is_pre_311())

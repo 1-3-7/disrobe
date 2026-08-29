@@ -22,6 +22,38 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 const ALL: &[&str] = &["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"];
 const BLOCK_STACK: &[&str] = &["3.9", "3.10"];
 const PLAIN_TRY_EXCEPT: &[&str] = &["3.9", "3.10", "3.12", "3.14", "3.15"];
+const MUTATE_ENTRY_RETURN: &str = r"import dis,marshal,sys,types
+path = sys.argv[1]
+raw = open(path, 'rb').read()
+module = marshal.loads(raw[16:])
+def mutate(code):
+    if code.co_name != 'f':
+        return code
+    instructions = list(dis.get_instructions(code))
+    entry = next(item for item in instructions if item.opname == 'POP_JUMP_IF_FALSE')
+    target_index = next(index for index, item in enumerate(instructions) if item.offset == entry.argval)
+    target = instructions[target_index]
+    assert target.argval is None
+    if target.opname == 'RETURN_CONST':
+        assert instructions[target_index - 1].opname == 'RETURN_CONST'
+        assert instructions[target_index - 1].argval is None
+    else:
+        assert target.opname == 'LOAD_CONST'
+        assert instructions[target_index - 1].opname == 'RETURN_VALUE'
+        assert instructions[target_index - 2].opname == 'LOAD_CONST'
+        assert instructions[target_index - 2].argval is None
+    marker = 137
+    constants = code.co_consts + (marker,)
+    assert len(constants) <= 256
+    bytecode = bytearray(code.co_code)
+    bytecode[target.offset + 1] = len(constants) - 1
+    changed = code.replace(co_code=bytes(bytecode), co_consts=constants)
+    changed_target = next(item for item in dis.get_instructions(changed) if item.offset == target.offset)
+    assert changed_target.argval == marker
+    return changed
+module = module.replace(co_consts=tuple(mutate(value) if isinstance(value, types.CodeType) else value for value in module.co_consts))
+open(path, 'wb').write(raw[:16] + marshal.dumps(module))
+";
 
 #[derive(Debug, Clone, Copy)]
 struct LoopTryCase {
@@ -430,6 +462,71 @@ fn compile_source(interpreter: &Path, source_path: &Path, pyc_path: &Path) -> Re
     ))
 }
 
+fn assert_recompiled_equivalent(
+    interpreter: &Path,
+    scratch: &Path,
+    label: &str,
+    original: &CodeObject,
+    marshal_version: MarshalVersion,
+    recovered: &str,
+) {
+    let recovered_path: PathBuf = scratch.join(format!("{label}.recovered.py"));
+    let recompiled_path: PathBuf = scratch.join(format!("{label}.recompiled.pyc"));
+    fs::write(&recovered_path, recovered).expect("write recovered fixture");
+    compile_source(interpreter, &recovered_path, &recompiled_path)
+        .expect("compile recovered fixture");
+    let (recompiled, _): (CodeObject, MarshalVersion) =
+        read_code(&recompiled_path).expect("read recompiled fixture");
+    assert!(
+        matches!(
+            semantic_equiv(original, &recompiled, marshal_version),
+            Verdict::Perfect | Verdict::Semantic
+        ),
+        "{label}: recovered source is not semantically equivalent\n{recovered}"
+    );
+}
+
+fn assert_outer_while_nesting(
+    interpreter: &Path,
+    scratch: &Path,
+    label: &str,
+    recovered: &str,
+    expected: bool,
+) {
+    let recovered_path: PathBuf = scratch.join(format!("{label}.structure.py"));
+    fs::write(&recovered_path, recovered).expect("write structure fixture");
+    let script: &str = "import ast,sys; tree=ast.parse(open(sys.argv[1],encoding='utf-8').read()); function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='f'); nested=any(isinstance(node,ast.If) and any(isinstance(child,ast.While) for child in node.body) for node in ast.walk(function)); assert nested == (sys.argv[2]=='true')";
+    let output: std::process::Output = Command::new(interpreter)
+        .args(["-c", script])
+        .arg(&recovered_path)
+        .arg(expected.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .expect("inspect recovered structure");
+    assert!(
+        output.status.success(),
+        "{label}: outer-if/while nesting mismatch: {}\n{recovered}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_distinct_return_guard(interpreter: &Path, scratch: &Path, label: &str, recovered: &str) {
+    let recovered_path: PathBuf = scratch.join(format!("{label}.guard.py"));
+    fs::write(&recovered_path, recovered).expect("write guard fixture");
+    let script: &str = "import ast,sys; tree=ast.parse(open(sys.argv[1],encoding='utf-8').read()); function=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=='f'); guard=function.body[0]; assert isinstance(guard,ast.If); assert any(isinstance(node,ast.While) for node in guard.body); guarded_return=next(node for node in guard.body if isinstance(node,ast.Return)); assert isinstance(guarded_return.value,ast.Constant) and guarded_return.value.value is None; outer_return=function.body[-1]; assert isinstance(outer_return,ast.Return) and isinstance(outer_return.value,ast.Constant) and outer_return.value.value==137";
+    let output: std::process::Output = Command::new(interpreter)
+        .args(["-c", script])
+        .arg(&recovered_path)
+        .stdin(Stdio::null())
+        .output()
+        .expect("inspect distinct return guard");
+    assert!(
+        output.status.success(),
+        "{label}: distinct return paths were collapsed: {}\n{recovered}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
     let bytes: Vec<u8> = fs::read(pyc_path).map_err(|e: std::io::Error| format!("read: {e}"))?;
     let pyc: PycFile = read_pyc(&bytes).map_err(|e| format!("read_pyc: {e}"))?;
@@ -525,4 +622,206 @@ fn loop_bodies_holding_a_try_keep_their_pinned_recovery() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+#[test]
+fn identical_outer_guard_remains_outside_a_while() {
+    let interpreter: PathBuf = find_interpreter("3.12").expect("CPython 3.12");
+    let scratch: PathBuf = PathBuf::from("../../target/py-ci003-outer-guard");
+    fs::create_dir_all(&scratch).expect("scratch");
+    for (label, source, while_header, retains_outer_if) in [
+        (
+            "ordinary",
+            "def f(active, sink):\n    while active():\n        sink()\n",
+            "while active():",
+            false,
+        ),
+        (
+            "try-else-loop",
+            "def f(active, nxt, sink):\n    try:\n        active = nxt()\n    except LookupError:\n        pass\n    else:\n        while active:\n            sink(active)\n            active = nxt()\n    sink(0)\n",
+            "while active:",
+            false,
+        ),
+        (
+            "compound",
+            "def f(active, ready, sink):\n    while active() and ready():\n        sink()\n",
+            "while active() and ready():",
+            false,
+        ),
+        (
+            "repeated-compound",
+            "def f(active, sink):\n    while active() and active():\n        sink()\n",
+            "while active() and active():",
+            false,
+        ),
+        (
+            "outer",
+            "def f(active, sink):\n    if active():\n        while active():\n            sink()\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-tail",
+            "def f(active, sink):\n    if active():\n        while active():\n            sink()\n    sink(1)\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-try-break",
+            "def f(active, nxt, sink):\n    if active():\n        while active():\n            try:\n                item = nxt()\n            except LookupError:\n                break\n            else:\n                sink(item)\n    sink(0)\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-multiple-handler",
+            "def f(active, nxt, sink):\n    if active():\n        while active():\n            try:\n                sink(nxt())\n            except LookupError:\n                break\n            except ValueError:\n                break\n    sink(0)\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-finally",
+            "def f(active, nxt, sink):\n    if active():\n        while active():\n            try:\n                sink(nxt())\n            finally:\n                sink(None)\n    sink(0)\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-with",
+            "def f(active, mgr, sink):\n    if active():\n        while active():\n            with mgr():\n                sink(1)\n    sink(0)\n",
+            "while active():",
+            true,
+        ),
+        (
+            "outer-distinct-returns",
+            "def f(active, sink):\n    if active():\n        while active():\n            sink()\n        return 1\n    return 2\n",
+            "while active():",
+            true,
+        ),
+    ] {
+        let source_path: PathBuf = scratch.join(format!("{label}.py"));
+        let pyc_path: PathBuf = scratch.join(format!("{label}.pyc"));
+        fs::write(&source_path, source).expect("write fixture");
+        compile_source(&interpreter, &source_path, &pyc_path).expect("compile fixture");
+        let (original, marshal_version): (CodeObject, MarshalVersion) =
+            read_code(&pyc_path).expect("read fixture");
+        let version: PyVersion = marshal_to_decompile(marshal_version).expect("version map");
+        let recovered: String =
+            build_real_source(&original, &version, marshal_version).expect("decompile fixture");
+        assert!(recovered.contains(while_header), "{label}: {recovered}");
+        assert_eq!(
+            recovered.contains("if active():"),
+            retains_outer_if,
+            "{label}: {recovered}"
+        );
+        assert_outer_while_nesting(&interpreter, &scratch, label, &recovered, retains_outer_if);
+        if label == "outer-distinct-returns" {
+            assert_recompiled_equivalent(
+                &interpreter,
+                &scratch,
+                label,
+                &original,
+                marshal_version,
+                &recovered,
+            );
+        }
+    }
+}
+
+#[test]
+fn pre311_terminal_peel_keeps_a_source_outer_guard() {
+    let interpreter: PathBuf = find_interpreter("3.10").expect("CPython 3.10");
+    let scratch: PathBuf = PathBuf::from("../../target/py-ci003-pre311-outer-guard");
+    fs::create_dir_all(&scratch).expect("scratch");
+    for (label, source, retains_outer_if) in [
+        (
+            "outer",
+            "def f(active, nxt, sink):\n    if active():\n        while active():\n            try:\n                sink(nxt())\n            except LookupError:\n                sink(None)\n",
+            true,
+        ),
+        (
+            "outer-tail",
+            "def f(active, nxt, sink):\n    if active():\n        while active():\n            try:\n                sink(nxt())\n            except LookupError:\n                sink(None)\n    sink(0)\n",
+            true,
+        ),
+        (
+            "peeled",
+            "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(None)\n",
+            false,
+        ),
+        (
+            "peeled-tail",
+            "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(None)\n    sink(0)\n",
+            false,
+        ),
+        (
+            "outer-distinct-returns",
+            "def f(active, sink):\n    if active():\n        while active():\n            sink()\n        return 1\n    return 2\n",
+            true,
+        ),
+    ] {
+        let source_path: PathBuf = scratch.join(format!("{label}.py"));
+        let pyc_path: PathBuf = scratch.join(format!("{label}.pyc"));
+        fs::write(&source_path, source).expect("write fixture");
+        compile_source(&interpreter, &source_path, &pyc_path).expect("compile fixture");
+        let (original, marshal_version): (CodeObject, MarshalVersion) =
+            read_code(&pyc_path).expect("read fixture");
+        let version: PyVersion = marshal_to_decompile(marshal_version).expect("version map");
+        let recovered: String =
+            build_real_source(&original, &version, marshal_version).expect("decompile fixture");
+        assert!(
+            recovered.contains("while active():"),
+            "{label}: {recovered}"
+        );
+        assert_eq!(
+            recovered.contains("if active():"),
+            retains_outer_if,
+            "{label}: {recovered}"
+        );
+        assert_outer_while_nesting(&interpreter, &scratch, label, &recovered, retains_outer_if);
+        if label == "outer-distinct-returns" {
+            assert_recompiled_equivalent(
+                &interpreter,
+                &scratch,
+                label,
+                &original,
+                marshal_version,
+                &recovered,
+            );
+        }
+    }
+}
+
+#[test]
+fn distinct_terminal_return_padding_is_never_peeled() {
+    let source: &str = "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(None)\n";
+    for alias in ["3.10", "3.12"] {
+        let interpreter: PathBuf = find_interpreter(alias).expect("required CPython");
+        let scratch: PathBuf = PathBuf::from("../../target/py-ci003-distinct-return-padding");
+        fs::create_dir_all(&scratch).expect("scratch");
+        let source_path: PathBuf = scratch.join(format!("{alias}.py"));
+        let pyc_path: PathBuf = scratch.join(format!("{alias}.pyc"));
+        fs::write(&source_path, source).expect("write fixture");
+        compile_source(&interpreter, &source_path, &pyc_path).expect("compile fixture");
+        let mutation: std::process::Output = Command::new(&interpreter)
+            .args(["-c", MUTATE_ENTRY_RETURN])
+            .arg(&pyc_path)
+            .stdin(Stdio::null())
+            .output()
+            .expect("mutate entry return");
+        assert!(
+            mutation.status.success(),
+            "{alias}: {}",
+            String::from_utf8_lossy(&mutation.stderr)
+        );
+        let (original, marshal_version): (CodeObject, MarshalVersion) =
+            read_code(&pyc_path).expect("read mutated fixture");
+        let version: PyVersion = marshal_to_decompile(marshal_version).expect("version map");
+        let recovered: String = build_real_source(&original, &version, marshal_version)
+            .expect("recover representable distinct return paths");
+        assert_distinct_return_guard(
+            &interpreter,
+            &scratch,
+            &format!("{alias}-distinct-return-padding"),
+            &recovered,
+        );
+    }
 }

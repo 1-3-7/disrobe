@@ -17,12 +17,13 @@ use super::exprs::{
 };
 use super::function_meta::prepend_nonlocal_decls;
 use super::loops::{
-    cond_expr_start, find_legacy_async_for_loop, find_loop, guard_matches_enclosed_while,
-    is_post311_two_call_and_try_break_loop, is_walrus_store_shape, leading_cond_arm_holds_loop,
-    leading_guard_if_encloses_loop, legacy_async_for_enclosed_by_loop,
+    PeeledWhileTestRelation, compound_guard_is_source_outer_while, cond_expr_start,
+    find_legacy_async_for_loop, find_loop, guard_matches_enclosed_while,
+    guard_peels_enclosed_while, is_post311_two_call_and_try_break_loop, is_walrus_store_shape,
+    leading_cond_arm_holds_loop, leading_guard_if_encloses_loop, legacy_async_for_enclosed_by_loop,
     legacy_async_for_enclosed_by_try, loop_enclosed_by_guard, loop_is_else_arm_of_leading_if,
-    loop_structure_guarded_loop, non_empty, recover_for_target, structure_for_loop_with_iter,
-    structure_loop, try_enclosed_by_loop,
+    loop_structure_guarded_loop, non_empty, peeled_while_test_relation, recover_for_target,
+    structure_for_loop_with_iter, structure_loop, try_enclosed_by_loop,
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
@@ -2090,6 +2091,26 @@ pub(super) fn structure_stmts(
     if let Some(try_region) = find_try_region(stream, lo, hi)
         && !try_enclosed_by_loop(stream, lo, hi, &try_region)
         && !try_enclosed_by_leading_guard(stream, lo, hi, &try_region)
+        && (stream.is_pre_311()
+            || !find_loop(stream, lo, hi).is_some_and(|loop_region: LoopRegion| {
+                matches!(loop_region.kind, LoopKind::While)
+                    && !loop_region.infinite
+                    && loop_region.header <= try_region.try_start
+                    && try_region.try_start < loop_region.back_edge
+                    && try_region.protected_end() <= loop_region.back_edge
+                    && try_region.handler_start >= loop_region.back_edge
+                    && last_significant_back(stream, lo, loop_region.header).is_some_and(
+                        |guard: usize| {
+                            matches!(
+                                peeled_while_test_relation(code, stream, lo, hi, guard),
+                                Some(
+                                    PeeledWhileTestRelation::Mismatched
+                                        | PeeledWhileTestRelation::EnclosingGuard
+                                )
+                            )
+                        },
+                    )
+            }))
     {
         if let Some(stmts) = try_structure_loop_guard_before_try(code, stream, lo, hi, &try_region)?
         {
@@ -2101,7 +2122,7 @@ pub(super) fn structure_stmts(
         return Ok(stmts);
     }
     if let Some(loop_region) = find_loop(stream, lo, hi)
-        && !leading_guard_if_encloses_loop(stream, lo, hi, &loop_region)
+        && !leading_guard_if_encloses_loop(code, stream, lo, hi, &loop_region)
         && !loop_enclosed_by_guard(stream, lo, &loop_region)
         && !loop_is_else_arm_of_leading_if(stream, lo, hi, &loop_region)
         && !leading_cond_arm_holds_loop(stream, lo, &loop_region)
@@ -2183,6 +2204,9 @@ pub(super) fn structure_stmts(
         }
     }
     let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
+    let compound: Option<CompoundIf> = compound.filter(|candidate: &CompoundIf| {
+        !compound_guard_is_source_outer_while(code, stream, candidate.last_jump, &candidate.test)
+    });
     let cond_at: Option<usize> = compound
         .as_ref()
         .map(|c: &CompoundIf| c.last_jump)
@@ -2420,7 +2444,10 @@ pub(super) fn structure_stmts(
     let mut out: Vec<Stmt> = head;
     if body.is_empty() && orelse.is_empty() && !empty_pass_body {
         out.push(Stmt::Expr(test));
-    } else if orelse.is_empty() && guard_matches_enclosed_while(&body, &test) {
+    } else if orelse.is_empty()
+        && guard_matches_enclosed_while(&body, &test)
+        && guard_peels_enclosed_while(stream, jump_idx, target, hi)
+    {
         out.extend(body);
     } else {
         out.push(Stmt::If {
