@@ -29,7 +29,7 @@ use super::{
 };
 use crate::ast::node::{BoolOpKind, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
-use crate::error::Result;
+use crate::error::{DecompileError, Result};
 use disrobe_py_marshal::CodeObject;
 
 type InfiniteLoopTail = (usize, usize);
@@ -1871,7 +1871,66 @@ const fn transfers_control(op: &CanonicalOp) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PeeledWhileTestRelation {
+    Equivalent,
+    Mismatched,
+    NonExiting,
+}
+
+pub(super) fn peeled_while_test_relation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    test: usize,
+) -> Option<PeeledWhileTestRelation> {
+    let region: LoopRegion = find_loop(stream, lo, hi)?;
+    if stream.is_pre_311()
+        || region.infinite
+        || !matches!(region.kind, LoopKind::While)
+        || test >= region.header
+        || test >= region.back_edge
+        || region.back_edge >= stream.ops.len()
+        || test >= stream.ops.len()
+    {
+        return None;
+    }
+    let owns_header_latch: bool = (region.header..=region.back_edge).any(|latch: usize| {
+        (is_back_edge(&stream.ops[latch])
+            || is_cond_back_edge(&stream.ops[latch])
+            || is_cond_jump_with_backward_target(stream, latch))
+            && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(region.header)
+    });
+    if !owns_header_latch
+        || (test + 1..region.header).any(|k: usize| transfers_control(&stream.ops[k]))
+        || !is_forward_cond_jump(&stream.ops[test])
+        || is_chain_cond_jump(&stream.ops, test)
+        || is_value_form_shortcircuit(&stream.ops, test)
+    {
+        return None;
+    }
+    let entry_target: usize = resolve_jump_target(stream, test, &stream.ops[test])?;
+    let (entry_start, entry_test): (usize, Expr) =
+        recover_entry_guard_test(code, stream, lo, &region)?;
+    if entry_start > test || last_significant_back(stream, entry_start, region.header) != Some(test)
+    {
+        return None;
+    }
+    let loop_test: Expr = recover_while_test(code, stream, &region);
+    if entry_target != region.exit {
+        return Some(PeeledWhileTestRelation::NonExiting);
+    }
+    Some(if exprs_equal_ignoring_lines(&entry_test, &loop_test) {
+        PeeledWhileTestRelation::Equivalent
+    } else {
+        PeeledWhileTestRelation::Mismatched
+    })
+}
+
+#[must_use]
 pub(super) fn loop_header_owns_test(
+    code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
     hi: usize,
@@ -1880,9 +1939,12 @@ pub(super) fn loop_header_owns_test(
     let Some(region): Option<LoopRegion> = find_loop(stream, lo, hi) else {
         return false;
     };
+    if test < region.header {
+        return peeled_while_test_relation(code, stream, lo, hi, test)
+            == Some(PeeledWhileTestRelation::Equivalent);
+    }
     if region.infinite
         || !matches!(region.kind, LoopKind::While)
-        || test < region.header
         || test >= region.back_edge
         || region.back_edge >= stream.ops.len()
         || test >= stream.ops.len()
@@ -2294,6 +2356,7 @@ fn structure_while_body_absorbing_break_handler(
     region: &LoopRegion,
     hi: usize,
     test: &Expr,
+    has_peeled_entry_test: bool,
 ) -> Result<Vec<Stmt>> {
     if let Some(region_try) = while_break_handler_try(stream, region, hi) {
         if absorb_hoists_nested_try(stream, region, &region_try) {
@@ -2305,7 +2368,14 @@ fn structure_while_body_absorbing_break_handler(
         let try_hi: usize = region_try.region_end().min(hi);
         let mut body: Vec<Stmt> =
             structure_try(code, stream, region.body_start, try_hi, &region_try)?;
-        if normalize_two_call_and_handler_break(stream, region, &region_try, test, &mut body) {
+        if normalize_handler_break_loop_latch(
+            stream,
+            region,
+            &region_try,
+            test,
+            has_peeled_entry_test,
+            &mut body,
+        ) {
             let exit_tail: Vec<Stmt> = structure_stmts(code, stream, region.exit, hi)?;
             strip_loop_exit_prefix_suffix(&mut body, &exit_tail);
         }
@@ -2319,7 +2389,14 @@ fn structure_while_body_absorbing_break_handler(
         && region_try.try_start >= region.body_start
         && region_try.protected_end() <= region.body_end
         && region_try.region_end() <= region.body_end
-        && normalize_two_call_and_handler_break(stream, region, &region_try, test, &mut body)
+        && normalize_handler_break_loop_latch(
+            stream,
+            region,
+            &region_try,
+            test,
+            has_peeled_entry_test,
+            &mut body,
+        )
     {
         let exit_tail: Vec<Stmt> = structure_stmts(code, stream, region.exit, hi)?;
         strip_loop_exit_prefix_suffix(&mut body, &exit_tail);
@@ -2327,24 +2404,23 @@ fn structure_while_body_absorbing_break_handler(
     Ok(body)
 }
 
-fn normalize_two_call_and_handler_break(
+fn normalize_handler_break_loop_latch(
     stream: &DecodedStream,
     region: &LoopRegion,
     region_try: &TryRegion,
     test: &Expr,
+    has_peeled_entry_test: bool,
     body: &mut [Stmt],
 ) -> bool {
-    let Expr::BoolOp {
-        op: BoolOpKind::And,
-        values,
-    } = test
-    else {
-        return false;
-    };
-    let [left, right]: &[Expr] = values.as_slice() else {
-        return false;
-    };
-    if !is_direct_zero_argument_call(left) || !is_direct_zero_argument_call(right) {
+    let is_two_call_and: bool = matches!(
+        test,
+        Expr::BoolOp {
+            op: BoolOpKind::And,
+            values,
+        } if matches!(values.as_slice(), [left, right]
+            if is_direct_zero_argument_call(left) && is_direct_zero_argument_call(right))
+    );
+    if !(is_two_call_and || has_peeled_entry_test && is_direct_zero_argument_call(test)) {
         return false;
     }
     let matching_exit_edges: usize = (region_try.handler_start..region_try.region_end())
@@ -2376,27 +2452,33 @@ fn normalize_two_call_and_handler_break(
     let [handler] = handlers.as_mut_slice() else {
         return false;
     };
-    let orelse_is_latch: bool = orelse.is_empty()
-        || matches!(
-            orelse.as_slice(),
-            [Stmt::If {
+    let orelse_ends_in_latch: bool = matches!(
+        orelse.last(),
+        Some(Stmt::If {
                 test: latch_test,
                 body: latch_body,
                 orelse: latch_else,
                 ..
-            }] if exprs_equal_ignoring_lines(latch_test, test)
+            }) if exprs_equal_ignoring_lines(latch_test, test)
                 && matches!(latch_body.as_slice(), [Stmt::Continue])
                 && latch_else.is_empty()
-        );
+    );
+    let orelse_is_supported: bool = if is_two_call_and {
+        orelse.is_empty() || orelse.len() == 1 && orelse_ends_in_latch
+    } else {
+        orelse_ends_in_latch
+    };
     if handler.typ.is_none()
-        || !orelse_is_latch
+        || !orelse_is_supported
         || !finalbody.is_empty()
         || !matches!(handler.body.as_slice(), [Stmt::Pass])
     {
         return false;
     }
     handler.body = vec![Stmt::Break];
-    orelse.clear();
+    if orelse_ends_in_latch {
+        orelse.pop();
+    }
     true
 }
 
@@ -2499,10 +2581,13 @@ pub(super) fn structure_loop(
     } else {
         None
     };
-    let head_end: usize = while_test
-        .as_ref()
-        .and_then(|t: &Expr| redundant_entry_guard_start(code, stream, lo, region, t))
-        .unwrap_or(region.header);
+    let entry_guard_start: Option<usize> = match while_test.as_ref() {
+        Some(test) => redundant_entry_guard_start(code, stream, lo, region, test)?,
+        None => None,
+    };
+    let has_peeled_entry_test: bool =
+        entry_guard_start.is_some_and(|start: usize| start < region.header);
+    let head_end: usize = entry_guard_start.unwrap_or(region.header);
     let head: Vec<Stmt> = structure_stmts(code, stream, lo, head_end)?;
     let exit_return: Option<Expr> = loop_shared_exit_return(code, stream, region, hi);
     push_loop_frame(LoopFrame {
@@ -2585,7 +2670,14 @@ pub(super) fn structure_loop(
                     infinite_tail = tail;
                     body
                 } else {
-                    structure_while_body_absorbing_break_handler(code, stream, region, hi, &test)?
+                    structure_while_body_absorbing_break_handler(
+                        code,
+                        stream,
+                        region,
+                        hi,
+                        &test,
+                        has_peeled_entry_test,
+                    )?
                 };
                 let orelse: Vec<Stmt> = if region.infinite {
                     Vec::new()
@@ -3816,9 +3908,6 @@ fn recover_entry_guard_test(
         jump_idxs.push(prev);
         boundary = cond_expr_start(stream, prev, lo);
     }
-    if jump_idxs.len() < 2 {
-        return None;
-    }
     jump_idxs.reverse();
     let entry_start: usize = cond_expr_start(stream, jump_idxs[0], lo);
     let mut operands: Vec<CondOperand> = Vec::with_capacity(jump_idxs.len());
@@ -3851,9 +3940,28 @@ fn redundant_entry_guard_start(
     lo: usize,
     region: &LoopRegion,
     loop_test: &Expr,
-) -> Option<usize> {
-    let (start, guard_test): (usize, Expr) = recover_entry_guard_test(code, stream, lo, region)?;
-    exprs_equal_ignoring_lines(&guard_test, loop_test).then_some(start)
+) -> Result<Option<usize>> {
+    let Some((start, guard_test)): Option<(usize, Expr)> =
+        recover_entry_guard_test(code, stream, lo, region)
+    else {
+        return Ok(None);
+    };
+    if !exprs_equal_ignoring_lines(&guard_test, loop_test) {
+        return Ok(None);
+    }
+    let Some(last): Option<usize> = last_significant_back(stream, start, region.header) else {
+        return Ok(None);
+    };
+    if resolve_jump_target(stream, last, &stream.ops[last]) != Some(region.exit) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(last)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "peeled entry test does not exit the loop".to_owned(),
+        });
+    }
+    Ok(Some(start))
 }
 
 #[cfg(test)]

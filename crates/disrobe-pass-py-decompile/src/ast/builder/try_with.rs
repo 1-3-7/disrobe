@@ -7,9 +7,10 @@ use super::exprs::{
 };
 use super::function_meta::load_const;
 use super::loops::{
-    active_loop_exit_tail_range, exprs_equal_ignoring_lines, find_for_with_cold_handler, find_loop,
-    for_cold_handler_exit_epilogue, is_walrus_store_shape, loop_header_owns_test, non_empty,
-    stmts_equal_ignoring_lines, try_enclosed_by_loop,
+    PeeledWhileTestRelation, active_loop_exit_tail_range, exprs_equal_ignoring_lines,
+    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, is_walrus_store_shape,
+    loop_header_owns_test, non_empty, peeled_while_test_relation, stmts_equal_ignoring_lines,
+    try_enclosed_by_loop,
 };
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
@@ -1724,7 +1725,23 @@ pub(super) fn try_structure_guarded_try(
     }) else {
         return Ok(None);
     };
-    if loop_header_owns_test(stream, lo, hi, first_cond) {
+    let peeled_relation: Option<PeeledWhileTestRelation> =
+        peeled_while_test_relation(code, stream, lo, hi, first_cond);
+    if let Some(relation) = peeled_relation {
+        let reason: &str = match relation {
+            PeeledWhileTestRelation::Equivalent => return Ok(None),
+            PeeledWhileTestRelation::Mismatched => "peeled and loop-back tests differ",
+            PeeledWhileTestRelation::NonExiting => "peeled entry test does not exit the loop",
+        };
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(first_cond)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: reason.to_owned(),
+        });
+    }
+    if loop_header_owns_test(code, stream, lo, hi, first_cond) {
         return Ok(None);
     }
     let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
@@ -3438,7 +3455,12 @@ fn guard_prefix_kind(
 }
 
 #[must_use]
-fn active_loop_is_top_tested_while(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+fn active_loop_is_top_tested_while(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> bool {
     let (Some(header), Some(exit)): (Option<usize>, Option<usize>) =
         (loop_continue_target(), loop_break_target())
     else {
@@ -3450,7 +3472,7 @@ fn active_loop_is_top_tested_while(stream: &DecodedStream, lo: usize, hi: usize)
     (header..lo).any(|test: usize| {
         is_forward_cond_jump(&stream.ops[test])
             && resolve_jump_target(stream, test, &stream.ops[test]) == Some(exit)
-            && loop_header_owns_test(stream, header, hi, test)
+            && loop_header_owns_test(code, stream, header, hi, test)
     })
 }
 
@@ -3835,7 +3857,7 @@ fn try_structure_stmt_continue_guard_before_try(
         return Ok(None);
     };
     if is_and_guard
-        && (!active_loop_is_top_tested_while(stream, lo, hi)
+        && (!active_loop_is_top_tested_while(code, stream, lo, hi)
             || !handler_breaks_to_active_loop_exit(stream, region))
     {
         return Ok(None);
