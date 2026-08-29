@@ -1913,7 +1913,7 @@ fn lift_method_body(
         &code.exception_table,
         &boolean_param_slots,
     );
-    split_reused_primitive_ranges(&mut insns, next_fresh);
+    split_reused_primitive_ranges(&mut insns, next_fresh, &code.exception_table);
     if insns.is_empty() {
         return Ok(MethodBody {
             text: String::new(),
@@ -3481,14 +3481,6 @@ fn exception_local_types(
     out
 }
 
-const fn slot_op_category(opcode: u8) -> Option<bool> {
-    match opcode {
-        0x19 | 0x3A | 0x2A..=0x2D | 0x4B..=0x4E => Some(true),
-        0x15..=0x18 | 0x36..=0x39 | 0x1A..=0x29 | 0x3B..=0x4A => Some(false),
-        _ => None,
-    }
-}
-
 const fn slot_op_is_store(opcode: u8) -> bool {
     matches!(opcode, 0x36..=0x4E)
 }
@@ -3832,75 +3824,216 @@ fn split_reused_boolean_parameter_ranges(
     next_fresh
 }
 
-fn split_reused_primitive_ranges(insns: &mut [Instruction], max_locals: u16) {
-    let mut category_seen: BTreeMap<u16, BTreeSet<bool>> = BTreeMap::new();
-    for insn in insns.iter() {
-        if let (Some(cat), Some(slot)) = (slot_op_category(insn.opcode), local_slot_operand(insn)) {
-            category_seen.entry(slot).or_default().insert(cat);
-        }
-    }
-    let split_slots: BTreeSet<u16> = category_seen
-        .into_iter()
-        .filter(|(slot, cats): &(u16, BTreeSet<bool>)| {
-            cats.len() == 2 && slot_categories_cleanly_partitioned(insns, *slot)
-        })
-        .map(|(slot, _): (u16, BTreeSet<bool>)| slot)
+fn split_reused_primitive_ranges(
+    insns: &mut [Instruction],
+    max_locals: u16,
+    exception_table: &[bytecode::ExceptionEntry],
+) {
+    let Some(branch_edges) = branch_edges(insns) else {
+        return;
+    };
+    let referenced_slots: BTreeSet<u16> = insns
+        .iter()
+        .filter_map(instruction_local_slot)
+        .filter(|slot: &u16| *slot < max_locals)
         .collect();
-    if split_slots.is_empty() {
+    let split_slots: BTreeMap<u16, Vec<u8>> = referenced_slots
+        .into_iter()
+        .filter_map(|slot: u16| {
+            slot_reused_type_ranges(insns, slot, exception_table, &branch_edges)
+                .map(|ranges| (slot, ranges))
+        })
+        .collect();
+    let required_fresh: usize = split_slots
+        .values()
+        .map(|ranges: &Vec<u8>| ranges.len().saturating_sub(1))
+        .sum();
+    let Ok(required_fresh): core::result::Result<u16, _> = u16::try_from(required_fresh) else {
+        return;
+    };
+    if required_fresh == 0 || max_locals.checked_add(required_fresh).is_none() {
         return;
     }
     let mut next_fresh: u16 = max_locals;
-    for &slot in &split_slots {
-        let fresh: u16 = next_fresh;
-        next_fresh = next_fresh.saturating_add(1);
-        let first_category: bool = insns
-            .iter()
-            .filter(|insn: &&Instruction| local_slot_operand(insn) == Some(slot))
-            .find_map(|insn: &Instruction| slot_op_category(insn.opcode))
-            .unwrap_or(true);
+    for (slot, ranges) in split_slots {
+        let mut slots_by_type: BTreeMap<u8, u16> = BTreeMap::new();
+        slots_by_type.insert(ranges[0], slot);
+        for type_index in ranges.into_iter().skip(1) {
+            slots_by_type.insert(type_index, next_fresh);
+            next_fresh += 1;
+        }
         for insn in insns.iter_mut() {
-            if let Operands::Iinc { index, .. } = &mut insn.operands {
-                if *index == slot && first_category {
-                    *index = fresh;
-                }
-                continue;
-            }
             if local_slot_operand(insn) != Some(slot) {
                 continue;
             }
-            if slot_op_category(insn.opcode) != Some(first_category) {
+            let Some(type_index) =
+                slot_store_type_index(insn.opcode).or_else(|| slot_load_type_index(insn.opcode))
+            else {
+                continue;
+            };
+            if let Some(&fresh) = slots_by_type.get(&type_index)
+                && fresh != slot
+            {
                 rebind_slot_to_explicit(insn, fresh);
             }
         }
     }
 }
 
-fn slot_categories_cleanly_partitioned(insns: &[Instruction], slot: u16) -> bool {
-    let mut first_category: Option<bool> = None;
-    let mut crossed: bool = false;
-    for insn in insns {
-        if local_slot_operand(insn) != Some(slot) {
-            continue;
-        }
-        let Some(cat): Option<bool> = slot_op_category(insn.opcode) else {
+fn slot_reused_type_ranges(
+    insns: &[Instruction],
+    slot: u16,
+    exception_table: &[bytecode::ExceptionEntry],
+    branch_edges: &[(usize, usize)],
+) -> Option<Vec<u8>> {
+    let mut ranges: Vec<(u8, usize)> = Vec::new();
+    let mut seen: BTreeSet<u8> = BTreeSet::new();
+    for (index, insn) in insns.iter().enumerate() {
+        let Some(type_index) = slot_instruction_type_index(insn, slot) else {
             continue;
         };
-        match first_category {
-            None => first_category = Some(cat),
-            Some(first) if cat == first => {
-                if crossed {
-                    return false;
-                }
-            }
-            Some(_) => {
-                if !crossed && !slot_op_is_store(insn.opcode) {
-                    return false;
-                }
-                crossed = true;
-            }
+        if matches!(&insn.operands, Operands::Iinc { .. }) {
+            return None;
+        }
+        if pc_has_exception_ambiguity(insn.pc, exception_table) {
+            return None;
+        }
+        if ranges
+            .last()
+            .is_some_and(|(previous, _): &(u8, usize)| *previous == type_index)
+        {
+            continue;
+        }
+        if !ranges.is_empty() && !slot_op_is_store(insn.opcode) {
+            return None;
+        }
+        if !seen.insert(type_index) {
+            return None;
+        }
+        ranges.push((type_index, index));
+    }
+    if ranges.len() <= 1
+        || branch_crosses_type_range_boundary(
+            branch_edges,
+            &ranges
+                .iter()
+                .skip(1)
+                .map(|(_, index): &(u8, usize)| *index)
+                .collect::<Vec<usize>>(),
+        )
+    {
+        return None;
+    }
+    Some(
+        ranges
+            .into_iter()
+            .map(|(type_index, _): (u8, usize)| type_index)
+            .collect(),
+    )
+}
+
+fn slot_instruction_type_index(insn: &Instruction, slot: u16) -> Option<u8> {
+    match &insn.operands {
+        Operands::Iinc { index, .. } if *index == slot => Some(0),
+        _ if local_slot_operand(insn) == Some(slot) => {
+            slot_store_type_index(insn.opcode).or_else(|| slot_load_type_index(insn.opcode))
+        }
+        _ => None,
+    }
+}
+
+fn instruction_local_slot(insn: &Instruction) -> Option<u16> {
+    match &insn.operands {
+        Operands::Iinc { index, .. } => Some(*index),
+        _ => local_slot_operand(insn),
+    }
+}
+
+fn branch_edges(insns: &[Instruction]) -> Option<Vec<(usize, usize)>> {
+    if insns
+        .iter()
+        .any(|insn: &Instruction| matches!(insn.opcode, 0xA8 | 0xA9 | 0xC9))
+    {
+        return None;
+    }
+    let pc_to_index: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn): (usize, &Instruction)| (insn.pc, index))
+        .collect();
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (source, insn) in insns.iter().enumerate() {
+        for target_pc in instruction_successor_pcs(insn)? {
+            let &target = pc_to_index.get(&target_pc)?;
+            edges.push((source, target));
         }
     }
-    crossed
+    Some(edges)
+}
+
+fn instruction_successor_pcs(insn: &Instruction) -> Option<Vec<u32>> {
+    let offsets: Vec<i32> = match &insn.operands {
+        Operands::Branch(offset) => vec![*offset],
+        Operands::TableSwitch {
+            default,
+            low,
+            high,
+            offsets,
+        } => {
+            if high < low {
+                return None;
+            }
+            let expected: usize = usize::try_from(i64::from(*high) - i64::from(*low) + 1).ok()?;
+            if offsets.len() != expected {
+                return None;
+            }
+            let mut all_offsets: Vec<i32> = Vec::with_capacity(offsets.len().saturating_add(1));
+            all_offsets.push(*default);
+            all_offsets.extend(offsets.iter().copied());
+            all_offsets
+        }
+        Operands::LookupSwitch { default, pairs } => {
+            if pairs
+                .windows(2)
+                .any(|pair: &[(i32, i32)]| pair[0].0 >= pair[1].0)
+            {
+                return None;
+            }
+            let mut all_offsets: Vec<i32> = Vec::with_capacity(pairs.len().saturating_add(1));
+            all_offsets.push(*default);
+            all_offsets.extend(pairs.iter().map(|(_, offset): &(i32, i32)| *offset));
+            all_offsets
+        }
+        _ => Vec::new(),
+    };
+    offsets
+        .into_iter()
+        .map(|offset: i32| u32::try_from(i64::from(insn.pc).checked_add(i64::from(offset))?).ok())
+        .collect()
+}
+
+fn branch_crosses_type_range_boundary(
+    branch_edges: &[(usize, usize)],
+    boundaries: &[usize],
+) -> bool {
+    branch_edges
+        .iter()
+        .any(|&(source, target): &(usize, usize)| {
+            boundaries.iter().any(|&boundary: &usize| {
+                source < boundary && boundary <= target || target < boundary && boundary <= source
+            })
+        })
+}
+
+fn pc_has_exception_ambiguity(pc: u32, exception_table: &[bytecode::ExceptionEntry]) -> bool {
+    exception_table
+        .iter()
+        .any(|entry: &bytecode::ExceptionEntry| {
+            let start_pc: u32 = u32::from(entry.start_pc);
+            let end_pc: u32 = u32::from(entry.end_pc);
+            let handler_pc: u32 = u32::from(entry.handler_pc);
+            start_pc <= pc && pc < end_pc || pc == handler_pc
+        })
 }
 
 fn exception_value_conflicted_slots(
@@ -12200,5 +12333,285 @@ mod tests {
             !source.contains("new StringBuilder().append(arg0);"),
             "{source}"
         );
+    }
+
+    fn local_instruction(pc: u32, opcode: u8, slot: u16) -> Instruction {
+        Instruction {
+            pc,
+            opcode,
+            mnemonic: "test",
+            wide: false,
+            operands: Operands::Local(slot),
+        }
+    }
+
+    #[test]
+    fn split_reused_ranges_refuses_branch_and_iinc_ambiguity() {
+        let mut forward: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0xA7,
+                mnemonic: "goto",
+                wide: false,
+                operands: Operands::Branch(3),
+            },
+            local_instruction(2, 0x3A, 0),
+            local_instruction(3, 0x19, 0),
+            Instruction {
+                pc: 4,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+        ];
+        let mut loop_latch: Vec<Instruction> = vec![
+            local_instruction(0, 0x3A, 0),
+            local_instruction(1, 0x36, 0),
+            Instruction {
+                pc: 2,
+                opcode: 0xA7,
+                mnemonic: "goto",
+                wide: false,
+                operands: Operands::Branch(6),
+            },
+            Instruction {
+                pc: 5,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+            Instruction {
+                pc: 6,
+                opcode: 0x84,
+                mnemonic: "iinc",
+                wide: false,
+                operands: Operands::Iinc { index: 0, delta: 1 },
+            },
+            Instruction {
+                pc: 9,
+                opcode: 0xA7,
+                mnemonic: "goto",
+                wide: false,
+                operands: Operands::Branch(-9),
+            },
+        ];
+
+        split_reused_primitive_ranges(&mut forward, 1, &[]);
+        split_reused_primitive_ranges(&mut loop_latch, 1, &[]);
+
+        assert_eq!(forward[2].operands, Operands::Local(0));
+        assert_eq!(forward[3].operands, Operands::Local(0));
+        assert_eq!(loop_latch[0].operands, Operands::Local(0));
+        assert_eq!(loop_latch[1].operands, Operands::Local(0));
+        assert_eq!(
+            loop_latch[4].operands,
+            Operands::Iinc { index: 0, delta: 1 }
+        );
+    }
+
+    #[test]
+    fn split_reused_ranges_refuses_switch_and_exception_ambiguity() {
+        let mut switch: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0xAA,
+                mnemonic: "tableswitch",
+                wide: false,
+                operands: Operands::TableSwitch {
+                    default: 3,
+                    low: 0,
+                    high: 0,
+                    offsets: vec![-1],
+                },
+            },
+            local_instruction(2, 0x3A, 0),
+            local_instruction(3, 0x19, 0),
+            Instruction {
+                pc: 4,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+        ];
+        let mut exception: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            local_instruction(1, 0x3A, 0),
+            local_instruction(2, 0x19, 0),
+        ];
+        let exceptions: Vec<bytecode::ExceptionEntry> = vec![bytecode::ExceptionEntry {
+            start_pc: 1,
+            end_pc: 2,
+            handler_pc: 2,
+            catch_type: 0,
+        }];
+
+        split_reused_primitive_ranges(&mut switch, 1, &[]);
+        split_reused_primitive_ranges(&mut exception, 1, &exceptions);
+
+        assert_eq!(switch[2].operands, Operands::Local(0));
+        assert_eq!(switch[3].operands, Operands::Local(0));
+        assert_eq!(exception[1].operands, Operands::Local(0));
+        assert_eq!(exception[2].operands, Operands::Local(0));
+    }
+
+    #[test]
+    fn split_reused_ranges_refuses_malformed_or_repeated_ranges() {
+        let mut malformed: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0xAB,
+                mnemonic: "lookupswitch",
+                wide: false,
+                operands: Operands::LookupSwitch {
+                    default: -1,
+                    pairs: vec![(7, -1), (7, 4)],
+                },
+            },
+            local_instruction(2, 0x3A, 0),
+            local_instruction(3, 0x19, 0),
+        ];
+        let mut repeated: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            local_instruction(1, 0x3A, 0),
+            local_instruction(2, 0x36, 0),
+        ];
+        let mut overflow: Vec<Instruction> =
+            vec![local_instruction(0, 0x36, 0), local_instruction(1, 0x3A, 0)];
+
+        split_reused_primitive_ranges(&mut malformed, 1, &[]);
+        split_reused_primitive_ranges(&mut repeated, 1, &[]);
+        split_reused_primitive_ranges(&mut overflow, u16::MAX, &[]);
+
+        assert_eq!(malformed[2].operands, Operands::Local(0));
+        assert_eq!(malformed[3].operands, Operands::Local(0));
+        assert_eq!(repeated[1].operands, Operands::Local(0));
+        assert_eq!(repeated[2].operands, Operands::Local(0));
+        assert_eq!(overflow[1].operands, Operands::Local(0));
+    }
+
+    #[test]
+    fn split_reused_ranges_refuses_valid_target_loop_with_iinc() {
+        let mut insns: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0x84,
+                mnemonic: "iinc",
+                wide: false,
+                operands: Operands::Iinc { index: 0, delta: 1 },
+            },
+            Instruction {
+                pc: 4,
+                opcode: 0x99,
+                mnemonic: "ifeq",
+                wide: false,
+                operands: Operands::Branch(-4),
+            },
+            local_instruction(7, 0x3A, 0),
+            local_instruction(8, 0x19, 0),
+        ];
+
+        split_reused_primitive_ranges(&mut insns, 1, &[]);
+
+        assert_eq!(insns[1].operands, Operands::Iinc { index: 0, delta: 1 });
+        assert_eq!(insns[3].operands, Operands::Local(0));
+        assert_eq!(insns[4].operands, Operands::Local(0));
+    }
+
+    #[test]
+    fn split_reused_ranges_allows_branch_within_one_value_range() {
+        let mut insns: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0xA7,
+                mnemonic: "goto",
+                wide: false,
+                operands: Operands::Branch(2),
+            },
+            local_instruction(2, 0x15, 0),
+            local_instruction(3, 0x15, 0),
+            local_instruction(4, 0x3A, 0),
+            local_instruction(5, 0x19, 0),
+        ];
+
+        split_reused_primitive_ranges(&mut insns, 1, &[]);
+
+        assert_eq!(insns[4].operands, Operands::Local(1));
+        assert_eq!(insns[5].operands, Operands::Local(1));
+    }
+
+    #[test]
+    fn split_reused_ranges_refuses_raw_subroutine_opcodes() {
+        for (opcode, operands) in [
+            (0xA8, Operands::Branch(0)),
+            (0xA9, Operands::Local(1)),
+            (0xC9, Operands::Branch(0)),
+        ] {
+            let mut insns: Vec<Instruction> = vec![
+                local_instruction(0, 0x36, 0),
+                Instruction {
+                    pc: 1,
+                    opcode,
+                    mnemonic: "subroutine",
+                    wide: false,
+                    operands,
+                },
+                local_instruction(2, 0x3A, 0),
+                local_instruction(3, 0x19, 0),
+            ];
+
+            split_reused_primitive_ranges(&mut insns, 1, &[]);
+
+            assert_eq!(insns[2].operands, Operands::Local(0));
+            assert_eq!(insns[3].operands, Operands::Local(0));
+        }
+    }
+
+    #[test]
+    fn split_reused_ranges_assigns_distinct_identities_to_each_jvm_value_category() {
+        let mut insns: Vec<Instruction> = [
+            (0x36, "istore"),
+            (0x15, "iload"),
+            (0x38, "fstore"),
+            (0x17, "fload"),
+            (0x37, "lstore"),
+            (0x16, "lload"),
+            (0x39, "dstore"),
+            (0x18, "dload"),
+            (0x3A, "astore"),
+            (0x19, "aload"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(
+            |(pc, (opcode, mnemonic)): (usize, (u8, &str))| Instruction {
+                pc: u32::try_from(pc).unwrap(),
+                opcode,
+                mnemonic,
+                wide: false,
+                operands: Operands::Local(0),
+            },
+        )
+        .collect();
+
+        split_reused_primitive_ranges(&mut insns, 1, &[]);
+
+        assert_eq!(insns[0].operands, Operands::Local(0));
+        assert_eq!(insns[1].operands, Operands::Local(0));
+        assert_eq!(insns[2].operands, Operands::Local(1));
+        assert_eq!(insns[3].operands, Operands::Local(1));
+        assert_eq!(insns[4].operands, Operands::Local(2));
+        assert_eq!(insns[5].operands, Operands::Local(2));
+        assert_eq!(insns[6].operands, Operands::Local(3));
+        assert_eq!(insns[7].operands, Operands::Local(3));
+        assert_eq!(insns[8].operands, Operands::Local(4));
+        assert_eq!(insns[9].operands, Operands::Local(4));
     }
 }
