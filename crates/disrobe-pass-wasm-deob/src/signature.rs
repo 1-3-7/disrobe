@@ -7,6 +7,10 @@ use crate::boundary_links::{
     BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage, BoundaryLink, BoundaryLinks,
     BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
 };
+use crate::boundary_name_propagation::{
+    BoundaryNameConfidence, BoundaryNameEvidence, BoundaryNamePropagationError,
+    MAX_BOUNDARY_NAME_SEEDS, RecoveredBoundaryName, propagate_boundary_names,
+};
 use crate::error::{Error, Result};
 
 pub(crate) const MAX_FUNCTION_LOCALS: usize = 100_000;
@@ -55,6 +59,29 @@ pub struct ModuleSignatures {
     imported_function_count: u32,
     export_aliases: Vec<ExportAlias>,
     boundary_links: BoundaryLinks,
+    recovered_boundary_names: Vec<RecoveredBoundaryName>,
+    boundary_name_recovery_status: BoundaryNameRecoveryStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BoundaryNameRecoveryStatus {
+    #[default]
+    Complete,
+    Truncated {
+        root_count: usize,
+        retained_root_count: usize,
+    },
+    Failed {
+        failure: BoundaryNameRecoveryFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryNameRecoveryFailure {
+    InvalidTrustedRoot,
+    UnknownTrustedRoot,
+    WorkLimitExceeded,
+    PathReconstructionFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -132,6 +159,18 @@ impl ModuleSignatures {
     #[must_use]
     pub fn boundary_relations(&self) -> &[BoundaryLink] {
         self.boundary_links.links()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn recovered_boundary_names(&self) -> &[RecoveredBoundaryName] {
+        &self.recovered_boundary_names
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn boundary_name_recovery_status(&self) -> &BoundaryNameRecoveryStatus {
+        &self.boundary_name_recovery_status
     }
 
     #[inline]
@@ -334,6 +373,10 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let boundary_links: BoundaryLinks =
         direct_boundary_links(&function_imports, &export_names, &name_by_index)
             .map_err(|error: BoundaryLinksError| Error::Parse(error.to_string()))?;
+    let (recovered_boundary_names, boundary_name_recovery_status): (
+        Vec<RecoveredBoundaryName>,
+        BoundaryNameRecoveryStatus,
+    ) = recover_trusted_boundary_names(&boundary_links);
     let type_signatures: Vec<(Vec<ValType>, Vec<ValType>)> = func_types
         .iter()
         .map(|func_type: &RawFuncType| {
@@ -350,7 +393,84 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         imported_function_count,
         export_aliases,
         boundary_links,
+        recovered_boundary_names,
+        boundary_name_recovery_status,
     })
+}
+
+fn recover_trusted_boundary_names(
+    boundary_links: &BoundaryLinks,
+) -> (Vec<RecoveredBoundaryName>, BoundaryNameRecoveryStatus) {
+    let roots_by_symbol: BTreeMap<BoundarySymbol, u32> = boundary_links
+        .links()
+        .iter()
+        .flat_map(|link: &BoundaryLink| [&link.source, &link.target])
+        .filter_map(|symbol: &BoundarySymbol| {
+            (symbol.language.as_str() == "webassembly"
+                && symbol.identity_source == BoundaryIdentitySource::NameSection)
+                .then_some(symbol.index.map(|index: u32| (symbol.clone(), index)))
+                .flatten()
+        })
+        .collect();
+    let root_count: usize = roots_by_symbol.len();
+    let roots: std::result::Result<Vec<RecoveredBoundaryName>, BoundaryNameRecoveryFailure> =
+        roots_by_symbol
+            .into_iter()
+            .take(MAX_BOUNDARY_NAME_SEEDS)
+            .map(|(symbol, function_index): (BoundarySymbol, u32)| {
+                let name: String = symbol.name.clone();
+                RecoveredBoundaryName::seed(
+                    symbol,
+                    name,
+                    BoundaryNameConfidence::Certain,
+                    BoundaryNameEvidence::NameSection { function_index },
+                )
+                .map_err(BoundaryNameRecoveryFailure::from)
+            })
+            .collect();
+    let roots: Vec<RecoveredBoundaryName> = match roots {
+        Ok(roots) => roots,
+        Err(failure) => {
+            return (Vec::new(), BoundaryNameRecoveryStatus::Failed { failure });
+        }
+    };
+    let recovered: Vec<RecoveredBoundaryName> =
+        match propagate_boundary_names(boundary_links, &roots) {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    BoundaryNameRecoveryStatus::Failed {
+                        failure: error.into(),
+                    },
+                );
+            }
+        };
+    let status: BoundaryNameRecoveryStatus = if root_count > MAX_BOUNDARY_NAME_SEEDS {
+        BoundaryNameRecoveryStatus::Truncated {
+            root_count,
+            retained_root_count: MAX_BOUNDARY_NAME_SEEDS,
+        }
+    } else {
+        BoundaryNameRecoveryStatus::Complete
+    };
+    (recovered, status)
+}
+
+impl From<BoundaryNamePropagationError> for BoundaryNameRecoveryFailure {
+    fn from(error: BoundaryNamePropagationError) -> Self {
+        match error {
+            BoundaryNamePropagationError::UnknownSeedSymbol { .. } => Self::UnknownTrustedRoot,
+            BoundaryNamePropagationError::WorkLimitExceeded { .. } => Self::WorkLimitExceeded,
+            BoundaryNamePropagationError::PathReconstructionFailed => {
+                Self::PathReconstructionFailed
+            }
+            BoundaryNamePropagationError::EmptyName
+            | BoundaryNamePropagationError::NameTooLong { .. }
+            | BoundaryNamePropagationError::CertainArityOnly
+            | BoundaryNamePropagationError::TooManyNames { .. } => Self::InvalidTrustedRoot,
+        }
+    }
 }
 
 fn direct_boundary_links(

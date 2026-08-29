@@ -24,6 +24,7 @@ pub(crate) fn push_string_line(out: &mut impl std::fmt::Write, args: std::fmt::A
 
 mod analyze;
 pub mod boundary_links;
+mod boundary_name_propagation;
 mod cfg;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
@@ -73,6 +74,11 @@ pub use boundary_links::{
     BOUNDARY_LINKS_SCHEMA_VERSION, BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage,
     BoundaryLink, BoundaryLinks, BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
     MAX_BOUNDARY_LINK_STRING_BYTES, MAX_BOUNDARY_LINKS, MAX_BOUNDARY_LINKS_JSON_BYTES,
+};
+pub use boundary_name_propagation::{
+    BoundaryNameConfidence, BoundaryNameEvidence, BoundaryNamePropagationError,
+    MAX_BOUNDARY_NAME_PROPAGATION_WORK, MAX_BOUNDARY_NAME_SEEDS, RecoveredBoundaryName,
+    propagate_boundary_names,
 };
 pub use cfg::{BlockId, CfgBlock, FunctionCfg, TerminatorKind, build_function_cfg};
 pub use custom_page_sizes::{
@@ -135,8 +141,9 @@ pub use provenance_header::{
 };
 pub use recover::{CollatzWitness, RecoveredModule, RecoveryReport, recover_module};
 pub use signature::{
-    ExportAlias, FunctionSig, ModuleSignatures, count_defined_function_bodies,
-    dedup_export_aliases, dwarf_local_names, extract_signatures, signatures_or_placeholders,
+    BoundaryNameRecoveryFailure, BoundaryNameRecoveryStatus, ExportAlias, FunctionSig,
+    ModuleSignatures, count_defined_function_bodies, dedup_export_aliases, dwarf_local_names,
+    extract_signatures, signatures_or_placeholders,
 };
 pub use simd::{SimdFlavor, SimdLane, SimdOpRecord, SimdReport, scan_simd};
 pub use sourcemap::{
