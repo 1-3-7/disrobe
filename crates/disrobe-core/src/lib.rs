@@ -2,6 +2,7 @@
 pub mod anti_analysis;
 pub mod anti_analysis_sigs;
 pub mod artifact;
+pub mod artifact_ledger;
 pub mod behavior;
 pub mod byte_search;
 #[cfg(feature = "cache")]
