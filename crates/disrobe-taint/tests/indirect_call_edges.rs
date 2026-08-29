@@ -15,11 +15,23 @@ const ALTERNATE_ADDRESS: u64 = 0x400;
 const INDIRECT_SITE: u64 = 0x108;
 
 fn instruction(address: u64, op: NirOp, mnemonic: &str) -> NirInstr {
+    instruction_with_operands(address, op, mnemonic, &[])
+}
+
+fn instruction_with_operands(
+    address: u64,
+    op: NirOp,
+    mnemonic: &str,
+    operands: &[&str],
+) -> NirInstr {
     NirInstr {
         address,
         op,
         mnemonic: mnemonic.to_owned(),
-        operands: Vec::new(),
+        operands: operands
+            .iter()
+            .map(|operand: &&str| (*operand).to_owned())
+            .collect(),
         reads_memory: false,
         writes_memory: false,
         byte_width: false,
@@ -113,12 +125,12 @@ fn module() -> NirModule {
 }
 
 fn finite_edge(targets: impl IntoIterator<Item = u64>) -> CallEdge {
-    CallEdge::finite_set(
-        INDIRECT_SITE,
-        targets,
-        CallEdgeEvidence::NavigationAmbiguousFunction,
-    )
-    .expect("test candidates are non-empty")
+    finite_edge_at(INDIRECT_SITE, targets)
+}
+
+fn finite_edge_at(site: u64, targets: impl IntoIterator<Item = u64>) -> CallEdge {
+    CallEdge::finite_set(site, targets, CallEdgeEvidence::NavigationAmbiguousFunction)
+        .expect("test candidates are non-empty")
 }
 
 fn analyze(edges: &[CallEdge]) -> TaintReport {
@@ -258,5 +270,173 @@ fn a_finite_set_on_a_direct_call_keeps_non_internal_uncertainty() {
             .path
             .iter()
             .any(|step| step.address == INDIRECT_SITE && step.kind == "call-unresolved")
+    );
+}
+
+#[test]
+fn unresolved_candidate_preserves_unsanitized_flow_alongside_internal_sanitizer() {
+    const SANITIZER_ADDRESS: u64 = 0x500;
+    const UNKNOWN_ADDRESS: u64 = 0x9_999;
+
+    let mixed_module: NirModule = NirModule {
+        source_hash: [0x22; 32],
+        lang: SourceLang::NativeX86,
+        functions: vec![
+            function(
+                "dispatch",
+                DISPATCH_ADDRESS,
+                vec![
+                    instruction_with_operands(
+                        DISPATCH_ADDRESS,
+                        NirOp::ExternCall {
+                            symbol: "recv".to_owned(),
+                        },
+                        "call",
+                        &[],
+                    ),
+                    instruction_with_operands(0x108, NirOp::Nop, "mov", &["rdi", "rax"]),
+                    instruction_with_operands(0x110, NirOp::IndirectCall, "call", &["rdi"]),
+                    instruction_with_operands(0x118, NirOp::Nop, "mov", &["rdi", "rax"]),
+                    instruction_with_operands(
+                        0x120,
+                        NirOp::ExternCall {
+                            symbol: "system".to_owned(),
+                        },
+                        "call",
+                        &["rdi"],
+                    ),
+                    instruction(0x128, NirOp::Return, "ret"),
+                ],
+            ),
+            function(
+                "escape_shell",
+                SANITIZER_ADDRESS,
+                vec![
+                    instruction_with_operands(
+                        SANITIZER_ADDRESS,
+                        NirOp::ExternCall {
+                            symbol: "escape_shell".to_owned(),
+                        },
+                        "call",
+                        &["rdi"],
+                    ),
+                    instruction(0x508, NirOp::Return, "ret"),
+                ],
+            ),
+        ],
+        symbols: Vec::new(),
+    };
+    let edge: CallEdge = finite_edge_at(0x110, [SANITIZER_ADDRESS, UNKNOWN_ADDRESS]);
+    let config: TaintConfig =
+        TaintConfig::from_lists(["recv"], ["system"]).with_sanitizer_for("escape_shell", "system");
+
+    let report: TaintReport =
+        analyze_with_call_edges(&mixed_module, &config, core::slice::from_ref(&edge));
+
+    assert!(report.flow_in("dispatch", "recv", "system"));
+    assert!(report.has_unresolved_calls());
+    assert!(
+        report.findings()[0]
+            .path
+            .iter()
+            .any(|step| step.address == 0x110 && step.kind == "call-unresolved")
+    );
+}
+
+#[test]
+fn path_cap_reports_truncation_and_retains_the_weakest_call_label() {
+    const WRAPPER_COUNT: usize = 70;
+    const WRAPPER_BASE: u64 = 0x1_000;
+    const WRAPPER_STRIDE: u64 = 0x100;
+    const UNCERTAIN_WRAPPER: usize = 65;
+    const UNKNOWN_ADDRESS: u64 = 0x9_999;
+
+    let mut functions: Vec<NirFunction> = Vec::new();
+    functions.push(function(
+        "dispatch",
+        DISPATCH_ADDRESS,
+        vec![
+            instruction_with_operands(
+                DISPATCH_ADDRESS,
+                NirOp::ExternCall {
+                    symbol: "recv".to_owned(),
+                },
+                "call",
+                &[],
+            ),
+            instruction_with_operands(0x108, NirOp::Nop, "mov", &["rdi", "rax"]),
+            instruction_with_operands(
+                0x110,
+                NirOp::Call {
+                    target: Some(WRAPPER_BASE),
+                },
+                "call",
+                &["rdi"],
+            ),
+            instruction(0x118, NirOp::Return, "ret"),
+        ],
+    ));
+    let mut uncertain_edge: Option<CallEdge> = None;
+    for index in 0..WRAPPER_COUNT {
+        let address: u64 = WRAPPER_BASE + (index as u64) * WRAPPER_STRIDE;
+        let instructions: Vec<NirInstr> = if index + 1 == WRAPPER_COUNT {
+            vec![
+                instruction_with_operands(
+                    address,
+                    NirOp::ExternCall {
+                        symbol: "system".to_owned(),
+                    },
+                    "call",
+                    &["rdi"],
+                ),
+                instruction(address + 8, NirOp::Return, "ret"),
+            ]
+        } else {
+            let target: u64 = address + WRAPPER_STRIDE;
+            if index == UNCERTAIN_WRAPPER {
+                uncertain_edge = Some(finite_edge_at(address, [target, UNKNOWN_ADDRESS]));
+            }
+            vec![
+                instruction_with_operands(
+                    address,
+                    NirOp::Call {
+                        target: Some(target),
+                    },
+                    "call",
+                    &["rdi"],
+                ),
+                instruction(address + 8, NirOp::Return, "ret"),
+            ]
+        };
+        functions.push(function(&format!("wrapper_{index}"), address, instructions));
+    }
+    let deep_module: NirModule = NirModule {
+        source_hash: [0x23; 32],
+        lang: SourceLang::NativeX86,
+        functions,
+        symbols: Vec::new(),
+    };
+    let edge: CallEdge = uncertain_edge.expect("uncertain wrapper edge");
+
+    let report: TaintReport = analyze_with_call_edges(
+        &deep_module,
+        &TaintConfig::from_lists(["recv"], ["system"]),
+        core::slice::from_ref(&edge),
+    );
+
+    assert!(report.flow_in("dispatch", "recv", "wrapper_0"));
+    assert!(report.is_truncated());
+    assert!(report.findings()[0].path.len() <= 128);
+    assert!(
+        report.findings()[0]
+            .path
+            .iter()
+            .any(|step| step.kind == "path-truncated")
+    );
+    assert!(
+        report.findings()[0]
+            .path
+            .iter()
+            .any(|step| step.kind == "call-unresolved")
     );
 }

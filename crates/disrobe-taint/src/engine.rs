@@ -19,6 +19,7 @@ use crate::thunks::ImportThunks;
 
 const MAX_PATH_STEPS: usize = 128;
 const MAX_RECORDED_UNRESOLVED_CALLS: usize = 4096;
+const PATH_TRUNCATED_KIND: &str = "path-truncated";
 
 type Summaries = BTreeMap<u64, FunctionSummary>;
 type FactMap = BTreeMap<FactKey, Fact>;
@@ -185,7 +186,7 @@ impl<'a> ResolvedModule<'a> {
             call_kind_by_site
                 .entry(edge.site)
                 .and_modify(|current: &mut &'static str| {
-                    if call_kind_rank(kind) > call_kind_rank(*current) {
+                    if call_kind_rank(kind) > call_kind_rank(current) {
                         *current = kind;
                     }
                 })
@@ -665,6 +666,14 @@ fn walk_block(
                     &mut candidate,
                     out,
                 );
+                match &mut merged {
+                    Some(existing) => existing.merge(&candidate),
+                    None => merged = Some(candidate),
+                }
+            }
+            if ctx.resolved.uncertain_call_sites.contains(&instr.address) {
+                let mut candidate: BlockState = incoming;
+                propagate(arena, instr, &defuse, &mut candidate);
                 match &mut merged {
                     Some(existing) => existing.merge(&candidate),
                     None => merged = Some(candidate),
@@ -1256,6 +1265,12 @@ fn push_finding(
     sink_site: u64,
     path: Vec<TaintStep>,
 ) {
+    if path
+        .iter()
+        .any(|step: &TaintStep| step.kind == PATH_TRUNCATED_KIND)
+    {
+        out.truncated = true;
+    }
     out.findings.push(TaintFinding {
         function: function.name.clone(),
         function_address: function.address,
@@ -1280,8 +1295,59 @@ fn step(address: u64, symbol: &str, kind: &str) -> TaintStep {
 }
 
 fn append_step(path: &mut Vec<TaintStep>, entry: TaintStep) {
+    if let Some(marker_index) = path
+        .iter()
+        .position(|step: &TaintStep| step.kind == PATH_TRUNCATED_KIND)
+    {
+        let Some(entry_rank): Option<u8> = call_path_kind_rank(&entry.kind) else {
+            return;
+        };
+        let witness_index: usize = marker_index + 1;
+        if let Some(witness) = path.get_mut(witness_index) {
+            match call_path_kind_rank(&witness.kind) {
+                Some(witness_rank) if entry_rank > witness_rank => *witness = entry,
+                None => *witness = entry,
+                Some(_) => {}
+            }
+        } else {
+            path.push(entry);
+        }
+        return;
+    }
     if path.len() < MAX_PATH_STEPS {
         path.push(entry);
+        return;
+    }
+
+    let weakest_call: Option<TaintStep> = path
+        .iter()
+        .chain(core::iter::once(&entry))
+        .filter_map(|step: &TaintStep| call_path_kind_rank(&step.kind).map(|rank: u8| (rank, step)))
+        .max_by(|(left_rank, left), (right_rank, right)| {
+            left_rank
+                .cmp(right_rank)
+                .then_with(|| right.address.cmp(&left.address))
+                .then_with(|| right.symbol.cmp(&left.symbol))
+        })
+        .map(|(_rank, step): (u8, &TaintStep)| step.clone());
+    path.truncate(MAX_PATH_STEPS - 2);
+    path.push(TaintStep {
+        address: entry.address,
+        symbol: entry.symbol,
+        kind: PATH_TRUNCATED_KIND.to_owned(),
+    });
+    if let Some(weakest_call) = weakest_call {
+        path.push(weakest_call);
+    }
+}
+
+fn call_path_kind_rank(kind: &str) -> Option<u8> {
+    match kind {
+        "call-definite" => Some(0),
+        "call-finite-set" => Some(1),
+        "call-symbolic" => Some(2),
+        "call-unresolved" => Some(3),
+        _ => None,
     }
 }
 

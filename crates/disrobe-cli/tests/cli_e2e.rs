@@ -2073,7 +2073,7 @@ fn taint_json_carries_the_source_to_sink_finding() {
 }
 
 #[test]
-fn taint_json_labels_the_stripped_native_twins_exact_direct_target_set() {
+fn taint_json_labels_the_stripped_native_twins_exact_direct_edges() {
     let stripped: PathBuf = corpus_path("native/discovery/disc.stripped.elf");
     let unstripped: PathBuf = corpus_path("native/discovery/disc.unstripped.elf");
     assert!(stripped.exists(), "{} must be tracked", stripped.display());
@@ -2101,25 +2101,43 @@ fn taint_json_labels_the_stripped_native_twins_exact_direct_target_set() {
             .or_default()
             .insert(symbol.name.as_str());
     }
-    let recovered: BTreeSet<u64> = edges
+    let recovered: BTreeSet<(u64, u64)> = edges
         .iter()
         .filter(|edge: &&serde_json::Value| edge["label"]["kind"] == "definite")
-        .filter_map(|edge: &serde_json::Value| edge["label"]["target"].as_u64())
+        .filter_map(|edge: &serde_json::Value| {
+            Some((edge["site"].as_u64()?, edge["label"]["target"].as_u64()?))
+        })
         .collect();
     let truth_names: BTreeSet<&str> =
         BTreeSet::from(["add", "compute", "dispatch", "mul", "sum_to"]);
-    let truth: BTreeSet<u64> = names_by_address
+    let truth_targets: BTreeSet<u64> = names_by_address
         .iter()
         .filter(|(_address, names): &(&u64, &BTreeSet<&str>)| !names.is_disjoint(&truth_names))
         .map(|(address, _names): (&u64, &BTreeSet<&str>)| *address)
         .collect();
+    assert_eq!(truth_targets.len(), 5);
+    let truth: BTreeSet<(u64, u64)> = twin
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.flow == disrobe_ir::payload::InsnFlow::Call)
+        .filter_map(|instruction| {
+            let target: u64 = instruction.branch_target?;
+            truth_targets
+                .contains(&target)
+                .then_some((instruction.offset, target))
+        })
+        .collect();
     let true_positive_count: usize = recovered.intersection(&truth).count();
 
-    assert_eq!(recovered, truth);
+    assert_eq!(recovered, truth, "call-site and target pairs must agree");
     assert_eq!(
         (true_positive_count, recovered.len(), truth.len()),
-        (5, 5, 5),
-        "precision 5/5 and recall 5/5"
+        (truth.len(), truth.len(), truth.len()),
+        "precision {}/{} and recall {}/{}",
+        true_positive_count,
+        recovered.len(),
+        true_positive_count,
+        truth.len()
     );
 }
 

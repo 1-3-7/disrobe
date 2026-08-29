@@ -139,7 +139,7 @@ impl CallEdge {
     }
 
     #[must_use]
-    pub fn evidence(&self) -> &BTreeSet<CallEdgeEvidence> {
+    pub const fn evidence(&self) -> &BTreeSet<CallEdgeEvidence> {
         &self.evidence
     }
 
