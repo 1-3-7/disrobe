@@ -58,6 +58,7 @@ impl FunctionNameConfidence {
 pub enum FunctionNameEvidenceSource {
     ExportedName,
     ImportThunk,
+    AssertFailFunction,
 }
 
 impl FunctionNameEvidenceSource {
@@ -66,6 +67,7 @@ impl FunctionNameEvidenceSource {
         match self {
             Self::ExportedName => "exported-name",
             Self::ImportThunk => "import-thunk",
+            Self::AssertFailFunction => "assert-fail-function",
         }
     }
 }

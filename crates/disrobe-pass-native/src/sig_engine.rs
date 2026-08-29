@@ -218,6 +218,188 @@ fn resolved_import_identities(bytes: &[u8]) -> BTreeMap<u64, Option<String>> {
     imports
 }
 
+fn nul_terminated_utf8_input_range(
+    bytes: &[u8],
+    file: &object::File<'_>,
+    address: u64,
+) -> Option<(String, InputByteRange)> {
+    const MAX_ASSERT_FUNCTION_NAME_BYTES: usize = 1024;
+    for section in file.sections() {
+        let section_start: u64 = section.address();
+        let section_end: u64 = section_start.checked_add(section.size())?;
+        if address < section_start || address >= section_end {
+            continue;
+        }
+        let relative: u64 = address.checked_sub(section_start)?;
+        let (file_start, file_size): (u64, u64) = section.file_range()?;
+        if relative >= file_size {
+            continue;
+        }
+        let input_start: u64 = file_start.checked_add(relative)?;
+        let available: u64 = file_size.checked_sub(relative)?;
+        let byte_limit: usize = usize::try_from(available)
+            .ok()?
+            .min(MAX_ASSERT_FUNCTION_NAME_BYTES);
+        let start: usize = usize::try_from(input_start).ok()?;
+        let end: usize = start.checked_add(byte_limit)?;
+        let raw: &[u8] = bytes.get(start..end)?;
+        let terminator: usize = raw.iter().position(|byte: &u8| *byte == 0)?;
+        let raw_name: &str = core::str::from_utf8(raw.get(..terminator)?).ok()?;
+        if raw_name.is_empty() {
+            return None;
+        }
+        let input_end: u64 = input_start.checked_add(u64::try_from(terminator).ok()?)?;
+        return Some((
+            raw_name.to_owned(),
+            InputByteRange {
+                start: input_start,
+                end: input_end,
+            },
+        ));
+    }
+    None
+}
+
+fn assert_fail_function_argument(
+    bits: u32,
+    file: &object::File<'_>,
+    bytes: &[u8],
+    subject: &FunctionNameSubject<'_>,
+    imports: &BTreeMap<u64, Option<String>>,
+) -> Option<(String, InputByteRange, u64)> {
+    let mut decoder: Decoder<'_> =
+        Decoder::with_ip(bits, subject.code, subject.address, DecoderOptions::NONE);
+    let mut fourth_argument: Option<u64> = None;
+    let mut candidates: BTreeMap<String, (InputByteRange, u64)> = BTreeMap::new();
+    while decoder.can_decode() {
+        let mut instruction: Instruction = Instruction::default();
+        decoder.decode_out(&mut instruction);
+        if instruction.is_invalid() {
+            return None;
+        }
+        if instruction.mnemonic() == Mnemonic::Lea
+            && instruction.op0_kind() == OpKind::Register
+            && instruction.op0_register() == Register::RCX
+            && instruction.op1_kind() == OpKind::Memory
+            && instruction.is_ip_rel_memory_operand()
+        {
+            fourth_argument = Some(instruction.ip_rel_memory_address());
+            continue;
+        }
+        if instruction.op0_kind() == OpKind::Register && instruction.op0_register() == Register::RCX
+        {
+            fourth_argument = None;
+        }
+        if instruction.mnemonic() != Mnemonic::Call
+            || !matches!(
+                instruction.op0_kind(),
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+            )
+        {
+            continue;
+        }
+        let target: u64 = instruction.near_branch_target();
+        let imported_name: Option<&str> = imports
+            .get(&target)
+            .or_else(|| {
+                target
+                    .checked_sub(4)
+                    .and_then(|entry: u64| imports.get(&entry))
+            })
+            .and_then(Option::as_deref);
+        if imported_name != Some("__assert_fail") {
+            continue;
+        }
+        let Some(fourth_argument): Option<u64> = fourth_argument else {
+            continue;
+        };
+        let Some((identity, input_bytes)): Option<(String, InputByteRange)> =
+            nul_terminated_utf8_input_range(bytes, file, fourth_argument)
+        else {
+            continue;
+        };
+        candidates.entry(identity).or_insert((input_bytes, target));
+    }
+    let [(identity, (input_bytes, target))]: [(String, (InputByteRange, u64)); 1] =
+        candidates.into_iter().collect::<Vec<_>>().try_into().ok()?;
+    Some((identity, input_bytes, target))
+}
+
+#[must_use]
+pub fn assert_fail_function_names(
+    bytes: &[u8],
+    subjects: &[FunctionNameSubject<'_>],
+) -> Vec<RecoveredFunctionName> {
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return Vec::new();
+    };
+    if !file.is_little_endian() {
+        return Vec::new();
+    }
+    let bits: u32 = match file.architecture() {
+        object::Architecture::X86_64 => 64,
+        _ => return Vec::new(),
+    };
+    let imports: BTreeMap<u64, Option<String>> = resolved_import_identities(bytes);
+    if imports.is_empty() {
+        return Vec::new();
+    }
+    let (real_addresses, mut reserved_names): (BTreeSet<u64>, BTreeSet<String>) =
+        real_function_symbols(&file);
+    for subject in subjects {
+        if !subject_has_address_placeholder(subject)
+            && let Some(name) = sanitize_function_name(subject.name)
+        {
+            let _: bool = reserved_names.insert(name);
+        }
+    }
+    let mut candidates: BTreeMap<String, Vec<RecoveredFunctionName>> = BTreeMap::new();
+    for subject in subjects {
+        if real_addresses.contains(&subject.address) || !subject_has_address_placeholder(subject) {
+            continue;
+        }
+        let Some((identity, input_bytes, target)): Option<(String, InputByteRange, u64)> =
+            assert_fail_function_argument(bits, &file, bytes, subject, &imports)
+        else {
+            continue;
+        };
+        let Some(name): Option<String> = sanitize_function_name(&identity) else {
+            continue;
+        };
+        if reserved_names.contains(&name) {
+            continue;
+        }
+        candidates
+            .entry(name.clone())
+            .or_default()
+            .push(RecoveredFunctionName {
+                function_address: subject.address,
+                name,
+                evidence: FunctionNameEvidence {
+                    confidence: FunctionNameConfidence::High,
+                    source: FunctionNameEvidenceSource::AssertFailFunction,
+                    input_bytes,
+                    identity,
+                    target_address: target,
+                    target_is_indirect: false,
+                },
+            });
+    }
+    let mut recovered: Vec<RecoveredFunctionName> = candidates
+        .into_values()
+        .filter_map(|mut proposals: Vec<RecoveredFunctionName>| {
+            if proposals.len() != 1 {
+                return None;
+            }
+            proposals.pop()
+        })
+        .collect();
+    recovered.sort_by_key(|proposal: &RecoveredFunctionName| proposal.function_address);
+    recovered
+}
+
 fn real_function_symbols(file: &object::File<'_>) -> (BTreeSet<u64>, BTreeSet<String>) {
     let mut addresses: BTreeSet<u64> = BTreeSet::new();
     let mut names: BTreeSet<String> = BTreeSet::new();

@@ -26,7 +26,8 @@ use crate::flow_facts::{
 use crate::lang::{FunctionNameEvidence, RecoveredFunctionName};
 use crate::plt_resolve::{resolve_elf_plt_imports, resolve_pe_iat_imports};
 use crate::sig_engine::{
-    FunctionNameSubject, exported_function_names, resolved_import_thunk_names,
+    FunctionNameSubject, assert_fail_function_names, exported_function_names,
+    resolved_import_thunk_names,
 };
 use crate::structuring;
 
@@ -3246,6 +3247,7 @@ fn recover_program_with_naming_and_sibling_extern_policy(
         functions.iter().map(FunctionNameSubject::from).collect();
     let mut names: Vec<RecoveredFunctionName> = exported_function_names(object, &subjects);
     names.extend(resolved_import_thunk_names(object, &subjects));
+    names.extend(assert_fail_function_names(object, &subjects));
     names.sort_by_key(|name: &RecoveredFunctionName| name.function_address);
     let naming_by_address: BTreeMap<u64, &RecoveredFunctionName> = names
         .iter()
