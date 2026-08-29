@@ -1326,6 +1326,58 @@ const FINALLY_THROW_ALWAYS_SRC: &str = "public class FinallyThrowAlways {\n\
     }\n\
 }\n";
 
+const FINALLY_CONDITIONAL_RETURN_SRC: &str = "public class FinallyConditionalReturn {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a * 2;\n\
+        } finally {\n\
+            if (a < 0) { return -1; }\n\
+            CTR += a;\n\
+        }\n\
+    }\n\
+    static void unit(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+        } finally {\n\
+            if (a < 0) { return; }\n\
+            CTR++;\n\
+        }\n\
+    }\n\
+    static long wide(long a) {\n\
+        try {\n\
+            return a * 2L;\n\
+        } finally {\n\
+            if (a < 0L) { return -1L; }\n\
+            CTR++;\n\
+        }\n\
+    }\n\
+    static float single(float a) {\n\
+        try {\n\
+            return a * 2.0f;\n\
+        } finally {\n\
+            if (a < 0.0f) { return -1.0f; }\n\
+            CTR++;\n\
+        }\n\
+    }\n\
+    static double doubleWide(double a) {\n\
+        try {\n\
+            return a * 2.0;\n\
+        } finally {\n\
+            if (a < 0.0) { return -1.0; }\n\
+            CTR++;\n\
+        }\n\
+    }\n\
+    static String text(String value) {\n\
+        try {\n\
+            return value.trim();\n\
+        } finally {\n\
+            if (value == null) { return \"fallback\"; }\n\
+            CTR++;\n\
+        }\n\
+    }\n\
+}\n";
+
 struct MethodTableSite {
     code_offset: usize,
     entries_offset: usize,
@@ -1585,6 +1637,82 @@ fn finally_that_always_throws_recompiles_to_equivalent_bytecode() {
         recompiled.original, recompiled.recovered,
         "recompiled always-throwing finally bytecode differs from the original:\n{}",
         recompiled.source
+    );
+}
+
+#[test]
+fn finally_that_conditionally_returns_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyConditionalReturn", FINALLY_CONDITIONAL_RETURN_SRC);
+    for fragment in [
+        " run(",
+        " unit(",
+        " wide(",
+        " single(",
+        " doubleWide(",
+        " text(",
+    ] {
+        let body: String = assert_finally_recovered(&recompiled.source, fragment);
+        let finally_at: usize = body
+            .find("finally {")
+            .unwrap_or_else(|| panic!("the recovered {fragment} method has no finally:\n{body}"));
+        let finally_body: &str = body
+            .get(finally_at..)
+            .unwrap_or_else(|| panic!("the recovered {fragment} finally is truncated:\n{body}"));
+        assert!(
+            finally_body.contains("return"),
+            "the conditional return is missing from the {fragment} finally:\n{body}"
+        );
+    }
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled conditionally-returning finally bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn conditionally_returning_finally_refuses_unequal_return_values() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_conditional_return_mismatch")
+            .expect("scratch");
+    let directory: PathBuf = scratch.path().join("orig");
+    std::fs::create_dir_all(&directory).expect("fixture directory");
+    let source_path: PathBuf = directory.join("FinallyConditionalReturn.java");
+    std::fs::write(&source_path, FINALLY_CONDITIONAL_RETURN_SRC).expect("fixture source");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&directory)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let mut class_bytes: Vec<u8> =
+        std::fs::read(directory.join("FinallyConditionalReturn.class")).expect("fixture class");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    assert_eq!(
+        table.code.get(25),
+        Some(&0x02),
+        "the javac layout this mutation targets changed"
+    );
+    class_bytes[table.code_offset + 25] = 0x03;
+    let mutated: ClassFile = parse_classfile(&class_bytes).expect("parse mutated fixture");
+    let decompiled: DecompiledClass = decompile_class(&mutated);
+    let body: String = method_body(&decompiled.source, " run(").expect("mutated run method");
+    assert!(
+        body.contains("not recovered:"),
+        "unequal conditional-return values were folded into one finally body:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "an unequal conditional-return finally became a Throwable catch:\n{body}"
     );
 }
 

@@ -1467,7 +1467,7 @@ impl<'a> Structurer<'a> {
             .iter()
             .enumerate()
             .any(|(index, ins): (usize, &Instruction)| {
-                matches!(ins.opcode, 0xA8..=0xA9 | 0xAC..=0xB1 | 0xC9)
+                matches!(ins.opcode, 0xA8..=0xA9 | 0xC9)
                     || (ins.opcode == 0xBF
                         && index
                             .checked_sub(1)
