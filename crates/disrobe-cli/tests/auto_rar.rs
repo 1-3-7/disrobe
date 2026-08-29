@@ -6,7 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_core::subprocess::{CapturedOutput, run_captured_with_env};
 use sha2::{Digest as _, Sha256};
 
 const FIXTURE: &[u8] = include_bytes!("../../../corpus/binfmt/rar/filter-e8-rar3.rar");
@@ -15,14 +15,32 @@ const MEMBER_SHA256: &str = "a961532b3a196e0b2c0126ad6f35d511c9fdfeadacbe78a1b15
 const MEMBER_BYTES: usize = 204_288;
 const CLI_TIMEOUT: Duration = Duration::from_secs(90);
 const CLI_CAPTURE: usize = 1usize << 20;
-const RUN_SCOPED: [&str; 4] = [
+const SOURCE_DATE_EPOCH: &str = "1700000000";
+const RUN_SCOPED: [&str; 7] = [
     "manifest.json",
     "filter-e8-rar3.rar/report.json",
+    "filter-e8-rar3.rar/report.sarif",
     "filter-e8-rar3.rar/recovery.json",
     "filter-e8-rar3.rar/chain.json",
+    "report.json",
+    "report.sarif",
 ];
 
 type OutputTree = BTreeMap<String, Vec<u8>>;
+
+fn differing_paths(left: &OutputTree, right: &OutputTree) -> Vec<String> {
+    left.iter()
+        .filter_map(|(path, bytes): (&String, &Vec<u8>)| {
+            (right.get(path) != Some(bytes)).then(|| path.clone())
+        })
+        .chain(
+            right
+                .keys()
+                .filter(|path: &&String| !left.contains_key(*path))
+                .cloned(),
+        )
+        .collect()
+}
 
 fn collect_tree(root: &Path, current: &Path, tree: &mut OutputTree) {
     let entries: std::fs::ReadDir = std::fs::read_dir(current).expect("read output directory");
@@ -58,9 +76,10 @@ fn recover(jobs: u32, input: &Path, output: &Path) -> OutputTree {
         OsString::from("--capture-stages"),
     ];
     let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-    let process: CapturedOutput = run_captured(
+    let process: CapturedOutput = run_captured_with_env(
         Path::new(env!("CARGO_BIN_EXE_disrobe")),
         &arg_refs,
+        [("SOURCE_DATE_EPOCH", SOURCE_DATE_EPOCH)],
         CLI_TIMEOUT,
         CLI_CAPTURE,
     )
@@ -122,9 +141,10 @@ fn auto_recovers_the_rar3_filtered_member_identically_at_jobs_one_and_four() {
         "the compared set must include the recovered member; it held {:?}",
         serial_artifacts.keys().collect::<Vec<&String>>()
     );
-    assert_eq!(
-        serial_artifacts, parallel_artifacts,
-        "one worker and four workers must produce identical recovered bytes"
+    assert!(
+        serial_artifacts == parallel_artifacts,
+        "one worker and four workers must produce identical recovered bytes; differing paths: {:?}",
+        differing_paths(&serial_artifacts, &parallel_artifacts)
     );
 
     let member: &Vec<u8> = serial_artifacts
