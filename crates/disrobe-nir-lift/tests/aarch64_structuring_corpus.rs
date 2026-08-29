@@ -207,7 +207,7 @@ fn unsupported_floating_comparisons_keep_their_effect_order() {
     ];
     for (optimization, name, expected) in CASES {
         let function: NirFunction = corpus_function(optimization, name);
-        let comparisons: Vec<&NirInstr> = function
+        let comparisons: usize = function
             .instructions
             .iter()
             .filter(|instruction: &&NirInstr| {
@@ -222,9 +222,9 @@ fn unsupported_floating_comparisons_keep_their_effect_order() {
                             && instruction.writes_memory
                 )
             })
-            .collect();
+            .count();
         assert_eq!(
-            comparisons.len(),
+            comparisons,
             expected.saturating_add(1),
             "{optimization} {name} changed its conservative floating comparison effects"
         );

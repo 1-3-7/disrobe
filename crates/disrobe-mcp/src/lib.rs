@@ -1022,6 +1022,7 @@ impl DisrobeMcp {
 
 #[cfg(feature = "wasm")]
 #[rmcp::tool_router(router = wasm_tool_router)]
+#[allow(clippy::unused_self)]
 impl DisrobeMcp {
     #[rmcp::tool(
         name = "wasm_lift",
