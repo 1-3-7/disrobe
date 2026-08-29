@@ -34,6 +34,13 @@ pub fn extract_all_with_quota(
     std::fs::create_dir_all(out_dir)?;
     let result: BinfmtResult =
         extract_to_with_quota(ContainerKind::Zip, zip_bytes, out_dir, quota)?;
+    if let Some(error) = result
+        .integrity_violations
+        .iter()
+        .find_map(|violation: &String| quota_refusal(violation))
+    {
+        return Err(error);
+    }
     if let Some(first_violation) = result.integrity_violations.first() {
         return Err(Error::UnsafeEntryPath(first_violation.clone()));
     }
@@ -58,6 +65,16 @@ pub fn extract_all_with_quota(
         });
     }
     Ok(out)
+}
+
+fn quota_refusal(violation: &str) -> Option<Error> {
+    const PREFIX: &str = "DR-BINFMT-0009: extraction quota exceeded on entry `";
+    let (_, detail): (&str, &str) = violation.split_once(PREFIX)?;
+    let (entry, reason): (&str, &str) = detail.split_once("`: ")?;
+    (!entry.is_empty() && !reason.is_empty()).then(|| Error::QuotaExceeded {
+        entry: entry.to_owned(),
+        reason: reason.to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -98,6 +115,19 @@ mod tests {
             u64::MAX,
             "the explicit unrestricted quota must still disable the cap"
         );
+    }
+
+    #[test]
+    fn recorded_refusals_preserve_quota_and_path_error_kinds() {
+        let quota: Error = quota_refusal(
+            "zip-quota `a.pyc`: DR-BINFMT-0009: extraction quota exceeded on entry `a.pyc`: aggregate expansion ratio 12 exceeds cap 4",
+        )
+        .expect("parse the typed binfmt quota diagnostic");
+        assert!(
+            matches!(quota, Error::QuotaExceeded { entry, reason } if entry == "a.pyc" && reason == "aggregate expansion ratio 12 exceeds cap 4")
+        );
+        assert!(quota_refusal("zip-path `../a.pyc`: parent traversal").is_none());
+        assert!(quota_refusal("DR-BINFMT-0009: truncated").is_none());
     }
 
     fn build_deflated_zip(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
