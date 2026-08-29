@@ -625,7 +625,12 @@ fn filter_rgb(
     byte_offset: u32,
 ) -> Result<usize> {
     let len: usize = block_length as usize;
-    if len > PROGRAM_WORK_SIZE / 2 || stride > block_length || len < 3 || byte_offset > 2 {
+    if len > PROGRAM_WORK_SIZE / 2
+        || stride == 0
+        || stride > block_length
+        || len < 3
+        || byte_offset > 2
+    {
         return Err(refuse(
             StandardFilter::Rgb,
             &format!(
@@ -1206,6 +1211,43 @@ mod tests {
             error.to_string().contains("runs past the 64 decoded bytes"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_filter_caller_refuses_an_rgb_filter_with_zero_stride() {
+        let mut set: FilterSet = FilterSet::default();
+        set.programs.push(FilterProgram {
+            filter: StandardFilter::Rgb,
+            usage_count: 0,
+            old_filter_length: 3,
+        });
+        set.pending.push(FilterInvocation {
+            block_start: 0,
+            block_end: 3,
+            block_length: 3,
+            filter: StandardFilter::Rgb,
+            registers: [0, 0, 0, 0, 3, 0, 0, 0],
+        });
+        let window: [u8; 3] = [0u8; 3];
+        let error: Error = match set.emit(&window, window.len()) {
+            Err(error) => error,
+            Ok(bytes) => panic!("the zero-stride RGB filter published {bytes:?}"),
+        };
+        assert!(
+            error.to_string().contains("rgb filter refused")
+                && error.to_string().contains("stride 0"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn zero_stride_rgb_metadata_is_refused_before_filter_memory_changes() {
+        let mut memory: Vec<u8> = vec![0xa5u8; VM_MEMORY_SIZE];
+        memory[..3].copy_from_slice(&[1u8, 2, 3]);
+        let before: Vec<u8> = memory.clone();
+        let error: Error = filter_rgb(&mut memory, 3, 0, 0).unwrap_err();
+        assert!(error.to_string().contains("stride 0"), "{error}");
+        assert_eq!(memory, before);
     }
 
     #[test]
