@@ -87,3 +87,4 @@ CALL main.Nested.func1 runtime.deferreturn 0x481aa0 123 e81bd0faff
 FUNC main.Nested.func1.1 122 122
 FUNC main.Nested 120 125
 FUNC main.main 128 133
+CALL main.main runtime.panicIndex 0x481e94 132 e80791fdff

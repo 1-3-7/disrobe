@@ -31,7 +31,7 @@ use crate::debug::{dbg_enabled, dbg_hex, dbg_kv, dbg_line, dbg_section};
 pub use binary::{Endian, GoImage, ImageKind, Section};
 pub use defers::{
     DeferCallKind, DeferCallSite, DeferCallSupport, DeferFunc, DeferLowering, DeferReport,
-    DeferSupport, RuntimeDeferHook, recover_defers,
+    DeferSupport, RuntimeDeferCall, RuntimeDeferHook, recover_defers,
 };
 pub use dwarf::{DwarfFunction, DwarfReport, recover_dwarf};
 pub use embed_digest::{

@@ -12,7 +12,7 @@ use disrobe_core::pass::PassId;
 
 use crate::GoAnalysis;
 use crate::binary::GoImage;
-use crate::defers::{DeferCallSite, DeferFunc, DeferSupport, RuntimeDeferHook};
+use crate::defers::{DeferFunc, DeferSupport, RuntimeDeferHook};
 use crate::embed_fs::EmbedFile;
 use crate::garble::GarbleQuality;
 use crate::pclntab::{PclntabVersion, locate_pclntab};
@@ -271,6 +271,19 @@ fn push_defer_section(out: &mut String, a: &GoAnalysis) {
             &format!("runtime hook {} // entry {:#x}", hook.name, hook.entry),
         );
     }
+    for call in &a.defers.runtime_calls {
+        let call: &crate::defers::RuntimeDeferCall = call;
+        push_line(
+            out,
+            &format!(
+                "defer call {} {} @ {:#x} // +{:#x}",
+                call.kind.label(),
+                call.function,
+                call.va,
+                call.offset,
+            ),
+        );
+    }
     for edge in &a.defers.control_edges {
         let edge: &crate::defers::ControlEdge = edge;
         push_line(
@@ -295,19 +308,6 @@ fn push_defer_section(out: &mut String, a: &GoAnalysis) {
                 func.deferreturn_offset,
             ),
         );
-        for call in &func.call_sites {
-            let call: &DeferCallSite = call;
-            push_line(
-                out,
-                &format!(
-                    "defer call {} {} @ {:#x} // +{:#x}",
-                    call.kind.label(),
-                    func.name,
-                    call.va,
-                    call.offset,
-                ),
-            );
-        }
     }
     if a.defers.functions.len() > MAX_LISTED_FUNCS {
         push_line(

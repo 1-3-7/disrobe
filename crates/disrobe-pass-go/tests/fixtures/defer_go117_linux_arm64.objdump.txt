@@ -67,6 +67,7 @@ FUNC main.MethodDefer 115 117
 CALL main.MethodDefer runtime.deferreturn 0x97a0c 117 97fea229
 FUNC main.Nested 120 125
 FUNC main.main 128 133
+CALL main.main runtime.panicIndex 0x97e44 132 97ff5f63
 FUNC main.OpenCodedThree.func1 23 23
 FUNC main.LoopAndPlainDefer.func1 38 38
 FUNC main.ManyReturnsManyDefers.func1 46 46

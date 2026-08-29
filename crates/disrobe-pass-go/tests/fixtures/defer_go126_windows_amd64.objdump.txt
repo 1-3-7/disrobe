@@ -57,6 +57,7 @@ CALL main.MethodDefer runtime.deferreturn 0x1400a9f22 117 e8b995f9ff
 FUNC main.MethodDefer.deferwrap1 116 116
 FUNC main.Nested 120 125
 FUNC main.main 128 133
+CALL main.main runtime.panicBounds 0x1400aa30e 132 e82d25fdff
 FUNC main.Nested.func1 121 123
 CALL main.Nested.func1 runtime.deferreturn 0x1400aa380 123 e85b91f9ff
 FUNC main.Nested.func1.1 122 122

@@ -255,6 +255,7 @@ if (Test-Path (Join-Path $deferSrc 'main.go')) {
         $env:GOOS = 'windows'
         $env:GOARCH = 'amd64'
         foreach ($t in $deferTargets) {
+            $env:GOTOOLCHAIN = $t.tool
             $binPath = Join-Path $here $t.out
             $dump = & go tool objdump -s '^main\.' $binPath
             if (-not $dump) { throw ("go tool objdump (defer {0}) produced nothing" -f $t.out) }
@@ -286,13 +287,14 @@ if (Test-Path (Join-Path $deferSrc 'main.go')) {
                 $insnBytes = $Matches['bytes']
                 if ($minLine -eq 0 -or $srcLine -lt $minLine) { $minLine = $srcLine }
                 if ($srcLine -gt $maxLine) { $maxLine = $srcLine }
-                if ($line -match 'CALL (?<target>runtime\.(deferreturn|deferproc|deferprocStack|deferprocat|gopanic|gorecover))\(SB\)') {
+                if ($line -match 'CALL (?<target>runtime\.(deferreturn|deferproc|deferprocStack|deferprocat|deferrangefunc|gopanic|gorecover|panic[A-Za-z0-9_]+|goPanic[A-Za-z0-9_]+))\(SB\)') {
                     $pending.Add(("CALL {0} {1} {2} {3} {4}" -f $current, $Matches['target'], $pc, $srcLine, $insnBytes))
                 }
             }
             & $flush
             [System.IO.File]::WriteAllLines(($binPath + '.objdump.txt'), $out, $utf8NoBom)
         }
+        $env:GOTOOLCHAIN = 'auto'
         $env:GO111MODULE = 'auto'
     } finally {
         Pop-Location

@@ -24,7 +24,17 @@ struct Fixture {
     pclntab_band: &'static str,
     container: &'static str,
     arch: &'static str,
+    pclntab_control_targets: &'static [&'static str],
 }
+
+const BASE_CONTROL_TARGETS: [&str; 2] = ["runtime.gopanic", "runtime.gorecover"];
+const GO126_CONTROL_TARGETS: [&str; 3] = [
+    "runtime.gopanic",
+    "runtime.gorecover",
+    "runtime.panicBounds",
+];
+const GO115_CONTROL_TARGETS: [&str; 3] =
+    ["runtime.gopanic", "runtime.gorecover", "runtime.panicIndex"];
 
 const FIXTURES: [Fixture; 4] = [
     Fixture {
@@ -33,6 +43,7 @@ const FIXTURES: [Fixture; 4] = [
         pclntab_band: "go1.20+",
         container: "pe",
         arch: "amd64",
+        pclntab_control_targets: &GO126_CONTROL_TARGETS,
     },
     Fixture {
         binary: "defer_go118_linux_amd64",
@@ -40,6 +51,7 @@ const FIXTURES: [Fixture; 4] = [
         pclntab_band: "go1.18..go1.19",
         container: "elf",
         arch: "amd64",
+        pclntab_control_targets: &BASE_CONTROL_TARGETS,
     },
     Fixture {
         binary: "defer_go117_linux_arm64",
@@ -47,6 +59,7 @@ const FIXTURES: [Fixture; 4] = [
         pclntab_band: "go1.16..go1.17",
         container: "elf",
         arch: "arm64",
+        pclntab_control_targets: &BASE_CONTROL_TARGETS,
     },
     Fixture {
         binary: "defer_go115_windows_386",
@@ -54,6 +67,7 @@ const FIXTURES: [Fixture; 4] = [
         pclntab_band: "go1.2..go1.15",
         container: "pe",
         arch: "386",
+        pclntab_control_targets: &GO115_CONTROL_TARGETS,
     },
 ];
 
@@ -64,7 +78,7 @@ struct ObjdumpFunc {
     defer_setup_lines: Vec<u32>,
     deferreturn_bytes: Vec<(u64, Vec<u8>)>,
     runtime_calls: Vec<(DeferCallKind, u64)>,
-    control_calls: Vec<(ControlEdgeKind, u64)>,
+    control_calls: Vec<(String, ControlEdgeKind, u64)>,
 }
 
 impl ObjdumpFunc {
@@ -73,6 +87,36 @@ impl ObjdumpFunc {
             return Some(DeferLowering::CallBased);
         }
         (!self.deferreturn_pcs.is_empty()).then_some(DeferLowering::OpenCoded)
+    }
+}
+
+fn control_kind(target: &str) -> Option<ControlEdgeKind> {
+    match target {
+        "runtime.gopanic" => Some(ControlEdgeKind::Panic),
+        "runtime.gorecover" => Some(ControlEdgeKind::Recover),
+        name if name
+            .strip_prefix("runtime.panic")
+            .is_some_and(|suffix: &str| {
+                !suffix.is_empty()
+                    && suffix
+                        .bytes()
+                        .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+            }) =>
+        {
+            Some(ControlEdgeKind::Panic)
+        }
+        name if name
+            .strip_prefix("runtime.goPanic")
+            .is_some_and(|suffix: &str| {
+                !suffix.is_empty()
+                    && suffix
+                        .bytes()
+                        .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+            }) =>
+        {
+            Some(ControlEdgeKind::Panic)
+        }
+        _ => None,
     }
 }
 
@@ -119,16 +163,18 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
                         entry.defer_setup_lines.push(src_line);
                         entry.runtime_calls.push((DeferCallKind::ProcStack, pc));
                     }
+                    "runtime.deferrangefunc" => {
+                        entry.runtime_calls.push((DeferCallKind::RangeFunc, pc));
+                    }
                     "runtime.deferprocat" => {
                         entry.defer_setup_lines.push(src_line);
+                        entry.runtime_calls.push((DeferCallKind::ProcAt, pc));
                     }
-                    "runtime.gopanic" => {
-                        entry.control_calls.push((ControlEdgeKind::Panic, pc));
+                    target => {
+                        if let Some(kind) = control_kind(target) {
+                            entry.control_calls.push((target.to_owned(), kind, pc));
+                        }
                     }
-                    "runtime.gorecover" => {
-                        entry.control_calls.push((ControlEdgeKind::Recover, pc));
-                    }
-                    _ => {}
                 }
             }
             [] => {}
@@ -262,7 +308,12 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
                 function
                     .control_calls
                     .iter()
-                    .map(|(kind, va): &(ControlEdgeKind, u64)| (name.clone(), *kind, *va))
+                    .filter(|(target, _kind, _va): &&(String, ControlEdgeKind, u64)| {
+                        fixture.pclntab_control_targets.contains(&target.as_str())
+                    })
+                    .map(|(_target, kind, va): &(String, ControlEdgeKind, u64)| {
+                        (name.clone(), *kind, *va)
+                    })
             })
             .collect();
         let actual_set: BTreeSet<(String, ControlEdgeKind, u64)> = first
@@ -272,9 +323,17 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
             .filter(|edge: &&ControlEdge| referenced_names.contains(edge.function.as_str()))
             .map(|edge: &ControlEdge| (edge.function.clone(), edge.kind, edge.va))
             .collect();
+        let expected_edges: usize = if matches!(
+            fixture.binary,
+            "defer_go126_windows_amd64" | "defer_go115_windows_386"
+        ) {
+            4
+        } else {
+            3
+        };
         assert_eq!(
             expected_set.len(),
-            3,
+            expected_edges,
             "{} objdump reference lost a panic/recover call",
             fixture.binary
         );
@@ -284,7 +343,15 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
             fixture.binary
         );
         for (name, function) in &reference {
-            if function.control_calls.is_empty() {
+            let expected: Vec<(ControlEdgeKind, u64)> = function
+                .control_calls
+                .iter()
+                .filter(|(target, _kind, _va): &&(String, ControlEdgeKind, u64)| {
+                    fixture.pclntab_control_targets.contains(&target.as_str())
+                })
+                .map(|(_target, kind, va): &(String, ControlEdgeKind, u64)| (*kind, *va))
+                .collect();
+            if expected.is_empty() {
                 continue;
             }
             let actual: Vec<(ControlEdgeKind, u64)> = first
@@ -295,7 +362,7 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
                 .map(|edge: &ControlEdge| (edge.kind, edge.va))
                 .collect();
             assert_eq!(
-                actual, function.control_calls,
+                actual, expected,
                 "{}: {name} panic/recover calls differ from go tool objdump",
                 fixture.binary
             );
@@ -311,10 +378,7 @@ fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
             fixture.binary
         );
     }
-    assert!(
-        graded >= 12,
-        "graded only {graded} panic/recover call sites"
-    );
+    assert_eq!(graded, 14, "graded an unexpected panic/recover population");
 }
 
 #[cfg(feature = "chain")]
