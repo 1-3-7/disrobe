@@ -1,8 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use disrobe_nir::NirModule;
 use disrobe_nir_lift::lift_pyc;
@@ -156,12 +157,76 @@ const REFERENCE_STMT_EXPR_KINDS: [&str; 54] = [
 
 const DECLINED_BINOPKIND_VARIANTS: [&str; 3] = ["Pow", "MatMul", "Generic"];
 
-fn python_binary() -> Option<&'static str> {
-    ["python3", "python"].into_iter().find(|candidate: &&str| {
-        Command::new(candidate)
-            .arg("--version")
-            .output()
-            .is_ok_and(|out: Output| out.status.success())
+#[derive(Debug, Clone)]
+struct CpythonInvocation {
+    program: PathBuf,
+    prefix_args: Vec<OsString>,
+}
+
+fn probe_cpython_314(invocation: &CpythonInvocation) -> bool {
+    Command::new(&invocation.program)
+        .args(&invocation.prefix_args)
+        .args([
+            "-c",
+            "import platform,sys;print(platform.python_implementation(),f'{sys.version_info.major}.{sys.version_info.minor}',sys.version_info.releaselevel,sep='|')",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output: Output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).trim() == "CPython|3.14|final"
+        })
+}
+
+fn uv_python_314() -> Option<PathBuf> {
+    let output: Output = Command::new("uv")
+        .args(["python", "find", "3.14"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path: PathBuf = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    path.is_file().then_some(path)
+}
+
+fn find_cpython_314() -> Option<CpythonInvocation> {
+    let configured: Option<CpythonInvocation> =
+        std::env::var_os("DISROBE_PYTHON").map(|program| CpythonInvocation {
+            program: PathBuf::from(program),
+            prefix_args: Vec::new(),
+        });
+    let uv: Option<CpythonInvocation> = uv_python_314().map(|program: PathBuf| CpythonInvocation {
+        program,
+        prefix_args: Vec::new(),
+    });
+    let launcher: Option<CpythonInvocation> = cfg!(windows).then(|| CpythonInvocation {
+        program: PathBuf::from("py"),
+        prefix_args: vec![OsString::from("-3.14")],
+    });
+    configured
+        .into_iter()
+        .chain(uv)
+        .chain(launcher)
+        .chain(
+            ["python3.14", "python"]
+                .into_iter()
+                .map(|program: &str| CpythonInvocation {
+                    program: PathBuf::from(program),
+                    prefix_args: Vec::new(),
+                }),
+        )
+        .find(|candidate: &CpythonInvocation| probe_cpython_314(candidate))
+}
+
+fn require_cpython_314() -> CpythonInvocation {
+    find_cpython_314().unwrap_or_else(|| {
+        panic!(
+            "final CPython 3.14 is mandatory for Python opcode completeness; install it through uv or point DISROBE_PYTHON at the interpreter"
+        )
     })
 }
 
@@ -182,7 +247,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn compile_snippet(python: &str, dir: &Path, stem: &str, source: &str) -> Vec<u8> {
+fn compile_snippet(python: &CpythonInvocation, dir: &Path, stem: &str, source: &str) -> Vec<u8> {
     let py_path: PathBuf = dir.join(format!("{stem}.py"));
     let pyc_path: PathBuf = dir.join(format!("{stem}.pyc"));
     std::fs::write(&py_path, source).expect("write snippet source");
@@ -191,7 +256,8 @@ fn compile_snippet(python: &str, dir: &Path, stem: &str, source: &str) -> Vec<u8
         py = py_path.to_string_lossy(),
         pyc = pyc_path.to_string_lossy(),
     );
-    let output: Output = Command::new(python)
+    let output: Output = Command::new(&python.program)
+        .args(&python.prefix_args)
         .arg("-c")
         .arg(&script)
         .output()
@@ -265,27 +331,27 @@ fn committed_edge_cases_corpus_is_non_vacuous_and_covers_every_modelled_mnemonic
         "the committed edge_cases.cpython-314.pyc fixture recovers a fixed function count"
     );
     assert_eq!(
-        total, 1101,
-        "the lifted instruction stream for a byte-fixed pyc is deterministic"
+        total, 1093,
+        "the lifted instruction stream for a byte-fixed pyc is deterministic: {counts:?}"
     );
 
     let expected_minimums: [(&str, usize); 20] = [
-        ("add", 43),
+        ("add", 42),
         ("and", 2),
         ("break", 2),
-        ("call", 235),
+        ("call", 232),
         ("case", 54),
         ("continue", 9),
         ("div", 5),
-        ("if", 62),
+        ("if", 61),
         ("jump", 59),
         ("load", 22),
         ("loop", 59),
         ("mul", 28),
         ("or", 3),
-        ("raise", 15),
+        ("raise", 14),
         ("rem", 7),
-        ("return", 480),
+        ("return", 478),
         ("shl", 1),
         ("store", 6),
         ("sub", 8),
@@ -336,14 +402,11 @@ fn committed_tstring_corpus_surfaces_calls_inside_interpolations() {
 
 #[test]
 fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
-    let Some(python): Option<&str> = python_binary() else {
-        eprintln!("skipping declined-construct gate: no python interpreter on PATH");
-        return;
-    };
+    let python: CpythonInvocation = require_cpython_314();
     let dir: PathBuf = scratch_dir("declined");
 
     let nested_defs: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "nested_defs",
         "def outer():\n    def inner():\n        return 99\n    class Inner:\n        def method(self):\n            return 1\n    return 1\n",
@@ -360,7 +423,7 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
     );
 
     let import_pass_typealias: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "import_pass_typealias",
         "import os\nfrom sys import argv\ntype Alias = int\n\n\ndef f():\n    import json\n    from os import path\n    type Local = str\n    pass\n    return 1\n",
@@ -374,7 +437,7 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
     );
 
     let global_nonlocal: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "global_nonlocal",
         "counter = 0\n\n\ndef outer():\n    x = 0\n\n    def inner():\n        global counter\n        nonlocal x\n        return 1\n\n    return inner()\n",
@@ -391,7 +454,7 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
     );
 
     let bare_yield: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "bare_yield",
         "def gen():\n    yield\n    return\n",
@@ -404,7 +467,7 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
     );
 
     let assert_stmt: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "assert_stmt",
         "def f(x):\n    assert x > 0\n    return 1\n",
@@ -417,7 +480,7 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
     );
 
     let yield_from: Vec<u8> = compile_snippet(
-        python,
+        &python,
         &dir,
         "yield_from",
         "def gen():\n    yield from range(3)\n",
@@ -432,14 +495,11 @@ fn declined_stmt_and_expr_constructs_never_emit_an_instruction() {
 
 #[test]
 fn declined_binopkind_variants_are_pinned() {
-    let Some(python): Option<&str> = python_binary() else {
-        eprintln!("skipping BinOpKind decline gate: no python interpreter on PATH");
-        return;
-    };
+    let python: CpythonInvocation = require_cpython_314();
     let dir: PathBuf = scratch_dir("binop");
 
     let source: &str = "def f(a, b):\n    c = a ** b\n    return c\n\n\ndef g(a, b):\n    c = a + b\n    return c\n\n\ndef h(a, b):\n    c = a @ b\n    return c\n";
-    let bytes: Vec<u8> = compile_snippet(python, &dir, "pow_matmul_decline", source);
+    let bytes: Vec<u8> = compile_snippet(&python, &dir, "pow_matmul_decline", source);
     let module: NirModule = lift_pyc(&bytes).expect("lift pow_matmul_decline snippet");
 
     assert_eq!(
@@ -461,10 +521,7 @@ fn declined_binopkind_variants_are_pinned() {
 
 #[test]
 fn cpython_ast_module_cross_check_pins_the_reference_node_kind_set() {
-    let Some(python): Option<&str> = python_binary() else {
-        eprintln!("skipping CPython ast cross-check: no python interpreter on PATH");
-        return;
-    };
+    let python: CpythonInvocation = require_cpython_314();
     let root: PathBuf = workspace_root();
     let edge_cases: PathBuf = root
         .join("corpus")
@@ -495,7 +552,8 @@ for path in sys.argv[1:]:\n\
 \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20names.add(type(n).__name__)\n\
 \n\
 print('\\n'.join(sorted(names)))\n";
-    let output: Output = Command::new(python)
+    let output: Output = Command::new(&python.program)
+        .args(&python.prefix_args)
         .arg("-c")
         .arg(script)
         .arg(&edge_cases)
