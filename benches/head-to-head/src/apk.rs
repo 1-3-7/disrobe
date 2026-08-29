@@ -724,7 +724,7 @@ const JADX_1_5_5_METHOD_IDENTITY_SHA256: &str =
 const JADX_1_5_5_SOURCE_TREE_SHA256: &str =
     "9e3ec674ab0b08c0be61b8732e02a317f3764ea99ed645fa57e7803a2dd61fff";
 const JADX_1_5_5_FAILED_BODY_SHA256: &str =
-    "43c2c0e6f7376544f7818e948bbfd17d92ff8a9036d09f41bee28e0f6a6fb6d9";
+    "42416863677d532c1ad139249b7f89308c3de40cc2b030110007a345539424cc";
 const JADX_1_5_5_SOURCE_PATHS: [&str; 2] = [
     "com/android/tools/r8/RecordTag.java",
     "defpackage/EdgeCases.java",
@@ -1012,7 +1012,8 @@ fn explicit_source_failures(
                 if !identities.insert(identity.to_owned()) {
                     return Err("JADX repeated an explicit failed-method identity".to_owned());
                 }
-                failed_bodies.push(format!("{source_name}\0{}", body.trim()));
+                let normalized_body: String = body.trim().lines().collect::<Vec<&str>>().join("\n");
+                failed_bodies.push(format!("{source_name}\0{normalized_body}"));
             }
             if trimmed == JADX_ERROR_COMMENT_PREFIX {
                 parsed_errors = parsed_errors.saturating_add(1);
@@ -3796,6 +3797,23 @@ mod tests {
         let moved: ExplicitSourceFailures =
             explicit_source_failures(&moved_identity, &moved_regions)?;
         assert_ne!(failures.identities, moved.identities);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_jadx_failure_body_digest_is_line_ending_independent()
+    -> core::result::Result<(), String> {
+        let identity: &str = "EdgeCases.failed():int";
+        let lf: BTreeMap<String, String> = explicit_failure_source(identity, "instructions");
+        let crlf: BTreeMap<String, String> = lf
+            .iter()
+            .map(|(path, source): (&String, &String)| (path.clone(), source.replace('\n', "\r\n")))
+            .collect();
+        let lf_regions: Vec<SourceMethodRegion> = source_method_regions(&lf);
+        let crlf_regions: Vec<SourceMethodRegion> = source_method_regions(&crlf);
+        let lf_failures: ExplicitSourceFailures = explicit_source_failures(&lf, &lf_regions)?;
+        let crlf_failures: ExplicitSourceFailures = explicit_source_failures(&crlf, &crlf_regions)?;
+        assert_eq!(lf_failures.body_sha256, crlf_failures.body_sha256);
         Ok(())
     }
 
