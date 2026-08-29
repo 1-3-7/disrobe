@@ -13,10 +13,12 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         .collect();
     for expected in [
         "verify",
+        "native_match",
         "rename",
         "annot",
         "provenance_lookup",
         "ioc",
+        "secret_scan",
         "behavior",
         "coverage",
         "strings",
@@ -37,7 +39,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "missing WebAssembly lift tool"
     );
     let expected_count: usize =
-        13 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
+        14 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
     assert_eq!(
         tools.len(),
         expected_count,
@@ -67,6 +69,18 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
                 .as_ref()
                 .is_some_and(|d: &std::borrow::Cow<'static, str>| !d.is_empty()),
             "tool {} must carry a description",
+            t.name
+        );
+        let output_schema: &serde_json::Map<String, serde_json::Value> = t
+            .output_schema
+            .as_deref()
+            .unwrap_or_else(|| panic!("tool {} must expose an output schema", t.name));
+        assert_eq!(
+            output_schema
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("object"),
+            "tool {} output_schema must be an object",
             t.name
         );
     }

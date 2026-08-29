@@ -15,19 +15,23 @@ mod common;
 
 const LSP_ADVERTISED_METHODS: [&str; 2] = ["disrobe/analyze", "disrobe/explain"];
 
-const MCP_TOOL_NAMES: [&str; 13] = [
+const MCP_TOOL_NAMES: [&str; 17] = [
     "annot",
     "auto",
     "behavior",
     "call_graph",
+    "coverage",
     "decompile",
     "function_summary",
     "ioc",
+    "native_match",
     "neighborhood",
     "provenance_lookup",
     "rename",
+    "secret_scan",
     "strings",
     "verify",
+    "wasm_lift",
     "xrefs",
 ];
 

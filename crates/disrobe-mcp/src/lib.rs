@@ -641,7 +641,7 @@ impl DisrobeMcp {
     fn native_match(
         &self,
         Parameters(p): Parameters<NativeMatchParams>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
         let a: Vec<u8> = decode_inline_bytes(&p.a_bytes_b64)?;
         let b: Vec<u8> = decode_inline_bytes(&p.b_bytes_b64)?;
         let report = disrobe_pass_native::match_native_images(
@@ -661,14 +661,17 @@ impl DisrobeMcp {
         .map_err(|error: disrobe_pass_native::NativeMatchError| {
             ErrorData::invalid_params(error.to_string(), None)
         })?;
-        serde_json::to_value(report)
-            .map(Json)
-            .map_err(|error: serde_json::Error| {
-                ErrorData::internal_error(
-                    format!("DR-MCP-0680: native match report serialization failed: {error}"),
-                    None,
-                )
-            })
+        match serde_json::to_value(report) {
+            Ok(serde_json::Value::Object(object)) => Ok(Json(object)),
+            Ok(_) => Err(ErrorData::internal_error(
+                "DR-MCP-0680: native match report serialization produced a non-object value",
+                None,
+            )),
+            Err(error) => Err(ErrorData::internal_error(
+                format!("DR-MCP-0680: native match report serialization failed: {error}"),
+                None,
+            )),
+        }
     }
 
     #[rmcp::tool(
@@ -1576,7 +1579,7 @@ mod tests {
             include_bytes!("../../../corpus/native/obfuscators/guardian-rs/sample.clean.exe");
         let encoded: String = BASE64_STANDARD.encode(SAMPLE);
         let mcp: DisrobeMcp = DisrobeMcp::new();
-        let Json(actual): Json<serde_json::Value> = mcp
+        let Json(actual): Json<serde_json::Map<String, serde_json::Value>> = mcp
             .native_match(Parameters(NativeMatchParams {
                 a_bytes_b64: encoded.clone(),
                 b_bytes_b64: encoded,
@@ -1598,7 +1601,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(actual, serde_json::to_value(expected).unwrap());
+        assert_eq!(
+            serde_json::Value::Object(actual),
+            serde_json::to_value(expected).unwrap()
+        );
     }
 
     #[test]
