@@ -13,8 +13,12 @@ mod report;
 mod summary;
 mod thunks;
 
+pub use callgraph::{
+    CALL_EDGE_TARGET_CAP, CallEdge, CallEdgeBuildError, CallEdgeEvidence, CallEdgeLabel,
+    NonEmptyCallTargets,
+};
 pub use config::TaintConfig;
-pub use engine::{analyze, analyze_with_import_thunks};
+pub use engine::{analyze, analyze_with_call_edges, analyze_with_import_thunks};
 pub use report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 pub use thunks::ImportThunks;
 

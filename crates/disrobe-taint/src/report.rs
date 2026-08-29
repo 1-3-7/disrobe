@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::callgraph::CallEdge;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TaintStep {
     pub address: u64,
@@ -40,6 +42,7 @@ pub struct TaintReport {
     truncated: bool,
     unresolved_calls: Vec<UnresolvedCall>,
     unresolved_call_count: usize,
+    call_edges: Vec<CallEdge>,
 }
 
 impl TaintReport {
@@ -50,6 +53,7 @@ impl TaintReport {
             truncated: false,
             unresolved_calls: Vec::new(),
             unresolved_call_count: 0,
+            call_edges: Vec::new(),
         }
     }
 
@@ -60,6 +64,7 @@ impl TaintReport {
             truncated,
             unresolved_calls: Vec::new(),
             unresolved_call_count: 0,
+            call_edges: Vec::new(),
         }
     }
 
@@ -71,6 +76,12 @@ impl TaintReport {
     ) -> Self {
         self.unresolved_calls = unresolved_calls;
         self.unresolved_call_count = unresolved_call_count;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_call_edges(mut self, call_edges: Vec<CallEdge>) -> Self {
+        self.call_edges = call_edges;
         self
     }
 
@@ -112,6 +123,11 @@ impl TaintReport {
     #[must_use]
     pub const fn has_unresolved_calls(&self) -> bool {
         self.unresolved_call_count > 0
+    }
+
+    #[must_use]
+    pub fn call_edges(&self) -> &[CallEdge] {
+        &self.call_edges
     }
 
     #[must_use]

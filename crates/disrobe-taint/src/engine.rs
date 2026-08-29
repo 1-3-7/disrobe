@@ -6,7 +6,10 @@ use disrobe_nir::{
 };
 
 use crate::abi::CallAbi;
-use crate::callgraph::scc_bottom_up;
+use crate::callgraph::{
+    CallEdge, CallEdgeEvidence, CallEdgeLabel, normalize_call_edges, scc_bottom_up,
+    unresolved_non_internal_edge,
+};
 use crate::config::{OutArgument, ResolvedSinkPolicy, TaintConfig};
 use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 use crate::summary::{
@@ -70,6 +73,10 @@ struct ResolvedModule<'a> {
     function_at: BTreeMap<u64, usize>,
     thunks: &'a ImportThunks,
     abi: CallAbi,
+    call_targets_by_site: BTreeMap<u64, Vec<u64>>,
+    call_kind_by_site: BTreeMap<u64, &'static str>,
+    uncertain_call_sites: BTreeSet<u64>,
+    call_edges: Vec<CallEdge>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +97,18 @@ const fn direct_call(instr: &NirInstr) -> Option<DirectCall> {
     }
 }
 
+fn call_kind_rank(kind: &str) -> u8 {
+    match kind {
+        "call-definite" => 0,
+        "call-finite-set" => 1,
+        "call-symbolic" => 2,
+        "call-unresolved" => 3,
+        _ => 4,
+    }
+}
+
 impl<'a> ResolvedModule<'a> {
-    fn new(module: &'a NirModule, thunks: &'a ImportThunks) -> Self {
+    fn new(module: &'a NirModule, thunks: &'a ImportThunks, call_edges: &[CallEdge]) -> Self {
         let symbol_by_addr: BTreeMap<u64, &'a NirSymbol> = module
             .symbols
             .iter()
@@ -104,12 +121,96 @@ impl<'a> ResolvedModule<'a> {
             .map(|(idx, f): (usize, &'a NirFunction)| (f.address, idx))
             .collect();
         let abi: CallAbi = CallAbi::detect(module);
+        let supplied_sites: BTreeSet<u64> =
+            call_edges.iter().map(|edge: &CallEdge| edge.site).collect();
+        let mut collected: Vec<CallEdge> = call_edges.to_vec();
+        for function in &module.functions {
+            for instr in &function.instructions {
+                if instr.op.class() != NirClass::Call {
+                    continue;
+                }
+                if !supplied_sites.contains(&instr.address) {
+                    collected.push(match &instr.op {
+                        NirOp::ExternCall { symbol } => CallEdge::symbolic(
+                            instr.address,
+                            CallEdgeEvidence::NamedExternal {
+                                symbol: symbol.clone(),
+                            },
+                        ),
+                        _ => match direct_call(instr) {
+                            Some(DirectCall::ToAddress(target)) => CallEdge::definite(
+                                instr.address,
+                                target,
+                                CallEdgeEvidence::DirectCall,
+                            ),
+                            Some(DirectCall::ToUnknown) | None => CallEdge::unresolved(
+                                instr.address,
+                                CallEdgeEvidence::NavigationIndirect,
+                            ),
+                        },
+                    });
+                }
+            }
+        }
+        let mut call_edges: Vec<CallEdge> = normalize_call_edges(collected);
+        let mut non_internal_edges: Vec<CallEdge> = Vec::new();
+        for edge in &call_edges {
+            if !matches!(edge.label, CallEdgeLabel::FiniteSet { .. }) {
+                continue;
+            }
+            let non_internal: BTreeSet<u64> = edge
+                .label
+                .targets()
+                .iter()
+                .copied()
+                .filter(|target: &u64| {
+                    !function_at.contains_key(target) || thunks.name_at(*target).is_some()
+                })
+                .collect();
+            if let Some(unresolved) = unresolved_non_internal_edge(edge.site, non_internal) {
+                non_internal_edges.push(unresolved);
+            }
+        }
+        call_edges.extend(non_internal_edges);
+        call_edges = normalize_call_edges(call_edges);
+        let mut call_targets_by_site: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        let mut call_kind_by_site: BTreeMap<u64, &'static str> = BTreeMap::new();
+        let mut uncertain_call_sites: BTreeSet<u64> = BTreeSet::new();
+        for edge in &call_edges {
+            call_targets_by_site
+                .entry(edge.site)
+                .or_default()
+                .extend(edge.label.targets());
+            let kind: &'static str = edge.label.path_kind();
+            call_kind_by_site
+                .entry(edge.site)
+                .and_modify(|current: &mut &'static str| {
+                    if call_kind_rank(kind) > call_kind_rank(*current) {
+                        *current = kind;
+                    }
+                })
+                .or_insert(kind);
+            if matches!(
+                &edge.label,
+                CallEdgeLabel::Symbolic | CallEdgeLabel::Unresolved
+            ) {
+                uncertain_call_sites.insert(edge.site);
+            }
+        }
+        for targets in call_targets_by_site.values_mut() {
+            targets.sort_unstable();
+            targets.dedup();
+        }
         Self {
             module,
             symbol_by_addr,
             function_at,
             thunks,
             abi,
+            call_targets_by_site,
+            call_kind_by_site,
+            uncertain_call_sites,
+            call_edges,
         }
     }
 
@@ -131,13 +232,29 @@ impl<'a> ResolvedModule<'a> {
     }
 
     fn callee_internal(&self, instr: &NirInstr) -> Option<u64> {
-        let DirectCall::ToAddress(addr) = direct_call(instr)? else {
-            return None;
+        self.callee_internals(instr)
+            .into_iter()
+            .next()
+            .map(|(address, _kind): (u64, &'static str)| address)
+    }
+
+    fn callee_internals(&self, instr: &NirInstr) -> Vec<(u64, &'static str)> {
+        let Some(targets): Option<&Vec<u64>> = self.call_targets_by_site.get(&instr.address) else {
+            return Vec::new();
         };
-        if self.thunks.name_at(addr).is_some() {
-            return None;
-        }
-        self.function_at.contains_key(&addr).then_some(addr)
+        let kind: &'static str = self
+            .call_kind_by_site
+            .get(&instr.address)
+            .copied()
+            .unwrap_or("call-unresolved");
+        targets
+            .iter()
+            .copied()
+            .filter(|address: &u64| {
+                self.thunks.name_at(*address).is_none() && self.function_at.contains_key(address)
+            })
+            .map(|address: u64| (address, kind))
+            .collect()
     }
 
     fn external_symbol(&self, instr: &NirInstr) -> Option<String> {
@@ -147,7 +264,35 @@ impl<'a> ResolvedModule<'a> {
         self.callee_symbol(instr)
     }
 
+    fn call_kind(&self, instr: &NirInstr) -> &'static str {
+        self.call_kind_by_site
+            .get(&instr.address)
+            .copied()
+            .unwrap_or("call-unresolved")
+    }
+
     fn unresolved_call(&self, function: &NirFunction, instr: &NirInstr) -> Option<UnresolvedCall> {
+        if matches!(instr.op, NirOp::ExternCall { .. }) {
+            return None;
+        }
+        if self.uncertain_call_sites.contains(&instr.address) && instr.op.class() == NirClass::Call
+        {
+            return Some(UnresolvedCall {
+                function: function.name.clone(),
+                function_address: function.address,
+                site: instr.address,
+                kind: UnresolvedCallKind::IndirectTarget,
+                target: None,
+            });
+        }
+        if matches!(instr.op, NirOp::IndirectCall)
+            && self
+                .call_targets_by_site
+                .get(&instr.address)
+                .is_some_and(|targets: &Vec<u64>| !targets.is_empty())
+        {
+            return None;
+        }
         let (kind, target): (UnresolvedCallKind, Option<u64>) = match &instr.op {
             NirOp::ExternCall { .. } => return None,
             NirOp::IndirectCall => (UnresolvedCallKind::IndirectTarget, None),
@@ -187,7 +332,16 @@ struct Ctx<'a> {
 
 #[must_use]
 pub fn analyze(module: &NirModule, config: &TaintConfig) -> TaintReport {
-    analyze_with_import_thunks(module, config, &ImportThunks::new())
+    analyze_with_call_edges_and_import_thunks(module, config, &[], &ImportThunks::new())
+}
+
+#[must_use]
+pub fn analyze_with_call_edges(
+    module: &NirModule,
+    config: &TaintConfig,
+    call_edges: &[CallEdge],
+) -> TaintReport {
+    analyze_with_call_edges_and_import_thunks(module, config, call_edges, &ImportThunks::new())
 }
 
 #[must_use]
@@ -196,10 +350,19 @@ pub fn analyze_with_import_thunks(
     config: &TaintConfig,
     thunks: &ImportThunks,
 ) -> TaintReport {
+    analyze_with_call_edges_and_import_thunks(module, config, &[], thunks)
+}
+
+fn analyze_with_call_edges_and_import_thunks(
+    module: &NirModule,
+    config: &TaintConfig,
+    call_edges: &[CallEdge],
+    thunks: &ImportThunks,
+) -> TaintReport {
+    let resolved: ResolvedModule<'_> = ResolvedModule::new(module, thunks, call_edges);
     if config.is_empty() {
-        return TaintReport::empty();
+        return TaintReport::empty().with_call_edges(resolved.call_edges);
     }
-    let resolved: ResolvedModule<'_> = ResolvedModule::new(module, thunks);
     let mut arena: Arena = Arena::default();
     let mut summaries: Summaries = Summaries::new();
 
@@ -241,6 +404,7 @@ pub fn analyze_with_import_thunks(
         collect_unresolved_calls(&resolved);
     TaintReport::new_with_truncated(findings, truncated)
         .with_unresolved_calls(unresolved_calls, unresolved_call_count)
+        .with_call_edges(resolved.call_edges)
 }
 
 fn collect_unresolved_calls(resolved: &ResolvedModule<'_>) -> (Vec<UnresolvedCall>, usize) {
@@ -275,10 +439,10 @@ fn call_adjacency(resolved: &ResolvedModule<'_>) -> Vec<Vec<usize>> {
         .map(|function: &NirFunction| {
             let mut callees: BTreeSet<usize> = BTreeSet::new();
             for instr in &function.instructions {
-                if let Some(addr) = resolved.callee_internal(instr)
-                    && let Some(idx) = resolved.function_at.get(&addr)
-                {
-                    callees.insert(*idx);
+                for (address, _edge) in resolved.callee_internals(instr) {
+                    if let Some(index) = resolved.function_at.get(&address) {
+                        callees.insert(*index);
+                    }
                 }
             }
             callees.into_iter().collect()
@@ -485,16 +649,40 @@ fn walk_block(
     for instr in &block.instructions {
         let defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
         let is_call: bool = instr.op.class() == NirClass::Call;
-        if let Some(callee) = ctx.resolved.callee_internal(instr) {
-            instantiate_callee(ctx, arena, mode, instr, callee, &mut state, out);
+        let callees: Vec<(u64, &'static str)> = ctx.resolved.callee_internals(instr);
+        if !callees.is_empty() {
+            let incoming: BlockState = state.clone();
+            let mut merged: Option<BlockState> = None;
+            for (callee, call_kind) in callees {
+                let mut candidate: BlockState = incoming.clone();
+                instantiate_callee(
+                    ctx,
+                    arena,
+                    mode,
+                    instr,
+                    callee,
+                    call_kind,
+                    &mut candidate,
+                    out,
+                );
+                match &mut merged {
+                    Some(existing) => existing.merge(&candidate),
+                    None => merged = Some(candidate),
+                }
+            }
+            if let Some(candidate) = merged {
+                state = candidate;
+            }
         } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
             let external_defuse: DefUse = external_taint_def_use(ctx, instr, &symbol, defuse);
+            let call_kind: &'static str = ctx.resolved.call_kind(instr);
             dispatch_external(
                 ctx,
                 arena,
                 mode,
                 instr,
                 &symbol,
+                call_kind,
                 &external_defuse,
                 &mut state,
                 out,
@@ -565,16 +753,19 @@ fn dispatch_external(
     mode: WalkMode,
     instr: &NirInstr,
     symbol: &str,
+    call_kind: &str,
     defuse: &DefUse,
     state: &mut BlockState,
     out: &mut Outputs,
 ) {
     if let Some(kind) = ctx.config.source_kind(symbol) {
-        apply_source(ctx, arena, instr, symbol, kind, defuse, state);
+        apply_source(ctx, arena, instr, symbol, call_kind, kind, defuse, state);
     } else if let Some(policy) = ctx.config.sink_policy(symbol) {
-        apply_sink(ctx, arena, mode, instr, symbol, &policy, defuse, state, out);
+        apply_sink(
+            ctx, arena, mode, instr, symbol, call_kind, &policy, defuse, state, out,
+        );
     } else if let Some(feature) = ctx.config.sanitizer_feature(symbol) {
-        apply_sanitizer(arena, instr, symbol, feature, defuse, state);
+        apply_sanitizer(arena, instr, symbol, call_kind, feature, defuse, state);
     } else {
         propagate(arena, instr, defuse, state);
     }
@@ -585,6 +776,7 @@ fn apply_source(
     arena: &mut Arena,
     instr: &NirInstr,
     symbol: &str,
+    call_kind: &str,
     kind: KindSet,
     defuse: &DefUse,
     state: &mut BlockState,
@@ -595,7 +787,10 @@ fn apply_source(
         features: FeatureSet::EMPTY,
         origin_symbol: symbol.to_owned(),
         origin_site: instr.address,
-        path: vec![step(instr.address, symbol, "source")],
+        path: vec![
+            step(instr.address, symbol, call_kind),
+            step(instr.address, symbol, "source"),
+        ],
     };
     let out_argument_defs: Vec<ValueId> =
         established_out_argument_defs(ctx, arena, instr, symbol, state);
@@ -725,6 +920,7 @@ fn apply_sink(
     mode: WalkMode,
     instr: &NirInstr,
     symbol: &str,
+    call_kind: &str,
     policy: &ResolvedSinkPolicy,
     defuse: &DefUse,
     state: &mut BlockState,
@@ -737,11 +933,13 @@ fn apply_sink(
                 && !fact.features.intersects(policy.suppress)
             {
                 let mut path: Vec<TaintStep> = fact.path.clone();
+                append_step(&mut path, step(instr.address, symbol, call_kind));
                 append_step(&mut path, step(instr.address, symbol, "sink"));
                 push_finding(out, ctx.function, &fact, symbol, instr.address, path);
             }
         } else if let (WalkMode::Summarize, Some(arg)) = (mode, fact.formal_index()) {
             let mut path: Vec<TaintStep> = fact.path.clone();
+            append_step(&mut path, step(instr.address, symbol, call_kind));
             append_step(&mut path, step(instr.address, symbol, "sink"));
             out.summary.add_frame(SinkFrame {
                 in_arg: arg,
@@ -765,6 +963,7 @@ fn apply_sanitizer(
     arena: &mut Arena,
     instr: &NirInstr,
     symbol: &str,
+    call_kind: &str,
     feature: FeatureSet,
     defuse: &DefUse,
     state: &mut BlockState,
@@ -773,6 +972,7 @@ fn apply_sanitizer(
     let mut produced: FactMap = FactMap::new();
     for (mut fact, _via_flag) in incoming {
         fact.features.insert(feature);
+        append_step(&mut fact.path, step(instr.address, symbol, call_kind));
         append_step(&mut fact.path, step(instr.address, symbol, "sanitize"));
         produced.insert(fact.key, fact);
     }
@@ -813,6 +1013,7 @@ fn instantiate_callee(
     mode: WalkMode,
     instr: &NirInstr,
     callee: u64,
+    call_kind: &str,
     state: &mut BlockState,
     out: &mut Outputs,
 ) {
@@ -851,7 +1052,10 @@ fn instantiate_callee(
             features: generation.features,
             origin_symbol: callee_name.clone(),
             origin_site: instr.address,
-            path: vec![step(instr.address, &callee_name, "source")],
+            path: vec![
+                step(instr.address, &callee_name, call_kind),
+                step(instr.address, &callee_name, "source"),
+            ],
         };
         let mut map: FactMap = FactMap::new();
         map.insert(fact.key, fact.clone());
@@ -873,6 +1077,7 @@ fn instantiate_callee(
                 let mut fact: Fact = source_fact.clone();
                 fact.kinds.insert(propagation.kinds);
                 fact.features.insert(propagation.features);
+                append_step(&mut fact.path, step(instr.address, &callee_name, call_kind));
                 append_step(
                     &mut fact.path,
                     step(instr.address, &callee_name, "propagate"),
@@ -892,6 +1097,7 @@ fn instantiate_callee(
             mode,
             instr,
             &callee_name,
+            call_kind,
             frame,
             &arg_facts,
             &flag_facts,
@@ -906,6 +1112,7 @@ fn instantiate_frame(
     mode: WalkMode,
     instr: &NirInstr,
     callee_name: &str,
+    call_kind: &str,
     frame: &SinkFrame,
     arg_facts: &[FactMap],
     flag_facts: &FactMap,
@@ -925,6 +1132,7 @@ fn instantiate_frame(
                 && !effective.intersects(frame.suppress)
             {
                 let mut path: Vec<TaintStep> = cf.path.clone();
+                append_step(&mut path, step(instr.address, callee_name, call_kind));
                 append_step(&mut path, step(instr.address, callee_name, "sink"));
                 for hop in &frame.path {
                     append_step(&mut path, hop.clone());
@@ -933,6 +1141,7 @@ fn instantiate_frame(
             }
         } else if let (WalkMode::Summarize, Some(arg)) = (mode, cf.formal_index()) {
             let mut path: Vec<TaintStep> = cf.path.clone();
+            append_step(&mut path, step(instr.address, callee_name, call_kind));
             append_step(&mut path, step(instr.address, callee_name, "sink"));
             for hop in &frame.path {
                 append_step(&mut path, hop.clone());

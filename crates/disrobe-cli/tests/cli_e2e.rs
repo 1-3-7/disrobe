@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
@@ -2050,6 +2051,76 @@ fn taint_json_carries_the_source_to_sink_finding() {
     assert_eq!(parsed["finding_count"], 1, "stdout: {}", r.stdout);
     assert_eq!(parsed["findings"][0]["source_symbol"], "recv");
     assert_eq!(parsed["findings"][0]["sink_symbol"], "system");
+    assert_eq!(
+        parsed["findings"][0]["path"]
+            .as_array()
+            .expect("finding path is an array")
+            .iter()
+            .filter(|step: &&serde_json::Value| step["kind"] == "call-definite")
+            .count(),
+        2,
+        "the external source and sink each retain their normalized call label"
+    );
+    assert_eq!(
+        parsed["call_edges"]
+            .as_array()
+            .expect("call edges are an array")
+            .iter()
+            .filter(|edge: &&serde_json::Value| edge["label"]["kind"] == "definite")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn taint_json_labels_the_stripped_native_twins_exact_direct_target_set() {
+    let stripped: PathBuf = corpus_path("native/discovery/disc.stripped.elf");
+    let unstripped: PathBuf = corpus_path("native/discovery/disc.unstripped.elf");
+    assert!(stripped.exists(), "{} must be tracked", stripped.display());
+    assert!(
+        unstripped.exists(),
+        "{} must be tracked",
+        unstripped.display()
+    );
+
+    let r: Run = run_disrobe(&["taint", stripped.to_str().unwrap(), "--json"]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&r.stdout).expect("native taint --json emits valid json");
+    let edges: &[serde_json::Value] = parsed["call_edges"]
+        .as_array()
+        .expect("native taint JSON carries call edges");
+
+    let twin_bytes: Vec<u8> = std::fs::read(&unstripped).expect("read unstripped twin");
+    let twin = disrobe_pass_native::build_disasm_payload(&twin_bytes)
+        .expect("unstripped twin disassembles");
+    let mut names_by_address: BTreeMap<u64, BTreeSet<&str>> = BTreeMap::new();
+    for symbol in &twin.symbol_table {
+        names_by_address
+            .entry(symbol.address)
+            .or_default()
+            .insert(symbol.name.as_str());
+    }
+    let recovered: BTreeSet<u64> = edges
+        .iter()
+        .filter(|edge: &&serde_json::Value| edge["label"]["kind"] == "definite")
+        .filter_map(|edge: &serde_json::Value| edge["label"]["target"].as_u64())
+        .collect();
+    let truth_names: BTreeSet<&str> =
+        BTreeSet::from(["add", "compute", "dispatch", "mul", "sum_to"]);
+    let truth: BTreeSet<u64> = names_by_address
+        .iter()
+        .filter(|(_address, names): &(&u64, &BTreeSet<&str>)| !names.is_disjoint(&truth_names))
+        .map(|(address, _names): (&u64, &BTreeSet<&str>)| *address)
+        .collect();
+    let true_positive_count: usize = recovered.intersection(&truth).count();
+
+    assert_eq!(recovered, truth);
+    assert_eq!(
+        (true_positive_count, recovered.len(), truth.len()),
+        (5, 5, 5),
+        "precision 5/5 and recall 5/5"
+    );
 }
 
 fn go_fixture(name: &str) -> PathBuf {

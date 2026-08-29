@@ -1,9 +1,15 @@
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
 use disrobe_llm_metadata::{MetadataSelection, PipelineStep};
-use disrobe_nir::NirModule;
-use disrobe_taint::{TaintConfig, TaintFinding, TaintReport, TaintStep};
+use disrobe_nir::{NirModule, NirOp};
+use disrobe_query::{
+    CallOutcome, FunctionIdentity, Module, NavigationCall, NavigationLimitError, NavigationLimits,
+};
+use disrobe_taint::{
+    CallEdge, CallEdgeEvidence, TaintConfig, TaintFinding, TaintReport, TaintStep,
+};
 use serde::Serialize;
 use serde_json::Value as Json;
 
@@ -65,6 +71,12 @@ const DEFAULT_SINKS: &[&str] = &[
     "subprocess.check_output",
 ];
 
+const MAX_NAVIGATION_FUNCTIONS: usize = 8_192;
+const MAX_NAVIGATION_INSTRUCTIONS: usize = 262_144;
+const MAX_NAVIGATION_CALLS: usize = 32_768;
+const MAX_NAVIGATION_CANDIDATE_RECORDS: usize = 65_536;
+const MAX_NAVIGATION_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Serialize)]
 struct TaintOutput<'a> {
     input: String,
@@ -73,6 +85,7 @@ struct TaintOutput<'a> {
     sinks: Vec<&'a str>,
     finding_count: usize,
     findings: &'a [TaintFinding],
+    call_edges: &'a [CallEdge],
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_bundle: Option<String>,
 }
@@ -88,7 +101,8 @@ pub(crate) fn run(
         .map_err(|e| miette::miette!("DR-CLI-0850: cannot read {}: {e}", input.display()))?;
     let module: NirModule = lift_module_from_bytes(&input, &bytes)?;
     let config: TaintConfig = build_config(&sources, &sinks);
-    let report: TaintReport = disrobe_taint::analyze(&module, &config);
+    let call_edges: Vec<CallEdge> = navigation_call_edges(&module)?;
+    let report: TaintReport = disrobe_taint::analyze_with_call_edges(&module, &config, &call_edges);
     let lang: &str = module.lang.label();
     let resolved_sources: Vec<&str> = config.sources().collect();
     let resolved_sinks: Vec<&str> = config.sinks().collect();
@@ -101,6 +115,7 @@ pub(crate) fn run(
         sinks: resolved_sinks,
         finding_count: report.findings().len(),
         findings: report.findings(),
+        call_edges: report.call_edges(),
         llm_bundle: llm_out
             .as_ref()
             .map(|o: &llm_cli::LlmOutputs| o.bundle.display().to_string()),
@@ -111,6 +126,84 @@ pub(crate) fn run(
             println!("llm bundle: {}", o.bundle.display());
         }
     })
+}
+
+fn navigation_call_edges(module: &NirModule) -> miette::Result<Vec<CallEdge>> {
+    let query: Module = Module::from_nir(module);
+    let extern_sites: BTreeSet<u64> = module
+        .functions
+        .iter()
+        .flat_map(|function| function.instructions.iter())
+        .filter(|instruction| matches!(instruction.op, NirOp::ExternCall { .. }))
+        .map(|instruction| instruction.address)
+        .collect();
+    let calls: Vec<NavigationCall> = query
+        .navigation_calls(NavigationLimits {
+            functions: MAX_NAVIGATION_FUNCTIONS,
+            instructions: MAX_NAVIGATION_INSTRUCTIONS,
+            calls: MAX_NAVIGATION_CALLS,
+            candidate_records: MAX_NAVIGATION_CANDIDATE_RECORDS,
+            retained_bytes: MAX_NAVIGATION_RETAINED_BYTES,
+        })
+        .map_err(|error: NavigationLimitError| {
+            miette::miette!("DR-CLI-0871: taint call-edge analysis: {error}")
+        })?;
+    calls
+        .iter()
+        .filter(|call: &&NavigationCall| !extern_sites.contains(&call.call_site))
+        .map(call_edge_from_navigation)
+        .collect()
+}
+
+fn call_edge_from_navigation(call: &NavigationCall) -> miette::Result<CallEdge> {
+    let edge: CallEdge = match call.outcome.as_ref() {
+        CallOutcome::FunctionStart { address, .. } => CallEdge::definite(
+            call.call_site,
+            *address,
+            CallEdgeEvidence::NavigationFunctionStart,
+        ),
+        CallOutcome::FunctionInterior {
+            function_address,
+            target_address,
+            ..
+        } => CallEdge::definite(
+            call.call_site,
+            *function_address,
+            CallEdgeEvidence::NavigationFunctionInterior {
+                target_address: *target_address,
+            },
+        ),
+        CallOutcome::AmbiguousFunction { candidates, .. } => CallEdge::finite_set(
+            call.call_site,
+            candidates
+                .iter()
+                .map(|candidate: &FunctionIdentity| candidate.address),
+            CallEdgeEvidence::NavigationAmbiguousFunction,
+        )
+        .map_err(|_: disrobe_taint::CallEdgeBuildError| {
+            miette::miette!(
+                "DR-CLI-0872: navigation returned an empty ambiguous call target set at {:#x}",
+                call.call_site
+            )
+        })?,
+        CallOutcome::Symbol { address, .. } => CallEdge::definite(
+            call.call_site,
+            *address,
+            CallEdgeEvidence::NavigationSymbol {
+                target_address: *address,
+            },
+        ),
+        CallOutcome::Unresolved { address } => CallEdge::unresolved(
+            call.call_site,
+            CallEdgeEvidence::NavigationUnresolved {
+                target_address: *address,
+            },
+        ),
+        CallOutcome::Indirect => {
+            CallEdge::unresolved(call.call_site, CallEdgeEvidence::NavigationIndirect)
+        }
+    };
+    Ok(edge)
 }
 
 fn maybe_emit_llm_taint(
