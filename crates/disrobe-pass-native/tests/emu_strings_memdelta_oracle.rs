@@ -7,6 +7,7 @@
     clippy::print_stderr
 )]
 
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,6 +22,7 @@ const BLOCK2: &str = "surviving0final0block0two";
 const COPY_SRC: &str = "benign0static0copysource0CCCC";
 const GEN_FILL: &str = "01234567890123456789012345678901";
 const WIDE_PLAINTEXT: &str = "wide0secret0url0payload0token0DDDD";
+const TEST_GCC_ENV: &str = "DISROBE_TEST_GCC";
 
 fn has_tool(cmd: &str) -> bool {
     Command::new(cmd)
@@ -186,16 +188,18 @@ fn gcc_dll_decoders_recovered_from_written_memory() {
         );
         return;
     }
-    if !has_tool("gcc") {
+    let gcc_override: Option<OsString> = std::env::var_os(TEST_GCC_ENV);
+    if gcc_override.is_none() && !has_tool("gcc") {
         eprintln!("skipping: gcc not on PATH");
         return;
     }
+    let gcc: OsString = gcc_override.unwrap_or_else(|| OsString::from("gcc"));
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("corpus.c");
     std::fs::write(&src_path, corpus_source().as_bytes()).expect("write corpus.c");
     let dll: PathBuf = dir.join("corpus_gcc.dll");
-    let build: std::process::Output = Command::new("gcc")
+    let build: std::process::Output = Command::new(&gcc)
         .args([
             "-O0",
             "-fno-stack-protector",
@@ -208,14 +212,53 @@ fn gcc_dll_decoders_recovered_from_written_memory() {
         .arg(&dll)
         .arg(&src_path)
         .output()
-        .expect("invoke gcc");
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "host gcc toolchain could not start before Disrobe recovery ran: compiler \
+                 {gcc:?}; output {dll:?}; error {error}"
+            )
+        });
     assert!(
         build.status.success(),
-        "gcc DLL build failed: {}",
+        "host gcc toolchain failed before Disrobe recovery ran: compiler {gcc:?}; status {}; \
+         output {dll:?}; stdout: {}; stderr: {}",
+        build.status,
+        String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr)
     );
     let image: Vec<u8> = std::fs::read(&dll).expect("read corpus_gcc.dll");
     assert_recovery(&image, "gcc-dll");
+}
+
+#[test]
+fn gcc_failure_is_identified_as_host_toolchain_error() {
+    if !cfg!(windows) {
+        return;
+    }
+    let current_exe: PathBuf = std::env::current_exe().expect("resolve current test executable");
+    let child: std::process::Output = Command::new(&current_exe)
+        .args([
+            "--exact",
+            "gcc_dll_decoders_recovered_from_written_memory",
+            "--nocapture",
+        ])
+        .env(TEST_GCC_ENV, &current_exe)
+        .output()
+        .expect("run gcc oracle with failing compiler process");
+    let diagnostic: String = format!(
+        "{}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+
+    assert!(
+        !child.status.success(),
+        "injected compiler unexpectedly passed"
+    );
+    assert!(
+        diagnostic.contains("host gcc toolchain failed before Disrobe recovery ran"),
+        "toolchain failure was not classified: {diagnostic}"
+    );
 }
 
 #[test]
