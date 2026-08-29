@@ -95,7 +95,7 @@ pub(super) fn deob(
         }
         if out_path.exists() && !g.force {
             return Err(miette::miette!(
-                "DR-CLI-0033B: out file {} already exists; pass --force to overwrite",
+                "DR-CLI-0033B: output already exists at {}; pass --force to overwrite",
                 out_path.display()
             ));
         }
