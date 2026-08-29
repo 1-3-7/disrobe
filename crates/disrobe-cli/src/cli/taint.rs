@@ -186,11 +186,11 @@ fn call_edge_from_navigation(call: &NavigationCall) -> miette::Result<CallEdge> 
                 call.call_site
             )
         })?,
-        CallOutcome::Symbol { address, .. } => CallEdge::definite(
+        CallOutcome::Symbol { name, address, .. } => CallEdge::definite(
             call.call_site,
             *address,
-            CallEdgeEvidence::NavigationSymbol {
-                target_address: *address,
+            CallEdgeEvidence::NamedExternal {
+                symbol: name.to_string(),
             },
         ),
         CallOutcome::Unresolved { address } => CallEdge::unresolved(

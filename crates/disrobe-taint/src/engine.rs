@@ -76,6 +76,7 @@ struct ResolvedModule<'a> {
     abi: CallAbi,
     call_targets_by_site: BTreeMap<u64, Vec<u64>>,
     call_kind_by_site: BTreeMap<u64, &'static str>,
+    call_symbols_by_site: BTreeMap<u64, BTreeSet<String>>,
     uncertain_call_sites: BTreeSet<u64>,
     call_edges: Vec<CallEdge>,
 }
@@ -176,6 +177,7 @@ impl<'a> ResolvedModule<'a> {
         call_edges = normalize_call_edges(call_edges);
         let mut call_targets_by_site: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         let mut call_kind_by_site: BTreeMap<u64, &'static str> = BTreeMap::new();
+        let mut call_symbols_by_site: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
         let mut uncertain_call_sites: BTreeSet<u64> = BTreeSet::new();
         for edge in &call_edges {
             call_targets_by_site
@@ -197,6 +199,14 @@ impl<'a> ResolvedModule<'a> {
             ) {
                 uncertain_call_sites.insert(edge.site);
             }
+            for evidence in edge.evidence() {
+                if let CallEdgeEvidence::NamedExternal { symbol } = evidence {
+                    call_symbols_by_site
+                        .entry(edge.site)
+                        .or_default()
+                        .insert(symbol.clone());
+                }
+            }
         }
         for targets in call_targets_by_site.values_mut() {
             targets.sort_unstable();
@@ -210,6 +220,7 @@ impl<'a> ResolvedModule<'a> {
             abi,
             call_targets_by_site,
             call_kind_by_site,
+            call_symbols_by_site,
             uncertain_call_sites,
             call_edges,
         }
@@ -261,6 +272,11 @@ impl<'a> ResolvedModule<'a> {
     fn external_symbol(&self, instr: &NirInstr) -> Option<String> {
         if self.callee_internal(instr).is_some() {
             return None;
+        }
+        if let Some(symbols) = self.call_symbols_by_site.get(&instr.address)
+            && symbols.len() == 1
+        {
+            return symbols.iter().next().cloned();
         }
         self.callee_symbol(instr)
     }

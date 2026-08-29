@@ -274,6 +274,26 @@ fn a_finite_set_on_a_direct_call_keeps_non_internal_uncertainty() {
 }
 
 #[test]
+fn a_definite_external_symbol_drives_taint_through_an_indirect_call() {
+    const EXTERNAL_RECV_ADDRESS: u64 = 0x9_999;
+
+    let edge: CallEdge = CallEdge::definite(
+        INDIRECT_SITE,
+        EXTERNAL_RECV_ADDRESS,
+        CallEdgeEvidence::NamedExternal {
+            symbol: "recv".to_owned(),
+        },
+    );
+    let report: TaintReport = analyze(core::slice::from_ref(&edge));
+
+    assert!(report.flow_in("dispatch", "recv", "run_command"));
+    assert!(!report.has_unresolved_calls());
+    assert!(report.findings()[0].path.iter().any(|step| {
+        step.address == INDIRECT_SITE && step.symbol == "recv" && step.kind == "call-definite"
+    }));
+}
+
+#[test]
 fn unresolved_candidate_preserves_unsanitized_flow_alongside_internal_sanitizer() {
     const SANITIZER_ADDRESS: u64 = 0x500;
     const UNKNOWN_ADDRESS: u64 = 0x9_999;
