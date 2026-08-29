@@ -30,9 +30,8 @@ type OutputTree = BTreeMap<String, Vec<u8>>;
 
 fn differing_paths(left: &OutputTree, right: &OutputTree) -> Vec<String> {
     left.iter()
-        .filter_map(|(path, bytes): (&String, &Vec<u8>)| {
-            (right.get(path) != Some(bytes)).then(|| path.clone())
-        })
+        .filter(|(path, bytes): &(&String, &Vec<u8>)| right.get(*path) != Some(*bytes))
+        .map(|(path, _): (&String, &Vec<u8>)| path.clone())
         .chain(
             right
                 .keys()
