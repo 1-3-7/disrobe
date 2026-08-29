@@ -185,6 +185,7 @@ pub fn entry_bytes(bytes: &[u8], entry: &ArcEntry, max_out: u64) -> Result<Vec<u
         }
         8 => crate::containers::arc_codec::un_crunch(raw, expected)?,
         9 => crate::containers::arc_codec::un_squash(raw, expected)?,
+        11 => un_distill(raw, expected, cap)?,
         other => {
             return Err(Error::Arc(format!(
                 "arc: entry `{}` uses compression method {other}, which is not decodable in-tree",
@@ -226,6 +227,334 @@ fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
     disrobe_bytes::read_u32_le_at(bytes, at)
         .map_err(|_| Error::Arc("arc: truncated u32".to_owned()))
+}
+
+const DISTILLED_WINDOW_SIZE: usize = 8_192;
+const DISTILLED_MAX_NODES: usize = 628;
+const DISTILLED_MAX_CODES: usize = 315;
+const DISTILLED_STOP_CODE: u16 = 256;
+const DISTILLED_MIN_MATCH: u16 = 3;
+const DISTILLED_MAX_MATCH: u16 = 60;
+const DISTILLED_MATCH_BIAS: u16 = 254;
+const DISTILLED_MAX_CODE_BITS: u32 = 24;
+const DISTILLED_OFFSET_CODES: [u8; 64] = [
+    0x00, 0x04, 0x02, 0x03, 0x10, 0x0c, 0x0a, 0x0e, 0x11, 0x0d, 0x0b, 0x0f, 0x28, 0x24, 0x2c, 0x2a,
+    0x26, 0x2e, 0x29, 0x25, 0x2d, 0x2b, 0x27, 0x2f, 0x60, 0x70, 0x68, 0x64, 0x74, 0x6c, 0x62, 0x72,
+    0x6a, 0x66, 0x76, 0x6e, 0x61, 0x71, 0x69, 0x65, 0x75, 0x6d, 0x63, 0x73, 0x6b, 0x67, 0x77, 0x6f,
+    0xf0, 0xf8, 0xf4, 0xfc, 0xf2, 0xfa, 0xf6, 0xfe, 0xf1, 0xf9, 0xf5, 0xfd, 0xf3, 0xfb, 0xf7, 0xff,
+];
+
+struct DistilledBitReader<'a> {
+    src: &'a [u8],
+    pos: usize,
+    accumulator: u32,
+    bits: u32,
+}
+
+impl<'a> DistilledBitReader<'a> {
+    const fn new(src: &'a [u8]) -> Self {
+        Self {
+            src,
+            pos: 0,
+            accumulator: 0,
+            bits: 0,
+        }
+    }
+
+    fn read_bit(&mut self) -> Result<u32> {
+        if self.bits == 0 {
+            let byte: u8 = *self.src.get(self.pos).ok_or_else(|| {
+                Error::Decompression(
+                    "arc: distilled stream ended before the decoded data".to_owned(),
+                )
+            })?;
+            self.pos += 1;
+            self.accumulator = u32::from(byte);
+            self.bits = 8;
+        }
+        let bit: u32 = self.accumulator & 1;
+        self.accumulator >>= 1;
+        self.bits -= 1;
+        Ok(bit)
+    }
+
+    fn read_bits(&mut self, count: u32) -> Result<u32> {
+        if count > 32 {
+            return Err(Error::Decompression(
+                "arc: distilled bit request exceeds the reader width".to_owned(),
+            ));
+        }
+        let mut value: u32 = 0;
+        for index in 0..count {
+            value |= self.read_bit()? << index;
+        }
+        Ok(value)
+    }
+}
+
+struct DistilledTrieNode {
+    child: [Option<usize>; 2],
+    value: Option<u16>,
+}
+
+struct DistilledTrie {
+    nodes: Vec<DistilledTrieNode>,
+}
+
+impl DistilledTrie {
+    fn new() -> Self {
+        Self {
+            nodes: vec![DistilledTrieNode {
+                child: [None, None],
+                value: None,
+            }],
+        }
+    }
+
+    fn insert(&mut self, code: u32, bits: u32, value: u16) -> Result<()> {
+        if bits == 0 || bits > DISTILLED_MAX_CODE_BITS {
+            return Err(Error::Decompression(format!(
+                "arc: distilled code length {bits} is outside 1..={DISTILLED_MAX_CODE_BITS}"
+            )));
+        }
+        let mut node: usize = 0;
+        for depth in (0..bits).rev() {
+            let branch: usize = ((code >> depth) & 1) as usize;
+            let next: Option<usize> = self.nodes[node].child[branch];
+            node = if let Some(index) = next {
+                index
+            } else {
+                let index: usize = self.nodes.len();
+                self.nodes.push(DistilledTrieNode {
+                    child: [None, None],
+                    value: None,
+                });
+                self.nodes[node].child[branch] = Some(index);
+                index
+            };
+            if self.nodes[node].value.is_some() {
+                return Err(Error::Decompression(
+                    "arc: distilled code table has a prefix collision".to_owned(),
+                ));
+            }
+        }
+        let slot: &mut DistilledTrieNode = self.nodes.get_mut(node).ok_or_else(|| {
+            Error::Decompression("arc: distilled trie index is invalid".to_owned())
+        })?;
+        if slot.value.is_some() || slot.child[0].is_some() || slot.child[1].is_some() {
+            return Err(Error::Decompression(
+                "arc: distilled code table has a duplicate code".to_owned(),
+            ));
+        }
+        slot.value = Some(value);
+        Ok(())
+    }
+
+    fn read(&self, reader: &mut DistilledBitReader<'_>) -> Result<u16> {
+        let mut node: usize = 0;
+        for _ in 0..=DISTILLED_MAX_CODE_BITS {
+            if let Some(value) = self.nodes[node].value {
+                return Ok(value);
+            }
+            let branch: usize = reader.read_bit()? as usize;
+            node = self.nodes[node].child[branch].ok_or_else(|| {
+                Error::Decompression("arc: distilled stream selects an unassigned code".to_owned())
+            })?;
+        }
+        Err(Error::Decompression(
+            "arc: distilled code walk exceeds its depth limit".to_owned(),
+        ))
+    }
+}
+
+const fn distilled_offset_code_bits(index: usize) -> u32 {
+    if index == 0 {
+        3
+    } else if index < 4 {
+        4
+    } else if index < 12 {
+        5
+    } else if index < 24 {
+        6
+    } else if index < 48 {
+        7
+    } else {
+        8
+    }
+}
+
+fn distilled_offsets_trie() -> Result<DistilledTrie> {
+    let mut trie: DistilledTrie = DistilledTrie::new();
+    for (index, code) in DISTILLED_OFFSET_CODES.into_iter().enumerate() {
+        trie.insert(
+            u32::from(code),
+            distilled_offset_code_bits(index),
+            index as u16,
+        )?;
+    }
+    Ok(trie)
+}
+
+struct DistilledNodeTable {
+    values: Vec<u16>,
+    in_use: Vec<bool>,
+}
+
+impl DistilledNodeTable {
+    fn descend(
+        &mut self,
+        trie: &mut DistilledTrie,
+        value: u16,
+        code: u32,
+        bits: u32,
+    ) -> Result<()> {
+        let count: u16 = u16::try_from(self.values.len()).map_err(|_| {
+            Error::Decompression("arc: distilled node count exceeds u16".to_owned())
+        })?;
+        if value < count {
+            return self.walk(trie, usize::from(value), code, bits);
+        }
+        let symbol: u16 = value - count;
+        if usize::from(symbol) >= DISTILLED_MAX_CODES {
+            return Err(Error::Decompression(format!(
+                "arc: distilled leaf value {symbol} exceeds the {DISTILLED_MAX_CODES}-code table"
+            )));
+        }
+        trie.insert(code, bits, symbol)
+    }
+
+    fn walk(&mut self, trie: &mut DistilledTrie, node: usize, code: u32, bits: u32) -> Result<()> {
+        if bits >= DISTILLED_MAX_CODE_BITS || node + 1 >= self.values.len() {
+            return Err(Error::Decompression(
+                "arc: distilled node table selects an invalid pair".to_owned(),
+            ));
+        }
+        if self.in_use[node] || self.in_use[node + 1] {
+            return Err(Error::Decompression(
+                "arc: distilled node table contains a cycle".to_owned(),
+            ));
+        }
+        self.in_use[node] = true;
+        self.in_use[node + 1] = true;
+        let left: u16 = self.values[node];
+        let right: u16 = self.values[node + 1];
+        let result: Result<()> = self
+            .descend(trie, left, code << 1, bits + 1)
+            .and_then(|(): ()| self.descend(trie, right, (code << 1) | 1, bits + 1));
+        self.in_use[node] = false;
+        self.in_use[node + 1] = false;
+        result
+    }
+}
+
+fn distilled_literals_trie(reader: &mut DistilledBitReader<'_>) -> Result<DistilledTrie> {
+    let count: usize = reader.read_bits(16)? as usize;
+    if !(2..=DISTILLED_MAX_NODES).contains(&count) || !count.is_multiple_of(2) {
+        return Err(Error::Decompression(format!(
+            "arc: distilled node count {count} is not an even value in 2..={DISTILLED_MAX_NODES}"
+        )));
+    }
+    let width: u32 = reader.read_bits(8)?;
+    if !(1..=12).contains(&width) {
+        return Err(Error::Decompression(format!(
+            "arc: distilled node width {width} is outside 1..=12"
+        )));
+    }
+    let mut values: Vec<u16> = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(reader.read_bits(width)? as u16);
+    }
+    let mut table: DistilledNodeTable = DistilledNodeTable {
+        values,
+        in_use: vec![false; count],
+    };
+    let mut trie: DistilledTrie = DistilledTrie::new();
+    table.walk(&mut trie, count - 2, 0, 0)?;
+    Ok(trie)
+}
+
+fn distilled_extra_offset_bits(produced: usize) -> u32 {
+    let reach: usize = produced.saturating_add(60);
+    for width in (6..=12).rev() {
+        if reach >= (1usize << width) {
+            return width - 5;
+        }
+    }
+    0
+}
+
+fn un_distill(input: &[u8], expected: usize, cap: usize) -> Result<Vec<u8>> {
+    if expected > cap {
+        return Err(Error::Decompression(format!(
+            "arc: distilled member declares {expected} bytes above the {cap}-byte limit"
+        )));
+    }
+    let mut reader: DistilledBitReader<'_> = DistilledBitReader::new(input);
+    let literals: DistilledTrie = distilled_literals_trie(&mut reader)?;
+    let offsets: DistilledTrie = distilled_offsets_trie()?;
+    let mut window: Box<[u8; DISTILLED_WINDOW_SIZE]> = Box::new([b' '; DISTILLED_WINDOW_SIZE]);
+    let mut window_pos: usize = 0;
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(expected as u64));
+    let mut commands: usize = 0;
+    while out.len() < expected {
+        commands = commands.checked_add(1).ok_or_else(|| {
+            Error::Decompression("arc: distilled command counter overflow".to_owned())
+        })?;
+        if commands > expected.saturating_add(1) {
+            return Err(Error::Decompression(format!(
+                "arc: distilled stream issued more than {expected} command(s)"
+            )));
+        }
+        let code: u16 = literals.read(&mut reader)?;
+        if code == DISTILLED_STOP_CODE {
+            break;
+        }
+        if code < DISTILLED_STOP_CODE {
+            let byte: u8 = code as u8;
+            window[window_pos] = byte;
+            window_pos = (window_pos + 1) % DISTILLED_WINDOW_SIZE;
+            out.push(byte);
+            continue;
+        }
+        let length: u16 = code.checked_sub(DISTILLED_MATCH_BIAS).ok_or_else(|| {
+            Error::Decompression("arc: distilled match length underflow".to_owned())
+        })?;
+        if !(DISTILLED_MIN_MATCH..=DISTILLED_MAX_MATCH).contains(&length) {
+            return Err(Error::Decompression(format!(
+                "arc: distilled match length {length} is outside {DISTILLED_MIN_MATCH}..={DISTILLED_MAX_MATCH}"
+            )));
+        }
+        let remaining: usize = expected - out.len();
+        if usize::from(length) > remaining {
+            return Err(Error::Decompression(
+                "arc: distilled match exceeds the declared output length".to_owned(),
+            ));
+        }
+        let high: usize = usize::from(offsets.read(&mut reader)?);
+        let extra: u32 = distilled_extra_offset_bits(out.len());
+        let distance: usize = (high << extra) | reader.read_bits(extra)? as usize;
+        if distance >= DISTILLED_WINDOW_SIZE {
+            return Err(Error::Decompression(format!(
+                "arc: distilled match distance {distance} exceeds the {DISTILLED_WINDOW_SIZE}-byte window"
+            )));
+        }
+        let mut source: usize =
+            (window_pos + DISTILLED_WINDOW_SIZE - 1 - distance) % DISTILLED_WINDOW_SIZE;
+        for _ in 0..length {
+            let byte: u8 = window[source];
+            window[window_pos] = byte;
+            window_pos = (window_pos + 1) % DISTILLED_WINDOW_SIZE;
+            source = (source + 1) % DISTILLED_WINDOW_SIZE;
+            out.push(byte);
+        }
+    }
+    if out.len() != expected {
+        return Err(Error::Decompression(format!(
+            "arc: distilled stream stopped after {} of {expected} byte(s)",
+            out.len()
+        )));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

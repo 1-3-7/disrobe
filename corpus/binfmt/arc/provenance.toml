@@ -97,3 +97,20 @@ verification = "NostalgicPlayer records the member MD5. Nomarch 1.4 independentl
 path = "expected/crystals.669"
 method = 9
 sha256 = "acd8c8d1214dfb7c44436438903a12fdabb2688b8d2f6255f716b8d637f9c926"
+
+[[artifacts]]
+path = "pak/pak11_distilled.pak"
+sha256 = "ab32da9f42d88b4a8a3f52b0e158570acb1f093242f574374f4db118b32f6b41"
+source_url = "http://cd.textfiles.com/nopv18/007A/IE111SEP.ZIP"
+source_member = "INTRECHO.PAK"
+container_sha256 = "a50ff41a9f41caba6748d369bf0e24589f389077c3c9d0641c578ee79a1e55d0"
+retrieved = "2026-08-18"
+archiver = "NoGate Consulting PAK 2.x"
+method = 11
+method_name = "distilled"
+members = 10
+redistribution = "The archive's own LICENSE.DOC member states: `You are allowed and encouraged to distribute the demo file archive to others, provided that no modifications are made.` The file is therefore committed whole and unmodified; it must not be carved down."
+specification = "https://entropymine.wordpress.com/ distilled format writeup by Jason Summers, the Deark author, which documents the node table, the fixed 64-entry offsets codebook, and the produced-bytes-dependent offset width"
+second_reference = "Deark 1.7.3 modules/arc.c and src/fmtutil-lzh.c implement Distilled; its distilled_offsetcodes table and get_lzhuf_p_len code lengths agree with the published writeup entry for entry."
+second_reference_verdict = "Deark could not be built on the recovery host: its own Makefile fails on a temp-directory permission error, and a direct two-stage gcc build compiles all 207 objects but the link fails with `ld returned 5` and emits a non-executable image. No Deark extraction run backs these digests."
+verification = "Every one of the 10 members decodes to its exact declared length and matches the CRC-16/ARC that PAK wrote when the archive was built, which the ARC entry reader enforces. The recovered LICENSE.DOC is coherent English text and both recovered executables carry MZ headers."
