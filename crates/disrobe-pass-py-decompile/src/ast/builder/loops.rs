@@ -17,6 +17,7 @@ use super::try_with::{
     is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
     offset_is_unprotected, structure_for_bare_except_continue_epilogue,
     structure_for_typed_except_continue_epilogue, structure_infinite_while_finally_arm_break_body,
+    structure_infinite_while_finally_arm_continue_body,
     structure_infinite_while_finally_arm_return_body, structure_infinite_while_split_finally_body,
     structure_try,
 };
@@ -29,6 +30,8 @@ use crate::ast::node::{BoolOpKind, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
 use crate::error::Result;
 use disrobe_py_marshal::CodeObject;
+
+type InfiniteLoopTail = (usize, usize);
 
 #[derive(Debug, Clone, Copy)]
 struct LoopOwnership {
@@ -2527,7 +2530,7 @@ pub(super) fn structure_loop(
     };
     let ownership_guard: LoopOwnershipGuard = LoopOwnershipGuard::enter(ownership);
     let mut cold_handler_exit_tail: Vec<Stmt> = Vec::new();
-    let mut infinite_tail_end: Option<usize> = None;
+    let mut infinite_tail: Option<InfiniteLoopTail> = None;
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let loop_stmt: Stmt = match region.kind {
             LoopKind::For => {
@@ -2576,9 +2579,9 @@ pub(super) fn structure_loop(
                     .clone()
                     .unwrap_or_else(|| recover_while_test(code, stream, region));
                 let body: Vec<Stmt> = if region.infinite {
-                    let (body, tail_end): (Vec<Stmt>, Option<usize>) =
+                    let (body, tail): (Vec<Stmt>, Option<InfiniteLoopTail>) =
                         structure_infinite_while_body(code, stream, region)?;
-                    infinite_tail_end = tail_end;
+                    infinite_tail = tail;
                     body
                 } else {
                     structure_while_body_absorbing_break_handler(code, stream, region, hi, &test)?
@@ -2604,14 +2607,16 @@ pub(super) fn structure_loop(
     let mut out: Vec<Stmt> = head;
     out.push(loop_stmt);
     out.extend(cold_handler_exit_tail);
-    let tail_start: usize = if infinite_tail_end.is_some() {
-        region.exit.min(hi)
+    let tail_start: usize = if let Some((tail_start, _)) = infinite_tail {
+        tail_start.min(hi)
     } else if region.infinite {
         skip_loop_epilogue(stream, infinite_tail_start(stream, region).min(hi), hi)
     } else {
         loop_tail_start(stream, region, hi)
     };
-    let tail_end: usize = infinite_tail_end.unwrap_or(hi).min(hi);
+    let tail_end: usize = infinite_tail
+        .map_or(hi, |(_, tail_end): InfiniteLoopTail| tail_end)
+        .min(hi);
     if tail_start < tail_end {
         out.extend(structure_stmts(code, stream, tail_start, tail_end)?);
     }
@@ -2727,21 +2732,26 @@ fn structure_infinite_while_body(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &LoopRegion,
-) -> Result<(Vec<Stmt>, Option<usize>)> {
+) -> Result<(Vec<Stmt>, Option<InfiniteLoopTail>)> {
+    if let Some((body, tail_start, tail_end)) =
+        structure_infinite_while_finally_arm_continue_body(code, stream, region)?
+    {
+        return Ok((body, Some((tail_start, tail_end))));
+    }
     if let Some((body, tail_end)) =
         structure_infinite_while_finally_arm_return_body(code, stream, region)?
     {
-        return Ok((body, Some(tail_end)));
+        return Ok((body, Some((region.exit, tail_end))));
     }
     if let Some((body, tail_end)) =
         structure_infinite_while_finally_arm_break_body(code, stream, region)?
     {
-        return Ok((body, Some(tail_end)));
+        return Ok((body, Some((region.exit, tail_end))));
     }
     if let Some((body, tail_end)) =
         structure_infinite_while_split_finally_body(code, stream, region)?
     {
-        return Ok((body, Some(tail_end)));
+        return Ok((body, Some((region.exit, tail_end))));
     }
     let body_end: usize = infinite_body_end(stream, region);
     let body_entry: usize = infinite_body_entry(stream, region, body_end);

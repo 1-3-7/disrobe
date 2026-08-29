@@ -7525,6 +7525,225 @@ pub(super) fn structure_infinite_while_finally_arm_break_body(
 }
 
 #[derive(Clone, Copy)]
+struct FinallyArmContinueLoop {
+    try_start: usize,
+    protected_end: usize,
+    inline_end: usize,
+    tail_start: usize,
+    handler_start: usize,
+}
+
+fn finally_arm_continue_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Option<FinallyArmContinueLoop> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit != loop_region.back_edge.checked_add(1)?
+        || !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return None;
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && first_significant(stream, loop_region.header, try_start).is_none()
+                && try_start < protected_end
+                && protected_end < handler_start
+                && handler_start < loop_region.back_edge
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return None;
+    };
+    let try_start: usize = stream.index_for_offset(primary.start)?;
+    let protected_end: usize = stream.index_for_offset_ceil(primary.end())?;
+    let handler_start: usize = stream.index_for_offset(primary.target)?;
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return None;
+    }
+    let inline_guards: Vec<usize> = (protected_end..handler_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [inline_guard]: &[usize] = inline_guards.as_slice() else {
+        return None;
+    };
+    let inline_resume: usize =
+        resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
+            .filter(|target: &usize| *target > *inline_guard && *target < handler_start)?;
+    let inline_continue: usize = last_significant_back(stream, *inline_guard + 1, inline_resume)?;
+    if first_significant(stream, *inline_guard + 1, inline_resume) != Some(inline_continue)
+        || !is_back_edge(&stream.ops[inline_continue])
+        || resolve_jump_target(stream, inline_continue, &stream.ops[inline_continue])
+            != Some(loop_region.header)
+    {
+        return None;
+    }
+    let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 1 && entry.lasti && entry.start >= primary.target
+        })
+        .collect();
+    cleanup_entries
+        .sort_unstable_by_key(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.start);
+    let [first_cleanup, second_cleanup]: &[&crate::bytecode::flow::ExceptionTableEntry] =
+        cleanup_entries.as_slice()
+    else {
+        return None;
+    };
+    if first_cleanup.target != second_cleanup.target {
+        return None;
+    }
+    let cleanup_start: usize = stream.index_for_offset(first_cleanup.target)?;
+    let first_cleanup_start: usize = stream.index_for_offset(first_cleanup.start)?;
+    let first_cleanup_end: usize = stream.index_for_offset_ceil(first_cleanup.end())?;
+    let second_cleanup_start: usize = stream.index_for_offset(second_cleanup.start)?;
+    let second_cleanup_end: usize = stream.index_for_offset_ceil(second_cleanup.end())?;
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    if first_cleanup_start != handler_start
+        || second_cleanup_end != cleanup_start
+        || !matches!(
+            significant_ops(stream, cleanup_start, handler_end).as_slice(),
+            [
+                CanonicalOp::Copy(3),
+                CanonicalOp::PopExcept,
+                CanonicalOp::Reraise(1)
+            ]
+        )
+    {
+        return None;
+    }
+    let handler_guards: Vec<usize> = (handler_start + 1..cleanup_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [handler_guard]: &[usize] = handler_guards.as_slice() else {
+        return None;
+    };
+    let handler_resume: usize =
+        resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
+            .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
+    let handler_continue_ops: Vec<&CanonicalOp> =
+        significant_ops(stream, *handler_guard + 1, handler_resume);
+    let [CanonicalOp::Pop, CanonicalOp::PopExcept, handler_continue]: &[&CanonicalOp] =
+        handler_continue_ops.as_slice()
+    else {
+        return None;
+    };
+    let handler_continue_index: usize =
+        last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    let handler_reraise: usize = last_significant_back(stream, handler_resume, cleanup_start)?;
+    if !matches!(
+        handler_continue,
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) || resolve_jump_target(stream, handler_continue_index, handler_continue)
+        != Some(loop_region.header)
+        || handler_continue_index != loop_region.back_edge
+        || handler_resume != loop_region.exit
+        || handler_continue_index.checked_sub(1) != Some(first_cleanup_end)
+        || second_cleanup_start != handler_resume
+        || !matches!(stream.ops[handler_reraise], CanonicalOp::Reraise(0))
+        || !significant_slices_match(
+            stream,
+            protected_end,
+            *inline_guard + 1,
+            handler_start + 1,
+            *handler_guard + 1,
+        )
+    {
+        return None;
+    }
+    let inline_end: usize = finally_inline_copy_end(
+        stream,
+        inline_resume,
+        handler_start,
+        handler_resume,
+        handler_reraise,
+    )?;
+    let tail_start: usize = first_significant(stream, inline_end, handler_start)?;
+    let tail_terminal: usize = last_significant_back(stream, tail_start, handler_start)?;
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) || (tail_start..handler_start).any(|index: usize| is_targeted_jump(&stream.ops[index]))
+    {
+        return None;
+    }
+    Some(FinallyArmContinueLoop {
+        try_start,
+        protected_end,
+        inline_end,
+        tail_start,
+        handler_start,
+    })
+}
+
+pub(super) fn structure_infinite_while_finally_arm_continue_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize, usize)>> {
+    let Some(shape): Option<FinallyArmContinueLoop> =
+        finally_arm_continue_loop(stream, loop_region)
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> =
+        structure_stmts(code, stream, shape.protected_end, shape.inline_end)?;
+    if body.is_empty() || finalbody.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![
+            Stmt::Try {
+                body,
+                handlers: Vec::new(),
+                orelse: Vec::new(),
+                finalbody,
+                line: None,
+            },
+            Stmt::Break,
+        ],
+        shape.tail_start,
+        shape.handler_start,
+    )))
+}
+
+#[derive(Clone, Copy)]
 struct SplitFinallyLoopExit {
     protected_end: usize,
     resumed_end: usize,
