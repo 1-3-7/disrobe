@@ -894,13 +894,43 @@ fn parse_jadx_error_count(stdout: &str) -> std::result::Result<usize, String> {
 }
 
 fn validate_jadx_progress_records(records: &[&str]) -> std::result::Result<(), String> {
-    const PINNED_RECORDS: [&str; 3] = [
-        "INFO  - loading ...",
-        "INFO  - processing ...",
-        "INFO  - progress: 0 of 2 (0%)",
-    ];
-    if records != PINNED_RECORDS {
+    let [loading, processing, progress @ ..]: &[&str] = records else {
         return Err("JADX progress records differ from the pinned fixture".to_owned());
+    };
+    if *loading != "INFO  - loading ..." || *processing != "INFO  - processing ..." {
+        return Err("JADX progress records differ from the pinned fixture".to_owned());
+    }
+    let mut previous: usize = 0;
+    for record in progress {
+        let fields: &str = record
+            .strip_prefix("INFO  - progress: ")
+            .ok_or_else(|| "JADX progress records differ from the pinned fixture".to_owned())?;
+        let (current, remainder): (&str, &str) = fields
+            .split_once(" of ")
+            .ok_or_else(|| "JADX progress record is malformed".to_owned())?;
+        let (total, percent): (&str, &str) = remainder
+            .split_once(" (")
+            .ok_or_else(|| "JADX progress record is malformed".to_owned())?;
+        let percent: &str = percent
+            .strip_suffix("%)")
+            .ok_or_else(|| "JADX progress record is malformed".to_owned())?;
+        let current: usize = current
+            .parse()
+            .map_err(|_| "JADX progress record is malformed".to_owned())?;
+        let total: usize = total
+            .parse()
+            .map_err(|_| "JADX progress record is malformed".to_owned())?;
+        let percent: usize = percent
+            .parse()
+            .map_err(|_| "JADX progress record is malformed".to_owned())?;
+        if total != 2
+            || current < previous
+            || current > total
+            || percent != current.saturating_mul(100) / total
+        {
+            return Err("JADX progress records differ from the pinned fixture".to_owned());
+        }
+        previous = current;
     }
     Ok(())
 }
@@ -3956,8 +3986,31 @@ mod tests {
         assert!(parse_jadx_error_count("ERROR - finished with errors, count: five").is_err());
         assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 2 of 1 (200%)\nERROR - finished with errors, count: 1").is_err());
         assert!(parse_jadx_error_count("INFO  - processing ...\nINFO  - loading ...\nERROR - finished with errors, count: 1").is_err());
-        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nERROR - finished with errors, count: 1").is_err());
         assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 0 of 303 (0%)\nINFO  - progress: 303 of 303 (100%)\nERROR - finished with errors, count: 1").is_err());
+        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 1 of 2 (49%)\nERROR - finished with errors, count: 1").is_err());
+        assert!(parse_jadx_error_count("INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 2 of 2 (100%)\nINFO  - progress: 1 of 2 (50%)\nERROR - finished with errors, count: 1").is_err());
+    }
+
+    #[test]
+    fn jadx_nonzero_stdout_accepts_platform_progress_variants() {
+        assert_eq!(
+            parse_jadx_error_count(
+                "INFO  - loading ...\nINFO  - processing ...\nERROR - finished with errors, count: 5\n"
+            ),
+            Ok(5)
+        );
+        assert_eq!(
+            parse_jadx_error_count(
+                "INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 0 of 2 (0%)\nINFO  - progress: 1 of 2 (50%)\nERROR - finished with errors, count: 5\n"
+            ),
+            Ok(5)
+        );
+        assert_eq!(
+            parse_jadx_error_count(
+                "INFO  - loading ...\nINFO  - processing ...\nINFO  - progress: 2 of 2 (100%)\nERROR - finished with errors, count: 5\n"
+            ),
+            Ok(5)
+        );
     }
 
     #[test]
