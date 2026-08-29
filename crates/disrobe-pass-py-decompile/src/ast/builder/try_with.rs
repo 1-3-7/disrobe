@@ -6587,6 +6587,30 @@ fn structure_pure_finally(
     let _ = body_real_end;
     let fin_start: usize = handler_body_first(stream, region.handler_start);
     let fin_end: usize = finally_body_end(stream, fin_start, region.region_end);
+    if is_guarded_finally_raise_pair(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+        fin_start,
+        fin_end,
+    ) && !guarded_finally_raise_copies_match(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+        fin_start,
+        fin_end,
+    ) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(region.protected_end)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "guarded finally raise copies differ between inline and handler paths"
+                .to_owned(),
+        });
+    }
     let finalbody: Vec<Stmt> = structure_stmts(code, stream, fin_start, fin_end)?;
     let finally_len: usize = fin_end.saturating_sub(fin_start);
 
@@ -6817,6 +6841,182 @@ fn finally_inline_copy_end(
         k += 1;
     }
     (matched == fin_ops.len()).then_some(k)
+}
+
+fn guarded_finally_significant_indices(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<Vec<usize>> {
+    if lo > hi || hi > stream.ops.len() {
+        return None;
+    }
+    Some(
+        (lo..hi)
+            .filter(|&index: &usize| {
+                !matches!(
+                    stream.ops[index],
+                    CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+                )
+            })
+            .collect(),
+    )
+}
+
+fn guarded_finally_target_position(
+    stream: &DecodedStream,
+    indices: &[usize],
+    lo: usize,
+    hi: usize,
+    jump: usize,
+) -> Option<usize> {
+    let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])?;
+    if target < lo || target > hi {
+        return None;
+    }
+    let normalized_target: usize = first_significant(stream, target, hi).unwrap_or(hi);
+    indices
+        .iter()
+        .position(|&index: &usize| index == normalized_target)
+        .or_else(|| (normalized_target == hi).then_some(indices.len()))
+}
+
+fn guarded_finally_raise_spans_match(
+    stream: &DecodedStream,
+    inline_start: usize,
+    inline_end: usize,
+    handler_start: usize,
+    handler_end: usize,
+) -> bool {
+    let (Some(inline_indices), Some(handler_indices)): (Option<Vec<usize>>, Option<Vec<usize>>) = (
+        guarded_finally_significant_indices(stream, inline_start, inline_end),
+        guarded_finally_significant_indices(stream, handler_start, handler_end),
+    ) else {
+        return false;
+    };
+    if inline_indices.len() != handler_indices.len() {
+        return false;
+    }
+    inline_indices.iter().zip(handler_indices.iter()).all(
+        |(&inline, &handler): (&usize, &usize)| {
+            let inline_op: &CanonicalOp = &stream.ops[inline];
+            let handler_op: &CanonicalOp = &stream.ops[handler];
+            if is_targeted_jump(inline_op) || is_targeted_jump(handler_op) {
+                if !is_targeted_jump(inline_op)
+                    || !is_targeted_jump(handler_op)
+                    || std::mem::discriminant(inline_op) != std::mem::discriminant(handler_op)
+                {
+                    return false;
+                }
+                let inline_target: Option<usize> = guarded_finally_target_position(
+                    stream,
+                    &inline_indices,
+                    inline_start,
+                    inline_end,
+                    inline,
+                );
+                let handler_target: Option<usize> = guarded_finally_target_position(
+                    stream,
+                    &handler_indices,
+                    handler_start,
+                    handler_end,
+                    handler,
+                );
+                return inline_target.is_some() && inline_target == handler_target;
+            }
+            inline_op == handler_op
+        },
+    )
+}
+
+#[must_use]
+fn is_guarded_finally_raise_pair(
+    stream: &DecodedStream,
+    try_start: usize,
+    inline_start: usize,
+    handler_start: usize,
+    handler_body_start: usize,
+    handler_body_end: usize,
+) -> bool {
+    if stream.is_pre_311()
+        || try_start >= inline_start
+        || inline_start >= handler_start
+        || handler_body_start >= handler_body_end
+    {
+        return false;
+    }
+    let Some(back_edge): Option<usize> = last_significant_back(stream, inline_start, handler_start)
+    else {
+        return false;
+    };
+    if !is_back_edge(&stream.ops[back_edge])
+        || resolve_jump_target(stream, back_edge, &stream.ops[back_edge])
+            .is_none_or(|target: usize| target >= try_start)
+    {
+        return false;
+    }
+    (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| is_forward_cond_jump(&stream.ops[index]))
+        .any(|guard: usize| {
+            (guard + 1..handler_body_end)
+                .any(|index: usize| matches!(stream.ops[index], CanonicalOp::Raise(_)))
+        })
+}
+
+#[must_use]
+fn guarded_finally_raise_copies_match(
+    stream: &DecodedStream,
+    try_start: usize,
+    inline_start: usize,
+    handler_start: usize,
+    handler_body_start: usize,
+    handler_body_end: usize,
+) -> bool {
+    if !is_guarded_finally_raise_pair(
+        stream,
+        try_start,
+        inline_start,
+        handler_start,
+        handler_body_start,
+        handler_body_end,
+    ) {
+        return false;
+    }
+    let Some(back_edge): Option<usize> = last_significant_back(stream, inline_start, handler_start)
+    else {
+        return false;
+    };
+    let handler_guards: Vec<usize> = (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| is_forward_cond_jump(&stream.ops[index]))
+        .collect();
+    let handler_raises: Vec<usize> = (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::Raise(_)))
+        .collect();
+    let ([guard], [raise]): (&[usize], &[usize]) =
+        (handler_guards.as_slice(), handler_raises.as_slice())
+    else {
+        return false;
+    };
+    let Some(resume): Option<usize> = resolve_jump_target(stream, *guard, &stream.ops[*guard])
+    else {
+        return false;
+    };
+    if is_chain_cond_jump(&stream.ops, *guard)
+        || !matches!(stream.ops[*raise], CanonicalOp::Raise(1))
+        || *raise <= *guard
+        || *raise >= resume
+        || resume > handler_body_end
+        || last_significant_back(stream, *guard + 1, resume) != Some(*raise)
+    {
+        return false;
+    }
+    guarded_finally_raise_spans_match(
+        stream,
+        inline_start,
+        back_edge,
+        handler_body_start,
+        handler_body_end,
+    )
 }
 
 #[must_use]
