@@ -479,6 +479,12 @@ fn reference_rewrite_shift(op: BinOp, left: Expr, right: Expr, width: Width) -> 
     if reference_is_zero(&left) {
         return Expr::konst(0);
     }
+    if op == BinOp::Shr
+        && let Expr::Const(amount) = right
+        && amount >= u64::from(width.bits())
+    {
+        return Expr::konst(0);
+    }
     if op == BinOp::Shl
         && let Expr::Const(amount) = right
     {
