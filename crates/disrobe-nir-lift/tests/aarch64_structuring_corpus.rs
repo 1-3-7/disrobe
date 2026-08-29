@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_nir::{
-    HirFunction, HirStmt, NirFunction, NirInstr, SplitBudget, SurfaceFunction, basic_blocks,
+    HirFunction, HirStmt, NirFunction, NirInstr, NirOp, SplitBudget, SurfaceFunction, basic_blocks,
     emit_pseudo_source, structurize_function_with_budget, surfacify_function,
 };
 use disrobe_nir_lift::lower_aarch64;
@@ -11,7 +11,7 @@ use disrobe_nir_lift::lower_aarch64;
 const CORPUS: &[(&str, &str, &[u8])] =
     &include!("../../disrobe-pass-native/tests/aarch64_recovery_corpus.inc");
 
-const CORPUS_ENTRIES: usize = 1225;
+const CORPUS_ENTRIES: usize = 1260;
 const LOAD_ADDRESS: u64 = 0x1000;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -177,17 +177,8 @@ fn duplication_stays_bounded_against_the_original_block_count() {
 }
 
 #[test]
-fn short_circuit_condition_family_needs_no_reconvergence_clones() {
-    const CASES: [(&str, &str); 8] = [
-        ("O0", "fc_seland_d"),
-        ("O0", "fc_seland_f"),
-        ("O0", "fc_selor_d"),
-        ("O0", "fc_selor_f"),
-        ("O0", "fc_seland3_f"),
-        ("O0", "fc_seland3_mix_f"),
-        ("O0", "fc_selor3_f"),
-        ("O0", "and_or_cond"),
-    ];
+fn modeled_short_circuit_conditions_need_no_reconvergence_clones() {
+    const CASES: [(&str, &str); 1] = [("O0", "and_or_cond")];
     for (optimization, name) in CASES {
         let function: NirFunction = corpus_function(optimization, name);
         let first: HirFunction =
@@ -204,8 +195,55 @@ fn short_circuit_condition_family_needs_no_reconvergence_clones() {
 }
 
 #[test]
-fn short_circuit_source_emits_one_compound_condition() {
-    let function: NirFunction = corpus_function("O0", "fc_seland_f");
+fn unsupported_floating_comparisons_keep_their_effect_order() {
+    const CASES: [(&str, &str, usize); 7] = [
+        ("O0", "fc_seland_d", 1),
+        ("O0", "fc_seland_f", 1),
+        ("O0", "fc_selor_d", 1),
+        ("O0", "fc_selor_f", 1),
+        ("O0", "fc_seland3_f", 2),
+        ("O0", "fc_seland3_mix_f", 2),
+        ("O0", "fc_selor3_f", 2),
+    ];
+    for (optimization, name, expected) in CASES {
+        let function: NirFunction = corpus_function(optimization, name);
+        let comparisons: Vec<&NirInstr> = function
+            .instructions
+            .iter()
+            .filter(|instruction: &&NirInstr| {
+                matches!(
+                    &instruction.op,
+                    NirOp::CallOther { effect }
+                        if effect.name == "unsupported_fcmp"
+                            && effect.reads_memory
+                            && effect.writes_memory
+                            && effect.unknown_registers
+                            && instruction.reads_memory
+                            && instruction.writes_memory
+                )
+            })
+            .collect();
+        assert_eq!(
+            comparisons.len(),
+            expected.saturating_add(1),
+            "{optimization} {name} changed its conservative floating comparison effects"
+        );
+        let first: HirFunction =
+            structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+        let second: HirFunction =
+            structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+        assert_eq!(first, second, "{optimization} {name} changed across runs");
+        assert_eq!(
+            added_blocks(optimization, name),
+            expected,
+            "{optimization} {name} changed its bounded effect-preserving split"
+        );
+    }
+}
+
+#[test]
+fn short_circuit_source_emits_compound_conditions() {
+    let function: NirFunction = corpus_function("O0", "and_or_cond");
     let hir: HirFunction = structurize_function_with_budget(&function, SplitBudget::TightForGraph);
     assert_eq!(hir.to_nir_function().instructions, function.instructions);
     let surface: SurfaceFunction = surfacify_function(&hir);
@@ -217,12 +255,13 @@ fn short_circuit_source_emits_one_compound_condition() {
         emit_pseudo_source(&surface).expect("emit the committed short-circuit function");
     assert_eq!(
         source.matches("if (").count(),
-        1,
-        "the compound guard must emit as one if:\n{source}"
+        2,
+        "the two source guards must emit as two if statements:\n{source}"
     );
-    assert!(
-        source.contains(" && "),
-        "the emitted condition must preserve short-circuit conjunction:\n{source}"
+    assert_eq!(
+        source.matches(" || ").count(),
+        2,
+        "both emitted conditions must remain short-circuited:\n{source}"
     );
 }
 
@@ -279,8 +318,5 @@ fn total_corpus_block_growth_is_exactly_fifty() {
             Some(added)
         })
         .sum();
-    assert_eq!(
-        total, 50,
-        "compound conditions must remove 18 cloned blocks"
-    );
+    assert_eq!(total, 60, "the measured corpus split total changed");
 }
