@@ -1,7 +1,89 @@
+use std::collections::BTreeMap;
+
+use serde::Serialize;
+
 use crate::signature::ModuleSignatures;
 #[cfg(feature = "dwarf")]
 use crate::signature::dwarf_local_names;
 use crate::sourcemap::SourceMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryDirection {
+    JavaScriptToWebAssembly,
+    WebAssemblyToJavaScript,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryIdentitySource {
+    BoundaryField,
+    NameSection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct JavaScriptBoundaryIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct WebAssemblyBoundaryIdentity {
+    pub function_index: u32,
+    pub name: String,
+    pub source: BoundaryIdentitySource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BoundaryEvidence {
+    WasmImport { module: String, field: String },
+    WasmExport { field: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct BoundaryRelation {
+    pub direction: BoundaryDirection,
+    pub javascript: JavaScriptBoundaryIdentity,
+    pub webassembly: WebAssemblyBoundaryIdentity,
+    pub evidence: BoundaryEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BoundaryRelationKey {
+    direction: BoundaryDirection,
+    javascript: JavaScriptBoundaryIdentity,
+    function_index: u32,
+}
+
+pub(crate) fn deduplicate_boundary_relations(
+    candidates: Vec<BoundaryRelation>,
+) -> Vec<BoundaryRelation> {
+    let mut relations: BTreeMap<BoundaryRelationKey, BoundaryRelation> = BTreeMap::new();
+    for candidate in candidates {
+        let key: BoundaryRelationKey = BoundaryRelationKey {
+            direction: candidate.direction,
+            javascript: candidate.javascript.clone(),
+            function_index: candidate.webassembly.function_index,
+        };
+        match relations.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let current: &BoundaryRelation = entry.get();
+                if candidate.webassembly.source > current.webassembly.source
+                    || (candidate.webassembly.source == current.webassembly.source
+                        && candidate < *current)
+                {
+                    entry.insert(candidate);
+                }
+            }
+        }
+    }
+    relations.into_values().collect()
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NameRecoveryStats {

@@ -4,6 +4,10 @@ use serde::Serialize;
 use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValType};
 
 use crate::error::{Error, Result};
+use crate::name_recovery::{
+    BoundaryDirection, BoundaryEvidence, BoundaryIdentitySource, BoundaryRelation,
+    JavaScriptBoundaryIdentity, WebAssemblyBoundaryIdentity, deduplicate_boundary_relations,
+};
 
 pub(crate) const MAX_FUNCTION_LOCALS: usize = 100_000;
 
@@ -50,6 +54,7 @@ pub struct ModuleSignatures {
     type_signatures: Vec<(Vec<ValType>, Vec<ValType>)>,
     imported_function_count: u32,
     export_aliases: Vec<ExportAlias>,
+    boundary_relations: Vec<BoundaryRelation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,6 +123,12 @@ impl ModuleSignatures {
     }
 
     #[inline]
+    #[must_use]
+    pub fn boundary_relations(&self) -> &[BoundaryRelation] {
+        &self.boundary_relations
+    }
+
+    #[inline]
     pub fn defined_sig_mut(&mut self, defined_index: u32) -> Option<&mut FunctionSig> {
         let abs: usize =
             (self.imported_function_count as usize).checked_add(defined_index as usize)?;
@@ -176,10 +187,16 @@ struct RawFuncType {
     results: Vec<ValType>,
 }
 
+struct RawFunctionImport {
+    type_index: u32,
+    module: String,
+    field: String,
+}
+
 pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let mut func_types: Vec<RawFuncType> = Vec::new();
     let mut function_type_indices: Vec<u32> = Vec::new();
-    let mut imported_function_type_indices: Vec<u32> = Vec::new();
+    let mut function_imports: Vec<RawFunctionImport> = Vec::new();
     let mut export_names: Vec<(u32, String)> = Vec::new();
     let mut name_section_names: Vec<(u32, String)> = Vec::new();
     let mut name_section_locals: std::collections::BTreeMap<u32, Vec<Option<String>>> =
@@ -209,13 +226,15 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
                 }
             }
             Payload::ImportSection(reader) => {
-                for group in reader {
-                    let group: wasmparser::Imports<'_> =
-                        group.map_err(|e| Error::Parse(e.to_string()))?;
-                    if let wasmparser::Imports::Single(_, imp) = group
-                        && let TypeRef::Func(type_index) = imp.ty
-                    {
-                        imported_function_type_indices.push(type_index);
+                for import in reader.into_imports() {
+                    let import: wasmparser::Import<'_> =
+                        import.map_err(|e| Error::Parse(e.to_string()))?;
+                    if let TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) = import.ty {
+                        function_imports.push(RawFunctionImport {
+                            type_index,
+                            module: import.module.to_owned(),
+                            field: import.name.to_owned(),
+                        });
                     }
                 }
             }
@@ -242,8 +261,7 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         }
     }
 
-    let imported_function_count: u32 =
-        u32::try_from(imported_function_type_indices.len()).unwrap_or(u32::MAX);
+    let imported_function_count: u32 = u32::try_from(function_imports.len()).unwrap_or(u32::MAX);
 
     let name_by_index: BTreeMap<u32, &str> = {
         let mut index: BTreeMap<u32, &str> = BTreeMap::new();
@@ -262,11 +280,11 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let exported_indices: BTreeSet<u32> = export_names.iter().map(|(i, _)| *i).collect();
 
     let mut sigs: Vec<FunctionSig> =
-        Vec::with_capacity(imported_function_type_indices.len() + function_type_indices.len());
+        Vec::with_capacity(function_imports.len() + function_type_indices.len());
 
-    for (idx, type_index) in imported_function_type_indices.iter().enumerate() {
+    for (idx, import) in function_imports.iter().enumerate() {
         let (params, results): (Vec<ValType>, Vec<ValType>) =
-            type_signature(&func_types, *type_index);
+            type_signature(&func_types, import.type_index);
         let function_index: u32 = u32::try_from(idx).unwrap_or(u32::MAX);
         sigs.push(FunctionSig {
             name: resolve_name(
@@ -307,6 +325,8 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     }
 
     let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
+    let boundary_relations: Vec<BoundaryRelation> =
+        direct_boundary_relations(&function_imports, &export_names, &name_by_index);
     let type_signatures: Vec<(Vec<ValType>, Vec<ValType>)> = func_types
         .iter()
         .map(|func_type: &RawFuncType| {
@@ -322,7 +342,79 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         type_signatures,
         imported_function_count,
         export_aliases,
+        boundary_relations,
     })
+}
+
+fn direct_boundary_relations(
+    function_imports: &[RawFunctionImport],
+    export_names: &[(u32, String)],
+    name_by_index: &BTreeMap<u32, &str>,
+) -> Vec<BoundaryRelation> {
+    let capacity: usize = function_imports.len().saturating_add(export_names.len());
+    let mut candidates: Vec<BoundaryRelation> = Vec::with_capacity(capacity);
+    for (function_index, import) in function_imports.iter().enumerate() {
+        let function_index: u32 = u32::try_from(function_index).unwrap_or(u32::MAX);
+        let (name, source): (String, BoundaryIdentitySource) =
+            boundary_identity(function_index, &import.field, name_by_index);
+        candidates.push(BoundaryRelation {
+            direction: BoundaryDirection::JavaScriptToWebAssembly,
+            javascript: JavaScriptBoundaryIdentity {
+                module: Some(import.module.clone()),
+                name: import.field.clone(),
+            },
+            webassembly: WebAssemblyBoundaryIdentity {
+                function_index,
+                name,
+                source,
+            },
+            evidence: BoundaryEvidence::WasmImport {
+                module: import.module.clone(),
+                field: import.field.clone(),
+            },
+        });
+    }
+    for (function_index, field) in export_names {
+        let (name, source): (String, BoundaryIdentitySource) =
+            boundary_identity(*function_index, field, name_by_index);
+        candidates.push(BoundaryRelation {
+            direction: BoundaryDirection::WebAssemblyToJavaScript,
+            javascript: JavaScriptBoundaryIdentity {
+                module: None,
+                name: field.clone(),
+            },
+            webassembly: WebAssemblyBoundaryIdentity {
+                function_index: *function_index,
+                name,
+                source,
+            },
+            evidence: BoundaryEvidence::WasmExport {
+                field: field.clone(),
+            },
+        });
+    }
+    deduplicate_boundary_relations(candidates)
+}
+
+fn boundary_identity(
+    function_index: u32,
+    boundary_field: &str,
+    name_by_index: &BTreeMap<u32, &str>,
+) -> (String, BoundaryIdentitySource) {
+    name_by_index.get(&function_index).map_or_else(
+        || {
+            (
+                sanitize_identifier(boundary_field),
+                BoundaryIdentitySource::BoundaryField,
+            )
+        },
+        |name: &&str| {
+            (
+                sanitize_identifier(name),
+                BoundaryIdentitySource::NameSection,
+            )
+        },
+    )
 }
 
 #[must_use]
