@@ -236,7 +236,7 @@ const DISTILLED_STOP_CODE: u16 = 256;
 const DISTILLED_MIN_MATCH: u16 = 3;
 const DISTILLED_MAX_MATCH: u16 = 60;
 const DISTILLED_MATCH_BIAS: u16 = 254;
-const DISTILLED_MAX_CODE_BITS: u32 = 24;
+const DISTILLED_MAX_TRIE_NODES: usize = DISTILLED_MAX_CODES * 2 - 1;
 const DISTILLED_OFFSET_CODES: [u8; 64] = [
     0x00, 0x04, 0x02, 0x03, 0x10, 0x0c, 0x0a, 0x0e, 0x11, 0x0d, 0x0b, 0x0f, 0x28, 0x24, 0x2c, 0x2a,
     0x26, 0x2e, 0x29, 0x25, 0x2d, 0x2b, 0x27, 0x2f, 0x60, 0x70, 0x68, 0x64, 0x74, 0x6c, 0x62, 0x72,
@@ -312,32 +312,44 @@ impl DistilledTrie {
     }
 
     fn insert(&mut self, code: u32, bits: u32, value: u16) -> Result<()> {
-        if bits == 0 || bits > DISTILLED_MAX_CODE_BITS {
+        if bits == 0 || bits > u32::BITS {
             return Err(Error::Decompression(format!(
-                "arc: distilled code length {bits} is outside 1..={DISTILLED_MAX_CODE_BITS}"
+                "arc: distilled code length {bits} is outside 1..={}",
+                u32::BITS
             )));
         }
         let mut node: usize = 0;
         for depth in (0..bits).rev() {
             let branch: usize = ((code >> depth) & 1) as usize;
-            let next: Option<usize> = self.nodes[node].child[branch];
-            node = if let Some(index) = next {
-                index
-            } else {
-                let index: usize = self.nodes.len();
-                self.nodes.push(DistilledTrieNode {
-                    child: [None, None],
-                    value: None,
-                });
-                self.nodes[node].child[branch] = Some(index);
-                index
-            };
-            if self.nodes[node].value.is_some() {
-                return Err(Error::Decompression(
-                    "arc: distilled code table has a prefix collision".to_owned(),
-                ));
-            }
+            node = self.child(node, branch)?;
         }
+        self.assign(node, value)
+    }
+
+    fn child(&mut self, node: usize, branch: usize) -> Result<usize> {
+        if self.nodes[node].value.is_some() {
+            return Err(Error::Decompression(
+                "arc: distilled code table has a prefix collision".to_owned(),
+            ));
+        }
+        if let Some(index) = self.nodes[node].child[branch] {
+            return Ok(index);
+        }
+        if self.nodes.len() >= DISTILLED_MAX_TRIE_NODES {
+            return Err(Error::Decompression(format!(
+                "arc: distilled code table exceeds {DISTILLED_MAX_TRIE_NODES} trie nodes"
+            )));
+        }
+        let index: usize = self.nodes.len();
+        self.nodes.push(DistilledTrieNode {
+            child: [None, None],
+            value: None,
+        });
+        self.nodes[node].child[branch] = Some(index);
+        Ok(index)
+    }
+
+    fn assign(&mut self, node: usize, value: u16) -> Result<()> {
         let slot: &mut DistilledTrieNode = self.nodes.get_mut(node).ok_or_else(|| {
             Error::Decompression("arc: distilled trie index is invalid".to_owned())
         })?;
@@ -352,7 +364,7 @@ impl DistilledTrie {
 
     fn read(&self, reader: &mut DistilledBitReader<'_>) -> Result<u16> {
         let mut node: usize = 0;
-        for _ in 0..=DISTILLED_MAX_CODE_BITS {
+        for _ in 0..self.nodes.len() {
             if let Some(value) = self.nodes[node].value {
                 return Ok(value);
             }
@@ -401,18 +413,12 @@ struct DistilledNodeTable {
 }
 
 impl DistilledNodeTable {
-    fn descend(
-        &mut self,
-        trie: &mut DistilledTrie,
-        value: u16,
-        code: u32,
-        bits: u32,
-    ) -> Result<()> {
+    fn descend(&mut self, trie: &mut DistilledTrie, value: u16, trie_node: usize) -> Result<()> {
         let count: u16 = u16::try_from(self.values.len()).map_err(|_| {
             Error::Decompression("arc: distilled node count exceeds u16".to_owned())
         })?;
         if value < count {
-            return self.walk(trie, usize::from(value), code, bits);
+            return self.walk(trie, usize::from(value), trie_node);
         }
         let symbol: u16 = value - count;
         if usize::from(symbol) >= DISTILLED_MAX_CODES {
@@ -420,11 +426,11 @@ impl DistilledNodeTable {
                 "arc: distilled leaf value {symbol} exceeds the {DISTILLED_MAX_CODES}-code table"
             )));
         }
-        trie.insert(code, bits, symbol)
+        trie.assign(trie_node, symbol)
     }
 
-    fn walk(&mut self, trie: &mut DistilledTrie, node: usize, code: u32, bits: u32) -> Result<()> {
-        if bits >= DISTILLED_MAX_CODE_BITS || node + 1 >= self.values.len() {
+    fn walk(&mut self, trie: &mut DistilledTrie, node: usize, trie_node: usize) -> Result<()> {
+        if !node.is_multiple_of(2) || node + 1 >= self.values.len() {
             return Err(Error::Decompression(
                 "arc: distilled node table selects an invalid pair".to_owned(),
             ));
@@ -438,9 +444,12 @@ impl DistilledNodeTable {
         self.in_use[node + 1] = true;
         let left: u16 = self.values[node];
         let right: u16 = self.values[node + 1];
-        let result: Result<()> = self
-            .descend(trie, left, code << 1, bits + 1)
-            .and_then(|(): ()| self.descend(trie, right, (code << 1) | 1, bits + 1));
+        let result: Result<()> = (|| {
+            let left_node: usize = trie.child(trie_node, 0)?;
+            let right_node: usize = trie.child(trie_node, 1)?;
+            self.descend(trie, left, left_node)?;
+            self.descend(trie, right, right_node)
+        })();
         self.in_use[node] = false;
         self.in_use[node + 1] = false;
         result
@@ -469,7 +478,7 @@ fn distilled_literals_trie(reader: &mut DistilledBitReader<'_>) -> Result<Distil
         in_use: vec![false; count],
     };
     let mut trie: DistilledTrie = DistilledTrie::new();
-    table.walk(&mut trie, count - 2, 0, 0)?;
+    table.walk(&mut trie, count - 2, 0)?;
     Ok(trie)
 }
 
@@ -732,6 +741,42 @@ mod tests {
             preflight_entry_quota(&entry, below),
             Err(Error::QuotaExceeded { .. })
         ));
+    }
+
+    #[test]
+    fn distilled_node_table_rejects_odd_pair_references() {
+        let mut table: DistilledNodeTable = DistilledNodeTable {
+            values: vec![0, 6, 7, 0, 1, 8],
+            in_use: vec![false; 6],
+        };
+        let mut trie: DistilledTrie = DistilledTrie::new();
+        let error: Error = table
+            .walk(&mut trie, 4, 0)
+            .expect_err("reject an odd node-pair reference");
+        assert!(matches!(error, Error::Decompression(message) if message.contains("invalid pair")));
+    }
+
+    #[test]
+    fn distilled_node_table_accepts_the_bounded_maximum_depth() {
+        let mut values: Vec<u16> = Vec::with_capacity(DISTILLED_MAX_NODES);
+        let count: u16 = DISTILLED_MAX_NODES as u16;
+        values.extend([count, count + 1]);
+        for pair in 1..(DISTILLED_MAX_NODES / 2) {
+            values.push(count + pair as u16 + 1);
+            values.push((pair * 2 - 2) as u16);
+        }
+        let mut table: DistilledNodeTable = DistilledNodeTable {
+            values,
+            in_use: vec![false; DISTILLED_MAX_NODES],
+        };
+        let mut trie: DistilledTrie = DistilledTrie::new();
+        table
+            .walk(&mut trie, DISTILLED_MAX_NODES - 2, 0)
+            .expect("accept a finite maximum-depth node table");
+        let mut encoded: Vec<u8> = vec![u8::MAX; 39];
+        encoded.push(1);
+        let mut reader: DistilledBitReader<'_> = DistilledBitReader::new(&encoded);
+        assert_eq!(trie.read(&mut reader).expect("read deepest code"), 0);
     }
 
     #[test]
