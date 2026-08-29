@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_nir::{NirFunction, NirModule, SourceLang};
+use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirModule, NirOp, SourceLang, SourceRef};
 use disrobe_nir_lift::lower_x86_64;
 use disrobe_pass_native::disasm_ir::build_disasm_payload;
 use disrobe_query::disasm_to_nir;
 use disrobe_semdiff::{
-    Indeterminate, LineageReport, LineageVariant, MatchTier, StructuralMatchReport, VariantFamily,
-    structural_match, variant_lineage,
+    Indeterminate, LineageMember, LineageReport, LineageVariant, MatchTier, StructuralMatchReport,
+    VariantFamily, structural_match, variant_lineage,
 };
 use object::{Object as _, ObjectSymbol as _};
 
@@ -61,6 +61,75 @@ __attribute__((noinline)) int probe_leaf(int a) { return a * 3 + 1; }
 int main(void) { return probe_leaf(2) & 1; }
 ";
 
+const OUTLINE_ANCHOR_SOURCE: &str = r"
+__attribute__((noinline)) int outline_primary_anchor_body(int x, int c) {
+    int s = x;
+    for (int i = 0; i < 64; i++) {
+        s = s * 31 + i;
+        s ^= (s >> 13);
+        s += (s << 7) - i;
+        if (s % 97 == 0) { s -= x; }
+        s = (s * 3) ^ (i * 17);
+    }
+    return s;
+}
+__attribute__((noinline)) int outline_primary(int x, int c) {
+    if (c == 0) {
+        return x + 2;
+    }
+    return outline_primary_anchor_body(x, c);
+}
+int main(int argc, char **argv) {
+    (void)argv;
+    int total = 0;
+    total += outline_primary(argc, 0);
+    total += outline_primary(argc, argc);
+    total += outline_primary(argc, argc + 1);
+    total += outline_primary(argc, argc + 2);
+    total += outline_primary(argc, argc + 3);
+    total += outline_primary(argc, argc + 4);
+    return total;
+}
+";
+
+const OUTLINE_VARIANT_SOURCE: &str = r#"
+__attribute__((noinline)) int outline_primary_variant_body(int x, int c) asm("outline_primary.part.0");
+__attribute__((noinline)) int outline_primary_variant_body(int x, int c) {
+    int s = x;
+    for (int i = 0; i < 64; i++) {
+        s = s * 31 + i;
+        s ^= (s >> 13);
+        s += (s << 7) - i;
+        if (s % 97 == 0) { s -= x; }
+        s = (s * 3) ^ (i * 17);
+    }
+    return s;
+}
+__attribute__((noinline)) int outline_primary(int x, int c) {
+    if (c == 0) {
+        return x + 2;
+    }
+    return outline_primary_variant_body(x, c);
+}
+int main(int argc, char **argv) {
+    (void)argv;
+    int total = 0;
+    total += outline_primary(argc, 0);
+    total += outline_primary(argc, argc);
+    total += outline_primary(argc, argc + 1);
+    total += outline_primary(argc, argc + 2);
+    total += outline_primary(argc, argc + 3);
+    total += outline_primary(argc, argc + 4);
+    return total;
+}
+"#;
+
+const OUTLINE_PRIMARY_NAME: &str = "outline_primary";
+const OUTLINE_ANCHOR_HELPER_NAME: &str = "outline_primary_anchor_body";
+const OUTLINE_FRAGMENT_NAME: &str = "outline_primary.part.0";
+const OUTLINE_OPT_LEVEL: &str = "-O1";
+const OUTLINE_COMPILER: &str = "gcc";
+
 const TRACKED_NAMES: &[&str] = &[
     "add_two",
     "sub_two",
@@ -90,6 +159,8 @@ const MAX_FUNCTION_BYTES: usize = 8192;
 const MIN_TRACKED_SUMMARY_NAMES_ACROSS_THE_OPTIMIZATION_GAP: usize = 4;
 const MIN_COMPLETE_TRACKED_FAMILIES: usize = 4;
 const MIN_SUMMARY_TIER_COMMITMENTS: usize = 40;
+const MIN_AGGREGATE_RECALL: f64 = 0.45;
+const OUTLINE_FRAGMENT_OVERFLOW: usize = 3;
 
 fn tool_responds(tool: &str) -> bool {
     Command::new(tool)
@@ -529,14 +600,28 @@ fn prepare_battery() -> Option<Battery> {
 #[derive(Debug)]
 struct CaseResult {
     label: String,
-    ground_truth_pairs: usize,
-    predicted_pairs: usize,
-    true_positive_pairs: usize,
+    expected: usize,
+    reported: usize,
+    correct: usize,
+    precision: f64,
+    recall: f64,
     summary_predicted: usize,
     summary_correct: usize,
     tracked_ground_truth_pairs: usize,
     tracked_true_positive_pairs: usize,
     tracked_summary_names: BTreeSet<String>,
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the optimization matrix is a small, bounded battery"
+    )]
+    let value: f64 = numerator as f64 / denominator as f64;
+    value
 }
 
 fn grade(
@@ -598,9 +683,11 @@ fn grade(
 
     CaseResult {
         label: label.to_owned(),
-        ground_truth_pairs: ground_truth.len(),
-        predicted_pairs,
-        true_positive_pairs,
+        expected: ground_truth.len(),
+        reported: predicted_pairs,
+        correct: true_positive_pairs,
+        precision: ratio(true_positive_pairs, predicted_pairs),
+        recall: ratio(true_positive_pairs, ground_truth.len()),
         summary_predicted,
         summary_correct,
         tracked_ground_truth_pairs,
@@ -644,19 +731,22 @@ fn symbolic_summary_recovers_optimization_variants_without_a_wrong_commit() {
     }
 
     eprintln!(
-        "case,ground_truth,predicted,correct,summary_predicted,summary_correct,tracked_truth,tracked_correct,summary_names"
+        "case,expected,reported,correct,precision,recall,summary_predicted,summary_correct,tracked_truth,tracked_correct,summary_names"
     );
-    let mut total_predicted: usize = 0;
+    let mut total_reported: usize = 0;
     let mut total_correct: usize = 0;
+    let mut total_expected: usize = 0;
     let mut total_summary_predicted: usize = 0;
     let mut total_summary_correct: usize = 0;
     for result in &results {
         eprintln!(
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{:.4},{:.4},{},{},{},{},{}",
             result.label,
-            result.ground_truth_pairs,
-            result.predicted_pairs,
-            result.true_positive_pairs,
+            result.expected,
+            result.reported,
+            result.correct,
+            result.precision,
+            result.recall,
             result.summary_predicted,
             result.summary_correct,
             result.tracked_ground_truth_pairs,
@@ -668,8 +758,9 @@ fn symbolic_summary_recovers_optimization_variants_without_a_wrong_commit() {
                 .collect::<Vec<String>>()
                 .join("|")
         );
-        total_predicted += result.predicted_pairs;
-        total_correct += result.true_positive_pairs;
+        total_reported += result.reported;
+        total_correct += result.correct;
+        total_expected += result.expected;
         total_summary_predicted += result.summary_predicted;
         total_summary_correct += result.summary_correct;
         assert_eq!(
@@ -677,14 +768,38 @@ fn symbolic_summary_recovers_optimization_variants_without_a_wrong_commit() {
             "the symbolic summary tier committed to a wrong pair for {}: {}/{} correct",
             result.label, result.summary_correct, result.summary_predicted
         );
+        assert!(
+            (result.precision - ratio(result.correct, result.reported)).abs() < f64::EPSILON,
+            "precision for {} must equal correct/reported exactly as measured: correct={} reported={}",
+            result.label,
+            result.correct,
+            result.reported
+        );
+        assert!(
+            (result.recall - ratio(result.correct, result.expected)).abs() < f64::EPSILON,
+            "recall for {} must equal correct/expected exactly as measured: correct={} expected={}",
+            result.label,
+            result.correct,
+            result.expected
+        );
     }
+    let aggregate_precision: f64 = ratio(total_correct, total_reported);
+    let aggregate_recall: f64 = ratio(total_correct, total_expected);
     eprintln!(
-        "aggregate,predicted={total_predicted},correct={total_correct},summary_predicted={total_summary_predicted},summary_correct={total_summary_correct}"
+        "aggregate,expected={total_expected},reported={total_reported},correct={total_correct},precision={aggregate_precision:.4},recall={aggregate_recall:.4},summary_predicted={total_summary_predicted},summary_correct={total_summary_correct}"
     );
 
     assert_eq!(
-        total_correct, total_predicted,
-        "the matcher must commit to no wrong pair across the optimization matrix: {total_correct}/{total_predicted}"
+        total_correct, total_reported,
+        "the matcher must commit to no wrong pair across the optimization matrix: correct={total_correct}/reported={total_reported}"
+    );
+    assert!(
+        (aggregate_precision - 1.0).abs() < f64::EPSILON,
+        "aggregate precision correct={total_correct}/reported={total_reported}={aggregate_precision} must be exactly 1.0, because the matcher must never report a wrong pair"
+    );
+    assert!(
+        aggregate_recall >= MIN_AGGREGATE_RECALL,
+        "aggregate recall correct={total_correct}/expected={total_expected}={aggregate_recall} must reach the measured floor {MIN_AGGREGATE_RECALL}"
     );
     assert!(
         total_summary_predicted >= MIN_SUMMARY_TIER_COMMITMENTS,
@@ -747,7 +862,7 @@ fn variant_lineage_clusters_one_source_function_across_optimization_levels() {
 
     let (matched, possible): (usize, usize) = report.membership();
     eprintln!(
-        "lineage anchor {} membership {matched}/{possible} across {} variants",
+        "lineage anchor {} membership matched={matched} possible={possible} across {} variants",
         anchor_build.label,
         primary_builds.len()
     );
@@ -967,4 +1082,703 @@ fn an_absent_toolchain_is_mandatory_whenever_the_requirement_is_set() {
             "{truthy} must turn an unreachable reference into a failure rather than a skip"
         );
     }
+}
+
+struct OutlineFixture {
+    anchor_module: NirModule,
+    anchor_named: BTreeMap<String, u64>,
+    variant_module: NirModule,
+    variant_named: BTreeMap<String, u64>,
+    fragment_name: String,
+}
+
+fn prepare_outline_fixture(toolchain: &Toolchain, scratch: &Path) -> Option<OutlineFixture> {
+    if !toolchain.compilers.contains(&OUTLINE_COMPILER) {
+        refuse_or_announce(
+            "the outlined-fragment fixture compiles a real GCC asm-labeled split, and `gcc` is not callable on PATH",
+        );
+        return None;
+    }
+
+    let build = |source: &str, tag: &str| -> (BTreeMap<String, u64>, NirModule) {
+        let source_path: PathBuf = scratch.join(format!("outline-{tag}.c"));
+        std::fs::write(&source_path, source).expect("write outline source");
+        let target_path: PathBuf = scratch.join(format!("outline-{tag}.exe"));
+        let outcome: std::io::Result<Output> = run_compiler(
+            OUTLINE_COMPILER,
+            OUTLINE_OPT_LEVEL,
+            &source_path,
+            &target_path,
+        );
+        assert!(
+            outcome
+                .as_ref()
+                .is_ok_and(|output: &Output| output.status.success())
+                && target_path.is_file(),
+            "outline fixture build {tag} must succeed with a toolchain that already passed its capability probe: {}",
+            compiler_diagnostic(OUTLINE_COMPILER, OUTLINE_OPT_LEVEL, &outcome)
+        );
+        let bytes: Vec<u8> = std::fs::read(&target_path).expect("read outline build");
+        let named: BTreeMap<String, u64> = named_addresses(&bytes);
+        let stripped_path: PathBuf = scratch.join(format!("outline-{tag}.stripped.exe"));
+        assert!(
+            strip_copy(
+                strip_tool().expect("strip tool must be present"),
+                &target_path,
+                &stripped_path
+            ),
+            "real strip must succeed on the outline fixture build {tag}"
+        );
+        let stripped_bytes: Vec<u8> =
+            std::fs::read(&stripped_path).expect("read stripped outline build");
+        assert!(
+            named_addresses(&stripped_bytes).is_empty(),
+            "strip must remove every symbol from the outline fixture build {tag}"
+        );
+        let (module, _lift): (NirModule, LiftStats) = lift_pcode_module(&stripped_bytes);
+        (named, module)
+    };
+
+    let (anchor_named, mut anchor_module): (BTreeMap<String, u64>, NirModule) =
+        build(OUTLINE_ANCHOR_SOURCE, "anchor");
+    let (variant_named, variant_module): (BTreeMap<String, u64>, NirModule) =
+        build(OUTLINE_VARIANT_SOURCE, "variant");
+
+    assert!(
+        anchor_named.contains_key(OUTLINE_PRIMARY_NAME),
+        "the anchor build must expose the tracked primary symbol {OUTLINE_PRIMARY_NAME} unsplit"
+    );
+    assert!(
+        !anchor_named.contains_key(OUTLINE_FRAGMENT_NAME),
+        "the anchor build must not carry the asm-labeled fragment symbol {OUTLINE_FRAGMENT_NAME}, because the anchor source represents the unsplit optimization boundary this fixture targets"
+    );
+    let &anchor_helper_address: &u64 = anchor_named
+        .get(OUTLINE_ANCHOR_HELPER_NAME)
+        .unwrap_or_else(|| {
+            panic!("the anchor build must expose its differently named helper {OUTLINE_ANCHOR_HELPER_NAME}")
+        });
+    let helper_lifted: bool = anchor_module
+        .functions
+        .iter()
+        .any(|function: &NirFunction| function.address == anchor_helper_address);
+    assert!(
+        helper_lifted,
+        "the anchor helper symbol {OUTLINE_ANCHOR_HELPER_NAME} at {anchor_helper_address:#x} must resolve to a real lifted function before this fixture removes it to model the unsplit anchor boundary"
+    );
+    anchor_module
+        .functions
+        .retain(|function: &NirFunction| function.address != anchor_helper_address);
+
+    assert!(
+        variant_named.contains_key(OUTLINE_PRIMARY_NAME),
+        "the variant build must expose the tracked primary symbol {OUTLINE_PRIMARY_NAME}"
+    );
+    assert!(
+        variant_named.contains_key(OUTLINE_FRAGMENT_NAME),
+        "the variant build must expose the asm-labeled fragment symbol {OUTLINE_FRAGMENT_NAME}: this fixture names the split with an explicit asm label so it is source-controlled rather than dependent on the optimizer spontaneously producing a partial-inlining split"
+    );
+
+    Some(OutlineFixture {
+        anchor_module,
+        anchor_named,
+        variant_module,
+        variant_named,
+        fragment_name: OUTLINE_FRAGMENT_NAME.to_owned(),
+    })
+}
+
+const fn synthetic_instr(address: u64, op: NirOp) -> NirInstr {
+    NirInstr {
+        address,
+        op,
+        mnemonic: String::new(),
+        operands: Vec::new(),
+        reads_memory: false,
+        writes_memory: false,
+        byte_width: false,
+        source: SourceRef::new(SourceLang::NativeX86, address),
+    }
+}
+
+fn caller_function(address: u64, marker: BinaryOp, call_targets: &[u64]) -> NirFunction {
+    let mut instructions: Vec<NirInstr> =
+        vec![synthetic_instr(address, NirOp::BinOp { op: marker })];
+    for (offset, &target) in call_targets.iter().enumerate() {
+        instructions.push(synthetic_instr(
+            address + 1 + offset as u64,
+            NirOp::Call {
+                target: Some(target),
+            },
+        ));
+    }
+    let end: u64 = address + 1 + call_targets.len() as u64 + 1;
+    instructions.push(synthetic_instr(
+        address + 1 + call_targets.len() as u64,
+        NirOp::Return,
+    ));
+    NirFunction {
+        name: String::new(),
+        address,
+        end,
+        is_export: false,
+        instructions,
+        source: SourceRef::new(SourceLang::NativeX86, address),
+    }
+}
+
+fn leaf_marker_function(address: u64, marker: BinaryOp) -> NirFunction {
+    NirFunction {
+        name: String::new(),
+        address,
+        end: address + 2,
+        is_export: false,
+        instructions: vec![
+            synthetic_instr(address, NirOp::BinOp { op: marker }),
+            synthetic_instr(address + 1, NirOp::Return),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, address),
+    }
+}
+
+const fn synthetic_module(functions: Vec<NirFunction>) -> NirModule {
+    NirModule {
+        source_hash: [0u8; 32],
+        lang: SourceLang::NativeX86,
+        functions,
+        symbols: Vec::new(),
+    }
+}
+
+#[test]
+fn a_residual_called_by_exactly_one_partner_becomes_that_family_s_possible_outlined_candidate() {
+    let anchor_exclusive: NirFunction = caller_function(0x1000, BinaryOp::Add, &[0xDEAD_0000]);
+    let anchor_shared_a: NirFunction = caller_function(0x1010, BinaryOp::Xor, &[0xDEAD_0010]);
+    let anchor_shared_b: NirFunction = caller_function(0x1020, BinaryOp::Mul, &[0xDEAD_0020]);
+    let anchor: NirModule = synthetic_module(vec![
+        anchor_exclusive.clone(),
+        anchor_shared_a.clone(),
+        anchor_shared_b.clone(),
+    ]);
+
+    let fragment_exclusive: u64 = 0x9100;
+    let fragment_shared: u64 = 0x9200;
+    let variant_exclusive: NirFunction =
+        caller_function(0x9000, BinaryOp::Add, &[fragment_exclusive]);
+    let variant_shared_a: NirFunction = caller_function(0x9010, BinaryOp::Xor, &[fragment_shared]);
+    let variant_shared_b: NirFunction = caller_function(0x9020, BinaryOp::Mul, &[fragment_shared]);
+    let fragment_exclusive_fn: NirFunction =
+        leaf_marker_function(fragment_exclusive, BinaryOp::Sub);
+    let fragment_shared_fn: NirFunction = leaf_marker_function(fragment_shared, BinaryOp::Rem);
+    let variant: NirModule = synthetic_module(vec![
+        variant_exclusive,
+        variant_shared_a,
+        variant_shared_b,
+        fragment_exclusive_fn,
+        fragment_shared_fn,
+    ]);
+
+    let anchor_variant: LineageVariant<'_> = LineageVariant {
+        label: "anchor",
+        module: &anchor,
+    };
+    let variant_variant: LineageVariant<'_> = LineageVariant {
+        label: "variant",
+        module: &variant,
+    };
+    let report: LineageReport = variant_lineage(&anchor_variant, &[variant_variant]);
+    assert!(report.refused.is_empty());
+
+    let exclusive_family: &VariantFamily = report
+        .family(anchor_exclusive.address)
+        .unwrap_or_else(|| panic!("the exclusively-called family must be present"));
+    let exclusive_member: &LineageMember = exclusive_family
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("one variant member is expected"));
+    match exclusive_member {
+        LineageMember::Matched {
+            possible_outlined, ..
+        } => {
+            assert_eq!(
+                possible_outlined,
+                &[fragment_exclusive],
+                "a residual called by exactly one matched partner must be offered as that partner's possible outlined candidate"
+            );
+        }
+        LineageMember::Absent { .. } => panic!("the exclusive caller must match"),
+    }
+
+    for anchor_shared in [&anchor_shared_a, &anchor_shared_b] {
+        let shared_family: &VariantFamily = report
+            .family(anchor_shared.address)
+            .unwrap_or_else(|| panic!("the shared-caller family must be present"));
+        let shared_member: &LineageMember = shared_family
+            .members
+            .first()
+            .unwrap_or_else(|| panic!("one variant member is expected"));
+        match shared_member {
+            LineageMember::Matched {
+                possible_outlined, ..
+            } => {
+                assert!(
+                    possible_outlined.is_empty(),
+                    "a fragment called by two matched partners must be offered to neither family, never to an arbitrary single match"
+                );
+            }
+            LineageMember::Absent { .. } => panic!("the shared caller must match"),
+        }
+    }
+}
+
+#[test]
+fn possible_outlined_attachment_is_bounded_per_member() {
+    let cap: usize = VariantFamily::MAX_OUTLINED_FRAGMENTS;
+    let fragment_count: usize = cap + OUTLINE_FRAGMENT_OVERFLOW;
+    let fragment_addresses: Vec<u64> = (0..fragment_count)
+        .map(|index: usize| 0x9F00_0000 + index as u64 * 0x10)
+        .collect();
+    let anchor_targets: Vec<u64> = (0..fragment_count)
+        .map(|index: usize| 0xDEAD_0000 + index as u64 * 0x10)
+        .collect();
+
+    let anchor_caller: NirFunction = caller_function(0x2000, BinaryOp::Or, &anchor_targets);
+    let anchor: NirModule = synthetic_module(vec![anchor_caller.clone()]);
+
+    let variant_caller: NirFunction = caller_function(0xA000, BinaryOp::Or, &fragment_addresses);
+    let mut variant_functions: Vec<NirFunction> = vec![variant_caller];
+    for (index, &address) in fragment_addresses.iter().enumerate() {
+        let marker: BinaryOp = if index % 2 == 0 {
+            BinaryOp::Shl
+        } else {
+            BinaryOp::Shr
+        };
+        variant_functions.push(leaf_marker_function(address, marker));
+    }
+    let variant: NirModule = synthetic_module(variant_functions);
+
+    let anchor_variant: LineageVariant<'_> = LineageVariant {
+        label: "anchor",
+        module: &anchor,
+    };
+    let variant_variant: LineageVariant<'_> = LineageVariant {
+        label: "variant",
+        module: &variant,
+    };
+    let report: LineageReport = variant_lineage(&anchor_variant, &[variant_variant]);
+    let family: &VariantFamily = report
+        .family(anchor_caller.address)
+        .unwrap_or_else(|| panic!("the overflowing family must be present"));
+    let member: &LineageMember = family
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("one variant member is expected"));
+    match member {
+        LineageMember::Matched {
+            possible_outlined, ..
+        } => {
+            assert_eq!(
+                possible_outlined.len(),
+                cap,
+                "candidate attachment must be bounded to MAX_OUTLINED_FRAGMENTS even when more candidates qualify"
+            );
+            let mut sorted: Vec<u64> = possible_outlined.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                possible_outlined, &sorted,
+                "candidate fragment addresses must be reported in a deterministic, sorted order"
+            );
+        }
+        LineageMember::Absent { .. } => panic!("the overflowing caller must match"),
+    }
+}
+
+#[test]
+fn reported_possible_outlined_edges_are_graded_against_real_compiler_symbol_ground_truth() {
+    let Some(toolchain): Option<Toolchain> = require_toolchain() else {
+        return;
+    };
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe-semdiff-outline").expect("create scratch directory");
+    let Some(fixture): Option<OutlineFixture> = prepare_outline_fixture(&toolchain, scratch.path())
+    else {
+        return;
+    };
+
+    eprintln!(
+        "outline fixture: primary={OUTLINE_PRIMARY_NAME} fragment={} anchor_named={} variant_named={}",
+        fixture.fragment_name,
+        fixture.anchor_named.len(),
+        fixture.variant_named.len()
+    );
+
+    let anchor: LineageVariant<'_> = LineageVariant {
+        label: "outline-anchor",
+        module: &fixture.anchor_module,
+    };
+    let variant: LineageVariant<'_> = LineageVariant {
+        label: "outline-variant",
+        module: &fixture.variant_module,
+    };
+    let report: LineageReport = variant_lineage(&anchor, &[variant]);
+    assert!(
+        report.refused.is_empty(),
+        "the anchor and variant share a source language and must not be refused"
+    );
+
+    let primary_address: u64 = *fixture
+        .anchor_named
+        .get(OUTLINE_PRIMARY_NAME)
+        .unwrap_or_else(|| panic!("the anchor build must expose {OUTLINE_PRIMARY_NAME}"));
+    let variant_primary_address: u64 = *fixture
+        .variant_named
+        .get(OUTLINE_PRIMARY_NAME)
+        .unwrap_or_else(|| panic!("the variant build must expose {OUTLINE_PRIMARY_NAME}"));
+    let variant_fragment_address: u64 = *fixture
+        .variant_named
+        .get(&fixture.fragment_name)
+        .unwrap_or_else(|| panic!("the variant build must expose {}", fixture.fragment_name));
+
+    let primary_family: &VariantFamily = report.family(primary_address).unwrap_or_else(|| {
+        panic!("the primary function must form its own lineage family at {primary_address:#x}")
+    });
+    let primary_member: &LineageMember = primary_family
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("the primary family must carry exactly one variant member"));
+    let LineageMember::Matched {
+        address: matched_primary_address,
+        possible_outlined: primary_candidates,
+        ..
+    } = primary_member
+    else {
+        panic!(
+            "outline_primary must match its variant counterpart, not be absent: {primary_member:?}"
+        );
+    };
+    assert_eq!(
+        *matched_primary_address, variant_primary_address,
+        "the primary member must match at the variant's real outline_primary address, not a different one"
+    );
+    assert_eq!(
+        primary_candidates,
+        &vec![variant_fragment_address],
+        "the exact fragment {} at {variant_fragment_address:#x} must be the sole possible outlined candidate offered for outline_primary's family, and nothing else",
+        fixture.fragment_name
+    );
+
+    let anchor_names_bounded: BTreeMap<u64, &str> =
+        BTreeMap::from([(primary_address, OUTLINE_PRIMARY_NAME)]);
+    let variant_names_bounded: BTreeMap<u64, &str> = BTreeMap::from([
+        (variant_primary_address, OUTLINE_PRIMARY_NAME),
+        (variant_fragment_address, fixture.fragment_name.as_str()),
+    ]);
+
+    let (expected, reported, correct): (usize, usize, usize) = report
+        .grade_named_relations(
+            &anchor_names_bounded,
+            std::slice::from_ref(&variant_names_bounded),
+        )
+        .unwrap_or_else(|| panic!("both builds carry embedded symbol names, so grading must not report ground truth as unavailable"));
+    eprintln!("outline grade: expected={expected} reported={reported} correct={correct}");
+    assert_eq!(
+        (expected, reported, correct),
+        (2, 2, 2),
+        "a grading map bounded to only the tracked primary and fragment identities must report exactly one primary relation and one possible outlined relation, and independent symbol names must confirm both"
+    );
+
+    let mut omitted_report: LineageReport = report.clone();
+    let mut omitted: bool = false;
+    for family in &mut omitted_report.families {
+        if family.anchor_address != primary_address {
+            continue;
+        }
+        for member in &mut family.members {
+            if let LineageMember::Matched {
+                possible_outlined, ..
+            } = member
+            {
+                possible_outlined.clear();
+                omitted = true;
+            }
+        }
+    }
+    assert!(
+        omitted,
+        "the omission mutation must touch the primary family's possible outlined edge"
+    );
+    let (omitted_expected, omitted_reported, omitted_correct): (usize, usize, usize) =
+        omitted_report
+            .grade_named_relations(
+                &anchor_names_bounded,
+                std::slice::from_ref(&variant_names_bounded),
+            )
+            .unwrap_or_else(|| {
+                panic!("ground truth must remain available after mutating only the report")
+            });
+    assert_eq!(
+        (omitted_expected, omitted_reported, omitted_correct),
+        (2, 1, 1),
+        "dropping the possible outlined edge must not change expected ground truth but must reduce reported and correct"
+    );
+    assert!(
+        ratio(omitted_correct, omitted_expected) < ratio(correct, expected),
+        "omitting the possible outlined edge must reduce recall relative to the relation the fixture's symbols confirm: omitted_recall={} baseline_recall={}",
+        ratio(omitted_correct, omitted_expected),
+        ratio(correct, expected)
+    );
+
+    let mut wrong_report: LineageReport = report.clone();
+    let mut mutated: bool = false;
+    for family in &mut wrong_report.families {
+        if family.anchor_address != primary_address {
+            continue;
+        }
+        for member in &mut family.members {
+            if let LineageMember::Matched {
+                possible_outlined, ..
+            } = member
+                && !possible_outlined.is_empty()
+            {
+                possible_outlined[0] = variant_fragment_address.wrapping_add(0x4000);
+                mutated = true;
+            }
+        }
+    }
+    assert!(
+        mutated,
+        "the mutation must touch the real possible outlined edge produced by this fixture"
+    );
+    let (wrong_expected, wrong_reported, wrong_correct): (usize, usize, usize) = wrong_report
+        .grade_named_relations(&anchor_names_bounded, &[variant_names_bounded])
+        .unwrap_or_else(|| {
+            panic!("ground truth must remain available after mutating only the report")
+        });
+    assert_eq!(
+        (wrong_expected, wrong_reported, wrong_correct),
+        (2, 2, 1),
+        "a wrong possible outlined address must not change expected or reported counts but must reduce correct"
+    );
+    assert!(
+        ratio(wrong_correct, wrong_reported) < ratio(correct, reported),
+        "a deliberately wrong candidate must make precision fail relative to the relation the fixture's symbols confirm: wrong_precision={} baseline_precision={}",
+        ratio(wrong_correct, wrong_reported),
+        ratio(correct, reported)
+    );
+}
+
+fn matched_possible_outlined(report: &LineageReport, anchor_address: u64) -> &Vec<u64> {
+    let family: &VariantFamily = report.family(anchor_address).unwrap_or_else(|| {
+        panic!("a family must exist for the anchor function at {anchor_address:#x}")
+    });
+    let member: &LineageMember = family
+        .members
+        .first()
+        .unwrap_or_else(|| panic!("one variant member is expected at {anchor_address:#x}"));
+    match member {
+        LineageMember::Matched {
+            possible_outlined, ..
+        } => possible_outlined,
+        LineageMember::Absent { reason, .. } => panic!(
+            "the anchor function at {anchor_address:#x} must match its variant partner before its candidate set can be judged, got absent [{reason:?}]"
+        ),
+    }
+}
+
+#[test]
+fn an_ordinary_helper_present_in_the_anchor_is_not_offered_as_a_possible_outlined_candidate() {
+    let anchor_peer_caller: NirFunction = caller_function(0x1000, BinaryOp::Add, &[0x1100]);
+    let anchor_peer_helper: NirFunction = leaf_marker_function(0x1100, BinaryOp::Sub);
+    let anchor_split_caller: NirFunction = caller_function(0x2000, BinaryOp::Xor, &[0xDEAD_2000]);
+    let anchor: NirModule = synthetic_module(vec![
+        anchor_peer_caller.clone(),
+        anchor_peer_helper,
+        anchor_split_caller.clone(),
+    ]);
+
+    let variant_peer_helper: u64 = 0xB100;
+    let variant_fragment: u64 = 0xB200;
+    let variant: NirModule = synthetic_module(vec![
+        caller_function(0xB000, BinaryOp::Add, &[variant_peer_helper]),
+        caller_function(0xC000, BinaryOp::Xor, &[variant_fragment]),
+        leaf_marker_function(variant_peer_helper, BinaryOp::Rem),
+        leaf_marker_function(variant_fragment, BinaryOp::Shl),
+    ]);
+
+    let anchor_variant: LineageVariant<'_> = LineageVariant {
+        label: "anchor",
+        module: &anchor,
+    };
+    let variant_variant: LineageVariant<'_> = LineageVariant {
+        label: "variant",
+        module: &variant,
+    };
+    let report: LineageReport = variant_lineage(&anchor_variant, &[variant_variant]);
+    assert!(report.refused.is_empty());
+
+    let peer_candidates: &Vec<u64> = matched_possible_outlined(&report, anchor_peer_caller.address);
+    assert!(
+        peer_candidates.is_empty(),
+        "a sole-caller callee is not a possible outlined candidate when the anchor caller still calls a body of its own, because the variant callee is then an ordinary helper rather than a residual the anchor cannot account for: {peer_candidates:?}"
+    );
+
+    let split_candidates: &Vec<u64> =
+        matched_possible_outlined(&report, anchor_split_caller.address);
+    assert_eq!(
+        split_candidates,
+        &vec![variant_fragment],
+        "the same report must still offer a candidate whose anchor caller carries an unaccounted-for call residual, so the negative case above is the residual criterion and not a blanket refusal"
+    );
+}
+
+#[test]
+fn a_fragment_also_called_by_an_unmatched_variant_function_is_not_offered_as_a_candidate() {
+    let anchor_shared_caller: NirFunction = caller_function(0x3000, BinaryOp::Or, &[0xDEAD_3000]);
+    let anchor_sole_caller: NirFunction = caller_function(0x3010, BinaryOp::Add, &[0xDEAD_3010]);
+    let anchor: NirModule = synthetic_module(vec![
+        anchor_shared_caller.clone(),
+        anchor_sole_caller.clone(),
+    ]);
+
+    let shared_fragment: u64 = 0xC100;
+    let sole_fragment: u64 = 0xC400;
+    let variant: NirModule = synthetic_module(vec![
+        caller_function(0xC000, BinaryOp::Or, &[shared_fragment]),
+        caller_function(0xC200, BinaryOp::Mul, &[shared_fragment]),
+        caller_function(0xC300, BinaryOp::Add, &[sole_fragment]),
+        leaf_marker_function(shared_fragment, BinaryOp::Shr),
+        leaf_marker_function(sole_fragment, BinaryOp::Sub),
+    ]);
+
+    let anchor_variant: LineageVariant<'_> = LineageVariant {
+        label: "anchor",
+        module: &anchor,
+    };
+    let variant_variant: LineageVariant<'_> = LineageVariant {
+        label: "variant",
+        module: &variant,
+    };
+    let report: LineageReport = variant_lineage(&anchor_variant, &[variant_variant]);
+    assert!(report.refused.is_empty());
+
+    let shared_candidates: &Vec<u64> =
+        matched_possible_outlined(&report, anchor_shared_caller.address);
+    assert!(
+        shared_candidates.is_empty(),
+        "a fragment is exclusive to one partner only when nothing else in the variant calls it, and an unmatched caller is still a caller: {shared_candidates:?}"
+    );
+
+    let sole_candidates: &Vec<u64> = matched_possible_outlined(&report, anchor_sole_caller.address);
+    assert_eq!(
+        sole_candidates,
+        &vec![sole_fragment],
+        "the same report must still offer a candidate that no other variant function calls, so the negative case above is the exclusivity rule and not a blanket refusal"
+    );
+}
+
+const GRADED_ANCHOR_PRIMARY: u64 = 0x1000;
+const GRADED_VARIANT_PRIMARY: u64 = 0x9000;
+const GRADED_VARIANT_FRAGMENT: u64 = 0x9100;
+const GRADED_PRIMARY_NAME: &str = "graded_primary";
+const GRADED_FRAGMENT_NAME: &str = "graded_primary.part.0";
+
+fn single_family_report(members: Vec<LineageMember>) -> LineageReport {
+    let variant_labels: Vec<String> = (0..members.len())
+        .map(|index: usize| format!("variant-{index}"))
+        .collect();
+    LineageReport {
+        anchor_label: "anchor".to_owned(),
+        variant_labels,
+        families: vec![VariantFamily {
+            anchor_address: GRADED_ANCHOR_PRIMARY,
+            members,
+        }],
+        refused: Vec::new(),
+    }
+}
+
+fn graded_anchor_names() -> BTreeMap<u64, &'static str> {
+    BTreeMap::from([(GRADED_ANCHOR_PRIMARY, GRADED_PRIMARY_NAME)])
+}
+
+fn graded_variant_names(variants: usize) -> Vec<BTreeMap<u64, &'static str>> {
+    (0..variants)
+        .map(|_| {
+            BTreeMap::from([
+                (GRADED_VARIANT_PRIMARY, GRADED_PRIMARY_NAME),
+                (GRADED_VARIANT_FRAGMENT, GRADED_FRAGMENT_NAME),
+            ])
+        })
+        .collect()
+}
+
+fn graded_matched_member(variant: usize) -> LineageMember {
+    LineageMember::Matched {
+        variant,
+        address: GRADED_VARIANT_PRIMARY,
+        tier: MatchTier::LeafExact,
+        possible_outlined: vec![GRADED_VARIANT_FRAGMENT],
+    }
+}
+
+#[test]
+fn an_absent_member_grades_as_expected_ground_truth_with_nothing_reported() {
+    let report: LineageReport = single_family_report(vec![LineageMember::Absent {
+        variant: 0,
+        reason: Indeterminate::NoCandidate,
+    }]);
+    assert_eq!(
+        report.grade_named_relations(&graded_anchor_names(), &graded_variant_names(1)),
+        Some((2, 0, 0)),
+        "independently supplied names expect a primary relation and an outlined relation, and an absent member reports neither, so expected ground truth must not follow the report"
+    );
+}
+
+#[test]
+fn dropping_a_family_from_the_report_cannot_shrink_the_expected_ground_truth() {
+    let mut report: LineageReport = single_family_report(vec![
+        graded_matched_member(0),
+        LineageMember::Absent {
+            variant: 1,
+            reason: Indeterminate::NoCandidate,
+        },
+    ]);
+    assert_eq!(
+        report.grade_named_relations(&graded_anchor_names(), &graded_variant_names(2)),
+        Some((4, 2, 2)),
+        "two named variants each carry a primary and an outlined relation, and only the matched variant reports them"
+    );
+
+    report.families.clear();
+    assert_eq!(
+        report.grade_named_relations(&graded_anchor_names(), &graded_variant_names(2)),
+        Some((4, 0, 0)),
+        "a report that drops the family entirely must lose recall, not lose the ground truth it is graded against"
+    );
+}
+
+#[test]
+fn grading_without_a_comparable_named_relation_is_unavailable() {
+    let report: LineageReport = single_family_report(vec![graded_matched_member(0)]);
+    assert!(
+        report
+            .grade_named_relations(&BTreeMap::new(), &graded_variant_names(1))
+            .is_none(),
+        "an anchor with no embedded names carries no comparable relation to grade"
+    );
+
+    let unrelated_anchor: BTreeMap<u64, &str> = BTreeMap::from([(0x7777_u64, "unrelated_anchor")]);
+    let unrelated_variant: Vec<BTreeMap<u64, &str>> =
+        vec![BTreeMap::from([(0x8888_u64, "unrelated_variant")])];
+    assert!(
+        report
+            .grade_named_relations(&unrelated_anchor, &unrelated_variant)
+            .is_none(),
+        "names that address no family and no reported relation must read as unavailable, never as a zero-over-zero precision and recall"
+    );
+
+    assert_eq!(
+        report.grade_named_relations(&graded_anchor_names(), &graded_variant_names(1)),
+        Some((2, 2, 2)),
+        "the same report must grade when comparable names are supplied, so the unavailable verdicts above are not unconditional"
+    );
 }

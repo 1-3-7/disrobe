@@ -180,6 +180,8 @@ struct MemberOut {
     tier: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    possible_outlined: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +202,52 @@ struct RefusedOut {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+enum RelationGradeOut {
+    Graded {
+        expected: usize,
+        reported: usize,
+        correct: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        precision: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recall: Option<f64>,
+    },
+    Unavailable {
+        reason: &'static str,
+    },
+}
+
+const RELATIONS_UNAVAILABLE_REASON: &str = "no-comparable-named-relations-in-the-supplied-images";
+
+fn defined_rate(numerator: usize, denominator: usize) -> Option<f64> {
+    if denominator == 0 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "relation counts are bounded by MAX_FUNCTIONS_PER_MODULE times MAX_LINEAGE_VARIANTS"
+    )]
+    let rate: f64 = numerator as f64 / denominator as f64;
+    Some(rate)
+}
+
+fn relation_grade(graded: Option<(usize, usize, usize)>) -> RelationGradeOut {
+    match graded {
+        Some((expected, reported, correct)) => RelationGradeOut::Graded {
+            expected,
+            reported,
+            correct,
+            precision: defined_rate(correct, reported),
+            recall: defined_rate(correct, expected),
+        },
+        None => RelationGradeOut::Unavailable {
+            reason: RELATIONS_UNAVAILABLE_REASON,
+        },
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct LineageOutput<'a> {
     anchor: String,
     anchor_lang: &'a str,
@@ -209,6 +257,9 @@ struct LineageOutput<'a> {
     variants: Vec<VariantOut>,
     families: usize,
     complete_families: usize,
+    matched_members: usize,
+    possible_members: usize,
+    relation_grade: RelationGradeOut,
     listed: usize,
     family_rows: Vec<FamilyOut>,
     refused: Vec<RefusedOut>,
@@ -259,20 +310,12 @@ fn run_lineage(
         .collect();
 
     let report: LineageReport = disrobe_semdiff::variant_lineage(&anchor, &variants);
-    let listing_limit: usize = limit.unwrap_or(DEFAULT_LISTING_LIMIT);
     let anchor_names: BTreeMap<u64, &str> = name_index(&anchor_module);
-    let complete: usize = report
-        .families
-        .iter()
-        .filter(|family: &&VariantFamily| family.is_complete())
-        .count();
-
-    let payload: LineageOutput<'_> = LineageOutput {
-        anchor: anchor_label.clone(),
+    let variant_names: Vec<BTreeMap<u64, &str>> = variant_modules.iter().map(name_index).collect();
+    let inputs: LineageInputs<'_> = LineageInputs {
+        anchor_label: anchor_label.as_str(),
         anchor_lang: anchor_module.lang.label(),
         anchor_functions: anchor_module.functions.len(),
-        variant_count: variants.len(),
-        max_variants: MAX_LINEAGE_VARIANTS,
         variants: labels
             .iter()
             .zip(variant_modules.iter())
@@ -282,10 +325,54 @@ fn run_lineage(
                 functions: module.functions.len(),
             })
             .collect(),
+        labels,
+        listing_limit: limit.unwrap_or(DEFAULT_LISTING_LIMIT),
+    };
+    let payload: LineageOutput<'_> =
+        lineage_payload(&report, inputs, &anchor_names, &variant_names);
+
+    output::emit(fmt, &payload, || render_lineage(&payload))
+}
+
+#[derive(Debug)]
+struct LineageInputs<'a> {
+    anchor_label: &'a str,
+    anchor_lang: &'a str,
+    anchor_functions: usize,
+    variants: Vec<VariantOut>,
+    labels: Vec<String>,
+    listing_limit: usize,
+}
+
+fn lineage_payload<'a>(
+    report: &LineageReport,
+    inputs: LineageInputs<'a>,
+    anchor_names: &BTreeMap<u64, &str>,
+    variant_names: &[BTreeMap<u64, &str>],
+) -> LineageOutput<'a> {
+    let LineageInputs {
+        anchor_label,
+        anchor_lang,
+        anchor_functions,
+        variants,
+        labels,
+        listing_limit,
+    } = inputs;
+    let (matched_members, possible_members): (usize, usize) = report.membership();
+    LineageOutput {
+        anchor: anchor_label.to_owned(),
+        anchor_lang,
+        anchor_functions,
+        variant_count: variants.len(),
+        max_variants: MAX_LINEAGE_VARIANTS,
+        variants,
         families: report.families.len(),
-        complete_families: complete,
+        complete_families: report.complete_families(),
+        matched_members,
+        possible_members,
+        relation_grade: relation_grade(report.grade_named_relations(anchor_names, variant_names)),
         listed: listing_limit,
-        family_rows: family_rows(&report, &anchor_names, &labels, listing_limit),
+        family_rows: family_rows(report, anchor_names, &labels, listing_limit),
         refused: report
             .refused
             .iter()
@@ -295,9 +382,7 @@ fn run_lineage(
                 reason: indeterminate_label(reason),
             })
             .collect(),
-    };
-
-    output::emit(fmt, &payload, || render_lineage(&payload))
+    }
 }
 
 fn family_rows(
@@ -327,24 +412,30 @@ fn family_rows(
 }
 
 fn member_row(member: &LineageMember, labels: &[String]) -> MemberOut {
-    match *member {
+    match member {
         LineageMember::Matched {
             variant,
             address,
             tier,
+            possible_outlined,
         } => MemberOut {
-            variant,
-            label: labels.get(variant).cloned().unwrap_or_default(),
+            variant: *variant,
+            label: labels.get(*variant).cloned().unwrap_or_default(),
             address: Some(format!("{address:#x}")),
-            tier: Some(tier_label(tier)),
+            tier: Some(tier_label(*tier)),
             reason: None,
+            possible_outlined: possible_outlined
+                .iter()
+                .map(|address: &u64| format!("{address:#x}"))
+                .collect(),
         },
         LineageMember::Absent { variant, reason } => MemberOut {
-            variant,
-            label: labels.get(variant).cloned().unwrap_or_default(),
+            variant: *variant,
+            label: labels.get(*variant).cloned().unwrap_or_default(),
             address: None,
             tier: None,
-            reason: Some(indeterminate_label(reason)),
+            reason: Some(indeterminate_label(*reason)),
+            possible_outlined: Vec::new(),
         },
     }
 }
@@ -370,6 +461,26 @@ fn render_lineage(payload: &LineageOutput<'_>) {
         "  families:     {} ({} present in every variant)",
         payload.families, payload.complete_families
     );
+    println!(
+        "  membership:   {} matched of {} possible",
+        payload.matched_members, payload.possible_members
+    );
+    match &payload.relation_grade {
+        RelationGradeOut::Graded {
+            expected,
+            reported,
+            correct,
+            precision,
+            recall,
+        } => println!(
+            "  relations:    expected {expected} reported {reported} correct {correct} precision {} recall {}",
+            percent(*precision),
+            percent(*recall)
+        ),
+        RelationGradeOut::Unavailable { reason } => {
+            println!("  relations:    unavailable [{reason}]");
+        }
+    }
     for family in &payload.family_rows {
         let name: &str = family.anchor_name.as_deref().unwrap_or("<unnamed>");
         println!(
@@ -383,6 +494,12 @@ fn render_lineage(payload: &LineageOutput<'_>) {
             match (&member.address, member.tier, member.reason) {
                 (Some(address), Some(tier), _) => {
                     println!("      [{}] {address} [{tier}]", member.variant);
+                    if !member.possible_outlined.is_empty() {
+                        println!(
+                            "        possible outlined (inferred, unproved): {}",
+                            member.possible_outlined.join(", ")
+                        );
+                    }
                 }
                 (_, _, Some(reason)) => println!("      [{}] absent [{reason}]", member.variant),
                 _ => {}
@@ -442,6 +559,13 @@ fn read_capped(path: &Path) -> miette::Result<Vec<u8>> {
     std::fs::read(path).map_err(|e: std::io::Error| {
         miette::miette!("DR-CLI-0870: cannot read {}: {e}", path.display())
     })
+}
+
+fn percent(rate: Option<f64>) -> String {
+    rate.map_or_else(
+        || "undefined".to_owned(),
+        |value: f64| format!("{:.1}%", value * 100.0),
+    )
 }
 
 fn match_rate(matched: usize, denominator: usize) -> f64 {
@@ -712,5 +836,203 @@ fn render_named(payload: &SemdiffOutput<'_>) {
 fn print_elision(total: usize, shown: usize) {
     if total > shown {
         println!("    ... {} more, raise --limit to list them", total - shown);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    use serde_json::{Map, Value};
+
+    const ANCHOR_PRIMARY: u64 = 0x1400;
+    const VARIANT_PRIMARY: u64 = 0x2400;
+    const VARIANT_FRAGMENT: u64 = 0x2500;
+    const PRIMARY_NAME: &str = "hot_path";
+    const FRAGMENT_NAME: &str = "hot_path.part.0";
+
+    fn inputs() -> LineageInputs<'static> {
+        LineageInputs {
+            anchor_label: "anchor.exe",
+            anchor_lang: "native-x86",
+            anchor_functions: 3,
+            variants: vec![VariantOut {
+                label: "variant.exe".to_owned(),
+                lang: "native-x86",
+                functions: 4,
+            }],
+            labels: vec!["variant.exe".to_owned()],
+            listing_limit: DEFAULT_LISTING_LIMIT,
+        }
+    }
+
+    fn report_with(member: LineageMember) -> LineageReport {
+        LineageReport {
+            anchor_label: "anchor.exe".to_owned(),
+            variant_labels: vec!["variant.exe".to_owned()],
+            families: vec![VariantFamily {
+                anchor_address: ANCHOR_PRIMARY,
+                members: vec![member],
+            }],
+            refused: Vec::new(),
+        }
+    }
+
+    fn candidate_member() -> LineageMember {
+        LineageMember::Matched {
+            variant: 0,
+            address: VARIANT_PRIMARY,
+            tier: MatchTier::LeafExact,
+            possible_outlined: vec![VARIANT_FRAGMENT],
+        }
+    }
+
+    fn anchor_names() -> BTreeMap<u64, &'static str> {
+        BTreeMap::from([(ANCHOR_PRIMARY, PRIMARY_NAME)])
+    }
+
+    fn variant_names() -> Vec<BTreeMap<u64, &'static str>> {
+        vec![BTreeMap::from([
+            (VARIANT_PRIMARY, PRIMARY_NAME),
+            (VARIANT_FRAGMENT, FRAGMENT_NAME),
+        ])]
+    }
+
+    fn json_of(payload: &LineageOutput<'_>) -> Value {
+        serde_json::to_value(payload).expect("the lineage payload must serialize")
+    }
+
+    fn grade_object(value: &Value) -> Map<String, Value> {
+        value
+            .get("relation_grade")
+            .and_then(Value::as_object)
+            .cloned()
+            .expect("the lineage payload must carry a relation_grade object")
+    }
+
+    #[test]
+    fn a_graded_lineage_payload_serializes_its_exact_counts_and_possible_outlined_addresses() {
+        let report: LineageReport = report_with(candidate_member());
+        let payload: LineageOutput<'_> =
+            lineage_payload(&report, inputs(), &anchor_names(), &variant_names());
+        let json: Value = json_of(&payload);
+
+        assert_eq!(
+            json["matched_members"],
+            Value::from(1),
+            "one structurally matched primary is one matched member: a possible outlined candidate is not a second match"
+        );
+        assert_eq!(
+            json["possible_members"],
+            Value::from(2),
+            "the possible count carries the matched primary plus its possible outlined candidate"
+        );
+        assert_eq!(json["families"], Value::from(1));
+        assert_eq!(json["complete_families"], Value::from(1));
+
+        let grade: Map<String, Value> = grade_object(&json);
+        assert_eq!(grade["state"], Value::from("graded"));
+        assert_eq!(grade["expected"], Value::from(2));
+        assert_eq!(grade["reported"], Value::from(2));
+        assert_eq!(grade["correct"], Value::from(2));
+        assert_eq!(grade["precision"], Value::from(1.0));
+        assert_eq!(grade["recall"], Value::from(1.0));
+
+        let member: &Value = &json["family_rows"][0]["members"][0];
+        assert_eq!(
+            json["family_rows"][0]["anchor_name"],
+            Value::from(PRIMARY_NAME)
+        );
+        assert_eq!(
+            member["address"],
+            Value::from(format!("{VARIANT_PRIMARY:#x}"))
+        );
+        assert_eq!(member["tier"], Value::from("leaf-exact"));
+        assert_eq!(
+            member["possible_outlined"],
+            Value::from(vec![format!("{VARIANT_FRAGMENT:#x}")]),
+            "the candidate fragment address must reach the JSON payload verbatim under its possible label"
+        );
+        let member_keys: &Map<String, Value> = member
+            .as_object()
+            .expect("a serialized lineage member must be a JSON object");
+        assert!(
+            !member_keys.contains_key("outlined"),
+            "the ambiguous outlined field must be gone, because a candidate attachment is inferred rather than a definite relation: {:?}",
+            member_keys.keys().collect::<Vec<&String>>()
+        );
+    }
+
+    #[test]
+    fn an_ungradable_lineage_payload_carries_a_reason_and_no_metric_fields() {
+        let report: LineageReport = report_with(candidate_member());
+        let payload: LineageOutput<'_> = lineage_payload(
+            &report,
+            inputs(),
+            &BTreeMap::new(),
+            std::slice::from_ref(&BTreeMap::new()),
+        );
+        let grade: Map<String, Value> = grade_object(&json_of(&payload));
+
+        assert_eq!(grade["state"], Value::from("unavailable"));
+        assert_eq!(grade["reason"], Value::from(RELATIONS_UNAVAILABLE_REASON));
+        let mut keys: Vec<String> = grade.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["reason".to_owned(), "state".to_owned()],
+            "an unavailable grade must not publish expected, reported, correct, precision, or recall"
+        );
+    }
+
+    #[test]
+    fn a_grade_with_no_reported_relation_omits_precision_rather_than_publishing_zero() {
+        let report: LineageReport = report_with(LineageMember::Absent {
+            variant: 0,
+            reason: Indeterminate::NoCandidate,
+        });
+        let payload: LineageOutput<'_> =
+            lineage_payload(&report, inputs(), &anchor_names(), &variant_names());
+        let grade: Map<String, Value> = grade_object(&json_of(&payload));
+
+        assert_eq!(grade["state"], Value::from("graded"));
+        assert_eq!(grade["expected"], Value::from(2));
+        assert_eq!(grade["reported"], Value::from(0));
+        assert_eq!(grade["correct"], Value::from(0));
+        assert!(
+            !grade.contains_key("precision"),
+            "precision over zero reported relations is undefined and must be absent, not zero"
+        );
+        assert_eq!(grade["recall"], Value::from(0.0));
+    }
+
+    #[test]
+    fn a_wrong_possible_outlined_address_is_reported_and_costs_precision() {
+        let report: LineageReport = report_with(LineageMember::Matched {
+            variant: 0,
+            address: VARIANT_PRIMARY,
+            tier: MatchTier::LeafExact,
+            possible_outlined: vec![VARIANT_FRAGMENT + 0x4000],
+        });
+        let payload: LineageOutput<'_> =
+            lineage_payload(&report, inputs(), &anchor_names(), &variant_names());
+        let grade: Map<String, Value> = grade_object(&json_of(&payload));
+
+        assert_eq!(grade["expected"], Value::from(2));
+        assert_eq!(grade["reported"], Value::from(2));
+        assert_eq!(grade["correct"], Value::from(1));
+        assert_eq!(grade["precision"], Value::from(0.5));
+        assert_eq!(grade["recall"], Value::from(0.5));
+    }
+
+    #[test]
+    fn a_rate_is_undefined_only_when_its_denominator_is_zero() {
+        assert_eq!(defined_rate(0, 0), None);
+        assert_eq!(defined_rate(1, 0), None);
+        assert_eq!(defined_rate(0, 4), Some(0.0));
+        assert_eq!(defined_rate(1, 4), Some(0.25));
+        assert_eq!(percent(None), "undefined");
+        assert_eq!(percent(Some(0.25)), "25.0%");
     }
 }
