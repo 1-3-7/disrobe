@@ -24,24 +24,24 @@ import "fmt"
 
 var sink int
 
-//go:noinline
+__GO_NOINLINE__
 func ExplicitPanic(value int) {
 	if value < 0 {
 		panic(value)
 	}
 }
 
-//go:noinline
+__GO_NOINLINE__
 func BoundsPanic(values []int, index int) int {
 	return values[index]
 }
 
-//go:noinline
+__GO_NOINLINE__
 func TypePanic(value any) string {
 	return value.(string)
 }
 
-//go:noinline
+__GO_NOINLINE__
 func DirectRecover(value int) (result int) {
 	defer func() {
 		if recover() != nil {
@@ -52,7 +52,7 @@ func DirectRecover(value int) (result int) {
 	return value
 }
 
-//go:noinline
+__GO_NOINLINE__
 func Sequence(limit int) func(func(int) bool) {
 	return func(yield func(int) bool) {
 		for value := 0; value < limit; value++ {
@@ -63,7 +63,7 @@ func Sequence(limit int) func(func(int) bool) {
 	}
 }
 
-//go:noinline
+__GO_NOINLINE__
 func RangeDefer(limit int) int {
 	for value := range Sequence(limit) {
 		defer func() { sink += value }()
@@ -71,7 +71,7 @@ func RangeDefer(limit int) int {
 	return sink
 }
 
-//go:noinline
+__GO_NOINLINE__
 func OrdinaryRuntimeCall(size int) []byte {
 	return make([]byte, size)
 }
@@ -242,7 +242,8 @@ fn current_go_runtime_edges_reach_the_registered_report_and_sidecar() {
         return;
     }
     let scratch: common::GoBuildScratch = common::new_scratch("panic_edges");
-    common::write_module(&scratch, "disrobe.example/panicedges", SOURCE);
+    let source: String = SOURCE.replace("__GO_NOINLINE__", "//go:noinline");
+    common::write_module(&scratch, "disrobe.example/panicedges", &source);
     let binary: std::path::PathBuf = build_fixture(&scratch);
     let (expected_controls, expected_range_defers): (
         BTreeSet<ToolchainCall>,
