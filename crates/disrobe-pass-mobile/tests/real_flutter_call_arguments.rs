@@ -426,7 +426,7 @@ fn pool_name_and_null_register_inline_at_a_real_call_site() {
 }
 
 #[test]
-fn main_recovers_integer_call_and_result_arguments() {
+fn main_recovers_integer_boxed_double_and_result_arguments() {
     let report: AotLiftReport = primary_report();
     let mains: Vec<String> = report
         .functions
@@ -440,12 +440,22 @@ fn main_recovers_integer_call_and_result_arguments() {
         .expect("the application main must lift");
     eprintln!("--- main ---\n{dart}");
 
-    for expected in ["_Random.nextInt(v0, 3)", "double.toStringAsFixed(?, 2)"] {
-        assert!(
-            dart.contains(expected),
-            "main must render {expected}, got:\n{dart}"
-        );
-    }
+    assert!(
+        dart.contains("_Random.nextInt(v0, 3)"),
+        "main must render _Random.nextInt(v0, 3), got:\n{dart}"
+    );
+    let carrying: &str = dart
+        .lines()
+        .map(str::trim)
+        .find_map(|line: &str| {
+            line.strip_prefix("var ")?
+                .strip_suffix(" = WarehouseLedger.totalCarryingValue(v7);")
+        })
+        .unwrap_or_else(|| panic!("the returned carrying value must bind, got:\n{dart}"));
+    assert!(
+        dart.contains(&format!("double.toStringAsFixed({carrying}, 2)")),
+        "the boxed double receiver must retain the value returned by totalCarryingValue, got:\n{dart}"
+    );
     let seed: &str = dart
         .lines()
         .map(str::trim)
@@ -460,8 +470,10 @@ fn main_recovers_integer_call_and_result_arguments() {
     );
     let source: String = dill_source();
     assert!(
-        source.contains("nextInt(3)") && source.contains("12 +"),
-        "the .dill source must declare the nextInt(3) and 12 + ... expressions these arguments reconstruct"
+        source.contains("nextInt(3)")
+            && source.contains("12 +")
+            && source.contains("carrying.toStringAsFixed(2)"),
+        "the .dill source must declare the nextInt(3), 12 + ..., and carrying.toStringAsFixed(2) expressions these arguments reconstruct"
     );
 }
 

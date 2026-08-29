@@ -93,6 +93,7 @@ pub(crate) fn structure_dart_function(
         &tail_calls,
         abi.pool,
         parameter_count,
+        abi.resolve,
     );
     let baseline: String = emit_dart(&hir, abi, &reachable, &arguments, parameter_count);
     let text: String = match returned_expression_pass(func, abi, &arguments, &blocks) {

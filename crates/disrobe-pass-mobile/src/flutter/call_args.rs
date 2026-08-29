@@ -51,6 +51,18 @@ const MAX_BOOLEAN_RETURN_INSTRUCTIONS: usize = 64;
 
 const ARM64_IMMEDIATE_SHIFT_BIT: u32 = 1 << 22;
 
+const DART_DOUBLE_RECEIVER_REGISTER: u8 = 1;
+
+const DART_FLOAT_RESULT_REGISTER: u8 = 0;
+
+const DART_DOUBLE_VALUE_OFFSET: i64 = 7;
+
+const MAX_BOXED_DOUBLE_SETUP_INSTRUCTIONS: usize = 8;
+
+const MAX_BOXED_DOUBLE_TRACE_INSTRUCTIONS: usize = 256;
+
+const MAX_FLOAT_RETURN_SPILL_DISTANCE: usize = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DartComparison {
     left: DartValue,
@@ -803,13 +815,27 @@ pub(super) fn recover_call_arguments(
     tail_calls: &BTreeSet<u64>,
     pool: Option<&DartPoolTable>,
     parameter_count: Option<u8>,
+    resolve: &dyn Fn(u64) -> Option<String>,
 ) -> DartCallArguments {
     let live: Vec<&NirBlock> = blocks
         .iter()
         .filter(|block: &&NirBlock| reachable.contains(&block.start))
         .collect::<Vec<&NirBlock>>();
-    let (sites, effects): (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) =
+    let (mut sites, effects): (BTreeMap<u64, Vec<Option<DartValue>>>, TrackedEffects) =
         track_call_sites(func, &live, tail_calls, parameter_count);
+    for (address, receiver) in recover_boxed_double_receivers(func, resolve) {
+        let Some(arguments): Option<&mut Vec<Option<DartValue>>> = sites.get_mut(&address) else {
+            continue;
+        };
+        if arguments.is_empty() {
+            arguments.push(Some(receiver));
+        } else {
+            let first: Option<&mut Option<DartValue>> = arguments.first_mut();
+            if let Some(first) = first {
+                *first = Some(receiver);
+            }
+        }
+    }
     let mut consumed: BTreeSet<u64> = BTreeSet::new();
     let mut max_parameter: Option<usize> = None;
     for values in sites.values() {
@@ -936,6 +962,154 @@ pub(super) fn recover_call_arguments(
         max_parameter,
         lifted_statements,
     }
+}
+
+fn recover_boxed_double_receivers(
+    func: &Arm64Function,
+    resolve: &dyn Fn(u64) -> Option<String>,
+) -> BTreeMap<u64, DartValue> {
+    let instructions: &[Arm64Instruction] = &func.instructions;
+    let mut recovered: BTreeMap<u64, DartValue> = BTreeMap::new();
+    for (call_index, call) in instructions.iter().enumerate() {
+        if call.flow != Arm64FlowKind::DirectCall {
+            continue;
+        }
+        let Some(target): Option<u64> = call.branch_target else {
+            continue;
+        };
+        let Some(name): Option<String> = resolve(target) else {
+            continue;
+        };
+        if !name.starts_with("double.") {
+            continue;
+        }
+        let setup_start: usize = call_index.saturating_sub(MAX_BOXED_DOUBLE_SETUP_INSTRUCTIONS);
+        let Some((box_index, box_store)): Option<(usize, FieldStore)> = instructions
+            .iter()
+            .enumerate()
+            .take(call_index)
+            .skip(setup_start)
+            .rev()
+            .find_map(|(index, instruction): (usize, &Arm64Instruction)| {
+                let store: FieldStore = field_store(instruction.bytes)?;
+                (store.base == DART_DOUBLE_RECEIVER_REGISTER
+                    && store.offset == DART_DOUBLE_VALUE_OFFSET)
+                    .then_some((index, store))
+            })
+        else {
+            continue;
+        };
+        if !box_store.float || box_store.source != DART_FLOAT_RESULT_REGISTER {
+            continue;
+        }
+        let trace_start: usize = box_index.saturating_sub(MAX_BOXED_DOUBLE_TRACE_INSTRUCTIONS);
+        let Some((load_index, frame_offset)): Option<(usize, i64)> = instructions
+            .iter()
+            .enumerate()
+            .take(box_index)
+            .skip(trace_start)
+            .rev()
+            .find_map(|(index, instruction): (usize, &Arm64Instruction)| {
+                let (register, base, offset): (u8, u8, i64) =
+                    float_unscaled_load(instruction.bytes)?;
+                (register == box_store.source && base == DART_FRAME_REGISTER)
+                    .then_some((index, offset))
+            })
+        else {
+            continue;
+        };
+        let Some((spill_index, spill_store)): Option<(usize, FieldStore)> = instructions
+            .iter()
+            .enumerate()
+            .take(load_index)
+            .skip(trace_start)
+            .rev()
+            .find_map(|(index, instruction): (usize, &Arm64Instruction)| {
+                let store: FieldStore = field_store(instruction.bytes)?;
+                (store.base == DART_FRAME_REGISTER && store.offset == frame_offset)
+                    .then_some((index, store))
+            })
+        else {
+            continue;
+        };
+        if !spill_store.float || spill_store.source != DART_FLOAT_RESULT_REGISTER {
+            continue;
+        }
+        let producer_start: usize = spill_index.saturating_sub(MAX_FLOAT_RETURN_SPILL_DISTANCE);
+        let Some((producer_index, producer)): Option<(usize, &Arm64Instruction)> = instructions
+            .iter()
+            .enumerate()
+            .take(spill_index)
+            .skip(producer_start)
+            .rev()
+            .find(|(_, instruction): &(usize, &Arm64Instruction)| {
+                instruction.flow == Arm64FlowKind::DirectCall
+            })
+        else {
+            continue;
+        };
+        if !preserves_register_value(
+            &instructions[producer_index + 1..spill_index],
+            DART_FLOAT_RESULT_REGISTER,
+            true,
+        ) || !preserves_register_value(
+            &instructions[load_index + 1..box_index],
+            DART_FLOAT_RESULT_REGISTER,
+            true,
+        ) || !preserves_register_value(
+            &instructions[box_index + 1..call_index],
+            DART_DOUBLE_RECEIVER_REGISTER,
+            false,
+        ) {
+            continue;
+        }
+        recovered.insert(call.address, DartValue::CallResult(producer.address));
+    }
+    recovered
+}
+
+fn preserves_register_value(instructions: &[Arm64Instruction], register: u8, float: bool) -> bool {
+    let marker: DartValue = DartValue::Param(usize::MAX);
+    instructions.iter().all(|instruction: &Arm64Instruction| {
+        match instruction.flow {
+            Arm64FlowKind::Sequential => {}
+            Arm64FlowKind::ConditionalBranch => return true,
+            Arm64FlowKind::DirectBranch
+            | Arm64FlowKind::DirectCall
+            | Arm64FlowKind::IndirectCall
+            | Arm64FlowKind::IndirectBranch
+            | Arm64FlowKind::Return
+            | Arm64FlowKind::DecodeError => return false,
+        }
+        let mut state: TrackState = TrackState::default();
+        if float {
+            state.floats.insert(register, marker.clone());
+        } else {
+            state.integers.insert(register, marker.clone());
+        }
+        apply_sequential(&mut state, instruction, instruction.bytes);
+        let values: &BTreeMap<u8, DartValue> = if float {
+            &state.floats
+        } else {
+            &state.integers
+        };
+        values.get(&register) == Some(&marker)
+    })
+}
+
+fn float_unscaled_load(raw: u32) -> Option<(u8, u8, i64)> {
+    if raw & 0xFFE0_0C00 != 0xFC40_0000 {
+        return None;
+    }
+    let immediate: u32 = (raw >> 12) & 0x1FF;
+    let offset: i64 = if immediate & 0x100 == 0 {
+        i64::from(immediate)
+    } else {
+        i64::from(immediate) - 512
+    };
+    let base: u8 = ((raw >> 5) & 0x1F) as u8;
+    let register: u8 = (raw & 0x1F) as u8;
+    Some((register, base, offset))
 }
 
 const MAX_CONSUMED_TEXT_BYTES: usize = 1 << 16;
@@ -2196,6 +2370,91 @@ mod tests {
     use crate::flutter::disasm::disassemble_range;
 
     use super::*;
+
+    fn recover_boxed_double_receiver(words: &[u32]) -> BTreeMap<u64, DartValue> {
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let function: Arm64Function = disassemble_range(
+            &bytes,
+            0x1000,
+            0,
+            bytes.len(),
+            Some("boxed-double".to_owned()),
+        );
+        recover_boxed_double_receivers(&function, &|target: u64| {
+            (target != 0x1000).then(|| "double.toStringAsFixed".to_owned())
+        })
+    }
+
+    #[test]
+    fn producer_result_is_not_recovered_after_d0_is_clobbered_before_spill() {
+        let recovered: BTreeMap<u64, DartValue> = recover_boxed_double_receiver(&[
+            0x9400_0000,
+            0x1e60_4020,
+            0xfc1b_83a0,
+            0xfc5b_83a0,
+            0xfc00_7020,
+            0x9400_0000,
+        ]);
+
+        assert!(
+            recovered.is_empty(),
+            "fmov d0, d1 replaces the producer's result before its frame spill, got {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn reloaded_result_is_not_recovered_after_d0_is_clobbered_before_box_store() {
+        let recovered: BTreeMap<u64, DartValue> = recover_boxed_double_receiver(&[
+            0x9400_0000,
+            0xfc1b_83a0,
+            0xfc5b_83a0,
+            0x1e60_4020,
+            0xfc00_7020,
+            0x9400_0000,
+        ]);
+
+        assert!(
+            recovered.is_empty(),
+            "fmov d0, d1 replaces the reloaded result before boxing, got {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn boxed_receiver_is_not_recovered_after_x1_is_clobbered_before_call() {
+        let recovered: BTreeMap<u64, DartValue> = recover_boxed_double_receiver(&[
+            0x9400_0000,
+            0xfc1b_83a0,
+            0xfc5b_83a0,
+            0xfc00_7020,
+            0xaa02_03e1,
+            0x9400_0000,
+        ]);
+
+        assert!(
+            recovered.is_empty(),
+            "mov x1, x2 replaces the boxed receiver before the call, got {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn boxed_receiver_is_not_recovered_across_a_control_flow_transfer() {
+        let recovered: BTreeMap<u64, DartValue> = recover_boxed_double_receiver(&[
+            0x9400_0000,
+            0xfc1b_83a0,
+            0xfc5b_83a0,
+            0x1400_0002,
+            0xfc00_7020,
+            0x9400_0000,
+        ]);
+
+        assert!(
+            recovered.is_empty(),
+            "a direct branch breaks the linear value chain before boxing, got {recovered:?}"
+        );
+    }
 
     #[test]
     fn decodes_a_real_register_move() {
