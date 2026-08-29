@@ -18,6 +18,7 @@ use super::try_with::{
     offset_is_unprotected, structure_for_bare_except_continue_epilogue,
     structure_for_typed_except_continue_epilogue, structure_infinite_while_finally_arm_break_body,
     structure_infinite_while_finally_arm_continue_body,
+    structure_infinite_while_finally_arm_raise_body,
     structure_infinite_while_finally_arm_return_body, structure_infinite_while_split_finally_body,
     structure_try,
 };
@@ -2733,6 +2734,11 @@ fn structure_infinite_while_body(
     stream: &DecodedStream,
     region: &LoopRegion,
 ) -> Result<(Vec<Stmt>, Option<InfiniteLoopTail>)> {
+    if let Some((body, tail_end)) =
+        structure_infinite_while_finally_arm_raise_body(code, stream, region)?
+    {
+        return Ok((body, Some((region.exit, tail_end))));
+    }
     if let Some((body, tail_start, tail_end)) =
         structure_infinite_while_finally_arm_continue_body(code, stream, region)?
     {

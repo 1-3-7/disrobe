@@ -368,8 +368,10 @@ fn auto_preserves_guarded_nonconstant_raise_inside_infinite_loop_finally() {
     let recovered_output: std::process::Output = run(&interpreter, &[], &recovered_path);
     assert!(original.status.success() && recovered_output.status.success());
     assert_eq!(recovered_output.stdout, original.stdout);
+    let original_stdout: String = String::from_utf8(original.stdout).expect("utf8");
+    let normalized_stdout: String = original_stdout.replace("\r\n", "\n");
     assert_eq!(
-        String::from_utf8(original.stdout).expect("utf8").trim(),
+        normalized_stdout.trim(),
         "RuntimeError raised:two True [('body', 'one'), ('cleanup', 'one'), ('continue', 'one'), ('body', 'two'), ('cleanup', 'two'), ('make_error', 'two')]\n[('body', 'one'), ('cleanup', 'one'), ('continue', 'one'), ('body', 'two'), ('cleanup', 'two'), ('make_error', 'two'), ('body', 'one'), ('cleanup', 'one'), ('continue', 'one'), ('body', 'two'), ('cleanup', 'two'), ('continue', 'two'), ('done', 'two')]"
     );
 }

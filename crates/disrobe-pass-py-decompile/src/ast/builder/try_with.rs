@@ -7079,6 +7079,230 @@ fn finally_arm_return_copies_match(
 }
 
 #[derive(Clone, Copy)]
+struct FinallyArmRaiseLoop {
+    try_start: usize,
+    protected_end: usize,
+    inline_end: usize,
+    handler_start: usize,
+}
+
+#[must_use]
+fn guarded_finally_raise_span_candidate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    if lo >= hi || hi > stream.ops.len() {
+        return false;
+    }
+    let guards: Vec<usize> = (lo..hi)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let raises: Vec<usize> = (lo..hi)
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::Raise(1)))
+        .collect();
+    matches!(
+        (guards.as_slice(), raises.as_slice()),
+        ([guard], [raise]) if guard < raise
+    )
+}
+
+fn finally_arm_raise_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<FinallyArmRaiseLoop>> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+        || loop_region.back_edge >= loop_region.exit
+        || !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return Ok(None);
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && first_significant(stream, loop_region.header, try_start).is_none()
+                && try_start < protected_end
+                && protected_end < loop_region.back_edge
+                && handler_start > loop_region.exit
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return Ok(None);
+    };
+    let Some(try_start): Option<usize> = stream.index_for_offset(primary.start) else {
+        return Ok(None);
+    };
+    let Some(protected_end): Option<usize> = stream.index_for_offset_ceil(primary.end()) else {
+        return Ok(None);
+    };
+    let Some(handler_start): Option<usize> = stream.index_for_offset(primary.target) else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) || first_significant(stream, loop_region.back_edge + 1, handler_start)
+        != Some(loop_region.exit)
+    {
+        return Ok(None);
+    }
+    let Some(tail_terminal): Option<usize> =
+        last_significant_back(stream, loop_region.exit, handler_start)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) {
+        return Ok(None);
+    }
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    if !is_pure_finally_handler_shape(stream, handler_start, handler_end, false) {
+        return Ok(None);
+    }
+    let handler_body_start: usize = handler_body_first(stream, handler_start);
+    let handler_body_end: usize = finally_body_end(stream, handler_body_start, handler_end);
+    let finally_len: usize = handler_body_end.saturating_sub(handler_body_start);
+    let Some(inline_end): Option<usize> = protected_end.checked_add(finally_len) else {
+        return Ok(None);
+    };
+    if finally_len == 0
+        || inline_end > loop_region.back_edge
+        || !guarded_finally_raise_span_candidate(stream, protected_end, inline_end)
+        || !guarded_finally_raise_span_candidate(stream, handler_body_start, handler_body_end)
+    {
+        return Ok(None);
+    }
+    if !guarded_finally_raise_spans_match(
+        stream,
+        protected_end,
+        inline_end,
+        handler_body_start,
+        handler_body_end,
+    ) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(protected_end)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "guarded finally raise copies differ between inline and handler paths"
+                .to_owned(),
+        });
+    }
+    Ok(Some(FinallyArmRaiseLoop {
+        try_start,
+        protected_end,
+        inline_end,
+        handler_start,
+    }))
+}
+
+fn structure_infinite_while_raise_exit_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    loop_region: &LoopRegion,
+) -> Result<Option<Stmt>> {
+    let guards: Vec<usize> = (lo..loop_region.back_edge)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && !is_chain_cond_jump(&stream.ops, index)
+                && resolve_jump_target(stream, index, &stream.ops[index])
+                    == Some(loop_region.back_edge)
+        })
+        .collect();
+    let [guard]: &[usize] = guards.as_slice() else {
+        return Ok(None);
+    };
+    let Some(break_jump): Option<usize> =
+        first_significant(stream, *guard + 1, loop_region.back_edge)
+    else {
+        return Ok(None);
+    };
+    if last_significant_back(stream, *guard + 1, loop_region.back_edge) != Some(break_jump)
+        || !matches!(
+            stream.ops[break_jump],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        )
+        || resolve_jump_target(stream, break_jump, &stream.ops[break_jump])
+            != Some(loop_region.exit)
+    {
+        return Ok(None);
+    }
+    let (test_head, test_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..*guard])?;
+    let [raw_test]: &[Expr] = test_values.as_slice() else {
+        return Ok(None);
+    };
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Stmt::If {
+        test: fallthrough_cond_test(stream, *guard, raw_test.clone()),
+        body: vec![Stmt::Break],
+        orelse: Vec::new(),
+        line: None,
+    }))
+}
+
+pub(super) fn structure_infinite_while_finally_arm_raise_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    let Some(shape): Option<FinallyArmRaiseLoop> = finally_arm_raise_loop(stream, loop_region)?
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> =
+        structure_stmts(code, stream, shape.protected_end, shape.inline_end)?;
+    if body.is_empty() || finalbody.is_empty() {
+        return Ok(None);
+    }
+    let mut loop_body: Vec<Stmt> = vec![Stmt::Try {
+        body,
+        handlers: Vec::new(),
+        orelse: Vec::new(),
+        finalbody,
+        line: None,
+    }];
+    let Some(exit_guard): Option<Stmt> =
+        structure_infinite_while_raise_exit_guard(code, stream, shape.inline_end, loop_region)?
+    else {
+        return Ok(None);
+    };
+    loop_body.push(exit_guard);
+    Ok(Some((loop_body, shape.handler_start)))
+}
+
+#[derive(Clone, Copy)]
 struct FinallyArmReturnLoop {
     try_start: usize,
     protected_end: usize,
