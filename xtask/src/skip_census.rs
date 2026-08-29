@@ -15,7 +15,7 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-irsummary", 1),
     ("disrobe-lift-x86", 2),
     ("disrobe-mba", 3),
-    ("disrobe-nir-lift", 9),
+    ("disrobe-nir-lift", 6),
     ("disrobe-pass-dotnet", 9),
     ("disrobe-pass-go", 7),
     ("disrobe-pass-js-deob", 67),

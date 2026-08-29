@@ -91,15 +91,16 @@ fn the_readme_states_the_roundtrip_figure_this_gate_enforces() {
     );
 
     let doc: String = rendered_readme();
-    let headline: String = format!("{reexecuted} / {fixtures} re-execute equal");
+    let coverage_figure: String =
+        format!("{reexecuted} / {fixtures} reconstructed fixtures re-execute equal");
     assert!(
-        doc.contains(&headline),
-        "{README} does not state `{headline}`; {GATE_FILE} pins {FIXTURES_CONST} at {fixtures} and \
+        doc.contains(&coverage_figure),
+        "{README} does not state `{coverage_figure}`; {GATE_FILE} pins {FIXTURES_CONST} at {fixtures} and \
          {REEXECUTED_CONST} at {reexecuted}, so the page publishes a figure the gate does not \
          measure"
     );
 
-    let graded_row: String = format!("{headline}, floor {floor}%");
+    let graded_row: String = format!("{reexecuted} / {fixtures} re-execute equal, floor {floor}%");
     assert!(
         doc.contains(&graded_row),
         "the benchmarks row in {README} must state `{graded_row}`; {FLOOR_CONST} in {GATE_FILE} is \
@@ -108,11 +109,17 @@ fn the_readme_states_the_roundtrip_figure_this_gate_enforces() {
     );
 
     assert_eq!(
-        doc.matches(&headline).count(),
-        2,
-        "{README} states `{headline}` {} times; the coverage table and the benchmarks table each \
-         carry it once, so a row that drifted away from the gate would otherwise go unnoticed",
-        doc.matches(&headline).count()
+        doc.matches(&coverage_figure).count(),
+        1,
+        "{README} states `{coverage_figure}` {} times; the coverage table must carry it exactly \
+         once",
+        doc.matches(&coverage_figure).count()
+    );
+    assert_eq!(
+        doc.matches(&graded_row).count(),
+        1,
+        "{README} states `{graded_row}` {} times; the benchmarks table must carry it exactly once",
+        doc.matches(&graded_row).count()
     );
 }
 
