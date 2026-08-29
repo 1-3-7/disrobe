@@ -578,7 +578,8 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> JadxScore {
         Ok(JadxCapturedOutcome::Recovered(output)) => JadxScore {
             score: score_source_set(javac, &output.sources, denominator),
             input_integrity: Err(format!(
-                "required JADX 1.5.5 fixture expected producer exit status {JADX_1_5_5_EXIT_STATUS}, but JADX reported success"
+                "required JADX 1.5.5 fixture expected one of producer exit statuses {:?}, but JADX reported success",
+                JADX_1_5_5_EXIT_STATUSES
             )),
         },
         Ok(JadxCapturedOutcome::ProducerFailed {
@@ -729,7 +730,7 @@ const JADX_1_5_5_SOURCE_PATHS: [&str; 2] = [
     "com/android/tools/r8/RecordTag.java",
     "defpackage/EdgeCases.java",
 ];
-const JADX_1_5_5_EXIT_STATUS: i32 = 1;
+const JADX_1_5_5_EXIT_STATUSES: [i32; 2] = [1, 3];
 const JADX_1_5_5_METHODS: usize = 303;
 const EDGE_CASES_ORIGINAL_METHODS: usize = 114;
 const EDGE_CASES_DEX_METHODS: usize = 370;
@@ -759,7 +760,7 @@ fn validate_pinned_jadx_partial_output(
     stdout: &str,
     stderr: &str,
 ) -> std::result::Result<(), String> {
-    if status != JADX_1_5_5_EXIT_STATUS {
+    if !JADX_1_5_5_EXIT_STATUSES.contains(&status) {
         return Err(format!(
             "JADX exit status differs from the pinned fixture: {status}"
         ));
@@ -3800,7 +3801,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_jadx_partial_integrity_rejects_non_status_one() {
+    fn pinned_jadx_partial_integrity_rejects_an_unobserved_status() {
         let output: AndroidDecompileOutput = AndroidDecompileOutput {
             engine: disrobe_pass_jvm::AndroidDecompiler::Jadx,
             sources: BTreeMap::from([(
@@ -3822,8 +3823,37 @@ mod tests {
             "",
         )
         .err()
-        .unwrap_or_else(|| unreachable!("only the pinned status-1 route can be reconciled"));
+        .unwrap_or_else(|| {
+            unreachable!("only an observed partial-output status can be reconciled")
+        });
         assert!(error.contains("exit status differs"));
+    }
+
+    #[test]
+    fn pinned_jadx_partial_integrity_accepts_linux_status_three_for_content_validation() {
+        let output: AndroidDecompileOutput = AndroidDecompileOutput {
+            engine: disrobe_pass_jvm::AndroidDecompiler::Jadx,
+            sources: BTreeMap::from([(
+                MAIN_CLASS_FILE.to_owned(),
+                "class EdgeCases { int peer() { return 1; } }\n".to_owned(),
+            )]),
+            class_count: 1,
+            method_count: 1,
+            notes: Vec::new(),
+        };
+        let regions: Vec<SourceMethodRegion> = source_method_regions(&output.sources);
+        let error: String = validate_pinned_jadx_partial_output(
+            &[],
+            3,
+            Path::new("EdgeCases.dex"),
+            &output,
+            &regions,
+            "ERROR - finished with errors, count: 1",
+            "",
+        )
+        .err()
+        .unwrap_or_else(|| unreachable!("the dummy fixture must fail a content invariant"));
+        assert!(!error.contains("exit status differs"), "{error}");
     }
 
     #[test]
