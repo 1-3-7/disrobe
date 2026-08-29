@@ -47,6 +47,12 @@ fn readme() -> String {
     })
 }
 
+fn rendered_readme() -> String {
+    readme()
+        .replace("<!-- m:pickle_roundtrip_frac -->", "")
+        .replace("<!-- /m -->", "")
+}
+
 fn declared(source: &str, name: &str) -> usize {
     let needle: String = format!("const {name}: usize = ");
     let Some(at): Option<usize> = source.find(&needle) else {
@@ -84,7 +90,7 @@ fn the_readme_states_the_roundtrip_figure_this_gate_enforces() {
          the published sentence would overstate it"
     );
 
-    let doc: String = readme();
+    let doc: String = rendered_readme();
     let headline: String = format!("{reexecuted} / {fixtures} re-execute equal");
     assert!(
         doc.contains(&headline),
@@ -115,7 +121,7 @@ fn the_readme_check_rejects_a_figure_the_gate_does_not_measure() {
     let source: String = gate_source();
     let fixtures: usize = declared(&source, FIXTURES_CONST);
     let reexecuted: usize = declared(&source, REEXECUTED_CONST);
-    let doc: String = readme();
+    let doc: String = rendered_readme();
 
     let understated: String = format!(
         "{} / {} re-execute equal",

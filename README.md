@@ -45,7 +45,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 |---|---|---|---|---|
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.53%<!-- /m --> per code object, 123 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
-| Python pickle | Recover | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
+| Python pickle | Recover | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> re-execute equal across reconstructed fixtures | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
 | Android DEX | Recover | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
