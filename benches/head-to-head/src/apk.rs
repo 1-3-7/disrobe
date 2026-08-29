@@ -578,8 +578,7 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> JadxScore {
         Ok(JadxCapturedOutcome::Recovered(output)) => JadxScore {
             score: score_source_set(javac, &output.sources, denominator),
             input_integrity: Err(format!(
-                "required JADX 1.5.5 fixture expected one of producer exit statuses {:?}, but JADX reported success",
-                JADX_1_5_5_EXIT_STATUSES
+                "required JADX 1.5.5 fixture expected one of producer exit statuses {JADX_1_5_5_EXIT_STATUSES:?}, but JADX reported success"
             )),
         },
         Ok(JadxCapturedOutcome::ProducerFailed {
