@@ -821,13 +821,22 @@ impl DisrobeMcp {
         let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
             ErrorData::internal_error(format!("DR-MCP-0610: auto chain failed: {e}"), None)
         })?;
-        let doc: disrobe_core::chain::ChainDocument = disrobe_core::chain::ChainDocument::from_plan(
-            &run.plan,
-            &run.spec,
-            &run.spec_raw,
-            env!("CARGO_PKG_VERSION"),
-            None,
-        );
+        let doc: disrobe_core::chain::ChainDocument =
+            disrobe_core::chain::ChainDocument::from_plan(
+                &run.plan,
+                &run.spec,
+                &run.spec_raw,
+                env!("CARGO_PKG_VERSION"),
+                None,
+            )
+            .map_err(
+                |error: disrobe_core::chain::metadata_keys::MetadataValueError| {
+                    ErrorData::internal_error(
+                        format!("DR-MCP-0612: invalid chain metadata: {error}"),
+                        None,
+                    )
+                },
+            )?;
         let report: ChainRecoveryReport =
             ChainRecoveryReport::from_plan(&run.plan, env!("CARGO_PKG_VERSION"), None);
         let passes: Vec<ChainPassOut> = report

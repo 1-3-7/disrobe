@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::detection::{ChildHandle, ConfidenceBand, OutputKind};
+use super::metadata_keys;
+use super::metadata_keys::MetadataValueError;
+use super::metadata_keys::keys;
 use super::spec::SpecKind;
 use super::state_machine::{ChainPlan, Node, NodeId, Verdict};
 
@@ -237,14 +240,13 @@ pub struct ChainDocument {
 }
 
 impl ChainDocument {
-    #[must_use]
     pub fn from_plan(
         plan: &ChainPlan,
         spec: &super::spec::ChainSpec,
         raw_spec: &str,
         tool_version: &str,
         input_path: Option<String>,
-    ) -> Self {
+    ) -> Result<Self, MetadataValueError> {
         let root: &Node = plan.root();
         let topology: Topology = if plan.has_multiple_branches {
             Topology::Tree
@@ -257,7 +259,11 @@ impl ChainDocument {
             .skip(1)
             .filter_map(|n: &Node| n.format_tag_in.clone())
             .collect();
-        let nodes: Vec<NodeDoc> = plan.nodes.iter().map(NodeDoc::from).collect();
+        let nodes: Vec<NodeDoc> = plan
+            .nodes
+            .iter()
+            .map(NodeDoc::from_node)
+            .collect::<Result<Vec<NodeDoc>, MetadataValueError>>()?;
         let stats: ChainStats = ChainStats {
             layers: u32::try_from(plan.nodes.len().saturating_sub(1)).unwrap_or(u32::MAX),
             branches: plan.branch_count(),
@@ -266,7 +272,7 @@ impl ChainDocument {
             detector_calls: plan.detector_calls,
             rejected_passes: plan.rejected_passes,
         };
-        Self {
+        Ok(Self {
             schema: SCHEMA_VERSION.to_string(),
             tool_version: tool_version.to_string(),
             input: ChainInputDoc {
@@ -286,17 +292,18 @@ impl ChainDocument {
             verdict: VerdictDoc::from(&plan.verdict),
             final_format: plan.final_format.clone(),
             stats,
-        }
+        })
     }
 }
 
-impl From<&Node> for NodeDoc {
-    fn from(n: &Node) -> Self {
+impl NodeDoc {
+    fn from_node(n: &Node) -> Result<Self, MetadataValueError> {
         let error: Option<String> = match &n.verdict {
             Verdict::Error { message } => Some(message.clone()),
             _ => None,
         };
-        Self {
+        let rule_pack_id: Option<String> = n.rule_pack_id()?;
+        let mut document: Self = Self {
             id: n.id,
             parent_id: n.parent_id,
             depth: n.depth,
@@ -331,10 +338,27 @@ impl From<&Node> for NodeDoc {
                 .collect(),
             artifacts: n.artifacts.clone(),
             metadata: n.metadata.clone(),
-            rule_pack_id: n.metadata.get("mba.rule_pack_id").cloned(),
+            rule_pack_id,
             verdict: VerdictDoc::from(&n.verdict),
             error,
+        };
+        if let Some(value) = document.rule_pack_id.clone() {
+            document.set_rule_pack_id(&value)?;
         }
+        Ok(document)
+    }
+
+    fn set_rule_pack_id(&mut self, value: &str) -> Result<(), MetadataValueError> {
+        let _previous: Option<String> =
+            metadata_keys::set_string(&mut self.metadata, keys::MBA_RULE_PACK_ID_KEY, value)?;
+        Ok(())
+    }
+}
+
+impl Node {
+    fn rule_pack_id(&self) -> Result<Option<String>, MetadataValueError> {
+        metadata_keys::get_string(&self.metadata, keys::MBA_RULE_PACK_ID_KEY)
+            .map(|value: Option<&str>| value.map(str::to_owned))
     }
 }
 
@@ -403,7 +427,7 @@ mod tests {
             metadata: BTreeMap::new(),
             verdict: Verdict::Ok,
         };
-        let doc: NodeDoc = NodeDoc::from(&n);
+        let doc: NodeDoc = NodeDoc::from_node(&n).expect("valid node metadata");
         let j: String = serde_json::to_string(&doc).unwrap();
         let parsed: NodeDoc = serde_json::from_str(&j).unwrap();
         assert_eq!(parsed.id, 0);
@@ -444,7 +468,8 @@ mod tests {
             extracted: Vec::new(),
         };
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None);
+        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None)
+            .expect("valid chain metadata");
         assert_eq!(doc.schema, "disrobe.chain/v1");
         assert_eq!(doc.spec.cap, 8);
         assert!(matches!(doc.topology, Topology::Linear));
@@ -492,13 +517,83 @@ mod tests {
             extracted: Vec::new(),
         };
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
-        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None);
+        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "0.1.0", None)
+            .expect("valid chain metadata");
         assert!(matches!(doc.topology, Topology::Tree));
         let j: String = serde_json::to_string(&doc).unwrap();
         assert!(
             j.contains("\"topology\":\"tree\""),
             "the topology JSON key and Tree text must be byte-for-byte unchanged: {j}"
         );
+    }
+
+    #[test]
+    fn chain_document_preserves_and_bounds_rule_pack_metadata() {
+        use super::super::spec::ChainSpec;
+
+        let value: &str = "mba-peephole/2026-08";
+        let mut valid_metadata: BTreeMap<String, String> = BTreeMap::new();
+        valid_metadata.insert(keys::MBA_RULE_PACK_ID.to_string(), value.to_string());
+        let valid_plan: ChainPlan = chain_plan_with_metadata(valid_metadata);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let document: ChainDocument =
+            ChainDocument::from_plan(&valid_plan, &spec, "auto:8", "0.1.0", None)
+                .expect("valid rule-pack metadata");
+        assert_eq!(document.nodes[0].rule_pack_id.as_deref(), Some(value));
+        assert_eq!(
+            metadata_keys::get_string(&document.nodes[0].metadata, keys::MBA_RULE_PACK_ID_KEY)
+                .expect("bounded rule-pack metadata"),
+            Some(value)
+        );
+
+        let oversized: String = "x".repeat(keys::MBA_RULE_PACK_ID_KEY.max_bytes() + 1);
+        let invalid_plan: ChainPlan = chain_plan_with_metadata(BTreeMap::from([(
+            keys::MBA_RULE_PACK_ID.to_string(),
+            oversized,
+        )]));
+        let error: MetadataValueError =
+            ChainDocument::from_plan(&invalid_plan, &spec, "auto:8", "0.1.0", None)
+                .expect_err("oversized rule-pack metadata must be rejected");
+        assert_eq!(
+            error,
+            MetadataValueError::ValueTooLong {
+                key: keys::MBA_RULE_PACK_ID,
+                actual_bytes: keys::MBA_RULE_PACK_ID_KEY.max_bytes() + 1,
+                max_bytes: keys::MBA_RULE_PACK_ID_KEY.max_bytes(),
+            }
+        );
+    }
+
+    fn chain_plan_with_metadata(metadata: BTreeMap<String, String>) -> ChainPlan {
+        ChainPlan {
+            nodes: vec![Node {
+                id: 0,
+                parent_id: None,
+                depth: 0,
+                branch_id: "a".to_string(),
+                pass_id: None,
+                format_tag_in: None,
+                input_blake3: [0u8; 32],
+                input_size: 0,
+                output_kind: None,
+                output_blake3: None,
+                output_size: None,
+                output_bytes: None,
+                duration: None,
+                picks: vec![],
+                artifacts: vec![],
+                metadata,
+                verdict: Verdict::Ok,
+            }],
+            root_id: 0,
+            verdict: Verdict::Ok,
+            final_format: None,
+            total: Duration::ZERO,
+            detector_calls: 0,
+            rejected_passes: 0,
+            has_multiple_branches: false,
+            extracted: Vec::new(),
+        }
     }
 
     #[test]

@@ -14,8 +14,6 @@ pub use schema::{Binary, Condition, Pattern, Rule, RuleSet, Template, Unary};
 
 pub const MBA_PEEPHOLE_RULES: &str = include_str!("rules_data/mba_peephole.toml");
 pub const MBA_PEEPHOLE_AUDIT: &str = include_str!("rules_data/mba_peephole_audit.toml");
-pub const MBA_PEEPHOLE_RULE_PACK_METADATA_KEY: &str = "mba.rule_pack_id";
-
 #[must_use]
 pub fn mba_peephole_rule_pack_id() -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

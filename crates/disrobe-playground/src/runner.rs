@@ -575,7 +575,8 @@ fn run_chain_capture(
         "auto:8",
         "playground",
         Some(source_path.to_owned()),
-    );
+    )
+    .map_err(|error: disrobe_core::chain::metadata_keys::MetadataValueError| error.to_string())?;
     let first_node: Option<&disrobe_core::chain::NodeDoc> = doc
         .nodes
         .iter()

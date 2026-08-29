@@ -191,7 +191,8 @@ fn run_chain(seed: &[u8]) -> (ChainPlan, String) {
         "auto:8",
         "0.0.0-idem",
         Some("synthetic://idem".to_string()),
-    );
+    )
+    .expect("valid chain metadata");
     let mut v: Value = serde_json::to_value(&doc).expect("doc serializes");
     scrub(&mut v);
     let rendered: String = serde_json::to_string_pretty(&v).expect("render");

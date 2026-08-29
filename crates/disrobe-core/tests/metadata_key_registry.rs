@@ -392,14 +392,23 @@ fn metadata_owner_bindings_for_function(
     let function_source: &str = function.map_or(source, |scope: &SourceFunction| {
         source.get(scope.start..=scope.end).unwrap_or("")
     });
-    typed_owner
+    let mut bindings: BTreeSet<String> = typed_owner
         .captures_iter(function_source)
         .filter_map(|captures: regex::Captures<'_>| {
             captures
                 .get(1)
                 .map(|binding: regex::Match<'_>| binding.as_str().to_string())
         })
-        .collect()
+        .collect();
+    if function.is_some_and(|function: &SourceFunction| {
+        matches!(
+            function.identity.rsplit("::").nth(1),
+            Some("Node" | "NodeDoc" | "PassRunOutcome")
+        )
+    }) {
+        bindings.insert("self".to_string());
+    }
+    bindings
 }
 
 fn metadata_map_parameter_names(source: &str, function: &SourceFunction) -> BTreeSet<String> {
@@ -1003,7 +1012,7 @@ fn metadata_map_type_pattern(aliases: &BTreeSet<String>) -> String {
 
 fn metadata_owner_aliases(source: &str) -> BTreeSet<String> {
     let alias: Regex = Regex::new(
-        r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*=\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*(?:Node|PassRunOutcome)\b",
+        r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]*>)?\s*=\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*(?:Node|NodeDoc|PassRunOutcome)\b",
     )
     .expect("metadata owner type alias pattern");
     alias
@@ -1017,7 +1026,11 @@ fn metadata_owner_aliases(source: &str) -> BTreeSet<String> {
 }
 
 fn metadata_owner_type_pattern(aliases: &BTreeSet<String>) -> String {
-    let mut alternatives: Vec<String> = vec!["Node".to_string(), "PassRunOutcome".to_string()];
+    let mut alternatives: Vec<String> = vec![
+        "Node".to_string(),
+        "NodeDoc".to_string(),
+        "PassRunOutcome".to_string(),
+    ];
     alternatives.extend(aliases.iter().map(|alias: &String| regex::escape(alias)));
     format!("(?:{})", alternatives.join("|"))
 }
@@ -1207,7 +1220,7 @@ fn metadata_targeted_functions<'source>(
                     .trim_end_matches("::");
                 if matches!(
                     impl_scope.rsplit("::").next(),
-                    Some("Node" | "PassRunOutcome")
+                    Some("Node" | "NodeDoc" | "PassRunOutcome")
                 ) {
                     owner_bindings.insert("self".to_string());
                 }
@@ -1611,7 +1624,7 @@ fn direct_metadata_key_accesses_with_aliases(
             .map_or("", |(scope, _name): (&str, &str)| scope);
         if matches!(
             impl_scope.rsplit("::").next(),
-            Some("Node" | "PassRunOutcome")
+            Some("Node" | "NodeDoc" | "PassRunOutcome")
         ) {
             insert_scoped_binding(
                 &mut owner_bindings,

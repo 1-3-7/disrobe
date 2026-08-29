@@ -3,6 +3,8 @@
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
+use disrobe_core::chain::metadata_keys;
+use disrobe_core::chain::metadata_keys::keys;
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
     FAMILY_INTERPRETER_BYTECODE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
@@ -91,10 +93,13 @@ impl Pass for WasmDeobPass {
             std::collections::BTreeMap::new();
         if recovered.is_some_and(|module: RecoveredModule| module.report.mba_expressions_folded > 0)
         {
-            metadata.insert(
-                disrobe_mba::rules::MBA_PEEPHOLE_RULE_PACK_METADATA_KEY.to_string(),
-                disrobe_mba::mba_peephole_rule_pack_id(),
-            );
+            let rule_pack_id: String = disrobe_mba::mba_peephole_rule_pack_id();
+            metadata_keys::set_string(&mut metadata, keys::MBA_RULE_PACK_ID_KEY, &rule_pack_id)
+                .map_err(|error: metadata_keys::MetadataValueError| {
+                    CoreError::PassFailure(format!(
+                        "DR-WASM-0922: invalid MBA rule-pack metadata: {error}"
+                    ))
+                })?;
         }
         Ok(metadata)
     }
@@ -562,8 +567,9 @@ mod tests {
             .chain_metadata(&a)
             .expect("chain metadata must recover");
         assert_eq!(
-            metadata.get(disrobe_mba::rules::MBA_PEEPHOLE_RULE_PACK_METADATA_KEY),
-            Some(&disrobe_mba::mba_peephole_rule_pack_id())
+            metadata_keys::get_string(&metadata, keys::MBA_RULE_PACK_ID_KEY)
+                .expect("valid rule-pack metadata"),
+            Some(disrobe_mba::mba_peephole_rule_pack_id().as_str())
         );
     }
 

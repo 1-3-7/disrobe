@@ -138,6 +138,7 @@ fn run_chain_auto(bytes: Vec<u8>, source_path: &str) -> ChainDocument {
         "0.8.0-real",
         Some(source_path.to_owned()),
     )
+    .expect("valid chain metadata")
 }
 
 fn pick_first_pass_node(doc: &ChainDocument) -> Option<&disrobe_core::chain::NodeDoc> {

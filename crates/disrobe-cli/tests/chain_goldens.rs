@@ -140,6 +140,7 @@ fn run_to_document(seed: Vec<u8>, spec: &ChainSpec, path: Option<String>) -> Cha
         ChainDriver::new(&registry, &runner, ChainConfig::default());
     let plan: ChainPlan = driver.run(seed, spec, path.clone());
     ChainDocument::from_plan(&plan, spec, "auto:8", "0.1.0-golden", path)
+        .expect("valid chain metadata")
 }
 
 fn scrub_timings(value: &mut Value) {

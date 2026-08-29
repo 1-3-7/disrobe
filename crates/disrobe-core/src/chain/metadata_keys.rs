@@ -173,7 +173,8 @@ const fn valid_key_name(name: &str) -> bool {
 
 pub mod keys {
     use super::{
-        Boolean, CommaSeparatedList, Integer, JsonFragment, MetadataKey, RegisteredKey, descriptor,
+        Boolean, CommaSeparatedList, Integer, JsonFragment, MetadataKey, PlainString,
+        RegisteredKey, descriptor,
     };
 
     macro_rules! define_metadata_keys {
@@ -219,6 +220,11 @@ pub mod keys {
         CONTAINER_REFUSALS_TRUNCATED_KEY: Boolean =>
             "container.refusals_truncated",
             5,
+            true;
+        MBA_RULE_PACK_ID,
+        MBA_RULE_PACK_ID_KEY: PlainString =>
+            "mba.rule_pack_id",
+            256,
             true;
     );
 }
@@ -608,7 +614,7 @@ mod tests {
             MetadataValueKind::JsonFragment
         );
         let registered: &[RegisteredKey] = registered_keys();
-        assert_eq!(registered.len(), 5);
+        assert_eq!(registered.len(), 6);
         assert_eq!(registered[0].symbol(), "ANTI_RECOVERED_TECHNIQUES_KEY");
         assert_eq!(registered[0].name(), "anti.recovered_techniques");
         assert_eq!(
@@ -637,6 +643,11 @@ mod tests {
         assert_eq!(registered[4].value_kind(), MetadataValueKind::Boolean);
         assert_eq!(registered[4].max_bytes(), 5);
         assert!(registered[4].published());
+        assert_eq!(registered[5].symbol(), "MBA_RULE_PACK_ID_KEY");
+        assert_eq!(registered[5].name(), "mba.rule_pack_id");
+        assert_eq!(registered[5].value_kind(), MetadataValueKind::PlainString);
+        assert_eq!(registered[5].max_bytes(), 256);
+        assert!(registered[5].published());
         for valid in ["a.b", "anti.recovered_techniques", "format.v2-name"] {
             assert!(valid_key_name(valid));
         }

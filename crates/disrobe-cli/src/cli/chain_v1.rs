@@ -691,7 +691,8 @@ pub(crate) fn run_with_disk(
         &spec_raw,
         env!("CARGO_PKG_VERSION"),
         Some(input.display().to_string()),
-    );
+    )
+    .map_err(metadata_value_report)?;
     let report: ChainRecoveryReport = ChainRecoveryReport::from_plan(
         &plan,
         env!("CARGO_PKG_VERSION"),
@@ -1054,7 +1055,8 @@ pub(crate) fn run_chain_to_dir(
         chain_arg,
         env!("CARGO_PKG_VERSION"),
         Some(input_label.to_string()),
-    );
+    )
+    .map_err(metadata_value_report)?;
     let report: ChainRecoveryReport = ChainRecoveryReport::from_plan(
         &plan,
         env!("CARGO_PKG_VERSION"),
@@ -2058,7 +2060,8 @@ mod tests {
         let plan: ChainPlan = linear_plan(vec![node]);
         let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
         let document: ChainDocument =
-            ChainDocument::from_plan(&plan, &spec, "auto:8", "0.10.5", None);
+            ChainDocument::from_plan(&plan, &spec, "auto:8", "0.10.5", None)
+                .expect("valid chain metadata");
         let serialized: serde_json::Value = serde_json::to_value(document).expect("chain document");
         assert_eq!(
             serialized["nodes"][0]["metadata"][keys::ANTI_RECOVERED_TECHNIQUES],

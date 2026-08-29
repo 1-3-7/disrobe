@@ -200,7 +200,8 @@ fn chain_json_render(bencher: divan::Bencher) {
     let payload: Vec<u8> = make_payload(64 * 1024);
     let plan: ChainPlan = driver.run(payload, &spec, None);
     bencher.bench_local(|| {
-        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "bench", None);
+        let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:8", "bench", None)
+            .expect("valid chain metadata");
         let s: Vec<u8> = serde_json::to_vec(&doc).expect("ok");
         divan::black_box(s);
     });

@@ -80,7 +80,8 @@ fn auto(input: &[u8], max_depth: u8, path_hint: Option<String>) -> PyResult<PyCh
         ChainDriver::new(&registry, &runner, ChainConfig::default());
     let plan: ChainPlan = driver.run(input.to_vec(), &spec, path_hint.clone());
     let doc: ChainDocument =
-        ChainDocument::from_plan(&plan, &spec, &spec_raw, SCHEMA_VERSION, path_hint);
+        ChainDocument::from_plan(&plan, &spec, &spec_raw, SCHEMA_VERSION, path_hint)
+            .map_err(map("chain metadata"))?;
     PyChainReport::from_serialize(&doc)
 }
 

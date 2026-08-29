@@ -191,7 +191,8 @@ fn run_once(seed: &[u8]) -> String {
         "auto:8",
         "0.0.0-det",
         Some("synthetic://det".to_string()),
-    );
+    )
+    .expect("valid chain metadata");
     let mut v: Value = serde_json::to_value(&doc).expect("doc serializes");
     scrub(&mut v);
     serde_json::to_string_pretty(&v).expect("render")

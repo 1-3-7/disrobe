@@ -100,6 +100,7 @@ fuzz_target!(|data: &[u8]| {
         ChainDriver::new(&registry, &runner, ChainConfig::default());
     let spec: ChainSpec = ChainSpec::Auto { cap: 4 };
     let plan: ChainPlan = driver.run(data.to_vec(), &spec, None);
-    let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:4", "0.0.0-fuzz", None);
+    let doc: ChainDocument = ChainDocument::from_plan(&plan, &spec, "auto:4", "0.0.0-fuzz", None)
+        .expect("empty fuzz metadata must remain valid");
     let _ = serde_json::to_vec(&doc);
 });
