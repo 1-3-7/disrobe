@@ -7,7 +7,7 @@ use crate::metadata::{MetadataRoot, RuntimeLabel, parse_metadata_root};
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use crate::peel::{ConfuserConstantsRecovery, peel_confuserex_constants};
 use crate::protectors::{DetectionReport, Protector, detect_all};
-use crate::r2r::{R2rReport, detect as detect_r2r};
+use crate::r2r::{R2rReport, R2rRuntimeFunctions, R2rSection, detect as detect_r2r};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PassSummary {
@@ -17,6 +17,10 @@ pub struct PassSummary {
     pub runtime_label: RuntimeLabel,
     pub stream_names: Vec<String>,
     pub r2r_present: bool,
+    #[serde(default)]
+    pub ready_to_run_sections: Vec<R2rSection>,
+    #[serde(default)]
+    pub ready_to_run_runtime_functions: R2rRuntimeFunctions,
     pub native_aot: bool,
     pub primary_protector: Option<Protector>,
     pub protectors_detected: Vec<Protector>,
@@ -93,7 +97,7 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
             names
         })
     });
-    let r2r: R2rReport = detect_r2r(image, &pe, &clr);
+    let r2r: R2rReport = detect_r2r(image, &pe, &clr)?;
     let aot: AotReport = detect_aot(image);
     dbg_kv("native_layers", || {
         format!("r2r={} native_aot={}", r2r.present, aot.is_native_aot)
@@ -187,6 +191,8 @@ pub fn analyze(image: &[u8]) -> crate::error::Result<PassSummary> {
         runtime_label: runtime,
         stream_names,
         r2r_present: r2r.present,
+        ready_to_run_sections: r2r.sections,
+        ready_to_run_runtime_functions: r2r.runtime_functions,
         native_aot: aot.is_native_aot,
         primary_protector: detection.primary,
         protectors_detected: protectors,
@@ -208,6 +214,8 @@ fn native_aot_summary(pe: &PeImage, aot: &AotReport) -> PassSummary {
         runtime_label: RuntimeLabel::Unknown,
         stream_names: Vec::new(),
         r2r_present: false,
+        ready_to_run_sections: Vec::new(),
+        ready_to_run_runtime_functions: R2rRuntimeFunctions::Absent,
         native_aot: aot.is_native_aot,
         primary_protector: None,
         protectors_detected: Vec::new(),
@@ -293,4 +301,50 @@ fn analyze_eazvm(image: &[u8], detection: &mut DetectionReport) -> Option<EazVmS
         undecoded_methods: recovery.undecoded,
         recovered_method_names,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_pass_summary_without_ready_to_run_details_deserializes() {
+        let current: PassSummary = PassSummary {
+            pe_bitness: "Pe32Plus".to_owned(),
+            machine: 0x8664,
+            clr_runtime_version: "v4.0.30319".to_owned(),
+            runtime_label: RuntimeLabel::Unknown,
+            stream_names: Vec::new(),
+            r2r_present: true,
+            ready_to_run_sections: Vec::new(),
+            ready_to_run_runtime_functions: R2rRuntimeFunctions::Absent,
+            native_aot: false,
+            primary_protector: None,
+            protectors_detected: Vec::new(),
+            opcode_table_size: 0,
+            opcode_spec_coverage_pct: 0,
+            recovered_constants: Vec::new(),
+            koivm: None,
+            eazvm: None,
+            control_flow_flattening: None,
+            inlined_literals: Vec::new(),
+        };
+        let mut legacy: serde_json::Value =
+            serde_json::to_value(current).expect("serialize current pass summary");
+        let fields: &mut serde_json::Map<String, serde_json::Value> = legacy
+            .as_object_mut()
+            .expect("pass summary serializes as an object");
+        fields.remove("ready_to_run_sections");
+        fields.remove("ready_to_run_runtime_functions");
+
+        let decoded: PassSummary =
+            serde_json::from_value(legacy).expect("deserialize legacy pass summary");
+
+        assert!(decoded.ready_to_run_sections.is_empty());
+        assert_eq!(
+            decoded.ready_to_run_runtime_functions,
+            R2rRuntimeFunctions::Absent
+        );
+    }
 }

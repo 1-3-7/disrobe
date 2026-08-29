@@ -19,12 +19,13 @@ use crate::aot::{
 };
 use crate::decompile::{DecompiledAssembly, decompile_assembly};
 use crate::pass::{PassSummary, analyze};
-use crate::pe::{DataDirectory, PeImage, parse as parse_pe};
+use crate::pe::{ClrHeader, DataDirectory, PeImage, parse as parse_pe, parse_clr_header};
 use crate::peel::confuserex_constants::{ConfuserConstantsRecovery, peel_confuserex_constants};
 use crate::peel::static_decrypt::{DecodedValue, RecoveredConstant};
 use crate::peel::string_emu::RecoveredString as EmulatedString;
 use crate::peel::{PeelReport, PeelStrategy, RecoveredMethod, RecoveredResource, peel_by};
 use crate::protectors::{DetectionReport, Handling, Protector, detect_all};
+use crate::r2r::parse_header as parse_r2r_header;
 use crate::structurize::StructuredMethod;
 
 pub const PASS_ID: PassId = "dotnet.classify";
@@ -125,6 +126,15 @@ impl Pass for DotnetPass {
             }
             let output: Vec<u8> = native_aot_symbols_bytes(&report)?;
             return Ok(Artifact::new(Rung::Surface, output, artifact.root_hash));
+        }
+        let clr_header: ClrHeader =
+            parse_clr_header(bytes, &pe).map_err(|error: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-DOTNET-0907: CLR header parse: {error}"))
+            })?;
+        if clr_header.managed_native_header.rva != 0 && clr_header.managed_native_header.size != 0 {
+            parse_r2r_header(bytes, &pe, &clr_header).map_err(|error: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-DOTNET-0908: ReadyToRun recovery: {error}"))
+            })?;
         }
         let assembly: DecompiledAssembly =
             decompile_assembly(bytes).map_err(|e: crate::error::Error| {
@@ -273,6 +283,8 @@ fn analyze_manifest(summary: &PassSummary) -> serde_json::Value {
         "clr_runtime_version": summary.clr_runtime_version,
         "runtime_label": format!("{:?}", summary.runtime_label),
         "r2r_present": summary.r2r_present,
+        "ready_to_run_sections": summary.ready_to_run_sections,
+        "ready_to_run_runtime_functions": summary.ready_to_run_runtime_functions,
         "native_aot": summary.native_aot,
         "primary_protector": summary.primary_protector.as_ref().map(|p: &Protector| format!("{p:?}")),
         "protectors_detected": summary

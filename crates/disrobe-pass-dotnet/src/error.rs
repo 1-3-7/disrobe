@@ -144,6 +144,15 @@ pub enum Error {
 
     #[error("DR-DOTNET-0039: invalid ahead-of-time method body at RVA 0x{offset:X}: {reason}")]
     InvalidAotMethodBody { offset: u32, reason: &'static str },
+
+    #[error("DR-DOTNET-0040: ReadyToRun section count {count} exceeds parser limit {cap}")]
+    TooManyR2rSections { count: u32, cap: u32 },
+
+    #[error("DR-DOTNET-0041: invalid ReadyToRun section table entry {index}: {reason}")]
+    InvalidR2rSectionTable { index: usize, reason: &'static str },
+
+    #[error("DR-DOTNET-0042: invalid ReadyToRun runtime-function entry {index}: {reason}")]
+    InvalidR2rRuntimeFunctions { index: usize, reason: &'static str },
 }
 
 impl From<ByteReadError> for Error {
