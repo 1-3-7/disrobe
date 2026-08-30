@@ -43,6 +43,30 @@ fn r2r_error(bytes: &[u8]) -> disrobe_pass_dotnet::Error {
     r2r_detect(bytes, &pe, &clr).expect_err("mutated MethodDef entry points must be refused")
 }
 
+fn analyzed_runtime_functions(bytes: &[u8]) -> serde_json::Value {
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(bytes).expect("analyze mutated ReadyToRun DLL");
+    serde_json::to_value(summary.ready_to_run_runtime_functions)
+        .expect("serialize ReadyToRun runtime functions")
+}
+
+#[cfg(feature = "chain")]
+fn automatic_runtime_functions(bytes: Vec<u8>) -> serde_json::Value {
+    let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+    let children: Vec<disrobe_core::chain::ChildArtifact> = DOTNET_PASS
+        .extract_children(&input)
+        .expect("automatic route must inspect mutated ReadyToRun DLL");
+    let analysis: &disrobe_core::chain::ChildArtifact = children
+        .iter()
+        .find(|child: &&disrobe_core::chain::ChildArtifact| {
+            child.handle.relative_path.ends_with(".analyze.json")
+        })
+        .expect("automatic route must emit a .NET analysis artifact");
+    let document: serde_json::Value =
+        serde_json::from_slice(&analysis.bytes).expect("automatic analysis artifact must be JSON");
+    document["ready_to_run_runtime_functions"].clone()
+}
+
 #[test]
 fn helloapp_runtime_function_has_exact_metadata_method_identity() {
     let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
@@ -96,6 +120,216 @@ fn helloapp_runtime_function_has_exact_metadata_method_identity() {
         runtime_functions["method_def_identity"],
         serde_json::json!({"status": "recovered", "attached": 1, "abstained": 1})
     );
+}
+
+#[test]
+fn helloapp_constructor_runtime_function_lifts_exact_unwind_bounded_body() {
+    let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    assert_eq!(
+        &bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12
+            ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 24],
+        &[
+            0xE0, 0x17, 0x00, 0x00, 0xE1, 0x17, 0x00, 0x00, 0x60, 0x17, 0x00, 0x00,
+        ]
+    );
+    let decompiled: disrobe_pass_dotnet::DecompiledAssembly =
+        decompile_assembly(&bytes).expect("decompile tracked R2R metadata");
+    let metadata_constructor: &disrobe_pass_dotnet::StructuredMethod = decompiled
+        .methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::StructuredMethod| method.token == 0x0600_0002)
+        .expect("tracked metadata constructor");
+    assert_eq!(
+        metadata_constructor.signature.lines().next_back(),
+        Some("public void .ctor()")
+    );
+    let pe: PeImage = parse(&bytes).expect("parse tracked ReadyToRun PE");
+    let body_offset: usize = pe
+        .rva_to_offset(0x17E0)
+        .expect("tracked constructor body RVA is file backed");
+    assert_eq!(&bytes[body_offset..=body_offset], &[0xc3]);
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(&bytes).expect("analyze tracked ReadyToRun DLL");
+    let runtime_functions: serde_json::Value =
+        serde_json::to_value(summary.ready_to_run_runtime_functions)
+            .expect("serialize ReadyToRun runtime functions");
+
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"],
+        serde_json::json!({
+            "range": {"start_rva": 6112, "end_rva": 6113},
+            "status": "recovered",
+            "signature": "registers",
+            "pseudo_c": "#include <stdint.h>\nuint64_t recovered(void) {\n    uint64_t r_rax = 0;\n    return r_rax;\n}\n"
+        })
+    );
+    assert!(runtime_functions["entries"][0]["method_body"].is_null());
+}
+
+#[test]
+fn unsupported_constructor_instruction_preserves_method_identity() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let pe: PeImage = parse(&bytes).expect("parse tracked ReadyToRun PE");
+    let body_offset: usize = pe
+        .rva_to_offset(0x17E0)
+        .expect("tracked constructor body RVA is file backed");
+    bytes[body_offset] = 0xCC;
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(&bytes).expect("unsupported body remains inspectable");
+    let runtime_functions: serde_json::Value =
+        serde_json::to_value(summary.ready_to_run_runtime_functions)
+            .expect("serialize ReadyToRun runtime functions");
+    assert_eq!(
+        runtime_functions["entries"][1]["method_def"],
+        serde_json::json!({"token": 0x0600_0002, "name": ".ctor"})
+    );
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"]["reason"],
+        serde_json::json!("native_lifter_refused")
+    );
+}
+
+#[test]
+fn malformed_constructor_runtime_function_range_preserves_method_identity() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x17E0u32.to_le_bytes());
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(&bytes).expect("malformed body range remains inspectable");
+    let runtime_functions: serde_json::Value =
+        serde_json::to_value(summary.ready_to_run_runtime_functions)
+            .expect("serialize ReadyToRun runtime functions");
+
+    assert_eq!(
+        runtime_functions["entries"][1]["method_def"],
+        serde_json::json!({"token": 0x0600_0002, "name": ".ctor"})
+    );
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"],
+        serde_json::json!({
+            "status": "refused",
+            "range": {"start_rva": 6112, "end_rva": 6112},
+            "reason": "range_malformed"
+        })
+    );
+}
+
+#[test]
+fn overlapping_constructor_runtime_function_range_is_refused_with_attribution() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4]
+        .copy_from_slice(&0x17C5u32.to_le_bytes());
+    bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x17D0u32.to_le_bytes());
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(&bytes).expect("overlapping body range remains inspectable");
+    let runtime_functions: serde_json::Value =
+        serde_json::to_value(summary.ready_to_run_runtime_functions)
+            .expect("serialize ReadyToRun runtime functions");
+
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"]["reason"],
+        serde_json::json!("range_overlaps")
+    );
+    assert_eq!(
+        runtime_functions["entries"][1]["method_def"]["token"],
+        serde_json::json!(0x0600_0002)
+    );
+}
+
+#[test]
+fn oversized_constructor_runtime_function_range_is_refused_with_attribution() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x0010_17E1u32.to_le_bytes());
+    let summary: PassSummary =
+        disrobe_pass_dotnet::analyze(&bytes).expect("oversized body range remains inspectable");
+    let runtime_functions: serde_json::Value =
+        serde_json::to_value(summary.ready_to_run_runtime_functions)
+            .expect("serialize ReadyToRun runtime functions");
+
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"]["reason"],
+        serde_json::json!("input_budget_exhausted")
+    );
+    assert_eq!(
+        runtime_functions["entries"][1]["method_def"]["name"],
+        serde_json::json!(".ctor")
+    );
+}
+
+#[test]
+fn trailing_decodable_constructor_body_byte_is_boundary_ambiguous() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let pe: PeImage = parse(&bytes).expect("parse tracked ReadyToRun PE");
+    let trailing_offset: usize = pe
+        .rva_to_offset(0x17E1)
+        .expect("constructor trailing body RVA is file backed");
+    bytes[trailing_offset] = 0x90;
+    bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x17E2u32.to_le_bytes());
+
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
+    assert_eq!(
+        runtime_functions["entries"][1]["method_body"],
+        serde_json::json!({
+            "status": "refused",
+            "range": {"start_rva": 6112, "end_rva": 6114},
+            "reason": "boundary_ambiguous"
+        })
+    );
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn automatic_r2r_analysis_preserves_method_body_refusals() {
+    let mut malformed: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    malformed[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x17E0u32.to_le_bytes());
+
+    let mut overlapping: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    overlapping[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4]
+        .copy_from_slice(&0x17C5u32.to_le_bytes());
+    overlapping[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x17D0u32.to_le_bytes());
+
+    let mut unsupported: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let pe: PeImage = parse(&unsupported).expect("parse tracked ReadyToRun PE");
+    let body_offset: usize = pe
+        .rva_to_offset(0x17E0)
+        .expect("tracked constructor body RVA is file backed");
+    unsupported[body_offset] = 0xCC;
+
+    let mut budget_exhausted: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    budget_exhausted[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 4
+        ..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 12 + 8]
+        .copy_from_slice(&0x0010_17E1u32.to_le_bytes());
+
+    for (case, bytes, reason) in [
+        ("malformed", malformed, "range_malformed"),
+        ("overlapping", overlapping, "range_overlaps"),
+        ("unsupported", unsupported, "native_lifter_refused"),
+        (
+            "budget exhausted",
+            budget_exhausted,
+            "input_budget_exhausted",
+        ),
+    ] {
+        let expected: serde_json::Value = analyzed_runtime_functions(&bytes);
+        assert_eq!(
+            expected["entries"][1]["method_body"]["reason"], reason,
+            "{case}"
+        );
+        assert_eq!(automatic_runtime_functions(bytes), expected, "{case}");
+    }
 }
 
 #[test]
@@ -446,6 +680,15 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
                     "method_def": {
                         "token": 100_663_298,
                         "name": ".ctor"
+                    },
+                    "method_body": {
+                        "status": "recovered",
+                        "range": {
+                            "start_rva": 6112,
+                            "end_rva": 6113
+                        },
+                        "pseudo_c": "#include <stdint.h>\nuint64_t recovered(void) {\n    uint64_t r_rax = 0;\n    return r_rax;\n}\n",
+                        "signature": "registers"
                     }
                 }
             ],
@@ -494,7 +737,7 @@ fn amd64_runtime_function_payload_requires_complete_entries() {
 }
 
 #[test]
-fn runtime_function_unwind_range_must_be_file_backed() {
+fn unclaimed_runtime_function_range_remains_a_global_malformed_table_rejection() {
     let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
     assert_eq!(
         u32::from_le_bytes(
@@ -518,9 +761,7 @@ fn runtime_function_unwind_range_must_be_file_backed() {
         .copy_from_slice(&0xFFFF_F000u32.to_le_bytes());
     bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 4..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 8]
         .copy_from_slice(&0xFFFF_F010u32.to_le_bytes());
-    let pe: PeImage = parse(&bytes).expect("parse pe");
-    let clr: ClrHeader = parse_clr_header(&bytes, &pe).expect("clr header");
-    let error: disrobe_pass_dotnet::Error =
-        parse_header(&bytes, &pe, &clr).expect_err("unmapped unwind range must be refused");
+    let error: disrobe_pass_dotnet::Error = disrobe_pass_dotnet::analyze(&bytes)
+        .expect_err("unclaimed malformed range must reject the runtime-function table");
     assert!(error.to_string().starts_with("DR-DOTNET-0042:"));
 }

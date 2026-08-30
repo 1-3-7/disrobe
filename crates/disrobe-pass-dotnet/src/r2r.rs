@@ -1,4 +1,5 @@
 use disrobe_bytes::ByteReader;
+use disrobe_pass_native::{Arch, DisasmInsn, PseudoAbi, disassemble, recover_leaf_function_abi};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -17,6 +18,10 @@ const MACHINE_ARMNT: u16 = 0x01C4;
 const MACHINE_AMD64: u16 = 0x8664;
 const MACHINE_ARM64: u16 = 0xAA64;
 const MAX_SUPPORTED_R2R_MAJOR_VERSION: u16 = 27;
+const MAX_R2R_METHOD_BODY_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_R2R_METHOD_BODY_TOTAL_INPUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_R2R_METHOD_BODY_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_R2R_METHOD_BODY_TOTAL_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct R2rHeader {
@@ -58,6 +63,8 @@ pub struct R2rAmd64RuntimeFunction {
     pub method_def: Option<R2rMethodDefIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method_def_abstention: Option<R2rMethodDefAbstention>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_body: Option<R2rMethodBody>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +81,46 @@ pub struct R2rUnwindGcRuntimeFunction {
 pub struct R2rMethodDefIdentity {
     pub token: u32,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct R2rMethodCodeRange {
+    pub start_rva: R2rRva,
+    pub end_rva: R2rRva,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum R2rMethodBody {
+    Recovered {
+        range: R2rMethodCodeRange,
+        pseudo_c: String,
+        signature: R2rMethodBodySignature,
+    },
+    Refused {
+        range: Option<R2rMethodCodeRange>,
+        reason: R2rMethodBodyRefusal,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum R2rMethodBodySignature {
+    Registers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum R2rMethodBodyRefusal {
+    BoundaryUnavailable,
+    BoundaryAmbiguous,
+    RangeMalformed,
+    RangeNotExecutable,
+    RangeOverlaps,
+    InputBudgetExhausted,
+    OutputBudgetExhausted,
+    AddressOverflow,
+    NativeLifterRefused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +347,8 @@ fn parse(
             )?;
         }
     }
+    attach_method_bodies(image, pe, &mut runtime_functions);
+    validate_unclaimed_runtime_ranges(image, pe, &runtime_functions)?;
     Ok((header, sections, runtime_functions))
 }
 
@@ -397,22 +446,6 @@ fn parse_runtime_functions(
         let unwind_info_start_rva: u32 = reader.read_u32_le()?;
         let unwind_info_end_rva: u32 = reader.read_u32_le()?;
         let gc_info_start_rva: u32 = reader.read_u32_le()?;
-        let size: u32 = unwind_info_end_rva
-            .checked_sub(unwind_info_start_rva)
-            .ok_or(Error::InvalidR2rRuntimeFunctions {
-                index,
-                reason: "unwind-info end is before its start",
-            })?;
-        if size == 0
-            || pe
-                .slice_exact_file_backed_rva(image, unwind_info_start_rva, size as usize)
-                .is_none()
-        {
-            return Err(Error::InvalidR2rRuntimeFunctions {
-                index,
-                reason: "unwind-info range is not wholly file backed",
-            });
-        }
         if pe
             .slice_exact_file_backed_rva(image, gc_info_start_rva, 1)
             .is_none()
@@ -428,6 +461,7 @@ fn parse_runtime_functions(
             gc_info_start: R2rRva(gc_info_start_rva),
             method_def: None,
             method_def_abstention: None,
+            method_body: None,
         });
     }
     Ok(R2rRuntimeFunctions::Amd64 {
@@ -903,6 +937,234 @@ fn attach_method_def_join(
     Ok(())
 }
 
+const fn method_body_refusal(
+    range: Option<R2rMethodCodeRange>,
+    reason: R2rMethodBodyRefusal,
+) -> R2rMethodBody {
+    R2rMethodBody::Refused { range, reason }
+}
+
+fn range_is_file_backed(image: &[u8], pe: &PeImage, range: R2rMethodCodeRange) -> bool {
+    let Some(length): Option<u32> = range.end_rva.0.checked_sub(range.start_rva.0) else {
+        return false;
+    };
+    length != 0
+        && usize::try_from(length)
+            .ok()
+            .and_then(|length| pe.slice_exact_file_backed_rva(image, range.start_rva.0, length))
+            .is_some()
+}
+
+fn validate_unclaimed_runtime_ranges(
+    image: &[u8],
+    pe: &PeImage,
+    runtime_functions: &R2rRuntimeFunctions,
+) -> Result<()> {
+    let R2rRuntimeFunctions::Amd64 { entries, .. } = runtime_functions else {
+        return Ok(());
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let range: R2rMethodCodeRange = R2rMethodCodeRange {
+            start_rva: entry.unwind_info_start,
+            end_rva: entry.unwind_info_end,
+        };
+        if entry.method_def.is_none() && !range_is_file_backed(image, pe, range) {
+            return Err(Error::InvalidR2rRuntimeFunctions {
+                index,
+                reason: "runtime-function range is not wholly file backed",
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct R2rMethodBodyBudget {
+    input: usize,
+    output: usize,
+}
+
+fn body_from_range(
+    image: &[u8],
+    pe: &PeImage,
+    range: R2rMethodCodeRange,
+    overlaps: bool,
+    budget: &mut R2rMethodBodyBudget,
+) -> R2rMethodBody {
+    let length_u32: u32 = match range.end_rva.0.checked_sub(range.start_rva.0) {
+        Some(length) if length != 0 => length,
+        _ => return method_body_refusal(Some(range), R2rMethodBodyRefusal::RangeMalformed),
+    };
+    if overlaps {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::RangeOverlaps);
+    }
+    let length: usize = match usize::try_from(length_u32) {
+        Ok(length) if length <= MAX_R2R_METHOD_BODY_INPUT_BYTES => length,
+        _ => {
+            return method_body_refusal(Some(range), R2rMethodBodyRefusal::InputBudgetExhausted);
+        }
+    };
+    let Some(total_input): Option<usize> = budget.input.checked_add(length) else {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::InputBudgetExhausted);
+    };
+    if total_input > MAX_R2R_METHOD_BODY_TOTAL_INPUT_BYTES {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::InputBudgetExhausted);
+    }
+    budget.input = total_input;
+    let executable: bool = pe.sections.iter().any(|section| {
+        let Some(raw_end): Option<u32> = section.virtual_address.checked_add(section.raw_size)
+        else {
+            return false;
+        };
+        range.start_rva.0 >= section.virtual_address
+            && range.end_rva.0 <= raw_end
+            && section.characteristics & 0x2000_0000 != 0
+    });
+    if !executable {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::RangeNotExecutable);
+    }
+    let Some(bytes): Option<&[u8]> =
+        pe.slice_exact_file_backed_rva(image, range.start_rva.0, length)
+    else {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::RangeMalformed);
+    };
+    let Some(base): Option<u64> = pe.image_base.checked_add(u64::from(range.start_rva.0)) else {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::AddressOverflow);
+    };
+    let instructions: Vec<DisasmInsn> = match disassemble(Arch::X86_64, base, bytes) {
+        Ok(instructions) => instructions,
+        Err(_) => {
+            return method_body_refusal(Some(range), R2rMethodBodyRefusal::BoundaryAmbiguous);
+        }
+    };
+    let Some(expected_end): Option<u64> = base.checked_add(length as u64) else {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::AddressOverflow);
+    };
+    let mut next_address: u64 = base;
+    for (index, instruction) in instructions.iter().enumerate() {
+        if instruction.address != next_address
+            || instruction.bytes.is_empty()
+            || instruction.mnemonic == "(bad)"
+        {
+            return method_body_refusal(Some(range), R2rMethodBodyRefusal::BoundaryAmbiguous);
+        }
+        let Some(instruction_end): Option<u64> = instruction
+            .address
+            .checked_add(instruction.bytes.len() as u64)
+        else {
+            return method_body_refusal(Some(range), R2rMethodBodyRefusal::AddressOverflow);
+        };
+        if instruction_end > expected_end
+            || (index + 1 < instructions.len()
+                && matches!(instruction.mnemonic.as_str(), "ret" | "retf"))
+        {
+            return method_body_refusal(Some(range), R2rMethodBodyRefusal::BoundaryAmbiguous);
+        }
+        next_address = instruction_end;
+    }
+    if instructions.is_empty() || next_address != expected_end {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::BoundaryAmbiguous);
+    }
+    let Some(reserved_output): Option<usize> =
+        budget.output.checked_add(MAX_R2R_METHOD_BODY_OUTPUT_BYTES)
+    else {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::OutputBudgetExhausted);
+    };
+    if reserved_output > MAX_R2R_METHOD_BODY_TOTAL_OUTPUT_BYTES {
+        return method_body_refusal(Some(range), R2rMethodBodyRefusal::OutputBudgetExhausted);
+    }
+    match recover_leaf_function_abi(bytes, base, PseudoAbi::MsX64) {
+        Ok(recovery) => {
+            let Some(total_output): Option<usize> =
+                budget.output.checked_add(recovery.source.len())
+            else {
+                return method_body_refusal(
+                    Some(range),
+                    R2rMethodBodyRefusal::OutputBudgetExhausted,
+                );
+            };
+            if recovery.source.len() > MAX_R2R_METHOD_BODY_OUTPUT_BYTES {
+                return method_body_refusal(
+                    Some(range),
+                    R2rMethodBodyRefusal::OutputBudgetExhausted,
+                );
+            }
+            if total_output > MAX_R2R_METHOD_BODY_TOTAL_OUTPUT_BYTES {
+                return method_body_refusal(
+                    Some(range),
+                    R2rMethodBodyRefusal::OutputBudgetExhausted,
+                );
+            }
+            budget.output = total_output;
+            R2rMethodBody::Recovered {
+                range,
+                pseudo_c: recovery.source,
+                signature: R2rMethodBodySignature::Registers,
+            }
+        }
+        Err(_) => method_body_refusal(Some(range), R2rMethodBodyRefusal::NativeLifterRefused),
+    }
+}
+
+fn attach_method_bodies(image: &[u8], pe: &PeImage, runtime_functions: &mut R2rRuntimeFunctions) {
+    let R2rRuntimeFunctions::Amd64 { entries, .. } = runtime_functions else {
+        return;
+    };
+    let mut ranges: Vec<(usize, R2rMethodCodeRange)> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            (
+                index,
+                R2rMethodCodeRange {
+                    start_rva: entry.unwind_info_start,
+                    end_rva: entry.unwind_info_end,
+                },
+            )
+        })
+        .collect();
+    ranges.sort_unstable_by_key(|(_, range)| (range.start_rva, range.end_rva));
+    let mut overlaps: Vec<bool> = vec![false; entries.len()];
+    let mut greatest_end: Option<(usize, u32)> = None;
+    for (index, range) in &ranges {
+        if let Some((prior_index, prior_end)) = greatest_end
+            && range.start_rva.0 < prior_end
+        {
+            if let Some(value) = overlaps.get_mut(prior_index) {
+                *value = true;
+            }
+            if let Some(value) = overlaps.get_mut(*index) {
+                *value = true;
+            }
+        }
+        if greatest_end.is_none_or(|(_, end)| range.end_rva.0 > end) {
+            greatest_end = Some((*index, range.end_rva.0));
+        }
+    }
+    let by_index: Vec<R2rMethodCodeRange> = entries
+        .iter()
+        .map(|entry| R2rMethodCodeRange {
+            start_rva: entry.unwind_info_start,
+            end_rva: entry.unwind_info_end,
+        })
+        .collect();
+    let mut budget: R2rMethodBodyBudget = R2rMethodBodyBudget::default();
+    for (index, entry) in entries.iter_mut().enumerate() {
+        if entry.method_def.is_none() {
+            continue;
+        }
+        let Some(range): Option<R2rMethodCodeRange> = by_index.get(index).copied() else {
+            entry.method_body = Some(method_body_refusal(
+                None,
+                R2rMethodBodyRefusal::BoundaryUnavailable,
+            ));
+            continue;
+        };
+        let overlap: bool = overlaps.get(index).is_none_or(|overlap| *overlap);
+        entry.method_body = Some(body_from_range(image, pe, range, overlap, &mut budget));
+    }
+}
+
 fn section_name(section_type: u32) -> String {
     let known: Option<&'static str> = match section_type {
         100 => Some("compiler_identifier"),
@@ -987,5 +1249,44 @@ mod tests {
                 "entries": [{"unwind_info_start_rva": 4160, "gc_info_start_rva": 4176}]
             })
         );
+    }
+
+    #[test]
+    fn output_budget_overflow_has_a_distinct_refusal() {
+        let image: [u8; 1] = [0xcc];
+        let pe: PeImage = PeImage {
+            bitness: PeBitness::Pe32Plus,
+            machine: MACHINE_AMD64,
+            number_of_sections: 1,
+            timestamp: 0,
+            characteristics: 0,
+            entry_point_rva: 0,
+            image_base: 0,
+            data_directories: Vec::new(),
+            sections: vec![SectionHeader {
+                name: ".text".to_owned(),
+                virtual_size: 1,
+                virtual_address: 0x1000,
+                raw_size: 1,
+                raw_pointer: 0,
+                characteristics: 0x2000_0000,
+            }],
+        };
+        let range: R2rMethodCodeRange = R2rMethodCodeRange {
+            start_rva: R2rRva(0x1000),
+            end_rva: R2rRva(0x1001),
+        };
+        let mut budget: R2rMethodBodyBudget = R2rMethodBodyBudget {
+            input: 0,
+            output: usize::MAX,
+        };
+
+        assert!(matches!(
+            body_from_range(&image, &pe, range, false, &mut budget),
+            R2rMethodBody::Refused {
+                reason: R2rMethodBodyRefusal::OutputBudgetExhausted,
+                ..
+            }
+        ));
     }
 }
