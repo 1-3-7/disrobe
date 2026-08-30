@@ -314,49 +314,45 @@ fn cobalt_strike_sweep_reports_the_bound_that_stopped_it() {
 
 const NJRAT_FILLER_BYTES: usize = MEGABYTE;
 const NJRAT_FIELDS: usize = 5000;
-const NJRAT_MEASURE_ROUNDS: usize = 3;
-const NJRAT_RESCAN_RATIO_NUMERATOR: u32 = 3;
-const NJRAT_RESCAN_RATIO_DENOMINATOR: u32 = 2;
 
 #[test]
 fn njrat_field_offsets_do_not_rescan_the_file_per_field() {
-    let mut baseline: Duration = Duration::MAX;
-    let mut loaded: Duration = Duration::MAX;
-    let mut njrat_fields: usize = 0;
-    for _ in 0..NJRAT_MEASURE_ROUNDS {
-        let plain: Vec<u8> = njrat_field_soup(NJRAT_FILLER_BYTES, 1);
-        let Some((_plain_findings, plain_elapsed)): Option<Measured<Vec<ReconFinding>>> =
-            recon_findings_of("njrat baseline", plain)
-        else {
-            return;
-        };
-        baseline = baseline.min(plain_elapsed);
+    const RECOVERED_FIELDS: usize = 4096;
+    const FIELD_BYTES: usize = 8;
+    const SEPARATOR_BYTES: usize = 5;
 
-        let dense: Vec<u8> = njrat_field_soup(NJRAT_FILLER_BYTES, NJRAT_FIELDS);
-        let Some((findings, dense_elapsed)): Option<Measured<Vec<ReconFinding>>> =
-            recon_findings_of("njrat field sweep", dense)
-        else {
-            return;
-        };
-        loaded = loaded.min(dense_elapsed);
-        njrat_fields = findings
-            .iter()
-            .filter(|f: &&ReconFinding| f.rule_id.starts_with("DR-RECON-MALCFG-NJRAT-FIELD"))
-            .count();
-    }
-    let ceiling: Duration =
-        baseline * NJRAT_RESCAN_RATIO_NUMERATOR / NJRAT_RESCAN_RATIO_DENOMINATOR;
+    let dense: Vec<u8> = njrat_field_soup(NJRAT_FILLER_BYTES, NJRAT_FIELDS);
+    let field_line_start: usize = dense[..dense.len() - 1]
+        .iter()
+        .rposition(|&byte: &u8| byte == b'\n')
+        .map_or(0usize, |offset: usize| offset + 1);
+    let field_line: usize = memchr::memchr_iter(b'\n', &dense[..field_line_start]).count() + 1;
+    let Some((findings, elapsed)): Option<Measured<Vec<ReconFinding>>> =
+        recon_findings_of("njrat field sweep", dense)
+    else {
+        return;
+    };
+    let njrat_fields: Vec<&ReconFinding> = findings
+        .iter()
+        .filter(|finding: &&ReconFinding| {
+            finding.rule_id.starts_with("DR-RECON-MALCFG-NJRAT-FIELD")
+        })
+        .collect();
     println!(
-        "njrat 1MiB baseline {baseline:?}, {NJRAT_FIELDS} fields {loaded:?}, ceiling {ceiling:?}, {njrat_fields} njrat field(s)"
+        "njrat 1MiB carrier recovered {} field(s) in {elapsed:?}",
+        njrat_fields.len()
     );
-    assert!(
-        njrat_fields >= 4096,
-        "the crafted line must reach the field cap, got {njrat_fields}"
-    );
-    assert!(
-        loaded < ceiling,
-        "resolving a field position must not rescan the file per field, {loaded:?} against a {baseline:?} baseline"
-    );
+    assert_eq!(njrat_fields.len(), RECOVERED_FIELDS);
+    for (index, finding) in njrat_fields.into_iter().enumerate() {
+        let expected_offset: usize = field_line_start + index * (FIELD_BYTES + SEPARATOR_BYTES);
+        assert_eq!(finding.offset, expected_offset, "field {index} offset");
+        assert_eq!(finding.line, field_line, "field {index} line");
+        assert_eq!(
+            finding.column,
+            index * (FIELD_BYTES + SEPARATOR_BYTES) + 1,
+            "field {index} column"
+        );
+    }
 }
 
 #[test]

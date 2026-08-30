@@ -577,6 +577,14 @@ struct LineBlock {
     last_newline_before: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LineLocation {
+    line: usize,
+    column: usize,
+    #[cfg(test)]
+    examined: usize,
+}
+
 #[derive(Debug)]
 struct LineIndex<'a> {
     bytes: &'a [u8],
@@ -611,11 +619,16 @@ impl<'a> LineIndex<'a> {
         self.bytes
     }
 
-    fn line_col(&self, offset: usize) -> (usize, usize) {
+    fn locate(&self, offset: usize) -> LineLocation {
         let capped: usize = offset.min(self.bytes.len());
         let block_start: usize = capped - capped % LINE_BLOCK_BYTES;
         let Some(block): Option<&LineBlock> = self.blocks.get(capped / LINE_BLOCK_BYTES) else {
-            return (1, capped.saturating_add(1));
+            return LineLocation {
+                line: 1,
+                column: capped.saturating_add(1),
+                #[cfg(test)]
+                examined: 0,
+            };
         };
         let head: &[u8] = &self.bytes[block_start..capped];
         let line: usize = 1 + block.newlines_before + memchr::memchr_iter(b'\n', head).count();
@@ -626,7 +639,17 @@ impl<'a> LineIndex<'a> {
         } else {
             capped - last_newline
         };
-        (line, column)
+        LineLocation {
+            line,
+            column,
+            #[cfg(test)]
+            examined: head.len(),
+        }
+    }
+
+    fn line_col(&self, offset: usize) -> (usize, usize) {
+        let location: LineLocation = self.locate(offset);
+        (location.line, location.column)
     }
 }
 
@@ -1942,6 +1965,50 @@ mod tests {
             short.pop();
             assert_line_index_matches_scan(&short, "one byte below a block multiple");
         }
+    }
+
+    #[test]
+    fn njrat_field_locations_examine_at_most_one_index_block_each() {
+        const FILLER_BYTES: usize = 1 << 20;
+        const FIELD_COUNT: usize = 4096;
+        const FIELD: &[u8] = b"YWJjZA==";
+        const SEPARATOR: &[u8] = b"|'|'|";
+
+        let mut bytes: Vec<u8> = Vec::with_capacity(FILLER_BYTES + FIELD_COUNT * 16);
+        while bytes.len() < FILLER_BYTES {
+            bytes.extend_from_slice(b"0123456789abcdef0123456789abcdef\n");
+        }
+        let field_line_start: usize = bytes.len();
+        for index in 0..FIELD_COUNT {
+            if index > 0 {
+                bytes.extend_from_slice(SEPARATOR);
+            }
+            bytes.extend_from_slice(FIELD);
+        }
+        bytes.push(b'\n');
+
+        let text: &str = std::str::from_utf8(&bytes).expect("carrier is ASCII");
+        let field_line: &str = text[field_line_start..].trim_end_matches('\n');
+        let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+        let fields: Vec<malware_config::ConfigField> =
+            malware_config::njrat_split(field_line, field_line_start, &mut budget);
+        assert_eq!(fields.len(), FIELD_COUNT);
+
+        let lines: LineIndex<'_> = LineIndex::new(&bytes);
+        let expected_line: usize =
+            memchr::memchr_iter(b'\n', &bytes[..field_line_start]).count() + 1;
+        let mut total_examined: usize = 0;
+        for (index, field) in fields.iter().enumerate() {
+            let location: LineLocation = lines.locate(field.offset);
+            let expected_column: usize = index * (FIELD.len() + SEPARATOR.len()) + 1;
+            assert_eq!(
+                (location.line, location.column),
+                (expected_line, expected_column)
+            );
+            assert!(location.examined < LINE_BLOCK_BYTES);
+            total_examined = total_examined.saturating_add(location.examined);
+        }
+        assert!(total_examined < FIELD_COUNT * LINE_BLOCK_BYTES);
     }
 
     fn values_in(report: &ReconReport, category: ReconCategory) -> Vec<String> {
