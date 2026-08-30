@@ -16,7 +16,9 @@ use super::try_with::{
     is_pure_finally_handler_shape, is_shortcircuit_cleanup_pop, is_simple_guard_prelude_stmt,
     is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
     offset_is_unprotected, structure_for_bare_except_continue_epilogue,
-    structure_for_typed_except_continue_epilogue, structure_infinite_while_finally_arm_break_body,
+    structure_for_typed_except_continue_epilogue,
+    structure_for_typed_except_continue_external_body,
+    structure_infinite_while_finally_arm_break_body,
     structure_infinite_while_finally_arm_continue_body,
     structure_infinite_while_finally_arm_raise_body,
     structure_infinite_while_finally_arm_return_body, structure_infinite_while_split_finally_body,
@@ -452,14 +454,21 @@ fn back_edge_inside_exc_handler_cold_block(
         Some(&o) => o,
         None => return false,
     };
+    let reenters_for: bool = matches!(
+        stream.ops.get(header),
+        Some(CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_))
+    );
+    let handler_end: usize = handler_chain_end(stream, handler_start, stream.ops.len())
+        .unwrap_or_else(|| handler_start.saturating_add(1).min(stream.ops.len()));
     stream
         .exception_table
         .iter()
-        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
-        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
-            stream
-                .index_for_offset(e.start)
-                .is_some_and(|try_start: usize| try_start < header)
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.target == handler_off)
+        .any(|entry: &crate::bytecode::flow::ExceptionTableEntry| {
+            (reenters_for && back_edge < handler_end)
+                || stream
+                    .index_for_offset(entry.start)
+                    .is_some_and(|try_start: usize| try_start < header)
         })
 }
 
@@ -1319,7 +1328,7 @@ fn handler_encloses_loop(stream: &DecodedStream, handler_offset: u32, body_start
         })
 }
 
-fn first_cold_for_handler(
+pub(super) fn first_cold_for_handler(
     stream: &DecodedStream,
     body_start: usize,
     raw_exit: usize,
@@ -1425,6 +1434,92 @@ pub(super) fn find_for_with_cold_handler(
         next_header = region.header.saturating_add(1);
     }
     None
+}
+
+fn find_for_arm_with_cold_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    emission_hi: usize,
+    discovery_hi: usize,
+) -> Option<(LoopRegion, usize, usize)> {
+    let discovery_hi: usize = discovery_hi.min(stream.ops.len());
+    if stream.is_pre_311()
+        || stream.exception_table.is_empty()
+        || lo >= emission_hi
+        || emission_hi >= discovery_hi
+    {
+        return None;
+    }
+    let comp_envelopes: Vec<(usize, usize)> = inline_comp_envelopes(stream, lo, emission_hi);
+    let mut match_: Option<(LoopRegion, usize, usize)> = None;
+    for header in lo..emission_hi {
+        let Some(op @ (CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_))) =
+            stream.ops.get(header)
+        else {
+            continue;
+        };
+        if in_any_envelope(&comp_envelopes, header) {
+            continue;
+        }
+        let Some(raw_exit): Option<usize> = resolve_jump_target(stream, header, op)
+            .filter(|exit: &usize| header.saturating_add(1) < *exit && *exit < emission_hi)
+        else {
+            continue;
+        };
+        let body_start: usize = header + 1;
+        if let Some(handler_start) =
+            first_cold_for_handler(stream, body_start, raw_exit, discovery_hi)
+            && handler_start >= emission_hi
+            && for_arm_exit_is_scaffolding(stream, raw_exit, emission_hi, handler_start)
+        {
+            if match_.is_some() {
+                return None;
+            }
+            match_ = Some((
+                LoopRegion {
+                    kind: LoopKind::For,
+                    header,
+                    body_start,
+                    body_end: raw_exit,
+                    back_edge: raw_exit - 1,
+                    exit: raw_exit,
+                    infinite: false,
+                },
+                raw_exit,
+                handler_start,
+            ));
+        }
+    }
+    match_
+}
+
+fn for_arm_exit_is_scaffolding(
+    stream: &DecodedStream,
+    raw_exit: usize,
+    emission_hi: usize,
+    handler_start: usize,
+) -> bool {
+    let mut exit_jumps: usize = 0;
+    for index in raw_exit..emission_hi {
+        match stream.ops.get(index) {
+            Some(
+                CanonicalOp::Pop
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_),
+            ) => {}
+            Some(op @ (CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_))) => {
+                if !resolve_jump_target(stream, index, op)
+                    .is_some_and(|target: usize| target > emission_hi && target < handler_start)
+                {
+                    return false;
+                }
+                exit_jumps += 1;
+            }
+            _ => return false,
+        }
+    }
+    exit_jumps == 1
 }
 
 pub(super) fn for_cold_handler_exit_epilogue(
@@ -2977,6 +3072,65 @@ pub(super) fn structure_for_loop_with_iter(
     Ok(Some(out))
 }
 
+pub(super) fn structure_for_loop_with_external_cold_handler(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    emission_hi: usize,
+    discovery_hi: usize,
+    expected_handler_start: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some((region, raw_exit, handler_start)): Option<(LoopRegion, usize, usize)> =
+        find_for_arm_with_cold_handler(stream, lo, emission_hi, discovery_hi)
+    else {
+        return Ok(None);
+    };
+    if handler_start != expected_handler_start {
+        return Ok(None);
+    }
+    let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.header)?;
+    let iter: Expr = recover_for_iter(code, stream, &region, lo);
+    push_loop_frame(LoopFrame {
+        header: region.header,
+        exit: raw_exit,
+        exit_return: None,
+        exit_tail_range: None,
+    });
+    let result: Result<Option<Stmt>> = (|| -> Result<Option<Stmt>> {
+        let Some((target, body_start)): Option<(Expr, usize)> =
+            recover_for_target(code, stream, &region)
+        else {
+            return Ok(None);
+        };
+        let Some(body): Option<Vec<Stmt>> = structure_for_typed_except_continue_external_body(
+            code,
+            stream,
+            &region,
+            body_start,
+            expected_handler_start,
+            discovery_hi,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Stmt::For {
+            target,
+            iter,
+            body: non_empty(body),
+            orelse: Vec::new(),
+            is_async: false,
+            line: None,
+        }))
+    })();
+    pop_loop_frame();
+    let Some(loop_stmt): Option<Stmt> = result? else {
+        return Ok(None);
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(loop_stmt);
+    Ok(Some(out))
+}
+
 fn infinite_exit_block(stream: &DecodedStream, region: &LoopRegion) -> Option<(usize, usize)> {
     if !region.infinite {
         return None;
@@ -4262,10 +4416,12 @@ mod for_target_bounds {
     use super::super::DecodedStream;
     use super::super::try_with::{LoopKind, LoopRegion};
     use super::{
-        TerminalExitPadRelation, find_for_loop, find_loop, loop_tail_start, recover_for_target,
-        stmts_equal_ignoring_lines, terminal_exit_pad_relation,
+        TerminalExitPadRelation, back_edge_inside_exc_handler_cold_block, find_for_loop, find_loop,
+        handler_chain_end, loop_tail_start, recover_for_target, stmts_equal_ignoring_lines,
+        terminal_exit_pad_relation,
     };
     use crate::ast::node::{Arg, Arguments, Expr, ExprCtx, Stmt, TypeParam};
+    use crate::bytecode::flow::ExceptionTableEntry;
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
     use disrobe_py_marshal::{CodeEra, CodeObject, Object};
@@ -4563,6 +4719,45 @@ mod for_target_bounds {
         ]);
         let recovered: LoopRegion = find_for_loop(&stream, 0, 7, &[]).expect("for region");
         assert_eq!(recovered.back_edge, 4);
+    }
+
+    #[test]
+    fn ordinary_for_latch_after_exception_handler_is_retained() {
+        let mut stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(9),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpForward(5),
+            CanonicalOp::PushExcInfo,
+            CanonicalOp::CheckExcMatch,
+            CanonicalOp::Pop,
+            CanonicalOp::Reraise(0),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(9),
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        stream.exception_table = vec![
+            ExceptionTableEntry {
+                start: 2,
+                length: 2,
+                target: 6,
+                depth: 0,
+                lasti: false,
+            },
+            ExceptionTableEntry {
+                start: 6,
+                length: 8,
+                target: 12,
+                depth: 1,
+                lasti: true,
+            },
+        ];
+
+        assert_eq!(handler_chain_end(&stream, 3, stream.ops.len()), Some(8));
+        assert!(!back_edge_inside_exc_handler_cold_block(&stream, 0, 8));
+        let recovered: LoopRegion = find_for_loop(&stream, 0, stream.ops.len(), &[])
+            .expect("ordinary for latch remains eligible");
+        assert_eq!(recovered.back_edge, 8);
     }
 
     #[test]

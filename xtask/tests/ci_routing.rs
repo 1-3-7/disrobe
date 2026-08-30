@@ -164,12 +164,12 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "arbitrary_recompile_gate_310",
         ),
         (
-            "per-code-object recompile-equivalence floor (>= 95.49% on the 3.12 band)",
+            "per-code-object recompile-equivalence floor (>= 95.56% on the 3.12 band)",
             "DISROBE_REQUIRE_PY_312",
             "arbitrary_recompile_gate_312",
         ),
         (
-            "per-code-object recompile-equivalence floor (>= 95.80% on the 3.13 band)",
+            "per-code-object recompile-equivalence floor (>= 95.89% on the 3.13 band)",
             "DISROBE_REQUIRE_PY_313",
             "arbitrary_recompile_gate_313",
         ),

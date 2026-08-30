@@ -790,11 +790,11 @@ jobs:
         env:
           DISROBE_REQUIRE_PY_310: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
-      - name: per-code-object recompile-equivalence floor (>= 95.49% on the 3.12 band)
+      - name: per-code-object recompile-equivalence floor (>= 95.56% on the 3.12 band)
         env:
           DISROBE_REQUIRE_PY_312: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
-      - name: per-code-object recompile-equivalence floor (>= 95.80% on the 3.13 band)
+      - name: per-code-object recompile-equivalence floor (>= 95.89% on the 3.13 band)
         env:
           DISROBE_REQUIRE_PY_313: "1"
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture

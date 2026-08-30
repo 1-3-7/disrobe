@@ -71,10 +71,10 @@
         },
         {
           "label": "CPython 3.12 (177 of the pinned modules)",
-          "value": 95.45,
-          "num": 5402,
+          "value": 95.56,
+          "num": 5408,
           "den": 5659,
-          "detail": "5402 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5408 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.12.13 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_312.rs",
@@ -84,10 +84,10 @@
         },
         {
           "label": "CPython 3.13 (190 of the pinned modules)",
-          "value": 95.80,
-          "num": 5716,
+          "value": 95.89,
+          "num": 5721,
           "den": 5966,
-          "detail": "5716 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5721 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.13.14 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs",

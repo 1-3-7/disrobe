@@ -8,8 +8,9 @@ use super::exprs::{
 use super::function_meta::load_const;
 use super::loops::{
     PeeledWhileTestRelation, active_loop_exit_tail_range, exprs_equal_ignoring_lines,
-    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, is_walrus_store_shape,
-    loop_header_owns_test, non_empty, peeled_while_test_relation, stmts_equal_ignoring_lines,
+    find_for_with_cold_handler, find_loop, first_cold_for_handler, for_cold_handler_exit_epilogue,
+    is_walrus_store_shape, loop_header_owns_test, non_empty, peeled_while_test_relation,
+    stmts_equal_ignoring_lines, structure_for_loop_with_external_cold_handler,
     try_enclosed_by_loop,
 };
 use super::postprocess::is_implicit_none_return;
@@ -4042,39 +4043,41 @@ pub(super) fn structure_for_bare_except_continue_epilogue(
     Ok(Some((loop_body, epilogue)))
 }
 
-pub(super) fn structure_for_typed_except_continue_epilogue(
+struct TypedForContinueBody {
+    body: Vec<Stmt>,
+    raw_exit: usize,
+    handler_start: usize,
+}
+
+fn structure_for_typed_except_continue_body(
     code: &CodeObject,
     stream: &DecodedStream,
     region: &LoopRegion,
     body_start: usize,
-) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    raw_exit: usize,
+    handler_start: usize,
+    cold_end: usize,
+) -> Result<Option<TypedForContinueBody>> {
     if stream.is_pre_311()
         || stream.exception_table.is_empty()
         || !matches!(region.kind, LoopKind::For)
+        || body_start <= region.header
+        || body_start >= raw_exit
+        || handler_start < raw_exit
+        || handler_start >= cold_end
+        || cold_end > stream.ops.len()
     {
         return Ok(None);
     }
-    let Some(raw_exit): Option<usize> =
-        resolve_jump_target(stream, region.header, &stream.ops[region.header])
-            .filter(|t: &usize| *t > region.header)
-    else {
-        return Ok(None);
-    };
-    if region.body_end <= raw_exit {
+    if resolve_jump_target(stream, region.header, &stream.ops[region.header]) != Some(raw_exit) {
         return Ok(None);
     }
-    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
-        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
-    else {
-        return Ok(None);
-    };
     if !matches!(
         stream.ops.get(handler_start),
         Some(CanonicalOp::PushExcInfo)
     ) {
         return Ok(None);
     }
-    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
     let has_typed_match: bool = (handler_start..cold_end)
         .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckExcMatch));
     let has_group_or_with: bool = (handler_start..cold_end).any(|k: usize| {
@@ -4119,7 +4122,7 @@ pub(super) fn structure_for_typed_except_continue_epilogue(
         .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
             let ts: usize = stream.index_for_offset(e.start)?;
             let te: usize = stream.index_for_offset_ceil(e.end())?;
-            (ts >= body_start && ts < raw_exit && te <= raw_exit).then_some((ts, te))
+            (ts >= body_start && ts < te && te <= raw_exit).then_some((ts, te))
         })
         .min_by_key(|&(ts, _): &(usize, usize)| ts)
     else {
@@ -4130,7 +4133,16 @@ pub(super) fn structure_for_typed_except_continue_epilogue(
     } else {
         Vec::new()
     };
-    let try_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    let protected_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    let (try_body, continuation_start): (Vec<Stmt>, usize) = if protected_body.is_empty() {
+        let body: Vec<Stmt> = structure_stmts(code, stream, try_start, raw_exit)?;
+        (
+            append_handler_loop_jump(stream, body, try_start, raw_exit),
+            raw_exit,
+        )
+    } else {
+        (protected_body, protected_end)
+    };
     if try_body.is_empty() {
         return Ok(None);
     }
@@ -4139,12 +4151,8 @@ pub(super) fn structure_for_typed_except_continue_epilogue(
     if handlers.iter().any(|h: &ExceptHandler| h.typ.is_none()) {
         return Ok(None);
     }
-    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
-    if epilogue.is_empty() || epilogue_is_trivial_return(&epilogue) {
-        return Ok(None);
-    }
-    let continuation: Vec<Stmt> = if protected_end < raw_exit {
-        structure_stmts(code, stream, protected_end, raw_exit)?
+    let continuation: Vec<Stmt> = if continuation_start < raw_exit {
+        structure_stmts(code, stream, continuation_start, raw_exit)?
     } else {
         Vec::new()
     };
@@ -4157,7 +4165,97 @@ pub(super) fn structure_for_typed_except_continue_epilogue(
         line: None,
     });
     loop_body.extend(continuation);
-    Ok(Some((loop_body, epilogue)))
+    Ok(Some(TypedForContinueBody {
+        body: loop_body,
+        raw_exit,
+        handler_start,
+    }))
+}
+
+pub(super) fn structure_for_typed_except_continue_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|exit: &usize| *exit > region.header)
+    else {
+        return Ok(None);
+    };
+    if region.body_end <= raw_exit {
+        return Ok(None);
+    }
+    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(None);
+    };
+    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
+    let Some(recovered): Option<TypedForContinueBody> = structure_for_typed_except_continue_body(
+        code,
+        stream,
+        region,
+        body_start,
+        raw_exit,
+        handler_start,
+        cold_end,
+    )?
+    else {
+        return Ok(None);
+    };
+    if recovered.raw_exit != raw_exit || recovered.handler_start != handler_start {
+        return Ok(None);
+    }
+    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
+    if epilogue.is_empty() || epilogue_is_trivial_return(&epilogue) {
+        return Ok(None);
+    }
+    Ok(Some((recovered.body, epilogue)))
+}
+
+pub(super) fn structure_for_typed_except_continue_external_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+    expected_handler_start: usize,
+    discovery_hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let discovery_hi: usize = discovery_hi.min(stream.ops.len());
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|exit: &usize| *exit > region.header && *exit <= region.body_end)
+    else {
+        return Ok(None);
+    };
+    if first_cold_for_handler(stream, body_start, raw_exit, discovery_hi)
+        != Some(expected_handler_start)
+    {
+        return Ok(None);
+    }
+    let Some(cold_end): Option<usize> =
+        handler_chain_end(stream, expected_handler_start, discovery_hi)
+    else {
+        return Ok(None);
+    };
+    let Some(recovered): Option<TypedForContinueBody> = structure_for_typed_except_continue_body(
+        code,
+        stream,
+        region,
+        body_start,
+        raw_exit,
+        expected_handler_start,
+        cold_end,
+    )?
+    else {
+        return Ok(None);
+    };
+    if recovered.raw_exit != raw_exit || recovered.handler_start != expected_handler_start {
+        return Ok(None);
+    }
+    Ok(Some(recovered.body))
 }
 
 fn count_handlers_continuing_to(
@@ -4190,6 +4288,97 @@ fn epilogue_is_trivial_return(epilogue: &[Stmt]) -> bool {
         )
 }
 
+fn try_structure_guarded_for_with_external_cold_handler(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311()
+        || region.is_with
+        || region.is_finally
+        || region.region_end > hi
+        || region.handler_start >= hi
+    {
+        return Ok(None);
+    }
+    let Some((guard, false_target)): Option<(usize, usize)> =
+        (lo..region.try_start).rev().find_map(|guard: usize| {
+            if !is_forward_cond_jump(&stream.ops[guard])
+                || is_chain_cond_jump(&stream.ops, guard)
+                || is_value_form_shortcircuit(&stream.ops, guard)
+            {
+                return None;
+            }
+            let false_target: usize = resolve_jump_target(stream, guard, &stream.ops[guard])?;
+            (false_target > region.try_start && false_target < region.handler_start)
+                .then_some((guard, false_target))
+        })
+    else {
+        return Ok(None);
+    };
+    let Some(true_body): Option<Vec<Stmt>> = structure_for_loop_with_external_cold_handler(
+        code,
+        stream,
+        guard + 1,
+        false_target,
+        hi,
+        region.handler_start,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(exit_jump): Option<usize> = then_terminating_jump(stream, guard + 1, false_target)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, exit_jump, &stream.ops[exit_jump])
+        .filter(|join: &usize| *join > false_target && *join < region.handler_start)
+    else {
+        return Ok(None);
+    };
+    let test_start: Option<usize> = guard_test_expr_start(code, stream, lo, guard).or_else(|| {
+        let candidate: usize = first_jump_value_lo(stream, lo, guard);
+        (candidate < guard).then_some(candidate)
+    });
+    let Some(test_start): Option<usize> = test_start else {
+        return Ok(None);
+    };
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() || residual.len() != 1 {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    let orelse: Vec<Stmt> = structure_stmts(code, stream, false_target, join)?;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(true_body),
+        orelse,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, join, hi)?);
+    Ok(Some(out))
+}
+
 pub(super) fn structure_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -4197,6 +4386,11 @@ pub(super) fn structure_try(
     hi: usize,
     region: &TryRegion,
 ) -> Result<Vec<Stmt>> {
+    if let Some(stmts) =
+        try_structure_guarded_for_with_external_cold_handler(code, stream, lo, hi, region)?
+    {
+        return Ok(stmts);
+    }
     if let Some(stmts) = try_structure_loop_continue_guard_over_try(code, stream, lo, hi, region)? {
         return Ok(stmts);
     }

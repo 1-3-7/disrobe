@@ -1997,7 +1997,9 @@ pub(super) fn try_structure_return_ternary(
     jump_idx: usize,
     target: usize,
 ) -> Result<Option<Vec<Stmt>>> {
-    if !matches!(stream.ops[jump_idx], CanonicalOp::PopJumpIfFalse(_)) {
+    if !matches!(stream.ops[jump_idx], CanonicalOp::PopJumpIfFalse(_))
+        && !stream.none_jump_kind.contains_key(&jump_idx)
+    {
         return Ok(None);
     }
     let Some(expr): Option<Expr> =
@@ -2081,10 +2083,7 @@ fn build_return_ternary_test(
         let Some(value): Option<Expr> = residual.into_iter().next_back() else {
             return Ok(None);
         };
-        let is_jump_if_true: bool = matches!(
-            stream.ops[jump],
-            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
-        );
+        let is_jump_if_true: bool = jump_taken_if_true(stream, jump);
         let Some(jump_target): Option<usize> = resolve_jump_target(stream, jump, &stream.ops[jump])
             .filter(|t: &usize| {
                 *t == body_start || *t == else_target || (*t > jump && *t < body_start)
@@ -2093,7 +2092,7 @@ fn build_return_ternary_test(
             return Ok(None);
         };
         operands.push(CondOperand {
-            expr: none_jump_test(stream, jump, value.clone()).unwrap_or(value),
+            expr: none_jump_test_taken(stream, jump, value.clone()).unwrap_or(value),
             is_jump_if_true,
             target: jump_target,
             value_lo,

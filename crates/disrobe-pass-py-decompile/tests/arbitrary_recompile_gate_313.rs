@@ -27,11 +27,11 @@ use common::stdlib_measure::{
 const BAND_LABEL: &str = "CPython 3.13 (190 of the pinned modules)";
 const BAND_POPULATION: &str = "cpython-313-band";
 
-const OBJECT_PCT_FLOOR: f64 = 95.80;
-const BAND_OBJECTS_OK: u64 = 5_716;
+const OBJECT_PCT_FLOOR: f64 = 95.89;
+const BAND_OBJECTS_OK: u64 = 5_721;
 const BAND_CODE_OBJECTS: u64 = 5_966;
 const BAND_MODULES: u64 = 190;
-const BAND_MODULES_EXACT_FLOOR: u64 = 114;
+const BAND_MODULES_EXACT_FLOOR: u64 = 115;
 const BAND_MISSING_FROM_LIB: u64 = 10;
 const BAND_CPYTHON: &str = CPYTHON_313.release;
 
@@ -192,6 +192,12 @@ fn arbitrary_recompile_equivalence_gate_313() {
         m.listed_modules, PINNED_MODULE_COUNT,
         "the harness read {} module paths from the pinned corpus, not {PINNED_MODULE_COUNT}",
         m.listed_modules
+    );
+    assert_eq!(
+        m.sibling_collisions, 0,
+        "the 3.13 measurement matched multiple original sibling code objects to one recovered \
+         sibling {} times",
+        m.sibling_collisions
     );
     assert_eq!(
         m.missing_from_lib, BAND_MISSING_FROM_LIB,
