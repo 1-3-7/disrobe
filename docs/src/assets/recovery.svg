@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1874" viewBox="0 0 920 1874" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:7a3a969e34471c5ac13dbf6ce42a80e7</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="1874" viewBox="0 0 920 1874" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from recovery.json sha256:0a4a6180d8c9236e5b5134f3fdc67cd6</desc>
   <rect x="0" y="0" width="920" height="1874" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="1873" rx="9.5" fill="none" stroke="#262626"/>
   <desc>graded from evidence/descriptors sha256:ff820ee428e2eedecbb75944a7e3fa5b</desc>
@@ -174,7 +174,7 @@
 </svg>
   <text x="703.00" y="166.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-0" dominant-baseline="central" xml:space="preserve">95.09%</text>
   <text x="703.00" y="193.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-1" dominant-baseline="central" xml:space="preserve">96.53%</text>
-  <text x="703.00" y="220.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-2" dominant-baseline="central" xml:space="preserve">95.73%</text>
+  <text x="703.00" y="220.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-2" dominant-baseline="central" xml:space="preserve">95.74%</text>
   <text x="703.00" y="247.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-3" dominant-baseline="central" xml:space="preserve">96.36%</text>
   <text x="703.00" y="274.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-4" dominant-baseline="central" xml:space="preserve">95.45%</text>
   <text x="703.00" y="301.50" font-size="11.5" fill="#ededed" font-family="'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-5" dominant-baseline="central" xml:space="preserve">95.80%</text>

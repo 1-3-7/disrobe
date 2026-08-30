@@ -1,0 +1,3 @@
+path	fork	method	logical_size	crc16	sha256	executable
+mw.bin	data	8	7	9318	ff437f3914ede560404202c5a7587f44fbd2b3255c7db445736d998280803eec	false
+mw.bin.rsrc	resource	8	3	17697	b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78	false

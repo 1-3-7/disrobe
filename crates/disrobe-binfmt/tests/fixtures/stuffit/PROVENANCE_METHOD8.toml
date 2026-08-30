@@ -1,0 +1,42 @@
+schema = "disrobe.fixture-provenance/v1"
+format = "Aladdin StuffIt classic, compression method 8 (MW)"
+
+fixture = "stuffit-method8-xadmaster.sit.hex"
+fixture_encoding = "lowercase hexadecimal with one trailing newline"
+decoded_archive_size = 144
+decoded_archive_sha256 = "8176bd01aeafa6c4f5dda1e0787eb6e4074a4bc500b6a17a458d6febf26e9f0c"
+construction = "One classic SIT! record containing method 8 data and resource forks, with record-header and fork CRC-16 values computed over the final bytes"
+
+reference_repository = "https://github.com/MacPaw/XADMaster"
+reference_commit = "e85bed95e61deb1295972fc76f9180d37fc33b76"
+reference_path = "XADStuffItOldHandles.m"
+reference_range = "SITMWData, SITMW_out and SIT_mw at lines 26-89"
+reference_license = "LGPL-2.1-or-later"
+reference_vectors = "method8-xadmaster-vectors.txt"
+reference_validation = "A separate C17 harness implementing the pinned XADMaster state machine decoded every tracked compressed vector before the archive was constructed"
+reference_compiler = "clang 19.1.7, x86_64-pc-windows-msvc, -std=c17 -Wall -Wextra -Werror -O2"
+reference_manifest = "MANIFEST_METHOD8.tsv"
+
+[[artifacts]]
+path = "mw.bin"
+fork = "data"
+method = 8
+logical_size = 7
+compressed_size = 5
+crc16 = 9318
+sha256 = "ff437f3914ede560404202c5a7587f44fbd2b3255c7db445736d998280803eec"
+
+[[artifacts]]
+path = "mw.bin.rsrc"
+fork = "resource"
+method = 8
+logical_size = 3
+compressed_size = 5
+crc16 = 17697
+sha256 = "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78"
+
+[input_space]
+bit_order = "least-significant bit first within each code"
+initial_code_width = 9
+maximum_dictionary_entries = 16385
+tracked_boundaries = "literal and dictionary expansion, reset at the next dictionary slot, repeated reset, 9-to-10-bit transition, truncation, invalid codes, trailing whole bytes, output quota and CRC mismatch"

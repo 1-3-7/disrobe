@@ -11,6 +11,7 @@ const MAX_PATH_BYTES: usize = 4096;
 const METHOD_STORED: u8 = 0;
 const METHOD_COMPRESS_14: u8 = 2;
 const METHOD_LZAH: u8 = 5;
+const METHOD_MW: u8 = 8;
 const METHOD_13: u8 = 13;
 const FLAG_ENCRYPTED: u8 = 0x80;
 const FLAG_FOLDER_CONTAINS_ENCRYPTED: u8 = 0x10;
@@ -23,6 +24,7 @@ pub enum SitCompression {
     Stored,
     Compress14,
     Lzah,
+    Method8,
     Method13,
 }
 
@@ -115,6 +117,7 @@ fn compression(method: u8) -> Result<SitCompression> {
         METHOD_STORED => Ok(SitCompression::Stored),
         METHOD_COMPRESS_14 => Ok(SitCompression::Compress14),
         METHOD_LZAH => Ok(SitCompression::Lzah),
+        METHOD_MW => Ok(SitCompression::Method8),
         METHOD_13 => Ok(SitCompression::Method13),
         other => Err(stuffit_error(format!(
             "stuffit: unsupported compression method {other}"
@@ -356,6 +359,136 @@ fn decode_lzah(raw: &[u8], expected_len: usize, max_output: usize) -> Result<Vec
     Ok(output)
 }
 
+fn mw_bits_low(raw: &[u8], bit_offset: &mut usize, bits: usize) -> Result<usize> {
+    let available: usize = raw
+        .len()
+        .checked_mul(8)
+        .and_then(|total: usize| total.checked_sub(*bit_offset))
+        .ok_or_else(|| stuffit_error("stuffit: method 8 bit position overflow"))?;
+    if available < bits {
+        return Err(stuffit_error("stuffit: method 8 stream is truncated"));
+    }
+    let mut value: usize = 0;
+    for shift in 0..bits {
+        let position: usize = bit_offset
+            .checked_add(shift)
+            .ok_or_else(|| stuffit_error("stuffit: method 8 bit position overflow"))?;
+        let byte: u8 = raw[position / 8];
+        value |= usize::from((byte >> (position % 8)) & 1) << shift;
+    }
+    *bit_offset = bit_offset
+        .checked_add(bits)
+        .ok_or_else(|| stuffit_error("stuffit: method 8 bit position overflow"))?;
+    Ok(value)
+}
+
+fn mw_emit(
+    dictionary: &[u16],
+    stack: &mut [u16],
+    code: usize,
+    output: &mut Vec<u8>,
+    expected_len: usize,
+) -> Result<()> {
+    let mut stack_len: usize = 1;
+    stack[0] = u16::try_from(code)
+        .map_err(|_| stuffit_error("stuffit: method 8 dictionary code exceeds u16"))?;
+    while stack_len != 0 {
+        stack_len -= 1;
+        let mut value: usize = usize::from(stack[stack_len]);
+        while value >= 256 {
+            if value >= dictionary.len() || stack_len == stack.len() {
+                return Err(stuffit_error(
+                    "stuffit: method 8 dictionary chain is invalid",
+                ));
+            }
+            stack[stack_len] = dictionary[value];
+            stack_len += 1;
+            value = usize::from(dictionary[value - 1]);
+        }
+        if output.len() == expected_len {
+            return Err(stuffit_error("stuffit: method 8 output limit exceeded"));
+        }
+        output.push(
+            u8::try_from(value)
+                .map_err(|_| stuffit_error("stuffit: method 8 literal exceeds u8"))?,
+        );
+    }
+    Ok(())
+}
+
+fn decode_method8(raw: &[u8], expected_len: usize, max_output: usize) -> Result<Vec<u8>> {
+    if expected_len > max_output {
+        return Err(stuffit_error(format!(
+            "stuffit: decoded fork length {expected_len} exceeds cap {max_output}"
+        )));
+    }
+    if expected_len == 0 {
+        if raw.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(stuffit_error("stuffit: method 8 stream has trailing bytes"));
+    }
+
+    let mut dictionary: Box<[u16]> = vec![0; 16_385].into_boxed_slice();
+    let mut stack: Box<[u16]> = vec![0; 16_384].into_boxed_slice();
+    let declared: u64 = u64::try_from(expected_len)
+        .map_err(|_| stuffit_error("stuffit: declared fork length exceeds u64"))?;
+    let mut output: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(declared));
+    let mut bit_offset: usize = 0;
+    while output.len() < expected_len {
+        let mut max_code: usize = 256;
+        let mut width_limit: usize = 512;
+        let mut bit_width: usize = 9;
+        let first: usize = mw_bits_low(raw, &mut bit_offset, bit_width)?;
+        if first > max_code {
+            return Err(stuffit_error(
+                "stuffit: method 8 first code is not a literal or reset",
+            ));
+        }
+        if first == max_code {
+            continue;
+        }
+        dictionary[255] = u16::try_from(first)
+            .map_err(|_| stuffit_error("stuffit: method 8 literal exceeds u16"))?;
+        mw_emit(&dictionary, &mut stack, first, &mut output, expected_len)?;
+
+        while output.len() < expected_len {
+            let code: usize = mw_bits_low(raw, &mut bit_offset, bit_width)?;
+            if code >= max_code {
+                if code == max_code {
+                    break;
+                }
+                return Err(stuffit_error(
+                    "stuffit: method 8 dictionary code is invalid",
+                ));
+            }
+            if max_code >= dictionary.len() {
+                return Err(stuffit_error("stuffit: method 8 dictionary is full"));
+            }
+            dictionary[max_code] = u16::try_from(code)
+                .map_err(|_| stuffit_error("stuffit: method 8 dictionary code exceeds u16"))?;
+            max_code += 1;
+            if max_code == width_limit {
+                width_limit = width_limit
+                    .checked_mul(2)
+                    .ok_or_else(|| stuffit_error("stuffit: method 8 code-width overflow"))?;
+                bit_width = bit_width
+                    .checked_add(1)
+                    .ok_or_else(|| stuffit_error("stuffit: method 8 code-width overflow"))?;
+            }
+            mw_emit(&dictionary, &mut stack, code, &mut output, expected_len)?;
+        }
+    }
+    let consumed_bytes: usize = bit_offset
+        .checked_add(7)
+        .ok_or_else(|| stuffit_error("stuffit: method 8 input count overflow"))?
+        / 8;
+    if consumed_bytes != raw.len() {
+        return Err(stuffit_error("stuffit: method 8 stream has trailing bytes"));
+    }
+    Ok(output)
+}
+
 pub fn fork_bytes_bounded(bytes: &[u8], fork: &SitFork, max_output: usize) -> Result<Vec<u8>> {
     let end: usize = checked_end(fork.data_offset, fork.compressed_len, bytes.len())?;
     let raw: &[u8] = &bytes[fork.data_offset..end];
@@ -392,6 +525,7 @@ pub fn fork_bytes_bounded(bytes: &[u8], fork: &SitFork, max_output: usize) -> Re
             decoded
         }
         SitCompression::Lzah => decode_lzah(raw, expected_len, max_output)?,
+        SitCompression::Method8 => decode_method8(raw, expected_len, max_output)?,
         SitCompression::Method13 => decode_method13(raw, expected_len, max_output)?,
     };
     let actual_crc: u16 = crc16_ibm(&output);
@@ -881,6 +1015,110 @@ mod tests {
             data_offset: 0,
         };
         assert!(fork_bytes_bounded(&[], &empty_input, 16).is_err());
+    }
+
+    #[test]
+    fn method8_bounds_resets_and_integrity_fail_closed() {
+        let raw: &[u8] = &[0x41, 0x84, 0x00, 0x0c, 0x08];
+        let fork: SitFork = SitFork {
+            compression: SitCompression::Method8,
+            uncompressed_len: 7,
+            compressed_len: raw.len() as u32,
+            expected_crc: crc16_ibm(b"ABABBAB"),
+            data_offset: 0,
+        };
+        assert_eq!(
+            fork_bytes_bounded(raw, &fork, 7).expect("decode method 8 dictionary vector"),
+            b"ABABBAB"
+        );
+
+        let initial_reset: SitFork = SitFork {
+            uncompressed_len: 1,
+            compressed_len: 3,
+            expected_crc: crc16_ibm(b"A"),
+            ..fork
+        };
+        assert_eq!(
+            fork_bytes_bounded(&[0x00, 0x83, 0x00], &initial_reset, 1)
+                .expect("decode initial method 8 reset"),
+            b"A"
+        );
+        let repeated_resets: SitFork = SitFork {
+            compressed_len: 4,
+            ..initial_reset
+        };
+        assert_eq!(
+            fork_bytes_bounded(&[0x00, 0x01, 0x06, 0x01], &repeated_resets, 1)
+                .expect("decode repeated method 8 resets"),
+            b"A"
+        );
+
+        let invalid_first: SitFork = SitFork {
+            compressed_len: 2,
+            ..initial_reset
+        };
+        let first_error: Error = fork_bytes_bounded(&[0x01, 0x01], &invalid_first, 1)
+            .expect_err("a first code above the reset marker must be refused");
+        assert!(first_error.to_string().contains("literal or reset"));
+
+        let invalid_later: SitFork = SitFork {
+            uncompressed_len: 2,
+            compressed_len: 3,
+            expected_crc: crc16_ibm(b"AA"),
+            ..initial_reset
+        };
+        let later_error: Error = fork_bytes_bounded(&[0x41, 0x02, 0x02], &invalid_later, 2)
+            .expect_err("a dictionary code above the next slot must be refused");
+        assert!(
+            later_error
+                .to_string()
+                .contains("dictionary code is invalid")
+        );
+
+        let truncated: SitFork = SitFork {
+            compressed_len: 4,
+            ..fork
+        };
+        assert!(fork_bytes_bounded(&raw[..4], &truncated, 7).is_err());
+
+        let mut trailing_raw: Vec<u8> = raw.to_vec();
+        trailing_raw.push(0);
+        let trailing: SitFork = SitFork {
+            compressed_len: trailing_raw.len() as u32,
+            ..fork
+        };
+        let trailing_error: Error = fork_bytes_bounded(&trailing_raw, &trailing, 7)
+            .expect_err("whole trailing bytes must be refused");
+        assert!(trailing_error.to_string().contains("trailing bytes"));
+
+        let cap_error: Error = fork_bytes_bounded(raw, &fork, 6)
+            .expect_err("the declared output must fit the caller cap");
+        assert!(cap_error.to_string().contains("exceeds cap"));
+
+        let wrong_crc: SitFork = SitFork {
+            expected_crc: fork.expected_crc ^ 1,
+            ..fork
+        };
+        let crc_error: Error =
+            fork_bytes_bounded(raw, &wrong_crc, 7).expect_err("CRC mismatch must be refused");
+        assert!(crc_error.to_string().contains("fork CRC mismatch"));
+
+        let empty: SitFork = SitFork {
+            compression: SitCompression::Method8,
+            uncompressed_len: 0,
+            compressed_len: 0,
+            expected_crc: 0,
+            data_offset: 0,
+        };
+        assert_eq!(
+            fork_bytes_bounded(&[], &empty, 0).expect("empty method 8 fork"),
+            b""
+        );
+        let nonempty_zero: SitFork = SitFork {
+            compressed_len: 1,
+            ..empty
+        };
+        assert!(fork_bytes_bounded(&[0], &nonempty_zero, 0).is_err());
     }
 
     #[test]
