@@ -824,6 +824,10 @@ fn render_method_mode(
     let mut local_index: u16 = u16::from(!is_static);
     let mut param_names: Vec<(u16, String)> = Vec::new();
     let mut param_types: BTreeMap<u16, String> = BTreeMap::new();
+    let mut parameter_value_categories: BTreeMap<u16, u8> = BTreeMap::new();
+    if !is_static {
+        parameter_value_categories.insert(0, 4);
+    }
     let mut boolean_params: BTreeSet<String> = BTreeSet::new();
     let params: String = match &parsed {
         Some(md) => {
@@ -857,6 +861,9 @@ fn render_method_mode(
                     && let Some(signature) = &generic_signature
                 {
                     param_types.insert(local_index, signature.parameters[i].clone());
+                }
+                if let Some(category) = java_type_value_category(p) {
+                    parameter_value_categories.insert(local_index, category);
                 }
                 param_names.push((local_index, pname));
                 local_index += if p.category_two() { 2 } else { 1 };
@@ -954,6 +961,7 @@ fn render_method_mode(
         &code,
         &param_names,
         &param_types,
+        &parameter_value_categories,
         &boolean_params,
         has_this,
         bool_return,
@@ -1889,6 +1897,7 @@ fn lift_method_body(
     code: &CodeAttribute,
     params: &[(u16, String)],
     param_types: &BTreeMap<u16, String>,
+    parameter_value_categories: &BTreeMap<u16, u8>,
     boolean_params: &BTreeSet<String>,
     has_this: bool,
     bool_return: bool,
@@ -1913,7 +1922,12 @@ fn lift_method_body(
         &code.exception_table,
         &boolean_param_slots,
     );
-    split_reused_primitive_ranges(&mut insns, next_fresh, &code.exception_table);
+    split_reused_primitive_ranges_with_parameters(
+        &mut insns,
+        next_fresh,
+        &code.exception_table,
+        parameter_value_categories,
+    );
     if insns.is_empty() {
         return Ok(MethodBody {
             text: String::new(),
@@ -3538,6 +3552,10 @@ fn local_slot_operand(insn: &Instruction) -> Option<u16> {
 }
 
 fn rebind_slot_to_explicit(insn: &mut Instruction, fresh: u16) {
+    if let Operands::Iinc { index, .. } = &mut insn.operands {
+        *index = fresh;
+        return;
+    }
     if let Some(ti) = slot_store_type_index(insn.opcode) {
         insn.opcode = explicit_store_opcode(ti);
     } else if let Some(ti) = slot_load_type_index(insn.opcode) {
@@ -3824,112 +3842,385 @@ fn split_reused_boolean_parameter_ranges(
     next_fresh
 }
 
+const REUSED_LOCAL_SPLIT_WORK_LIMIT: usize = 1_000_000;
+
+#[derive(Clone, Copy)]
+struct ReusedLocalEvent {
+    instruction_index: usize,
+    type_index: u8,
+    is_store: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReusedLocalTypeState {
+    Uninitialized,
+    Type(u8),
+    Mixed,
+}
+
+struct ReusedLocalSplitPlan {
+    ranges: Vec<u8>,
+    original_type: u8,
+}
+
+#[cfg(test)]
 fn split_reused_primitive_ranges(
     insns: &mut [Instruction],
     max_locals: u16,
     exception_table: &[bytecode::ExceptionEntry],
 ) {
-    let Some(branch_edges) = branch_edges(insns) else {
-        return;
+    split_reused_primitive_ranges_with_parameters(
+        insns,
+        max_locals,
+        exception_table,
+        &BTreeMap::new(),
+    );
+}
+
+fn split_reused_primitive_ranges_with_parameters(
+    insns: &mut [Instruction],
+    max_locals: u16,
+    exception_table: &[bytecode::ExceptionEntry],
+    parameter_value_categories: &BTreeMap<u16, u8>,
+) {
+    let _completed: bool = split_reused_primitive_ranges_with_budget(
+        insns,
+        max_locals,
+        exception_table,
+        parameter_value_categories,
+        REUSED_LOCAL_SPLIT_WORK_LIMIT,
+    );
+}
+
+fn split_reused_primitive_ranges_with_budget(
+    insns: &mut [Instruction],
+    max_locals: u16,
+    exception_table: &[bytecode::ExceptionEntry],
+    parameter_value_categories: &BTreeMap<u16, u8>,
+    work_limit: usize,
+) -> bool {
+    let mut work: usize = 0;
+    let Some(events_by_slot): Option<BTreeMap<u16, Vec<ReusedLocalEvent>>> =
+        reused_local_events(insns, max_locals, &mut work, work_limit)
+    else {
+        return false;
     };
-    let referenced_slots: BTreeSet<u16> = insns
-        .iter()
-        .filter_map(instruction_local_slot)
-        .filter(|slot: &u16| *slot < max_locals)
-        .collect();
-    let split_slots: BTreeMap<u16, Vec<u8>> = referenced_slots
-        .into_iter()
-        .filter_map(|slot: u16| {
-            slot_reused_type_ranges(insns, slot, exception_table, &branch_edges)
-                .map(|ranges| (slot, ranges))
-        })
-        .collect();
-    let required_fresh: usize = split_slots
-        .values()
-        .map(|ranges: &Vec<u8>| ranges.len().saturating_sub(1))
-        .sum();
-    let Ok(required_fresh): core::result::Result<u16, _> = u16::try_from(required_fresh) else {
-        return;
+    let Some(successors): Option<Vec<Vec<usize>>> = instruction_successor_indices(insns) else {
+        return false;
+    };
+    let handler_indices: Vec<usize> = if exception_table.is_empty() {
+        Vec::new()
+    } else {
+        let Some(indices): Option<Vec<usize>> =
+            reused_local_handler_indices(insns, exception_table)
+        else {
+            return false;
+        };
+        indices
+    };
+    let mut split_slots: BTreeMap<u16, ReusedLocalSplitPlan> = BTreeMap::new();
+    for (slot, events) in &events_by_slot {
+        let parameter_type: Option<u8> = parameter_value_categories.get(slot).copied();
+        let Some(ranges): Option<Vec<u8>> = slot_reused_type_ranges(events, parameter_type) else {
+            continue;
+        };
+        let Some(is_safe): Option<bool> = reused_local_control_flow_is_safe(
+            insns,
+            events,
+            &ranges,
+            &successors,
+            &handler_indices,
+            parameter_type,
+            &mut work,
+            work_limit,
+        ) else {
+            return false;
+        };
+        if !is_safe {
+            continue;
+        }
+        let Some(original_type): Option<u8> = parameter_type.or_else(|| ranges.first().copied())
+        else {
+            continue;
+        };
+        split_slots.insert(
+            *slot,
+            ReusedLocalSplitPlan {
+                ranges,
+                original_type,
+            },
+        );
+    }
+    let required_fresh: Option<u16> =
+        split_slots
+            .values()
+            .try_fold(0_u16, |total: u16, plan: &ReusedLocalSplitPlan| {
+                plan.ranges
+                    .iter()
+                    .filter(|type_index: &&u8| **type_index != plan.original_type)
+                    .try_fold(total, |subtotal: u16, type_index: &u8| {
+                        subtotal.checked_add(reused_local_width(*type_index))
+                    })
+            });
+    let Some(required_fresh): Option<u16> = required_fresh else {
+        return true;
     };
     if required_fresh == 0 || max_locals.checked_add(required_fresh).is_none() {
-        return;
+        return true;
     }
+    let mut rewrites: Vec<(usize, u16)> = Vec::new();
     let mut next_fresh: u16 = max_locals;
-    for (slot, ranges) in split_slots {
+    for (slot, plan) in &split_slots {
         let mut slots_by_type: BTreeMap<u8, u16> = BTreeMap::new();
-        slots_by_type.insert(ranges[0], slot);
-        for type_index in ranges.into_iter().skip(1) {
-            slots_by_type.insert(type_index, next_fresh);
-            next_fresh += 1;
-        }
-        for insn in insns.iter_mut() {
-            if local_slot_operand(insn) != Some(slot) {
+        slots_by_type.insert(plan.original_type, *slot);
+        for type_index in &plan.ranges {
+            if *type_index == plan.original_type {
                 continue;
             }
-            let Some(type_index) =
-                slot_store_type_index(insn.opcode).or_else(|| slot_load_type_index(insn.opcode))
+            let fresh: u16 = next_fresh;
+            let Some(next): Option<u16> = next_fresh.checked_add(reused_local_width(*type_index))
             else {
-                continue;
+                return false;
             };
-            if let Some(&fresh) = slots_by_type.get(&type_index)
-                && fresh != slot
+            slots_by_type.insert(*type_index, fresh);
+            next_fresh = next;
+        }
+        let Some(events): Option<&Vec<ReusedLocalEvent>> = events_by_slot.get(slot) else {
+            return false;
+        };
+        if claim_reused_local_split_work(&mut work, events.len(), work_limit).is_none() {
+            return false;
+        }
+        for event in events {
+            if let Some(&fresh) = slots_by_type.get(&event.type_index)
+                && fresh != *slot
             {
-                rebind_slot_to_explicit(insn, fresh);
+                rewrites.push((event.instruction_index, fresh));
             }
         }
     }
+    if rewrites
+        .iter()
+        .any(|(instruction_index, _): &(usize, u16)| *instruction_index >= insns.len())
+    {
+        return false;
+    }
+    for (instruction_index, fresh) in rewrites {
+        let Some(insn): Option<&mut Instruction> = insns.get_mut(instruction_index) else {
+            return false;
+        };
+        rebind_slot_to_explicit(insn, fresh);
+    }
+    true
+}
+
+fn reused_local_events(
+    insns: &[Instruction],
+    max_locals: u16,
+    work: &mut usize,
+    work_limit: usize,
+) -> Option<BTreeMap<u16, Vec<ReusedLocalEvent>>> {
+    let mut events_by_slot: BTreeMap<u16, Vec<ReusedLocalEvent>> = BTreeMap::new();
+    for (instruction_index, insn) in insns.iter().enumerate() {
+        claim_reused_local_split_work(work, 1, work_limit)?;
+        let Some(slot): Option<u16> = instruction_local_slot(insn) else {
+            continue;
+        };
+        if slot >= max_locals {
+            continue;
+        }
+        let Some(type_index): Option<u8> = slot_instruction_type_index(insn, slot) else {
+            continue;
+        };
+        events_by_slot
+            .entry(slot)
+            .or_default()
+            .push(ReusedLocalEvent {
+                instruction_index,
+                type_index,
+                is_store: slot_op_is_store(insn.opcode),
+            });
+    }
+    Some(events_by_slot)
 }
 
 fn slot_reused_type_ranges(
-    insns: &[Instruction],
-    slot: u16,
-    exception_table: &[bytecode::ExceptionEntry],
-    branch_edges: &[(usize, usize)],
+    events: &[ReusedLocalEvent],
+    parameter_type: Option<u8>,
 ) -> Option<Vec<u8>> {
-    let mut ranges: Vec<(u8, usize)> = Vec::new();
+    let mut ranges: Vec<u8> = Vec::new();
     let mut seen: BTreeSet<u8> = BTreeSet::new();
-    for (index, insn) in insns.iter().enumerate() {
-        let Some(type_index) = slot_instruction_type_index(insn, slot) else {
-            continue;
-        };
-        if matches!(&insn.operands, Operands::Iinc { .. }) {
-            return None;
-        }
-        if pc_has_exception_ambiguity(insn.pc, exception_table) {
-            return None;
-        }
+    for event in events {
         if ranges
             .last()
-            .is_some_and(|(previous, _): &(u8, usize)| *previous == type_index)
+            .is_some_and(|previous: &u8| *previous == event.type_index)
         {
             continue;
         }
-        if !ranges.is_empty() && !slot_op_is_store(insn.opcode) {
+        if !ranges.is_empty() && !event.is_store && parameter_type != Some(event.type_index) {
             return None;
         }
-        if !seen.insert(type_index) {
+        if !seen.insert(event.type_index) {
             return None;
         }
-        ranges.push((type_index, index));
+        ranges.push(event.type_index);
     }
-    if ranges.len() <= 1
-        || branch_crosses_type_range_boundary(
-            branch_edges,
-            &ranges
-                .iter()
-                .skip(1)
-                .map(|(_, index): &(u8, usize)| *index)
-                .collect::<Vec<usize>>(),
-        )
+    if ranges.is_empty()
+        || ranges.len() == 1
+            && (parameter_type.is_none() || parameter_type == ranges.first().copied())
     {
         return None;
     }
+    Some(ranges)
+}
+
+fn reused_local_control_flow_is_safe(
+    insns: &[Instruction],
+    events: &[ReusedLocalEvent],
+    ranges: &[u8],
+    successors: &[Vec<usize>],
+    handler_indices: &[usize],
+    parameter_type: Option<u8>,
+    work: &mut usize,
+    work_limit: usize,
+) -> Option<bool> {
+    if insns.is_empty() || successors.len() != insns.len() {
+        return Some(false);
+    }
+    claim_reused_local_split_work(work, insns.len(), work_limit)?;
+    let mut events_by_instruction: Vec<Option<ReusedLocalEvent>> = vec![None; insns.len()];
+    for event in events {
+        claim_reused_local_split_work(work, 1, work_limit)?;
+        let target: &mut Option<ReusedLocalEvent> =
+            events_by_instruction.get_mut(event.instruction_index)?;
+        if target.replace(*event).is_some() {
+            return Some(false);
+        }
+    }
+    let mut incoming: Vec<Option<ReusedLocalTypeState>> = vec![None; insns.len()];
+    let mut pending: Vec<usize> = vec![0];
+    let mut queued: Vec<bool> = vec![false; insns.len()];
+    queued[0] = true;
+    incoming[0] = Some(parameter_type.map_or(
+        ReusedLocalTypeState::Uninitialized,
+        ReusedLocalTypeState::Type,
+    ));
+    for &handler_index in handler_indices {
+        let current: Option<ReusedLocalTypeState> = *incoming.get(handler_index)?;
+        let merged: ReusedLocalTypeState =
+            merge_reused_local_type_state(current, ReusedLocalTypeState::Mixed);
+        if current != Some(merged) {
+            incoming[handler_index] = Some(merged);
+            if !queued[handler_index] {
+                queued[handler_index] = true;
+                pending.push(handler_index);
+            }
+        }
+    }
+    let mut reached_types: BTreeSet<u8> = BTreeSet::new();
+    while let Some(instruction_index) = pending.pop() {
+        claim_reused_local_split_work(work, 1, work_limit)?;
+        queued[instruction_index] = false;
+        let state: ReusedLocalTypeState = incoming[instruction_index]?;
+        let outgoing: ReusedLocalTypeState = match events_by_instruction[instruction_index] {
+            Some(event) if event.is_store => {
+                reached_types.insert(event.type_index);
+                ReusedLocalTypeState::Type(event.type_index)
+            }
+            Some(event) => {
+                reached_types.insert(event.type_index);
+                match state {
+                    ReusedLocalTypeState::Type(type_index) if type_index == event.type_index => {
+                        state
+                    }
+                    ReusedLocalTypeState::Uninitialized
+                    | ReusedLocalTypeState::Type(_)
+                    | ReusedLocalTypeState::Mixed => {
+                        return Some(false);
+                    }
+                }
+            }
+            None => state,
+        };
+        for &successor in successors.get(instruction_index)? {
+            let current: Option<ReusedLocalTypeState> = *incoming.get(successor)?;
+            let merged: ReusedLocalTypeState = merge_reused_local_type_state(current, outgoing);
+            if current != Some(merged) {
+                incoming[successor] = Some(merged);
+                if !queued[successor] {
+                    queued[successor] = true;
+                    pending.push(successor);
+                }
+            }
+        }
+    }
     Some(
         ranges
-            .into_iter()
-            .map(|(type_index, _): (u8, usize)| type_index)
-            .collect(),
+            .iter()
+            .all(|type_index: &u8| reached_types.contains(type_index)),
     )
+}
+
+fn merge_reused_local_type_state(
+    current: Option<ReusedLocalTypeState>,
+    incoming: ReusedLocalTypeState,
+) -> ReusedLocalTypeState {
+    match (current, incoming) {
+        (None, state) => state,
+        (Some(current), next) if current == next => current,
+        (Some(_), _) => ReusedLocalTypeState::Mixed,
+    }
+}
+
+fn reused_local_handler_indices(
+    insns: &[Instruction],
+    exception_table: &[bytecode::ExceptionEntry],
+) -> Option<Vec<usize>> {
+    let pc_to_index: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(index, insn): (usize, &Instruction)| (insn.pc, index))
+        .collect();
+    if pc_to_index.len() != insns.len() {
+        return None;
+    }
+    let mut handler_indices: BTreeSet<usize> = BTreeSet::new();
+    for entry in exception_table {
+        if entry.start_pc >= entry.end_pc {
+            return None;
+        }
+        handler_indices.insert(*pc_to_index.get(&u32::from(entry.handler_pc))?);
+    }
+    Some(handler_indices.into_iter().collect())
+}
+
+fn claim_reused_local_split_work(work: &mut usize, amount: usize, work_limit: usize) -> Option<()> {
+    let next: usize = work.checked_add(amount)?;
+    if next > work_limit {
+        return None;
+    }
+    *work = next;
+    Some(())
+}
+
+const fn reused_local_width(type_index: u8) -> u16 {
+    match type_index {
+        1 | 3 => 2,
+        _ => 1,
+    }
+}
+
+const fn java_type_value_category(java_type: &JavaType) -> Option<u8> {
+    match java_type {
+        JavaType::Byte | JavaType::Char | JavaType::Int | JavaType::Short | JavaType::Boolean => {
+            Some(0)
+        }
+        JavaType::Long => Some(1),
+        JavaType::Float => Some(2),
+        JavaType::Double => Some(3),
+        JavaType::Object(_) | JavaType::Array(_) => Some(4),
+        JavaType::Void => None,
+    }
 }
 
 fn slot_instruction_type_index(insn: &Instruction, slot: u16) -> Option<u8> {
@@ -3947,93 +4238,6 @@ fn instruction_local_slot(insn: &Instruction) -> Option<u16> {
         Operands::Iinc { index, .. } => Some(*index),
         _ => local_slot_operand(insn),
     }
-}
-
-fn branch_edges(insns: &[Instruction]) -> Option<Vec<(usize, usize)>> {
-    if insns
-        .iter()
-        .any(|insn: &Instruction| matches!(insn.opcode, 0xA8 | 0xA9 | 0xC9))
-    {
-        return None;
-    }
-    let pc_to_index: BTreeMap<u32, usize> = insns
-        .iter()
-        .enumerate()
-        .map(|(index, insn): (usize, &Instruction)| (insn.pc, index))
-        .collect();
-    let mut edges: Vec<(usize, usize)> = Vec::new();
-    for (source, insn) in insns.iter().enumerate() {
-        for target_pc in instruction_successor_pcs(insn)? {
-            let &target = pc_to_index.get(&target_pc)?;
-            edges.push((source, target));
-        }
-    }
-    Some(edges)
-}
-
-fn instruction_successor_pcs(insn: &Instruction) -> Option<Vec<u32>> {
-    let offsets: Vec<i32> = match &insn.operands {
-        Operands::Branch(offset) => vec![*offset],
-        Operands::TableSwitch {
-            default,
-            low,
-            high,
-            offsets,
-        } => {
-            if high < low {
-                return None;
-            }
-            let expected: usize = usize::try_from(i64::from(*high) - i64::from(*low) + 1).ok()?;
-            if offsets.len() != expected {
-                return None;
-            }
-            let mut all_offsets: Vec<i32> = Vec::with_capacity(offsets.len().saturating_add(1));
-            all_offsets.push(*default);
-            all_offsets.extend(offsets.iter().copied());
-            all_offsets
-        }
-        Operands::LookupSwitch { default, pairs } => {
-            if pairs
-                .windows(2)
-                .any(|pair: &[(i32, i32)]| pair[0].0 >= pair[1].0)
-            {
-                return None;
-            }
-            let mut all_offsets: Vec<i32> = Vec::with_capacity(pairs.len().saturating_add(1));
-            all_offsets.push(*default);
-            all_offsets.extend(pairs.iter().map(|(_, offset): &(i32, i32)| *offset));
-            all_offsets
-        }
-        _ => Vec::new(),
-    };
-    offsets
-        .into_iter()
-        .map(|offset: i32| u32::try_from(i64::from(insn.pc).checked_add(i64::from(offset))?).ok())
-        .collect()
-}
-
-fn branch_crosses_type_range_boundary(
-    branch_edges: &[(usize, usize)],
-    boundaries: &[usize],
-) -> bool {
-    branch_edges
-        .iter()
-        .any(|&(source, target): &(usize, usize)| {
-            boundaries.iter().any(|&boundary: &usize| {
-                source < boundary && boundary <= target || target < boundary && boundary <= source
-            })
-        })
-}
-
-fn pc_has_exception_ambiguity(pc: u32, exception_table: &[bytecode::ExceptionEntry]) -> bool {
-    exception_table
-        .iter()
-        .any(|entry: &bytecode::ExceptionEntry| {
-            let start_pc: u32 = u32::from(entry.start_pc);
-            let end_pc: u32 = u32::from(entry.end_pc);
-            let handler_pc: u32 = u32::from(entry.handler_pc);
-            start_pc <= pc && pc < end_pc || pc == handler_pc
-        })
 }
 
 fn exception_value_conflicted_slots(
@@ -12460,6 +12664,53 @@ mod tests {
     }
 
     #[test]
+    fn split_reused_ranges_allows_iinc_when_exception_handlers_do_not_read_the_old_lifetime() {
+        let mut insns: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0x84,
+                mnemonic: "iinc",
+                wide: false,
+                operands: Operands::Iinc { index: 0, delta: 1 },
+            },
+            local_instruction(4, 0x3A, 0),
+            local_instruction(5, 0x19, 0),
+            Instruction {
+                pc: 6,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+            local_instruction(7, 0x3A, 0),
+            local_instruction(8, 0x19, 0),
+            Instruction {
+                pc: 9,
+                opcode: 0xBF,
+                mnemonic: "athrow",
+                wide: false,
+                operands: Operands::None,
+            },
+        ];
+        let exceptions: Vec<bytecode::ExceptionEntry> = vec![bytecode::ExceptionEntry {
+            start_pc: 0,
+            end_pc: 6,
+            handler_pc: 7,
+            catch_type: 0,
+        }];
+
+        split_reused_primitive_ranges(&mut insns, 1, &exceptions);
+
+        assert_eq!(insns[0].operands, Operands::Local(0));
+        assert_eq!(insns[1].operands, Operands::Iinc { index: 0, delta: 1 });
+        assert_eq!(insns[2].operands, Operands::Local(1));
+        assert_eq!(insns[3].operands, Operands::Local(1));
+        assert_eq!(insns[5].operands, Operands::Local(1));
+        assert_eq!(insns[6].operands, Operands::Local(1));
+    }
+
+    #[test]
     fn split_reused_ranges_refuses_malformed_or_repeated_ranges() {
         let mut malformed: Vec<Instruction> = vec![
             local_instruction(0, 0x36, 0),
@@ -12496,7 +12747,7 @@ mod tests {
     }
 
     #[test]
-    fn split_reused_ranges_refuses_valid_target_loop_with_iinc() {
+    fn split_reused_ranges_allows_valid_target_loop_with_iinc() {
         let mut insns: Vec<Instruction> = vec![
             local_instruction(0, 0x36, 0),
             Instruction {
@@ -12520,8 +12771,8 @@ mod tests {
         split_reused_primitive_ranges(&mut insns, 1, &[]);
 
         assert_eq!(insns[1].operands, Operands::Iinc { index: 0, delta: 1 });
-        assert_eq!(insns[3].operands, Operands::Local(0));
-        assert_eq!(insns[4].operands, Operands::Local(0));
+        assert_eq!(insns[3].operands, Operands::Local(1));
+        assert_eq!(insns[4].operands, Operands::Local(1));
     }
 
     #[test]
@@ -12545,6 +12796,72 @@ mod tests {
 
         assert_eq!(insns[4].operands, Operands::Local(1));
         assert_eq!(insns[5].operands, Operands::Local(1));
+    }
+
+    #[test]
+    fn split_reused_ranges_keeps_a_declared_parameter_on_its_original_identity() {
+        let mut insns: Vec<Instruction> = vec![
+            Instruction {
+                pc: 0,
+                opcode: 0x99,
+                mnemonic: "ifeq",
+                wide: false,
+                operands: Operands::Branch(3),
+            },
+            local_instruction(1, 0x36, 0),
+            Instruction {
+                pc: 2,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+            local_instruction(3, 0x19, 0),
+            Instruction {
+                pc: 4,
+                opcode: 0xB0,
+                mnemonic: "areturn",
+                wide: false,
+                operands: Operands::None,
+            },
+        ];
+        let parameter_types: BTreeMap<u16, u8> = BTreeMap::from([(0, 4)]);
+
+        split_reused_primitive_ranges_with_parameters(&mut insns, 1, &[], &parameter_types);
+
+        assert_eq!(insns[1].operands, Operands::Local(1));
+        assert_eq!(insns[3].operands, Operands::Local(0));
+    }
+
+    #[test]
+    fn split_reused_ranges_moves_a_parameter_overwrite_without_a_later_parameter_read() {
+        let mut insns: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            Instruction {
+                pc: 1,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+        ];
+        let parameter_types: BTreeMap<u16, u8> = BTreeMap::from([(0, 4)]);
+
+        split_reused_primitive_ranges_with_parameters(&mut insns, 1, &[], &parameter_types);
+
+        assert_eq!(insns[0].operands, Operands::Local(1));
+    }
+
+    #[test]
+    fn split_reused_ranges_ignores_one_category_nonparameter_slots() {
+        let mut insns: Vec<Instruction> = vec![local_instruction(0, 0x36, 0)];
+        let before: Vec<Instruction> = insns.clone();
+
+        let completed: bool =
+            split_reused_primitive_ranges_with_budget(&mut insns, 1, &[], &BTreeMap::new(), 1);
+
+        assert!(completed);
+        assert_eq!(insns, before);
     }
 
     #[test]
@@ -12572,6 +12889,45 @@ mod tests {
             assert_eq!(insns[2].operands, Operands::Local(0));
             assert_eq!(insns[3].operands, Operands::Local(0));
         }
+    }
+
+    #[test]
+    fn split_reused_ranges_exhausts_its_budget_after_proving_flow_without_mutation() {
+        let mut insns: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            local_instruction(1, 0x15, 0),
+            local_instruction(2, 0x3A, 0),
+            local_instruction(3, 0x19, 0),
+        ];
+        let before: Vec<Instruction> = insns.clone();
+
+        let completed: bool =
+            split_reused_primitive_ranges_with_budget(&mut insns, 1, &[], &BTreeMap::new(), 15);
+
+        assert!(!completed);
+        assert_eq!(insns, before);
+    }
+
+    #[test]
+    fn split_reused_ranges_charges_unreachable_flow_state_to_budget() {
+        let mut insns: Vec<Instruction> = vec![
+            Instruction {
+                pc: 0,
+                opcode: 0xB1,
+                mnemonic: "return",
+                wide: false,
+                operands: Operands::None,
+            },
+            local_instruction(1, 0x36, 0),
+            local_instruction(2, 0x3A, 0),
+        ];
+        let before: Vec<Instruction> = insns.clone();
+
+        let completed: bool =
+            split_reused_primitive_ranges_with_budget(&mut insns, 1, &[], &BTreeMap::new(), 8);
+
+        assert!(!completed);
+        assert_eq!(insns, before);
     }
 
     #[test]
@@ -12609,9 +12965,29 @@ mod tests {
         assert_eq!(insns[3].operands, Operands::Local(1));
         assert_eq!(insns[4].operands, Operands::Local(2));
         assert_eq!(insns[5].operands, Operands::Local(2));
-        assert_eq!(insns[6].operands, Operands::Local(3));
-        assert_eq!(insns[7].operands, Operands::Local(3));
-        assert_eq!(insns[8].operands, Operands::Local(4));
-        assert_eq!(insns[9].operands, Operands::Local(4));
+        assert_eq!(insns[6].operands, Operands::Local(4));
+        assert_eq!(insns[7].operands, Operands::Local(4));
+        assert_eq!(insns[8].operands, Operands::Local(6));
+        assert_eq!(insns[9].operands, Operands::Local(6));
+    }
+
+    #[test]
+    fn split_reused_ranges_reserves_both_wide_slots_at_the_local_limit() {
+        let sample: Vec<Instruction> = vec![
+            local_instruction(0, 0x36, 0),
+            local_instruction(1, 0x15, 0),
+            local_instruction(2, 0x37, 0),
+            local_instruction(3, 0x16, 0),
+        ];
+        let mut fits: Vec<Instruction> = sample.clone();
+        let mut overflows: Vec<Instruction> = sample;
+
+        split_reused_primitive_ranges(&mut fits, u16::MAX - 2, &[]);
+        split_reused_primitive_ranges(&mut overflows, u16::MAX - 1, &[]);
+
+        assert_eq!(fits[2].operands, Operands::Local(u16::MAX - 2));
+        assert_eq!(fits[3].operands, Operands::Local(u16::MAX - 2));
+        assert_eq!(overflows[2].operands, Operands::Local(0));
+        assert_eq!(overflows[3].operands, Operands::Local(0));
     }
 }

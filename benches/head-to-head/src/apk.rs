@@ -4423,11 +4423,9 @@ mod tests {
     #[test]
     fn one_seeded_defect_costs_one_recovered_method_of_the_real_jar()
     -> core::result::Result<(), String> {
-        let Some(javac): Option<PathBuf> =
-            javac_or_announce("the seeded-defect check over the recovered baseline jar")
-        else {
-            return Ok(());
-        };
+        let javac: PathBuf = find_on_path("javac").ok_or_else(|| {
+            "the tracked 181-method baseline gate requires javac on PATH".to_owned()
+        })?;
         let root: PathBuf = crate::published::checked_workspace_root();
         let jar: Vec<u8> = read_bounded_file(
             &root
@@ -4439,6 +4437,16 @@ mod tests {
         )
         .map_err(|error: eyre::Report| error.to_string())?;
         let source: String = disrobe_jar_source(&jar)?;
+        let baseline_verdict: OracleVerdict = javac_verdict(&javac, &source)?;
+        assert!(
+            baseline_verdict.type_checked,
+            "the recovered baseline jar must reach javac attribution: {baseline_verdict:?}"
+        );
+        assert!(
+            baseline_verdict.diagnostics.is_empty(),
+            "the recovered baseline jar must compile without diagnostics: {:?}",
+            baseline_verdict.diagnostics
+        );
 
         let ToolScore::Certified {
             clean: baseline_clean,
@@ -4451,6 +4459,11 @@ mod tests {
                     .to_owned(),
             );
         };
+        assert_eq!(
+            (baseline_clean, emitted),
+            (181, 181),
+            "the tracked baseline fixture must retain its published exact method population"
+        );
         assert_eq!(
             baseline_clean, emitted,
             "the unmodified recovered class compiles clean, so every emitted method is certified"
@@ -4478,6 +4491,11 @@ mod tests {
                     .to_owned(),
             );
         };
+        assert_eq!(
+            (seeded_clean, seeded_emitted),
+            (180, 181),
+            "the seeded contrast must lose exactly one clean method from the tracked population"
+        );
         assert_eq!(
             seeded_emitted, emitted,
             "seeding a defect changes what compiles, never how many methods were recovered"

@@ -148,13 +148,13 @@ fn edgecases_dex_preserves_constructor_primitive_and_reference_local_lifetimes()
             &[
                 "int var2;",
                 "long var5;",
-                "String var6;",
+                "String var7;",
                 "var2 = 7;",
                 "this.instanceField = var2;",
                 "var5 = 0L;",
                 "this.volatileField = var5;",
-                "var6 = \"skip-me\";",
-                "this.transientField = var6;",
+                "var7 = \"skip-me\";",
+                "this.transientField = var7;",
             ]
         ) && !constructor.contains("Object var2;"),
         "the constructor must retain distinct writable primitive and reference locals:\n{constructor}"
