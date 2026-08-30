@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::aot_lift::escape_dart_string;
 use super::cid_table::predefined_name;
 use super::dart_graph::{
-    DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph, DartPoolResetKind,
-    DartPoolSlot,
+    DartFunctionTypeShape, DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph,
+    DartPoolResetKind, DartPoolSlot,
 };
 use super::dart_graph_inventory::DartPinnedInventory;
 use super::dart_graph_layout::{DartClusterBodyKind, DartPinnedLayout};
@@ -55,6 +55,18 @@ const UNNAMED_CLASS_PREFIX: &str = "cid@";
 const RECORD_TYPE_TOKEN: &str = "recordType";
 
 const NULL_OBJECT_REFERENCE: u32 = 1;
+
+const EMPTY_ARRAY_REFERENCE: u32 = 4;
+
+const DYNAMIC_TYPE_REFERENCE: u32 = 7;
+
+const VOID_TYPE_REFERENCE: u32 = 8;
+
+const ABSTRACT_TYPE_NULLABILITY_MASK: u64 = 1;
+
+const ABSTRACT_TYPE_STATE_MASK: u64 = 0b110;
+
+const ABSTRACT_TYPE_FLAGS_MASK: u64 = 0b111;
 
 const SYMBOL_CLASS_NAME: &str = "Symbol";
 
@@ -126,7 +138,11 @@ enum DartPoolObjectKind {
     Field,
     Library,
     Type,
+    FunctionType,
+    DynamicType,
+    VoidType,
     TypeArguments,
+    TypeParameters,
     TypeParameter,
     RecordType,
     Symbol,
@@ -142,6 +158,7 @@ struct DartPoolObject {
     references: Vec<u32>,
     class_id: Option<i32>,
     type_flags: Option<u64>,
+    function_type_shape: Option<DartFunctionTypeShape>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +203,7 @@ impl DartPoolTable {
             .iter()
             .map(|node: &DartGraphNode| compact(node, layout))
             .collect::<Vec<DartPoolObject>>();
+        classify_base_objects(&mut objects);
         classify_symbol_objects(&mut objects, layout);
         Ok(Some(Self {
             slots,
@@ -340,11 +358,16 @@ impl DartPoolTable {
             | DartPoolObjectKind::Field
             | DartPoolObjectKind::Library => DartPoolLiteralKind::Named,
             DartPoolObjectKind::Type
+            | DartPoolObjectKind::FunctionType
+            | DartPoolObjectKind::DynamicType
+            | DartPoolObjectKind::VoidType
             | DartPoolObjectKind::TypeParameter
             | DartPoolObjectKind::RecordType => DartPoolLiteralKind::Type,
             DartPoolObjectKind::TypeArguments => DartPoolLiteralKind::TypeArguments,
             DartPoolObjectKind::Symbol => DartPoolLiteralKind::Symbol,
-            DartPoolObjectKind::Opaque => DartPoolLiteralKind::Unresolved,
+            DartPoolObjectKind::TypeParameters | DartPoolObjectKind::Opaque => {
+                DartPoolLiteralKind::Unresolved
+            }
         }
     }
 
@@ -415,13 +438,20 @@ impl DartPoolTable {
                 self.declared_name(object, self.declarations.declarations.library.url_reference)
             }
             DartPoolObjectKind::Type => self.render_type(object, depth, path, budget),
+            DartPoolObjectKind::FunctionType => {
+                self.render_function_type(object, depth, path, budget)
+            }
+            DartPoolObjectKind::DynamicType => Ok(String::from("dynamic")),
+            DartPoolObjectKind::VoidType => Ok(String::from("void")),
             DartPoolObjectKind::TypeParameter => Err(DartPoolUnresolvedReason::TypeParameter),
             DartPoolObjectKind::RecordType => Err(DartPoolUnresolvedReason::RecordType),
             DartPoolObjectKind::TypeArguments => {
                 self.render_type_arguments(object, depth, path, budget)
             }
             DartPoolObjectKind::Symbol => self.render_symbol(object),
-            DartPoolObjectKind::Opaque => Err(DartPoolUnresolvedReason::ClusterBodyUnmodelled),
+            DartPoolObjectKind::TypeParameters | DartPoolObjectKind::Opaque => {
+                Err(DartPoolUnresolvedReason::ClusterBodyUnmodelled)
+            }
         }
     }
 
@@ -525,7 +555,10 @@ impl DartPoolTable {
                 .object(*element)
                 .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
             match value.kind {
-                DartPoolObjectKind::Type => {
+                DartPoolObjectKind::Type
+                | DartPoolObjectKind::FunctionType
+                | DartPoolObjectKind::DynamicType
+                | DartPoolObjectKind::VoidType => {
                     rendered.push(self.render_object(*element, depth + 1, path, budget)?);
                 }
                 DartPoolObjectKind::TypeParameter => {
@@ -541,6 +574,132 @@ impl DartPoolTable {
             rendered.push(ELISION.to_owned());
         }
         Ok(format!("<{}>", rendered.join(", ")))
+    }
+
+    fn render_function_type(
+        &self,
+        object: &DartPoolObject,
+        depth: usize,
+        path: &mut BTreeSet<u32>,
+        budget: &mut usize,
+    ) -> Rendered {
+        let shape: DartFunctionTypeShape = object
+            .function_type_shape
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
+        let flags: u64 = object
+            .type_flags
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
+        if flags & !ABSTRACT_TYPE_FLAGS_MASK != 0
+            || !matches!(flags & ABSTRACT_TYPE_STATE_MASK, 0b010 | 0b100)
+        {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        if object.references.len() != 6
+            || shape.parent_type_arguments != 0
+            || shape.type_parameters != 0
+            || shape.has_named_optional_parameters
+        {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        let type_parameters: u32 = object.references[2];
+        if !self.is_null_object(type_parameters)
+            && self
+                .object(type_parameters)
+                .map(|value: &DartPoolObject| value.kind)
+                != Some(DartPoolObjectKind::TypeParameters)
+        {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        let parameter_types: u32 = object.references[4];
+        let parameters: &DartPoolObject = self
+            .object(parameter_types)
+            .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
+        if !matches!(parameters.kind, DartPoolObjectKind::List { .. }) {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        let parameter_references: &[u32] = Self::array_elements(parameters)?;
+        let total_parameters: usize = shape
+            .fixed_parameters
+            .checked_add(shape.optional_parameters)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
+        if parameter_references.len() != total_parameters
+            || total_parameters > MAX_LIST_ELEMENTS
+            || shape.implicit_parameters > shape.fixed_parameters
+        {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        let parameter_names: u32 = object.references[5];
+        if !self.is_null_object(parameter_names) {
+            let names: &DartPoolObject = self
+                .object(parameter_names)
+                .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
+            if !Self::array_elements(names)?.is_empty() {
+                return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+            }
+        }
+        let result: String =
+            self.render_abstract_type(object.references[3], depth + 1, path, budget)?;
+        let visible_references: &[u32] = &parameter_references[shape.implicit_parameters..];
+        let mut rendered_parameters: Vec<String> = Vec::with_capacity(visible_references.len());
+        for reference in visible_references {
+            rendered_parameters.push(self.render_abstract_type(
+                *reference,
+                depth + 1,
+                path,
+                budget,
+            )?);
+        }
+        let fixed: usize = shape.fixed_parameters - shape.implicit_parameters;
+        let required: String = rendered_parameters[..fixed].join(", ");
+        let optional: String = rendered_parameters[fixed..].join(", ");
+        let parameters: String = match (required.is_empty(), optional.is_empty()) {
+            (_, true) => required,
+            (true, false) => format!("[{optional}]"),
+            (false, false) => format!("{required}, [{optional}]"),
+        };
+        let nullability: &str = if flags & ABSTRACT_TYPE_NULLABILITY_MASK == 0 {
+            ""
+        } else {
+            "?"
+        };
+        Ok(format!("{result} Function({parameters}){nullability}"))
+    }
+
+    fn array_elements(
+        object: &DartPoolObject,
+    ) -> std::result::Result<&[u32], DartPoolUnresolvedReason> {
+        if !matches!(object.kind, DartPoolObjectKind::List { .. }) {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        if object.references.is_empty() {
+            return Ok(&[]);
+        }
+        object
+            .references
+            .get(1..)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)
+    }
+
+    fn render_abstract_type(
+        &self,
+        reference: u32,
+        depth: usize,
+        path: &mut BTreeSet<u32>,
+        budget: &mut usize,
+    ) -> Rendered {
+        let value: &DartPoolObject = self
+            .object(reference)
+            .ok_or(DartPoolUnresolvedReason::ObjectOutOfRange)?;
+        if !matches!(
+            value.kind,
+            DartPoolObjectKind::Type
+                | DartPoolObjectKind::FunctionType
+                | DartPoolObjectKind::DynamicType
+                | DartPoolObjectKind::VoidType
+        ) {
+            return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
+        }
+        self.render_object(reference, depth, path, budget)
     }
 
     fn is_null_object(&self, reference: u32) -> bool {
@@ -662,6 +821,36 @@ fn compact(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject {
         references: node.references.clone(),
         class_id: node.class_id,
         type_flags: node.type_flags,
+        function_type_shape: node.function_type_shape,
+    }
+}
+
+fn classify_base_objects(objects: &mut [DartPoolObject]) {
+    for (reference, kind) in [
+        (
+            EMPTY_ARRAY_REFERENCE,
+            DartPoolObjectKind::List { immutable: true },
+        ),
+        (DYNAMIC_TYPE_REFERENCE, DartPoolObjectKind::DynamicType),
+        (VOID_TYPE_REFERENCE, DartPoolObjectKind::VoidType),
+    ] {
+        let Ok(index): std::result::Result<usize, _> = usize::try_from(reference) else {
+            continue;
+        };
+        let Some(object): Option<&mut DartPoolObject> = objects.get_mut(index) else {
+            continue;
+        };
+        if object.kind == DartPoolObjectKind::Opaque
+            && object.text.is_none()
+            && !object.text_is_escaped
+            && object.immediate.is_none()
+            && object.references.is_empty()
+            && object.class_id.is_none()
+            && object.type_flags.is_none()
+            && object.function_type_shape.is_none()
+        {
+            object.kind = kind;
+        }
     }
 }
 
@@ -754,11 +943,9 @@ fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject
         DartGraphNodeKind::Field => return DartPoolObjectKind::Field,
         DartGraphNodeKind::Library => return DartPoolObjectKind::Library,
         DartGraphNodeKind::Type => return DartPoolObjectKind::Type,
+        DartGraphNodeKind::FunctionType => return DartPoolObjectKind::FunctionType,
         DartGraphNodeKind::TypeArguments => return DartPoolObjectKind::TypeArguments,
-        DartGraphNodeKind::Unknown
-        | DartGraphNodeKind::Other
-        | DartGraphNodeKind::PatchClass
-        | DartGraphNodeKind::FunctionType => {}
+        DartGraphNodeKind::Unknown | DartGraphNodeKind::Other | DartGraphNodeKind::PatchClass => {}
     }
     let Some(class_id): Option<i32> = node.class_id else {
         return DartPoolObjectKind::Opaque;
@@ -772,6 +959,7 @@ fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject
     };
     match layout.cluster_body_kind(cid) {
         Some(DartClusterBodyKind::TypeParameter) => DartPoolObjectKind::TypeParameter,
+        Some(DartClusterBodyKind::TypeParameters) => DartPoolObjectKind::TypeParameters,
         Some(DartClusterBodyKind::RecordType) => DartPoolObjectKind::RecordType,
         Some(DartClusterBodyKind::Double) => DartPoolObjectKind::Double,
         Some(DartClusterBodyKind::Array) => DartPoolObjectKind::List {
@@ -865,6 +1053,7 @@ mod tests {
             references: Vec::new(),
             class_id: None,
             type_flags: None,
+            function_type_shape: None,
         }
     }
 
@@ -877,6 +1066,7 @@ mod tests {
             references,
             class_id: None,
             type_flags: None,
+            function_type_shape: None,
         }
     }
 
@@ -889,6 +1079,7 @@ mod tests {
             references,
             class_id: Some(class_id),
             type_flags: Some(type_flags),
+            function_type_shape: None,
         }
     }
 
@@ -901,6 +1092,36 @@ mod tests {
             references,
             class_id: None,
             type_flags: None,
+            function_type_shape: None,
+        }
+    }
+
+    fn bare_object(kind: DartPoolObjectKind) -> DartPoolObject {
+        DartPoolObject {
+            kind,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references: Vec::new(),
+            class_id: None,
+            type_flags: None,
+            function_type_shape: None,
+        }
+    }
+
+    fn function_type_object(
+        references: Vec<u32>,
+        function_type_shape: DartFunctionTypeShape,
+    ) -> DartPoolObject {
+        DartPoolObject {
+            kind: DartPoolObjectKind::FunctionType,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references,
+            class_id: None,
+            type_flags: Some(2),
+            function_type_shape: Some(function_type_shape),
         }
     }
 
@@ -913,6 +1134,7 @@ mod tests {
             references,
             class_id: Some(class_id),
             type_flags: None,
+            function_type_shape: None,
         }
     }
 
@@ -929,6 +1151,7 @@ mod tests {
             references,
             class_id,
             type_flags: None,
+            function_type_shape: None,
         }
     }
 
@@ -976,6 +1199,23 @@ mod tests {
         record_parameter_count(&mut index, "missing", None);
         assert_eq!(index.get("large").copied().flatten(), None);
         assert_eq!(index.get("missing").copied().flatten(), None);
+    }
+
+    #[test]
+    fn base_object_classification_requires_exact_pristine_references() {
+        let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 9];
+        classify_base_objects(&mut objects);
+        assert_eq!(
+            objects[4].kind,
+            DartPoolObjectKind::List { immutable: true }
+        );
+        assert_eq!(objects[7].kind, DartPoolObjectKind::DynamicType);
+        assert_eq!(objects[8].kind, DartPoolObjectKind::VoidType);
+
+        let mut malformed: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 9];
+        malformed[7].class_id = Some(40);
+        classify_base_objects(&mut malformed);
+        assert_eq!(malformed[7].kind, DartPoolObjectKind::Opaque);
     }
 
     #[test]
@@ -1067,7 +1307,40 @@ mod tests {
             DartPoolLiteralKind::TypeArguments
         );
         assert_eq!(pool.render_slot(0, false), None);
-        assert_eq!(pool.render_slot(0, false), None);
+        assert_eq!(
+            pool.unresolved_reason_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            Some(DartPoolUnresolvedReason::Cyclic)
+        );
+    }
+
+    #[test]
+    fn out_of_range_type_argument_element_retains_its_typed_refusal() {
+        let pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(1)],
+            vec![text_object("unused"), type_arguments_object(vec![0, 99])],
+        );
+        assert_eq!(
+            pool.unresolved_reason_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            Some(DartPoolUnresolvedReason::ObjectOutOfRange)
+        );
+    }
+
+    #[test]
+    fn exhausted_type_argument_budget_retains_its_typed_refusal() {
+        let pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(1)],
+            vec![
+                text_object("unused"),
+                type_arguments_object(vec![0, 2]),
+                type_object(vec![0, 0, NULL_OBJECT_REFERENCE], 40, 641),
+            ],
+        );
+        let mut path: BTreeSet<u32> = BTreeSet::new();
+        let mut budget: usize = 0;
+        assert_eq!(
+            pool.render_object(1, 0, &mut path, &mut budget),
+            Err(DartPoolUnresolvedReason::NodeBudgetExhausted)
+        );
     }
 
     #[test]
@@ -1098,11 +1371,96 @@ mod tests {
                 references: Vec::new(),
                 class_id: None,
                 type_flags: None,
+                function_type_shape: None,
             },
             type_object(vec![0, 0, NULL_OBJECT_REFERENCE], 40, 641),
         ];
         let pool: DartPoolTable = table(vec![DartPoolSlot::Object(2)], objects);
         assert_eq!(pool.render_slot(0, false).as_deref(), Some("Error"));
+    }
+
+    #[test]
+    fn function_type_uses_pinned_base_objects_and_hides_implicit_parameters() {
+        let shape: DartFunctionTypeShape = DartFunctionTypeShape {
+            implicit_parameters: 1,
+            fixed_parameters: 2,
+            optional_parameters: 0,
+            has_named_optional_parameters: false,
+            parent_type_arguments: 0,
+            type_parameters: 0,
+        };
+        let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 11];
+        objects[2] = function_type_object(vec![0, 0, 1, 8, 9, 4], shape);
+        objects[4] = bare_object(DartPoolObjectKind::List { immutable: true });
+        objects[7] = bare_object(DartPoolObjectKind::DynamicType);
+        objects[8] = bare_object(DartPoolObjectKind::VoidType);
+        objects[9] = list_object(vec![1, 7, 7]);
+        objects[10] = type_arguments_object(vec![1, 2]);
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(10)], objects);
+
+        assert_eq!(
+            pool.render_slot(0, false).as_deref(),
+            Some("<void Function(dynamic)>")
+        );
+    }
+
+    #[test]
+    fn nullable_function_type_preserves_its_serialized_nullability_bit() {
+        let shape: DartFunctionTypeShape = DartFunctionTypeShape {
+            implicit_parameters: 1,
+            fixed_parameters: 2,
+            optional_parameters: 0,
+            has_named_optional_parameters: false,
+            parent_type_arguments: 0,
+            type_parameters: 0,
+        };
+        let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 11];
+        objects[2] = function_type_object(vec![0, 0, 1, 8, 9, 4], shape);
+        objects[2].type_flags = Some(3);
+        objects[4] = bare_object(DartPoolObjectKind::List { immutable: true });
+        objects[7] = bare_object(DartPoolObjectKind::DynamicType);
+        objects[8] = bare_object(DartPoolObjectKind::VoidType);
+        objects[9] = list_object(vec![1, 7, 7]);
+        objects[10] = type_arguments_object(vec![1, 2]);
+        let mut pool: DartPoolTable = table(vec![DartPoolSlot::Object(10)], objects);
+
+        assert_eq!(
+            pool.render_slot(0, false).as_deref(),
+            Some("<void Function(dynamic)?>")
+        );
+        for flags in [None, Some(0), Some(6), Some(8)] {
+            pool.objects[2].type_flags = flags;
+            assert_eq!(
+                pool.unresolved_reason_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+                Some(DartPoolUnresolvedReason::TypeArgumentsMalformed)
+            );
+        }
+    }
+
+    #[test]
+    fn function_type_refuses_a_visible_non_type_parameter() {
+        let shape: DartFunctionTypeShape = DartFunctionTypeShape {
+            implicit_parameters: 1,
+            fixed_parameters: 2,
+            optional_parameters: 0,
+            has_named_optional_parameters: false,
+            parent_type_arguments: 0,
+            type_parameters: 0,
+        };
+        let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 11];
+        objects[0] = text_object("not a type");
+        objects[2] = function_type_object(vec![0, 0, 1, 8, 9, 4], shape);
+        objects[4] = bare_object(DartPoolObjectKind::List { immutable: true });
+        objects[7] = bare_object(DartPoolObjectKind::DynamicType);
+        objects[8] = bare_object(DartPoolObjectKind::VoidType);
+        objects[9] = list_object(vec![1, 7, 0]);
+        objects[10] = type_arguments_object(vec![1, 2]);
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(10)], objects);
+
+        assert_eq!(
+            pool.unresolved_reason_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            Some(DartPoolUnresolvedReason::TypeArgumentsMalformed)
+        );
     }
 
     #[test]

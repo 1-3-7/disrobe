@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use disrobe_pass_mobile::flutter::pool_table::pool_offset_of_slot;
 use disrobe_pass_mobile::{
     AotLiftReport, DartGraphLimits, DartLiftedFunction, DartPoolLiteralKind, DartPoolRef,
-    DartPoolTable, dart_isolate_data_bytes, dart_vm_data_bytes, lift_libapp_aot,
+    DartPoolTable, DartPoolUnresolvedReason, dart_isolate_data_bytes, dart_vm_data_bytes,
+    lift_libapp_aot,
 };
 
 const COMMITTED_SAMPLES: [&str; 4] = [
@@ -270,11 +271,29 @@ fn a_type_parameter_argument_renders_its_position_and_never_a_source_name() {
     );
 }
 
-const RECORDED_REFUSED_VECTOR_CEILING: usize = 200;
+const RECORDED_REFUSED_VECTOR_BASELINE: usize = 148;
+const RECORDED_REFUSED_VECTOR_CEILING: usize = 13;
+const RECORDED_NULLABLE_FUNCTION_TYPE_COUNT: usize = 128;
 
 #[test]
-fn no_recovered_type_carries_a_nullability_suffix_the_flag_word_cannot_justify() {
-    let mut suffixed: Vec<String> = Vec::new();
+fn committed_snapshot_function_type_renders_from_its_pinned_pool_metadata() {
+    let table: DartPoolTable = pool_table_for("disrobe_sample/libapp_arm64.so");
+    let slot: usize = 905;
+    let offset: u64 = pool_offset_of_slot(slot as u64);
+
+    assert_eq!(
+        table.kind_at_offset(offset, false),
+        DartPoolLiteralKind::TypeArguments
+    );
+    assert_eq!(
+        table.render_slot(slot, false).as_deref(),
+        Some("<void Function(IsolateSpawnException)>")
+    );
+}
+
+#[test]
+fn serialized_function_type_nullability_is_recovered_without_spreading_to_other_types() {
+    let mut unexpected: Vec<String> = Vec::new();
     let mut carrying: usize = 0;
     let mut rendered: usize = 0;
     let mut refused: usize = 0;
@@ -302,22 +321,23 @@ fn no_recovered_type_carries_a_nullability_suffix_the_flag_word_cannot_justify()
                 || text.contains("*,");
             if carries {
                 carrying += 1;
-                if suffixed.len() < 8 {
-                    suffixed.push(format!("{sample}: {text}"));
+                if !text.contains("Function(") && unexpected.len() < 8 {
+                    unexpected.push(format!("{sample}: {text}"));
                 }
             }
         }
     }
     eprintln!(
-        "recovered type renderings: {rendered}, refused: {refused}, carrying a nullability suffix: {carrying}"
+        "recovered type renderings: {rendered}, refused: {refused}, nullable function types: {carrying}"
     );
     assert!(
-        carrying == 0,
-        "a recovered type carries a nullability suffix, but the low bits of the Dart type flag word \
-         are not a three-valued nullability field: across the committed corpus bits 1 and 2 are \
-         never both set and never both clear, so they are a two-valued field and bit 0 varies \
-         independently. Emitting a suffix from them states a nullability the artifact has not been \
-         shown to carry. {carrying} of them, for example {suffixed:?}"
+        unexpected.is_empty(),
+        "a nullability suffix escaped the FunctionType decoder: {unexpected:?}"
+    );
+    assert_eq!(
+        carrying, RECORDED_NULLABLE_FUNCTION_TYPE_COUNT,
+        "the committed Dart 3.12.2 snapshots contain \
+         {RECORDED_NULLABLE_FUNCTION_TYPE_COUNT} nullable FunctionType renderings"
     );
     assert!(
         rendered > 0,
@@ -329,6 +349,7 @@ fn no_recovered_type_carries_a_nullability_suffix_the_flag_word_cannot_justify()
 fn an_unreadable_type_flag_word_no_longer_discards_a_resolved_class_name() {
     let mut refused: usize = 0;
     let mut vectors: usize = 0;
+    let mut reasons: BTreeMap<DartPoolUnresolvedReason, usize> = BTreeMap::new();
     for sample in COMMITTED_SAMPLES {
         let table: DartPoolTable = pool_table_for(sample);
         let mut sample_refused: usize = 0;
@@ -340,12 +361,24 @@ fn an_unreadable_type_flag_word_no_longer_discards_a_resolved_class_name() {
             vectors += 1;
             if table.render_slot(index, false).is_none() {
                 sample_refused += 1;
+                let reason: DartPoolUnresolvedReason = table
+                    .unresolved_reason_at_offset(offset, false)
+                    .expect("a refused type-argument slot must carry its reason");
+                *reasons.entry(reason).or_insert(0) += 1;
             }
         }
         eprintln!("{sample}: {sample_refused} type-argument vectors still refuse");
         refused += sample_refused;
     }
-    eprintln!("type-argument vectors across the committed corpus: {vectors}, refusing: {refused}");
+    eprintln!(
+        "type-argument vectors across the committed corpus: {vectors}, baseline refusing: \
+         {RECORDED_REFUSED_VECTOR_BASELINE}, refusing now: {refused}, by reason: {reasons:?}"
+    );
+    assert!(
+        refused < RECORDED_REFUSED_VECTOR_BASELINE,
+        "{refused} type-argument vectors refuse, so the recorded baseline of \
+         {RECORDED_REFUSED_VECTOR_BASELINE} did not improve"
+    );
     assert!(
         refused <= RECORDED_REFUSED_VECTOR_CEILING,
         "{refused} type-argument vectors refuse, above the recorded ceiling of \

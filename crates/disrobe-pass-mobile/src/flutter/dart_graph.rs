@@ -129,6 +129,16 @@ pub(super) enum DartPoolResetKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DartFunctionTypeShape {
+    pub(super) implicit_parameters: usize,
+    pub(super) fixed_parameters: usize,
+    pub(super) optional_parameters: usize,
+    pub(super) has_named_optional_parameters: bool,
+    pub(super) parent_type_arguments: usize,
+    pub(super) type_parameters: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DartPoolSlot {
     Immediate(i64),
     Object(u32),
@@ -143,6 +153,7 @@ pub(super) struct DartGraphNode {
     pub(super) text: Option<String>,
     pub(super) class_id: Option<i32>,
     pub(super) parameter_count: Option<usize>,
+    pub(super) function_type_shape: Option<DartFunctionTypeShape>,
     pub(super) immediate: Option<i64>,
     pub(super) pool_slots: Vec<DartPoolSlot>,
     pub(super) text_is_escaped: bool,
@@ -864,19 +875,45 @@ impl DartGraphParser<'_> {
     fn fill_function_types(&mut self, cluster: &DartGraphCluster) -> Result<()> {
         for reference in cluster.start_reference..cluster.end_reference {
             let references: Vec<u32> = self.read_references(6)?;
-            let _flags: u8 = self.cursor.read_u8("function type flags")?;
+            let flags: u8 = self.cursor.read_u8("function type flags")?;
             let packed: u32 = self
                 .cursor
                 .read_u32("function type packed parameter counts")?;
-            let _type_parameter_counts: u16 =
+            let type_parameter_counts: u16 =
                 self.cursor.read_u16("function type parameter counts")?;
-            let implicit: usize = usize::try_from(packed & 1).unwrap_or(0);
-            let fixed: usize = usize::try_from((packed >> 2) & 0x3fff).unwrap_or(0);
-            let optional: usize = usize::try_from((packed >> 16) & 0x3fff).unwrap_or(0);
-            let parameter_count: usize = fixed.saturating_add(optional).saturating_sub(implicit);
+            let implicit: usize = usize::from((packed & 1) != 0);
+            let fixed: usize = ((packed >> 2) & 0x3fff) as usize;
+            let optional: usize = ((packed >> 16) & 0x3fff) as usize;
+            let total: usize =
+                fixed
+                    .checked_add(optional)
+                    .ok_or_else(|| Error::DartGraphInvalidClusterValue {
+                        index: cluster.index,
+                        field: "function type parameter count",
+                        value: i64::MAX,
+                        offset: self.cursor.position(),
+                    })?;
+            let parameter_count: usize =
+                total
+                    .checked_sub(implicit)
+                    .ok_or_else(|| Error::DartGraphInvalidClusterValue {
+                        index: cluster.index,
+                        field: "function type implicit parameter count",
+                        value: i64::from(implicit as u8),
+                        offset: self.cursor.position(),
+                    })?;
             let node: &mut DartGraphNode = self.node_mut(reference)?;
             node.references = references;
             node.parameter_count = Some(parameter_count);
+            node.type_flags = Some(u64::from(flags));
+            node.function_type_shape = Some(DartFunctionTypeShape {
+                implicit_parameters: implicit,
+                fixed_parameters: fixed,
+                optional_parameters: optional,
+                has_named_optional_parameters: packed & 2 != 0,
+                parent_type_arguments: usize::from(type_parameter_counts as u8),
+                type_parameters: usize::from((type_parameter_counts >> 8) as u8),
+            });
         }
         Ok(())
     }
