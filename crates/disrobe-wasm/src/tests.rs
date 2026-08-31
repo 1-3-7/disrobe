@@ -194,6 +194,56 @@ fn wasm_analyze_reports_on_minimal_module() {
 }
 
 #[test]
+fn wasm_signatures_carries_the_validated_boundary_links_document() {
+    let module: Vec<u8> = wat::parse_str(
+        r#"(module
+            (import "host" "call" (func (param i32)))
+            (import "host" "memory" (memory 1))
+            (import "host" "table" (table 1 funcref))
+            (import "host" "global" (global i32))
+            (export "call_out" (func 0))
+            (export "memory_out" (memory 0))
+            (export "table_out" (table 0))
+            (export "global_out" (global 0)))"#,
+    )
+    .expect("boundary module assembles");
+    let json: Value = run(super::wasm_signatures, &module);
+    assert_eq!(json["ok"], Value::Bool(true), "wasm signatures: {json}");
+    let boundary_links: Value = json
+        .get("boundary_links")
+        .expect("wasm signatures includes boundary links")
+        .clone();
+    let encoded: Vec<u8> = serde_json::to_vec(&boundary_links).expect("encode boundary links");
+    let expected: Vec<u8> = disrobe_pass_wasm_deob::extract_signatures(&module)
+        .expect("extract boundary links")
+        .boundary_links()
+        .to_json()
+        .expect("serialize boundary links");
+    let decoded: disrobe_pass_wasm_deob::BoundaryLinks =
+        disrobe_pass_wasm_deob::BoundaryLinks::from_json(&encoded).expect("validated links");
+
+    let reserialized: Vec<u8> = decoded.to_json().expect("re-serialize boundary links");
+    assert_eq!(reserialized, expected);
+    assert_eq!(decoded.schema_version(), 1);
+    assert_eq!(decoded.links().len(), 8);
+}
+
+#[test]
+fn wasm_signatures_keeps_an_empty_boundary_links_document() {
+    let json: Value = run(super::wasm_signatures, b"\0asm\x01\x00\x00\x00");
+    let boundary_links: Value = json
+        .get("boundary_links")
+        .expect("wasm signatures includes empty boundary links")
+        .clone();
+    let encoded: Vec<u8> = serde_json::to_vec(&boundary_links).expect("encode boundary links");
+    let decoded: disrobe_pass_wasm_deob::BoundaryLinks =
+        disrobe_pass_wasm_deob::BoundaryLinks::from_json(&encoded).expect("validated empty links");
+
+    assert_eq!(decoded.schema_version(), 1);
+    assert!(decoded.links().is_empty());
+}
+
+#[test]
 fn wasm_lift_rust_reports_unsafe_atomic_state() {
     let json: Value = run(super::wasm_lift_rust, UNSAFE_ATOMIC_WASM);
     assert_eq!(json["ok"], Value::Bool(false));

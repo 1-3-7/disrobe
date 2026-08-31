@@ -150,6 +150,10 @@ fn deob(
         analyze_module(&clean_bytes).map_err(|e| miette::miette!("{e}"))?;
     let sigs: ModuleSignatures =
         extract_signatures(&clean_bytes).map_err(|e| miette::miette!("DR-WASMDEOB-0001: {e}"))?;
+    let boundary_links: Vec<u8> = sigs
+        .boundary_links()
+        .to_json()
+        .map_err(|e| miette::miette!("DR-WASMDEOB-0001: boundary links: {e}"))?;
     let wat: String = assemble_wat(&clean_bytes, &sigs)?;
     let func_count: usize = sigs.defined().len();
 
@@ -166,6 +170,9 @@ fn deob(
     write_json(&summary_path, &summary)?;
     let report_path: PathBuf = out_path.with_extension("recovery.json");
     write_json(&report_path, &report)?;
+    let boundary_links_path: PathBuf = out_path.with_extension("boundary-links.json");
+    std::fs::write(&boundary_links_path, boundary_links)
+        .map_err(|e| miette::miette!("DR-CLI-0042: cannot write boundary links: {e}"))?;
 
     let emitted_wasm: Option<PathBuf> = match emit_wasm {
         Some(path) => {
@@ -197,6 +204,7 @@ fn deob(
     println!("  wat source:   {}", out_path.display());
     println!("  summary:      {}", summary_path.display());
     println!("  recovery:     {}", report_path.display());
+    println!("  boundary links: {}", boundary_links_path.display());
     if let Some(path) = emitted_wasm {
         println!("  recovered wasm: {}", path.display());
     }

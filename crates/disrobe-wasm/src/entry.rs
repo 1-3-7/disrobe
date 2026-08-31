@@ -43,8 +43,8 @@ use disrobe_pass_shell::{
 };
 use disrobe_pass_swift_objc::{SwiftObjcReport, analyze as swift_objc_analyze};
 use disrobe_pass_wasm_deob::{
-    ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg, FunctionSig,
-    GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
+    BoundaryLinks, ComponentBindings, ComponentManifest, EhModuleSummary, ExportAlias, FunctionCfg,
+    FunctionSig, GcHirModule, GcTypeGraph, LiftResult, LiftTarget, MemoryReport, ModuleSignatures,
     ModuleSummary, RecoveredModule, RecoveryReport, SourceMap, TypeScriptModuleLift, WasmDetection,
     analyze_module, build_function_cfg, c_runtime_prelude, extract_signatures,
     lift_component_manifest, lift_gc_module, lift_module_faithful_wat, lift_module_to_wat,
@@ -634,6 +634,7 @@ pub struct WasmSignaturesResult {
     defined_function_count: usize,
     defined: Vec<FunctionSig>,
     export_aliases: Vec<ExportAlias>,
+    boundary_links: BoundaryLinks,
     summary: ModuleSummary,
     recovery: RecoveryReport,
     recovered_byte_len: usize,
@@ -642,6 +643,7 @@ pub struct WasmSignaturesResult {
 pub fn wasm_signatures(bytes: &[u8]) -> Result<WasmSignaturesResult, String> {
     let sigs: ModuleSignatures =
         extract_signatures(bytes).map_err(|e| format!("wasm signatures: {e}"))?;
+    let boundary_links: BoundaryLinks = sigs.boundary_links().clone();
     let summary: ModuleSummary = analyze_module(bytes).map_err(|e| format!("wasm analyze: {e}"))?;
     let recovered: RecoveredModule =
         recover_module(bytes).map_err(|e| format!("wasm recover: {e}"))?;
@@ -652,6 +654,7 @@ pub fn wasm_signatures(bytes: &[u8]) -> Result<WasmSignaturesResult, String> {
         defined_function_count: sigs.defined().len(),
         defined: sigs.defined().to_vec(),
         export_aliases: sigs.export_aliases().to_vec(),
+        boundary_links,
         summary,
         recovery: recovered.report,
         recovered_byte_len: recovered.bytes.len(),
