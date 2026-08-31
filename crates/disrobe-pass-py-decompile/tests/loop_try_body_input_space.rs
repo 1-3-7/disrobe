@@ -73,8 +73,8 @@ const CASES: &[LoopTryCase] = &[
     LoopTryCase {
         label: "while_try_break",
         source: "def f(active, nxt, sink):\n    while active():\n        try:\n            item = nxt()\n        except LookupError:\n            break\n        else:\n            sink(item)\n    sink(0)\n",
-        equivalent_on: &["3.9", "3.10", "3.12"],
-        open_reason: "3.11, 3.13, 3.14 and 3.15 use different table-era loop joins outside this slice",
+        equivalent_on: &["3.9", "3.10", "3.12", "3.13", "3.14"],
+        open_reason: "3.11 and 3.15 use different table-era loop joins outside this slice",
     },
     LoopTryCase {
         label: "while_try_finally",

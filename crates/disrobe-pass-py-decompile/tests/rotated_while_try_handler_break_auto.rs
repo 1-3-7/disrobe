@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use common::band::{band_scratch, find_interpreter};
-use common::stdlib_measure::find_disrobe;
+use common::stdlib_measure::workspace_target;
 
 const SOURCE: &str = r"def consume(active, next_item, sink):
     while active():
@@ -165,11 +165,25 @@ fn captured_source(out: &Path) -> String {
     std::fs::read_to_string(path).expect("read recovered source")
 }
 
-#[test]
-fn auto_preserves_rotated_while_try_handler_break() {
-    let interpreter: PathBuf = find_interpreter("3.12").expect("CPython 3.12");
-    let disrobe: PathBuf = find_disrobe().expect("disrobe binary");
-    let scratch: PathBuf = band_scratch("rotated-while-try-handler-break-auto");
+fn debug_disrobe() -> PathBuf {
+    let executable: &str = if cfg!(windows) {
+        "disrobe.exe"
+    } else {
+        "disrobe"
+    };
+    let path: PathBuf = workspace_target().join("debug").join(executable);
+    assert!(
+        path.is_file(),
+        "missing debug disrobe at {}",
+        path.display()
+    );
+    path
+}
+
+fn assert_auto_preserves_rotated_while_try_handler_break(alias: &str) {
+    let interpreter: PathBuf = find_interpreter(alias).unwrap_or_else(|| panic!("CPython {alias}"));
+    let disrobe: PathBuf = debug_disrobe();
+    let scratch: PathBuf = band_scratch(&format!("rotated-while-try-handler-break-auto-{alias}"));
     let source_path: PathBuf = scratch.join("fixture.py");
     let pyc_path: PathBuf = scratch.join("fixture.pyc");
     let original_path: PathBuf = scratch.join("original.py");
@@ -182,28 +196,36 @@ fn auto_preserves_rotated_while_try_handler_break() {
     assert_eq!(
         recovered.matches("while active():").count(),
         1,
-        "{recovered}"
+        "CPython {alias}: {recovered}"
     );
     assert_eq!(
         recovered.matches("except LookupError:").count(),
         1,
-        "{recovered}"
+        "CPython {alias}: {recovered}"
     );
-    assert_eq!(recovered.matches("break").count(), 1, "{recovered}");
-    assert_eq!(recovered.matches("else:").count(), 1, "{recovered}");
+    assert_eq!(
+        recovered.matches("break").count(),
+        1,
+        "CPython {alias}: {recovered}"
+    );
+    assert_eq!(
+        recovered.matches("else:").count(),
+        1,
+        "CPython {alias}: {recovered}"
+    );
     std::fs::write(&original_path, format!("{SOURCE}\n{DRIVER}")).expect("write original");
     std::fs::write(&recovered_path, format!("{recovered}\n{DRIVER}")).expect("write recovered");
     let structure: std::process::Output =
         run(&interpreter, &["-c", STRUCTURE_CHECK], &recovered_path);
     assert!(
         structure.status.success(),
-        "{}",
+        "CPython {alias}: {}",
         String::from_utf8_lossy(&structure.stderr)
     );
     let original: std::process::Output = run(&interpreter, &[], &original_path);
     let rebuilt: std::process::Output = run(&interpreter, &[], &recovered_path);
     assert!(original.status.success() && rebuilt.status.success());
-    assert_eq!(rebuilt.stdout, original.stdout);
+    assert_eq!(rebuilt.stdout, original.stdout, "CPython {alias}");
     assert_eq!(
         String::from_utf8(original.stdout).expect("utf8").trim(),
         "['test', 'next', 'one', 'test', 'next', 'exhausted']"
@@ -211,10 +233,18 @@ fn auto_preserves_rotated_while_try_handler_break() {
 }
 
 #[test]
-fn auto_refuses_mismatched_rotated_while_tests() {
-    let interpreter: PathBuf = find_interpreter("3.12").expect("CPython 3.12");
-    let disrobe: PathBuf = find_disrobe().expect("disrobe binary");
-    let scratch: PathBuf = band_scratch("rotated-while-try-handler-break-mismatch-auto");
+fn auto_preserves_rotated_while_try_handler_break() {
+    for alias in ["3.12", "3.13", "3.14"] {
+        assert_auto_preserves_rotated_while_try_handler_break(alias);
+    }
+}
+
+fn assert_auto_refuses_mismatched_rotated_while_tests(alias: &str) {
+    let interpreter: PathBuf = find_interpreter(alias).unwrap_or_else(|| panic!("CPython {alias}"));
+    let disrobe: PathBuf = debug_disrobe();
+    let scratch: PathBuf = band_scratch(&format!(
+        "rotated-while-try-handler-break-mismatch-auto-{alias}"
+    ));
     let source_path: PathBuf = scratch.join("fixture.py");
     let pyc_path: PathBuf = scratch.join("fixture.pyc");
     let out: PathBuf = scratch.join("out");
@@ -228,26 +258,36 @@ fn auto_refuses_mismatched_rotated_while_tests() {
         .expect("mutate bottom test");
     assert!(
         mutation.status.success(),
-        "{}",
+        "CPython {alias}: {}",
         String::from_utf8_lossy(&mutation.stderr)
     );
     run_auto(&disrobe, &pyc_path, &out);
     let recovered: String = captured_source(&out);
     assert!(
         recovered.contains("decompile-error: ast builder desync at offset "),
-        "mismatched tests were published as source:\n{recovered}"
+        "CPython {alias} mismatched tests were published as source:\n{recovered}"
     );
     assert!(
         recovered.contains("peeled and loop-back tests differ"),
-        "the refusal did not identify the mismatched loop tests:\n{recovered}"
+        "CPython {alias} refusal did not identify the mismatched loop tests:\n{recovered}"
     );
-    assert!(!recovered.contains("while active():"), "{recovered}");
+    assert!(
+        !recovered.contains("while active():"),
+        "CPython {alias}: {recovered}"
+    );
+}
+
+#[test]
+fn auto_refuses_mismatched_rotated_while_tests() {
+    for alias in ["3.12", "3.13"] {
+        assert_auto_refuses_mismatched_rotated_while_tests(alias);
+    }
 }
 
 #[test]
 fn auto_refuses_rotated_while_entry_jump_to_body() {
     let interpreter: PathBuf = find_interpreter("3.12").expect("CPython 3.12");
-    let disrobe: PathBuf = find_disrobe().expect("disrobe binary");
+    let disrobe: PathBuf = debug_disrobe();
     let scratch: PathBuf = band_scratch("rotated-while-entry-jump-to-body-auto");
     let source_path: PathBuf = scratch.join("fixture.py");
     let pyc_path: PathBuf = scratch.join("fixture.pyc");

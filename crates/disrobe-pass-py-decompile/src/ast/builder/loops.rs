@@ -2701,7 +2701,14 @@ fn normalize_handler_break_loop_latch(
         } if matches!(values.as_slice(), [left, right]
             if is_direct_zero_argument_call(left) && is_direct_zero_argument_call(right))
     );
-    if !(is_two_call_and || has_peeled_entry_test && is_direct_zero_argument_call(test)) {
+    let is_direct_call: bool = is_direct_zero_argument_call(test);
+    let is_unpeeled_top_test: bool = !has_peeled_entry_test
+        && is_direct_call
+        && (region.header..region.body_start).any(|index: usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(region.exit)
+        });
+    if !(is_two_call_and || has_peeled_entry_test && is_direct_call || is_unpeeled_top_test) {
         return false;
     }
     let matching_exit_edges: usize = (region_try.handler_start..region_try.region_end())
@@ -2746,6 +2753,8 @@ fn normalize_handler_break_loop_latch(
     );
     let orelse_is_supported: bool = if is_two_call_and {
         orelse.is_empty() || orelse.len() == 1 && orelse_ends_in_latch
+    } else if is_unpeeled_top_test {
+        true
     } else {
         orelse_ends_in_latch
     };
