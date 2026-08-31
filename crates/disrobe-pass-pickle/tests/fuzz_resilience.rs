@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use disrobe_pass_pickle::{
     AnalysisOptions, Disassembly, PickleValue, Result, Session, VmTrace, analyze_all, analyze_deep,
-    analyze_polyglot, analyze_safety, analyze_with_options, analyze_with_policy, detect_model,
-    disassemble, execute, execute_full, extract_ml, looks_like_pickle, needs_memo_table,
-    reconstruct, render_disasm, to_python,
+    analyze_polyglot, analyze_safety, analyze_with_options, analyze_with_policy, disassemble,
+    execute, execute_full, looks_like_pickle, needs_memo_table, reconstruct, render_disasm,
+    to_python,
 };
+#[cfg(feature = "ml")]
+use disrobe_pass_pickle::{detect_model, extract_ml};
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
@@ -103,8 +105,11 @@ fn consume<T>(_: T) {}
 fn probe(bytes: &[u8]) {
     consume(looks_like_pickle(bytes));
     consume(analyze_polyglot(bytes));
-    consume(detect_model(bytes));
-    consume(extract_ml(bytes));
+    #[cfg(feature = "ml")]
+    {
+        consume(detect_model(bytes));
+        consume(extract_ml(bytes));
+    }
     consume(analyze_all(bytes));
 
     let disassembly: Result<Disassembly> = disassemble(bytes);

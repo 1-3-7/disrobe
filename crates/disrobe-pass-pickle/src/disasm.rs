@@ -610,6 +610,7 @@ pub fn disassemble(bytes: &[u8]) -> Result<Disassembly> {
     Ok(result)
 }
 
+#[cfg(any(feature = "ml", test))]
 fn skip_arg(cur: &mut Cursor<'_>, info: &OpInfo) -> Result<()> {
     match info.arg {
         ArgKind::None => Ok(()),
@@ -676,18 +677,21 @@ fn skip_arg(cur: &mut Cursor<'_>, info: &OpInfo) -> Result<()> {
     }
 }
 
+#[cfg(any(feature = "ml", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamEnd {
     pub(crate) len: usize,
     pub(crate) protocol: u8,
 }
 
+#[cfg(any(feature = "ml", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamProbe {
     pub(crate) opcodes: usize,
     pub(crate) end: Option<StreamEnd>,
 }
 
+#[cfg(any(feature = "ml", test))]
 pub(crate) fn probe_stream(bytes: &[u8], opcode_budget: usize) -> StreamProbe {
     let ceiling: usize = opcode_budget.min(OPCODE_BUDGET);
     let mut cur: Cursor<'_> = Cursor::new(bytes);

@@ -67,8 +67,11 @@ fn harness_entrypoint() {
     );
     let poly: disrobe_pass_pickle::PolyglotReport = disrobe_pass_pickle::analyze_polyglot(&bytes);
     assert!(poly.is_pickle);
-    let format: disrobe_pass_pickle::ModelFormat = disrobe_pass_pickle::detect_model(&bytes);
-    assert_eq!(format, disrobe_pass_pickle::ModelFormat::BarePickle);
+    #[cfg(feature = "ml")]
+    {
+        let format: disrobe_pass_pickle::ModelFormat = disrobe_pass_pickle::detect_model(&bytes);
+        assert_eq!(format, disrobe_pass_pickle::ModelFormat::BarePickle);
+    }
 }
 
 fn filtered_noise(stderr: &str) -> String {
@@ -130,6 +133,7 @@ fn set_emits_decision_points() {
         stderr.contains("[debug:pickle] verdict ="),
         "expected the severity verdict, got:\n{stderr}"
     );
+    #[cfg(feature = "ml")]
     assert!(
         stderr.contains("[debug:pickle] model-format ="),
         "expected the model-file detection, got:\n{stderr}"
