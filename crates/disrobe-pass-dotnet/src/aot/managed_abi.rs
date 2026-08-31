@@ -16,6 +16,7 @@ const HAS_THIS: u32 = 0x20;
 const EXPLICIT_THIS: u32 = 0x40;
 const SYSTEM_NAMESPACE: &str = "System";
 const VOID_TYPE_NAME: &str = "Void";
+const OBJECT_TYPE_NAME: &str = "Object";
 const MS_X64_INTEGER_ARGUMENTS: [PseudoReg; 4] =
     [PseudoReg::Rcx, PseudoReg::Rdx, PseudoReg::R8, PseudoReg::R9];
 const OBJECT_REFERENCE_C_TYPE: &str = "uintptr_t";
@@ -632,6 +633,22 @@ fn resolve_slot(
     layouts: &[AotTypeLayout],
 ) -> Reattached<ManagedSlot> {
     let declaration: &AotType = resolve_declaration(signature, types)?;
+    if declaration.enclosing_type_record_offset.is_none()
+        && declaration.namespace.as_deref() == Some(SYSTEM_NAMESPACE)
+        && declaration.name == OBJECT_TYPE_NAME
+        && types
+            .iter()
+            .filter(|candidate: &&AotType| {
+                candidate.enclosing_type_record_offset.is_none()
+                    && candidate.namespace.as_deref() == Some(SYSTEM_NAMESPACE)
+                    && candidate.name == OBJECT_TYPE_NAME
+            })
+            .take(2)
+            .count()
+            == 1
+    {
+        return Ok(ManagedSlot::InstanceReference);
+    }
     let scalar: AotSignatureAbstention = match resolve_value(signature, types) {
         Ok(value) => return Ok(ManagedSlot::Value(value)),
         Err(abstention) => abstention,
@@ -1179,10 +1196,11 @@ mod tests {
     use super::{
         AotMethod, AotMethodSignature, AotSignatureAbstention, AotType, AotTypeSignature,
         AotTypeSignatureKind, ManagedFloat, ManagedPlan, ManagedPrimitive, ManagedReturn,
-        ManagedSlot, ManagedStruct, ManagedStructField, ManagedValue, PseudoParameterBinding,
-        PseudoReg, PseudoScalarType, abi_agrees, bindings_agree, identifier_occurrences,
-        recovery_shape_agrees, resolve_return, resolve_value, return_agrees,
-        rewrite_argument_bindings, rewrite_return, slot_binding_agrees, split_prototype,
+        ManagedSlot, ManagedStruct, ManagedStructField, ManagedValue, OBJECT_TYPE_NAME,
+        PseudoParameterBinding, PseudoReg, PseudoScalarType, SYSTEM_NAMESPACE, abi_agrees,
+        bindings_agree, identifier_occurrences, recovery_shape_agrees, resolve_return,
+        resolve_slot, resolve_value, return_agrees, rewrite_argument_bindings, rewrite_return,
+        slot_binding_agrees, split_prototype,
     };
     use crate::aot::{AOT_SIGNATURE_ABSTENTIONS, AotCodeRange};
     use disrobe_pass_native::{LeafRecovery, PseudoAbi, RecoveredSignature, SretReturn};
@@ -1191,6 +1209,7 @@ mod tests {
     const VOID: u32 = 7;
     const SINGLE: u32 = 8;
     const DOUBLE: u32 = 9;
+    const OBJECT: u32 = 10;
 
     fn primitive_type(record_offset: u32, name: &str) -> AotType {
         AotType {
@@ -1251,7 +1270,74 @@ mod tests {
             primitive_type(VOID, "Void"),
             primitive_type(SINGLE, "Single"),
             primitive_type(DOUBLE, "Double"),
+            primitive_type(OBJECT, "Object"),
         ]
+    }
+
+    #[test]
+    fn only_system_object_definitions_resolve_as_reference_parameter_slots() {
+        let mut types: Vec<AotType> = type_table();
+        types.push(AotType {
+            record_offset: 11,
+            namespace: Some("Probe".to_owned()),
+            name: "Object".to_owned(),
+            enclosing_type_record_offset: None,
+            method_record_offsets: Vec::new(),
+        });
+
+        assert_eq!(
+            resolve_slot(definition(OBJECT), &types, &[]),
+            Ok(ManagedSlot::InstanceReference)
+        );
+        assert_eq!(
+            resolve_slot(definition(11), &types, &[]),
+            Err(AotSignatureAbstention::TypeOutsidePrimitiveTable)
+        );
+        assert_eq!(
+            resolve_slot(definition(VOID), &types, &[]),
+            Err(AotSignatureAbstention::TypeOutsidePrimitiveTable)
+        );
+        assert_eq!(
+            resolve_slot(
+                AotTypeSignature {
+                    kind: AotTypeSignatureKind::Reference,
+                    record_offset: OBJECT,
+                },
+                &types,
+                &[]
+            ),
+            Err(AotSignatureAbstention::TypeSignatureKindUnsupported)
+        );
+
+        let mut nested_types: Vec<AotType> = type_table();
+        nested_types.push(AotType {
+            record_offset: 12,
+            namespace: Some(SYSTEM_NAMESPACE.to_owned()),
+            name: OBJECT_TYPE_NAME.to_owned(),
+            enclosing_type_record_offset: Some(INT32),
+            method_record_offsets: Vec::new(),
+        });
+        assert_eq!(
+            resolve_slot(definition(12), &nested_types, &[]),
+            Err(AotSignatureAbstention::TypeOutsidePrimitiveTable)
+        );
+
+        let mut duplicate_types: Vec<AotType> = type_table();
+        duplicate_types.push(AotType {
+            record_offset: 13,
+            namespace: Some(SYSTEM_NAMESPACE.to_owned()),
+            name: OBJECT_TYPE_NAME.to_owned(),
+            enclosing_type_record_offset: None,
+            method_record_offsets: Vec::new(),
+        });
+        assert_eq!(
+            resolve_slot(definition(OBJECT), &duplicate_types, &[]),
+            Err(AotSignatureAbstention::TypeOutsidePrimitiveTable)
+        );
+        assert_eq!(
+            resolve_slot(definition(13), &duplicate_types, &[]),
+            Err(AotSignatureAbstention::TypeOutsidePrimitiveTable)
+        );
     }
 
     fn plan(signature: AotMethodSignature) -> Result<ManagedPlan, AotSignatureAbstention> {

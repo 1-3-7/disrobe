@@ -732,30 +732,43 @@ fn a_hidden_struct_return_keeps_the_register_typed_body() -> Result<(), &'static
 }
 
 #[test]
-fn a_signature_outside_the_primitive_table_keeps_the_register_typed_body()
--> Result<(), &'static str> {
-    let document: serde_json::Value = BASELINE.document()?;
-    let reference_equals: &serde_json::Value =
-        method_record(&document, "System.Object", "ReferenceEquals")?;
-    assert_eq!(
-        reference_equals["signature"]["calling_convention"], 0,
-        "System.Object.ReferenceEquals is a static two-reference comparison"
-    );
-    assert_eq!(
-        reference_equals["signature"]["parameter_types"]
-            .as_array()
-            .map(Vec::len),
-        Some(2)
-    );
-    let pseudo_c: &str = reference_equals["body"]["pseudo_c"]
-        .as_str()
-        .ok_or("the recovered body carries no pseudo-C")?;
-
-    assert!(
-        pseudo_c
-            .starts_with("#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n"),
-        "an object-reference signature must keep the register-typed prototype: {pseudo_c}"
-    );
+fn system_object_parameter_methods_reattach_to_managed_bodies() -> Result<(), &'static str> {
+    for evidence in [&BASELINE, &FLOATING_POINT] {
+        let document: serde_json::Value = evidence.document()?;
+        for (name, calling_convention, parameter_count) in
+            [("Equals", 32, 1), ("ReferenceEquals", 0, 2)]
+        {
+            let matches: Vec<&serde_json::Value> = document["methods"]
+                .as_array()
+                .ok_or("the artifact carries no method array")?
+                .iter()
+                .filter(|method: &&serde_json::Value| {
+                    method["declaring_type"] == "System.Object"
+                        && method["name"] == name
+                        && method["body"]["signature_source"] == "managed"
+                })
+                .collect();
+            assert_eq!(matches.len(), 1, "System.Object.{name}");
+            let method: &serde_json::Value = matches[0];
+            assert_eq!(
+                method["signature"]["calling_convention"], calling_convention,
+                "System.Object.{name} has the expected receiver shape"
+            );
+            assert_eq!(
+                method["signature"]["parameter_types"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(parameter_count)
+            );
+            let pseudo_c: &str = method["body"]["pseudo_c"]
+                .as_str()
+                .ok_or("the recovered body carries no pseudo-C")?;
+            assert!(
+                pseudo_c.contains("bool recovered(uintptr_t a0, uintptr_t a1) {\n"),
+                "System.Object.{name}: {pseudo_c}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -903,11 +916,6 @@ fn every_declined_reattachment_names_the_rule_that_declined_it() -> Result<(), &
         "a return larger than eight bytes travels through a caller-supplied pointer"
     );
     assert_eq!(
-        signature_source(&document, "System.Object", "ReferenceEquals")?,
-        ("registers", Some("type-outside-primitive-table")),
-        "System.Object is a System type with no scalar C99 equivalent"
-    );
-    assert_eq!(
         signature_source(
             &document,
             "System.Runtime.InteropServices.DefaultDllImportSearchPathsAttribute",
@@ -954,8 +962,8 @@ fn the_artifact_carries_the_reattachment_rate_it_achieved() -> Result<(), &'stat
     let baseline: serde_json::Value = BASELINE.document()?;
     let floating_point: serde_json::Value = FLOATING_POINT.document()?;
 
-    assert_eq!(recorded_source_counts(&baseline)?, (15, 28));
-    assert_eq!(recorded_source_counts(&floating_point)?, (19, 29));
+    assert_eq!(recorded_source_counts(&baseline)?, (17, 26));
+    assert_eq!(recorded_source_counts(&floating_point)?, (21, 27));
     Ok(())
 }
 
