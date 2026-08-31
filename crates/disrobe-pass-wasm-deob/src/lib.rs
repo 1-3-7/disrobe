@@ -71,9 +71,11 @@ mod types;
 
 pub use analyze::{ModuleSummary, NameInfo, analyze_module};
 pub use boundary_links::{
-    BOUNDARY_LINKS_SCHEMA_VERSION, BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage,
-    BoundaryLink, BoundaryLinks, BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
-    MAX_BOUNDARY_LINK_STRING_BYTES, MAX_BOUNDARY_LINKS, MAX_BOUNDARY_LINKS_JSON_BYTES,
+    BOUNDARY_LINKS_SCHEMA_VERSION, BoundaryConfidence, BoundaryEvidence, BoundaryIdentitySource,
+    BoundaryLanguage, BoundaryLink, BoundaryLinks, BoundaryLinksError, BoundarySymbol,
+    BoundarySymbolKind, BoundaryWasmAbstractHeapType, BoundaryWasmReferenceType, BoundaryWasmType,
+    BoundaryWasmValueType, MAX_BOUNDARY_LINK_STRING_BYTES, MAX_BOUNDARY_LINKS,
+    MAX_BOUNDARY_LINKS_JSON_BYTES,
 };
 pub use boundary_name_propagation::{
     BoundaryNameConfidence, BoundaryNameEvidence, BoundaryNamePropagationError,

@@ -5,7 +5,8 @@ use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValTy
 
 use crate::boundary_links::{
     BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage, BoundaryLink, BoundaryLinks,
-    BoundaryLinksError, BoundarySymbol, BoundarySymbolKind,
+    BoundaryLinksError, BoundarySymbol, BoundarySymbolKind, BoundaryWasmReferenceType,
+    BoundaryWasmType, BoundaryWasmValueType, MAX_BOUNDARY_LINKS,
 };
 use crate::boundary_name_propagation::{
     BoundaryNameConfidence, BoundaryNameEvidence, BoundaryNamePropagationError,
@@ -14,6 +15,7 @@ use crate::boundary_name_propagation::{
 use crate::error::{Error, Result};
 
 pub(crate) const MAX_FUNCTION_LOCALS: usize = 100_000;
+const MAX_BOUNDARY_RESOURCES: usize = MAX_BOUNDARY_LINKS;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FunctionSig {
@@ -238,10 +240,30 @@ struct RawFunctionImport {
     field: String,
 }
 
+struct RawResourceImport {
+    kind: BoundarySymbolKind,
+    module: String,
+    field: String,
+    index: u32,
+    resource_type: BoundaryWasmType,
+}
+
+struct RawResourceExport {
+    kind: BoundarySymbolKind,
+    field: String,
+    index: u32,
+}
+
 pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     let mut func_types: Vec<RawFuncType> = Vec::new();
     let mut function_type_indices: Vec<u32> = Vec::new();
     let mut function_imports: Vec<RawFunctionImport> = Vec::new();
+    let mut resource_imports: Vec<RawResourceImport> = Vec::new();
+    let mut resource_exports: Vec<RawResourceExport> = Vec::new();
+    let mut prospective_boundary_link_count: usize = 0;
+    let mut memory_types: Vec<BoundaryWasmType> = Vec::new();
+    let mut table_types: Vec<BoundaryWasmType> = Vec::new();
+    let mut global_types: Vec<BoundaryWasmType> = Vec::new();
     let mut export_names: Vec<(u32, String)> = Vec::new();
     let mut name_section_names: Vec<(u32, String)> = Vec::new();
     let mut name_section_locals: std::collections::BTreeMap<u32, Vec<Option<String>>> =
@@ -274,13 +296,83 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
                 for import in reader.into_imports() {
                     let import: wasmparser::Import<'_> =
                         import.map_err(|e| Error::Parse(e.to_string()))?;
-                    if let TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) = import.ty {
-                        function_imports.push(RawFunctionImport {
-                            type_index,
-                            module: import.module.to_owned(),
-                            field: import.name.to_owned(),
-                        });
+                    match import.ty {
+                        TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            function_imports.push(RawFunctionImport {
+                                type_index,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                            });
+                        }
+                        TypeRef::Memory(memory) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = memory_boundary_type(memory);
+                            let index: u32 = u32::try_from(memory_types.len()).unwrap_or(u32::MAX);
+                            memory_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Memory,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Table(table) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = table_boundary_type(table)?;
+                            let index: u32 = u32::try_from(table_types.len()).unwrap_or(u32::MAX);
+                            table_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Table,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Global(global) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = global_boundary_type(global)?;
+                            let index: u32 = u32::try_from(global_types.len()).unwrap_or(u32::MAX);
+                            global_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Global,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Tag(_) => {}
                     }
+                }
+            }
+            Payload::MemorySection(reader) => {
+                for memory in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    memory_types.push(memory_boundary_type(
+                        memory.map_err(|e| Error::Parse(e.to_string()))?,
+                    ));
+                }
+            }
+            Payload::TableSection(reader) => {
+                for table in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    table_types.push(table_boundary_type(
+                        table.map_err(|e| Error::Parse(e.to_string()))?.ty,
+                    )?);
+                }
+            }
+            Payload::GlobalSection(reader) => {
+                for global in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    global_types.push(global_boundary_type(
+                        global.map_err(|e| Error::Parse(e.to_string()))?.ty,
+                    )?);
                 }
             }
             Payload::FunctionSection(reader) => {
@@ -292,8 +384,36 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
                 for exp in reader {
                     let exp: wasmparser::Export<'_> =
                         exp.map_err(|e| Error::Parse(e.to_string()))?;
-                    if matches!(exp.kind, wasmparser::ExternalKind::Func) {
-                        export_names.push((exp.index, exp.name.to_owned()));
+                    match exp.kind {
+                        wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            export_names.push((exp.index, exp.name.to_owned()));
+                        }
+                        wasmparser::ExternalKind::Memory => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Memory,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Table => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Table,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Global => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Global,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Tag => {}
                     }
                 }
             }
@@ -370,9 +490,17 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
     }
 
     let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
-    let boundary_links: BoundaryLinks =
-        direct_boundary_links(&function_imports, &export_names, &name_by_index)
-            .map_err(|error: BoundaryLinksError| Error::Parse(error.to_string()))?;
+    let boundary_links: BoundaryLinks = direct_boundary_links(
+        &function_imports,
+        &resource_imports,
+        &export_names,
+        &resource_exports,
+        &memory_types,
+        &table_types,
+        &global_types,
+        &name_by_index,
+    )
+    .map_err(|error: BoundaryLinksError| Error::Parse(error.to_string()))?;
     let (recovered_boundary_names, boundary_name_recovery_status): (
         Vec<RecoveredBoundaryName>,
         BoundaryNameRecoveryStatus,
@@ -396,6 +524,36 @@ pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
         recovered_boundary_names,
         boundary_name_recovery_status,
     })
+}
+
+fn ensure_resource_capacity(
+    memory_types: &[BoundaryWasmType],
+    table_types: &[BoundaryWasmType],
+    global_types: &[BoundaryWasmType],
+) -> Result<()> {
+    let resource_count: usize = memory_types
+        .len()
+        .checked_add(table_types.len())
+        .and_then(|count: usize| count.checked_add(global_types.len()))
+        .ok_or_else(|| Error::Parse("WebAssembly resource count overflow".to_owned()))?;
+    if resource_count >= MAX_BOUNDARY_RESOURCES {
+        return Err(Error::Parse(format!(
+            "WebAssembly resource count exceeds the {MAX_BOUNDARY_RESOURCES}-resource limit"
+        )));
+    }
+    Ok(())
+}
+
+fn reserve_boundary_link(count: &mut usize) -> Result<()> {
+    if *count >= MAX_BOUNDARY_LINKS {
+        return Err(Error::Parse(format!(
+            "WebAssembly boundary links exceed the {MAX_BOUNDARY_LINKS}-link limit"
+        )));
+    }
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| Error::Parse("WebAssembly boundary link count overflow".to_owned()))?;
+    Ok(())
 }
 
 fn recover_trusted_boundary_names(
@@ -475,10 +633,18 @@ impl From<BoundaryNamePropagationError> for BoundaryNameRecoveryFailure {
 
 fn direct_boundary_links(
     function_imports: &[RawFunctionImport],
+    resource_imports: &[RawResourceImport],
     export_names: &[(u32, String)],
+    resource_exports: &[RawResourceExport],
+    memory_types: &[BoundaryWasmType],
+    table_types: &[BoundaryWasmType],
+    global_types: &[BoundaryWasmType],
     name_by_index: &BTreeMap<u32, &str>,
 ) -> std::result::Result<BoundaryLinks, BoundaryLinksError> {
-    let capacity: usize = function_imports.len().saturating_add(export_names.len());
+    let capacity: usize = function_imports
+        .len()
+        .saturating_add(resource_imports.len())
+        .saturating_add(export_names.len());
     let mut candidates: Vec<BoundaryLink> = Vec::with_capacity(capacity);
     for (function_index, import) in function_imports.iter().enumerate() {
         let function_index: u32 = u32::try_from(function_index).unwrap_or(u32::MAX);
@@ -507,6 +673,32 @@ fn direct_boundary_links(
             },
         });
     }
+    for import in resource_imports {
+        candidates.push(BoundaryLink {
+            source: BoundarySymbol {
+                language: BoundaryLanguage::javascript(),
+                kind: import.kind,
+                module: Some(import.module.clone()),
+                name: import.field.clone(),
+                index: None,
+                identity_source: BoundaryIdentitySource::BoundaryField,
+            },
+            target: BoundarySymbol {
+                language: BoundaryLanguage::webassembly(),
+                kind: import.kind,
+                module: None,
+                name: sanitize_identifier(&import.field),
+                index: Some(import.index),
+                identity_source: BoundaryIdentitySource::BoundaryField,
+            },
+            evidence: BoundaryEvidence::ResourceImport {
+                module: import.module.clone(),
+                field: import.field.clone(),
+                index: import.index,
+                resource_type: import.resource_type.clone(),
+            },
+        });
+    }
     for (function_index, field) in export_names {
         let (name, source): (String, BoundaryIdentitySource) =
             boundary_identity(*function_index, field, name_by_index);
@@ -532,7 +724,92 @@ fn direct_boundary_links(
             },
         });
     }
+    for export in resource_exports {
+        let Some(resource_type): Option<&BoundaryWasmType> = resource_type_for_export(
+            export.kind,
+            export.index,
+            memory_types,
+            table_types,
+            global_types,
+        ) else {
+            continue;
+        };
+        let kind: BoundarySymbolKind = export.kind;
+        let field: String = export.field.clone();
+        let index: u32 = export.index;
+        candidates.push(BoundaryLink {
+            source: BoundarySymbol {
+                language: BoundaryLanguage::webassembly(),
+                kind,
+                module: None,
+                name: sanitize_identifier(&field),
+                index: Some(index),
+                identity_source: BoundaryIdentitySource::BoundaryField,
+            },
+            target: BoundarySymbol {
+                language: BoundaryLanguage::javascript(),
+                kind,
+                module: None,
+                name: field.clone(),
+                index: None,
+                identity_source: BoundaryIdentitySource::BoundaryField,
+            },
+            evidence: BoundaryEvidence::ResourceExport {
+                field,
+                index,
+                resource_type: resource_type.clone(),
+            },
+        });
+    }
     BoundaryLinks::new(candidates)
+}
+
+fn resource_type_for_export<'a>(
+    kind: BoundarySymbolKind,
+    index: u32,
+    memory_types: &'a [BoundaryWasmType],
+    table_types: &'a [BoundaryWasmType],
+    global_types: &'a [BoundaryWasmType],
+) -> Option<&'a BoundaryWasmType> {
+    let index: usize = usize::try_from(index).ok()?;
+    match kind {
+        BoundarySymbolKind::Memory => memory_types.get(index),
+        BoundarySymbolKind::Table => table_types.get(index),
+        BoundarySymbolKind::Global => global_types.get(index),
+        BoundarySymbolKind::Function => None,
+    }
+}
+
+const fn memory_boundary_type(memory: wasmparser::MemoryType) -> BoundaryWasmType {
+    BoundaryWasmType::Memory {
+        minimum: memory.initial,
+        maximum: memory.maximum,
+        memory64: memory.memory64,
+        shared: memory.shared,
+        page_size_log2: memory.page_size_log2,
+    }
+}
+
+fn table_boundary_type(table: wasmparser::TableType) -> Result<BoundaryWasmType> {
+    let element_type: BoundaryWasmReferenceType =
+        BoundaryWasmReferenceType::from_wasm(table.element_type).map_err(Error::Parse)?;
+    Ok(BoundaryWasmType::Table {
+        element_type,
+        minimum: table.initial,
+        maximum: table.maximum,
+        table64: table.table64,
+        shared: table.shared,
+    })
+}
+
+fn global_boundary_type(global: wasmparser::GlobalType) -> Result<BoundaryWasmType> {
+    let value_type: BoundaryWasmValueType =
+        BoundaryWasmValueType::from_wasm(global.content_type).map_err(Error::Parse)?;
+    Ok(BoundaryWasmType::Global {
+        value_type,
+        mutable: global.mutable,
+        shared: global.shared,
+    })
 }
 
 fn boundary_identity(
@@ -658,7 +935,7 @@ fn collect_name_section(
     }
 }
 
-fn sanitize_identifier(raw: &str) -> String {
+pub(crate) fn sanitize_identifier(raw: &str) -> String {
     let mut out: String = String::with_capacity(raw.len());
     for (i, ch) in raw.chars().enumerate() {
         let ok: bool = if i == 0 {

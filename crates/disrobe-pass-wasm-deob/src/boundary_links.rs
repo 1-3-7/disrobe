@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use wasmparser::{AbstractHeapType, HeapType, UnpackedIndex, ValType};
+
+use crate::signature::sanitize_identifier;
 
 pub const BOUNDARY_LINKS_SCHEMA_VERSION: u32 = 1;
 pub const MAX_BOUNDARY_LINKS_JSON_BYTES: usize = 1_048_576;
@@ -47,6 +50,351 @@ impl<'de> Deserialize<'de> for BoundaryLanguage {
 #[serde(rename_all = "snake_case")]
 pub enum BoundarySymbolKind {
     Function,
+    Memory,
+    Table,
+    Global,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundaryConfidence {
+    Certain,
+    High,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryWasmAbstractHeapType {
+    Func,
+    Extern,
+    Any,
+    Eq,
+    I31,
+    Struct,
+    Array,
+    None,
+    NoExtern,
+    NoFunc,
+    Exn,
+    NoExn,
+    Cont,
+    NoCont,
+}
+
+impl BoundaryWasmAbstractHeapType {
+    const fn from_wasm(value: AbstractHeapType) -> Self {
+        match value {
+            AbstractHeapType::Func => Self::Func,
+            AbstractHeapType::Extern => Self::Extern,
+            AbstractHeapType::Any => Self::Any,
+            AbstractHeapType::Eq => Self::Eq,
+            AbstractHeapType::I31 => Self::I31,
+            AbstractHeapType::Struct => Self::Struct,
+            AbstractHeapType::Array => Self::Array,
+            AbstractHeapType::None => Self::None,
+            AbstractHeapType::NoExtern => Self::NoExtern,
+            AbstractHeapType::NoFunc => Self::NoFunc,
+            AbstractHeapType::Exn => Self::Exn,
+            AbstractHeapType::NoExn => Self::NoExn,
+            AbstractHeapType::Cont => Self::Cont,
+            AbstractHeapType::NoCont => Self::NoCont,
+        }
+    }
+    const fn as_str(self, nullable: bool) -> &'static str {
+        match self {
+            Self::Func => "funcref",
+            Self::Extern => "externref",
+            Self::Any => "anyref",
+            Self::Eq => "eqref",
+            Self::I31 => "i31ref",
+            Self::Struct => "structref",
+            Self::Array => "arrayref",
+            Self::None if nullable => "nullref",
+            Self::None => "none",
+            Self::NoExtern if nullable => "nullexternref",
+            Self::NoExtern => "noextern",
+            Self::NoFunc if nullable => "nullfuncref",
+            Self::NoFunc => "nofunc",
+            Self::Exn => "exnref",
+            Self::NoExn if nullable => "nullexnref",
+            Self::NoExn => "noexn",
+            Self::Cont => "contref",
+            Self::NoCont if nullable => "nullcontref",
+            Self::NoCont => "nocont",
+        }
+    }
+
+    fn parse(value: &str, nullable: bool) -> Option<Self> {
+        match value {
+            "funcref" => Some(Self::Func),
+            "externref" => Some(Self::Extern),
+            "anyref" => Some(Self::Any),
+            "eqref" => Some(Self::Eq),
+            "i31ref" => Some(Self::I31),
+            "structref" => Some(Self::Struct),
+            "arrayref" => Some(Self::Array),
+            "nullref" if nullable => Some(Self::None),
+            "none" if !nullable => Some(Self::None),
+            "nullexternref" if nullable => Some(Self::NoExtern),
+            "noextern" if !nullable => Some(Self::NoExtern),
+            "nullfuncref" if nullable => Some(Self::NoFunc),
+            "nofunc" if !nullable => Some(Self::NoFunc),
+            "exnref" => Some(Self::Exn),
+            "nullexnref" if nullable => Some(Self::NoExn),
+            "noexn" if !nullable => Some(Self::NoExn),
+            "contref" => Some(Self::Cont),
+            "nullcontref" if nullable => Some(Self::NoCont),
+            "nocont" if !nullable => Some(Self::NoCont),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryWasmReferenceType {
+    Abstract {
+        heap_type: BoundaryWasmAbstractHeapType,
+        nullable: bool,
+        shared: bool,
+    },
+    Indexed {
+        type_index: u32,
+        nullable: bool,
+        exact: bool,
+    },
+}
+
+impl BoundaryWasmReferenceType {
+    pub(crate) fn from_wasm(value: wasmparser::RefType) -> Result<Self, String> {
+        let nullable: bool = value.is_nullable();
+        match value.heap_type() {
+            HeapType::Abstract { shared, ty } => Ok(Self::Abstract {
+                heap_type: BoundaryWasmAbstractHeapType::from_wasm(ty),
+                nullable,
+                shared,
+            }),
+            HeapType::Concrete(UnpackedIndex::Module(type_index)) => Ok(Self::Indexed {
+                type_index,
+                nullable,
+                exact: false,
+            }),
+            HeapType::Exact(UnpackedIndex::Module(type_index)) => Ok(Self::Indexed {
+                type_index,
+                nullable,
+                exact: true,
+            }),
+            HeapType::Concrete(UnpackedIndex::RecGroup(type_index)) => Err(format!(
+                "WebAssembly recursion-group reference index {type_index} cannot appear in a module boundary type"
+            )),
+            HeapType::Exact(UnpackedIndex::RecGroup(type_index)) => Err(format!(
+                "WebAssembly exact recursion-group reference index {type_index} cannot appear in a module boundary type"
+            )),
+            HeapType::Concrete(UnpackedIndex::Id(_)) | HeapType::Exact(UnpackedIndex::Id(_)) => {
+                Err("WebAssembly canonical reference identifiers cannot appear in a module boundary type".to_owned())
+            }
+        }
+    }
+
+    fn as_wire(self) -> String {
+        match self {
+            Self::Abstract {
+                heap_type,
+                nullable: true,
+                shared: false,
+            } => heap_type.as_str(true).to_owned(),
+            Self::Abstract {
+                heap_type,
+                nullable: true,
+                shared: true,
+            } => format!("(shared {})", heap_type.as_str(true)),
+            Self::Abstract {
+                heap_type,
+                nullable: false,
+                shared: false,
+            } => format!("(ref {})", heap_type.as_str(false)),
+            Self::Abstract {
+                heap_type,
+                nullable: false,
+                shared: true,
+            } => format!("(ref (shared {}))", heap_type.as_str(false)),
+            Self::Indexed {
+                type_index,
+                nullable,
+                exact,
+            } => {
+                let nullability: &str = if nullable { " null" } else { "" };
+                if exact {
+                    format!("(ref{nullability} (exact {type_index}))")
+                } else {
+                    format!("(ref{nullability} {type_index})")
+                }
+            }
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        if let Some(heap_type) = BoundaryWasmAbstractHeapType::parse(value, true) {
+            return Some(Self::Abstract {
+                heap_type,
+                nullable: true,
+                shared: false,
+            });
+        }
+        if let Some(content) = value
+            .strip_prefix("(shared ")
+            .and_then(|value: &str| value.strip_suffix(')'))
+        {
+            if let Some(heap_type) = BoundaryWasmAbstractHeapType::parse(content, true) {
+                return Some(Self::Abstract {
+                    heap_type,
+                    nullable: true,
+                    shared: true,
+                });
+            }
+        }
+        let content: &str = value.strip_prefix("(ref ")?.strip_suffix(')')?;
+        let (shared, content): (bool, &str) = content
+            .strip_prefix("(shared ")
+            .and_then(|value: &str| value.strip_suffix(')'))
+            .map_or((false, content), |value: &str| (true, value));
+        let (nullable, content): (bool, &str) = content
+            .strip_prefix("null ")
+            .map_or((false, content), |value: &str| (true, value));
+        let (exact, content): (bool, &str) = content
+            .strip_prefix("(exact ")
+            .and_then(|value: &str| value.strip_suffix(')'))
+            .map_or((false, content), |value: &str| (true, value));
+        if !shared {
+            if let Some(heap_type) = BoundaryWasmAbstractHeapType::parse(content, nullable) {
+                return Some(Self::Abstract {
+                    heap_type,
+                    nullable,
+                    shared,
+                });
+            }
+        }
+        (!shared)
+            .then(|| content.parse::<u32>().ok())
+            .flatten()
+            .map(|type_index: u32| Self::Indexed {
+                type_index,
+                nullable,
+                exact,
+            })
+    }
+}
+
+impl Serialize for BoundaryWasmReferenceType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.as_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundaryWasmReferenceType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value: String = String::deserialize(deserializer)?;
+        Self::parse(&value)
+            .ok_or_else(|| serde::de::Error::custom("unknown WebAssembly reference type"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryWasmValueType {
+    I32,
+    I64,
+    F32,
+    F64,
+    V128,
+    Reference(BoundaryWasmReferenceType),
+}
+
+impl BoundaryWasmValueType {
+    pub(crate) fn from_wasm(value: ValType) -> Result<Self, String> {
+        match value {
+            ValType::I32 => Ok(Self::I32),
+            ValType::I64 => Ok(Self::I64),
+            ValType::F32 => Ok(Self::F32),
+            ValType::F64 => Ok(Self::F64),
+            ValType::V128 => Ok(Self::V128),
+            ValType::Ref(reference) => {
+                BoundaryWasmReferenceType::from_wasm(reference).map(Self::Reference)
+            }
+        }
+    }
+    fn as_wire(self) -> String {
+        match self {
+            Self::I32 => "i32".to_owned(),
+            Self::I64 => "i64".to_owned(),
+            Self::F32 => "f32".to_owned(),
+            Self::F64 => "f64".to_owned(),
+            Self::V128 => "v128".to_owned(),
+            Self::Reference(reference) => reference.as_wire(),
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "i32" => Some(Self::I32),
+            "i64" => Some(Self::I64),
+            "f32" => Some(Self::F32),
+            "f64" => Some(Self::F64),
+            "v128" => Some(Self::V128),
+            _ => BoundaryWasmReferenceType::parse(value).map(Self::Reference),
+        }
+    }
+}
+
+impl Serialize for BoundaryWasmValueType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.as_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundaryWasmValueType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value: String = String::deserialize(deserializer)?;
+        Self::parse(&value)
+            .ok_or_else(|| serde::de::Error::custom("unknown WebAssembly value type"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum BoundaryWasmType {
+    Memory {
+        minimum: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        maximum: Option<u64>,
+        memory64: bool,
+        shared: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        page_size_log2: Option<u32>,
+    },
+    Table {
+        element_type: BoundaryWasmReferenceType,
+        minimum: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        maximum: Option<u64>,
+        table64: bool,
+        shared: bool,
+    },
+    Global {
+        value_type: BoundaryWasmValueType,
+        mutable: bool,
+        shared: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -72,16 +420,68 @@ pub struct BoundarySymbol {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub enum BoundaryEvidence {
-    WasmImport { module: String, field: String },
-    WasmExport { field: String },
+    WasmImport {
+        module: String,
+        field: String,
+    },
+    WasmExport {
+        field: String,
+    },
+    ResourceImport {
+        module: String,
+        field: String,
+        index: u32,
+        resource_type: BoundaryWasmType,
+    },
+    ResourceExport {
+        field: String,
+        index: u32,
+        resource_type: BoundaryWasmType,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl BoundaryEvidence {
+    #[must_use]
+    pub const fn confidence(&self) -> BoundaryConfidence {
+        match self {
+            Self::WasmImport { .. }
+            | Self::WasmExport { .. }
+            | Self::ResourceImport { .. }
+            | Self::ResourceExport { .. } => BoundaryConfidence::Certain,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoundaryLink {
     pub source: BoundarySymbol,
     pub target: BoundarySymbol,
     pub evidence: BoundaryEvidence,
+}
+
+impl BoundaryLink {
+    pub fn new(
+        source: BoundarySymbol,
+        target: BoundarySymbol,
+        evidence: BoundaryEvidence,
+        confidence: BoundaryConfidence,
+    ) -> Result<Self, BoundaryLinksError> {
+        let link: Self = Self {
+            source,
+            target,
+            evidence,
+        };
+        if confidence != link.confidence() {
+            return Err(BoundaryLinksError::InconsistentEvidence { link_index: 0 });
+        }
+        Ok(link)
+    }
+
+    #[must_use]
+    pub const fn confidence(&self) -> BoundaryConfidence {
+        self.evidence.confidence()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,7 +500,26 @@ struct BoundaryLinksVersion {
 #[serde(deny_unknown_fields)]
 struct BoundaryLinksWire {
     schema_version: u32,
-    links: Vec<BoundaryLink>,
+    links: Vec<BoundaryLinkWire>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoundaryLinkWire {
+    source: BoundarySymbol,
+    target: BoundarySymbol,
+    evidence: BoundaryEvidence,
+    #[serde(default)]
+    confidence: Option<BoundaryConfidence>,
+}
+
+impl BoundaryLinkWire {
+    fn into_link(self) -> Result<BoundaryLink, BoundaryLinksError> {
+        let confidence: BoundaryConfidence = self
+            .confidence
+            .unwrap_or_else(|| self.evidence.confidence());
+        BoundaryLink::new(self.source, self.target, self.evidence, confidence)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,7 +626,21 @@ impl BoundaryLinks {
             });
         }
         validate_link_count(wire.links.len())?;
-        Self::new(wire.links)
+        let links: Vec<BoundaryLink> = wire
+            .links
+            .into_iter()
+            .enumerate()
+            .map(|(link_index, wire): (usize, BoundaryLinkWire)| {
+                wire.into_link()
+                    .map_err(|error: BoundaryLinksError| match error {
+                        BoundaryLinksError::InconsistentEvidence { .. } => {
+                            BoundaryLinksError::InconsistentEvidence { link_index }
+                        }
+                        error => error,
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        Self::new(links)
     }
 }
 
@@ -231,6 +664,24 @@ fn validate_links(links: &[BoundaryLink]) -> Result<(), BoundaryLinksError> {
             }
             BoundaryEvidence::WasmExport { field } => {
                 validate_string(field, link_index, "evidence.field")?;
+            }
+            BoundaryEvidence::ResourceImport {
+                module,
+                field,
+                resource_type,
+                ..
+            } => {
+                validate_string(module, link_index, "evidence.module")?;
+                validate_string(field, link_index, "evidence.field")?;
+                validate_wasm_type(resource_type, link_index)?;
+            }
+            BoundaryEvidence::ResourceExport {
+                field,
+                resource_type,
+                ..
+            } => {
+                validate_string(field, link_index, "evidence.field")?;
+                validate_wasm_type(resource_type, link_index)?;
             }
         }
         if link.source.language == link.target.language {
@@ -256,12 +707,113 @@ fn validate_links(links: &[BoundaryLink]) -> Result<(), BoundaryLinksError> {
                     && link.target.index.is_none()
                     && link.target.name == *field
             }
+            BoundaryEvidence::ResourceImport {
+                module,
+                field,
+                index,
+                resource_type,
+            } => {
+                link.source.language.as_str() == "javascript"
+                    && link.target.language.as_str() == "webassembly"
+                    && link.source.kind == wasm_type_symbol_kind(resource_type)
+                    && link.target.kind == wasm_type_symbol_kind(resource_type)
+                    && link.source.module.as_ref() == Some(module)
+                    && link.source.name == *field
+                    && link.source.index.is_none()
+                    && link.target.index == Some(*index)
+                    && link.target.name == sanitize_identifier(field)
+            }
+            BoundaryEvidence::ResourceExport {
+                field,
+                index,
+                resource_type,
+            } => {
+                link.source.language.as_str() == "webassembly"
+                    && link.target.language.as_str() == "javascript"
+                    && link.source.kind == wasm_type_symbol_kind(resource_type)
+                    && link.target.kind == wasm_type_symbol_kind(resource_type)
+                    && link.source.index == Some(*index)
+                    && link.source.name == sanitize_identifier(field)
+                    && link.target.index.is_none()
+                    && link.target.name == *field
+            }
         };
         if !evidence_is_consistent {
             return Err(BoundaryLinksError::InconsistentEvidence { link_index });
         }
     }
     Ok(())
+}
+
+fn validate_wasm_type(
+    resource_type: &BoundaryWasmType,
+    link_index: usize,
+) -> Result<(), BoundaryLinksError> {
+    match resource_type {
+        BoundaryWasmType::Memory {
+            minimum,
+            maximum,
+            memory64,
+            shared,
+            page_size_log2,
+        } => {
+            let page_size_log2: u32 = page_size_log2.unwrap_or(16);
+            let maximum_pages: u64 = memory_page_limit(*memory64, page_size_log2);
+            if maximum.is_some_and(|maximum: u64| maximum < *minimum)
+                || (*shared && maximum.is_none())
+                || !matches!(page_size_log2, 0 | 16)
+                || *minimum > maximum_pages
+                || maximum.is_some_and(|maximum: u64| maximum > maximum_pages)
+            {
+                return Err(BoundaryLinksError::InconsistentEvidence { link_index });
+            }
+            Ok(())
+        }
+        BoundaryWasmType::Table {
+            minimum,
+            maximum,
+            table64,
+            shared,
+            element_type,
+            ..
+        } => {
+            if maximum.is_some_and(|maximum: u64| maximum < *minimum)
+                || (!*table64
+                    && (*minimum > u64::from(u32::MAX)
+                        || maximum.is_some_and(|maximum: u64| maximum > u64::from(u32::MAX))))
+                || (*shared && reference_is_known_unshared(*element_type))
+            {
+                return Err(BoundaryLinksError::InconsistentEvidence { link_index });
+            }
+            Ok(())
+        }
+        BoundaryWasmType::Global { .. } => Ok(()),
+    }
+}
+
+const fn memory_page_limit(memory64: bool, page_size_log2: u32) -> u64 {
+    match (memory64, page_size_log2) {
+        (false, 0) => 4_294_967_295,
+        (false, 16) => 65_536,
+        (true, 0) => u64::MAX,
+        (true, 16) => 281_474_976_710_656,
+        _ => 0,
+    }
+}
+
+const fn reference_is_known_unshared(reference: BoundaryWasmReferenceType) -> bool {
+    matches!(
+        reference,
+        BoundaryWasmReferenceType::Abstract { shared: false, .. }
+    )
+}
+
+const fn wasm_type_symbol_kind(resource_type: &BoundaryWasmType) -> BoundarySymbolKind {
+    match resource_type {
+        BoundaryWasmType::Memory { .. } => BoundarySymbolKind::Memory,
+        BoundaryWasmType::Table { .. } => BoundarySymbolKind::Table,
+        BoundaryWasmType::Global { .. } => BoundarySymbolKind::Global,
+    }
 }
 
 fn validate_symbol(
@@ -290,12 +842,6 @@ fn validate_symbol(
             "target.name"
         },
     )?;
-    if symbol.name.is_empty() {
-        return Err(BoundaryLinksError::EmptySymbolName {
-            link_index,
-            endpoint,
-        });
-    }
     Ok(())
 }
 
