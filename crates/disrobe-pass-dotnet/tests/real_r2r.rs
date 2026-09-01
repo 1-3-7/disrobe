@@ -28,6 +28,17 @@ const HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET: usize = 0x177C;
 const HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET: usize = 0x1630;
 const HELLOAPP_METHOD_DEF_ENTRY_POINTS_SIZE_OFFSET: usize =
     HELLOAPP_R2R_HEADER_FILE_OFFSET + 16 + 3 * 12 + 8;
+const HELLOAPP_IMPORT_SECTIONS_FILE_OFFSET: usize = 0x2000;
+const R2R_IMPORT_SECTION_LEN: usize = 20;
+const HELLOAPP_STRING_HANDLE_IMPORT_INDEX: usize = 6;
+const HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET: usize = 0x20fd;
+const HELLOAPP_USER_STRING_HEAP_FILE_OFFSET: usize = 0x1c70;
+
+const fn string_handle_import_field_offset(field_offset: usize) -> usize {
+    HELLOAPP_IMPORT_SECTIONS_FILE_OFFSET
+        + HELLOAPP_STRING_HANDLE_IMPORT_INDEX * R2R_IMPORT_SECTION_LEN
+        + field_offset
+}
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -48,6 +59,22 @@ fn analyzed_runtime_functions(bytes: &[u8]) -> serde_json::Value {
         disrobe_pass_dotnet::analyze(bytes).expect("analyze mutated ReadyToRun DLL");
     serde_json::to_value(summary.ready_to_run_runtime_functions)
         .expect("serialize ReadyToRun runtime functions")
+}
+
+fn assert_fixup_unsupported(bytes: &[u8]) {
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(bytes);
+    assert_eq!(
+        runtime_functions["method_def_identity"],
+        serde_json::json!({"status": "recovered", "attached": 1, "abstained": 1})
+    );
+    assert_eq!(
+        runtime_functions["entries"][0]["method_def_abstention"],
+        serde_json::json!({
+            "token": 0x0600_0001,
+            "name": "<Main>$",
+            "reason": "fixup_unsupported"
+        })
+    );
 }
 
 #[cfg(feature = "chain")]
@@ -107,18 +134,14 @@ fn helloapp_runtime_function_has_exact_metadata_method_identity() {
         runtime_functions["entries"][1]["method_def"],
         serde_json::json!({"token": 0x0600_0002, "name": ".ctor"})
     );
-    assert!(runtime_functions["entries"][0]["method_def"].is_null());
     assert_eq!(
-        runtime_functions["entries"][0]["method_def_abstention"],
-        serde_json::json!({
-            "token": 0x0600_0001,
-            "name": "<Main>$",
-            "reason": "fixup_unsupported"
-        })
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
     );
+    assert!(runtime_functions["entries"][0]["method_def_abstention"].is_null());
     assert_eq!(
         runtime_functions["method_def_identity"],
-        serde_json::json!({"status": "recovered", "attached": 1, "abstained": 1})
+        serde_json::json!({"status": "recovered", "attached": 2, "abstained": 0})
     );
 }
 
@@ -163,7 +186,6 @@ fn helloapp_constructor_runtime_function_lifts_exact_unwind_bounded_body() {
             "pseudo_c": "#include <stdint.h>\nuint64_t recovered(void) {\n    uint64_t r_rax = 0;\n    return r_rax;\n}\n"
         })
     );
-    assert!(runtime_functions["entries"][0]["method_body"].is_null());
 }
 
 #[test]
@@ -362,7 +384,7 @@ fn out_of_range_method_def_native_array_tree_offset_is_refused() {
 }
 
 #[test]
-fn tracked_fixup_bearing_method_def_entry_point_is_an_explicit_abstention() {
+fn tracked_fixup_bearing_method_def_entry_point_recovers_identity_and_bounded_body() {
     let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
     let summary: PassSummary = disrobe_pass_dotnet::analyze(&bytes)
         .expect("analyze tracked ReadyToRun DLL with a fixup-bearing entry");
@@ -371,14 +393,19 @@ fn tracked_fixup_bearing_method_def_entry_point_is_an_explicit_abstention() {
             .expect("serialize ReadyToRun runtime functions");
     assert_eq!(
         runtime_functions["method_def_identity"],
-        serde_json::json!({"status": "recovered", "attached": 1, "abstained": 1})
+        serde_json::json!({"status": "recovered", "attached": 2, "abstained": 0})
     );
     assert_eq!(
-        runtime_functions["entries"][0]["method_def_abstention"],
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
+    );
+    assert!(runtime_functions["entries"][0]["method_def_abstention"].is_null());
+    assert_eq!(
+        runtime_functions["entries"][0]["method_body"],
         serde_json::json!({
-            "token": 0x0600_0001,
-            "name": "<Main>$",
-            "reason": "fixup_unsupported"
+            "status": "refused",
+            "range": {"start_rva": 0x17c0, "end_rva": 0x17da},
+            "reason": "native_lifter_refused"
         })
     );
 }
@@ -434,19 +461,266 @@ fn compact_leaf_method_def_native_array_is_an_explicit_refusal() {
 }
 
 #[test]
-fn relative_fixup_method_def_entry_point_is_an_explicit_refusal() {
+fn fixup_bearing_method_def_duplicate_runtime_function_is_refused() {
     let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
     bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 6] = 0x06;
 
-    let summary: PassSummary = disrobe_pass_dotnet::analyze(&bytes)
-        .expect("unobserved relative-fixup entry point remains inspectable");
-    let runtime_functions: serde_json::Value =
-        serde_json::to_value(summary.ready_to_run_runtime_functions)
-            .expect("serialize ReadyToRun runtime functions");
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn fixup_import_slot_outside_string_handle_section_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 7] = 0x07;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn fixup_string_handle_slot_outside_import_section_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 7] = 0x16;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn inconsistent_fixup_import_section_entry_size_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let entry_size_offset: usize = string_handle_import_field_offset(11);
+    bytes[entry_size_offset] = 7;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn amd64_string_handle_entry_width_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[string_handle_import_field_offset(11)] = 4;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn import_section_unknown_flag_bits_are_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let flags_offset: usize = string_handle_import_field_offset(8);
+    bytes[flags_offset..flags_offset + 2].copy_from_slice(&0x8000u16.to_le_bytes());
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn import_section_unknown_type_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[string_handle_import_field_offset(10)] = 1;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn valid_unsupported_import_section_preserves_explicit_abstention() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[string_handle_import_field_offset(10)] = 2;
+    let signatures_rva_offset: usize = string_handle_import_field_offset(12);
+    bytes[signatures_rva_offset..signatures_rva_offset + 4].fill(0);
+
+    assert_fixup_unsupported(&bytes);
+}
+
+#[test]
+fn zero_import_section_index_resolves_a_bounded_string_handle_slot() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let first_record: std::ops::Range<usize> = HELLOAPP_IMPORT_SECTIONS_FILE_OFFSET
+        ..HELLOAPP_IMPORT_SECTIONS_FILE_OFFSET + R2R_IMPORT_SECTION_LEN;
+    let string_record_start: usize = HELLOAPP_IMPORT_SECTIONS_FILE_OFFSET
+        + HELLOAPP_STRING_HANDLE_IMPORT_INDEX * R2R_IMPORT_SECTION_LEN;
+    let string_record: Vec<u8> =
+        bytes[string_record_start..string_record_start + R2R_IMPORT_SECTION_LEN].to_vec();
+    bytes[first_record].copy_from_slice(&string_record);
+    bytes[string_record_start + 4..string_record_start + 8].fill(0);
+    bytes[string_record_start + 10] = 0;
+    bytes[string_record_start + 12..string_record_start + 16].fill(0);
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 7] = 0;
+
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
     assert_eq!(
-        runtime_functions["method_def_identity"],
-        serde_json::json!({"status": "unsupported_layout"})
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
     );
+}
+
+#[test]
+fn non_file_backed_fixup_signature_table_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let signatures_rva_offset: usize = string_handle_import_field_offset(12);
+    bytes[signatures_rva_offset..signatures_rva_offset + 4]
+        .copy_from_slice(&u32::MAX.to_le_bytes());
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn malformed_string_handle_signature_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 0;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn string_handle_token_outside_user_string_heap_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 0x7f;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn string_handle_after_unreachable_user_string_garbage_is_accepted() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 1..HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 6]
+        .copy_from_slice(&[0xff, 0x03, 0x41, 0x00, 0x00]);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 2;
+
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
+    assert_eq!(
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
+    );
+}
+
+#[test]
+fn noncanonical_user_string_length_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 1] = 0x80;
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 2] = 0x1b;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn invalid_user_string_terminal_byte_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 28] = 2;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn mismatched_plain_user_string_terminal_byte_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 28] = 1;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn matched_special_user_string_terminal_byte_is_accepted() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 2] = 0x27;
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 28] = 1;
+
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
+    assert_eq!(
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
+    );
+}
+
+#[test]
+fn mismatched_special_user_string_terminal_byte_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 2] = 0x27;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn unpaired_surrogate_user_string_is_accepted() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 2] = 0;
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 3] = 0xd8;
+    bytes[HELLOAPP_USER_STRING_HEAP_FILE_OFFSET + 28] = 1;
+
+    let runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
+    assert_eq!(
+        runtime_functions["entries"][0]["method_def"],
+        serde_json::json!({"token": 0x0600_0001, "name": "<Main>$"})
+    );
+}
+
+#[test]
+fn noncanonical_string_handle_signature_integer_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 0x80;
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 2] = 0x01;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn malformed_string_handle_signature_integer_prefix_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 0xff;
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 2] = 0x01;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn module_override_string_handle_preserves_explicit_abstention() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x9b;
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 1] = 1;
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET + 2] = 1;
+
+    assert_fixup_unsupported(&bytes);
+}
+
+#[test]
+fn bare_module_override_fixup_kind_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x80;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn other_valid_fixup_kind_preserves_explicit_abstention() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x1a;
+
+    assert_fixup_unsupported(&bytes);
+}
+
+#[test]
+fn final_v10_fixup_kind_preserves_explicit_abstention() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x36;
+
+    assert_fixup_unsupported(&bytes);
+}
+
+#[test]
+fn post_v10_fixup_kind_is_refused() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x37;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
+}
+
+#[test]
+fn subsequent_fixup_import_section_delta_is_checked() {
+    let mut bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_SIZE_OFFSET
+        ..HELLOAPP_METHOD_DEF_ENTRY_POINTS_SIZE_OFFSET + 4]
+        .copy_from_slice(&11u32.to_le_bytes());
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 8] = 0x20;
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 9] = 0;
+    bytes[HELLOAPP_METHOD_DEF_ENTRY_POINTS_FILE_OFFSET + 10] = 0;
+
+    assert!(r2r_error(&bytes).to_string().starts_with("DR-DOTNET-0042:"));
 }
 
 #[test]
@@ -629,6 +903,7 @@ fn composite_method_def_identity_join_is_an_explicit_refusal() {
 #[test]
 fn auto_emits_real_r2r_unwind_and_gc_bounds() {
     let bytes: Vec<u8> = load(HELLOAPP_R2R_DLL_REL);
+    let library_runtime_functions: serde_json::Value = analyzed_runtime_functions(&bytes);
     let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
     let children: Vec<disrobe_core::chain::ChildArtifact> = DOTNET_PASS
         .extract_children(&input)
@@ -642,6 +917,10 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
     let document: serde_json::Value = serde_json::from_slice(&analysis.bytes)
         .expect("the automatic analysis artifact must be JSON");
 
+    assert_eq!(
+        document["ready_to_run_runtime_functions"],
+        library_runtime_functions
+    );
     assert_eq!(
         document["ready_to_run_sections"],
         serde_json::json!([
@@ -667,10 +946,17 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
                     "unwind_info_start_rva": 6080,
                     "unwind_info_end_rva": 6106,
                     "gc_info_start_rva": 5968,
-                    "method_def_abstention": {
+                    "method_def": {
                         "token": 100_663_297,
-                        "name": "<Main>$",
-                        "reason": "fixup_unsupported"
+                        "name": "<Main>$"
+                    },
+                    "method_body": {
+                        "status": "refused",
+                        "range": {
+                            "start_rva": 6080,
+                            "end_rva": 6106
+                        },
+                        "reason": "native_lifter_refused"
                     }
                 },
                 {
@@ -694,8 +980,8 @@ fn auto_emits_real_r2r_unwind_and_gc_bounds() {
             ],
             "method_def_identity": {
                 "status": "recovered",
-                "attached": 1,
-                "abstained": 1
+                "attached": 2,
+                "abstained": 0
             }
         })
     );
@@ -761,6 +1047,7 @@ fn unclaimed_runtime_function_range_remains_a_global_malformed_table_rejection()
         .copy_from_slice(&0xFFFF_F000u32.to_le_bytes());
     bytes[HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 4..HELLOAPP_RUNTIME_FUNCTIONS_FILE_OFFSET + 8]
         .copy_from_slice(&0xFFFF_F010u32.to_le_bytes());
+    bytes[HELLOAPP_STRING_HANDLE_SIGNATURE_FILE_OFFSET] = 0x1a;
     let error: disrobe_pass_dotnet::Error = disrobe_pass_dotnet::analyze(&bytes)
         .expect_err("unclaimed malformed range must reject the runtime-function table");
     assert!(error.to_string().starts_with("DR-DOTNET-0042:"));

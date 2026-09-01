@@ -3,15 +3,27 @@ use disrobe_pass_native::{Arch, DisasmInsn, PseudoAbi, disassemble, recover_leaf
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::metadata::{metadata_slice, parse_metadata_root, read_strings_heap};
+use crate::metadata::{
+    StreamHeader, decompress_uint, metadata_slice, parse_metadata_root, read_strings_heap,
+};
 use crate::pe::{ClrHeader, DataDirectory, PeImage};
 use crate::tables::{Tables, parse_tables};
 
 pub const R2R_MAGIC: u32 = 0x0052_5452;
 const R2R_HEADER_LEN: usize = 16;
 const R2R_SECTION_LEN: usize = 12;
+const R2R_IMPORT_SECTION_LEN: usize = 20;
+const R2R_IMPORT_SIGNATURE_POINTER_LEN: usize = 4;
+const R2R_IMPORT_SECTION_FLAG_MASK: u16 = 0x0005;
+const R2R_IMPORT_SECTION_TYPE_UNKNOWN: u8 = 0;
+const R2R_IMPORT_SECTION_TYPE_STUB_DISPATCH: u8 = 2;
+const R2R_IMPORT_SECTION_TYPE_STRING_HANDLE: u8 = 3;
+const R2R_IMPORT_SECTION_TYPE_IL_BODY_FIXUPS: u8 = 7;
+const R2R_FIXUP_STRING_HANDLE: u8 = 0x1b;
+const R2R_FIXUP_MODULE_OVERRIDE: u8 = 0x80;
 const MAX_R2R_SECTIONS: u32 = 1024;
 const MAX_R2R_RUNTIME_FUNCTIONS: usize = 1_048_576;
+const MAX_R2R_USER_STRING_ENTRIES: usize = 1_048_576;
 const MACHINE_I386: u16 = 0x014C;
 const MACHINE_ARM: u16 = 0x01C0;
 const MACHINE_ARMNT: u16 = 0x01C4;
@@ -337,8 +349,14 @@ fn parse(
         .find(|section: &&R2rSection| section.section_type == 103);
     if let Some(section) = method_def_section {
         if major_version == 10 && minor_version == 1 && flags & 0x0000_0001 == 0 {
-            let parsed: ParsedMethodDefJoin =
-                parse_method_def_entry_points(image, pe, clr, section, &runtime_functions)?;
+            let parsed: ParsedMethodDefJoin = parse_method_def_entry_points(
+                image,
+                pe,
+                clr,
+                &sections,
+                section,
+                &runtime_functions,
+            )?;
             attach_method_def_join(&mut runtime_functions, parsed)?;
         } else {
             attach_method_def_join(
@@ -585,10 +603,19 @@ const fn runtime_function_count(runtime_functions: &R2rRuntimeFunctions) -> usiz
     }
 }
 
-fn method_def_names(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Result<Vec<String>> {
+struct R2rMethodDefMetadata<'a> {
+    names: Vec<String>,
+    user_strings: Option<(&'a [u8], StreamHeader)>,
+}
+
+fn method_def_metadata<'a>(
+    image: &'a [u8],
+    pe: &PeImage,
+    clr: &ClrHeader,
+) -> Result<R2rMethodDefMetadata<'a>> {
     let root: crate::metadata::MetadataRoot = parse_metadata_root(image, pe, clr)
         .map_err(|_| invalid_method_def(0, "CLI metadata root is unavailable"))?;
-    let bytes: &[u8] = metadata_slice(image, pe, clr, &root)
+    let bytes: &'a [u8] = metadata_slice(image, pe, clr, &root)
         .map_err(|_| invalid_method_def(0, "CLI metadata range is unavailable"))?;
     let table_header: crate::metadata::StreamHeader = root
         .streams
@@ -613,7 +640,15 @@ fn method_def_names(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Result<Vec<S
             .ok_or_else(|| invalid_method_def(index, "MethodDef name is absent"))?;
         names.push(name);
     }
-    Ok(names)
+    let user_strings: Option<(&'a [u8], StreamHeader)> = root
+        .streams
+        .get("#US")
+        .copied()
+        .map(|header: StreamHeader| (bytes, header));
+    Ok(R2rMethodDefMetadata {
+        names,
+        user_strings,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,21 +731,453 @@ fn read_fixup_uint(cursor: &mut NibbleCursor<'_>, index: usize) -> Result<u32> {
     }
 }
 
-fn validate_fixup_list(bytes: &[u8], start: usize, end: usize, index: usize) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+struct R2rImportSectionRecord {
+    size: u32,
+    flags: u16,
+    section_type: u8,
+    entry_size: u8,
+    signatures_rva: u32,
+}
+
+fn parse_import_section_records(
+    image: &[u8],
+    pe: &PeImage,
+    section: &R2rSection,
+    index: usize,
+) -> Result<Vec<R2rImportSectionRecord>> {
+    let section_size: usize = section.size as usize;
+    if !section_size.is_multiple_of(R2R_IMPORT_SECTION_LEN) {
+        return Err(invalid_method_def(
+            index,
+            "import-section table size is not divisible by the record width",
+        ));
+    }
+    let record_count: usize = section_size / R2R_IMPORT_SECTION_LEN;
+    if record_count > MAX_R2R_SECTIONS as usize {
+        return Err(invalid_method_def(
+            index,
+            "import-section record count exceeds parser limit",
+        ));
+    }
+    let bytes: &[u8] = pe
+        .slice_exact_file_backed_rva(image, section.rva, section_size)
+        .ok_or_else(|| invalid_method_def(index, "import-section table is not file backed"))?;
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    let mut records: Vec<R2rImportSectionRecord> = Vec::with_capacity(record_count);
+    for record_index in 0..record_count {
+        let rva: u32 = reader
+            .read_u32_le()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let size: u32 = reader
+            .read_u32_le()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let flags: u16 = reader
+            .read_u16_le()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let section_type: u8 = reader
+            .read_u8()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let entry_size: u8 = reader
+            .read_u8()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let signatures_rva: u32 = reader
+            .read_u32_le()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        let _auxiliary_data_rva: u32 = reader
+            .read_u32_le()
+            .map_err(|_| invalid_method_def(index, "import-section record is truncated"))?;
+        if entry_size == 0 || !size.is_multiple_of(u32::from(entry_size)) {
+            return Err(invalid_method_def(
+                record_index,
+                "import-section entry size is inconsistent with its range",
+            ));
+        }
+        if flags & !R2R_IMPORT_SECTION_FLAG_MASK != 0 {
+            return Err(invalid_method_def(
+                record_index,
+                "import-section flags contain unknown bits",
+            ));
+        }
+        if !matches!(
+            section_type,
+            R2R_IMPORT_SECTION_TYPE_UNKNOWN
+                | R2R_IMPORT_SECTION_TYPE_STUB_DISPATCH
+                | R2R_IMPORT_SECTION_TYPE_STRING_HANDLE
+                | R2R_IMPORT_SECTION_TYPE_IL_BODY_FIXUPS
+        ) {
+            return Err(invalid_method_def(
+                record_index,
+                "import-section type is unknown",
+            ));
+        }
+        if section_type == R2R_IMPORT_SECTION_TYPE_STRING_HANDLE && entry_size != 8 {
+            return Err(invalid_method_def(
+                record_index,
+                "AMD64 StringHandle import-section entry size is not eight bytes",
+            ));
+        }
+        if size != 0
+            && pe
+                .slice_exact_file_backed_rva(
+                    image,
+                    rva,
+                    usize::try_from(size).map_err(|_| {
+                        invalid_method_def(record_index, "import-section size does not fit usize")
+                    })?,
+                )
+                .is_none()
+        {
+            return Err(invalid_method_def(
+                record_index,
+                "import-section range is not file backed",
+            ));
+        }
+        records.push(R2rImportSectionRecord {
+            size,
+            flags,
+            section_type,
+            entry_size,
+            signatures_rva,
+        });
+    }
+    Ok(records)
+}
+
+const fn is_known_fixup_kind(kind: u8) -> bool {
+    matches!(kind, 0x07..=0x09 | 0x10..=0x36)
+}
+
+fn read_signature_uint(
+    image: &[u8],
+    pe: &PeImage,
+    signature_rva: u32,
+    offset: u32,
+    index: usize,
+) -> Result<(u32, u32)> {
+    let rva: u32 = signature_rva
+        .checked_add(offset)
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature offset overflowed"))?;
+    let first: u8 = pe
+        .slice_exact_file_backed_rva(image, rva, 1)
+        .and_then(|bytes: &[u8]| bytes.first().copied())
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature is truncated"))?;
+    let width: usize = match first {
+        0x00..=0x7f => 1,
+        0x80..=0xbf => 2,
+        0xc0..=0xdf => 4,
+        _ => {
+            return Err(invalid_method_def(
+                index,
+                "import-slot signature integer has an invalid prefix",
+            ));
+        }
+    };
+    let bytes: &[u8] = pe
+        .slice_exact_file_backed_rva(image, rva, width)
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature is truncated"))?;
+    let value: u32 = match width {
+        1 => u32::from(first),
+        2 => (u32::from(first & 0x3f) << 8) | u32::from(bytes[1]),
+        4 => {
+            (u32::from(first & 0x1f) << 24)
+                | (u32::from(bytes[1]) << 16)
+                | (u32::from(bytes[2]) << 8)
+                | u32::from(bytes[3])
+        }
+        _ => unreachable!(),
+    };
+    let canonical: bool = match width {
+        1 => true,
+        2 => value > 0x7f,
+        4 => value > 0x3fff,
+        _ => unreachable!(),
+    };
+    if !canonical {
+        return Err(invalid_method_def(
+            index,
+            "import-slot signature integer is not canonical",
+        ));
+    }
+    Ok((value, width as u32))
+}
+
+fn validate_string_handle_signature<'a>(
+    image: &'a [u8],
+    pe: &PeImage,
+    signature_rva: u32,
+    user_strings: &mut UserStringValidationState<'a>,
+    index: usize,
+) -> Result<bool> {
+    let kind: u8 = pe
+        .slice_exact_file_backed_rva(image, signature_rva, 1)
+        .and_then(|bytes: &[u8]| bytes.first().copied())
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature is not file backed"))?;
+    let module_override: bool = kind & R2R_FIXUP_MODULE_OVERRIDE != 0;
+    let base_kind: u8 = kind & !R2R_FIXUP_MODULE_OVERRIDE;
+    if !is_known_fixup_kind(base_kind) {
+        return Err(invalid_method_def(
+            index,
+            "import-slot signature kind is malformed",
+        ));
+    }
+    let mut offset: u32 = 1;
+    if module_override {
+        let (_, width): (u32, u32) = read_signature_uint(image, pe, signature_rva, offset, index)?;
+        offset = offset
+            .checked_add(width)
+            .ok_or_else(|| invalid_method_def(index, "import-slot signature offset overflowed"))?;
+    }
+    let (payload, _): (u32, u32) = read_signature_uint(image, pe, signature_rva, offset, index)?;
+    if base_kind != R2R_FIXUP_STRING_HANDLE || module_override {
+        return Ok(false);
+    }
+    let rid: u32 = payload;
+    if user_strings.index.is_none() {
+        let (metadata, header): (&'a [u8], StreamHeader) = user_strings
+            .metadata
+            .ok_or_else(|| invalid_method_def(index, "StringHandle signature has no #US heap"))?;
+        user_strings.index = Some(UserStringHeapIndex::new(metadata, header, index)?);
+    }
+    let heap_index: &mut UserStringHeapIndex<'a> = user_strings
+        .index
+        .as_mut()
+        .ok_or_else(|| invalid_method_def(index, "StringHandle #US index is unavailable"))?;
+    heap_index.validate_token(rid, index)?;
+    Ok(true)
+}
+
+struct UserStringValidationState<'a> {
+    metadata: Option<(&'a [u8], StreamHeader)>,
+    index: Option<UserStringHeapIndex<'a>>,
+}
+
+struct UserStringHeapIndex<'a> {
+    heap: &'a [u8],
+    validated_tokens: std::collections::BTreeSet<usize>,
+}
+
+impl<'a> UserStringHeapIndex<'a> {
+    fn new(metadata: &'a [u8], header: StreamHeader, index: usize) -> Result<Self> {
+        let start: usize = usize::try_from(header.offset)
+            .map_err(|_| invalid_method_def(index, "#US heap offset does not fit usize"))?;
+        let size: usize = usize::try_from(header.size)
+            .map_err(|_| invalid_method_def(index, "#US heap size does not fit usize"))?;
+        let end: usize = start
+            .checked_add(size)
+            .ok_or_else(|| invalid_method_def(index, "#US heap range overflowed"))?;
+        let heap: &'a [u8] = metadata
+            .get(start..end)
+            .ok_or_else(|| invalid_method_def(index, "#US heap is truncated"))?;
+        if heap.first() != Some(&0) {
+            return Err(invalid_method_def(index, "#US heap prefix is malformed"));
+        }
+        Ok(Self {
+            heap,
+            validated_tokens: std::collections::BTreeSet::new(),
+        })
+    }
+
+    fn validate_token(&mut self, token: u32, index: usize) -> Result<()> {
+        let target: usize = usize::try_from(token)
+            .map_err(|_| invalid_method_def(index, "StringHandle token does not fit usize"))?;
+        if target == 0 || target >= self.heap.len() {
+            return Err(invalid_method_def(
+                index,
+                "StringHandle token is outside the #US heap",
+            ));
+        }
+        if self.validated_tokens.contains(&target) {
+            return Ok(());
+        }
+        if self.validated_tokens.len() >= MAX_R2R_USER_STRING_ENTRIES {
+            return Err(invalid_method_def(
+                index,
+                "#US entry count exceeds parser limit",
+            ));
+        }
+        self.validate_entry(target, index)?;
+        let inserted: bool = self.validated_tokens.insert(target);
+        debug_assert!(inserted);
+        Ok(())
+    }
+
+    fn validate_entry(&self, target: usize, index: usize) -> Result<()> {
+        let encoded: &[u8] = self
+            .heap
+            .get(target..)
+            .ok_or_else(|| invalid_method_def(index, "#US entry offset is outside the heap"))?;
+        let (payload_size, width): (u32, usize) = decompress_uint(encoded)
+            .ok_or_else(|| invalid_method_def(index, "#US entry length is malformed"))?;
+        let canonical: bool = match width {
+            1 => true,
+            2 => payload_size > 0x7f,
+            4 => payload_size > 0x3fff,
+            _ => false,
+        };
+        if !canonical {
+            return Err(invalid_method_def(
+                index,
+                "#US entry length is not canonical",
+            ));
+        }
+        let payload_size: usize = usize::try_from(payload_size)
+            .map_err(|_| invalid_method_def(index, "#US entry length does not fit usize"))?;
+        if payload_size == 0 || !(payload_size - 1).is_multiple_of(2) {
+            return Err(invalid_method_def(
+                index,
+                "#US entry payload width is malformed",
+            ));
+        }
+        let payload_start: usize = target
+            .checked_add(width)
+            .ok_or_else(|| invalid_method_def(index, "#US entry payload offset overflowed"))?;
+        let entry_end: usize = payload_start
+            .checked_add(payload_size)
+            .ok_or_else(|| invalid_method_def(index, "#US entry range overflowed"))?;
+        if entry_end > self.heap.len() {
+            return Err(invalid_method_def(index, "#US entry is truncated"));
+        }
+        let terminal_at: usize = entry_end - 1;
+        let terminal: u8 = self
+            .heap
+            .get(terminal_at)
+            .copied()
+            .ok_or_else(|| invalid_method_def(index, "#US entry terminal byte is absent"))?;
+        if terminal > 1 {
+            return Err(invalid_method_def(
+                index,
+                "#US entry terminal byte is malformed",
+            ));
+        }
+        let characters: &[u8] = self
+            .heap
+            .get(payload_start..terminal_at)
+            .ok_or_else(|| invalid_method_def(index, "#US entry character range is malformed"))?;
+        let requires_terminal_flag: bool = characters.chunks_exact(2).any(|unit: &[u8]| {
+            let value: u16 = u16::from_le_bytes([unit[0], unit[1]]);
+            value & 0xff00 != 0
+                || matches!(
+                    value as u8,
+                    0x01..=0x08 | 0x0e..=0x1f | 0x27 | 0x2d | 0x7f
+                )
+        });
+        if terminal != u8::from(requires_terminal_flag) {
+            return Err(invalid_method_def(
+                index,
+                "#US entry terminal byte does not match its characters",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn resolve_import_slot<'a>(
+    image: &'a [u8],
+    pe: &PeImage,
+    imports: &[R2rImportSectionRecord],
+    table_index: u32,
+    slot_index: u32,
+    user_strings: &mut UserStringValidationState<'a>,
+    index: usize,
+) -> Result<bool> {
+    let table_index: usize = usize::try_from(table_index)
+        .map_err(|_| invalid_method_def(index, "import-section index does not fit usize"))?;
+    let record: R2rImportSectionRecord = *imports.get(table_index).ok_or_else(|| {
+        invalid_method_def(index, "fixup names an import section outside the table")
+    })?;
+    let slot_count: u32 = record.size / u32::from(record.entry_size);
+    if slot_index >= slot_count {
+        return Err(invalid_method_def(
+            index,
+            "fixup names an import slot outside the section",
+        ));
+    }
+    if record.section_type != R2R_IMPORT_SECTION_TYPE_STRING_HANDLE
+        || record.flags != 0
+        || record.entry_size != 8
+    {
+        return Ok(false);
+    }
+    let signature_table_size: usize = usize::try_from(slot_count)
+        .ok()
+        .and_then(|count: usize| count.checked_mul(R2R_IMPORT_SIGNATURE_POINTER_LEN))
+        .ok_or_else(|| invalid_method_def(index, "import-signature table size overflowed"))?;
+    let signatures: &[u8] = pe
+        .slice_exact_file_backed_rva(image, record.signatures_rva, signature_table_size)
+        .ok_or_else(|| invalid_method_def(index, "import-signature table is not file backed"))?;
+    let signature_offset: usize = usize::try_from(slot_index)
+        .ok()
+        .and_then(|slot: usize| slot.checked_mul(R2R_IMPORT_SIGNATURE_POINTER_LEN))
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature offset overflowed"))?;
+    let signature_end: usize = signature_offset
+        .checked_add(R2R_IMPORT_SIGNATURE_POINTER_LEN)
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature range overflowed"))?;
+    let signature_bytes: &[u8] = signatures
+        .get(signature_offset..signature_end)
+        .ok_or_else(|| invalid_method_def(index, "import-slot signature pointer is truncated"))?;
+    let signature_rva: u32 =
+        u32::from_le_bytes(signature_bytes.try_into().map_err(|_| {
+            invalid_method_def(index, "import-slot signature pointer is malformed")
+        })?);
+    if signature_rva == 0 {
+        return Err(invalid_method_def(
+            index,
+            "import-slot signature pointer is zero",
+        ));
+    }
+    validate_string_handle_signature(image, pe, signature_rva, user_strings, index)
+}
+
+fn validate_fixup_list<'a>(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    image: &'a [u8],
+    pe: &PeImage,
+    imports: &[R2rImportSectionRecord],
+    user_strings: &mut UserStringValidationState<'a>,
+    index: usize,
+) -> Result<bool> {
     let mut cursor: NibbleCursor<'_> = NibbleCursor::new(bytes, start, end, index)?;
-    let _table_index: u32 = read_fixup_uint(&mut cursor, index)?;
+    let mut table_index: u32 = read_fixup_uint(&mut cursor, index)?;
+    let mut all_string_handles: bool = true;
     loop {
-        let _fixup_index: u32 = read_fixup_uint(&mut cursor, index)?;
+        let mut slot_index: u32 = read_fixup_uint(&mut cursor, index)?;
+        all_string_handles &= resolve_import_slot(
+            image,
+            pe,
+            imports,
+            table_index,
+            slot_index,
+            user_strings,
+            index,
+        )?;
         loop {
             let delta: u32 = read_fixup_uint(&mut cursor, index)?;
             if delta == 0 {
                 break;
             }
+            slot_index = slot_index
+                .checked_add(delta)
+                .ok_or_else(|| invalid_method_def(index, "fixup slot index overflowed"))?;
+            all_string_handles &= resolve_import_slot(
+                image,
+                pe,
+                imports,
+                table_index,
+                slot_index,
+                user_strings,
+                index,
+            )?;
         }
-        let table_index: u32 = read_fixup_uint(&mut cursor, index)?;
-        if table_index == 0 {
-            return Ok(());
+        let table_delta: u32 = read_fixup_uint(&mut cursor, index)?;
+        if table_delta == 0 {
+            return Ok(all_string_handles);
         }
+        table_index = table_index
+            .checked_add(table_delta)
+            .ok_or_else(|| invalid_method_def(index, "fixup import-section index overflowed"))?;
     }
 }
 
@@ -718,6 +1185,7 @@ fn parse_method_def_entry_points(
     image: &[u8],
     pe: &PeImage,
     clr: &ClrHeader,
+    sections: &[R2rSection],
     section: &R2rSection,
     runtime_functions: &R2rRuntimeFunctions,
 ) -> Result<ParsedMethodDefJoin> {
@@ -746,7 +1214,10 @@ fn parse_method_def_entry_points(
     if element_count > 16 {
         return Ok(ParsedMethodDefJoin::UnsupportedLayout);
     }
-    let names: Vec<String> = method_def_names(image, pe, clr)?;
+    let R2rMethodDefMetadata {
+        names,
+        user_strings,
+    }: R2rMethodDefMetadata<'_> = method_def_metadata(image, pe, clr)?;
     if element_count > names.len() {
         return Err(invalid_method_def(
             element_count,
@@ -754,6 +1225,11 @@ fn parse_method_def_entry_points(
         ));
     }
     let runtime_count: usize = runtime_function_count(runtime_functions);
+    let mut imports: Option<Vec<R2rImportSectionRecord>> = None;
+    let mut user_string_validation: UserStringValidationState<'_> = UserStringValidationState {
+        metadata: user_strings,
+        index: None,
+    };
     let mut payloads: Vec<(usize, String, usize)> = Vec::new();
     let mut claimed_payload_offsets: std::collections::BTreeSet<usize> =
         std::collections::BTreeSet::new();
@@ -783,28 +1259,7 @@ fn parse_method_def_entry_points(
             return Ok(ParsedMethodDefJoin::UnsupportedLayout);
         };
         let has_fixups: bool = encoded_entrypoint & 1 != 0;
-        if has_fixups && encoded_entrypoint & 2 != 0 {
-            return Ok(ParsedMethodDefJoin::UnsupportedLayout);
-        }
-        if has_fixups {
-            let fixup_at: usize = payload_at
-                .checked_add(encoded_width)
-                .ok_or_else(|| invalid_method_def(method_index, "fixup list offset overflowed"))?;
-            let fixup_end: usize = claimed_payload_offsets
-                .range((
-                    std::ops::Bound::Included(fixup_at),
-                    std::ops::Bound::Unbounded,
-                ))
-                .next()
-                .copied()
-                .unwrap_or(bytes.len());
-            validate_fixup_list(bytes, fixup_at, fixup_end, method_index)?;
-        }
-        let runtime_index_value: u32 = if has_fixups {
-            encoded_entrypoint >> 2
-        } else {
-            encoded_entrypoint >> 1
-        };
+        let runtime_index_value: u32 = encoded_entrypoint >> 1;
         let runtime_index: usize = usize::try_from(runtime_index_value).map_err(|_| {
             invalid_method_def(method_index, "runtime-function index does not fit usize")
         })?;
@@ -823,7 +1278,57 @@ fn parse_method_def_entry_points(
         let rid: u32 = u32::try_from(method_index + 1)
             .map_err(|_| invalid_method_def(method_index, "MethodDef RID does not fit u32"))?;
         let token: u32 = 0x0600_0000 | rid;
-        if has_fixups {
+        let string_handle_fixups: bool = if has_fixups {
+            let fixup_at: usize = payload_at
+                .checked_add(encoded_width)
+                .ok_or_else(|| invalid_method_def(method_index, "fixup list offset overflowed"))?;
+            let fixup_end: usize = claimed_payload_offsets
+                .range((
+                    std::ops::Bound::Included(fixup_at),
+                    std::ops::Bound::Unbounded,
+                ))
+                .next()
+                .copied()
+                .unwrap_or(bytes.len());
+            if imports.is_none() {
+                let import_section: &R2rSection = sections
+                    .iter()
+                    .find(|candidate: &&R2rSection| candidate.section_type == 101)
+                    .ok_or_else(|| {
+                        invalid_method_def(
+                            method_index,
+                            "MethodDef fixups have no import-section table",
+                        )
+                    })?;
+                imports = Some(parse_import_section_records(
+                    image,
+                    pe,
+                    import_section,
+                    method_index,
+                )?);
+            }
+            let imports: &[R2rImportSectionRecord] = imports.as_deref().ok_or_else(|| {
+                invalid_method_def(method_index, "import-section records are unavailable")
+            })?;
+            validate_fixup_list(
+                bytes,
+                fixup_at,
+                fixup_end,
+                image,
+                pe,
+                imports,
+                &mut user_string_validation,
+                method_index,
+            )?
+        } else {
+            true
+        };
+        if string_handle_fixups {
+            associations.push(ParsedMethodDefAssociation::Identity {
+                runtime_index,
+                identity: R2rMethodDefIdentity { token, name },
+            });
+        } else {
             associations.push(ParsedMethodDefAssociation::Abstention {
                 runtime_index,
                 abstention: R2rMethodDefAbstention {
@@ -831,11 +1336,6 @@ fn parse_method_def_entry_points(
                     name,
                     reason: R2rMethodDefAbstentionReason::FixupUnsupported,
                 },
-            });
-        } else {
-            associations.push(ParsedMethodDefAssociation::Identity {
-                runtime_index,
-                identity: R2rMethodDefIdentity { token, name },
             });
         }
     }
@@ -1288,5 +1788,122 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn oversized_import_section_table_is_refused_before_allocation() {
+        let image: [u8; 0] = [];
+        let pe: PeImage = PeImage {
+            bitness: PeBitness::Pe32Plus,
+            machine: MACHINE_AMD64,
+            number_of_sections: 0,
+            timestamp: 0,
+            characteristics: 0,
+            entry_point_rva: 0,
+            image_base: 0,
+            data_directories: Vec::new(),
+            sections: Vec::new(),
+        };
+        let section: R2rSection = R2rSection {
+            section_type: 101,
+            name: "import_sections".to_owned(),
+            rva: 0,
+            size: (MAX_R2R_SECTIONS + 1) * R2R_IMPORT_SECTION_LEN as u32,
+        };
+
+        assert!(
+            parse_import_section_records(&image, &pe, &section, 0)
+                .expect_err("oversized import-section table must be refused")
+                .to_string()
+                .starts_with("DR-DOTNET-0042:")
+        );
+    }
+
+    #[test]
+    fn user_string_validation_index_stays_sparse_for_large_heaps() {
+        let mut metadata: Vec<u8> = vec![0; MAX_R2R_USER_STRING_ENTRIES + 2];
+        metadata[1] = 1;
+        let size: u32 = u32::try_from(metadata.len()).expect("test heap size fits u32");
+        let mut index: UserStringHeapIndex<'_> =
+            UserStringHeapIndex::new(&metadata, StreamHeader { offset: 0, size }, 0)
+                .expect("construct sparse user-string validation index");
+
+        assert_eq!(
+            index.validated_tokens.len(),
+            0,
+            "the validation index must not scale with the attacker-controlled heap length"
+        );
+        index
+            .validate_token(1, 0)
+            .expect("validate the single reachable user string");
+        assert_eq!(index.validated_tokens.len(), 1);
+    }
+
+    #[test]
+    fn truncated_unsupported_helper_signature_is_refused() {
+        let image: [u8; 1] = [0x1a];
+        let pe: PeImage = PeImage {
+            bitness: PeBitness::Pe32Plus,
+            machine: MACHINE_AMD64,
+            number_of_sections: 1,
+            timestamp: 0,
+            characteristics: 0,
+            entry_point_rva: 0,
+            image_base: 0,
+            data_directories: Vec::new(),
+            sections: vec![SectionHeader {
+                name: ".data".to_owned(),
+                virtual_size: 1,
+                virtual_address: 0x1000,
+                raw_size: 1,
+                raw_pointer: 0,
+                characteristics: 0,
+            }],
+        };
+        let mut state: UserStringValidationState<'_> = UserStringValidationState {
+            metadata: None,
+            index: None,
+        };
+
+        assert!(
+            validate_string_handle_signature(&image, &pe, 0x1000, &mut state, 0)
+                .expect_err("truncated helper signature must be refused")
+                .to_string()
+                .starts_with("DR-DOTNET-0042:")
+        );
+    }
+
+    #[test]
+    fn truncated_module_override_string_handle_signature_is_refused() {
+        let image: [u8; 2] = [0x9b, 1];
+        let pe: PeImage = PeImage {
+            bitness: PeBitness::Pe32Plus,
+            machine: MACHINE_AMD64,
+            number_of_sections: 1,
+            timestamp: 0,
+            characteristics: 0,
+            entry_point_rva: 0,
+            image_base: 0,
+            data_directories: Vec::new(),
+            sections: vec![SectionHeader {
+                name: ".data".to_owned(),
+                virtual_size: 2,
+                virtual_address: 0x1000,
+                raw_size: 2,
+                raw_pointer: 0,
+                characteristics: 0,
+            }],
+        };
+        let mut state: UserStringValidationState<'_> = UserStringValidationState {
+            metadata: None,
+            index: None,
+        };
+
+        assert!(
+            validate_string_handle_signature(&image, &pe, 0x1000, &mut state, 0)
+                .expect_err("truncated module override StringHandle must be refused")
+                .to_string()
+                .starts_with("DR-DOTNET-0042:")
+        );
     }
 }
