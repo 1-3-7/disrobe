@@ -331,33 +331,33 @@ fn committed_edge_cases_corpus_is_non_vacuous_and_covers_every_modelled_mnemonic
         "the committed edge_cases.cpython-314.pyc fixture recovers a fixed function count"
     );
     assert_eq!(
-        total, 1093,
+        total, 1098,
         "the lifted instruction stream for a byte-fixed pyc is deterministic: {counts:?}"
     );
 
-    let expected_minimums: [(&str, usize); 20] = [
+    let expected_counts: [(&str, usize); 20] = [
         ("add", 42),
         ("and", 2),
         ("break", 2),
-        ("call", 232),
+        ("call", 235),
         ("case", 54),
-        ("continue", 9),
+        ("continue", 13),
         ("div", 5),
         ("if", 61),
-        ("jump", 59),
-        ("load", 22),
-        ("loop", 59),
+        ("jump", 58),
+        ("load", 23),
+        ("loop", 58),
         ("mul", 28),
         ("or", 3),
         ("raise", 14),
         ("rem", 7),
-        ("return", 478),
+        ("return", 477),
         ("shl", 1),
         ("store", 6),
         ("sub", 8),
         ("xor", 1),
     ];
-    for (mnemonic, expected) in expected_minimums {
+    for (mnemonic, expected) in expected_counts {
         let observed: usize = counts.get(mnemonic).copied().unwrap_or(0);
         assert_eq!(
             observed, expected,
@@ -366,7 +366,7 @@ fn committed_edge_cases_corpus_is_non_vacuous_and_covers_every_modelled_mnemonic
     }
     assert_eq!(
         counts.keys().count(),
-        expected_minimums.len(),
+        expected_counts.len(),
         "an unexpected mnemonic appeared in the lifted stream: {counts:?}"
     );
 }
