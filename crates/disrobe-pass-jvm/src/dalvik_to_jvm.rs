@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::dalvik::{DalvikInsn, decode_method};
 use crate::descriptor::{self, JavaType, MethodDescriptor};
@@ -7,6 +7,7 @@ use crate::dex2jar::ConstantPool;
 
 const MAX_METHOD_INSNS: usize = 8192;
 const MAX_CODE_BYTES: usize = 60_000;
+const MAX_TRACKED_NARROW_CONSTANT_REGS: usize = 128;
 
 thread_local! {
     pub(crate) static LAST_BAIL_OP: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
@@ -153,6 +154,7 @@ struct CfgEmit {
 
     pc_entry_ref: BTreeMap<u32, BTreeMap<u16, String>>,
     pc_entry_null: BTreeMap<u32, BTreeSet<u16>>,
+    pc_entry_int_const: BTreeMap<u32, BTreeMap<u16, i32>>,
 
     pc_exit_ref_regs: BTreeMap<u32, BTreeSet<u16>>,
     tries: Vec<TryRegion>,
@@ -571,6 +573,8 @@ pub(crate) fn emit_branch_method_code(
 
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
+    let pc_entry_int_const: BTreeMap<u32, BTreeMap<u16, i32>> =
+        compute_entry_int_constants(&insns, &states, &switch_targets, &handler_edges, &pc_to_idx);
 
     let mut block_entry_slots: BTreeMap<u32, BTreeMap<u16, Slot>> = BTreeMap::new();
     let mut frame_types: BTreeMap<u32, BTreeMap<u16, crate::dalvik_typestate::RegType>> =
@@ -710,6 +714,7 @@ pub(crate) fn emit_branch_method_code(
             pc_post_array_elem,
             pc_entry_ref,
             pc_entry_null,
+            pc_entry_int_const,
             pc_exit_ref_regs,
             tries,
             handler_stack,
@@ -1289,6 +1294,209 @@ fn successors(
         }
     }
     out
+}
+
+fn compute_entry_int_constants(
+    insns: &[DalvikInsn],
+    states: &crate::dalvik_typestate::TypeStates,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    handler_edges: &BTreeMap<u32, Vec<u32>>,
+    pc_to_idx: &BTreeMap<u32, usize>,
+) -> BTreeMap<u32, BTreeMap<u16, i32>> {
+    let Some(entry_states): Option<Vec<Option<BTreeMap<u16, i32>>>> =
+        must_narrow_constant_states(insns, switch_targets, handler_edges, pc_to_idx)
+    else {
+        return BTreeMap::new();
+    };
+    let mut out: BTreeMap<u32, BTreeMap<u16, i32>> = BTreeMap::new();
+    for (idx, state) in entry_states.into_iter().enumerate() {
+        if !states.reached.get(idx).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(state): Option<BTreeMap<u16, i32>> = state else {
+            continue;
+        };
+        let Some(types): Option<&crate::dalvik_typestate::RegState> = states.entry_state.get(idx)
+        else {
+            continue;
+        };
+        let exact_ints: BTreeMap<u16, i32> = state
+            .into_iter()
+            .filter(|(reg, _): &(u16, i32)| {
+                matches!(types.get(reg), Some(crate::dalvik_typestate::RegType::Int))
+            })
+            .collect();
+        if let (Some(insn), false) = (insns.get(idx), exact_ints.is_empty()) {
+            out.insert(insn.pc, exact_ints);
+        }
+    }
+    out
+}
+
+fn must_narrow_constant_states(
+    insns: &[DalvikInsn],
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    handler_edges: &BTreeMap<u32, Vec<u32>>,
+    pc_to_idx: &BTreeMap<u32, usize>,
+) -> Option<Vec<Option<BTreeMap<u16, i32>>>> {
+    if insns.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut tracked: BTreeSet<u16> = BTreeSet::new();
+    for insn in insns {
+        match insn.op {
+            0x01..=0x03 => tracked.extend(insn.regs.iter().take(2).copied()),
+            0x12..=0x15 => tracked.extend(insn.regs.first().copied()),
+            0xB0..=0xBA => tracked.extend(insn.regs.get(1).copied()),
+            _ => {}
+        }
+        if tracked.len() > MAX_TRACKED_NARROW_CONSTANT_REGS {
+            return None;
+        }
+    }
+
+    let mut incoming: Vec<Option<BTreeMap<u16, i32>>> = vec![None; insns.len()];
+    incoming[0] = Some(BTreeMap::new());
+    let mut queued: Vec<bool> = vec![false; insns.len()];
+    queued[0] = true;
+    let mut work: VecDeque<usize> = VecDeque::from([0]);
+    let max_propagations: usize = insns
+        .len()
+        .saturating_mul(MAX_TRACKED_NARROW_CONSTANT_REGS.saturating_add(1))
+        .saturating_mul(8);
+    let mut propagations: usize = 0;
+
+    while let Some(idx) = work.pop_front() {
+        queued[idx] = false;
+        let Some(pre): Option<BTreeMap<u16, i32>> = incoming[idx].clone() else {
+            continue;
+        };
+        let Some(insn): Option<&DalvikInsn> = insns.get(idx) else {
+            continue;
+        };
+        let mut post: BTreeMap<u16, i32> = pre.clone();
+        apply_narrow_constant_transfer(insn, &mut post, &tracked);
+
+        let mut edges: Vec<(usize, &BTreeMap<u16, i32>)> =
+            normal_successors(insns, idx, switch_targets, pc_to_idx)
+                .into_iter()
+                .map(|successor: usize| (successor, &post))
+                .collect();
+        if let Some(handlers) = handler_edges.get(&insn.pc) {
+            edges.extend(handlers.iter().filter_map(|pc: &u32| {
+                pc_to_idx
+                    .get(pc)
+                    .copied()
+                    .map(|successor: usize| (successor, &pre))
+            }));
+        }
+        for (successor, state) in edges {
+            propagations = propagations.saturating_add(1);
+            if propagations > max_propagations {
+                return None;
+            }
+            if merge_narrow_constant_state(&mut incoming[successor], state) && !queued[successor] {
+                queued[successor] = true;
+                work.push_back(successor);
+            }
+        }
+    }
+    Some(incoming)
+}
+
+fn normal_successors(
+    insns: &[DalvikInsn],
+    idx: usize,
+    switch_targets: &BTreeMap<u32, Vec<u32>>,
+    pc_to_idx: &BTreeMap<u32, usize>,
+) -> Vec<usize> {
+    let Some(insn): Option<&DalvikInsn> = insns.get(idx) else {
+        return Vec::new();
+    };
+    let mut out: Vec<usize> = Vec::new();
+    if let Some(target) = insn.branch_target_pc()
+        && let Some(&successor) = pc_to_idx.get(&target)
+    {
+        out.push(successor);
+    }
+    if insn.is_switch()
+        && let Some(targets) = switch_targets.get(&insn.pc)
+    {
+        out.extend(
+            targets
+                .iter()
+                .filter_map(|target: &u32| pc_to_idx.get(target).copied()),
+        );
+    }
+    if !insn.is_unconditional_goto()
+        && !insn.is_return()
+        && !insn.is_throw()
+        && insns.get(idx + 1).is_some()
+    {
+        out.push(idx + 1);
+    }
+    out
+}
+
+fn merge_narrow_constant_state(
+    current: &mut Option<BTreeMap<u16, i32>>,
+    incoming: &BTreeMap<u16, i32>,
+) -> bool {
+    let Some(current): Option<&mut BTreeMap<u16, i32>> = current.as_mut() else {
+        *current = Some(incoming.clone());
+        return true;
+    };
+    let previous_len: usize = current.len();
+    current.retain(|reg: &u16, value: &mut i32| incoming.get(reg) == Some(value));
+    current.len() != previous_len
+}
+
+fn apply_narrow_constant_transfer(
+    insn: &DalvikInsn,
+    state: &mut BTreeMap<u16, i32>,
+    tracked: &BTreeSet<u16>,
+) {
+    let Some(&dest): Option<&u16> = insn.regs.first() else {
+        return;
+    };
+    match insn.op {
+        0x01..=0x03 => {
+            let value: Option<i32> = insn
+                .regs
+                .get(1)
+                .and_then(|source: &u16| state.get(source))
+                .copied();
+            match value {
+                Some(value) if tracked.contains(&dest) => {
+                    state.insert(dest, value);
+                }
+                _ => {
+                    state.remove(&dest);
+                }
+            }
+        }
+        0x12..=0x14 => match insn.literal.map(|literal: i64| literal as i32) {
+            Some(value) if tracked.contains(&dest) => {
+                state.insert(dest, value);
+            }
+            _ => {
+                state.remove(&dest);
+            }
+        },
+        0x15 => match insn.literal.map(|literal: i64| (literal as i32) << 16) {
+            Some(value) if tracked.contains(&dest) => {
+                state.insert(dest, value);
+            }
+            _ => {
+                state.remove(&dest);
+            }
+        },
+        _ if defines_register(insn) => {
+            state.remove(&dest);
+            state.remove(&dest.saturating_add(1));
+        }
+        _ => {}
+    }
 }
 
 fn reg_use_kind(dex: &DexFile, insn: &DalvikInsn, reg: u16) -> RegUse {
@@ -1989,6 +2197,11 @@ impl Emitter<'_> {
     fn entry_ref_name(&self, reg: u16) -> Option<String> {
         let cfg: &CfgEmit = self.cfg.as_ref()?;
         cfg.pc_entry_ref.get(&cfg.cur_pc)?.get(&reg).cloned()
+    }
+
+    fn entry_int_constant(&self, reg: u16) -> Option<i32> {
+        let cfg: &CfgEmit = self.cfg.as_ref()?;
+        cfg.pc_entry_int_const.get(&cfg.cur_pc)?.get(&reg).copied()
     }
 
     fn emit_ref_param(&mut self, reg: u16, formal: &str) {
@@ -3898,7 +4111,13 @@ impl Emitter<'_> {
         self.set_reg(dest, slot);
         self.set_reg(rhs, rhs_slot);
         self.emit_load(dest);
-        self.emit_load(rhs);
+        if matches!(op, 0xB0..=0xBA)
+            && let Some(value) = self.entry_int_constant(rhs)
+        {
+            self.push_int_const(value);
+        } else {
+            self.emit_load(rhs);
+        }
         self.push(opcode);
         self.adjust_stack(-rhs_slot.width());
         self.emit_store(dest, slot);
@@ -4708,6 +4927,7 @@ const fn defines_register(insn: &DalvikInsn) -> bool {
         insn.op,
         0x01..=0x0D
             | 0x1A..=0x23
+            | 0x2D..=0x31
             | 0x44..=0x4A
             | 0x52..=0x58
             | 0x60..=0x66
