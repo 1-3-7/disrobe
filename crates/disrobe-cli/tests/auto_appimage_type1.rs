@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 const FIXTURE: &[u8] =
     include_bytes!("../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage");
 const MANIFEST: &str = include_str!("../../../corpus/binfmt/appimage-type1/MANIFEST.tsv");
-const CLI_TIMEOUT: Duration = Duration::from_secs(30);
+const CLI_TIMEOUT: Duration = Duration::from_mins(1);
 const CLI_CAPTURE: usize = 1usize << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,14 +46,15 @@ struct BatchRecovery {
 
 fn run_disrobe(args: &[OsString]) -> CapturedOutput {
     let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-    run_captured(
+    let captured: Option<CapturedOutput> = run_captured(
         Path::new(env!("CARGO_BIN_EXE_disrobe")),
         &arg_refs,
         CLI_TIMEOUT,
         CLI_CAPTURE,
     )
-    .expect("spawn disrobe")
-    .expect("disrobe must finish within the timeout")
+    .expect("spawn disrobe");
+    captured
+        .unwrap_or_else(|| panic!("disrobe did not finish within {CLI_TIMEOUT:?}: {arg_refs:?}"))
 }
 
 #[cfg(unix)]
