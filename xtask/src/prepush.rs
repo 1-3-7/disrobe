@@ -36,6 +36,14 @@ enum GateOutcome {
     Skipped(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ScopedTestCommands {
+    nextest: Vec<String>,
+    doctest: Vec<String>,
+    self_excluded: bool,
+    selected_crates: usize,
+}
+
 pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     let scope: Scope = compute_scope(root, full)?;
     match &scope {
@@ -159,31 +167,78 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         Scope::Changed(paths) => owning_crates(root, paths)?,
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
     };
-    if crates.is_empty() {
-        return Ok(GateOutcome::Skipped("no changed rust crates".to_owned()));
-    }
-    let mut self_excluded: bool = false;
-    for name in &crates {
-        if name == SELF_CRATE {
-            self_excluded = true;
-            continue;
-        }
-        run_checked(root, cargo_bin().as_str(), &["test", "-p", name], || {
-            format!(
-                "a committed test in {name} fails on the state being pushed. A commit can introduce \
-                 an assertion before the data it asserts exists, and no other gate here catches \
-                 that, so the failure can predate the range being pushed"
-            )
-        })?;
-    }
-    if self_excluded {
+    let commands: ScopedTestCommands = scoped_test_commands(&crates);
+    if commands.self_excluded {
         println!(
             "    {SELF_CRATE}'s own tests are not run by this gate, because the gate executes as \
              {SELF_CRATE} and cannot replace its own running binary; the workspace test job covers \
              them instead"
         );
     }
+    if commands.selected_crates == 0 {
+        if should_validate_nextest_config(scope, commands.selected_crates) {
+            run_checked(
+                root,
+                cargo_bin().as_str(),
+                &["nextest", "show-config", "version"],
+                || {
+                    "install or update cargo-nextest with `cargo install cargo-nextest --locked`; version 0.9.115 or newer is required by .config/nextest.toml, then re-run the push".to_owned()
+                },
+            )?;
+            return Ok(GateOutcome::Ran);
+        }
+        let reason: &str = if crates.is_empty() {
+            "no changed rust crates"
+        } else {
+            "only xtask changed"
+        };
+        return Ok(GateOutcome::Skipped(reason.to_owned()));
+    }
+    run_checked_owned(root, cargo_bin().as_str(), &commands.nextest, || {
+        "a selected pre-push test failed, timed out, or leaked a child output handle; fix the named test, or install or update cargo-nextest with `cargo install cargo-nextest --locked` if the command is missing or older than 0.9.115, then re-run the push".to_owned()
+    })?;
+    run_checked_owned(root, cargo_bin().as_str(), &commands.doctest, || {
+        "a committed doctest fails on the state being pushed; fix the named doctest, then re-run the push".to_owned()
+    })?;
     Ok(GateOutcome::Ran)
+}
+
+fn scoped_test_commands(crates: &[String]) -> ScopedTestCommands {
+    let self_excluded: bool = crates.iter().any(|name: &String| name == SELF_CRATE);
+    let mut selected: Vec<&str> = crates
+        .iter()
+        .map(String::as_str)
+        .filter(|name: &&str| *name != SELF_CRATE)
+        .collect();
+    selected.sort_unstable();
+    selected.dedup();
+    let selected_crates: usize = selected.len();
+    let mut nextest: Vec<String> = vec![
+        "nextest".to_owned(),
+        "run".to_owned(),
+        "--profile".to_owned(),
+        "pre-push".to_owned(),
+    ];
+    let mut doctest: Vec<String> = vec!["test".to_owned(), "--doc".to_owned()];
+    for name in selected {
+        nextest.extend(["-p".to_owned(), name.to_owned()]);
+        doctest.extend(["-p".to_owned(), name.to_owned()]);
+    }
+    ScopedTestCommands {
+        nextest,
+        doctest,
+        self_excluded,
+        selected_crates,
+    }
+}
+
+fn should_validate_nextest_config(scope: &Scope, selected_crates: usize) -> bool {
+    selected_crates == 0
+        && matches!(
+            scope,
+            Scope::Changed(paths)
+                if paths.iter().any(|path: &Utf8PathBuf| path.as_str() == ".config/nextest.toml")
+        )
 }
 
 fn touches_regen(path: &Utf8PathBuf) -> bool {
@@ -425,6 +480,16 @@ fn run_checked<F: FnOnce() -> String>(
     Ok(())
 }
 
+fn run_checked_owned<F: FnOnce() -> String>(
+    root: &Path,
+    program: &str,
+    args: &[String],
+    remediation: F,
+) -> Result<()> {
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_checked(root, program, &borrowed, remediation)
+}
+
 fn dedup(paths: &mut Vec<Utf8PathBuf>) {
     paths.sort();
     paths.dedup();
@@ -438,4 +503,74 @@ fn cargo_bin() -> Utf8PathBuf {
     std::env::var("CARGO")
         .ok()
         .map_or_else(|| Utf8PathBuf::from("cargo"), Utf8PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SELF_CRATE, Scope, ScopedTestCommands, scoped_test_commands, should_validate_nextest_config,
+    };
+    use camino::Utf8PathBuf;
+
+    #[test]
+    fn nextest_config_validation_is_reserved_for_config_only_scope() {
+        let config_scope: Scope = Scope::Changed(vec![Utf8PathBuf::from(".config/nextest.toml")]);
+        let product_scope: Scope =
+            Scope::Changed(vec![Utf8PathBuf::from("crates/disrobe-bytes/src/lib.rs")]);
+
+        assert!(should_validate_nextest_config(&config_scope, 0));
+        assert!(!should_validate_nextest_config(&config_scope, 1));
+        assert!(!should_validate_nextest_config(&product_scope, 0));
+    }
+
+    #[test]
+    fn scoped_test_commands_are_batched_sorted_and_keep_doctests() {
+        let crates: Vec<String> = vec![
+            "disrobe-pass-jvm".to_owned(),
+            SELF_CRATE.to_owned(),
+            "disrobe-bytes".to_owned(),
+            "disrobe-pass-jvm".to_owned(),
+        ];
+        let actual: ScopedTestCommands = scoped_test_commands(&crates);
+        assert_eq!(
+            actual,
+            ScopedTestCommands {
+                nextest: vec![
+                    "nextest",
+                    "run",
+                    "--profile",
+                    "pre-push",
+                    "-p",
+                    "disrobe-bytes",
+                    "-p",
+                    "disrobe-pass-jvm",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+                doctest: vec![
+                    "test",
+                    "--doc",
+                    "-p",
+                    "disrobe-bytes",
+                    "-p",
+                    "disrobe-pass-jvm",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+                self_excluded: true,
+                selected_crates: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn scoped_test_commands_exclude_the_running_xtask() {
+        let actual: ScopedTestCommands = scoped_test_commands(&[SELF_CRATE.to_owned()]);
+        assert_eq!(actual.nextest, ["nextest", "run", "--profile", "pre-push"]);
+        assert_eq!(actual.doctest, ["test", "--doc"]);
+        assert!(actual.self_excluded);
+        assert_eq!(actual.selected_crates, 0);
+    }
 }

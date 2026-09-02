@@ -13,6 +13,13 @@ cargo test -p <crate> --features <the crate's test features>   # test a single c
 
 > The JVM decompiler can be memory-intensive on adversarial input. Prefer per-crate test runs over a bare workspace-wide `cargo test --workspace` when iterating locally.
 
+The pre-push hook batches changed crates under cargo-nextest 0.9.115 or newer. Install it with
+`cargo install cargo-nextest --locked`. The `pre-push` profile runs independent tests concurrently,
+allows at most two external-toolchain tests at once, disables retries, terminates a test after ten
+minutes for measured heavy crates and two minutes otherwise, and fails when a child retains the
+test's output handles for more than two seconds. Because nextest does not run doctests, the hook
+follows it with one scoped `cargo test --doc` invocation over the same crates.
+
 ### Name the features a crate hides its tests behind
 
 Some crates keep whole modules behind a feature that is off by default. Every pass crate keeps its
