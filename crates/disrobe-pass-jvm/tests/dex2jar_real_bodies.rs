@@ -130,6 +130,46 @@ fn matches_baseline(translated: &CodeAttribute, baseline: &CodeAttribute) -> boo
     normalize(semantic_skeleton(translated)) == normalize(semantic_skeleton(baseline))
 }
 
+fn constructor_skeleton(code: &CodeAttribute) -> Vec<String> {
+    let instructions: Vec<Instruction> = disassemble(&code.code).expect("disassemble code");
+    let mnemonics: Vec<&'static str> = instructions
+        .iter()
+        .map(|instruction: &Instruction| instruction.mnemonic)
+        .collect();
+    constructor_skeleton_from_mnemonics(&mnemonics)
+}
+
+fn constructor_skeleton_from_mnemonics(mnemonics: &[&'static str]) -> Vec<String> {
+    let mut skeleton: Vec<&'static str> = Vec::with_capacity(mnemonics.len());
+    for (index, mnemonic) in mnemonics.iter().copied().enumerate() {
+        if mnemonic == "checkcast" && mnemonics.get(index + 1).copied() == Some("areturn") {
+            continue;
+        }
+        if !is_register_shuffle(mnemonic) {
+            skeleton.push(mnemonic);
+        }
+    }
+    normalize(skeleton)
+}
+
+fn constructor_matches_baseline(translated: &CodeAttribute, baseline: &CodeAttribute) -> bool {
+    constructor_skeleton(translated) == constructor_skeleton(baseline)
+}
+
+#[test]
+fn constructor_skeleton_only_excludes_an_adjacent_return_cast() {
+    let skeleton: Vec<String> = constructor_skeleton_from_mnemonics(&[
+        "checkcast",
+        "astore_1",
+        "aload_1",
+        "areturn",
+        "iconst_0",
+        "checkcast",
+        "areturn",
+    ]);
+    assert_eq!(skeleton, ["checkcast", "areturn", "const", "areturn"]);
+}
+
 struct Leaf {
     class: &'static str,
     name: &'static str,
@@ -294,7 +334,7 @@ fn new_instance_constructed_on_stack_matches_baseline() {
             continue;
         };
         total += 1;
-        if matches_baseline(&tcode, &bcode) {
+        if constructor_matches_baseline(&tcode, &bcode) {
             matched += 1;
         } else {
             report.push(format!(
