@@ -1,0 +1,51 @@
+# ManagedSretProbe._ctor [0x14006C070, 0x14006C075)
+14006c070: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006c074: c3                          	retq
+# ManagedSretProbe.Split [0x14006C080, 0x14006C092)
+14006c080: 0f b7 c2                    	movzwl	%dx, %eax
+14006c083: 48 c1 fa 10                 	sarq	$0x10, %rdx
+14006c087: 48 89 01                    	movq	%rax, (%rcx)
+14006c08a: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006c08e: 48 8b c1                    	movq	%rcx, %rax
+14006c091: c3                          	retq
+# ManagedSretProbe.Spread [0x14006C0A0, 0x14006C0B7)
+14006c0a0: 48 8d 42 01                 	leaq	0x1(%rdx), %rax
+14006c0a4: 4c 8d 42 02                 	leaq	0x2(%rdx), %r8
+14006c0a8: 48 89 11                    	movq	%rdx, (%rcx)
+14006c0ab: 48 89 41 08                 	movq	%rax, 0x8(%rcx)
+14006c0af: 4c 89 41 10                 	movq	%r8, 0x10(%rcx)
+14006c0b3: 48 8b c1                    	movq	%rcx, %rax
+14006c0b6: c3                          	retq
+# ManagedSretProbe.Quarter [0x14006C0C0, 0x14006C0DC)
+14006c0c0: 8d 42 01                    	leal	0x1(%rdx), %eax
+14006c0c3: 44 8d 42 02                 	leal	0x2(%rdx), %r8d
+14006c0c7: 44 8d 52 03                 	leal	0x3(%rdx), %r10d
+14006c0cb: 89 11                       	movl	%edx, (%rcx)
+14006c0cd: 89 41 04                    	movl	%eax, 0x4(%rcx)
+14006c0d0: 44 89 41 08                 	movl	%r8d, 0x8(%rcx)
+14006c0d4: 44 89 51 0c                 	movl	%r10d, 0xc(%rcx)
+14006c0d8: 48 8b c1                    	movq	%rcx, %rax
+14006c0db: c3                          	retq
+# ManagedSretProbe.Narrow [0x14006C0E0, 0x14006C0E4)
+14006c0e0: 8d 41 01                    	leal	0x1(%rcx), %eax
+14006c0e3: c3                          	retq
+# ManagedSretProbe.Widen [0x14006C0F0, 0x14006C102)
+14006c0f0: 0f 57 c0                    	xorps	%xmm0, %xmm0
+14006c0f3: f2 0f 2a c2                 	cvtsi2sd	%edx, %xmm0
+14006c0f7: 89 11                       	movl	%edx, (%rcx)
+14006c0f9: f2 0f 11 41 08              	movsd	%xmm0, 0x8(%rcx)
+14006c0fe: 48 8b c1                    	movq	%rcx, %rax
+14006c101: c3                          	retq
+# ManagedSretProbe.Label [0x14006C110, 0x14006C11D)
+14006c110: 33 c0                       	xorl	%eax, %eax
+14006c112: 48 89 01                    	movq	%rax, (%rcx)
+14006c115: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006c119: 48 8b c1                    	movq	%rcx, %rax
+14006c11c: c3                          	retq
+# ManagedSretProbe.Doubled [0x14006C120, 0x14006C132)
+14006c120: 48 8b 41 08                 	movq	0x8(%rcx), %rax
+14006c124: 48 8b c8                    	movq	%rax, %rcx
+14006c127: 48 89 0a                    	movq	%rcx, (%rdx)
+14006c12a: 48 89 42 08                 	movq	%rax, 0x8(%rdx)
+14006c12e: 48 8b c2                    	movq	%rdx, %rax
+14006c131: c3                          	retq

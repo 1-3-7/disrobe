@@ -1,0 +1,21 @@
+{
+  "schema": "disrobe.demo.python/v1",
+  "captured_at": "2026-09-08T11:35:54.644534+00:00",
+  "python_version": "3.14.5 (main, Jun  2 2026, 22:34:49) [MSC v.1944 64 bit (AMD64)]",
+  "package_version": "0.10.5",
+  "extension_sha256": "d7c05b8954a9d3be8b22b2fda5044cf262652cf5b6c1085f7535a73db4c198b1",
+  "input": {
+    "path": "playground/public/samples/add.wasm",
+    "bytes": 69,
+    "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+  },
+  "result": {
+    "target": "wat",
+    "functions_emitted": 1,
+    "fully_recovered": true,
+    "total_ops": 3,
+    "translated_ops": 3,
+    "source": ";; disrobe wasm lift target=wat\n(module\n  (memory $m0 1 16)\n  (table $dr_tbl_func 1 funcref)\n  (func $f0 (param $p0 i32) (param $p1 i32) (result i32)\n    local.get $p0\n    local.get $p1\n    i32.add\n  )\n  (export \"add\" (func $f0))\n)\n"
+  },
+  "reproduction": "python docs/demo/capture-python.py"
+}

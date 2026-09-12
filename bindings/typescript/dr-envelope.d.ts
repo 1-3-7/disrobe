@@ -1,0 +1,9 @@
+export interface DrEnvelope {
+  cold_len: number;
+  flags: number;
+  hot_len: number;
+  magic: "DISROBE\u0000";
+  root_hash: string;
+  rung: "raw" | "disasm" | "mir" | "hir" | "surface";
+  version: number;
+}

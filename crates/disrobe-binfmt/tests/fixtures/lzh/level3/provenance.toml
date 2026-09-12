@@ -1,0 +1,25 @@
+schema = "disrobe.fixture.provenance/v1"
+source = "https://github.com/fragglet/lhasa"
+source_commit = "75ed83559f23e9538e0045c62f53f77ab03d03d6"
+license = "ISC"
+reference = "Lhasa test-extract-os2"
+
+[[fixtures]]
+archive = "test/archives/lha_os2_208/h3_lfn.lzh"
+sha256 = "3f1901b90037de2e820fbce52f96820cd2750e88bacf54068abc6db580a0bab4"
+members = ["Long Filename.txt"]
+
+[[fixtures]]
+archive = "test/archives/lha_os2_208/h3_lh0.lzh"
+sha256 = "f5460667f6ca09704e6627ce5046932882937bcf040b0564f14fabbf8ad1481f"
+members = ["GPL-2.gz"]
+
+[[fixtures]]
+archive = "test/archives/lha_os2_208/h3_lh5.lzh"
+sha256 = "d980d1ddc47323fc860b0fb7829d72ce26afbe1f3f59f89e52f0eda54f425212"
+members = ["gpl-2"]
+
+[[fixtures]]
+archive = "test/archives/lha_os2_208/h3_subdir.lzh"
+sha256 = "201051c47213d0964c596d40f574486dbb683665b2ba2a27a81bae69e3a9b655"
+members = ["subdir/", "subdir/subdir2/", "subdir/subdir2/HELLO.TXT"]

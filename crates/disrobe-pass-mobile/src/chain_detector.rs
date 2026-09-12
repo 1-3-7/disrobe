@@ -1,0 +1,611 @@
+#![cfg(feature = "chain")]
+#![allow(clippy::module_name_repetitions)]
+#[cfg(feature = "jni")]
+use disrobe_core::chain::detection::TERMINAL_HINT;
+use disrobe_core::chain::{
+    CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
+    DetectorOutput, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+};
+use disrobe_core::error::{CoreError, Result as CoreResult};
+use disrobe_core::pass::PassId;
+use disrobe_core::{Artifact, Capability, Rung};
+
+use crate::pass::{
+    BundleFormat, DetectedKind, MobilePassOutput, detect_bundle_format, detect_kind,
+    extract_android_bundle_children, extract_android_dex_children, run_inner,
+};
+
+pub const PASS_ID: PassId = "mobile.classify";
+
+const TAG_HERMES: &str = "react-native-hermes";
+const TAG_FLUTTER_AOT: &str = "flutter-aot";
+const TAG_FLUTTER_KERNEL: &str = "flutter-dart-kernel";
+const TAG_RN_APK: &str = "react-native-apk";
+const TAG_RN_IPA: &str = "react-native-ipa";
+const TAG_XAMARIN_APK: &str = "xamarin-apk";
+const TAG_CORDOVA_APK: &str = "cordova-apk";
+const TAG_CAPACITOR_APK: &str = "capacitor-apk";
+const TAG_NATIVESCRIPT_APK: &str = "nativescript-apk";
+const TAG_IPA: &str = "ipa";
+const TAG_ANDROID_DEX_APK: &str = "android-apk-dex";
+const TAG_ANDROID_BUNDLE: &str = "android-bundle";
+
+#[derive(Debug)]
+pub struct MobileDetector;
+
+impl Detector for MobileDetector {
+    #[inline]
+    fn id(&self) -> PassId {
+        PASS_ID
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        let kind: DetectedKind = detect_kind(ctx.bytes);
+        if matches!(kind, DetectedKind::AndroidBundle) {
+            let format: BundleFormat =
+                detect_bundle_format(ctx.bytes).unwrap_or(BundleFormat::Apkm);
+            return Some(DetectVerdict::new(
+                PASS_ID,
+                TAG_ANDROID_BUNDLE,
+                FAMILY_PACKER_ARCHIVE,
+                0.93,
+                28,
+                vec![format.marker()],
+                format!(
+                    "mobile kind={TAG_ANDROID_BUNDLE} format={}",
+                    format.marker()
+                ),
+            ));
+        }
+        verdict_for(kind)
+    }
+}
+
+#[derive(Debug)]
+pub struct MobilePassAdapter;
+
+impl Pass for MobilePassAdapter {
+    #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
+    fn id(&self) -> PassId {
+        PASS_ID
+    }
+
+    #[inline]
+    fn detector(&self) -> &'static dyn Detector {
+        &MobileDetector
+    }
+
+    #[inline]
+    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+        OutputKind::Mixed {
+            children: Vec::new(),
+        }
+    }
+
+    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        let bytes: &[u8] = artifact.envelope.as_slice();
+        let kind: DetectedKind = detect_kind(bytes);
+        if matches!(kind, DetectedKind::Unknown) {
+            return Err(CoreError::PassFailure(
+                "DR-MOB-0902: mobile.classify: input is not a recognized mobile container"
+                    .to_string(),
+            ));
+        }
+        let output: MobilePassOutput = run_inner(bytes)
+            .map_err(|e: crate::error::Error| CoreError::PassFailure(format!("{e}")))?;
+        let encoded: Vec<u8> = serde_json::to_vec(&output).map_err(|e: serde_json::Error| {
+            CoreError::PassFailure(format!("DR-MOB-PASS: serialize: {e}"))
+        })?;
+        let mut next: Artifact = Artifact::new(Rung::Disasm, encoded, artifact.root_hash);
+        next.add_capability(Capability::produces("mobile.bundle.extracted", 1));
+        next.add_capability(Capability::produces("mobile.surface.json", 1));
+        Ok(next)
+    }
+
+    fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        match detect_kind(bytes) {
+            DetectedKind::AndroidDexApk => {
+                let dex_children: Vec<(String, Vec<u8>)> = extract_android_dex_children(bytes)
+                    .map_err(|e: crate::error::Error| {
+                        CoreError::PassFailure(format!("DR-MOB-0905: android dex extract: {e}"))
+                    })?;
+                let sidecar_children: Vec<ChildArtifact> =
+                    android_jni_sidecar_children(bytes, &dex_children, dex_children.len());
+                let mut children: Vec<ChildArtifact> = to_children(dex_children, "android-dex");
+                children.extend(sidecar_children);
+                Ok(children)
+            }
+            DetectedKind::AndroidBundle => {
+                let entries: Vec<(String, Vec<u8>)> = extract_android_bundle_children(bytes)
+                    .map_err(|e: crate::error::Error| {
+                        CoreError::PassFailure(format!("DR-MOB-0906: android bundle extract: {e}"))
+                    })?;
+                let children: Vec<ChildArtifact> = entries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (name, data)): (usize, (String, Vec<u8>))| {
+                        let hint: &str = if name.ends_with(".apk") {
+                            "android-apk"
+                        } else {
+                            "android-dex"
+                        };
+                        ChildArtifact {
+                            handle: ChildHandle {
+                                artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+                                relative_path: name,
+                                hint: Some(hint.to_string()),
+                            },
+                            bytes: data,
+                        }
+                    })
+                    .collect();
+                Ok(children)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Mobile,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
+pub static MOBILE_PASS: MobilePassAdapter = MobilePassAdapter;
+
+#[cfg(feature = "jni")]
+fn android_jni_sidecar_children(
+    apk_bytes: &[u8],
+    dex_children: &[(String, Vec<u8>)],
+    index: usize,
+) -> Vec<ChildArtifact> {
+    android_jni_sidecar(apk_bytes, dex_children, index)
+        .into_iter()
+        .collect()
+}
+
+#[cfg(not(feature = "jni"))]
+fn android_jni_sidecar_children(
+    _apk_bytes: &[u8],
+    _dex_children: &[(String, Vec<u8>)],
+    _index: usize,
+) -> Vec<ChildArtifact> {
+    Vec::new()
+}
+
+#[cfg(feature = "jni")]
+fn android_jni_sidecar(
+    apk_bytes: &[u8],
+    dex_children: &[(String, Vec<u8>)],
+    index: usize,
+) -> Option<ChildArtifact> {
+    use disrobe_pass_jvm::{
+        DexFile, JniSurfaceReport, NativeMethod, analyze_jni_native_methods,
+        extract_native_methods, parse_dex,
+    };
+
+    let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
+    for (_name, dex_bytes) in dex_children {
+        match parse_dex(dex_bytes).map(|dex: DexFile| extract_native_methods(&dex, dex_bytes)) {
+            Ok(Ok(methods)) => native_methods.extend(methods),
+            Ok(Err(_)) | Err(_) => {
+                code_scan_complete = false;
+                decode_error_count += 1;
+            }
+        }
+    }
+
+    let native_libs_owned: Vec<(String, Vec<u8>)> = collect_android_native_libs(apk_bytes);
+    let native_libs: Vec<(&str, &[u8])> = native_libs_owned
+        .iter()
+        .map(|(p, b): &(String, Vec<u8>)| (p.as_str(), b.as_slice()))
+        .collect();
+
+    let mut surface: JniSurfaceReport = analyze_jni_native_methods(&native_methods, &native_libs);
+    surface.code_scan_complete = code_scan_complete;
+    surface.decode_error_count = decode_error_count;
+
+    if surface.native_method_count == 0
+        && surface.registered_natives.is_empty()
+        && surface.code_scan_complete
+    {
+        return None;
+    }
+
+    let native_lib_paths: Vec<String> = native_libs_owned
+        .iter()
+        .map(|(p, _): &(String, Vec<u8>)| p.clone())
+        .collect();
+    let json_value: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.mobile.jni-link/v1",
+        "native_libraries": native_lib_paths,
+        "surface": surface,
+    });
+    let encoded: Vec<u8> = serde_json::to_vec_pretty(&json_value).ok()?;
+    Some(ChildArtifact {
+        handle: ChildHandle {
+            artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+            relative_path: "jni-link.json".to_string(),
+            hint: Some(TERMINAL_HINT.to_string()),
+        },
+        bytes: encoded,
+    })
+}
+
+#[cfg(feature = "jni")]
+fn collect_android_native_libs(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Cursor;
+
+    use zip::ZipArchive;
+
+    let cursor: Cursor<&[u8]> = Cursor::new(bytes);
+    let Ok(mut archive): Result<ZipArchive<Cursor<&[u8]>>, _> = ZipArchive::new(cursor) else {
+        return Vec::new();
+    };
+    let entry_count: usize = match crate::checked_zip_entry_count(archive.len()) {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = Vec::with_capacity(entry_count);
+    for i in 0..entry_count {
+        if let Ok(file) = archive.by_index(i) {
+            let name: String = file.name().to_owned();
+            if name.starts_with("lib/")
+                && (name.ends_with(".so") || name.ends_with(".dll") || name.ends_with(".dylib"))
+            {
+                names.push(name);
+            }
+        }
+    }
+    names.sort_unstable();
+    let mut out: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
+    for name in names {
+        if let Ok(file) = archive.by_name(name.as_str())
+            && let Ok(buf) = crate::read_zip_file_bounded(file, &name)
+        {
+            out.push((name, buf));
+        }
+    }
+    out
+}
+
+fn to_children(entries: Vec<(String, Vec<u8>)>, hint: &str) -> Vec<ChildArtifact> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (name, data)): (usize, (String, Vec<u8>))| ChildArtifact {
+                handle: ChildHandle {
+                    artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    relative_path: name,
+                    hint: Some(hint.to_string()),
+                },
+                bytes: data,
+            },
+        )
+        .collect()
+}
+
+fn verdict_for(kind: DetectedKind) -> Option<DetectVerdict> {
+    let (tag, marker, confidence): (&'static str, &'static str, f32) = match kind {
+        DetectedKind::HermesRawBytecode => (TAG_HERMES, "hermes-magic", 0.95),
+        DetectedKind::FlutterLibAppSo => (TAG_FLUTTER_AOT, "flutter-elf+aot-snapshot", 0.95),
+        DetectedKind::FlutterDartKernel => (TAG_FLUTTER_KERNEL, "dart-kernel-magic", 0.95),
+        DetectedKind::ReactNativeApk => (TAG_RN_APK, "apk-zip-rn-bundle", 0.80),
+        DetectedKind::ReactNativeIpa => (TAG_RN_IPA, "ipa-rn-bundle", 0.80),
+        DetectedKind::XamarinApk => (TAG_XAMARIN_APK, "xamarin-apk", 0.85),
+        DetectedKind::CordovaApk => (TAG_CORDOVA_APK, "cordova-apk", 0.85),
+        DetectedKind::CapacitorApk => (TAG_CAPACITOR_APK, "capacitor-apk", 0.85),
+        DetectedKind::NativeScriptApk => (TAG_NATIVESCRIPT_APK, "nativescript-apk", 0.85),
+        DetectedKind::Ipa => (TAG_IPA, "ipa-zip", 0.78),
+        DetectedKind::AndroidDexApk => (TAG_ANDROID_DEX_APK, "apk-zip-classes-dex", 0.91),
+        DetectedKind::AndroidBundle => (TAG_ANDROID_BUNDLE, "android-bundle", 0.93),
+        DetectedKind::Unknown => return None,
+    };
+    Some(DetectVerdict::new(
+        PASS_ID,
+        tag,
+        FAMILY_PACKER_ARCHIVE,
+        confidence,
+        28,
+        vec![marker],
+        format!("mobile kind={tag}"),
+    ))
+}
+
+#[derive(Debug)]
+pub struct MobileCatalogEntry {
+    tag: &'static str,
+    id: &'static str,
+    display_name: &'static str,
+    aliases: &'static [&'static str],
+    quality: SupportQuality,
+}
+
+impl CatalogEntry for MobileCatalogEntry {
+    #[inline]
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    #[inline]
+    fn display_name(&self) -> &'static str {
+        self.display_name
+    }
+    #[inline]
+    fn aliases(&self) -> &'static [&'static str] {
+        self.aliases
+    }
+    #[inline]
+    fn support_quality(&self) -> SupportQuality {
+        self.quality
+    }
+}
+
+const CATALOG_COUNT: usize = 11;
+
+static CATALOG: [MobileCatalogEntry; CATALOG_COUNT] = [
+    MobileCatalogEntry {
+        tag: TAG_HERMES,
+        id: "mobile-hermes",
+        display_name: "React Native Hermes bytecode",
+        aliases: &["hermes", "hbc", "react-native"],
+        quality: SupportQuality::Full,
+    },
+    MobileCatalogEntry {
+        tag: TAG_FLUTTER_KERNEL,
+        id: "mobile-flutter-kernel",
+        display_name: "Flutter Dart kernel",
+        aliases: &["dart-kernel", "dill"],
+        quality: SupportQuality::Full,
+    },
+    MobileCatalogEntry {
+        tag: TAG_FLUTTER_AOT,
+        id: "mobile-flutter-aot",
+        display_name: "Flutter AOT snapshot (libapp.so)",
+        aliases: &["flutter", "libapp", "aot-snapshot"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_RN_APK,
+        id: "mobile-rn-apk",
+        display_name: "React Native APK",
+        aliases: &["rn-apk"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_RN_IPA,
+        id: "mobile-rn-ipa",
+        display_name: "React Native IPA",
+        aliases: &["rn-ipa"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_XAMARIN_APK,
+        id: "mobile-xamarin",
+        display_name: "Xamarin / .NET MAUI APK",
+        aliases: &["xamarin", "maui"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_CORDOVA_APK,
+        id: "mobile-cordova",
+        display_name: "Apache Cordova APK",
+        aliases: &["cordova", "phonegap"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_CAPACITOR_APK,
+        id: "mobile-capacitor",
+        display_name: "Capacitor APK",
+        aliases: &["capacitor", "ionic"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_NATIVESCRIPT_APK,
+        id: "mobile-nativescript",
+        display_name: "NativeScript APK",
+        aliases: &["nativescript"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_ANDROID_DEX_APK,
+        id: "mobile-android-apk",
+        display_name: "Android APK (classes.dex)",
+        aliases: &["apk", "android"],
+        quality: SupportQuality::Partial,
+    },
+    MobileCatalogEntry {
+        tag: TAG_ANDROID_BUNDLE,
+        id: "mobile-android-bundle",
+        display_name: "Android app bundle (AAB / APKM / XAPK)",
+        aliases: &["aab", "apkm", "xapk", "bundle"],
+        quality: SupportQuality::Partial,
+    },
+];
+
+fn catalog_id_for_tag(tag: &str) -> Option<&'static str> {
+    CATALOG
+        .iter()
+        .find(|e: &&MobileCatalogEntry| e.tag == tag)
+        .map(|e: &MobileCatalogEntry| e.id)
+}
+
+impl ObfuscatorCatalog for MobileDetector {
+    #[inline]
+    fn pass_id(&self) -> PassId {
+        PASS_ID
+    }
+
+    fn catalog(&self) -> Vec<&'static dyn CatalogEntry> {
+        CATALOG
+            .iter()
+            .map(|e: &'static MobileCatalogEntry| e as &'static dyn CatalogEntry)
+            .collect()
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectorOutput> {
+        let verdict: DetectVerdict = Detector::detect(self, ctx)?;
+        let entry_id: &'static str = catalog_id_for_tag(verdict.format_tag)?;
+        let markers: Vec<String> = verdict
+            .markers
+            .iter()
+            .map(|m: &&str| (*m).to_owned())
+            .collect();
+        Some(DetectorOutput::new(entry_id, verdict.confidence, markers))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use disrobe_core::Rung;
+    use std::path::{Path, PathBuf};
+
+    const FLUTTER_AOT_IMAGE: &str = "mobile/flutter/disrobe_sample/libapp_arm64.so";
+
+    fn ctx(bytes: &[u8]) -> DetectContext<'_> {
+        DetectContext {
+            bytes,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        }
+    }
+
+    fn corpus_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join(relative)
+    }
+
+    fn flutter_aot_image() -> Vec<u8> {
+        let path: PathBuf = corpus_path(FLUTTER_AOT_IMAGE);
+        std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "{FLUTTER_AOT_IMAGE} is tracked in git, so failing to read it at {} means an \
+                 incomplete checkout and the mapping below would be graded against nothing: {e}",
+                path.display()
+            )
+        })
+    }
+
+    #[test]
+    fn detector_id_is_stable() {
+        assert_eq!(MobileDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn catalog_lists_mobile_frameworks() {
+        let entries: Vec<&'static dyn CatalogEntry> = ObfuscatorCatalog::catalog(&MobileDetector);
+        assert_eq!(entries.len(), CATALOG_COUNT);
+        let ids: Vec<&'static str> = entries.iter().map(|e| e.id()).collect();
+        for want in [
+            "mobile-hermes",
+            "mobile-flutter-aot",
+            "mobile-xamarin",
+            "mobile-cordova",
+        ] {
+            assert!(
+                ids.contains(&want),
+                "mobile catalog missing {want}: {ids:?}"
+            );
+        }
+        let mut sorted: Vec<&'static str> = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), CATALOG_COUNT);
+    }
+
+    #[test]
+    fn catalog_detect_maps_flutter_elf() {
+        let bytes: Vec<u8> = flutter_aot_image();
+        let out: DetectorOutput =
+            ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).expect("flutter aot detect");
+        assert_eq!(out.entry_id, "mobile-flutter-aot");
+    }
+
+    #[test]
+    fn catalog_detect_misses_random_bytes() {
+        let bytes: Vec<u8> = vec![0u8; 32];
+        assert!(ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn detect_elf_as_flutter() {
+        let bytes: Vec<u8> = flutter_aot_image();
+        let v: DetectVerdict =
+            Detector::detect(&MobileDetector, &ctx(&bytes)).expect("must detect");
+        assert_eq!(v.format_tag, TAG_FLUTTER_AOT);
+    }
+
+    #[test]
+    fn detect_refuses_a_bare_elf_header_as_flutter() {
+        let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        assert!(
+            Detector::detect(&MobileDetector, &ctx(&bytes)).is_none(),
+            "elf magic carries no Dart evidence, so routing it to {TAG_FLUTTER_AOT} through the \
+             chain would report every linux binary as a Flutter app"
+        );
+        assert!(ObfuscatorCatalog::detect(&MobileDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn detect_zip_as_rn_apk() {
+        let bytes: Vec<u8> = vec![b'P', b'K', 0x03, 0x04];
+        let v: DetectVerdict =
+            Detector::detect(&MobileDetector, &ctx(&bytes)).expect("must detect");
+        assert_eq!(v.format_tag, TAG_RN_APK);
+    }
+
+    #[test]
+    fn detect_misses_random_bytes() {
+        let bytes: Vec<u8> = vec![0u8; 32];
+        assert!(Detector::detect(&MobileDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn pass_output_kind_is_mixed() {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![], [0u8; 32]);
+        match MOBILE_PASS.output_kind(&a) {
+            OutputKind::Mixed { children } => assert!(children.is_empty()),
+            _ => panic!("expected Mixed"),
+        }
+    }
+
+    #[test]
+    fn pass_run_rejects_synthetic_elf_without_libapp_layout() {
+        let bytes: Vec<u8> = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let err: CoreError = MOBILE_PASS
+            .run(&a)
+            .expect_err("synthetic ELF lacks libapp.so layout");
+        let msg: String = format!("{err}");
+        assert!(
+            msg.contains("DR-MOB")
+                || msg.contains("Unrecognized")
+                || msg.contains("recognized")
+                || msg.contains("Flutter")
+                || msg.contains("flutter")
+        );
+    }
+
+    #[test]
+    fn pass_run_rejects_unknown_bytes() {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 32], [0u8; 32]);
+        let err: CoreError = MOBILE_PASS.run(&a).expect_err("must reject");
+        assert!(format!("{err}").contains("DR-MOB-0902"));
+    }
+}

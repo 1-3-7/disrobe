@@ -1,0 +1,7 @@
+<project outputDir="obf" baseDir="." seed="disrobe-confuser-resource-20260711" xmlns="http://confuser.codeplex.com">
+  <rule pattern="true" preset="none" inherit="false">
+    <protection id="resources" />
+  </rule>
+  <module path="bin\Release\net48\ConfuserResources.dll" />
+  <probePath>C:\Windows\Microsoft.NET\Framework64\v4.0.30319</probePath>
+</project>

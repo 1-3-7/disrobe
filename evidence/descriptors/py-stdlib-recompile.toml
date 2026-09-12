@@ -1,0 +1,16 @@
+id = "py-stdlib-recompile"
+ecosystem = "python"
+title = "Python .pyc decompilation, normalized opcode-structure agreement"
+claim = "disrobe reaches normalized opcode-structure agreement for code objects in a 200-module pinned CPython 3.14.5 corpus."
+oracle_strength = "recompile-only"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "CPython 3.14.5 recompiles the recovered source. The comparator drops jump targets and most operands, removes and merges selected opcodes, omits __annotate__ code objects, and does not reject extra recovered objects; it does not establish semantic or emitted-bytecode equivalence."
+reproduce = "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate"
+
+[source]
+recovery_group = "Python bytecode (CPython 3.14.5 stdlib, normalized opcode-structure agreement)"
+recovery_bar = "200-module pinned corpus (normalized opcode-structure agreement)"
+floor = 96.51

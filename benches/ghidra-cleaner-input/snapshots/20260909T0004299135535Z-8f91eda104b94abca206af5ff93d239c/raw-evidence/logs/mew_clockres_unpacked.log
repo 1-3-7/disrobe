@@ -1,0 +1,112 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (511 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1651 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\mew_clockres_unpacked-7c2277ffb0d44be2bcb29cf42d1b568b\mew_clockres_unpacked (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\mew_clockres_unpacked-7c2277ffb0d44be2bcb29cf42d1b568b\mew_clockres_unpacked (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\mew_clockres_unpacked-7c2277ffb0d44be2bcb29cf42d1b568b\mew_clockres_unpacked (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe (HeadlessAnalyzer)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+INFO  Additional info:
+Loading file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe?MD5=46c1388f546ce0a9a8a4890ce6edb211...
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+WARN  Decompiling 0040d960, pcode error at 900040dc: Could not follow disassembly flow into non-existing memory at 900040dc (DecompileCallback)
+WARN  Decompiling 00403730, pcode error at 90004039: Could not follow disassembly flow into non-existing memory at 90004039 (DecompileCallback)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 0040d960, pcode error at 900040dc: Could not follow disassembly flow into non-existing memory at 900040dc (DecompileCallback)
+WARN  Decompiling 00403730, pcode error at 90004039: Could not follow disassembly flow into non-existing memory at 90004039 (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.297 secs
+    Apply Data Archives                        0.411 secs
+    Call Convention ID                         0.002 secs
+    Call-Fixup Installer                       0.012 secs
+    Create Address Tables                      0.010 secs
+    Create Address Tables - One Time           0.095 secs
+    Create Function                            0.087 secs
+    Data Reference                             0.398 secs
+    Decompiler Parameter ID                    2.924 secs
+    Decompiler Switch Analysis                 4.489 secs
+    Demangler Microsoft                        0.017 secs
+    Disassemble                                0.448 secs
+    Disassemble Entry Points                   0.029 secs
+    Embedded Media                             0.006 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.324 secs
+    Function Start Pre Search                  0.015 secs
+    Function Start Search                      0.052 secs
+    Function Start Search After Code           0.007 secs
+    Function Start Search After Data           0.009 secs
+    Function Start Search delayed - One Time   0.000 secs
+    Non-Returning Functions - Discovered       0.086 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.002 secs
+    Reference                                  0.413 secs
+    Scalar Operand References                  0.093 secs
+    Shared Return Calls                        0.056 secs
+    Stack                                      0.591 secs
+    Subroutine References                      0.027 secs
+    WindowsResourceReference                   0.341 secs
+    X86 Function Callee Purge                  0.017 secs
+    x86 Constant Reference Analyzer            0.625 secs
+-----------------------------------------------------
+     Total Time   11 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\mew_clockres_unpacked.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\mew_clockres_unpacked.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${RUN_DIRECTORY}/export/mew_clockres-c7f693bf7f904683938a5b4f3fa2c081/Clockres.packed.mew.unpacked.exe (HeadlessAnalyzer)
+INFO  /Clockres.packed.mew.unpacked.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /Clockres.packed.mew.unpacked.exe (mew_clockres_unpacked:/Clockres.packed.mew.unpacked.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

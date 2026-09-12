@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe recovers YARV source accepted by MRI's compiler; the benchmark measures original opcode-name multiset recall across the compiled instruction sequences.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": "The opcode-name multiset comparison matches 23648 of 23966 original occurrences after MRI compiles both sources, or 98.67%. There are 318 unmatched original occurrences. Ordering and operands are ignored, and additional recovered instructions do not reduce the score.",
+  "disrobe_leads": null,
+  "ecosystem": "ruby",
+  "floor": 98.67,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)",
+  "id": "ruby-yarv-recompile",
+  "measured": "98.67%",
+  "oracle": {
+    "external": "MRI compiles original and recovered sources without executing them. The comparison sums the smaller count for each opcode name and divides by the original instruction count. It ignores order, operands, constants, branch targets, and instruction ownership, and does not penalize additional recovered instructions.",
+    "kind": "recovery-import",
+    "note": null
+  },
+  "oracle_strength": "recompile-only",
+  "pairs": [],
+  "reproduce": "Set DISROBE_RUBY to MRI 3.4.10 and DISROBE_YARV_EVIDENCE_DIR to a new absolute directory outside Cargo build output, with an existing parent. Run cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle -- --nocapture. Each fixture retains its source, disassembly, opcode counts, tool identities, and SHA-256 hashes.",
+  "title": "Ruby YARV decompilation, opcode-name recall after recompilation"
+}

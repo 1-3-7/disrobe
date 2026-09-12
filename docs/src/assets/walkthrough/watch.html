@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Disrobe walkthrough</title>
+  <link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../docs/theme/tokens.css">
+  <style>
+    :root { color-scheme: dark; --bg: #101010; --text: #f5f5f5; --muted: #aaa; --line: #383838; }
+    :root[data-theme="light"] { color-scheme: light; --bg: #fafafa; --text: #171717; --muted: #555; --line: #ccc; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--card-sans); }
+    header, main { width: min(1280px, calc(100% - 48px)); margin: auto; }
+    header { display: flex; align-items: center; justify-content: space-between; height: 88px; border-bottom: 1px solid var(--line); }
+    a { color: inherit; text-underline-offset: 4px; }
+    a:focus-visible, button:focus-visible, video:focus-visible { outline: 2px solid var(--text); outline-offset: 5px; }
+    .brand { display: flex; align-items: center; gap: var(--brand-lockup-gap); font-family: var(--brand-display); font-size: var(--brand-wordmark-size); font-weight: var(--brand-weight); line-height: 1; letter-spacing: var(--brand-letter-spacing); text-decoration: none; }
+    .brand img { width: var(--brand-mark-size); height: var(--brand-mark-size); }
+    button { background: none; color: var(--muted); border: 0; font: inherit; cursor: pointer; }
+    main { padding: 42px 0 64px; }
+    h1 { margin: 0 0 16px; font-size: clamp(32px, 5vw, 54px); line-height: 1.1; font-weight: 560; letter-spacing: -.04em; }
+    p { color: var(--muted); max-width: 76ch; }
+    video { display: block; width: 100%; height: auto; aspect-ratio: 16/9; background: #101010; border: 1px solid var(--line); border-radius: 8px; margin: 28px 0 20px; }
+    nav { display: flex; gap: 24px; flex-wrap: wrap; font-size: 14px; }
+    h2 { margin-top: 48px; font-size: 25px; font-weight: 550; letter-spacing: -.025em; }
+  </style>
+</head>
+<body>
+  <header><a class="brand" href="../../index.html"><img id="mark" src="../brand-mark-dark.svg" alt="">disrobe</a><button id="theme" type="button">Light mode</button></header>
+  <main>
+    <h1>Disrobe at the command line</h1>
+    <p>A 36-second CLI demo: unpack a native binary, extract indicators, run automatic recovery, decompile Lua, and read recovered WebAssembly instructions.</p>
+    <video id="walkthrough" controls playsinline preload="none" poster="poster.png" aria-label="Disrobe capability walkthrough">
+      <source src="walkthrough.mp4" type="video/mp4">
+      <track kind="captions" src="captions.vtt" srclang="en" label="English" default>
+      <track kind="chapters" src="chapters.vtt" srclang="en" label="Chapters">
+      <a href="walkthrough.mp4">Download the walkthrough</a>
+    </video>
+    <nav aria-label="Walkthrough resources"><a href="transcript.txt">Read the transcript</a><a href="walkthrough.mp4" download>Download video</a></nav>
+    <h2>Four examples in 20 seconds</h2>
+    <video id="teaser" controls playsinline preload="none" poster="poster.png" aria-label="Disrobe walkthrough excerpts">
+      <source src="teaser.mp4" type="video/mp4">
+      <track kind="captions" src="teaser.vtt" srclang="en" label="English" default>
+      <a href="teaser.mp4">Download the excerpts</a>
+    </video>
+  </main>
+  <script>
+    document.getElementById("theme").addEventListener("click", () => {
+      const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = theme;
+      document.getElementById("theme").textContent = theme === "dark" ? "Light mode" : "Dark mode";
+      document.getElementById("mark").src = `../brand-mark-${theme}.svg`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "Clockres.packed.mew.unpacked.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 333,
+  "thunks": 0,
+  "instructions": 20990,
+  "instruction_bytes": 62508,
+  "defined_data_bytes": 19620,
+  "defined_bytes": 82128,
+  "defined_strings": 358,
+  "undefined_in_exec": 110800,
+  "executable_block_bytes": 192512,
+  "total_block_bytes": 193536
+}

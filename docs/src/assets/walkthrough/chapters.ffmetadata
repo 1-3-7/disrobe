@@ -1,0 +1,32 @@
+;FFMETADATA1
+title=Disrobe CLI walkthrough
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=6000
+title=Unpack a native binary
+[CHAPTER]
+TIMEBASE=1/1000
+START=6000
+END=11000
+title=Extract indicators
+[CHAPTER]
+TIMEBASE=1/1000
+START=11000
+END=16000
+title=Let Disrobe choose the recovery path
+[CHAPTER]
+TIMEBASE=1/1000
+START=16000
+END=22000
+title=Decompile Lua bytecode
+[CHAPTER]
+TIMEBASE=1/1000
+START=22000
+END=28000
+title=Lift WebAssembly to WAT
+[CHAPTER]
+TIMEBASE=1/1000
+START=28000
+END=36000
+title=Read the recovered instructions

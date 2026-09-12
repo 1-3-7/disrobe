@@ -1,0 +1,39 @@
+{
+  "schema": "disrobe.capabilities/v0",
+  "uri": "corpus/native/discovery/disc.unstripped.elf",
+  "byte_len": 1560,
+  "matched_rules": 1,
+  "attack": [
+    "T1027"
+  ],
+  "mbc": [
+    "C0026.002"
+  ],
+  "capabilities": [
+    {
+      "rule": "encode data using xor",
+      "namespace": "data-manipulation/encoding/xor",
+      "scope": "basic-block",
+      "function": "dispatch",
+      "function_address": 2101744,
+      "address": 2101769,
+      "attack": [
+        "T1027"
+      ],
+      "mbc": [
+        "C0026.002"
+      ],
+      "description": "non-zeroing xor inside a tight loop, the classic string / payload decoder",
+      "evidence": [
+        {
+          "feature": "characteristic(tight-loop)",
+          "address": 2101769
+        },
+        {
+          "feature": "characteristic(non-zeroing-xor)",
+          "address": 2101789
+        }
+      ]
+    }
+  ]
+}

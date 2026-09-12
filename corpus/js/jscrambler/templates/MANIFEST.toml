@@ -1,0 +1,56 @@
+schema = "disrobe.corpus.manifest.v1"
+collection = "jscrambler-templates"
+version = "8.5"
+harvested_at = "2026-05-25T20:18:00Z"
+source = "app.jscrambler.com playground app"
+license = "internal-research-only"
+
+[[templates]]
+file = "self_healing.json"
+category = "anti-tamper"
+tier = "paid"
+transform_count = 13
+notes = "Application self-restores after tampering attacks"
+
+[[templates]]
+file = "browser_lock.json"
+category = "lock-config"
+tier = "paid"
+transform_count = 14
+notes = "Restricts execution to whitelisted browsers"
+
+[[templates]]
+file = "date_lock.json"
+category = "lock-config"
+tier = "paid"
+transform_count = 14
+notes = "Restricts execution to a time window"
+
+[[templates]]
+file = "domain_lock.json"
+category = "lock-config"
+tier = "paid"
+transform_count = 14
+notes = "Restricts execution to whitelisted domains"
+
+[[templates]]
+file = "os_lock.json"
+category = "lock-config"
+tier = "paid"
+transform_count = 13
+notes = "Restricts execution to whitelisted operating systems; uniquely lacks globalVariableIndirection vs other locks"
+
+[harvest_method]
+approach = "DOM mouseenter -> popover tooltip text capture via Playwright MCP"
+ui_selection_blocked_by = "click events on .templateEntry only highlight; selection persists in Redux store inaccessible via DOM probe in v8.5"
+real_output_generation = "Downstream consumers run @jscrambler/jscrambler CLI with these transform lists + user credentials to produce real obfuscated JS at fixture-gen time. The template configs above are the authoritative blueprint."
+
+[free_tier_templates_already_captured]
+note = "7 free-tier templates were captured in prior session under corpus/js/jscrambler/templates/free/"
+list = ["default", "advanced_obfuscation", "anti_tampering_debugging", "dead_objects", "light_obfuscation", "minification", "obfuscation", "self_defending"]
+
+[completeness]
+total_templates_in_v8_5 = 12
+free_captured = 7
+paid_captured = 5
+coverage = "100%"

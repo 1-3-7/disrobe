@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="564" viewBox="0 0 880 564" font-family="'Manrope', sans-serif"><desc>generated from ir_ladder.json sha256:17d3f7610eb255abc6ed965d9946824e</desc>
+  <rect x="0" y="0" width="880" height="564" rx="10" fill="#111111"/>
+  <rect x="0.5" y="0.5" width="879" height="563" rx="9.5" fill="none" stroke="#404040"/>
+  <text x="40.00" y="49.00" font-size="26" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">From bytes to source</text>
+  <text x="40.00" y="77.00" font-size="14" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Five intermediate representations used by recovery passes</text>
+  <line x1="54.00" y1="148.00" x2="54.00" y2="452.00" stroke="#B3B3B3" stroke-width="1"/>
+  <circle cx="54.00" cy="148.00" r="5.00" fill="#F5F5F5"/>
+  <text x="82.00" y="154.00" font-size="19" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">Raw</text>
+  <text x="254.00" y="143.00" font-size="16" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">File bytes</text>
+  <text x="254.00" y="168.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Identify the format; extract or unpack its contents.</text>
+  <line x1="82.00" y1="191.00" x2="840.00" y2="191.00" stroke="#404040" stroke-width="1"/>
+  <path d="M50 183l4 5 4-5" fill="none" stroke="#B3B3B3" stroke-width="1.2"/>
+  <circle cx="54.00" cy="224.00" r="5.00" fill="#F5F5F5"/>
+  <text x="82.00" y="230.00" font-size="19" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">Disasm</text>
+  <text x="254.00" y="219.00" font-size="16" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Instructions</text>
+  <text x="254.00" y="244.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Decode operations while retaining their offsets.</text>
+  <line x1="82.00" y1="267.00" x2="840.00" y2="267.00" stroke="#404040" stroke-width="1"/>
+  <path d="M50 259l4 5 4-5" fill="none" stroke="#B3B3B3" stroke-width="1.2"/>
+  <circle cx="54.00" cy="300.00" r="5.00" fill="#F5F5F5"/>
+  <text x="82.00" y="306.00" font-size="19" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">MIR</text>
+  <text x="254.00" y="295.00" font-size="16" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Basic blocks</text>
+  <text x="254.00" y="320.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Normalize operations and recover control flow.</text>
+  <line x1="82.00" y1="343.00" x2="840.00" y2="343.00" stroke="#404040" stroke-width="1"/>
+  <path d="M50 335l4 5 4-5" fill="none" stroke="#B3B3B3" stroke-width="1.2"/>
+  <circle cx="54.00" cy="376.00" r="5.00" fill="#F5F5F5"/>
+  <text x="82.00" y="382.00" font-size="19" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">HIR</text>
+  <text x="254.00" y="371.00" font-size="16" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Program structure</text>
+  <text x="254.00" y="396.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Reconstruct loops, conditions, and expressions.</text>
+  <line x1="82.00" y1="419.00" x2="840.00" y2="419.00" stroke="#404040" stroke-width="1"/>
+  <path d="M50 411l4 5 4-5" fill="none" stroke="#B3B3B3" stroke-width="1.2"/>
+  <circle cx="54.00" cy="452.00" r="5.00" fill="#F5F5F5"/>
+  <text x="82.00" y="458.00" font-size="19" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">Surface</text>
+  <text x="254.00" y="447.00" font-size="16" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Readable source</text>
+  <text x="254.00" y="472.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Render code in the selected output language.</text>
+  <line x1="40.00" y1="510.00" x2="840.00" y2="510.00" stroke="#404040" stroke-width="1"/>
+  <text x="40.00" y="539.00" font-size="13" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Recovery can stop at any stage. The result retains the recovered artifacts and their limits.</text>
+</svg>

@@ -1,0 +1,12 @@
+source = "Hierarchy.java"
+javac = "Eclipse Adoptium JDK 25.0.4+7"
+d8 = "R8 9.1.31"
+commands = ["javac -d build/classes Hierarchy.java", "javac -cp build/classes -d build/classes Extra.java", "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --output build/hierarchy build/classes/implementors/Root.class build/classes/implementors/Middle.class build/classes/implementors/Base.class build/classes/implementors/Direct.class build/classes/implementors/Leaf.class", "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --output build/extra build/classes/implementors/Root.class build/classes/implementors/Extra.class"]
+d8_jar_sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+dex_sha256 = "7ea0aa4ce5d400e56e92b56dc9bd514a71c553bab9ed9c5c5039c3e885f624f3"
+extra_dex_sha256 = "9df30f049777b77b477a040cf8f3d1fb47ed7eb157ac2a86bda6eee0d362c84e"
+class_sha256 = { "Base.class" = "eda3e1e1edfcae756b8521fb0994db37b87fd7d2d486b1c1611ec4b8d2c1c253", "Direct.class" = "0a471e8bd94cb101d492531b7cc0184b37af48e00e2ed7fe4a93b70dadf91a71", "Leaf.class" = "53ddb8a6b8cf7ee6ec4253c50644a728ef98aa8cb2fed81141d67439eca80cd3", "Middle.class" = "181651060cdde996acb2f2e16c614a8281a09925bd60fa038cf79007eb11377f", "Root.class" = "2522b34cfa30472385889b8c9af5d3e0af5738a6b574216e5ad0addfc560bc3f" }
+expected_concrete_implementors = 2
+class_matches = 2
+single_dex_matches = 2
+multidex_matches = 3

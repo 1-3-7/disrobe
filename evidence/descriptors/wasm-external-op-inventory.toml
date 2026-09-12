@@ -1,0 +1,17 @@
+id = "wasm-external-op-inventory"
+ecosystem = "wasm"
+title = "WebAssembly op-coverage against an external instruction inventory"
+claim = "disrobe lowers 1034 of the 1034 opcodes that wasm-tools counts across the 38 parseable modules of the committed corpus, and the WAT it emits re-assembles."
+oracle_strength = "coverage-self-reported"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "the denominator is external and pinned: wasm-tools 1.250.0 disassembles every committed .wat and its per-function instruction inventory is frozen under crates/disrobe-pass-wasm-deob/tests/golden/external_wasm_op_inventory.json, keyed by each fixture's BLAKE3. The numerator is still disrobe counting the opcodes it lowered, so this stays coverage rather than correctness; the emitted WAT is re-assembled by the wat crate before any of its opcodes count"
+reproduce = "cargo test -p disrobe-pass-wasm-deob --test external_op_denominator --test semantic_recovery_corpus"
+note = "The tier is coverage-self-reported because a lowering rule firing is not the same as the lowering being right. What the external leg removes is the older defect where both sides of the ratio came from disrobe's own parser, which could not report its own regression: the denominator now stays at 1034 while a decoder that stops seeing opcodes drives the numerator down. Instruction-for-instruction the two decoders agree, 1034 accounted against 1034 counted, with 0 unseen. Semantic grading for this corpus lives in wasm-wasmtime-diff, which covers the 57 execution-eligible functions. The inventory is committed rather than regenerated in CI so no missing tool can turn into a pass; regenerating it demands wasm-tools 1.250.0 and fails without it."
+
+[source]
+recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
+recovery_bar = "op-coverage"
+floor = 100.0

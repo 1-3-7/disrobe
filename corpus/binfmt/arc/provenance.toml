@@ -1,0 +1,116 @@
+schema = "disrobe.fixture-provenance/v1"
+format = "System Enhancement Associates ARC"
+reference_repository = "https://github.com/ani6al/arc.git"
+reference_commit = "70f0b93516d0ee222db5cf1241aad0db1b721c0d"
+reference_tag = "5.21q"
+reference_files = ["arclzw.c", "arcunp.c", "arcsvc.c"]
+independent_reference_repository = "https://github.com/jeffpar/pcjs.git"
+independent_reference_commit = "c7f21b4fa2bdedac3d5c73094a6402fdc8b24c70"
+independent_reference_file = "tools/modules/legacyzip.js"
+independent_reference_sha256 = "1c6e5b1ea3d528a4508772642f1f1e3aa0fb950a03ddfd11dbb7fa642f1a1a5d"
+second_reference = "Deark 1.7.3"
+second_reference_url = "https://entropymine.com/deark/releases/deark-1.7.3.tar.gz"
+second_reference_sha256 = "84f9e0134830389e4ab12c89dc09cf42a3f885ec551254e9fdc22952858add11"
+dynamic_reference_repository = "https://github.com/gaborbata/nomarch.git"
+dynamic_reference_commit = "47b7aa272d6d52e6a5d1cf33dcd0f9bd62d0c506"
+dynamic_reference_file = "readlzw.c"
+dynamic_reference_release = "nomarch 1.4"
+dynamic_reference_release_sha256 = "fe20da34e0d3ba0cf6388701f44ac22224cf65130ddbc5fcbc27bc4949a6e1ad"
+
+[[artifacts]]
+path = "dosamatc.arc"
+sha256 = "ec0f540a8e2db509c91971b8bafb86d01e9236f8a046138e5e12764557179fd4"
+source_url = "https://ftp.math.utah.edu/pub/ibmpc/dosamatc.arc"
+retrieved = "2026-08-16"
+methods = [2, 6]
+member = "COMPAQ.BAT"
+member_sha256 = "c0951c38a978543fa0adaa80ea7287b71d41c656f06ecd3762be9ed51907ce4b"
+redistribution = "The bundled DOSAMATC.DOC encourages users to give copies to other users for evaluation."
+verification = "PCjs LegacyArc.uncrunchSync and Deark 1.7.3 independently decoded the historical method-6 member to the recorded 886-byte output and SHA-256."
+
+[[artifacts]]
+path = "hello.arc"
+sha256 = "92e73a13a45799bf9fd5a874cdfea16b454fe8665a76a875a1aa8b2f9a8e5bf4"
+method = 2
+member = "README.TXT"
+member_sha256 = "d5a5bc441d08e3bf1ddcb1ad791df9f67d363bce21ce1f9a3afd3f74d403769d"
+correction = "The inherited fixture stored 7ed2 in its CRC field. The source member computes to b949 under the CRC-16/ARC routine used by ARC 5.21q. Only the two CRC field bytes changed."
+
+[[artifacts]]
+path = "methods.arc"
+sha256 = "fba5eb114ec5c736346af963f391efcd28c048865aaf9ba4c75727131a829eff"
+methods = [5, 6, 7]
+generation = "The fixed 12-bit code streams follow the reference oldh, newh, collision-chain, linear-probe, and GOCODE operations. Headers use the reference ARC layout and CRC-16/ARC."
+verification = "PCjs LegacyArc.uncrunchSync decoded methods 5, 6, and 7 to the three recorded member hashes. Deark decoded methods 5 and 6 to the same recorded hashes and explicitly refused method 7 as unsupported."
+
+[[artifacts.members]]
+path = "expected/METHOD5.BIN"
+method = 5
+sha256 = "59b4ab7e025a2e403a68c28e85ac1290349b695e69c75bd674e864f464799d18"
+
+[[artifacts.members]]
+path = "expected/METHOD6.BIN"
+method = 6
+sha256 = "b814dc1e5c8f8924b9f00f7190d7c4f3d13bedf5178a2007639eb6bc9e150900"
+
+[[artifacts.members]]
+path = "expected/METHOD7.BIN"
+method = 7
+sha256 = "b814dc1e5c8f8924b9f00f7190d7c4f3d13bedf5178a2007639eb6bc9e150900"
+
+[[artifacts]]
+path = "method8-rle.arc"
+sha256 = "d237cc63494a73c5ff8562e68d44c8ca4c63cfba82911a8e8bc40f3b7e1dac27"
+source_repository = "https://github.com/neumatho/NostalgicPlayer.git"
+source_commit = "ba613c6388059847d0533e59605204afc83b0abb"
+source_path = "Source/Agents/Decrunchers/ArchiveDecruncher.Test/Data/Arc-Method8-RLE.arc"
+retrieved = "2026-08-16"
+redistribution = "The source repository publishes the fixture under its MIT license."
+method = 8
+member = "DreamAlone"
+member_size = 108648
+member_md5 = "64d67d1d5d123c6542a8099255ad8ca2"
+member_sha256 = "ccea1a26ddb101d777e8436efac98333734ed2b3a3326297ba99228b661960d5"
+verification = "NostalgicPlayer records the member MD5. Nomarch 1.4 independently decoded the member and validated its ARC CRC."
+
+[[artifacts.members]]
+path = "expected/DreamAlone"
+method = 8
+sha256 = "ccea1a26ddb101d777e8436efac98333734ed2b3a3326297ba99228b661960d5"
+
+[[artifacts]]
+path = "method9.arc"
+sha256 = "4ce71cf53f8c1e0d3768d9443642d64691b2394ffe66f7a670d716be56fbf8c5"
+source_repository = "https://github.com/neumatho/NostalgicPlayer.git"
+source_commit = "ba613c6388059847d0533e59605204afc83b0abb"
+source_path = "Source/Agents/Decrunchers/ArchiveDecruncher.Test/Data/Arc-Method9.arc"
+retrieved = "2026-08-16"
+redistribution = "The source repository publishes the fixture under its MIT license."
+method = 9
+member = "crystals.669"
+member_size = 26618
+member_md5 = "0bfbfe214139cfef08f7223cf8c3ba3f"
+member_sha256 = "acd8c8d1214dfb7c44436438903a12fdabb2688b8d2f6255f716b8d637f9c926"
+verification = "NostalgicPlayer records the member MD5. Nomarch 1.4 independently decoded the member and validated its ARC CRC."
+
+[[artifacts.members]]
+path = "expected/crystals.669"
+method = 9
+sha256 = "acd8c8d1214dfb7c44436438903a12fdabb2688b8d2f6255f716b8d637f9c926"
+
+[[artifacts]]
+path = "pak/pak11_distilled.pak"
+sha256 = "ab32da9f42d88b4a8a3f52b0e158570acb1f093242f574374f4db118b32f6b41"
+source_url = "http://cd.textfiles.com/nopv18/007A/IE111SEP.ZIP"
+source_member = "INTRECHO.PAK"
+container_sha256 = "a50ff41a9f41caba6748d369bf0e24589f389077c3c9d0641c578ee79a1e55d0"
+retrieved = "2026-08-18"
+archiver = "NoGate Consulting PAK 2.x"
+method = 11
+method_name = "distilled"
+members = 10
+redistribution = "The archive's own LICENSE.DOC member states: `You are allowed and encouraged to distribute the demo file archive to others, provided that no modifications are made.` The file is therefore committed whole and unmodified; it must not be carved down."
+specification = "https://entropymine.wordpress.com/ distilled format writeup by Jason Summers, the Deark author, which documents the node table, the fixed 64-entry offsets codebook, and the produced-bytes-dependent offset width"
+second_reference = "Deark 1.7.3 modules/arc.c and src/fmtutil-lzh.c implement Distilled; its distilled_offsetcodes table and get_lzhuf_p_len code lengths agree with the published writeup entry for entry."
+second_reference_verdict = "Deark could not be built on the recovery host: its own Makefile fails on a temp-directory permission error, and a direct two-stage gcc build compiles all 207 objects but the link fails with `ld returned 5` and emits a non-executable image. No Deark extraction run backs these digests."
+verification = "Every one of the 10 members decodes to its exact declared length and matches the CRC-16/ARC that PAK wrote when the archive was built, which the ARC entry reader enforces. The recovered LICENSE.DOC is coherent English text and both recovered executables carry MZ headers."

@@ -1,0 +1,30 @@
+Babel named System.register fixture
+====================================
+
+This fixture is a benign source-authored ECMAScript module. It was compiled and minified without execution.
+
+Toolchain
+---------
+
+Node.js 24.19.0 on Windows x64.
+@babel/core 8.0.1.
+@babel/plugin-transform-modules-systemjs 8.0.1.
+Terser 5.50.0.
+
+The Babel transform used moduleIds=true and moduleId="fixture/main". Terser used compress=true, mangle=true and module=false.
+
+https://babeljs.io/docs/babel-plugin-transform-modules-systemjs/
+https://github.com/systemjs/systemjs#systemregister-name-deps-declare
+
+The isolated producer installed the three exact package versions with:
+
+    npm install --ignore-scripts --no-audit --no-fund
+
+The resulting package-lock.json was 23008 bytes with SHA-256 d6ce0a75c02e4eb36f5a78af663d6e4603ee756f88319225c496f5d8781335e7.
+
+Artifacts
+---------
+
+entry.js size 130 SHA-256 a8c01c25bb4aa4999071aa0f1d5db1d5c1eb6dd04282e11187a353aac903474d
+babel.js size 420 SHA-256 835884cb556285b0b2f1d0d43665c53d71db3f34f6b51bb9b9bb6fb5def811e8
+fixture.min.js size 232 SHA-256 d0917269bffeadf4021cb3eae4780e433b6a881c34e0412a40f42f9f43cdb3d

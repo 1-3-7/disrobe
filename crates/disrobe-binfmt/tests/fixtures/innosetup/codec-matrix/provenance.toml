@@ -1,0 +1,30 @@
+schema = "disrobe.fixture.provenance/v1"
+producer = "Inno Setup 6.3.3"
+producer_source = "https://files.jrsoftware.org/is/6/innosetup-6.3.3.exe"
+producer_archive_sha256 = "0bcb2a409dea17e305a27a6b09555cabe600e984f88570ab72575cd7e93c95e6"
+compiler_path = "app/ISCC.exe"
+compiler_sha256 = "bf65156e415096b4b524ea7a8646d1e5b4ff7817fe8ba5dfc142a637640ae7d3"
+compiler_size = 894384
+script_sha256 = "16bc29aaa9094db34461c13e6602e486339a117691eeb5e582f03310f85c6325"
+solid_break_script_sha256 = "4a05c64871d153d6dc2f011713af4523155aff1d7209198e801c6ddab7f9cc0b"
+alpha_sha256 = "a2bca3e9c534788c76ea3af616e86d33889fe812acac40847ac706a589cdff19"
+beta_sha256 = "b55c45bebc8d86d3247a13a5d23eb72b9c724909393c91a6edd60b97aab9cb4f"
+stored_metadata_script_sha256 = "a7dbe0d9bd08f90b201136caf24d1525ab500429748775fa550dbde7f0d11b13"
+
+[commands]
+none = 'ISCC.exe /Q /DCodec="none" /Fcodec-none /O. codec-matrix.iss'
+zip = 'ISCC.exe /Q /DCodec="zip" /Fcodec-zip /O. codec-matrix.iss'
+bzip = 'ISCC.exe /Q /DCodec="bzip" /Fcodec-bzip /O. codec-matrix.iss'
+lzma = 'ISCC.exe /Q /DCodec="lzma" /Fcodec-lzma /O. codec-matrix.iss'
+lzma2 = 'ISCC.exe /Q /DCodec="lzma2" /Fcodec-lzma2 /O. codec-matrix.iss'
+solid_break = 'ISCC.exe /Q /Fsolid-break /O. solid-break.iss'
+stored_metadata = 'ISCC.exe /Q /Fstored-metadata /O. stored-metadata.iss'
+
+[outputs]
+none = "abdf89608136af8e6ad4a106d3f8b3ae42aab1965d907c76816fda06cbd6f4f1"
+zip = "aba105c3015434d47382a729367cae1c0ec416a7501fc4e93e7edcf4db6e66a2"
+bzip = "208b149182f920208dbafc9f05c7b99fac642cee6e5792ddd56760770ff37cdb"
+lzma = "7eb4b471f14c2fcf591db109911f6bf39d3d6ec0a82de032f16880df51a6d1e4"
+lzma2 = "6a3422a2a16cf609b1f32774c418d4adc1ed945abc9571ad2c889f2684b97fc2"
+solid_break = "fa022f5ce600787da59467b503fed36565e35e57ea6ead42b6f863cbcda92bed"
+stored_metadata = "bca950b98e26fb1ddbcb016433d0f677c56173735bd70463d21e524967ef4236"

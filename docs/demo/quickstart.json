@@ -1,0 +1,88 @@
+{
+  "schema": "disrobe.demo.quickstart/v1",
+  "captured_at": "2026-09-08T11:00:23.188Z",
+  "binary": {
+    "version": "disrobe 0.10.5",
+    "sha256": "a29596adf78d560f830609e1c0f2bd2150e0a21b331e66b6117eef067f5933e5"
+  },
+  "input": {
+    "path": "playground/public/samples/add.wasm",
+    "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e",
+    "bytes": 69,
+    "exports": [
+      {
+        "name": "add",
+        "kind": "function"
+      }
+    ]
+  },
+  "normalization": "Executable path is shown as disrobe; the owned output directory is shown as recovered; newlines are LF. Output is otherwise captured verbatim.",
+  "checks": {
+    "commands_succeeded": 3,
+    "functions": 1,
+    "imports": 0,
+    "exports": [
+      "add"
+    ],
+    "recovered_instruction": "i32.add"
+  },
+  "steps": [
+    {
+      "id": "module",
+      "argv": [
+        "disrobe",
+        "wasm",
+        "decompile",
+        "playground/public/samples/add.wasm",
+        "--target",
+        "json",
+        "--out",
+        "recovered\\add.summary.json"
+      ],
+      "exit_code": 0,
+      "started_ms": 17.482300000000002,
+      "elapsed_ms": 18.1528,
+      "stdout": "wasm decompile: OK (target=json)\n  types:        1\n  functions:    1\n  imports:      0\n  exports:      1\n  code bytes:   7\n  wrote:        recovered\\add.summary.json\n",
+      "stderr": ""
+    },
+    {
+      "id": "wat",
+      "argv": [
+        "disrobe",
+        "wasm",
+        "decompile",
+        "playground/public/samples/add.wasm",
+        "--target",
+        "wat",
+        "--out",
+        "recovered\\add.lifted.wat"
+      ],
+      "exit_code": 0,
+      "started_ms": 35.798,
+      "elapsed_ms": 17.931499999999993,
+      "stdout": "wasm decompile: OK (target=wat)\n  functions:    1\n  wrote:        recovered\\add.lifted.wat\n",
+      "stderr": ""
+    },
+    {
+      "id": "auto",
+      "argv": [
+        "disrobe",
+        "auto",
+        "playground/public/samples/add.wasm",
+        "--out",
+        "recovered\\auto",
+        "--capture-stages"
+      ],
+      "exit_code": 0,
+      "started_ms": 53.910500000000006,
+      "elapsed_ms": 135.8962,
+      "stdout": "chain.json written: recovered\\auto\\chain.json\nrecovery.json written: recovered\\auto\\recovery.json\nanti-analysis.json written: recovered\\auto\\anti-analysis.json\nreport.json written: recovered\\auto\\report.json\nreport.sarif written: recovered\\auto\\report.sarif\n1 stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under recovered\\auto; 1 terminal stage(s) linked under recovered\\auto\\final\nanti-analysis: none detected\n",
+      "stderr": ""
+    }
+  ],
+  "artifact": {
+    "path": "recovered/add.lifted.wat",
+    "sha256": "71877a6f7704293f3c3336703f090732cfa23d3524b373eef4d0e0be14867dbc",
+    "text": ";; disrobe wasm lift target=wat\n(module\n  (memory $m0 1 16)\n  (table $dr_tbl_func 1 funcref)\n  (func $f0 (param $p0 i32) (param $p1 i32) (result i32)\n    local.get $p0\n    local.get $p1\n    i32.add\n  )\n  (export \"add\" (func $f0))\n)\n"
+  }
+}

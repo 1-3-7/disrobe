@@ -1,0 +1,715 @@
+{
+  "schema_version": 1,
+  "title": "disrobe public capability coverage map",
+  "source_revision": "b4da568ec0c9a59da19a9d59aa1ec8097c444388",
+  "scope": "Public CLI commands, documented library APIs, and shipped integrations. Internal crates and hidden maintenance commands are included only when they define a public entry point.",
+  "authoritative_registries": {
+    "command_registration": "crates/disrobe-cli/src/main.rs",
+    "command_detail": "docs/src/cli/reference.md",
+    "capability_catalog": "docs/src/catalog.md",
+    "evidence_registry": "evidence/README.md",
+    "published_guide": "docs/src/capabilities.md"
+  },
+  "status_definitions": {
+    "working": "Validated for the input and consumer named in accepted_result.",
+    "partial": "Support varies by input variant or selected backend; see the linked language guide.",
+    "experimental": "Experimental interface or recovery path.",
+    "detection_only": "Identifies formats, signatures or static findings."
+  },
+  "cli": {
+    "binary": "disrobe",
+    "root_command_count": 67,
+    "root_commands": [
+      "pyarmor",
+      "pyinstaller",
+      "pyfreeze",
+      "nuitka",
+      "py",
+      "scan",
+      "ioc",
+      "indicators",
+      "frisk",
+      "prowl",
+      "strings",
+      "behavior",
+      "identify",
+      "detect",
+      "catalog",
+      "extract",
+      "webview",
+      "yara",
+      "js",
+      "wasm",
+      "native",
+      "jvm",
+      "apk",
+      "dotnet",
+      "hermes",
+      "macho",
+      "lua",
+      "php",
+      "shell",
+      "ruby",
+      "beam",
+      "pickle",
+      "plugin",
+      "go",
+      "swift",
+      "as3",
+      "flutter",
+      "mobile",
+      "envelope",
+      "query",
+      "capabilities",
+      "taint",
+      "semdiff",
+      "vulnmatch",
+      "auto",
+      "chain",
+      "diff",
+      "guard",
+      "serve",
+      "install-deps",
+      "status",
+      "verify",
+      "explain",
+      "passes",
+      "subcommand-tree",
+      "doctor",
+      "install",
+      "init",
+      "bug-report",
+      "self-update",
+      "completions",
+      "man",
+      "context",
+      "config",
+      "report",
+      "annot",
+      "rename"
+    ],
+    "hidden_commands": [
+      "subcommand-tree"
+    ],
+    "feature_gated_roots": [
+      "detect",
+      "catalog",
+      "js",
+      "jvm",
+      "apk",
+      "dotnet",
+      "hermes",
+      "macho",
+      "lua",
+      "php",
+      "shell",
+      "ruby",
+      "beam",
+      "pickle",
+      "plugin",
+      "go",
+      "swift",
+      "as3",
+      "flutter",
+      "mobile",
+      "auto",
+      "chain",
+      "diff",
+      "guard",
+      "report"
+    ],
+    "registration_tests": [
+      "crates/disrobe-cli/tests/cli_e2e.rs",
+      "crates/disrobe-cli/tests/github_meta_yaml.rs"
+    ]
+  },
+  "feature_groups": [
+    {
+      "id": "automatic-recovery-and-provenance",
+      "commands": [
+        "auto",
+        "chain",
+        "context",
+        "status",
+        "report",
+        "diff",
+        "guard"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-cli/src/cli/auto.rs",
+        "crates/disrobe-cli/src/cli/chain_v1.rs",
+        "crates/disrobe-core/src/chain/chain_json.rs"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/auto_chain_routing.rs",
+        "crates/disrobe-cli/tests/cli_e2e.rs",
+        "crates/disrobe-cli/tests/github_meta_yaml.rs"
+      ],
+      "docs": [
+        "docs/src/chain.md",
+        "docs/src/reading-a-result.md",
+        "docs/src/cli/report.md"
+      ],
+      "notes": "A registered chain can stop, cap out, or report an explicit limit; read its verdict instead of treating routing as recovery.",
+      "demos": [
+        "docs/demo/quickstart.json"
+      ]
+    },
+    {
+      "id": "static-triage-and-reporting",
+      "commands": [
+        "scan",
+        "ioc",
+        "indicators",
+        "frisk",
+        "strings",
+        "behavior",
+        "identify",
+        "detect",
+        "catalog",
+        "capabilities",
+        "taint",
+        "vulnmatch"
+      ],
+      "status": "detection_only",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-capabilities/src/lib.rs",
+        "crates/disrobe-taint",
+        "crates/disrobe-vulnmatch"
+      ],
+      "tests": [
+        "crates/disrobe-capabilities/tests/oracle.rs",
+        "crates/disrobe-cli/tests/cli_e2e.rs"
+      ],
+      "docs": [
+        "docs/src/frisk.md",
+        "docs/src/anti-analysis.md",
+        "docs/src/catalog.md",
+        "docs/src/forensics-safety.md"
+      ],
+      "notes": "These routes describe bytes, indicators, behavior, or support coverage. They do not by themselves recover source or unpack payloads.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "containers-and-webview-assets",
+      "commands": [
+        "extract",
+        "webview"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-binfmt",
+        "crates/disrobe-pass-webview"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/auto_appimage_type1.rs",
+        "crates/disrobe-cli/tests/cli_webview_carve.rs",
+        "crates/disrobe-pass-webview/tests/real_toolchain.rs",
+        "evidence/descriptors/binfmt-extract.toml"
+      ],
+      "docs": [
+        "docs/src/languages/containers.md",
+        "docs/src/languages/webview.md"
+      ],
+      "notes": "Container and webview support is format-specific; the container guide records bounded formats and explicit refusals.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "python-and-python-packaging",
+      "commands": [
+        "py",
+        "pyarmor",
+        "pyinstaller",
+        "pyfreeze",
+        "nuitka"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-pass-py-decompile",
+        "crates/disrobe-pass-py-deob",
+        "crates/disrobe-pass-pyarmor",
+        "crates/disrobe-pass-pyinstaller",
+        "crates/disrobe-pass-pyfreeze",
+        "crates/disrobe-pass-nuitka"
+      ],
+      "tests": [
+        "crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs",
+        "crates/disrobe-cli/tests/auto_chain_routing.rs"
+      ],
+      "docs": [
+        "docs/src/languages/python.md",
+        "docs/src/languages/containers.md"
+      ],
+      "notes": "`pyfreeze` is experimental and unvalidated for PyOxidizer. Python recovery has per-runtime and per-construct limits documented in the language guide.",
+      "demos": [
+        "docs/demo/sidecar.json"
+      ]
+    },
+    {
+      "id": "javascript-and-webassembly",
+      "commands": [
+        "js",
+        "wasm"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-pass-js-deob",
+        "crates/disrobe-wasm"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/cli_emit_universal.rs",
+        "crates/disrobe-playground/tests/wasm_source_lift.rs"
+      ],
+      "docs": [
+        "docs/src/languages/javascript.md",
+        "docs/src/languages/wasm.md"
+      ],
+      "notes": "Recovery and deobfuscation vary by bundle family, WebAssembly feature, and selected output language.",
+      "demos": [
+        "docs/demo/quickstart.json"
+      ]
+    },
+    {
+      "id": "native-analysis-and-recovery",
+      "commands": [
+        "native",
+        "macho",
+        "go",
+        "swift",
+        "as3",
+        "semdiff"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-pass-native",
+        "crates/disrobe-lift-x86",
+        "crates/disrobe-pass-go",
+        "crates/disrobe-pass-swift-objc",
+        "crates/disrobe-pass-as3",
+        "crates/disrobe-semdiff"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/arm_decode_boundary_reference.rs",
+        "crates/disrobe-cli/tests/dotnet_native_aot_cli.rs",
+        "evidence/descriptors/native-packer-byterecovery.toml"
+      ],
+      "docs": [
+        "docs/src/languages/native.md",
+        "docs/src/languages/native-decompile.md",
+        "docs/src/languages/native-unpack.md",
+        "docs/src/languages/go.md",
+        "docs/src/languages/swift.md",
+        "docs/src/languages/as3.md"
+      ],
+      "notes": "Native decompilation and unpacking have architecture- and packer-specific limits.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "jvm-dotnet-and-mobile",
+      "commands": [
+        "jvm",
+        "apk",
+        "dotnet",
+        "hermes",
+        "flutter",
+        "mobile"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-pass-jvm",
+        "crates/disrobe-pass-dotnet",
+        "crates/disrobe-pass-mobile",
+        "crates/disrobe-pass-swift-objc"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/apk_e2e.rs",
+        "crates/disrobe-cli/tests/auto_apk_dex.rs",
+        "evidence/descriptors/dalvik-verifier.toml",
+        "evidence/descriptors/dotnet-whole-type-recompile.toml"
+      ],
+      "docs": [
+        "docs/src/languages/jvm-android.md",
+        "docs/src/languages/dotnet.md",
+        "docs/src/languages/mobile.md"
+      ],
+      "notes": "Some JVM and .NET routes select optional local backends. Their registration does not establish that a backend is installed.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "script-and-bytecode-languages",
+      "commands": [
+        "lua",
+        "php",
+        "shell",
+        "ruby",
+        "beam",
+        "pickle"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-pass-lua",
+        "crates/disrobe-pass-php",
+        "crates/disrobe-pass-shell",
+        "crates/disrobe-pass-ruby",
+        "crates/disrobe-pass-beam",
+        "crates/disrobe-pass-pickle"
+      ],
+      "tests": [
+        "crates/disrobe-pass-pickle/tests/never_unpickles.rs",
+        "evidence/descriptors/lua-ironbrew.toml",
+        "evidence/descriptors/beam-erlang-recompile.toml"
+      ],
+      "docs": [
+        "docs/src/languages/lua.md",
+        "docs/src/languages/php.md",
+        "docs/src/languages/shell.md",
+        "docs/src/languages/ruby.md",
+        "docs/src/languages/beam.md",
+        "docs/src/languages/pickle.md"
+      ],
+      "notes": "Pickle analysis is deliberately static and symbolic. Individual language routes retain documented unsupported forms and explicit walls.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "structured-artifacts-and-query",
+      "commands": [
+        "envelope",
+        "verify",
+        "query",
+        "yara",
+        "annot",
+        "rename"
+      ],
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-query",
+        "crates/disrobe-capabilities",
+        "crates/disrobe-cli/src/cli/annot.rs"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/cli_e2e.rs",
+        "crates/disrobe-capabilities/tests/yaml_rules.rs"
+      ],
+      "docs": [
+        "docs/src/envelope.md",
+        "docs/src/query.md",
+        "docs/src/cli/plugin.md"
+      ],
+      "notes": "Creates, verifies and queries artifact envelopes; manages annotations, symbol renames and YARA rules.",
+      "demos": [
+        "docs/demo/features.json"
+      ]
+    },
+    {
+      "id": "project-tooling-and-service",
+      "commands": [
+        "serve",
+        "plugin",
+        "init",
+        "config",
+        "passes",
+        "doctor",
+        "install",
+        "install-deps",
+        "self-update",
+        "completions",
+        "man",
+        "explain",
+        "bug-report"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-plugin-host",
+        "crates/disrobe-plugin-loader",
+        "crates/disrobe-cli/src/cli/init.rs",
+        "crates/disrobe-cli/src/cli/config.rs"
+      ],
+      "tests": [
+        "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs",
+        "crates/disrobe-plugin-host/tests/signed_component_end_to_end.rs",
+        "crates/disrobe-cli/tests/llm_skill_packs.rs"
+      ],
+      "docs": [
+        "docs/src/cli/serve.md",
+        "docs/src/cli/config.md",
+        "docs/src/cli/plugin.md",
+        "docs/src/llm-sidecar.md"
+      ],
+      "notes": "Configures projects, installs dependencies and exposes local service interfaces.",
+      "demos": [
+        "docs/demo/services.json",
+        "docs/demo/sidecar.json"
+      ]
+    },
+    {
+      "id": "public-analysis-integrations",
+      "commands": [
+        "prowl"
+      ],
+      "status": "partial",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-prowl"
+      ],
+      "tests": [
+        "crates/disrobe-prowl/tests/fixture_oracle.rs",
+        "crates/disrobe-prowl/tests/e2e_mock_server.rs"
+      ],
+      "docs": [
+        "docs/src/forensics-safety.md"
+      ],
+      "notes": "Collects public web resources and makes network requests.",
+      "demos": [
+        "docs/demo/public-collection.json"
+      ]
+    }
+  ],
+  "public_integrations": [
+    {
+      "id": "rust-library",
+      "entry_point": "crates/disrobe-core/src/lib.rs",
+      "source": [
+        "crates/disrobe-core/src",
+        "crates/disrobe-passes/src/lib.rs"
+      ],
+      "tests": [
+        "crates/disrobe-core/tests/chain_determinism.rs",
+        "crates/disrobe-core/tests/provenance_header.rs"
+      ],
+      "docs": [
+        "docs/src/library.md"
+      ],
+      "status": "partial",
+      "demos": [
+        "docs/demo/rust-library.json"
+      ],
+      "accepted_result": "docs/demo/rust-library.json",
+      "accepted_measurement": {
+        "scope": "The Wasm library example reads add.wasm, reports one function and the add export, and emits WAT.",
+        "numerator": 1,
+        "denominator": 1
+      }
+    },
+    {
+      "id": "python-bindings",
+      "entry_point": "bindings/python/disrobe/__init__.py",
+      "source": [
+        "bindings/python",
+        "crates/disrobe-python/src"
+      ],
+      "tests": [
+        "crates/disrobe-python/tests/test_typed_surface.py",
+        "crates/disrobe-python/tests/test_cli_parity.py"
+      ],
+      "docs": [
+        "bindings/python/README.md",
+        "docs/src/python-bindings.md"
+      ],
+      "status": "working",
+      "demos": [
+        "docs/demo/python.json",
+        "docs/demo/python-tests.json"
+      ],
+      "accepted_result": "docs/demo/python-tests.json",
+      "accepted_measurement": {
+        "scope": "The installed 0.10.5 bindings pass 60 API tests and the separate Wasm-to-WAT example. Package and extension versions match.",
+        "numerator": 60,
+        "denominator": 60
+      }
+    },
+    {
+      "id": "mcp-stdio",
+      "entry_point": "crates/disrobe-mcp/src/main.rs",
+      "source": [
+        "crates/disrobe-mcp/src"
+      ],
+      "tests": [
+        "crates/disrobe-mcp/tests/mcp_tools_list.rs",
+        "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs"
+      ],
+      "docs": [
+        "docs/src/integrations/mcp.md"
+      ],
+      "demos": [
+        "docs/demo/services.json"
+      ],
+      "status": "working",
+      "accepted_result": "docs/demo/services.json",
+      "accepted_measurement": {
+        "scope": "Initialize the MCP server, list its tools, and extract the expected URL from inline text.",
+        "numerator": 3,
+        "denominator": 3
+      }
+    },
+    {
+      "id": "http-grpc-and-lsp",
+      "entry_point": "crates/disrobe-cli/src/main.rs",
+      "source": [
+        "crates/disrobe-cli/src/main.rs"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/grpc_e2e.rs"
+      ],
+      "docs": [
+        "docs/src/cli/serve.md"
+      ],
+      "status": "working",
+      "demos": [
+        "docs/demo/services.json"
+      ],
+      "accepted_result": "docs/demo/services.json",
+      "accepted_measurement": {
+        "scope": "Classify the 69-byte add.wasm fixture over LSP, HTTP, and gRPC with matching byte counts and BLAKE3 identities.",
+        "numerator": 3,
+        "denominator": 3
+      }
+    },
+    {
+      "id": "github-action",
+      "entry_point": "action.yml",
+      "source": [
+        "action.yml"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/github_meta_yaml.rs"
+      ],
+      "docs": [
+        "docs/src/integrations/github-action.md"
+      ],
+      "status": "partial",
+      "demos": [
+        "docs/demo/github-action.json"
+      ],
+      "accepted_result": "docs/demo/github-action.json",
+      "accepted_measurement": {
+        "scope": "Local execution of the exact Action run step for detect and auto, with SARIF validation and recovery grading.",
+        "numerator": 2,
+        "denominator": 2
+      }
+    },
+    {
+      "id": "editor-plugins",
+      "entry_point": "editors/install.ps1",
+      "source": [
+        "editors/vscode",
+        "editors/ida",
+        "editors/ghidra",
+        "editors/binja",
+        "plugins/ida",
+        "plugins/ghidra"
+      ],
+      "tests": [
+        "plugins/ida/tests/test_parse_map.py",
+        "plugins/ghidra/tests/test_disrobe_import.py"
+      ],
+      "docs": [
+        "docs/src/integrations/editor-plugins.md"
+      ],
+      "status": "partial",
+      "demos": [
+        "docs/demo/vscode.json"
+      ],
+      "accepted_result": "docs/demo/vscode.json",
+      "accepted_measurement": {
+        "scope": "VS Code extension activation, ten registered commands, and three LSP start/stop cycles, including concurrent start/stop.",
+        "numerator": 3,
+        "denominator": 3
+      }
+    },
+    {
+      "id": "browser-playground",
+      "entry_point": "playground/src/main.tsx",
+      "source": [
+        "playground/src",
+        "playground/src/wasm/disrobe.worker.ts",
+        "crates/disrobe-wasm/src/lib.rs"
+      ],
+      "tests": [
+        "crates/disrobe-wasm/src/tests.rs",
+        "playground/tests/playground/theme.spec.ts"
+      ],
+      "docs": [
+        "docs/src/playground.md"
+      ],
+      "status": "working",
+      "demos": [
+        "docs/demo/browser.json"
+      ],
+      "accepted_result": "docs/demo/browser.json",
+      "accepted_measurement": {
+        "scope": "310 browser checks across all 57 bundled runnable modes at desktop and mobile sizes; 228 Dark/Light accessibility scans. Two separate performance checks are recorded.",
+        "numerator": 310,
+        "denominator": 310
+      }
+    },
+    {
+      "id": "pre-commit-hook",
+      "entry_point": ".pre-commit-hooks.yaml",
+      "source": [
+        ".pre-commit-hooks.yaml",
+        "hooks/pre-commit-gate.sh"
+      ],
+      "tests": [
+        "hooks/pre-commit-gate-tests.sh"
+      ],
+      "docs": [
+        "docs/src/integrations/pre-commit.md"
+      ],
+      "demos": [
+        "docs/demo/precommit.json"
+      ],
+      "accepted_result": "docs/demo/precommit.json",
+      "status": "working",
+      "accepted_measurement": {
+        "scope": "pre-commit 4.6.2 installs the hook, accepts the add.wasm fixture, and rejects the UPX-packed fixture with both inputs unchanged.",
+        "numerator": 2,
+        "denominator": 2
+      }
+    },
+    {
+      "id": "llm-sidecar",
+      "entry_point": "crates/disrobe-cli/src/cli/init.rs",
+      "source": [
+        "crates/disrobe-cli/src/cli/init.rs",
+        "crates/disrobe-llm-metadata"
+      ],
+      "tests": [
+        "crates/disrobe-cli/tests/llm_skill_packs.rs",
+        "crates/disrobe-cli/tests/llm_slash_commands.rs"
+      ],
+      "docs": [
+        "docs/src/llm-sidecar.md"
+      ],
+      "status": "working",
+      "demos": [
+        "docs/demo/sidecar.json"
+      ],
+      "accepted_result": "docs/demo/sidecar.json",
+      "accepted_measurement": {
+        "scope": "Initialize a Claude workspace with seven skills, recover add.py, recompile the output, and emit Pack-4 metadata with 17 categories and reconstruction briefs. Decryption-key output remains disabled.",
+        "numerator": 4,
+        "denominator": 4
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "kind": "webpack5",
+  "entry": "main",
+  "module_ids": ["./src/index.js", "./src/util.js", "./node_modules/lib/index.js"],
+  "dynamic_imports_contains": ["./src/util.js", "./node_modules/lib/index.js", "lazy-chunk"],
+  "sourcemap_url_keys": ["main"]
+}

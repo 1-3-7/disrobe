@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from typing import Any, Literal, TypedDict, Union
+
+class DrEnvelope(TypedDict, total=False):
+    cold_len: int
+    flags: int
+    hot_len: int
+    magic: Literal["DISROBE\u0000"]
+    root_hash: str
+    rung: Literal["raw", "disasm", "mir", "hir", "surface"]
+    version: int
+

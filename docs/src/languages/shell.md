@@ -1,0 +1,84 @@
+# Shell / PowerShell
+
+`disrobe` deobfuscates supported PowerShell, Bash, Batch, VBScript, and VBA patterns. Its recovery paths cover the families listed below, VBA source from Office documents, VBA p-code with stomp detection, Excel 4.0 (XLM) macro formulas, and PDF maldoc analysis.
+
+## At a glance
+
+| Dialect | Families |
+|---|---|
+| PowerShell | Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids |
+| Bash | Bashfuscator (Token, String, Obfuscate, Compress modes), indirection peeler |
+| Batch | `.bat` / `.cmd` random-char and set-indirection patterns |
+| VBA / VBScript | VBA module source recovery, VBScript WSH patterns |
+
+| Other surface | Coverage |
+|---|---|
+| VBA p-code | 264-opcode table across VBA3 / VBA5 / VBA6 / VBA7 (32-bit and 64-bit) with identifier resolution, plus VBA-stomping detection |
+| Excel 4.0 (XLM) | BIFF8 (`.xls`) and BIFF12 (`.xlsb`) macro sheets, full Ftab and Cetab function tables, shared-formula resolution, auto-run entry points |
+| PDF maldocs | Both cross-reference forms, empty-password RC4 / AESV2 decrypt, embedded JavaScript and every Launch, URI, GoToR, SubmitForm, ImportData, and EmbeddedFile action |
+
+## Commands
+
+```sh
+disrobe shell deob payload.ps1 --out recovered.ps1
+disrobe shell detect payload.ps1
+disrobe shell deob book.xls                    # Excel 4.0 macro-sheet formulas from BIFF8 or BIFF12
+disrobe auto payload.ps1 --out recovered/      # detect the dialect and route obfuscated shell automatically
+```
+
+`deob` auto-detects the dialect and obfuscator family, applies the right reversal, and writes the recovered source plus a `manifest.json`. `detect` reports the dialect, family, confidence score, and detection markers without writing output.
+
+Output shape (illustrative):
+
+```text
+shell deob: OK
+  input:        payload.ps1
+  dialect:      PowerShell
+  family:       InvokeObfuscationToken
+  confidence:   0.94
+  markers:      ["iex", "token-replace"]
+  wrote:        ./out/payload.deob.ps1
+  manifest:     ./out/payload.deob.manifest.json
+```
+
+## Coverage and fidelity
+
+### VBA source and p-code
+
+From a `.docm` / `.xlsm` / `.bin` Office container, `disrobe` parses the `dir` stream (MS-OVBA), maps each module to its stream and `TextOffset`, and MS-OVBA-decompresses the `CompressedSourceCode` at that offset to emit the original `.bas` / `.cls` text per module (multi-chunk compression and CopyToken bit-count edges handled). Validated against real Word and Excel documents authored via COM, byte-for-byte against the known module text.
+
+The p-code decoder covers a 264-opcode table across VBA3, VBA5, VBA6, and VBA7 in 32-bit and 64-bit forms, with identifier resolution. Tests compare its disassembly with `pcodedmp` dumps. Accepted differences are limited to four pinned classes of `pcodedmp` 1.2.6 defects: a shifted identifier-table index, an unresolved object name, a truncated declaration parameter chain, and a missing user-defined type name.
+
+Source recovery has a separate comparison against the authored `.bas` files, preserving line order, operators, and operand order. The two committed modules recover 71 of 71 lines for SourceProbe and 552 of 552 for EdgeCases. These counts are enforced by regression tests. VBA-stomping detection compares compiled p-code with stored source, flags divergence, and recovers the compiled behavior from p-code.
+
+### Excel 4.0 (XLM) macros
+
+`disrobe shell deob book.xls` recovers Excel 4.0 macro-sheet formulas from a BIFF8 (`.xls`) or BIFF12 (`.xlsb`) workbook. It decodes the Ptg RPN token stream back to formula text over the full Ftab and Cetab function tables, resolves shared-formula masters to per-cell absolute references, and flags the built-in auto-run names (`Auto_Open`, `Auto_Close`, `Auto_Activate`, `Auto_Deactivate`) as execution entry points, so a `=EXEC("...")` or `=FORMULA(...)` macro reads back in full. A token the decoder does not recognize is emitted as an explicit unknown marker rather than a fabricated formula. Recovery is graded against hand-built BIFF fixtures with known formulas, covering BIFF12's wider reference fields, shared-formula relative-to-absolute resolution, and the `Auto_Open` entry point (`xlm_fixtures.rs`).
+
+### Haxe HashLink, Perl, R, and Tcl
+
+The same `scriptlang` pass covers four runtimes that ship compiled or packaged rather than as plain source.
+
+**HashLink (`.hl`).** The register bytecode is parsed byte-exact: type table, functions, natives, globals, and constants. Function bodies disassemble with reconstructed signatures, and source class and method names are recovered and graded against the original `.hx`. Haxe compiled to JavaScript or SWF routes to the JS and Flash stacks instead.
+
+**Perl.** A `B::Concise` op-tree is read back, and ByteLoader-encoded scripts are decoded.
+
+**R.** `.rds` serialized objects round-trip.
+
+**Tcl.** A starkit extracts byte-identically.
+
+### PDF maldoc analysis
+
+The shell pass carries a PDF analyzer (`disrobe_pass_shell::analyze_pdf`) for document-borne malware. It loads a PDF through both cross-reference forms (the classic `xref` table and cross-reference streams), transparently decrypts a Standard-security-handler document that uses RC4 or AESV2 under an empty user password (authenticating against `/U` per the PDF algorithms, with no password supplied), then walks the catalog, name trees, page annotations, and form fields to recover embedded JavaScript and every Launch, URI, GoToR, SubmitForm, ImportData, and EmbeddedFile action with its resolved target. Hex-escaped names, split or concatenated JavaScript strings, and Flate / LZW / ASCII85 filter chains are decoded along the way, and every decompression is bomb-bounded. It is graded against hand-crafted PDF fixtures that plant a known marker behind each path (classic-table and xref-stream JavaScript, RC4 and AESV2 empty-password decrypt, a launch target, an embedded file, name-tree and additional-action scripts), plus an RC4 published-vector check and an empty-password authentication test (`pdf_fixtures.rs`).
+
+## Limits
+
+The XLM decoder is graded three ways that do not share a reading of the specification. Workbooks authored by real Microsoft Excel 16.0 are decoded and compared against the formulas as authored, across 99 cells in both directions so that a missing cell and an unexpected extra cell each fail, with every fixture pinned by length and sha256; a control flips one byte of the real `=SUM(1,2)` Ptg stream and must be rejected. The function tables are graded against an independent decoder's published snapshot, agreeing on 476 shared `Ftab` ids and 396 shared `Cetab` ids, which is what catches the wrong-index case where every `CALL` and `EXEC` an analyst reads would be renamed. Third, XLMMacroDeobfuscator 0.2.7 reads the same committed workbooks at test time and its formula text is compared cell by cell against the recovery, agreeing on 44 cells across two workbooks once three formatting conventions are folded: the reference renders a whole number as `1.0`, spaces its argument separators, and quotes sheet names. Folding is string-aware, so a comma or a quote inside a literal is left alone, and the folding rules cannot rewrite a function name, a cell reference or a digit. Two of the four committed workbooks are outside that leg because the reference cannot read them: it stops at a `ptgFuncVar` function id it does not carry, and it refuses the `Ftab` probe sheet that deliberately carries index `0x00FF`. Both refusals are recorded as named constants with their exact message, so a refusal that changes is a deliberate edit rather than a silent pass, and neither workbook is counted as graded.
+
+A fourth leg grades the function tables at formula level rather than at name-table level. Each of the 476 `Ftab` and 396 `Cetab` ids is set into a real Excel-authored workbook, at four call sites that already exist in that workbook plus two synthesized call sites shaped to take four or five arguments, and the resulting file is read back by XLMMacroDeobfuscator 0.2.7. Of the 476 `Ftab` ids, 359 come back named by the reference and agree with the recovery; the remaining 117 are ids the reference's own parser table does not carry a name for at all, so they stay graded only against the name-table leg. All 396 `Cetab` ids come back named and agree. One divergence is recorded: `0x005C` is `SERIES` and `0x019E` is `SERIESSUM`, and the reference names both `SERIESSUM`, folding two distinct entries onto one name. Two mutation tests demonstrate the leg catches a wrong index rather than passing regardless of one: shifting `0x006E` (the index the committed workbook already calls through `EXEC`) to its neighbor is reported, and so is shifting `0x0125`, an id only the tables exercise. Two further tests walk the BIFF8 record and Ptg-class space each committed workbook actually carries, and state a reason for every declared record type and Ptg class no committed workbook carries.
+
+Of the four committed workbooks, `real_xlm_excel16.xls` and `real_xlm_ptgspread.xls` are graded against formulas read back from real Microsoft Excel 16.0, not retyped from the byte layout. `bench_biff12.xlsb` and `ftab_probe.xls` are real Excel-produced bytes whose expected formulas are authored to the specification rather than confirmed by an Excel readback; both fixtures are recorded that way in the manifest test data reads, and the ftab-index sweep above grades every function table entry those two carry independently of that distinction, since it writes its own probe workbooks rather than trusting either fixture's expected values.
+
+Two limits remain. Specification-assembled fixtures still cover shapes Excel will not author, and for those the same reading of the specification produces both the bytes and the expectation, so they catch a decoder that contradicts the specification but not a misreading shared by both sides. Breadth over arbitrary real-world workbooks is not graded, because the Excel-authored coverage comes from one producer version.
+
+The VBA line-recovery measurement covers the two committed modules described above. Unrecognized XLM Ptg tokens appear as explicit unknown markers in the recovered formula.

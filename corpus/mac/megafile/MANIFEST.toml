@@ -1,0 +1,39 @@
+schema_version = 1
+description = "Mach-O edge-case fixtures for disrobe-pass-swift-objc. The C source covers FAT magic, 64-bit thin slices, a non-standard named section to push segment / section counts past the common-case layout, an ObjC __objc_imageinfo section, constructor / destructor load commands, & hidden-visibility + external symbols. Swift sources cover swift5_* reflection sections."
+
+[regen]
+script = "scripts/regen-macho-edgecases.sh"
+host = "macOS with Xcode command-line tools (clang + lipo)"
+note = "thin slices are gitignored (platform-built, not byte-reproducible); EdgeCases.fat is the redistributed universal-binary fixture"
+
+[[fixtures]]
+path = "EdgeCases.fat"
+format = "fat-macho (0xcafebabe, 2 slices: arm64 + x86_64)"
+tool = "clang + lipo (Xcode CLT)"
+source = "src/main.c"
+provenance = "scripts/regen-macho-edgecases.sh on a macOS host"
+redistributed = true
+
+[[fixtures]]
+path = "EdgeCases.arm64"
+format = "thin macho 64-bit (MH_MAGIC_64, arm64)"
+tool = "clang -arch arm64"
+source = "src/main.c"
+provenance = "scripts/regen-macho-edgecases.sh on a macOS host"
+redistributed = false
+note = "gitignored; test marked #[ignore]"
+
+[[fixtures]]
+path = "EdgeCases.x86_64"
+format = "thin macho 64-bit (MH_MAGIC_64, x86_64)"
+tool = "clang -arch x86_64"
+source = "src/main.c"
+provenance = "scripts/regen-macho-edgecases.sh on a macOS host"
+redistributed = false
+note = "gitignored; test marked #[ignore]"
+
+[[fixtures]]
+path = "EdgeCases.swift"
+format = "swift source (swift5_* reflection section coverage)"
+tool = "n/a (source fixture)"
+redistributed = true

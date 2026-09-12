@@ -1,0 +1,47 @@
+app.App -> app.App:
+# {"fileName":"App.java","id":"sourceFile"}
+    7:7:void <init>() -> <init>
+    9:30:void main(java.lang.String[]) -> main
+    1010:1014:java.lang.String com.acme.stringkit.StringKit.repeat(java.lang.String,int):10:14 -> main
+    1010:1014:void main(java.lang.String[]):10 -> main
+    1011:1015:java.lang.String com.acme.stringkit.StringKit.repeat(java.lang.String,int):10:14 -> main
+    1011:1015:void main(java.lang.String[]):11 -> main
+    1012:1016:java.lang.String com.acme.stringkit.StringKit.repeat(java.lang.String,int):10:14 -> main
+    1012:1016:void main(java.lang.String[]):12 -> main
+    1011:1015:java.lang.String com.acme.stringkit.StringKit.repeat(java.lang.String,int):10:14 -> main
+    1011:1015:void main(java.lang.String[]):11 -> main
+    1014:1018:java.lang.String com.acme.stringkit.StringKit.repeat(java.lang.String,int):10:14 -> main
+    1014:1018:void main(java.lang.String[]):14 -> main
+    2030:2030:java.lang.String com.acme.stringkit.StringKit.reverse(java.lang.String):30:30 -> main
+    2030:2030:void main(java.lang.String[]):30 -> main
+    3026:3026:java.lang.String com.acme.stringkit.CaseFormat.toScreamingSnake(java.lang.String):26:26 -> main
+    3026:3026:void main(java.lang.String[]):26 -> main
+    4028:4030:int com.acme.stringkit.Hashing.mix(int,int):28:30 -> main
+    4028:4030:void main(java.lang.String[]):28 -> main
+    4029:4031:int com.acme.stringkit.Hashing.mix(int,int):28:30 -> main
+    4029:4031:void main(java.lang.String[]):29 -> main
+    4030:4032:int com.acme.stringkit.Hashing.mix(int,int):28:30 -> main
+    4030:4032:void main(java.lang.String[]):30 -> main
+com.acme.stringkit.CaseFormat -> a.a.a.a:
+# {"fileName":"CaseFormat.java","id":"sourceFile"}
+    java.lang.String UPPER_TOKEN -> a
+    6:7:void <init>() -> <init>
+    10:22:java.lang.String toSnakeCase(java.lang.String) -> a
+    26:26:java.lang.String toScreamingSnake(java.lang.String) -> c
+    30:33:java.lang.String capitalize(java.lang.String) -> b
+com.acme.stringkit.Hashing -> a.a.a.b:
+# {"fileName":"Hashing.java","id":"sourceFile"}
+    int FNV_OFFSET -> a
+    int FNV_PRIME -> b
+    7:8:void <init>() -> <init>
+    11:16:int fnv1a(java.lang.String) -> a
+    20:24:long checksum(byte[]) -> a
+    28:30:int mix(int,int) -> a
+com.acme.stringkit.StringKit -> a.a.a.c:
+# {"fileName":"StringKit.java","id":"sourceFile"}
+    java.lang.String MARKER -> a
+    6:7:void <init>() -> <init>
+    10:14:java.lang.String repeat$7a1ba7c4(java.lang.String) -> c
+    18:26:boolean isBlank(java.lang.String) -> a
+    30:30:java.lang.String reverse(java.lang.String) -> d
+    34:43:java.lang.String padLeft$a5a91a7(java.lang.String) -> b

@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "hello.packed.kkrunchy_classic.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "003f0000",
+  "functions": 4,
+  "thunks": 0,
+  "instructions": 149,
+  "defined_strings": 3,
+  "resolved_imports": 2,
+  "executable_bytes": 70944,
+  "decompile_workers": 4,
+  "decompile_timeout_seconds": 45,
+  "decompile_attempts": 4,
+  "decompiled_ok": 4
+}

@@ -1,0 +1,9 @@
+{
+  "_provenance": "disrobe-playground:circular-oracle py.decompile",
+  "_warning": "golden-emitted-by-pass-under-test py.decompile",
+  "_description": "DELIBERATELY CIRCULAR canary. This golden was written by the same pass it is used to validate (py.decompile emitted this exact artifact, then a test asserts py.decompile.run(input) == this golden). A self-referential oracle proves nothing. The playground circularity detector MUST flag this file. If the detector ever reports the real tree as clean while NOT flagging this canary, the detector is broken and the anti-gaming guarantee is void.",
+  "expected_emitted_by": "pass_under_test py.decompile same_pass true",
+  "pass_under_test": "py.decompile",
+  "expected_output": "def f():\n    return 1\n",
+  "assertion": "py.decompile.run(input) == expected_output (where expected_output is itself the recorded output of py.decompile)"
+}

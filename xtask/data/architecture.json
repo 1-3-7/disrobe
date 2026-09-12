@@ -1,0 +1,41 @@
+{
+  "title": "Chain auto-detection",
+  "subtitle": "disrobe auto fingerprints the input and composes the pipeline",
+  "note": "Each chain is a real auto-detect pipeline named in README.md:16 and README.md:125. Nodes are stages; the terminal node is the recovered artifact.",
+  "chains": [
+    {
+      "name": "Packed native executable",
+      "nodes": [
+        { "label": "PE", "kind": "input" },
+        { "label": "UPX", "kind": "stage", "note": "byte-identical unpack" },
+        { "label": "rust-demangle", "kind": "stage", "note": "symbol restore" },
+        { "label": "clean image", "kind": "output" }
+      ]
+    },
+    {
+      "name": "Android app",
+      "nodes": [
+        { "label": "APK", "kind": "input" },
+        { "label": "dex", "kind": "stage", "note": "sig v1-v3 verify" },
+        { "label": "Java", "kind": "output", "note": "in-house Dalvik decompiler" }
+      ]
+    },
+    {
+      "name": "Protected frozen Python",
+      "nodes": [
+        { "label": "PyInstaller", "kind": "input" },
+        { "label": "PyArmor", "kind": "stage", "note": "static-key recovery" },
+        { "label": ".pyc decompile", "kind": "stage", "note": "recompile-verified" },
+        { "label": "source", "kind": "output" }
+      ]
+    },
+    {
+      "name": "Untrusted pickle",
+      "nodes": [
+        { "label": "pickle", "kind": "input" },
+        { "label": "AST", "kind": "stage", "note": "symbolic VM trace, never executes" },
+        { "label": "safety grade", "kind": "output" }
+      ]
+    }
+  ]
+}

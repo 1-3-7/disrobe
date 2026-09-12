@@ -1,0 +1,9 @@
+ Preferred load address is 0000000140000000
+ 0001:0006b070       managed_abi_sret_net9_x86_64_ManagedSretProbe___ctor 000000014006c070     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b080       managed_abi_sret_net9_x86_64_ManagedSretProbe__Split 000000014006c080     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b0a0       managed_abi_sret_net9_x86_64_ManagedSretProbe__Spread 000000014006c0a0     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b0c0       managed_abi_sret_net9_x86_64_ManagedSretProbe__Quarter 000000014006c0c0     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b0e0       managed_abi_sret_net9_x86_64_ManagedSretProbe__Narrow 000000014006c0e0     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b0f0       managed_abi_sret_net9_x86_64_ManagedSretProbe__Widen 000000014006c0f0     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b110       managed_abi_sret_net9_x86_64_ManagedSretProbe__Label 000000014006c110     managed_abi_sret_net9_x86_64.obj
+ 0001:0006b120       managed_abi_sret_net9_x86_64_ManagedSretProbe__Doubled 000000014006c120     managed_abi_sret_net9_x86_64.obj

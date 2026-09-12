@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "AccessEnum.packed.pecompact.unpacked.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 186,
+  "thunks": 0,
+  "instructions": 9278,
+  "defined_strings": 53,
+  "resolved_imports": 15,
+  "executable_bytes": 180224,
+  "decompile_workers": 4,
+  "decompile_timeout_seconds": 45,
+  "decompile_attempts": 186,
+  "decompiled_ok": 186
+}

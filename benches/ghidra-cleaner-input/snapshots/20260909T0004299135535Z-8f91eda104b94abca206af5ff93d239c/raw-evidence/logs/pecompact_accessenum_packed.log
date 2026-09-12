@@ -1,0 +1,340 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (550 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1720 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\pecompact_accessenum_packed-20ff73a78eea40eea5f3b4c42f4fc87f\pecompact_accessenum_packed (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\pecompact_accessenum_packed-20ff73a78eea40eea5f3b4c42f4fc87f\pecompact_accessenum_packed (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\pecompact_accessenum_packed-20ff73a78eea40eea5f3b4c42f4fc87f\pecompact_accessenum_packed (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe (HeadlessAnalyzer)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+ERROR Invalid DebugDirectory (DebugDirectory)
+WARN  Invalid or missing function at 100754dc (ExportDataDirectory)
+INFO  TLS callbacks at 1000374c (TLSDirectory)
+INFO  TLS callbacks at 10001fec (TLSDirectory)
+INFO  TLS callbacks at 100057bc (TLSDirectory)
+INFO  TLS callbacks at 10006fe4 (TLSDirectory)
+WARN  Invalid or missing function at 1008ea38 (ExportDataDirectory)
+INFO  TLS callbacks at 10029368 (TLSDirectory)
+WARN  Invalid or missing function at 105df15c (ExportDataDirectory)
+WARN  Invalid or missing function at 100ca39c (ExportDataDirectory)
+INFO  Additional info:
+Loading file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe?MD5=cecc5ec6f910959d24125678aafd0b23...
+[AccessEnum.packed.pecompact.exe]: failed to create MenuResource at 00427a68: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00427ad0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00427c30: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00427dc8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00427ea0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 004282d0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00428360: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create DialogResource at 00428658: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create byte[8] at 00428780: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create byte[20] at 00428788: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 004287a0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 004287b8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 004287d0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 004287e8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 00428800: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 00428818: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create GroupIconResource at 00428830: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a000: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a010: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a058: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a068: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a070: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a080: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a088: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a018: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a098: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0a8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a0e8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0f8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a100: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0b0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a110: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a120: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a128: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0b8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a138: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a148: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a150: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0c0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a160: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a170: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a178: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0c8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a188: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a198: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a1a0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0d0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a1b0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a1c0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a1c8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0d8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a1d8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a1e8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a1f0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a0e0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a200: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a210: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a218: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a020: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a228: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a238: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a248: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a258: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a260: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_8 at 0042a298: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a240: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a270: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a280: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a288: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_10 at 0042a2a8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a028: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a2b8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2c8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a300: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a310: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a318: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_10 at 0042a418: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2d0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a328: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a338: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a340: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_10 at 0042a428: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2d8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a350: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a360: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a368: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_14 at 0042a438: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2e0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a378: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a388: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a390: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_16 at 0042a450: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2e8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a3a0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a3b0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a3b8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_8 at 0042a468: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2f0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a3c8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a3d8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a3e0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_8 at 0042a478: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a2f8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a3f0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a400: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a408: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIR_STRING_U_18 at 0042a488: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a030: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a4a0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a4b0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY at 0042a4b8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a4c8: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DATA_ENTRY at 0042a4d0: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a038: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a040: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a048: Conflicting data exists at address 00427950 to 0042a4d7
+[AccessEnum.packed.pecompact.exe]: failed to create IMAGE_RESOURCE_DIRECTORY_ENTRY at 0042a050: Conflicting data exists at address 00427950 to 0042a4d7
+------------------------------------------------
+
+Searching 45 paths for library ADVAPI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/advapi32.dll?MD5=e05908f79c914e9f6915632c7a37dd91...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library COMCTL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/comctl32.dll?MD5=a19d57953ec5f48772f24bad3b51dcac...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comctl32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library COMDLG32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/comdlg32.dll?MD5=dff2875ca3b15b633c9ca94d3f6a5068...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library GDI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/gdi32.dll?MD5=37002dbb23f87dae9ebd7dd7b5051995...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll?MD5=2d8ecc5a2aade7639ca790ef2e8e6e36...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library MPR.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/mpr.dll?MD5=a5c1f43a18f6fe5458245c83e1cd2f0d...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\mpr.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library MSVCRT.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/msvcrt.dll?MD5=079c06cb751ea84b73478446475593b2...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\msvcrt.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library NETAPI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/netapi32.dll?MD5=2741997fabdb9f46d921600497a24a8a...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\netapi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library OLE32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/ole32.dll?MD5=bba0731f1f2c4d80e9f44654ddc7bb32...
+[ole32.dll]: failed to create WEVTResource at 10138740: Failed to resolve data length for WEVTResource
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\ole32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library OLEAUT32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/oleaut32.dll?MD5=e6bbb4eefacdda667ee95436a6e49d58...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\oleaut32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library SHELL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/shell32.dll?MD5=7848d41f2d67e2e67cb702cc95228507...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\shell32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library USER32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/user32.dll?MD5=f20db7901b5acab93edf2366986a6fd3...
+[user32.dll]: failed to create WEVTResource at 100e7a70: Failed to resolve data length for WEVTResource
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\shell32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\ole32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\oleaut32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comctl32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\netapi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\mpr.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\msvcrt.exports
+Linking the External Programs of 'AccessEnum.packed.pecompact.exe' to imported libraries...
+  [KERNEL32.DLL] -> not found in project
+  [USER32.DLL] -> not found in project
+  [GDI32.DLL] -> not found in project
+  [COMDLG32.DLL] -> not found in project
+  [ADVAPI32.DLL] -> not found in project
+  [SHELL32.DLL] -> not found in project
+  [OLE32.DLL] -> not found in project
+  [OLEAUT32.DLL] -> not found in project
+  [COMCTL32.DLL] -> not found in project
+  [NETAPI32.DLL] -> not found in project
+  [MPR.DLL] -> not found in project
+  [MSVCRT.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 0042b9b5, pcode error at 0042b9ff: Unable to resolve constructor at 0042b9ff (DecompileCallback)
+WARN  Decompiling 0042b9b5, pcode error at 0042ba36: Unable to resolve constructor at 0042ba36 (DecompileCallback)
+WARN  Decompiling 0042b9b5, pcode error at 0042ba75: Unable to resolve constructor at 0042ba75 (DecompileCallback)
+WARN  Decompiling 0042b9b5, pcode error at 0042ba85: Unable to resolve constructor at 0042ba85 (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.299 secs
+    Apply Data Archives                        0.520 secs
+    Call Convention ID                         0.000 secs
+    Call-Fixup Installer                       0.000 secs
+    Create Address Tables                      0.036 secs
+    Create Function                            0.001 secs
+    Data Reference                             0.008 secs
+    Decompiler Parameter ID                    0.515 secs
+    Decompiler Switch Analysis                 0.000 secs
+    Demangler Microsoft                        0.008 secs
+    Disassemble                                0.016 secs
+    Disassemble Entry Points                   0.031 secs
+    Embedded Media                             0.003 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.089 secs
+    Function Start Pre Search                  0.004 secs
+    Function Start Search                      0.013 secs
+    Function Start Search After Code           0.000 secs
+    Function Start Search After Data           0.005 secs
+    Non-Returning Functions - Discovered       0.001 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.001 secs
+    Reference                                  0.015 secs
+    Scalar Operand References                  0.002 secs
+    Shared Return Calls                        0.001 secs
+    Stack                                      0.011 secs
+    Subroutine References                      0.003 secs
+    Windows x86 PE Exception Handling          0.008 secs
+    Windows x86 PE RTTI Analyzer               0.002 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.007 secs
+    WindowsResourceReference                   0.371 secs
+    X86 Function Callee Purge                  0.000 secs
+    x86 Constant Reference Analyzer            0.030 secs
+-----------------------------------------------------
+     Total Time   2 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\pecompact_accessenum_packed.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\pecompact_accessenum_packed.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/pecompact/AccessEnum.packed.pecompact.exe (HeadlessAnalyzer)
+INFO  /AccessEnum.packed.pecompact.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /AccessEnum.packed.pecompact.exe (pecompact_accessenum_packed:/AccessEnum.packed.pecompact.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

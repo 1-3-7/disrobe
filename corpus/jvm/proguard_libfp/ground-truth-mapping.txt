@@ -1,0 +1,27 @@
+app.App -> app.App:
+# {"fileName":"App.java","id":"sourceFile"}
+    7:7:void <init>() -> <init>
+    9:22:void main(java.lang.String[]) -> main
+com.acme.stringkit.CaseFormat -> a.a.a.a:
+# {"fileName":"CaseFormat.java","id":"sourceFile"}
+    java.lang.String UPPER_TOKEN -> a
+    6:7:void <init>() -> <init>
+    10:22:java.lang.String toSnakeCase(java.lang.String) -> a
+    26:26:java.lang.String toScreamingSnake(java.lang.String) -> b
+    30:33:java.lang.String capitalize(java.lang.String) -> c
+com.acme.stringkit.Hashing -> a.a.a.b:
+# {"fileName":"Hashing.java","id":"sourceFile"}
+    int FNV_OFFSET -> a
+    int FNV_PRIME -> b
+    7:8:void <init>() -> <init>
+    11:16:int fnv1a(java.lang.String) -> a
+    20:24:long checksum(byte[]) -> a
+    28:30:int mix(int,int) -> a
+com.acme.stringkit.StringKit -> a.a.a.c:
+# {"fileName":"StringKit.java","id":"sourceFile"}
+    java.lang.String MARKER -> a
+    6:7:void <init>() -> <init>
+    10:14:java.lang.String repeat(java.lang.String,int) -> a
+    18:26:boolean isBlank(java.lang.String) -> a
+    30:30:java.lang.String reverse(java.lang.String) -> b
+    34:43:java.lang.String padLeft(java.lang.String,int,char) -> a

@@ -1,0 +1,32 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-shell"
+generated = "2026-06-18"
+toolchain = "Chameleon (Resources/Chameleon/chameleon.py from JoelGMSec/Invoke-Stealth), run under Python 3.14 with PYTHONUTF8=1"
+note = "self-authored PowerShell sample obfuscated by the real Chameleon engine (the variable-rename + string-obfuscation core of Invoke-Stealth's Chimera technique), graded against the clean original"
+
+[provenance]
+obfuscator = "chameleon.py -a rename_original.ps1 -o rename_real.ps1 (default: variable rename + string obfuscation + indentation randomization)"
+transform = "every identifier renamed to a long high-entropy base62 slot (mixed-case alphanumeric, 40+ chars); string literals obfuscated"
+verified = "real Chameleon output - the rename is the genuine NameGenerator long-random form, NOT short synthetic mangling. disrobe's reverse_chameleon previously reported renamed_variables=0 on this (its looks_chameleon_mangled only matched names<=4 chars + VAR_DECL capped at 8 chars - tuned to the short-name synthetic fixture); it now detects the long-random renames"
+
+[[fixture]]
+name = "rename_original.ps1"
+path = "rename_original.ps1"
+kind = "powershell-source"
+provenance = "self-authored"
+description = "benign source: Add-Two function + Write-Output, with a known string constant"
+
+[[fixture]]
+name = "rename_real.ps1"
+path = "rename_real.ps1"
+kind = "powershell-source"
+provenance = "real"
+source = "rename_original.ps1"
+description = "real Chameleon variable-rename + string-obfuscation output; the long-random-identifier renaming is the gauntlet target"
+
+[[fixture]]
+name = "hello.ps1"
+path = "hello.ps1"
+kind = "powershell-source"
+provenance = "real"
+description = "real Chameleon base64-IEX layer (Convert::FromBase64String(...) one-liner); the decode path, distinct from the rename path"

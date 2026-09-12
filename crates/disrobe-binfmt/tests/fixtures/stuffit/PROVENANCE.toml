@@ -1,0 +1,18 @@
+fixture = "stuffit45-method13.sit"
+fixture_sha256 = "a0ef9c2f0a1f34be4cfd60da3b54af7fa16357544c009eb8241554670ec74755"
+fixture_size = 2804
+source_repository = "https://github.com/ssokolow/stuffit-test-files"
+source_commit = "b523c64337867aee5cc07ad3a6bbfc8e06e4b3c0"
+source_path = "build/testfile.stuffit45_dlx.mac9.sit"
+source_license = "CC0-1.0"
+producer = "StuffIt Deluxe 4.5 on Mac OS 9"
+
+reference_tool = "unar 1.8.1"
+reference_url = "https://cdn.theunarchiver.com/downloads/unarWindows.zip"
+reference_archive_sha256 = "61a6b299606282f72f51c278801eac11d3dccfac83e2d68bccce33539912e0dd"
+reference_result = "lsar -json -test reported nine valid logical forks; unar extracted every data and resource fork"
+reference_manifest = "MANIFEST.tsv"
+
+format_source = "https://sources.debian.org/src/unar/1.10.8%2Bds1-9/XADStuffItParser.m"
+codec_source = "https://docs.rs/compcol/0.6.10/compcol/sit13/index.html"
+codec_crate_sha256 = "c11ff3545f0554bd738d69ab7d4556713f7b986706563b0554a89339cee83396"

@@ -1,0 +1,172 @@
+schema = "disrobe-corpus-v1"
+category = "flash.swf"
+target_crate = "disrobe-pass-as3"
+fetched_utc = "2026-05-25T00:00:00Z"
+notes = """
+SWF samples sourced from the Internet Archive's preserved Flash collections - explicitly
+archived for legal preservation and public study under archive.org's terms. Magic-byte
+header verified for every file:
+  465753 = "FWS" - uncompressed SWF
+  435753 = "CWS" - zlib-compressed SWF (Flash 6+)
+  5a5753 = "ZWS" - LZMA-compressed SWF (Flash 11+, AS3 era)
+Variety: small (4 KB - 100 KB), medium (100 KB - 2 MB), large (2 MB - 10 MB);
+all three compression modes; mix of AS2-era and AS3-era titles.
+Collection: https://archive.org/details/swf-flash-games
+"""
+
+[[sample]]
+name = "A-Blast_Liberation.swf"
+source_url = "https://archive.org/download/swf-flash-games/A-Blast%20Liberation.swf"
+size_bytes = 421907
+sha256 = "6912c0881d400f3da2f5dff3938960a8018fe2f6d3e982d4899693449014533e"
+magic = "465753"
+compression = "uncompressed"
+notes = "FWS uncompressed - raw-tag parser fixture."
+
+[[sample]]
+name = "10_More_Bullets.swf"
+source_url = "https://archive.org/download/swf-flash-games/10%20More%20Bullets.swf"
+size_bytes = 5426829
+sha256 = "bb5cac0546699e83aa5979e7ad86415ab50f70e81f772c7067d9a9a59f5a2dd1"
+magic = "5a5753"
+compression = "lzma"
+notes = "ZWS LZMA-compressed (AS3 era) - exercises LZMA stream decode + DoABC tags."
+
+[[sample]]
+name = "1942_Battles_In_The_Sky.swf"
+source_url = "https://archive.org/download/swf-flash-games/1942%20Battles%20In%20The%20Sky.swf"
+size_bytes = 1862280
+sha256 = "046d7474cd7d32ee60adda693ff50e36747eefc766b2168781123b6419fa7ce9"
+magic = "435753"
+compression = "zlib"
+notes = "CWS zlib mid-size."
+
+[[sample]]
+name = "3D_Frogger.swf"
+source_url = "https://archive.org/download/swf-flash-games/3D%20Frogger.swf"
+size_bytes = 519104
+sha256 = "9a61c436385b0106b6731fa0d6201f6b891017cb0017fb0ddc0fffcca20aa253"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "3D_Motorbike_Racer.swf"
+source_url = "https://archive.org/download/swf-flash-games/3D%20Motorbike%20Racer.swf"
+size_bytes = 4192944
+sha256 = "f342c04d0cfccc07434c595b85a38f28c5129594bab4121df000b962f8725af0"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "3D_Tunnel.swf"
+source_url = "https://archive.org/download/swf-flash-games/3D%20Tunnel.swf"
+size_bytes = 614455
+sha256 = "44127f69250b66ae403e62dea50ec52d0c36cd2d552838ab0570d935e0505aec"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "4_Ball_Pong.swf"
+source_url = "https://archive.org/download/swf-flash-games/4%20Ball%20Pong.swf"
+size_bytes = 123455
+sha256 = "72fe99525220e7afddf675881d6860e18208fdf727d45378cb770d5c4d26b50c"
+magic = "435753"
+compression = "zlib"
+notes = "Smallest sample - fast-path unit test."
+
+[[sample]]
+name = "4_Wheel_Madness.swf"
+source_url = "https://archive.org/download/swf-flash-games/4%20Wheel%20Madness.swf"
+size_bytes = 2336631
+sha256 = "90884766487e389b6de1335701cabdef4886a48afffaa63e9cb295e834ba7e02"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "7Up_Pinball.swf"
+source_url = "https://archive.org/download/swf-flash-games/7Up%20Pinball.swf"
+size_bytes = 408551
+sha256 = "eaba81a7091f0ee3160c37c920ad995874c7e2a20f54745f9dd35c6c71f7c480"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "ASmallCar.swf"
+source_url = "https://archive.org/download/swf-flash-games/ASmallCar.swf"
+size_bytes = 7301224
+sha256 = "c7571c2363d779f8fa8fbda4340daa54e1de7a83959c3d266e002d926e2b1be8"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "ATV_Cross_Canada.swf"
+source_url = "https://archive.org/download/swf-flash-games/ATV%20Cross%20Canada.swf"
+size_bytes = 5613384
+sha256 = "a0b02ed85b1b731149ea464e6ce77996384822f13982f6f1fddca85b28be8eb6"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "Acrobatic_Rider.swf"
+source_url = "https://archive.org/download/swf-flash-games/Acrobatic%20Rider.swf"
+size_bytes = 3025102
+sha256 = "1c7184e5562439538e858bb7c6fceb81b6a8eea6476b2faef373c64c07aabb2a"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "Action_Driving_Game.swf"
+source_url = "https://archive.org/download/swf-flash-games/Action%20Driving%20Game.swf"
+size_bytes = 537719
+sha256 = "0678a7cee92e734ce5bb611e040aca6b7ad9ff9cf7f234764e6db772f6057b2e"
+magic = "465753"
+compression = "uncompressed"
+
+[[sample]]
+name = "BO_Awesome_Ranger.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Awesome%20Ranger.swf"
+size_bytes = 4247551
+sha256 = "9d8ca8c7b95f8deb32006ef9e47800203debe08a377ba59af475c9cb9ec63782"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "BO_Kirby_Star.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Kirby%20Star.swf"
+size_bytes = 1454305
+sha256 = "1537e9abd6366d82b5e1403aac56784322503a40e1efab7cda145529b52baed6"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "BO_Neo_Rider.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Neo%20Rider.swf"
+size_bytes = 2020533
+sha256 = "b5ac34b3468d10786561d3e268c08c2d0f3e683b4a45cba0f7f4d54407aca202"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "BO_Snake.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Snake.swf"
+size_bytes = 844696
+sha256 = "58476dccae5ce1d6d01bd4664b9704c33438d8bd0d972d11ec43ed1683b557ad"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "BO_Super_Transformation.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Super%20Transformation.swf"
+size_bytes = 4982615
+sha256 = "78d352e5f309aeda1b71af4dd3adffe033fbce6f21076a7c0a812a056014df29"
+magic = "435753"
+compression = "zlib"
+
+[[sample]]
+name = "BO_Twin_Drivers_Level_9000.swf"
+source_url = "https://archive.org/download/swf-flash-games/%28BO%29%20Twin%20Drivers%20Level%209000.swf"
+size_bytes = 9784906
+sha256 = "8204a99c082bd28e3227d7d619b6b683007038f793e1d6f61cb7156f4c067a3d"
+magic = "435753"
+compression = "zlib"
+notes = "Largest sample - stress test for streaming SWF parser."

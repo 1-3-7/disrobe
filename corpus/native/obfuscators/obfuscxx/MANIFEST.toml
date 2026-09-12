@@ -1,0 +1,41 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-24"
+toolchain = "nevergiveupcpp/obfuscxx (include/obfuscxx/obfuscxx.h) compiled with g++ (MinGW-W64 ucrt x86_64) 13.2.0 -std=c++20 -O2 -mavx2 - one of obfuscxx's documented GCC targets"
+note = "self-authored C++20 source compiled twice: a clean baseline and an obfuscxx-protected build that wraps the variable and string in obfxx()/obfxxs(), graded against the clean original; obfuscxx is a header-only compile-time XTEA variable obfuscator (per-compile-random key folded from __COUNTER__/__FILE__/__LINE__/__TIME__, SIMD AVX2/SSE2/NEON runtime decrypt)"
+
+[provenance]
+compiler = "g++ 13.2.0 (MinGW-W64 ucrt x86_64); clean = `g++ -std=c++20 -O2 -mavx2 clean.cpp -o sample.clean.exe`, obfuscated = `g++ -std=c++20 -O2 -mavx2 -Iobfuscxx/include sample.cpp -o sample.obfuscxx.exe`"
+obfuscator = "nevergiveupcpp/obfuscxx - header-only, consteval/constexpr; obfxx(int)(1337) encrypts the integer and obfxxs(\"...\") encrypts the string at compile time"
+transform = "the obfuscated PE encrypts the variable and string with compile-time XTEA; the plaintext greeting literal is gone from the obfuscated build and present in the clean baseline. The emitted AVX2 decrypt loop carries the ciphertext vectors, permutation vectors, and low 32-bit key words needed for static recovery."
+verified = "the Itanium-mangled ngu::obfuscxx<> template-instantiation symbol (`_ZN3ngu8obfuscxxI...`) appears 4x in the obfuscated build and is absent from the clean baseline; the obfuscated and clean binaries print matching output, proving the obfuscation round-trips correctly. `disrobe` reports Obfuscxx via the ngu::obfuscxx<> symbol and statically recovers the encrypted greeting byte-for-byte from the obfuscated binary while returning no Obfuscxx strings on the clean baseline."
+
+[[fixture]]
+name = "sample.cpp"
+path = "sample.cpp"
+kind = "cpp-source"
+provenance = "self-authored"
+description = "benign source: classify(n) + obfxx(int)(1337) + obfxxs(string) printed"
+
+[[fixture]]
+name = "sample.clean.cpp"
+path = "sample.clean.cpp"
+kind = "cpp-source"
+provenance = "self-authored"
+description = "the same program without any obfuscxx usage (plain int + plain string literal)"
+
+[[fixture]]
+name = "sample.clean.exe"
+path = "sample.clean.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.clean.cpp"
+description = "unobfuscated g++ baseline; no ngu::obfuscxx<> symbol, keeps the plaintext greeting string"
+
+[[fixture]]
+name = "sample.obfuscxx.exe"
+path = "sample.obfuscxx.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.cpp"
+description = "obfuscxx-protected g++ build; the ngu::obfuscxx<> template-instantiation symbol is the detection target, and the encrypted-away greeting is the static recovery oracle"

@@ -1,0 +1,47 @@
+Caller-context-keyed JVM string-decryption fixtures (benign, authored in-house)
+================================================================================
+
+Purpose
+-------
+These two classes exercise the constrained bytecode evaluator's caller-context
+stack: a static decrypt method that derives its XOR key from the *calling*
+method's identity, read at run time from new Throwable().getStackTrace()[1].
+This is the defeatable shape that Allatori's string encryptor and Stringer's
+name-keyed mode emit. The evaluator resolves the caller from the static call
+graph, supplies a synthetic StackTraceElement, executes the real decrypt body
+(including the intra-class callerKey helper call), and recovers the plaintext.
+
+Provenance (non-circular oracle)
+--------------------------------
+Both .java sources were authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by disrobe.
+The ground-truth plaintexts are the literals written in the source, listed below.
+The .class roundtrips were confirmed by running them under the real JVM
+(java com.disrobe.bench.CallerKeyed prints the five plaintexts).
+
+Files
+-----
+CallerKeyed.class (1797 B) -- DEFEATABLE. decrypt(String) keys on the caller
+    class+method hash obtained from the live stack trace. Five encrypted String
+    constants, each reachable from a known call site:
+        runConnect / which==0 -> "jdbc:postgresql://db.internal:5432/orders"
+        runConnect / which!=0 -> "SELECT token FROM sessions WHERE id = ?"
+        runAuth    / which==0 -> "Authorization: Bearer token"
+        runAuth    / which!=0 -> "X-Api-Key"
+        emitConfig            -> "feature.rollout.enabled=true"
+CallerKeyed.java  -- the in-house source; the literals above are the oracle.
+
+EnvKeyed.class (1084 B) -- HONEST WALL. decrypt(String) keys on
+    System.getProperty("com.disrobe.bench.licenseKey") with a
+    System.currentTimeMillis() fallback. The key is runtime-only state absent
+    from the static artifact; the evaluator hits RuntimeKeyUnavailable and stays
+    detect-only with a precise reason, fabricating nothing.
+EnvKeyed.java  -- the in-house source.
+
+Why the split matters
+----------------------
+The caller-derived key is fully recoverable from the static call graph (the
+caller is whoever invokes decrypt), so CallerKeyed is defeated end-to-end.
+The environment/clock key is information-theoretically absent, so EnvKeyed is a
+true wall. Both outcomes are graded against the known in-house plaintext.

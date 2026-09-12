@@ -1,0 +1,38 @@
+name: YARA reference
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  matcher-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@2fe4ca74464c5902a4f6e302d0a619b4ea911ccc
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: install YARA 4.5.0
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends yara=4.5.0-1build2
+          package_version="$(dpkg-query -W -f='${Version}' yara)"
+          test "$package_version" = '4.5.0-1build2'
+          yara_path="$(command -v yara)"
+          test -x "$yara_path"
+          test "$("$yara_path" --version)" = '4.5.0'
+          echo "YARA=$yara_path" >> "$GITHUB_ENV"
+      - name: grade matcher against YARA
+        env:
+          DISROBE_REQUIRE_YARA: '1'
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/yara-reference.log"
+          CARGO_TERM_COLOR=never cargo test --locked -p disrobe-core --all-features --test yara_match_oracle -- --exact engine_agrees_with_real_yara --nocapture 2>&1 | tee "$log"
+          grep -F 'running 1 test' "$log"
+          grep -F '[evidence] YARA differential matched all 32 cases; dropped-offset mutation control rejected' "$log"

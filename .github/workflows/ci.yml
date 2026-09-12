@@ -1,0 +1,1249 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]*']
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo check --workspace --all-targets --all-features
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+
+  process-containment:
+    name: process containment (macos)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p disrobe-tool-process --all-targets -- --nocapture
+
+  graphs:
+    name: graphs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+      - name: install graph renderer test dependencies
+        working-directory: xtask/graphgen
+        run: corepack enable && pnpm install --frozen-lockfile
+      - name: test graph renderer contracts
+        working-directory: xtask/graphgen
+        run: pnpm test
+      - name: verify CI routing contract
+        run: cargo test -p xtask --no-default-features --test ci_routing
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: Check generated artifacts and published claims
+        run: cargo run -p xtask -- regen --check
+      - name: Check workspace structure and dependencies
+        run: cargo run -p xtask -- health
+
+  test:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    name: test (${{ matrix.os }} / ${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      DR_AS3_CORPUS_OPTIONAL: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shard: one
+          - os: ubuntu-latest
+            shard: two
+          - os: ubuntu-latest
+            shard: three
+          - os: macos-latest
+            shard: one
+          - os: macos-latest
+            shard: two
+          - os: macos-latest
+            shard: three
+          - os: windows-latest
+            shard: one
+          - os: windows-latest
+            shard: two
+          - os: windows-latest
+            shard: three
+    steps:
+      - uses: actions/checkout@v6
+      - name: provision Lua and Luau reference toolchains
+        if: matrix.shard == 'three'
+        uses: ./.github/actions/lua-oracles
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.16.0"
+      - name: provision TypeScript 6.0.3 for the emitted-artifact oracle
+        shell: bash
+        env:
+          NODE_VERSION: "24.16.0"
+          TYPESCRIPT_VERSION: "6.0.3"
+        run: |
+          set -euo pipefail
+          actual_node_version="$(node --version | tr -d '\r')"
+          if [ "$actual_node_version" != "v${NODE_VERSION}" ]; then
+            echo "setup-node provisioned ${actual_node_version}, expected v${NODE_VERSION}"
+            exit 1
+          fi
+          npm install --global --ignore-scripts --no-audit --no-fund "typescript@${TYPESCRIPT_VERSION}"
+          actual_version="$(tsc --version | tr -d '\r')"
+          if [ "$actual_version" != "Version ${TYPESCRIPT_VERSION}" ]; then
+            echo "npm provisioned ${actual_version}, expected Version ${TYPESCRIPT_VERSION}"
+            exit 1
+          fi
+      - name: provision Babel runtime 7.24.5 for the async identity oracle
+        shell: bash
+        env:
+          BABEL_RUNTIME_VERSION: "7.24.5"
+          BABEL_ASYNC_HELPER_SHA256: "e8c18da3624e6b7a7cf4720bcaa8d108709c22b1ab76e6e5f974587acb05d2c8"
+        run: |
+          set -euo pipefail
+          runtime_root="$RUNNER_TEMP/disrobe-babel-runtime-${BABEL_RUNTIME_VERSION}"
+          npm install --prefix "$runtime_root" --ignore-scripts --no-audit --no-fund "@babel/runtime@${BABEL_RUNTIME_VERSION}"
+          actual_version="$(node -e 'const path=require("node:path"); process.stdout.write(require(path.join(process.argv[1], "node_modules", "@babel", "runtime", "package.json")).version)' "$runtime_root")"
+          if [ "$actual_version" != "$BABEL_RUNTIME_VERSION" ]; then
+            echo "npm provisioned @babel/runtime ${actual_version}, expected ${BABEL_RUNTIME_VERSION}"
+            exit 1
+          fi
+          helper="$runtime_root/node_modules/@babel/runtime/helpers/asyncToGenerator.js"
+          if [ ! -f "$helper" ]; then
+            echo "the pinned Babel runtime did not contain asyncToGenerator.js"
+            exit 1
+          fi
+          actual_sha256="$(node -e 'const crypto=require("node:crypto"); const fs=require("node:fs"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$helper")"
+          if [ "$actual_sha256" != "$BABEL_ASYNC_HELPER_SHA256" ]; then
+            echo "Babel async helper hash ${actual_sha256}, expected ${BABEL_ASYNC_HELPER_SHA256}"
+            exit 1
+          fi
+          echo "DISROBE_BABEL_RUNTIME_ROOT=$runtime_root/node_modules" >> "$GITHUB_ENV"
+      - name: free disk space (linux runner)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.8-3.15 for the py-decompile construct matrix
+        run: uv python install 3.8.20 3.9.25 3.10.20 3.11.15 3.12.13 3.13.14 3.14.5 3.15.0b4
+      - name: restore the pinned CPython empty package marker
+        if: matrix.shard == 'two'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$(uv python find 3.14.5)" - <<'PY'
+          from hashlib import sha256
+          from http.client import HTTPResponse
+          from pathlib import Path
+          import sys
+          import sysconfig
+          from urllib.request import urlopen
+
+          if sys.version_info[:3] != (3, 14, 5):
+              raise RuntimeError("expected CPython 3.14.5")
+          marker: Path = Path(sysconfig.get_path("stdlib")) / "__phello__" / "ham" / "__init__.py"
+          data: bytes
+          if marker.is_file():
+              with marker.open("rb") as existing:
+                  data = existing.read(1)
+          elif marker.exists() or marker.is_symlink():
+              raise RuntimeError("CPython package marker is not a regular source file")
+          else:
+              source: str = "https://raw.githubusercontent.com/python/cpython/5607950ef232dad16d75c0cf53101d9649d89115/Lib/__phello__/ham/__init__.py"
+              response: HTTPResponse
+              with urlopen(source, timeout=30) as response:
+                  data = response.read(1)
+          if sha256(data).hexdigest() != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855":
+              raise RuntimeError("CPython package marker differs from the pinned source")
+          if not marker.exists():
+              marker.parent.mkdir(parents=True, exist_ok=True)
+              marker.write_bytes(data)
+          PY
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        if: matrix.shard == 'two'
+        with:
+          php-version: "8.4"
+          extensions: opcache
+          coverage: none
+      - name: locate the PHP 8.4 opcache reference
+        if: matrix.shard == 'two'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $php = (Get-Command php -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $version = & $php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;'
+          if ($LASTEXITCODE -ne 0 -or $version -ne '8.4') { throw "Expected PHP 8.4, found $version" }
+          $extensionDir = & $php -r 'echo ini_get("extension_dir");'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the PHP extension directory' }
+          $extensionName = if ($env:RUNNER_OS -eq 'Windows') { 'php_opcache.dll' } else { 'opcache.so' }
+          $extension = Join-Path $extensionDir $extensionName
+          if (-not (Test-Path -LiteralPath $extension -PathType Leaf)) { throw "Missing opcache: $extension" }
+          "DISROBE_PHP_BIN=$php" >> $env:GITHUB_ENV
+          "DZOA_OPCACHE_DLL=$extension" >> $env:GITHUB_ENV
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25.0.4+7.0.LTS"
+      - name: require the JVM conversion-frame verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          javac -version
+          echo "DISROBE_REQUIRE_JVM=1" >> "$GITHUB_ENV"
+      - name: provision APK reference tools
+        if: matrix.shard == 'two'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install apkleaks==2.6.3
+          if ($LASTEXITCODE -ne 0) { throw 'APKLeaks installation failed' }
+          $archive = Join-Path $env:RUNNER_TEMP 'jadx-1.5.5.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'jadx-1.5.5'
+          Invoke-WebRequest -Uri 'https://github.com/skylot/jadx/releases/download/v1.5.5/jadx-1.5.5.zip' -OutFile $archive -TimeoutSec 120
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '38a5766d3c8170c41566b4b13ea0ede2430e3008421af4927235c2880234d51a') { throw 'JADX archive checksum mismatch' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          Remove-Item -LiteralPath $archive
+          $launcher = Join-Path $destination 'bin/jadx'
+          if ($env:RUNNER_OS -eq 'Windows') { $launcher += '.bat' } else { chmod +x $launcher }
+          $version = & $launcher --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne '1.5.5') { throw "Expected JADX 1.5.5, found $version" }
+          (Join-Path $destination 'bin') >> $env:GITHUB_PATH
+          [string]$jarDirectory = Join-Path $env:GITHUB_WORKSPACE 'evidence/competitors/jars'
+          New-Item -ItemType Directory -Path $jarDirectory -Force | Out-Null
+          [string]$cfr = Join-Path $jarDirectory 'cfr.jar'
+          Invoke-WebRequest -Uri 'https://github.com/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar' -OutFile $cfr -TimeoutSec 120
+          if ((Get-FileHash -LiteralPath $cfr -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2') { throw 'CFR archive checksum mismatch' }
+          java -jar $cfr --version
+          if ($LASTEXITCODE -ne 0) { throw 'CFR version probe failed' }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: provision Go 1.26.3 for graded Go fixtures
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.3'
+          check-latest: false
+          cache: false
+      - name: require Go 1.26.3 for cross-architecture grading
+        shell: bash
+        env:
+          GO_VERSION: '1.26.3'
+        run: |
+          set -euo pipefail
+          if [ "$(go env GOVERSION)" != "go${GO_VERSION}" ]; then
+            echo "setup-go did not provide Go ${GO_VERSION}"
+            go version
+            exit 1
+          fi
+          go version
+          echo "DISROBE_REQUIRE_GO=1" >> "$GITHUB_ENV"
+      - name: provision UPX and require the Linux auto-UPX differential tools
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          UPX_VERSION: '5.1.1'
+          UPX_SHA256: '1ff660454227861e00772f743f66b900072116b9dc24f6ee28b97cce88a7828a'
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          curl --proto '=https' --tlsv1.2 --retry 5 --retry-connrefused --location --silent \
+            --show-error --fail --output "$archive" \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          printf '%s  %s\n' "$UPX_SHA256" "$archive" | sha256sum --check --strict
+          stage="$RUNNER_TEMP/upx-${UPX_VERSION}"
+          mkdir -p "$stage"
+          tar -xJf "$archive" -C "$stage"
+          upx_bin="$(find "$stage" -type f -name upx -perm -u+x -print -quit)"
+          if [ -z "$upx_bin" ]; then
+            echo "the pinned UPX archive contained no executable"
+            exit 1
+          fi
+          "$upx_bin" --version
+          dirname "$upx_bin" >> "$GITHUB_PATH"
+          echo "DISROBE_REQUIRE_UPX=1" >> "$GITHUB_ENV"
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.10"
+      - name: provision the mruby reference toolchain
+        uses: ./.github/actions/mruby-oracle
+        if: matrix.shard == 'one'
+      - name: provision the smt solver the mba corpus is graded against
+        shell: bash
+        env:
+          Z3_VERSION: "4.16.0"
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ZIP="z3-${Z3_VERSION}-x64-win.zip"
+            curl --proto '=https' --tlsv1.2 --retry 5 --retry-connrefused --location --silent \
+              --show-error --fail --output "$RUNNER_TEMP/$ZIP" \
+              "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/${ZIP}"
+            unzip -q -o "$RUNNER_TEMP/$ZIP" -d "$RUNNER_TEMP/z3"
+            BIN="$(dirname "$(find "$RUNNER_TEMP/z3" -name 'z3.exe' -type f | head -1)")"
+            if [ -z "$BIN" ]; then
+              echo "the pinned z3 archive carried no z3.exe, so the differentials would grade nothing"
+              exit 1
+            fi
+            echo "$BIN" >> "$GITHUB_PATH"
+            PROBE="$BIN/z3.exe"
+          else
+            python -m pip install --disable-pip-version-check "z3-solver==${Z3_VERSION}.0"
+            SCRIPTS="$(python -c "import sysconfig; print(sysconfig.get_path('scripts'))")"
+            echo "$SCRIPTS" >> "$GITHUB_PATH"
+            PROBE="$SCRIPTS/z3"
+          fi
+          if [ ! -x "$PROBE" ]; then
+            echo "no z3 executable at $PROBE; the mba equivalence differentials would grade nothing"
+            ls -la "$(dirname "$PROBE")" | head -40
+            exit 1
+          fi
+          "$PROBE" --version
+          echo "DISROBE_REQUIRE_SOLVER=1" >> "$GITHUB_ENV"
+      - name: require the committed packer fixtures so an absent one fails instead of skipping
+        shell: bash
+        run: |
+          for pair in \
+            corpus/native/packers/fsg/Hash.packed.fsg.exe \
+            corpus/native/packers/nspack/hash.packed.nspack.exe \
+            corpus/native/packers/petite/hello.exe; do
+            if [ ! -f "$pair" ]; then
+              echo "committed packer fixture missing from the checkout: $pair"
+              exit 1
+            fi
+          done
+          echo "DISROBE_REQUIRE_PACKER_FIXTURES=1" >> "$GITHUB_ENV"
+      - name: provision erlang and elixir so the beam differentials run instead of returning early
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: "27.3.4.15"
+          elixir-version: "1.18.4"
+          version-type: strict
+      - name: require erlang so a beam differential fails instead of grading nothing
+        shell: bash
+        run: |
+          for probe in erlc erl; do
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is not callable after provisioning, so the beam differentials would grade nothing"
+              exit 1
+            fi
+          done
+          expected_otp_version="27.3.4.15"
+          otp_version="$(erl -noshell -eval 'Release = erlang:system_info(otp_release), {ok, Version} = file:read_file(filename:join([code:root_dir(), "releases", Release, "OTP_VERSION"])), io:format("~s", [string:trim(binary_to_list(Version))]), halt().')"
+          if [ "$otp_version" != "$expected_otp_version" ]; then
+            echo "setup-beam provisioned OTP $otp_version, expected exactly $expected_otp_version"
+            exit 1
+          fi
+          echo "otp $otp_version"
+          echo "DISROBE_REQUIRE_ERLANG=1" >> "$GITHUB_ENV"
+      - name: require elixir 1.18.4, the release corpus/beam/MANIFEST.toml records for the committed beam
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v elixirc >/dev/null 2>&1; then
+            echo "elixirc is not callable after provisioning, so the elixir recompile differential would grade nothing"
+            exit 1
+          fi
+          expected_elixir_version="1.18.4"
+          elixir_version="$(elixir -e 'IO.write(System.version())')"
+          if [ "$elixir_version" != "$expected_elixir_version" ]; then
+            echo "setup-beam provisioned Elixir $elixir_version, expected exactly $expected_elixir_version, which is the release corpus/beam/MANIFEST.toml records for Elixir.Hello.beam"
+            exit 1
+          fi
+          echo "elixir $elixir_version"
+          echo "DISROBE_REQUIRE_ELIXIR=1" >> "$GITHUB_ENV"
+      - name: provision R so the serialization reader is graded against R instead of returning early
+        uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6
+        with:
+          r-version: "4.6.0"
+          use-public-rspm: true
+      - name: require R 4.6.0, the release corpus/r/MANIFEST.toml records for every committed object
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v Rscript >/dev/null 2>&1; then
+            echo "Rscript is not callable after provisioning, so the R comparison would grade nothing"
+            exit 1
+          fi
+          expected_r_version="4.6.0"
+          r_version="$(Rscript -e 'cat(as.character(getRversion()))')"
+          if [ "$r_version" != "$expected_r_version" ]; then
+            echo "setup-r provisioned R $r_version, expected exactly $expected_r_version, which is the release corpus/r/MANIFEST.toml records for every file under corpus/r/objects"
+            exit 1
+          fi
+          echo "r $r_version"
+          echo "DISROBE_REQUIRE_R=1" >> "$GITHUB_ENV"
+      - name: require XLMMacroDeobfuscator 0.2.7, the deobfuscator that grades the recovered XLM formulas
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_xlm_version="0.2.7"
+          python -m pip install --disable-pip-version-check --upgrade setuptools
+          python -m pip install --disable-pip-version-check "XLMMacroDeobfuscator==${expected_xlm_version}"
+          xlm_version="$(python -c 'import importlib.metadata as m; print(m.version("XLMMacroDeobfuscator"))')"
+          if [ "$xlm_version" != "$expected_xlm_version" ]; then
+            echo "the interpreter carries XLMMacroDeobfuscator $xlm_version, expected exactly $expected_xlm_version, which is the release the XLM grader is pinned to"
+            exit 1
+          fi
+          echo "xlmmacrodeobfuscator $xlm_version"
+          echo "DISROBE_REQUIRE_XLM_REFERENCE=1" >> "$GITHUB_ENV"
+      - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
+        shell: bash
+        run: |
+          demand() {
+            probe="$1"
+            var="$2"
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is expected on $RUNNER_OS but is not callable, so the tests behind $var would grade nothing"
+              exit 1
+            fi
+            ("$probe" --version 2>&1 || true) | head -1
+            echo "$var=1" >> "$GITHUB_ENV"
+          }
+          if ! command -v perl >/dev/null 2>&1; then
+            echo "perl is expected on $RUNNER_OS but is not callable, so the op-tree tests behind DISROBE_REQUIRE_PERL would grade nothing"
+            exit 1
+          fi
+          if ! perl -MB::Concise -e 'print $^V, qq(\n)'; then
+            echo "perl is callable on $RUNNER_OS but its B::Concise module is not, so the op-tree differential would grade nothing"
+            exit 1
+          fi
+          demand ruby DISROBE_REQUIRE_RUBY
+          if [ "$RUNNER_OS" != "macOS" ]; then
+            demand php DISROBE_REQUIRE_PHP
+            seven=""
+            seven_candidates=(7z 7za 7zz 7zr)
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              seven_candidates+=("/c/Program Files/7-Zip/7z.exe" "/c/Program Files (x86)/7-Zip/7z.exe")
+            fi
+            for candidate in "${seven_candidates[@]}"; do
+              [ -x "$candidate" ] || command -v "$candidate" >/dev/null 2>&1 || continue
+              if ("$candidate" </dev/null 2>&1 || true) | grep -q "^7-Zip"; then
+                if [ -x "$candidate" ]; then
+                  seven="$candidate"
+                else
+                  seven="$(command -v "$candidate")"
+                fi
+                break
+              fi
+              echo "$candidate resolves here but does not run and name itself 7-Zip, so it cannot write the reference archives"
+            done
+            if [ -z "$seven" ]; then
+              echo "no 7-zip executable on $RUNNER_OS, so the archive round-trips would grade nothing"
+              exit 1
+            fi
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              dirname "$seven" >> "$GITHUB_PATH"
+            fi
+            echo "using $seven"
+            echo "DISROBE_REQUIRE_SEVEN_ZIP=1" >> "$GITHUB_ENV"
+          else
+            echo "macOS carries no php and its 7-zip name is unconfirmed, so those two stay unset here and their tests announce what they did not grade"
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            demand makecab DISROBE_REQUIRE_MAKECAB
+          fi
+      - name: provision the dotnet sdk the il-equivalence floors are measured with
+        uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/disrobe-dotnet
+        with:
+          dotnet-version: "9.0.x"
+      - name: confirm the dotnet sdk is callable before the suite depends on it
+        shell: bash
+        run: dotnet --info
+      - name: restore the pinned ilspy comparator before its floor runs
+        shell: bash
+        run: |
+          dotnet tool restore --tool-manifest .config/dotnet-tools.json
+          dotnet tool run ilspycmd --allow-roll-forward -- --version
+      - name: provision the installer and elf toolchains so their round trips run instead of returning early
+        shell: bash
+        env:
+          WIX_VERSION: "5.0.2"
+        run: |
+          demand() {
+            probe="$1"
+            var="$2"
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is not callable after provisioning, so the tests behind $var would grade nothing"
+              exit 1
+            fi
+            ("$probe" --version 2>&1 || true) | head -1
+            echo "$var=1" >> "$GITHUB_ENV"
+          }
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            dotnet tool install --global wix --version "$WIX_VERSION" \
+              || dotnet tool update --global wix --version "$WIX_VERSION"
+            export PATH="$HOME/.dotnet/tools:$PATH"
+            echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+            resolved_wix="$(wix --version 2>&1 | head -1 | tr -d '\r')"
+            case "$resolved_wix" in
+              "$WIX_VERSION"*) : ;;
+              *)
+                echo "wix resolved to '$resolved_wix' but this job pins $WIX_VERSION; a v7 toolset refuses to run until the Open Source Maintenance Fee licence is accepted, so the msi tests would fail during provisioning"
+                exit 1
+                ;;
+            esac
+            demand wix DISROBE_REQUIRE_WIX
+          fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            demand readelf DISROBE_REQUIRE_READELF
+            sudo apt-get update
+            sudo apt-get install -y nsis
+            demand makensis DISROBE_REQUIRE_MAKENSIS
+          fi
+      - name: provision LLVM 18 for the aarch64 dense-switch CLI differential and the bigobj reader differential
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes clang-18 lld-18 llvm-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          export PATH="/usr/lib/llvm-18/bin:$PATH"
+          clang --version
+          ld.lld --version
+          llvm-readobj --version
+          echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
+          clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
+      - name: provision the macOS LLVM ELF cross-linker
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install llvm@20 lld@20
+          llvm_bin="$(brew --prefix llvm@20)/bin"
+          lld_bin="$(brew --prefix lld@20)/bin"
+          test -x "$llvm_bin/clang"
+          test -x "$lld_bin/ld.lld"
+          export PATH="$llvm_bin:$lld_bin:$PATH"
+          echo "$llvm_bin" >> "$GITHUB_PATH"
+          echo "$lld_bin" >> "$GITHUB_PATH"
+          clang --version
+          ld.lld --version
+          llvm-strip --version
+          probe="$RUNNER_TEMP/disrobe-elf-link-probe"
+          trap 'rm -f -- "$probe.c" "$probe.elf"' EXIT
+          printf 'void _start(void) {}\n' > "$probe.c"
+          clang --target=x86_64-unknown-linux-gnu -nostdlib -static-pie -fPIE \
+            -fuse-ld=lld -Wl,-e,_start "$probe.c" -o "$probe.elf"
+          llvm-readobj --file-headers "$probe.elf"
+          test "$(head -c 4 "$probe.elf" | od -An -tx1 | tr -d ' \n')" = '7f454c46'
+      - name: restore the MSVC environment after reference tool setup
+        if: runner.os == 'Windows'
+        uses: step-security/msvc-dev-cmd@22c98154b708dbd743e6f27a933cf6ceba3305c4
+      - name: require the final native oracle compiler paths and versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($IsWindows) {
+            [string]$linker = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/link.exe'
+            if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "Missing MSVC linker: $linker" }
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+            [string]$nativeBin = 'C:\mingw64\bin'
+            if (-not (Test-Path -LiteralPath (Join-Path $nativeBin 'gcc.exe') -PathType Leaf)) { throw 'Missing runner MinGW compiler' }
+            $env:PATH = "$nativeBin;$env:PATH"
+            $nativeBin >> $env:GITHUB_PATH
+            (Split-Path -Parent $linker) >> $env:GITHUB_PATH
+            [string]$libgcc = (& gcc '-print-file-name=libgcc.a' | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libgcc -PathType Leaf)) { throw 'GCC cannot resolve libgcc.a' }
+            [string]$prefix = $libgcc
+            foreach ($level in 1..5) { $prefix = Split-Path -Parent $prefix }
+            foreach ($runtime in @('crt2.o', 'libgcc.a')) {
+              [string]$gccRuntime = (& gcc "-print-file-name=$runtime" | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0) { throw "GCC cannot resolve $runtime" }
+              [string]$clangRuntime = (& clang -target x86_64-w64-mingw32 --sysroot $prefix "-print-file-name=$runtime" | Out-String).Trim()
+              if ($LASTEXITCODE -ne 0) { throw "Clang cannot resolve $runtime" }
+              if (-not (Test-Path -LiteralPath $gccRuntime -PathType Leaf) -or -not (Test-Path -LiteralPath $clangRuntime -PathType Leaf)) { throw "Missing paired compiler runtime: $runtime" }
+              if ((Resolve-Path -LiteralPath $gccRuntime).Path -ne (Resolve-Path -LiteralPath $clangRuntime).Path) { throw "GCC and Clang resolve different $runtime files" }
+            }
+          }
+          foreach ($name in @('gcc', 'clang')) {
+            $compiler = (Get-Command $name -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            Write-Output "$name resolves to $compiler"
+            & $compiler --version
+            if ($LASTEXITCODE -ne 0) { throw "$name version probe failed" }
+          }
+          'DISROBE_REQUIRE_NATIVE_TOOLCHAIN=1' >> $env:GITHUB_ENV
+      - name: elixir recompile differential, printing the graded export count
+        if: matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-beam --all-features --no-fail-fast -- --nocapture
+      - name: R serialization differential, printing the graded object count
+        if: matrix.shard == 'three'
+        run: cargo test -p disrobe-pass-scriptlang --all-features --no-fail-fast -- --nocapture
+      - name: XLM formula differential against an independent deobfuscator, printing the graded cell count
+        if: matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-shell --all-features --no-fail-fast -- --nocapture
+      - name: build the CLI used by workspace caller tests
+        if: matrix.shard == 'one' || matrix.shard == 'two'
+        shell: pwsh
+        run: |
+          cargo build -p disrobe-cli --bin disrobe --all-features
+          if ($LASTEXITCODE -ne 0) { throw 'CLI build failed' }
+          [string]$name = if ($env:RUNNER_OS -eq 'Windows') { 'disrobe.exe' } else { 'disrobe' }
+          [string]$binary = Join-Path $env:GITHUB_WORKSPACE "target/debug/$name"
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Missing built CLI: $binary" }
+          "DISROBE_BIN=$binary" >> $env:GITHUB_ENV
+          "DISROBE_MEASUREMENT_EXECUTABLE=$binary" >> $env:GITHUB_ENV
+      - name: workspace shard one
+        if: matrix.shard == 'one'
+        run: >-
+          cargo test --all-features --no-fail-fast
+          -p disrobe-pass-jvm -p disrobe-cli -p disrobe-binfmt -p disrobe-pass-py-deob
+          -p disrobe-nir-lift -p disrobe-pass-ruby -p disrobe-pass-pyarmor
+          -p disrobe-sleigh -p disrobe-pass-nativelang -p disrobe-pass-pyinstaller
+          -p disrobe-pass-sourcedefender -p disrobe-pyarmor-cextract -p disrobe-query
+          -p disrobe-py-marshal -p disrobe-transcode -p disrobe-bytes -p disrobe-plugin-host
+          -p disrobe-validator -p disrobe-ir
+        timeout-minutes: 160
+        env:
+          DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+      - name: workspace shard two
+        if: matrix.shard == 'two'
+        run: >-
+          cargo test --all-features --no-fail-fast
+          -p disrobe-pass-native -p disrobe-pass-py-decompile -p disrobe-pass-wasm-deob
+          -p disrobe-pass-php -p disrobe-pass-swift-objc -p disrobe-pass-pyfreeze
+          -p disrobe-pass-as3
+          -p disrobe-llm-metadata -p disrobe-pass-pickle -p disrobe-taint
+          -p disrobe-vulnmatch -p disrobe-irsummary -p disrobe-capabilities
+          -p disrobe-evidence-mba -p disrobe-nir -p disrobe-prowl -p disrobe-lift-x86
+          -p disrobe-plugin-loader -p disrobe-bench-head-to-head
+          -p disrobe-bench-native-unpack -p disrobe-python -p disrobe-pyarmor-pytrace
+          -p disrobe-wasm -p disrobe-tool-process
+        timeout-minutes: 160
+        env:
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+      - name: workspace shard three
+        if: matrix.shard == 'three'
+        run: >-
+          cargo test --workspace --all-features --no-fail-fast
+          --exclude disrobe-pass-jvm --exclude disrobe-cli --exclude disrobe-binfmt
+          --exclude disrobe-pass-py-deob --exclude disrobe-nir-lift
+          --exclude disrobe-pass-ruby --exclude disrobe-pass-pyarmor --exclude disrobe-sleigh
+          --exclude disrobe-pass-nativelang --exclude disrobe-pass-pyinstaller
+          --exclude disrobe-pass-sourcedefender --exclude disrobe-pyarmor-cextract
+          --exclude disrobe-query --exclude disrobe-py-marshal --exclude disrobe-transcode
+          --exclude disrobe-bytes --exclude disrobe-plugin-host --exclude disrobe-validator
+          --exclude disrobe-ir --exclude disrobe-pass-native --exclude disrobe-pass-py-decompile
+          --exclude disrobe-pass-wasm-deob --exclude disrobe-pass-php
+          --exclude disrobe-pass-swift-objc --exclude disrobe-pass-pyfreeze
+          --exclude disrobe-pass-as3
+          --exclude disrobe-llm-metadata --exclude disrobe-pass-pickle --exclude disrobe-taint
+          --exclude disrobe-vulnmatch --exclude disrobe-irsummary --exclude disrobe-capabilities
+          --exclude disrobe-evidence-mba --exclude disrobe-nir --exclude disrobe-prowl
+          --exclude disrobe-lift-x86 --exclude disrobe-plugin-loader
+          --exclude disrobe-bench-head-to-head --exclude disrobe-bench-native-unpack
+          --exclude disrobe-python --exclude disrobe-pyarmor-pytrace --exclude disrobe-wasm
+          --exclude disrobe-tool-process --exclude disrobe-pass-beam
+          --exclude disrobe-pass-scriptlang --exclude disrobe-pass-shell
+        timeout-minutes: 160
+        env:
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+      - name: retain Ruby opcode measurement
+        if: always() && (matrix.shard == 'one')
+        uses: actions/upload-artifact@v7
+        with:
+          name: yarv-evidence-${{ matrix.os }}
+          path: ${{ runner.temp }}/yarv-evidence
+          retention-days: 14
+      - name: stage this OS leg's cross-platform determinism hash file
+        if: matrix.shard == 'one'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f target/determinism-hashes.txt
+          cp target/determinism-hashes.txt "target/determinism-hashes-${{ matrix.os }}.txt"
+          cat "target/determinism-hashes-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@v7
+        if: matrix.shard == 'one'
+        with:
+          name: determinism-hashes-${{ matrix.os }}
+          path: target/determinism-hashes-${{ matrix.os }}.txt
+      - name: batch worker-pool determinism (--jobs 1 vs --jobs 4, same fixtures, one leg only)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'one'
+        run: cargo test -p disrobe-cli --test determinism_cross_platform -- --ignored batch_jobs_does_not_change_recovered_output --nocapture
+      - name: aarch64 decompiler recompile-execution differential (one leg only)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-native --test aarch64_recovery_grade -- --ignored --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 rust recompile-execution differential (one leg only)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-native --test aarch64_rust_recovery_grade -- --ignored corpus_rust_grade_report --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 c against rust rendering cross-check (one leg only)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-native --test aarch64_render_cross_check -- --ignored c_and_rust_renderings_agree_bit_for_bit --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 floating-point helper semantics on directed vectors (one leg only)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
+        run: cargo test -p disrobe-pass-native --test aarch64_fp_semantics -- --ignored helpers_agree_with_the_integer_model_on_directed_vectors --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 dense-switch CLI differential (one explicitly provisioned leg)
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'one'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
+
+  beam-otp28-long-atu8:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    name: beam OTP 28 long AtU8
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      DISROBE_REQUIRE_ERLANG: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+        with:
+          otp-version: "28.5.0.3"
+          version-type: strict
+      - name: require exact OTP 28.5.0.3 for the long AtU8 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for probe in erlc erl; do
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is not callable after OTP 28 provisioning"
+              exit 1
+            fi
+          done
+          expected_otp_version="28.5.0.3"
+          otp_version="$(erl -noshell -eval 'Release = erlang:system_info(otp_release), {ok, Version} = file:read_file(filename:join([code:root_dir(), "releases", Release, "OTP_VERSION"])), io:format("~s", [string:trim(binary_to_list(Version))]), halt().')"
+          if [ "$otp_version" != "$expected_otp_version" ]; then
+            echo "setup-beam provisioned OTP $otp_version, expected exactly $expected_otp_version"
+            exit 1
+          fi
+          echo "otp $otp_version"
+      - name: OTP 28 compiler and beam_lib long-AtU8 integration gate
+        run: cargo test -p disrobe-pass-beam --test otp28_long_atu8 -- --ignored --nocapture
+
+  determinism-cross-platform:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    name: determinism cross-platform proof
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: determinism-hashes-*
+          merge-multiple: true
+          path: determinism-hashes
+      - name: assert identical input yields byte-identical output on every OS leg
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob
+          import sys
+
+          files = sorted(glob.glob("determinism-hashes/determinism-hashes-*.txt"))
+          if len(files) < 2:
+              sys.exit(f"expected a hash file from every OS leg, found {files}")
+
+          by_os = {}
+          for path in files:
+              os_name = path.rsplit("determinism-hashes-", 1)[-1]
+              if os_name.endswith(".txt"):
+                  os_name = os_name[:-4]
+              entries = {}
+              for line in open(path):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  name, digest = line.rsplit(" ", 1)
+                  entries[name] = digest
+              by_os[os_name] = entries
+
+          oses = sorted(by_os)
+          baseline_os = oses[0]
+          baseline = by_os[baseline_os]
+          mismatches = []
+          for os_name in oses[1:]:
+              entries = by_os[os_name]
+              if entries.keys() != baseline.keys():
+                  mismatches.append(
+                      f"{os_name} vs {baseline_os}: fixture set differs "
+                      f"({sorted(entries)} vs {sorted(baseline)})"
+                  )
+                  continue
+              for fixture, digest in baseline.items():
+                  other = entries[fixture]
+                  if other != digest:
+                      mismatches.append(
+                          f"{fixture}: {baseline_os}={digest} != {os_name}={other}"
+                      )
+
+          if mismatches:
+              sys.exit("cross-platform determinism violated:\n" + "\n".join(mismatches))
+          print(f"determinism proof ok: {len(baseline)} fixture(s) byte-identical across {oses}")
+          PY
+
+  py-recompile-gate:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    name: py recompile-equivalence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.14.5 (pinned corpus interpreter)
+        run: uv python install 3.14.5
+      - name: provision cpython 3.15.0b4 (the prerelease the 3.15 band bar names)
+        run: uv python install 3.15.0b4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: build the disrobe cli the harness drives
+        run: cargo build --release -p disrobe-cli --bin disrobe
+      - name: per-code-object recompile-equivalence floor (>= 96.67% on the pinned 3.14 corpus)
+        env:
+          DISROBE_REQUIRE_PY_314: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
+      - name: per-code-object recompile-equivalence floor (>= 96.09% on the 3.15 band)
+        env:
+          DISROBE_REQUIRE_PY_315: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
+
+  py-band-gate:
+    name: py band gate (3.10, 3.12, 3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: provision cpython 3.10.20 (the release the 3.10 band bar names)
+        run: uv python install 3.10.20
+      - name: provision cpython 3.12.13 (the release the 3.12 band bar names)
+        run: uv python install 3.12.13
+      - name: provision cpython 3.13.14 (the release the 3.13 band bar names)
+        run: uv python install 3.13.14
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: build the disrobe cli the harness drives
+        run: cargo build --release -p disrobe-cli --bin disrobe
+      - name: per-code-object recompile-equivalence floor (>= 95.76% on the 3.10 band)
+        env:
+          DISROBE_REQUIRE_PY_310: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
+      - name: per-code-object recompile-equivalence floor (>= 95.77% on the 3.12 band)
+        env:
+          DISROBE_REQUIRE_PY_312: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
+      - name: per-code-object recompile-equivalence floor (>= 96.06% on the 3.13 band)
+        env:
+          DISROBE_REQUIRE_PY_313: "1"
+        run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
+
+  execution-differentials:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    name: execution differentials
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - name: install lua5.4 and luajit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4 luajit
+          lua5.4 -v
+          luajit -v
+      - name: install C11 compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+          cc --version
+      - name: install luau 0.725 (matches the committed decompile fixtures)
+        run: |
+          curl -fsSL -o luau-ubuntu.zip \
+            https://github.com/luau-lang/luau/releases/download/0.725/luau-ubuntu.zip
+          mkdir -p "$HOME/.local/bin"
+          unzip -o luau-ubuntu.zip -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/luau" "$HOME/.local/bin/luau-compile"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/luau" --help >/dev/null 2>&1 || true
+          "$HOME/.local/bin/luau-compile" --help >/dev/null 2>&1 || true
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.10"
+      - name: provision pinned mruby 3.3.0
+        shell: bash
+        env:
+          MRUBY_COMMIT: "32279e4128527bab4c961854b9cce727a060abea"
+          MRUBY_ARCHIVE_SHA256: "c15bf94a6103380034b5617d24649790b09ac68a2477024f6990b2255e3995d3"
+          MRUBY_VERSION: "3.3.0"
+          MRUBY_BANNER: "mruby 3.3.0 (2024-02-14)"
+        run: |
+          set -euo pipefail
+
+          archive="${RUNNER_TEMP}/mruby-${MRUBY_COMMIT}.tar.gz"
+          source_dir="${RUNNER_TEMP}/mruby-${MRUBY_COMMIT}"
+          prefix="${RUNNER_TEMP}/mruby-${MRUBY_VERSION}"
+
+          curl \
+            --fail \
+            --show-error \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --proto '=https' \
+            --tlsv1.2 \
+            --output "$archive" \
+            "https://codeload.github.com/mruby/mruby/tar.gz/${MRUBY_COMMIT}"
+
+          printf '%s  %s\n' "$MRUBY_ARCHIVE_SHA256" "$archive" |
+            sha256sum --check --strict -
+
+          mkdir -p "$source_dir" "$prefix/bin"
+          tar \
+            --extract \
+            --gzip \
+            --file "$archive" \
+            --directory "$source_dir" \
+            --strip-components=1 \
+            --no-same-owner \
+            --no-same-permissions
+
+          (
+            cd "$source_dir"
+            MRUBY_CONFIG=default ruby -S rake all
+          )
+
+          install -m 0755 "$source_dir/build/host/bin/mrbc" "$prefix/bin/mrbc"
+          install -m 0755 "$source_dir/build/host/bin/mruby" "$prefix/bin/mruby"
+
+          install -d "$prefix/include/mruby"
+          install -m 0644 "$source_dir/include/mruby/ops.h" "$prefix/include/mruby/ops.h"
+          install -m 0644 "$source_dir/include/mruby/version.h" "$prefix/include/mruby/version.h"
+          printf 'DISROBE_MRUBY_INCLUDE=%s\n' "$prefix/include/mruby" >> "$GITHUB_ENV"
+
+          mrbc_banner="$("$prefix/bin/mrbc" --version)"
+          mruby_banner="$("$prefix/bin/mruby" --version)"
+
+          if [[ "$mrbc_banner" != "$MRUBY_BANNER" ]]; then
+            printf 'mrbc reported %q, expected %q\n' "$mrbc_banner" "$MRUBY_BANNER" >&2
+            exit 1
+          fi
+          if [[ "$mruby_banner" != "$MRUBY_BANNER" ]]; then
+            printf 'mruby reported %q, expected %q\n' "$mruby_banner" "$MRUBY_BANNER" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: opcache
+          tools: none
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: locate the opcache zend_extension the op_array emitter loads
+        run: |
+          ext_dir="$(php -r 'echo ini_get("extension_dir");')"
+          dll="${ext_dir}/opcache.so"
+          if [ ! -f "$dll" ]; then
+            echo "opcache.so not found at ${dll}; the php op_array differential cannot emit without it" >&2
+            ls -la "$ext_dir" || true
+            exit 1
+          fi
+          echo "DZOA_OPCACHE_DLL=${dll}" >> "$GITHUB_ENV"
+          echo "resolved opcache: ${dll}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: wasmtime re-execution differential (recovered wasm runs identically to clean)
+        run: cargo test -p disrobe-pass-wasm-deob --features sandbox,dwarf -- --nocapture
+      - name: lua interpreter re-execution differential
+        run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
+      - name: luajit decompile re-execution differential
+        run: cargo test -p disrobe-pass-lua --test luajit_decompile_oracle -- --nocapture
+      - name: luau decompile re-execution differential
+        run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture
+      - name: ruby yarv recompile differential
+        env:
+          DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
+        run: cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle -- --nocapture
+      - name: retain Ruby opcode measurement
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: yarv-evidence-execution
+          path: ${{ runner.temp }}/yarv-evidence
+          retention-days: 14
+      - name: mruby 3.3.0 recompile and execution differential
+        env:
+          DISROBE_REQUIRE_MRUBY: "1"
+        run: cargo test -p disrobe-pass-ruby --test mruby_recompile_oracle -- --nocapture
+      - name: mruby opcode table graded against the installed ops.h
+        run: cargo test -p disrobe-pass-ruby --test mruby_isa_coverage -- --nocapture
+      - name: php op_array behavioral differential
+        env:
+          DISROBE_REQUIRE_PHP: "1"
+          DISROBE_REQUIRE_PHP_OPCACHE: "1"
+        run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
+      - name: php loader re-execution differential
+        run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture
+      - name: node re-execution differential for the js deobfuscator
+        run: cargo test -p disrobe-pass-js-deob --test jsconfuser_node_oracle -- --nocapture
+      - name: node packager carve checks
+        run: cargo test -p disrobe-pass-js-deob --test node_sea_pkg_nexe --test real_node_packagers -- --nocapture
+      - name: v8 code-serializer fixture differential
+        run: cargo test -p disrobe-pass-js-deob --test v8_codeserializer_real -- --nocapture
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny --all-features check
+
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@master
+
+  hygiene:
+    name: source hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: reject committed scratch scaffolding
+        shell: bash
+        run: |
+          files=$(git ls-files -- crates xtask | grep '\.rs$')
+          named=$(printf '%s\n' "$files" | grep -E '_scratch\.rs$' || true)
+          if [ -n "$named" ]; then
+            echo "scratch scaffolding is committed; promote it to a named permanent target that asserts something, or delete it:"
+            printf '%s\n' "$named"
+            exit 1
+          fi
+          helpers=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(pub )?(async )?fn (scratch_dump|probe_dump)' || true)
+          if [ -n "$helpers" ]; then
+            echo "a throwaway dump helper is committed; move it out of the tree or make it assert something:"
+            printf '%s\n' "$helpers"
+            exit 1
+          fi
+          echo "no committed scratch scaffolding"
+      - name: source comment count stays at or below the string-literal baseline
+        shell: bash
+        run: |
+          baseline=39
+          files=$(git ls-files -- crates xtask | grep '\.rs$')
+          count=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)' | wc -l)
+          echo "line-leading comment-shaped lines: $count (baseline $baseline)"
+          if [ "$count" -gt "$baseline" ]; then
+            echo "this tree carries no source comments. Every one of the $baseline baseline matches is comment-shaped text INSIDE a string literal: embedded Java, Go build pragmas, YARA rule fixtures, emitted IDE plugin templates, the JS fixture text in the js-deob preset-env tests, and the js-deob hazard fixtures whose whole point is that a match sitting in a comment must not be rewritten."
+            echo "the count rose, so a real comment was added. Full list:"
+            printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)'
+            exit 1
+          fi
+          if [ "$count" -lt "$baseline" ]; then
+            echo "the count fell to $count, which is an improvement; set baseline=$count in this workflow so it keeps ratcheting down"
+            exit 1
+          fi
+          echo "comment count matches the baseline exactly"
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - run: cargo +1.95.0 check --workspace --all-features
+
+  slim:
+    name: slim (no-default-features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: export PYO3_PYTHON
+        shell: bash
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: slim compiles (lib, bin, tests)
+        run: cargo check -p disrobe-cli --no-default-features --all-targets
+      - name: slim is clippy-clean
+        run: cargo clippy -p disrobe-cli --no-default-features --all-targets -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+      - name: the graceful-bail seam fires when a pass is compiled out
+        run: cargo test -p disrobe-cli --no-default-features --test slim_wasm_bail -- --nocapture
+      - name: the network and async surfaces bail when they are compiled out
+        run: cargo test -p disrobe-cli --no-default-features --test slim_network_bail -- --nocapture
+      - name: build the slim release binary
+        run: cargo build -p disrobe-cli --release --no-default-features --bin disrobe
+      - name: the wasm decompiler tree is absent from the slim binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p disrobe-cli --no-default-features -e normal --prefix none | sort -u)"
+          for crate in walrus wasm-tools wasmtime tokio axum tonic tower-http tokio-util tokio-stream reqwest hyper rustls rmcp keyring; do
+            if printf '%s\n' "$tree" | grep -qE "(^| )${crate} v[0-9]"; then
+              echo "structural gate failed: ${crate} is in the slim disrobe-cli dependency tree" >&2
+              exit 1
+            fi
+            echo "ok: ${crate} absent from the slim disrobe-cli dependency tree"
+          done
+      - name: slim binary runs an always-on pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'hello\x00 disrobe SLIM_SMOKE_TOKEN world' > slim-smoke.bin
+          ./target/release/disrobe strings slim-smoke.bin | tee slim-smoke.out
+          grep -q "SLIM_SMOKE_TOKEN" slim-smoke.out

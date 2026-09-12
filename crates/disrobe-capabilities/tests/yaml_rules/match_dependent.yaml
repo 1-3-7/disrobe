@@ -1,0 +1,10 @@
+rule:
+  meta:
+    name: tag-kappa dependent rule
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture proving a cross-rule match resolves per function instance, not globally
+  features:
+    - and:
+        - match: "tag-iota base rule"
+        - mnemonic: xor

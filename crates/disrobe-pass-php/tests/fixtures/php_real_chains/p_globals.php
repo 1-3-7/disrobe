@@ -1,0 +1,1 @@
+<?php $GLOBALS['x']='ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTsK'; eval(base64_decode($GLOBALS['x']));

@@ -1,0 +1,22 @@
+Source: names_probe_net9_x86_64.cs
+Project: names_probe_net9_x86_64.csproj.txt
+Target: net9.0, win-x64, PE32+, AMD64, NativeAOT metadata 10.1
+SDK: .NET SDK 9.0.316
+Compiler: Microsoft.DotNet.ILCompiler 9.0.18, runtime.win-x64.microsoft.dotnet.ilcompiler 9.0.18
+Linker: MSVC 14.44.35207 Hostx64\x64\link.exe
+Runtime source tag: https://github.com/dotnet/runtime/tree/v9.0.18
+Command: dotnet publish names_probe_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Build directory: the project, Program.cs and publish output live outside the repository; PathMap rewrites the project directory to C:\src\names_probe_net9_x86_64 so no build path is embedded
+Path leak scan: the committed image carries zero occurrences of the byte sequence C:\ in ASCII and in UTF-16LE
+Source SHA-256: 6FC8FC79A742C9E21FDB8B0591F8F22EADBEEBB6D1E0173173CF5647C057EBB9
+Project SHA-256: 0173755CDAA6C00053EE7C961D89A33A7EA2E25F58819B49575407FAC7C41354
+Executable SHA-256: 2F400B7F1399451F80675017358166BA8FF1FE8DCF0E231913142ADB06527D29
+Purpose: this image exists so the name-recovery grades have a subject whose declared names are stated in this repository. No method body, code range or unwind record is graded against it, so no linker map, unwind dump or disassembly is committed beside it.
+Declared namespace: DisrobeAotProbe
+Declared types: IGauge, Program, Thermometer, Widget, and no other type in that namespace
+Declared type IGauge: interface, declares Read
+Declared type Widget: sealed class, declares properties Serial and Label and an override of ToString
+Declared type Thermometer: sealed class, implements IGauge, declares the field calibration, Read and an override of ToString
+Declared type Program: static class, declares the entry point Main
+Declared names the source spells: Widget, IGauge, Thermometer, DisrobeAotProbe, Program, Main, ToString, Read, Serial, Label, calibration, get_Serial, set_Serial, get_Label, set_Label
+Trimming note: IlcGenerateStackTraceData is on, so the names the runtime still needs survive into the metadata string heap. Names reachable only through a property accessor or a private field are trimmed, so Serial, Label, calibration, get_Serial, set_Serial, get_Label and set_Label carry no length-prefixed entry in the committed image. That absence is a property of the compiler's trimming, not of the reader.

@@ -1,0 +1,574 @@
+use std::collections::BTreeSet;
+
+pub trait DiGraph {
+    fn node_count(&self) -> usize;
+    fn entry(&self) -> u32;
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32));
+}
+
+#[derive(Debug, Clone)]
+pub struct AdjGraph {
+    entry: u32,
+    succ: Vec<Vec<u32>>,
+}
+
+impl AdjGraph {
+    #[must_use]
+    pub const fn new(entry: u32, succ: Vec<Vec<u32>>) -> Self {
+        Self { entry, succ }
+    }
+}
+
+impl DiGraph for AdjGraph {
+    fn node_count(&self) -> usize {
+        self.succ.len()
+    }
+
+    fn entry(&self) -> u32 {
+        self.entry
+    }
+
+    fn for_each_successor(&self, node: u32, visit: &mut dyn FnMut(u32)) {
+        if let Some(list) = self.succ.get(node as usize) {
+            for &s in list {
+                visit(s);
+            }
+        }
+    }
+}
+
+const UNVISITED: u32 = u32::MAX;
+
+fn reverse_postorder<G: DiGraph>(graph: &G) -> (Vec<u32>, Vec<u32>) {
+    let count: usize = graph.node_count();
+    let mut visited: Vec<bool> = vec![false; count];
+    let mut postorder: Vec<u32> = Vec::with_capacity(count);
+    let entry: u32 = graph.entry();
+    if (entry as usize) >= count {
+        return (Vec::new(), vec![UNVISITED; count]);
+    }
+    let mut stack: Vec<(u32, Vec<u32>, usize)> = Vec::new();
+    let mut initial: Vec<u32> = Vec::new();
+    graph.for_each_successor(entry, &mut |s: u32| initial.push(s));
+    visited[entry as usize] = true;
+    stack.push((entry, initial, 0));
+    while let Some((node, succs, idx)) = stack.last_mut() {
+        if *idx < succs.len() {
+            let child: u32 = succs[*idx];
+            *idx += 1;
+            let ci: usize = child as usize;
+            if ci < count && !visited[ci] {
+                visited[ci] = true;
+                let mut child_succs: Vec<u32> = Vec::new();
+                graph.for_each_successor(child, &mut |s: u32| child_succs.push(s));
+                stack.push((child, child_succs, 0));
+            }
+        } else {
+            postorder.push(*node);
+            stack.pop();
+        }
+    }
+    let mut rpo: Vec<u32> = postorder;
+    rpo.reverse();
+    let mut rpo_num: Vec<u32> = vec![UNVISITED; count];
+    for (i, &node) in rpo.iter().enumerate() {
+        rpo_num[node as usize] = i as u32;
+    }
+    (rpo, rpo_num)
+}
+
+fn predecessors<G: DiGraph>(graph: &G) -> Vec<Vec<u32>> {
+    let count: usize = graph.node_count();
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); count];
+    for from in 0..count {
+        graph.for_each_successor(from as u32, &mut |s: u32| {
+            if (s as usize) < count {
+                preds[s as usize].push(from as u32);
+            }
+        });
+    }
+    preds
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dominators {
+    entry: u32,
+    idom: Vec<Option<u32>>,
+    rpo: Vec<u32>,
+}
+
+impl Dominators {
+    #[must_use]
+    pub fn compute<G: DiGraph>(graph: &G) -> Self {
+        let count: usize = graph.node_count();
+        let entry: u32 = graph.entry();
+        let (rpo, rpo_num): (Vec<u32>, Vec<u32>) = reverse_postorder(graph);
+        let preds: Vec<Vec<u32>> = predecessors(graph);
+        let mut idom: Vec<Option<u32>> = vec![None; count];
+        if (entry as usize) < count {
+            idom[entry as usize] = Some(entry);
+        }
+        let mut changed: bool = true;
+        while changed {
+            changed = false;
+            for &b in &rpo {
+                if b == entry {
+                    continue;
+                }
+                let mut new_idom: Option<u32> = None;
+                for &p in &preds[b as usize] {
+                    if idom[p as usize].is_some() {
+                        new_idom =
+                            Some(new_idom.map_or(p, |cur: u32| intersect(cur, p, &idom, &rpo_num)));
+                    }
+                }
+                if new_idom.is_some() && new_idom != idom[b as usize] {
+                    idom[b as usize] = new_idom;
+                    changed = true;
+                }
+            }
+        }
+        Self { entry, idom, rpo }
+    }
+
+    #[must_use]
+    pub fn reverse_postorder(&self) -> &[u32] {
+        &self.rpo
+    }
+
+    #[must_use]
+    pub fn is_reachable(&self, node: u32) -> bool {
+        node == self.entry || self.idom.get(node as usize).copied().flatten().is_some()
+    }
+
+    #[must_use]
+    pub fn immediate_dominator(&self, node: u32) -> Option<u32> {
+        if node == self.entry {
+            return None;
+        }
+        self.idom.get(node as usize).copied().flatten()
+    }
+
+    #[must_use]
+    pub fn dominates(&self, a: u32, b: u32) -> bool {
+        let mut cur: u32 = b;
+        loop {
+            if cur == a {
+                return true;
+            }
+            match self.idom.get(cur as usize).copied().flatten() {
+                Some(parent) if parent == cur => return false,
+                Some(parent) => cur = parent,
+                None => return false,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn dominator_set(&self, node: u32) -> BTreeSet<u32> {
+        let mut set: BTreeSet<u32> = BTreeSet::new();
+        let mut cur: u32 = node;
+        loop {
+            if !set.insert(cur) {
+                break;
+            }
+            match self.idom.get(cur as usize).copied().flatten() {
+                Some(parent) if parent == cur => break,
+                Some(parent) => cur = parent,
+                None => break,
+            }
+        }
+        set
+    }
+
+    #[must_use]
+    pub fn children(&self, node: u32) -> Vec<u32> {
+        let mut kids: Vec<u32> = Vec::new();
+        for (child, parent) in self.idom.iter().enumerate() {
+            if child as u32 != self.entry && *parent == Some(node) {
+                kids.push(child as u32);
+            }
+        }
+        kids
+    }
+}
+
+fn intersect(mut a: u32, mut b: u32, idom: &[Option<u32>], rpo_num: &[u32]) -> u32 {
+    while a != b {
+        while rpo_num[a as usize] > rpo_num[b as usize] {
+            match idom[a as usize] {
+                Some(next) if next != a => a = next,
+                _ => return a,
+            }
+        }
+        while rpo_num[b as usize] > rpo_num[a as usize] {
+            match idom[b as usize] {
+                Some(next) if next != b => b = next,
+                _ => return b,
+            }
+        }
+    }
+    a
+}
+
+pub fn natural_loop_body<T: Ord + Copy>(
+    header: T,
+    latches: &[T],
+    mut predecessors: impl FnMut(T, &mut dyn FnMut(T)),
+) -> BTreeSet<T> {
+    let mut body: BTreeSet<T> = BTreeSet::new();
+    body.insert(header);
+    let mut pending: Vec<T> = Vec::with_capacity(latches.len());
+    for &latch in latches {
+        if body.insert(latch) {
+            pending.push(latch);
+        }
+    }
+    while let Some(node) = pending.pop() {
+        predecessors(node, &mut |pred: T| {
+            if body.insert(pred) {
+                pending.push(pred);
+            }
+        });
+    }
+    body
+}
+
+pub fn immediate_post_dominators(
+    node_count: usize,
+    mut successors_with_exit: impl FnMut(u32, &mut dyn FnMut(u32)),
+) -> Vec<Option<u32>> {
+    let exit: u32 = node_count as u32;
+    let total: usize = node_count + 1;
+    let mut reverse: Vec<Vec<u32>> = vec![Vec::new(); total];
+    for from in 0..node_count as u32 {
+        successors_with_exit(from, &mut |s: u32| {
+            if (s as usize) < total {
+                reverse[s as usize].push(from);
+            }
+        });
+    }
+    let graph: AdjGraph = AdjGraph::new(exit, reverse);
+    let doms: Dominators = Dominators::compute(&graph);
+    (0..node_count as u32)
+        .map(|n: u32| doms.immediate_dominator(n))
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_range_loop)]
+mod tests {
+    use super::*;
+    use crate::rng::{SeededRng, seeded};
+    use rand::RngExt;
+    use std::collections::BTreeMap;
+
+    fn body_over(preds: &[Vec<u32>], header: u32, latches: &[u32]) -> BTreeSet<u32> {
+        natural_loop_body(header, latches, |node: u32, emit: &mut dyn FnMut(u32)| {
+            for &pred in &preds[node as usize] {
+                emit(pred);
+            }
+        })
+    }
+
+    #[test]
+    fn a_self_loop_is_its_own_body() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 1]];
+        assert_eq!(body_over(&preds, 1, &[1]), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn the_body_walks_predecessors_back_to_the_header() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 3], vec![1], vec![2]];
+        assert_eq!(body_over(&preds, 1, &[3]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn a_node_outside_the_loop_stays_outside() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2], vec![1], vec![0]];
+        assert_eq!(
+            body_over(&preds, 1, &[2]),
+            BTreeSet::from([1, 2]),
+            "node 3 reaches nothing in the loop and must not be pulled in"
+        );
+    }
+
+    #[test]
+    fn several_latches_contribute_one_body() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2, 3], vec![1], vec![1]];
+        assert_eq!(body_over(&preds, 1, &[2, 3]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn a_cycle_among_predecessors_terminates() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0, 2], vec![3], vec![2, 1]];
+        assert_eq!(body_over(&preds, 1, &[2]), BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn the_header_is_present_even_with_no_latches() {
+        let preds: Vec<Vec<u32>> = vec![vec![], vec![0]];
+        assert_eq!(body_over(&preds, 1, &[]), BTreeSet::from([1]));
+    }
+
+    fn naive_dominators(entry: u32, succ: &[Vec<u32>]) -> Vec<Option<BTreeSet<u32>>> {
+        let count: usize = succ.len();
+        let reachable: Vec<bool> = reachable_set(entry, succ);
+        let mut out: Vec<Option<BTreeSet<u32>>> = vec![None; count];
+        for target in 0..count as u32 {
+            if !reachable[target as usize] {
+                continue;
+            }
+            let mut doms: BTreeSet<u32> = BTreeSet::new();
+            for candidate in 0..count as u32 {
+                if !reachable[candidate as usize] {
+                    continue;
+                }
+                if candidate == target || !reaches_avoiding(entry, target, candidate, succ) {
+                    doms.insert(candidate);
+                }
+            }
+            out[target as usize] = Some(doms);
+        }
+        out
+    }
+
+    fn reachable_set(entry: u32, succ: &[Vec<u32>]) -> Vec<bool> {
+        let count: usize = succ.len();
+        let mut seen: Vec<bool> = vec![false; count];
+        if (entry as usize) >= count {
+            return seen;
+        }
+        let mut stack: Vec<u32> = vec![entry];
+        seen[entry as usize] = true;
+        while let Some(node) = stack.pop() {
+            for &s in &succ[node as usize] {
+                if (s as usize) < count && !seen[s as usize] {
+                    seen[s as usize] = true;
+                    stack.push(s);
+                }
+            }
+        }
+        seen
+    }
+
+    fn reaches_avoiding(entry: u32, target: u32, blocked: u32, succ: &[Vec<u32>]) -> bool {
+        let count: usize = succ.len();
+        if entry == blocked {
+            return false;
+        }
+        let mut seen: Vec<bool> = vec![false; count];
+        let mut stack: Vec<u32> = vec![entry];
+        seen[entry as usize] = true;
+        while let Some(node) = stack.pop() {
+            if node == target {
+                return true;
+            }
+            for &s in &succ[node as usize] {
+                let si: usize = s as usize;
+                if si < count && s != blocked && !seen[si] {
+                    seen[si] = true;
+                    stack.push(s);
+                }
+            }
+        }
+        false
+    }
+
+    fn idom_from_sets(entry: u32, sets: &[Option<BTreeSet<u32>>]) -> Vec<Option<u32>> {
+        sets.iter()
+            .enumerate()
+            .map(|(node, maybe): (usize, &Option<BTreeSet<u32>>)| {
+                let node: u32 = node as u32;
+                let Some(doms) = maybe else {
+                    return None;
+                };
+                if node == entry {
+                    return None;
+                }
+                let strict: Vec<u32> = doms.iter().copied().filter(|&d: &u32| d != node).collect();
+                strict.iter().copied().find(|&cand: &u32| {
+                    strict.iter().all(|&other: &u32| {
+                        other == cand
+                            || sets[cand as usize]
+                                .as_ref()
+                                .is_some_and(|s: &BTreeSet<u32>| s.contains(&other))
+                    })
+                })
+            })
+            .collect()
+    }
+
+    fn random_graph(rng: &mut SeededRng, count: usize, allow_irreducible: bool) -> Vec<Vec<u32>> {
+        let mut succ: Vec<Vec<u32>> = vec![Vec::new(); count];
+        for node in 0..count {
+            let fanout: usize = (rng.random::<u32>() % 3) as usize;
+            for _ in 0..fanout {
+                let target: u32 = if allow_irreducible {
+                    rng.random::<u32>() % count as u32
+                } else {
+                    let span: u32 = (count - node) as u32;
+                    node as u32 + 1 + (rng.random::<u32>() % span.max(1))
+                };
+                if (target as usize) < count && !succ[node].contains(&target) {
+                    succ[node].push(target);
+                }
+            }
+            succ[node].sort_unstable();
+        }
+        succ
+    }
+
+    fn connected_graph(rng: &mut SeededRng, count: usize) -> Vec<Vec<u32>> {
+        let mut succ: Vec<Vec<u32>> = random_graph(rng, count, true);
+        for node in 1..count as u32 {
+            let parent: usize = (rng.random::<u32>() % node) as usize;
+            if !succ[parent].contains(&node) {
+                succ[parent].push(node);
+                succ[parent].sort_unstable();
+            }
+        }
+        succ
+    }
+
+    #[test]
+    fn chk_idom_matches_naive_oracle_reducible_and_irreducible() {
+        for irreducible in [false, true] {
+            let mut rng: SeededRng = seeded(if irreducible {
+                0xC0FF_EE01
+            } else {
+                0x1234_5678
+            });
+            for _ in 0..400 {
+                let count: usize = 1 + (rng.random::<u32>() % 12) as usize;
+                let succ: Vec<Vec<u32>> = random_graph(&mut rng, count, irreducible);
+                let graph: AdjGraph = AdjGraph::new(0, succ.clone());
+                let doms: Dominators = Dominators::compute(&graph);
+                let oracle_sets: Vec<Option<BTreeSet<u32>>> = naive_dominators(0, &succ);
+                let oracle_idom: Vec<Option<u32>> = idom_from_sets(0, &oracle_sets);
+                for node in 0..count as u32 {
+                    assert_eq!(
+                        doms.immediate_dominator(node),
+                        oracle_idom[node as usize],
+                        "idom mismatch node {node} irreducible={irreducible} succ={succ:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dominator_set_matches_naive_on_connected_graphs() {
+        let mut rng: SeededRng = seeded(0xABCD_1234);
+        for _ in 0..400 {
+            let count: usize = 1 + (rng.random::<u32>() % 12) as usize;
+            let succ: Vec<Vec<u32>> = connected_graph(&mut rng, count);
+            let graph: AdjGraph = AdjGraph::new(0, succ.clone());
+            let doms: Dominators = Dominators::compute(&graph);
+            let oracle: Vec<Option<BTreeSet<u32>>> = naive_dominators(0, &succ);
+            for node in 0..count {
+                assert_eq!(
+                    Some(&doms.dominator_set(node as u32)),
+                    oracle[node].as_ref(),
+                    "dom-set mismatch node {node} succ={succ:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dominates_agrees_with_dominator_set() {
+        let mut rng: SeededRng = seeded(0x5555_AAAA);
+        for _ in 0..300 {
+            let count: usize = 1 + (rng.random::<u32>() % 10) as usize;
+            let succ: Vec<Vec<u32>> = random_graph(&mut rng, count, true);
+            let graph: AdjGraph = AdjGraph::new(0, succ);
+            let doms: Dominators = Dominators::compute(&graph);
+            for b in 0..count as u32 {
+                if !doms.is_reachable(b) {
+                    continue;
+                }
+                let set: BTreeSet<u32> = doms.dominator_set(b);
+                for a in 0..count as u32 {
+                    assert_eq!(doms.dominates(a, b), set.contains(&a), "dominates({a},{b})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn postdominators_well_defined_multi_return_noreturn_infinite() {
+        let mut rng: SeededRng = seeded(0xFEED_BEEF);
+        for _ in 0..400 {
+            let count: usize = 1 + (rng.random::<u32>() % 12) as usize;
+            let succ: Vec<Vec<u32>> = random_graph(&mut rng, count, true);
+            let mut sinks: BTreeSet<u32> = BTreeSet::new();
+            for (node, list) in succ.iter().enumerate() {
+                if list.is_empty() || rng.random::<u32>() % 4 == 0 {
+                    sinks.insert(node as u32);
+                }
+            }
+            let succ_ref: &Vec<Vec<u32>> = &succ;
+            let sinks_ref: &BTreeSet<u32> = &sinks;
+            let report = |node: u32, visit: &mut dyn FnMut(u32)| {
+                for &s in &succ_ref[node as usize] {
+                    visit(s);
+                }
+                if sinks_ref.contains(&node) {
+                    visit(count as u32);
+                }
+            };
+            let first: Vec<Option<u32>> = immediate_post_dominators(count, report);
+            let report2 = |node: u32, visit: &mut dyn FnMut(u32)| {
+                for &s in &succ_ref[node as usize] {
+                    visit(s);
+                }
+                if sinks_ref.contains(&node) {
+                    visit(count as u32);
+                }
+            };
+            let second: Vec<Option<u32>> = immediate_post_dominators(count, report2);
+            assert_eq!(first, second, "postdom nondeterministic succ={succ:?}");
+
+            let mut reverse: Vec<Vec<u32>> = vec![Vec::new(); count + 1];
+            for node in 0..count as u32 {
+                for &s in &succ[node as usize] {
+                    reverse[s as usize].push(node);
+                }
+                if sinks.contains(&node) {
+                    reverse[count].push(node);
+                }
+            }
+            let oracle_sets: Vec<Option<BTreeSet<u32>>> = naive_dominators(count as u32, &reverse);
+            let oracle_idom: Vec<Option<u32>> = idom_from_sets(count as u32, &oracle_sets);
+            for node in 0..count {
+                assert_eq!(
+                    first[node], oracle_idom[node],
+                    "postdom mismatch node {node} succ={succ:?} sinks={sinks:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dead_block_flowing_into_a_live_one_does_not_remove_its_dominator() {
+        let succ: Vec<Vec<u32>> = vec![vec![1], vec![], vec![1]];
+        let graph: AdjGraph = AdjGraph::new(0, succ.clone());
+        let doms: Dominators = Dominators::compute(&graph);
+        let oracle: Vec<Option<BTreeSet<u32>>> = naive_dominators(0, &succ);
+        assert_eq!(doms.dominator_set(1), BTreeSet::from([0, 1]));
+        assert_eq!(Some(&doms.dominator_set(1)), oracle[1].as_ref());
+        assert!(!doms.is_reachable(2));
+        let counts: BTreeMap<u32, usize> = (0..3u32)
+            .filter(|node: &u32| doms.is_reachable(*node))
+            .map(|node: u32| doms.dominator_set(node).len() as u32)
+            .fold(
+                BTreeMap::new(),
+                |mut acc: BTreeMap<u32, usize>, len: u32| {
+                    *acc.entry(len).or_default() += 1;
+                    acc
+                },
+            );
+        assert!(counts.contains_key(&1));
+    }
+}

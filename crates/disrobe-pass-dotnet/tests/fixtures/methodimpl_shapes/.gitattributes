@@ -1,0 +1,6 @@
+MethodImplShapes.il -text
+MethodImplShapes.dll -text
+MethodImplShapes.metadata.txt -text
+build.ps1 -text
+metadata_reference/Program.cs -text
+metadata_reference/metadata_reference.csproj -text

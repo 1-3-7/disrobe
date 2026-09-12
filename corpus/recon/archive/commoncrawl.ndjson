@@ -1,0 +1,4 @@
+{"url":"https://planted.example.com/","timestamp":"20240105","status":"200","mime-detected":"text/html"}
+{"url":"https://planted.example.com/search?q=test&page=1","status":"200","mime":"text/html"}
+{"url":"https://planted.example.com/search?q=other&page=2","status":"200","mime":"text/html"}
+{"url":"https://shop.planted.example.com/cart","status":"302","mime-detected":"text/html"}

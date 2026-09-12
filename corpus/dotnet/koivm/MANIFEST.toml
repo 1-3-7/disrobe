@@ -1,0 +1,52 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-06-13"
+toolchain = "yck1509/ConfuserEx + TheProxyRE/KoiVM (real ConfuserEx-lineage register VM)"
+note = "benign self-authored sample; virtualized by real KoiVM driven through its public Virtualizer api"
+
+[provenance]
+compiler = "csc.exe (.NET Framework 4.8, C# 5 lang level), -optimize+"
+virtualizer = "KoiVM.dll (TheProxyRE fork) against yck1509 Confuser2 + yck1509/dnlib 1.5.0.1500"
+seed = 0
+runtime_lib = "KoiVM.Runtime.dll dispatcher emitted alongside the virtualized module"
+verified = "virtualized exe executes under .NET 4.8 and prints output byte-identical to the clean exe"
+
+[[fixture]]
+name = "KoiSample.clean.exe"
+path = "KoiSample.clean.exe"
+kind = "managed-pe-exe"
+provenance = "real"
+source = "KoiSample.cs"
+description = "unobfuscated baseline: ground-truth CIL the devirtualizer is graded against"
+
+[[fixture]]
+name = "KoiSample.clean.il"
+path = "KoiSample.clean.il"
+kind = "il-listing"
+provenance = "real"
+description = "ildasm-equivalent dump of the clean exe; per-method ground-truth bodies"
+
+[[fixture]]
+name = "KoiSample.koivm.exe"
+path = "KoiSample.koivm.exe"
+kind = "koivm-virtualized-pe-exe"
+provenance = "real"
+description = "the clean exe after real KoiVM virtualization; carries a #Koi stream; 6 methods replaced with VM-entry stubs"
+
+[[fixture]]
+name = "KoiVM.Runtime.dll"
+path = "KoiVM.Runtime.dll"
+kind = "koivm-runtime-lib"
+provenance = "real"
+description = "the VM dispatcher/runtime the stubs call into; present so the sample is runnable end to end"
+
+[virtualized_methods]
+Add = "(int a, int b) => a + b; semantics: Add(2,3)=5"
+Square = "(int x) => x * x; semantics: Square(7)=49"
+SumTo = "(int n) => sum 1..n via for loop; semantics: SumTo(10)=55"
+Classify = "(int v) => v<0 ? -1 : v==0 ? 0 : 1; semantics: Classify(-5)=-1"
+Factorial = "(int n) => n! via while loop, returns long; semantics: Factorial(5)=120"
+Max3 = "(int a,int b,int c) => max of three; semantics: Max3(3,9,4)=9"
+
+[not_virtualized_methods]
+note = "Counter::.ctor, Counter::Increment, Counter::Value, Text::Greeting, Program::Main keep native CIL"

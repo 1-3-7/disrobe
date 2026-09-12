@@ -1,0 +1,17 @@
+object ScalarForm: TScalarForm
+  Tiny = -128
+  Small = -32000
+  Big = 2000000000
+  Huge = 9000000000000000000
+  Nothing = nil
+  Yes = True
+  No = False
+  Style = [fsBold, fsItalic]
+  Empty = []
+  Align = alClient
+  Blank = ''
+  Quote = 'it''s'
+  Control = 'a'#13#10'b'
+  Wide = 'na'#239've'
+  Trailing = 1
+end

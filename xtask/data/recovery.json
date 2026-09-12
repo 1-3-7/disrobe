@@ -1,0 +1,989 @@
+{
+  "title": "Measured recovery by ecosystem",
+  "subtitle": "measured numbers, disrobe's own except where a row names another tool; sources cited per value in this file",
+  "note": "Measurements name their source harness and input population. Ratios apply to that population and comparator.",
+  "groups": [
+    {
+      "heading": "Python bytecode (CPython 3.14.5 stdlib, normalized opcode-structure agreement)",
+      "axis_label": "code objects with matching normalized opcode structure, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "fixed 574-module core population",
+          "value": 95.18,
+          "num": 17396,
+          "den": 18276,
+          "modules": 574,
+          "detail": "17396 / 18276 code objects across 574 CPython 3.14.5 core modules, excluding idlelib and turtledemo. The comparator checks normalized opcode streams and three argument-count fields; it omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. The percentage is truncated to two decimal places. The committed full_modules_314.txt list defines the population.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs",
+            "function": "published_full_stdlib_bar_agrees_with_the_gated_population",
+            "measured_by": "full_stdlib_recompile_equivalence_gate"
+          }
+        },
+        {
+          "label": "200-module pinned corpus (normalized opcode-structure agreement)",
+          "value": 96.67,
+          "num": 6077,
+          "den": 6286,
+          "modules": 200,
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs",
+            "function": "published_pinned_bar_agrees_with_the_enforced_floor",
+            "measured_by": "arbitrary_recompile_equivalence_gate"
+          },
+          "detail": "6077 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. Regression threshold: 96.67%.",
+          "source": "evidence/results/captured/python-stdlib-full.json records the accepted capture and its pinned subset. crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs enforces OBJECT_PCT_FLOOR 96.67 and 124 wholly matching modules. The shared py_arbitrary_measure.py harness defines both populations."
+        }
+      ]
+    },
+    {
+      "heading": "Python bytecode by interpreter band (same pinned module list, each compiled and recompiled by its own interpreter)",
+      "axis_label": "code objects with matching normalized opcode structure, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "CPython 3.10 (161 of the pinned modules)",
+          "value": 95.8,
+          "num": 5229,
+          "den": 5458,
+          "detail": "5229 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.10.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_310.rs",
+            "function": "published_310_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_310"
+          }
+        },
+        {
+          "label": "CPython 3.11 (172 of the pinned modules)",
+          "value": 96.52,
+          "num": 5442,
+          "den": 5638,
+          "detail": "5442 / 5638 code objects over 172 modules on CPython 3.11.15. 28 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.11.15 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_311.rs",
+            "function": "published_311_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_311"
+          }
+        },
+        {
+          "label": "CPython 3.12 (177 of the pinned modules)",
+          "value": 95.77,
+          "num": 5420,
+          "den": 5659,
+          "detail": "5420 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.12.13 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_312.rs",
+            "function": "published_312_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_312"
+          }
+        },
+        {
+          "label": "CPython 3.13 (190 of the pinned modules)",
+          "value": 96.07,
+          "num": 5732,
+          "den": 5966,
+          "detail": "5732 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.13.14 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs",
+            "function": "published_313_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_313"
+          }
+        },
+        {
+          "label": "CPython 3.14 (all 200 pinned modules)",
+          "value": 96.67,
+          "num": 6077,
+          "den": 6286,
+          "detail": "6077 / 6286 code objects over 200 modules on CPython 3.14.5. These modules share the accepted full measurement's source population and comparison rules. All 200 pinned modules exist in this interpreter's Lib. Other bands have different input populations.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.14.5 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt"
+        },
+        {
+          "label": "CPython 3.15 (199 of the pinned modules)",
+          "value": 96.09,
+          "num": 6227,
+          "den": 6480,
+          "detail": "6227 / 6480 code objects over 199 modules on CPython 3.15.0b4. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.15.0b4 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_315.rs",
+            "function": "published_315_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_315"
+          }
+        }
+      ]
+    },
+    {
+      "heading": "CPython legacy 1.0-3.7 (proven-correct: recompile-equivalence or structural token-match)",
+      "axis_label": "proven-correct decompiles over the legacy band, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "proven-correct",
+          "value": 78.5,
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs",
+            "function": "legacy_recompile_correctness_oracle",
+            "conditional": "Recompilation requires a matching legacy CPython interpreter. Otherwise, the grader compares structural tokens with the committed original source. The 150/191 floor applies in either case."
+          },
+          "detail": "The gate requires at least 150 of 191 committed fixtures to match through bytecode recompilation or structural token comparison. Recompilation uses a matching legacy interpreter when one is installed; structural comparison remains available for every fixture.",
+          "source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs enforces PROVEN_CORRECT_FLOOR 150 against the 191-fixture corpus.",
+          "num": 150,
+          "den": 191
+        }
+      ]
+    },
+    {
+      "heading": "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)",
+      "axis_label": "opcodes lowered out of the 1034 an external disassembler counts across the same 38 parseable modules, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "op-coverage",
+          "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs",
+            "function": "op_coverage_is_divided_by_the_external_instruction_inventory",
+            "measured_by": "op_coverage_is_divided_by_the_external_instruction_inventory"
+          },
+          "detail": "1034 of the 1034 opcodes across the 38 parseable corpus modules are lowered, where the 1034 is not disrobe's own count: wasm-tools 1.250.0 disassembled each committed .wat and its instruction inventory is pinned per fixture by BLAKE3 under crates/disrobe-pass-wasm-deob/tests/golden/external_wasm_op_inventory.json, so a decoder that stops seeing opcodes scores lower instead of shrinking its own denominator. That covers 133 of 133 functions across 38 parseable modules with every operator lowered and the emitted WAT re-assembling; the other 2 of the 40 corpus files are rejected by wasm-tools itself and are pinned with its error text, so this is 100% of the supported subset, NOT of all wasm. Lowering is not correctness: separately, 57 of 57 execution-eligible functions are EXECUTION-EQUIVALENT under wasmtime (original vs recovered: return values, trap parity, linear memory; 6 byte-identical), the remainder op-coverage-only",
+          "source": "crates/disrobe-pass-wasm-deob/tests/external_op_denominator.rs divides 1034 lowered opcodes by the 1034 wasm-tools 1.250.0 counts over the same modules, and pins each fixture's hash so a changed corpus fails rather than re-scores; crates/disrobe-pass-wasm-deob/tests/semantic_recovery_corpus.rs measure() = 38 modules parsed / 2 skipped / 133 functions / fully_recovered==133, with the module count and function total pinned by equality and the recovered count floored at 133; tests/semantic_differential.rs = wasmtime execution differential, 57/57 execution-eligible equivalent (6 byte-identical), CI-runnable under --features sandbox; op-coverage is NOT execution-equivalence except for those 57",
+          "num": 1034,
+          "den": 1034
+        },
+        {
+          "label": "execution-equivalence",
+          "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs",
+            "function": "differential_execution_equivalence_under_wasmtime",
+            "conditional": "a module wasmtime declines to instantiate is skipped rather than failed, so eligibility is a filtered population narrower than the 133-function corpus. The eligible count is pinned by equality against this bar, so a run that reaches fewer functions fails instead of quietly shrinking what it is divided by"
+          },
+          "detail": "57 of 57 execution-eligible functions in the same 38 parseable modules run equivalently under wasmtime: original against recovered on the same inputs, compared on return values, trap parity, and the first 4096 bytes of linear memory, 6 of them byte-identical. Eligibility is narrower than the op-coverage population because a function needs a callable signature and no host imports to be run at all",
+          "source": "crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs, CI-runnable under --features sandbox; this is the execution-equivalence leg and it is a different, smaller population than the 1034-opcode coverage bar beside it",
+          "num": 57,
+          "den": 57
+        }
+      ]
+    },
+    {
+      "heading": "JVM classfile (EdgeCases corpus, per-method real-javac recompile)",
+      "axis_label": "methods over the 131-method EdgeCases corpus, %; read each bar's own grading tier, because recompile-acceptance and execution-equivalence are different standards",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "per-method",
+          "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs",
+            "function": "published_per_method_bar_matches_the_floors_this_crate_enforces",
+            "measured_by": "report_per_method_javac_recompile"
+          },
+          "detail": "CI floor 131 of 131 (every top-level method recompiles error-free) measured under real javac attribution; the pickWord switch-expression lift (9afa2306) unmasked 25 latent defects previously hidden by javac parse-masking from the __unresolved__ token, all fixed by class: pattern-switch subject resolved to its source parameter (sealed-subtype exhaustiveness), sealed/permits emitted on inner type stubs, typed default initializers on final inner-stub fields, the Exceptions attribute threaded into a real throws clause, the loop-exhausted terminal emitted after a while loop whose exit is a shared pure-return tail, loop-captured locals hoisted to a fresh final declaration, and the shared return tail of an instanceof if-else-if chain duplicated under a Region-tree fall-through analysis",
+          "source": "crates/disrobe-pass-jvm/tests/decompile_recompile_rate.rs (report_per_method_javac_recompile asserts ok >= PER_METHOD_JAVAC_OK_FLOOR 131 of PER_METHOD_JAVAC_TOTAL 131); CI runs it via the test job with actions/setup-java (JDK 25); floor measured 2026-06-22 after fixing the pickWord-unmasked defects",
+          "num": 131,
+          "den": 131
+        },
+        {
+          "label": "per-method, execution-verified",
+          "value": 89.31,
+          "num": 117,
+          "den": 131,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs",
+            "function": "recovered_methods_execute_equivalently_under_a_real_jvm"
+          },
+          "detail": "117 of the same 131 top-level methods are EXECUTION-equivalent, which is a strictly stronger standard than the recompile bar beside it: the original and the recovered source are each compiled by real javac, both are run under a real JVM, and every observable per-method result is compared. Read the residual 14 as the two separate populations it is, never as one: 8 methods are javac-clean and measurably DIVERGENT, and 6 are javac-clean but not executable in isolation (5 measure a nested-type stub, 1 is not self-reproducible), so those 6 are ungraded rather than passing. The distinction is not academic in this crate, which once emitted a method that compiled cleanly and incremented a counter twice on its exception path.",
+          "source": "crates/disrobe-pass-jvm/tests/edgecases_execution_differential.rs (EXECUTION_EQUIVALENT_FLOOR 117 of PER_METHOD_TOTAL 131, with the equivalent set pinned as a membership list of method names rather than a count, so a method cannot leave it silently and the pinned-divergent lists only ever shrink); the reference is real javac plus a real JVM comparing observable behavior, never the decompiler's own output; the_execution_differential_reports_a_double_counted_exception_path injects a second counter increment on divSafe's recovered exception path and requires this differential to report divergence while javac still accepts the file; measured 117 equivalent, 8 divergent, 6 not driven on JDK 25"
+        }
+      ]
+    },
+    {
+      "heading": "BEAM stripped Core Erlang (committed OTP 27.3.4 recompile-execution corpus)",
+      "axis_label": "modules whose recovered source recompiles, preserves exports, and matches the committed test/0 result, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "recompile-execution",
+          "value": 100.0,
+          "num": 19,
+          "den": 19,
+          "verified_by": {
+            "path": "crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs",
+            "function": "stripped_core_lift_is_recompile_equivalent"
+          },
+          "detail": "All 19 committed Erlang modules recover from stripped BEAM to Core Erlang source that recompiles under OTP 27.3.4, preserves the export set, and matches the original module's test/0 exit status and stdout. The gate removes Dbgi and Docs before recovery. The measured behavior covers each module's committed test/0 inputs.",
+          "source": "crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs pins the 19 module names and enforces 19 equivalent results. It compares recovered exports against the original BEAM and executes both versions with erl. A separate regression changes the recovered test/0 result and requires the comparison to reject it. The Linux gate checks releases/<major>/OTP_VERSION against the provisioned 27.3.4.15 and requires the measured counts to equal this bar."
+        }
+      ]
+    },
+    {
+      "heading": "Go type-name recovery (go1.26.3 fixture)",
+      "axis_label": "type names resolved on stripped fixture, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "type names",
+          "value": 100.0,
+          "floor_pct": 85.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_typemeta.rs",
+            "function": "typemeta_recovers_real_type_names_on_go126"
+          },
+          "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
+          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12",
+          "num": 838,
+          "den": 838
+        }
+      ]
+    },
+    {
+      "heading": "Dalvik recovered bodies (committed dex corpus, real JVM verifier)",
+      "axis_label": "recovered classes that pass -Xverify:all, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "verifier-clean (committed, CI)",
+          "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs",
+            "function": "published_dalvik_verifier_bar_matches_the_floors_this_gate_enforces",
+            "measured_by": "recovered_dalvik_bodies_pass_the_real_jvm_verifier"
+          },
+          "detail": "118 of 118 VERIFIER-PRESENTED classes in the committed EdgeCases/EdgeCasesKt/Hello dex pass the real JVM bytecode verifier (-Xverify:all) with 0 lifter verify failures, so the plotted figure is the verifier-presented ratio. State the other denominator too: the corpus holds 155 classes and 37 of them are link-skipped, never reaching the verifier because they reference supertypes the harness does not bundle, Kotlin's Function1 among them. That is a harness limit rather than a lifter defect, but it means 118 of 155 classes are verifier-attested and the remaining 37 are ungraded, not passing. A live-range-splitting pass recovers bodies with conflicting register types across joins, and 317 re-hosted method bodies verify clean with 0 failures, every non-stub recovered body re-hosted into an Object carrier and run through -Xverify:all. Floor 118 classes; the reference is the JVM rejecting malformed bytecode, not the lifter's own report.",
+          "source": "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs (COMMITTED_VERIFY_CLEAN_CLASSES 118, COMMITTED_LIFTER_VERIFY_FAILURES 0, COMMITTED_CORPUS_CLASSES 155, COMMITTED_BODY_VERIFY_CLEAN 317, COMMITTED_BODY_VERIFY_FAILURES 0, every one an equality rather than a floor); reference = -Xverify:all over assemble_jar output, not the lifter self-report; measured 118 of 118 verifier-presented classes with 37 link-skipped and 317 re-hosted bodies clean on JDK 25, and because the corpus is committed and the translation deterministic, a figure that moves either way fails this gate until the documents state the new one",
+          "num": 118,
+          "den": 118,
+          "link_skipped_num": 37,
+          "link_skipped_den": 155
+        },
+        {
+          "label": "body-lowering (real apks, local)",
+          "value": 99.7,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs",
+            "function": "realworld_dalvik_body_lowering_is_verifier_attested",
+            "conditional": "the three apks are gitignored, so this gate re-measures only when DISROBE_RUN_REAL_APK_TESTS=1 and all three are present under corpus/mobile/apk/inbox; CI cannot re-derive either figure, and the numbers it pins are cross-checked against this file by dalvik_body_attest_bar_matches_the_pins_this_gate_enforces, which does run in CI"
+          },
+          "detail": "Across three SHA-256-pinned APKs, Disrobe reports lowering 83662 of 83943 methods with code items: transmissionic 26360 of 26416, rustdesk 29841 of 29983, and enrecipes 27461 of 27544. Of 83630 non-stub candidate bodies, a deterministic 100-permille sample selects 8419. The JVM verifies 2988 of 2998 bodies that the harness can re-host: transmissionic 988 of 989, rustdesk 1217 of 1223, and enrecipes 783 of 786. The other 5421 sampled bodies are ungraded: 1407 constructors, 1730 invokespecial receivers, 2141 unresolved dependencies, and 143 other exclusions. Relative to the previous measurement, three additional bodies verify and every previously accepted body remains accepted. Two previously rejected measureContentWidth bodies are now ungraded and are not counted as fixes. These local APK measurements use 89516 declared methods, including 5573 body-less declarations; the committed-DEX class verification bar measures a separate population.",
+          "source": "crates/disrobe-pass-jvm/tests/dalvik_realworld_body_attest.rs enforces the aggregate and per-APK counts against common::REAL_APKS, which pins each input SHA-256. tests/golden/dalvik_body_attest pins all 2998 verifier verdicts by method name. dex2jar_realworld_apks.rs independently checks the per-APK lowering counts. The attestation uses java -Xverify:all without invoking recovered methods.",
+          "num": 83662,
+          "den": 83943,
+          "attested_num": 2988,
+          "attested_den": 2998
+        }
+      ]
+    },
+    {
+      "heading": "Detection and extraction breadth (counts, not percentages)",
+      "axis_label": "measured delivery / detected roster",
+      "kind": "count_pair",
+      "bars": [
+        {
+          "label": "Containers",
+          "detected": 103,
+          "delivered": 42,
+          "delivered_label": "extracted from a committed input",
+          "detail": "103 formats detected. 102 declare a generic payload extractor, while LUKS1 has a bounded raw-volume-key route and a typed keyless wall. 42 generic routes write member bytes from an input this repository commits; the committed DMG input reaches detection only; 59 generic routes have no committed input. LUKS1 is graded separately against tracked plaintext.",
+          "verified_by": {
+            "path": "crates/disrobe-binfmt/src/container.rs",
+            "function": "published_container_counts_match_this_enum"
+          },
+          "source": "ContainerKind::ALL in crates/disrobe-binfmt/src/container.rs declares 103 detected variants excluding None, asserted by detected_count_is_one_hundred_and_three. The same file declares 102 generic payload extractors and names LUKS1 as the one metadata-only generic boundary because its dedicated API requires a raw volume key, asserted by every_declared_format_names_its_extraction_boundary. The measured generic leg is 42 formats driven to member bytes by tracked inputs in crates/disrobe-cli/tests/container_breadth.rs and crates/disrobe-cli/tests/golden/container_breadth.txt. That roster also records the committed DMG input as detect-only, leaving 59 generic extractors without a committed input. crates/disrobe-binfmt/tests/enigma.rs independently grades the Enigma Virtual Box 10.70 stored-member route with literal .enigma1 and .enigma2 section names against its upstream source file. crates/disrobe-binfmt/tests/real_luks1.rs separately grades the LUKS1 route by decrypting a tracked aes-cbc-plain fixture to byte-identical tracked VHD plaintext and entering the VHD extractor; crates/disrobe-cli/tests/luks1_extract.rs grades the file, stdin, keyless-wall, wrong-key, and unsupported-mode surfaces."
+        }
+      ]
+    },
+    {
+      "heading": "PyArmor structural marshal coverage",
+      "axis_label": "decoded root CodeObjects / named v8/v9 default-trial wrappers",
+      "kind": "count_pair",
+      "bars": [
+        {
+          "label": "v8/v9 default-trial wrappers",
+          "detected": 72,
+          "delivered": 72,
+          "delivered_label": "decoded root CodeObjects",
+          "denominator_label": "named v8/v9 default-trial wrappers",
+          "verified_by": {
+            "path": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs",
+            "function": "named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects"
+          },
+          "source": "crates/disrobe-pass-pyarmor/tests/static_unpack_corpus.rs named_v8_v9_default_trial_wrappers_decode_complete_root_code_objects binds the typed MANIFEST.toml roster to the discovered v8/v9 chunk-wrapper set, verifies each manifest-declared wrapper/runtime pair, checks the default-trial serial, statically decrypts every named wrapper, computes the header-declared marshal start, requires the public helper to agree, and requires disrobe-py-marshal to decode one complete root CodeObject. This self-reported structural check does not compare source, emitted pyc bytes, execution, semantic equivalence, or external-tool output."
+        }
+      ]
+    },
+    {
+      "heading": "OLLVM control-flow-flattening dispatcher cover (committed two-function corpus)",
+      "axis_label": "dispatcher states the recovered program reaches / states the dispatcher can select",
+      "kind": "count_pair",
+      "bars": [
+        {
+          "label": "OLLVM -fla dispatcher states",
+          "detected": 9,
+          "delivered": 9,
+          "denominator_label": "states the two committed dispatchers can select",
+          "delivered_label": "reached by the recovered program",
+          "detail": "This is a cover, not an equivalence. The denominator is every state the dispatcher can select, read back out of each sample's own compare tree rather than typed into the gate, so a state the recovery never places stays in the denominator instead of shrinking it. classify_fla.bin declares 4 states and 4 are reached; sumto_fla.bin declares 5 and 5 are reached. The population is two functions built by ollvm-16 -fla and nothing else, so this states nothing about a flattened function this repository does not commit. Behavior is graded separately and more narrowly: a bounded stub_emu differential runs the flattened bytes and the re-emitted recovered bytes on 15 arguments per function, 60 executions in total, and compares the return value against corpus/native/ollvm/probe_src.c. That establishes agreement on those 15 arguments per function and on no other input.",
+          "verified_by": {
+            "path": "crates/disrobe-pass-native/tests/cff_dispatcher_cover.rs",
+            "function": "the_published_dispatcher_cover_matches_the_committed_corpus",
+            "measured_by": "dispatcher_cover_counts_every_state_the_flattened_dispatcher_can_select"
+          },
+          "source": "crates/disrobe-pass-native/tests/cff_dispatcher_cover.rs reads this file back and asserts both counts against what crates/disrobe-pass-native/src/deobf/cff.rs measures on the committed samples, so the binding runs from the crate to this data. dispatcher_cover_counts_every_state_the_flattened_dispatcher_can_select pins each sample's declared state count and requires every state to be covered, every transition to be resolved and the recovered edge set to pass its check. dropping_one_dispatcher_state_turns_the_cover_gate_red_and_names_it retargets one state store in classify_fla.bin, drops the cover to 3 of 4 and requires the gate to name the missing state, so the gate is not vacuous. a_bounded_differential_agrees_with_the_committed_source_on_every_input_it_runs executes both programs under stub_emu with a 200000-step and 16 KiB-stack budget, and a_seeded_wrong_edge_makes_the_bounded_differential_disagree retargets one recovered edge and requires disagreement on exactly the 6 arguments above ten. the_denominator_is_not_the_tree_walk_counting_itself recounts the same states a second way, by reading every equality compare against the state register out of a linear decode of the whole function, so a compare-tree walk that stopped early would shrink its own denominator and be caught here"
+        }
+      ]
+    },
+    {
+      "heading": "Detection and routing rosters (counts)",
+      "axis_label": "families routed or detected by the named catalog",
+      "kind": "count",
+      "bars": [
+        {
+          "label": ".NET protectors",
+          "value": 23,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/src/protectors.rs",
+            "function": "published_dotnet_protector_roster_count_matches_this_enum"
+          },
+          "source": "crates/disrobe-pass-dotnet/src/protectors.rs detect_all walks the 23-member Protector::ALL roster. This is a detection roster, not an aggregate claim about source or CIL recovery. Per-sample recovery evidence remains scoped to the tests that grade it."
+        },
+        {
+          "label": "Python source obfuscators",
+          "value": 20,
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-deob/src/auto_route.rs",
+            "function": "published_source_obfuscator_roster_count_matches_the_registered_passes"
+          },
+          "source": "crates/disrobe-pass-py-deob/src/auto_route.rs describes 20 registered source-obfuscator passes. This is a routing roster, not an aggregate source-recovery measurement. The named membership test forces this figure to move with the registered passes."
+        },
+        {
+          "label": "JVM / Android families",
+          "value": 10,
+          "verified_by": {
+            "path": "crates/disrobe-pass-jvm/src/chain_detector.rs",
+            "function": "published_jvm_android_roster_count_matches_this_catalog"
+          },
+          "source": "crates/disrobe-pass-jvm/src/obfuscators.rs carries nine Protector variants, and the separate BlackObfuscator DEX path is the tenth catalogued family. This is a routing roster, not an aggregate recovered-body measurement."
+        },
+        {
+          "label": "Shell obfuscation modes",
+          "value": 19,
+          "verified_by": {
+            "path": "crates/disrobe-pass-shell/tests/published_family_count.rs",
+            "function": "published_shell_obfuscation_mode_count_matches_this_catalog"
+          },
+          "source": "The shell chain catalog carries 19 named PowerShell, bash, and batch obfuscation modes after excluding scripting formats handled alongside them. This is a routing roster, not a reversal rate; the count test pins all 19 identifiers, and a companion test records the 17 full plus 2 partial support split."
+        }
+      ]
+    },
+    {
+      "heading": "Dotnet protector sample recovery",
+      "axis_label": "graded outputs recovered, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "Obfuscar hidden strings",
+          "value": 100.0,
+          "num": 15,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/obfuscar_gauntlet.rs",
+            "function": "published_obfuscar_hidden_strings_bar_matches_real_grader"
+          },
+          "detail": "15 of 15 unique ldstr values removed by Obfuscar HideStrings are recovered byte-for-byte from the real gauntlet sample's FieldRVA carrier.",
+          "source": "crates/disrobe-pass-dotnet/tests/obfuscar_gauntlet.rs derives the denominator from the committed clean and Obfuscar-produced assemblies, requires the complete recovered method-token-to-byte map to equal the independently generated CLR runtime accessor map, and flips a real FieldRVA carrier byte as the grader mutation control."
+        },
+        {
+          "label": "SmartAssembly embedded resources",
+          "value": 100.0,
+          "num": 1,
+          "den": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/smartassembly_resources.rs",
+            "function": "published_smartassembly_embedded_resources_bar_matches_real_grader"
+          },
+          "detail": "The one named payload resource in the committed SmartAssembly mode-1 compatibility fixture is recovered byte-for-byte.",
+          "source": "crates/disrobe-pass-dotnet/tests/smartassembly_resources.rs requires exactly one [z]payload resource, byte equality with the independently compiled clean DLL, and the encrypted-resource extraction strategy. A separate mutation control flips bytes inside the real ManifestResource carrier and requires the clean payload comparison to fail. The framing fixture implements the published algorithm and is not output from the SmartAssembly product."
+        }
+      ]
+    },
+    {
+      "heading": "Dotnet whole-type recompile (EdgeCases corpus, recompile-only)",
+      "axis_label": "types whose recovered source recompiles standalone with real csc, %; recompile-only, not IL or execution equivalence",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "whole-type recompile",
+          "value": 51.42857142857143,
+          "num": 18,
+          "den": 35,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs",
+            "function": "published_edgecases_whole_type_recompile_bar_matches_the_floor_this_gate_enforces",
+            "measured_by": "edgecases_whole_type_recompile_fraction_is_published_as_measured"
+          },
+          "detail": "18 of the 35 EdgeCases types recompile standalone with real csc from their recovered source, each type built as its own single-file compilation unit with no reference back to the origin assembly. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
+          "source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 18 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal); measured locally with dotnet SDK 9.0.316 (Roslyn csc bundled with that SDK, MSBuild 17.14.43.7001) via `cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure"
+        }
+      ]
+    },
+    {
+      "heading": "Luau opcode lifting (disrobe declared table)",
+      "axis_label": "declared opcode entries lifted, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "Luau declared-table opcodes lifted",
+          "value": 97.72727272727273,
+          "num": 86,
+          "den": 88,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs",
+            "function": "published_luau_opcode_lift_ratio_matches_this_lifter"
+          },
+          "detail": "86 of the 88 opcode entries in disrobe's declared Luau table are lifted. BREAK debugger instrumentation and NEWCLASSMEMBER are decoded and reported as unresolved rather than lifted.",
+          "source": "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs enumerates all 88 declared opcode values through the real lifter, pins the exact two-entry unresolved set, and checks an undeclared opcode as the mutation-kill control. This is coverage of disrobe's declared table, not an external claim about every opcode in an upstream Luau release."
+        }
+      ]
+    },
+    {
+      "heading": "Obfuscator and bundler family coverage (counts)",
+      "axis_label": "families covered",
+      "kind": "count",
+      "bars": [
+        {
+          "label": "JS bundlers",
+          "value": 11,
+          "verified_by": {
+            "path": "crates/disrobe-pass-js-deob/src/bundle/mod.rs",
+            "function": "published_js_bundler_count_matches_this_enum"
+          },
+          "source": "BundlerKind enum crates/disrobe-pass-js-deob/src/bundle/mod.rs carries 12 variants; SystemJs and Amd are one published family (the unbundler treats RequireJS and AMD as the SystemJS lineage), so 12 variants render as 11 published bundlers. This entry previously recorded its own provenance as the README row it is used to validate, which made the check a copy compared against its original."
+        },
+        {
+          "label": "Lua chain catalog entries",
+          "value": 16,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/src/chain_detector.rs",
+            "function": "published_lua_catalog_count_matches_this_catalog"
+          },
+          "source": "crates/disrobe-pass-lua/src/chain_detector.rs (CATALOG_COUNT = 16; 14 obfuscator entries plus Luau and GLua dialect detectors)"
+        },
+        {
+          "label": "Lua VM-devirt on real tool output (IronBrew2 2.7.0)",
+          "value": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_lua_vm_devirt_legs.rs",
+            "function": "published_real_tool_vm_devirt_leg_matches_the_real_ironbrew2_corpus"
+          },
+          "source": "IronBrew2 2.7.0 is the one Lua VM-devirtualization family graded on committed output from the real obfuscator. The real-Lua execution differential runs the recovered output against the original across hello, arith, control, tables, and edge samples in standard and MAX mode."
+        },
+        {
+          "label": "Lua VM-devirt on an in-house sample only (MoonSec shape, no real sample)",
+          "value": 1,
+          "verified_by": {
+            "path": "crates/disrobe-pass-lua/tests/published_lua_vm_devirt_legs.rs",
+            "function": "published_in_house_leg_matches_the_families_with_no_real_sample"
+          },
+          "source": "This in-house, not real, no real sample leg covers aztup_brew, boronide, darksec, hercules, luraph, moonsec_v1, moonsec_v2, moonsec_v3, and psu reference containers. It records shape recovery only and is not evidence that any named obfuscator's own output was reversed."
+        },
+        {
+          "label": "WASM direct transformation helper families",
+          "value": 4,
+          "verified_by": {
+            "path": "crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs",
+            "function": "published_wasm_direct_helper_count_matches_this_crate_roster"
+          },
+          "source": "This is a source catalog count, not a measured claim about output from the named upstream tools. crates/disrobe-pass-wasm-deob/src/detect.rs declares exhaustive per-family support with separate direct-transformation-helper and wasm-deob-pipeline-delivery axes. crates/disrobe-pass-wasm-deob/tests/published_wasm_reverser_roster.rs derives four helper families from that catalog and pins their named membership against this bar: Jscrambler-WASM strip+fold, Wobfuscator optable lift, Tigress-via-Emscripten standalone unflatten and name helpers, and Wasmixer stub-unwrap. crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs exercises each direct helper on hand-authored modules. crates/disrobe-pass-wasm-deob/tests/recover_differential.rs runs the three pipeline-delivered transformations, Jscrambler-WASM, Wobfuscator, and Wasmixer, against fixture-backed recovery and wasmtime behavior differentials. Tigress-via-Emscripten helpers are standalone and not on that path. wasm-name-obfuscator is excluded from the helper count because it has neither a direct helper nor pipeline delivery and hex renames destroy the original names"
+        }
+      ]
+    },
+    {
+      "heading": "Ruby YARV (MRI opcode-name recall after recompilation)",
+      "axis_label": "original opcode-name multiset recall, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "greeter",
+          "value": 100.0,
+          "num": 79,
+          "den": 79,
+          "detail": "The opcode-name multiset comparison matches 79 of 79 original occurrences after MRI compiles both sources. The comparison ignores ordering and operands, and additional recovered instructions do not reduce the score. The separate hello.rb fixture yields 4 of 4.",
+          "verified_by": {
+            "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
+            "function": "published_yarv_bars_match_the_counts_this_crate_pins",
+            "measured_by": "yarv_opcode_name_multiset_recall_is_reproducible"
+          },
+          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (greeter >= 100)"
+        },
+        {
+          "label": "megafile",
+          "value": 98.67,
+          "detail": "The opcode-name multiset comparison matches 23648 of 23966 original occurrences after MRI compiles both sources, or 98.67%. There are 318 unmatched original occurrences. Ordering and operands are ignored, and additional recovered instructions do not reduce the score.",
+          "verified_by": {
+            "path": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs",
+            "function": "published_yarv_bars_match_the_counts_this_crate_pins",
+            "measured_by": "yarv_opcode_name_multiset_recall_is_reproducible"
+          },
+          "source": "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs (megafile >= 98)",
+          "num": 23648,
+          "den": 23966
+        }
+      ]
+    },
+    {
+      "heading": "React Native Hermes (committed hermesc-built HBC v96 sample: op-coverage, CI-gated)",
+      "axis_label": "op-coverage on the committed v96 sample, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "op-coverage",
+          "value": 100.0,
+          "verified_by": {
+            "path": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs",
+            "function": "hbc_v96_sample_recovers_every_function_at_full_op_coverage"
+          },
+          "detail": "self-authored sample.js compiled with the real hermesc (HBC v96); all 8 functions lift with correct names and source-matching bodies at 0 fallback ops; CI-gated",
+          "source": "crates/disrobe-pass-mobile/tests/real_hermes_sample.rs (hbc_v96_sample_recovers_every_function_at_full_op_coverage asserts total_fallback_ops == 0)",
+          "num": 8,
+          "den": 8
+        }
+      ]
+    },
+    {
+      "heading": "React Native Hermes production-bundle parse scale (local non-redistributable bundle, secondary, not CI-gated)",
+      "axis_label": "functions parsed with no module-parse failure",
+      "kind": "scalar",
+      "bars": [
+        {
+          "label": "functions parsed",
+          "value": 122633,
+          "source": "crates/disrobe-pass-mobile/tests/support/hermes_production_bundle.rs (PUBLISHED_FUNCTION_COUNT 122_633, asserted by tests/real_hermes_discord.rs); local-only, fixture is gitignored"
+        }
+      ]
+    },
+    {
+      "heading": "Flutter Dart AOT RAW static recovery on a real RustDesk 1.4.9 libapp.so (local fetched-by-hash sample, not CI-gated)",
+      "axis_label": "ARM64 frame-prologue function boundaries recovered from the binary's own isolate snapshot",
+      "kind": "scalar",
+      "bars": [
+        {
+          "label": "function boundaries recovered",
+          "value": 23471,
+          "verified_by": {
+            "path": "crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs",
+            "function": "rustdesk_static_recovery_reports_raw_counts"
+          },
+          "detail": "RustDesk 1.4.9 arm64-v8a release APK (AGPL-3.0), lib/arm64-v8a/libapp.so extracted from the zip; RAW path recovers 23471 function boundaries, 10351 class-name strings, 28952 method-name strings and 1489 library URIs, cross-checked against an independent whole-file `package:*.dart` string scan that finds 1271; the pinned declaration-graph path reports unsupported-version on this build because its Dart snapshot falls outside the pinned 3.12.2 android-arm64 product tuple",
+          "source": "crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs pins every one of those counts by equality; local-only, the APK is fetched by pinned url and sha256 into a scratch cache and never committed, provenance in corpus/mobile/flutter/MANIFEST.toml"
+        }
+      ]
+    },
+    {
+      "heading": "Go function-name recovery from a stripped binary (pclntab, graded against go tool nm on the same build)",
+      "axis_label": "function names recovered from a stripped build, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "windows/amd64",
+          "value": 94.92,
+          "num": 1869,
+          "den": 1969,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1869 / 1969 function names recovered from the stripped build. The unstripped build of the same source recovers all 1969. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "windows/386",
+          "value": 100.0,
+          "num": 1994,
+          "den": 1994,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1994 / 1994 function names recovered from the stripped build. The unstripped build of the same source recovers all 1994. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "linux/amd64",
+          "value": 93.81,
+          "num": 1836,
+          "den": 1957,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1836 / 1957 function names recovered from the stripped build. The unstripped build of the same source recovers all 1957. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "linux/386",
+          "value": 99.94,
+          "num": 1978,
+          "den": 1979,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1978 / 1979 function names recovered from the stripped build. The unstripped build of the same source recovers all 1979. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "linux/arm64",
+          "value": 94.16,
+          "num": 1807,
+          "den": 1919,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1807 / 1919 function names recovered from the stripped build. The unstripped build of the same source recovers all 1919. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "darwin/amd64",
+          "value": 88.78,
+          "num": 1845,
+          "den": 2078,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1845 / 2078 function names recovered from the stripped build. The unstripped build of the same source recovers all 2078. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        },
+        {
+          "label": "darwin/arm64",
+          "value": 90.01,
+          "num": 1839,
+          "den": 2043,
+          "verified_by": {
+            "path": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs",
+            "function": "published_go_function_name_bars_are_pinned_per_platform"
+          },
+          "detail": "1839 / 2043 function names recovered from the stripped build. The unstripped build of the same source recovers all 2043. The shortfall is assembly ABI0 entry points and platform linker symbols that carry no distinct pclntab entry, so a stripped image does not contain them to recover.",
+          "source": "crates/disrobe-pass-go/tests/go_published_function_name_bars.rs grades the committed stripped image for this platform against the committed `go tool nm` symbol dump beside it, pinning the denominator by equality and the recovered count as a floor, and it needs no toolchain; crates/disrobe-pass-go/tests/go_cross_arch_va_recovery.rs re-derives the same names from a live build of the same source. CI provisions exact go1.26.3 for this second leg; outside CI, an absent `go` executable skips it while a mismatched installed version fails. Its floors are coarser than this figure, so it is a second leg rather than what holds this number"
+        }
+      ]
+    },
+    {
+      "heading": "Secret recall on the committed planted APK (both tools read the same file)",
+      "axis_label": "planted secrets recalled, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "disrobe frisk",
+          "value": 100.0,
+          "num": 8,
+          "den": 8,
+          "verified_by": {
+            "path": "benches/head-to-head/src/frisk.rs",
+            "function": "published_planted_apk_secret_bars_are_pinned_by_membership"
+          },
+          "detail": "8 of 8 planted secrets recalled from corpus/recon/apk/planted-secrets.apk. The eight are named individually in this bar's membership list, so one secret cannot stop being found while another starts and leave the count at 8. The denominator is pinned by equality against the committed ground truth, so a run that inspects fewer secrets scores worse rather than shrinking what it is measured against.",
+          "source": "benches/head-to-head/src/frisk.rs test published_planted_apk_secret_bars_are_pinned_by_membership, which scans the committed apk and asserts every named secret is recalled; the ground truth is the planted token list, not frisk's own output",
+          "membership": [
+            "AWS access key id",
+            "AWS secret access key",
+            "Google OAuth access token",
+            "GCP / Google Maps API key",
+            "HTTP Basic auth credential",
+            "session JWT",
+            "Firebase database URL",
+            "S3 bucket URL"
+          ]
+        },
+        {
+          "label": "apkleaks 2.6.3",
+          "value": 62.5,
+          "num": 5,
+          "den": 8,
+          "verified_by": {
+            "path": "benches/head-to-head/src/frisk.rs",
+            "function": "published_planted_apk_secret_bars_are_pinned_by_membership",
+            "conditional": "this comparison leg is enforced only when apkleaks 2.6.3 is callable on the machine running the bench; on a machine without it the disrobe leg above still enforces unconditionally"
+          },
+          "detail": "5 of the same 8 planted secrets, measured by running apkleaks 2.6.3 over the same committed apk rather than quoting its documentation. It does not recall the AWS secret access key, the HTTP Basic auth credential, or the session JWT. This bar is asserted exact in both directions: publishing more than apkleaks finds would overstate it, and publishing less would flatter disrobe.",
+          "source": "benches/head-to-head/src/frisk.rs test published_planted_apk_secret_bars_are_pinned_by_membership, which pins the version it grades so the row and the measured build cannot drift apart",
+          "membership": [
+            "AWS access key id",
+            "Google OAuth access token",
+            "GCP / Google Maps API key",
+            "Firebase database URL",
+            "S3 bucket URL"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "frisk IOC category recall on the committed planted tree",
+      "axis_label": "planted IOC categories represented, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "planted non-secret IOC categories",
+          "value": 100.0,
+          "num": 6,
+          "den": 6,
+          "verified_by": {
+            "path": "crates/disrobe-core/tests/frisk_gauntlet.rs",
+            "function": "published_planted_ioc_category_bar_is_pinned_by_membership"
+          },
+          "detail": "The four committed files under corpus/recon/planted produce findings in all six named non-secret categories: endpoint, manifest, url, ipv4, email, and onion. Each category requires at least one finding. This measures category presence; per-item recall is outside its scope.",
+          "source": "crates/disrobe-core/tests/frisk_gauntlet.rs test published_planted_ioc_category_bar_is_pinned_by_membership pins the four fixture paths, detects all six expected categories, and checks the published membership, raw counts, and percentage.",
+          "membership": [
+            "endpoint",
+            "manifest",
+            "url",
+            "ipv4",
+            "email",
+            "onion"
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Pickle corpus (committed fixtures graded against the CPython pickletools reference)",
+      "axis_label": "committed fixtures disassembled, traced and classified, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "pickletools-graded fixtures",
+          "value": 100.0,
+          "num": 102,
+          "den": 102,
+          "verified_by": {
+            "path": "crates/disrobe-pass-pickle/tests/corpus.rs",
+            "function": "published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set"
+          },
+          "detail": "102 of the 102 pickle fixtures committed under corpus/pickle disassemble, trace and classify in agreement with CPython's own pickletools, which is the reference this figure is graded against rather than the pass reading its own output. The denominator is pinned by equality against the committed fixture set, so a run that inspects fewer fixtures scores worse instead of shrinking what it is measured against, and the figure is a named fixture set rather than a bare count, so one fixture cannot start failing while another starts passing.",
+          "source": "crates/disrobe-pass-pickle/tests/corpus.rs test published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set, with the_pinned_corpus_check_rejects_a_dropped_fixture_and_a_shrunken_denominator refuting both weakenings; reference = the opcode and argument tables CPython's pickletools emits, committed beside the corpus"
+        },
+        {
+          "label": "reconstruction roundtrip, re-executed",
+          "value": 100.0,
+          "num": 470,
+          "den": 470,
+          "detail": "470 of 470 generated Pickle fixtures pass CPython re-execution comparison checks, including type and value comparisons and identity checks for shared and cyclic container cases.",
+          "source": "crates/disrobe-pass-pickle/tests/roundtrip.rs runs the `reconstruction roundtrip, re-executed` measurement. Its roundtrip_harness.py emits 470 fixtures for protocols 0 through 5 at test time; CPython loads each original pickle, executes the reconstructed program, and compares the results. The measurement does not cover inputs requiring a runtime copyreg registry, out-of-band buffers, persistent IDs, or unavailable importable modules. `DISROBE_PYTHON` selects the interpreter.",
+          "verified_by": {
+            "path": "crates/disrobe-pass-pickle/tests/roundtrip.rs",
+            "function": "cpython_roundtrip_differential_oracle"
+          }
+        }
+      ]
+    },
+    {
+      "heading": "Swift symbol rendering on the committed SwiftHello Mach-O",
+      "axis_label": "pinned renderings from the LC_SYMTAB symbol population, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "pinned symbol renderings",
+          "value": 100.0,
+          "num": 37,
+          "den": 37,
+          "verified_by": {
+            "path": "crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs",
+            "function": "published_swift_symbol_rendering_is_pinned_to_the_measured_membership"
+          },
+          "detail": "All 37 Swift-mangled symbols in the committed, hash-pinned SwiftHello.original Mach-O appear in LC_SYMTAB and render to their pinned in-process text. LC_SYMTAB fixes the named population and denominator. This is a regression rendering check, not an external-demangler correctness measurement.",
+          "source": "crates/disrobe-pass-swift-objc/tests/swift_hello_symbol_pin.rs test published_swift_symbol_rendering_is_pinned_to_the_measured_membership, which pins the 37-symbol LC_SYMTAB membership, denominator and in-process rendering text against the committed fixture"
+        }
+      ]
+    },
+    {
+      "heading": "Ground-truth corpora whose originals the recovery path never reads (counts)",
+      "axis_label": "corpus entries carrying a held-out original",
+      "kind": "count",
+      "bars": [
+        {
+          "label": "Mixed boolean arithmetic",
+          "value": 316,
+          "unit": "corpus entries with a held-out original",
+          "verified_by": {
+            "path": "crates/disrobe-mba/tests/evidence_corpus_gate.rs",
+            "function": "published_corpus_size_matches_the_committed_corpus",
+            "measured_by": "recovery_agrees_with_the_held_out_originals"
+          },
+          "detail": "316 entries, each an obfuscated expression whose original is held in a separate file the recovery path never opens: 216 from a forward rewriter written from the published identity tables, at widths 2 through 64 over 1 to 8 variables, and 100 from MBA-Obfuscator run over kernels this repository chose. The count is the population, not a recovery rate. Measured alongside it on this box: 254 of the 316 entries returned an answer inside a 2 second per-entry budget and 0 of those answers disagreed with the held-out original; the other 62 refused the budget and are reported as refusals rather than counted either way. A seeded-wrong recovery that returns one more than the truth is rejected on all 254, and one that swaps addition for exclusive-or is rejected on 252, the 2 survivors being cases where the substitution happens to preserve the value.",
+          "source": "evidence/corpus/mba/cases.jsonl, regenerated byte-identically by the corpus generator's generate command and gated by cargo test -p disrobe-mba --test evidence_corpus_gate"
+        }
+      ]
+    },
+    {
+      "heading": "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.2.0 -O2 -fno-builtin, Windows x86-64)",
+      "axis_label": "recall (true positives / labeled flows), %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "direct flow, gcc -O2",
+          "value": 60.0,
+          "num": 9,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "9 of 15 labeled direct-flow command-injection cases recalled, precision 100% (9 of 9 flagged findings land on the corpus's own bad-labeled chain, 0 on a good-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category direct flow; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through a field, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "6 of 10 labeled struct-field flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a field; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through an array element, gcc -O2",
+          "value": 20.0,
+          "num": 1,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "1 of 5 labeled array-element flow cases recalled, precision 100% (1 of 1 flagged findings lands on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through an array element; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow across a function pointer, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "6 of 10 labeled function-pointer flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow across a function pointer; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "implicit flow through a control dependence, gcc -O2",
+          "value": 57.6,
+          "num": 49,
+          "den": 85,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "49 of 85 labeled control-dependence (implicit flow) cases recalled, precision 100% (49 of 49 flagged findings land on the corpus's own bad-labeled chain). This is the largest populated category, 85 of the corpus's 190 selected groups.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category implicit flow through a control dependence; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through a loop, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "6 of 10 labeled loop-flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a loop; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "inter-procedural flow at depth one, gcc -O2",
+          "value": 40.0,
+          "num": 16,
+          "den": 40,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "16 of 40 labeled depth-one inter-procedural cases recalled, precision 100% (16 of 16 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth one; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "inter-procedural flow at depth greater than one, gcc -O2",
+          "value": 0.0,
+          "num": 0,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
+            "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
+          },
+          "detail": "0 of 15 labeled depth-greater-than-one inter-procedural cases recalled at either -O0 or -O2; precision is undefined (0 true or false positive calls in this category, since nothing was flagged). A measured ceiling: the engine does not currently propagate taint through a second call boundary on this corpus.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth greater than one; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "aggregate (8 populated categories), gcc -O2",
+          "value": 48.9,
+          "num": 93,
+          "den": 190,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "93 of 190 labeled command-injection flows recalled across the 8 populated categories (48.9%), precision 100% (93 of 93 flagged findings land on a corpus-labeled bad chain, 0 false positives against any of the 190 good-labeled counterparts). The other 7 declared categories (container, callback, virtual call, string operation, sanitiser-severs, recursion, library boundary) hold 0 cases in this corpus slice. The same corpus and engine at -O0 recall only 12 of 190 (6.3%); the move from a prior 39 of 190 (20.5%) to 93 of 190 came from teaching the engine to track a source call's out-argument register, not from this row's own wiring.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, sum over the 8 populated categories; ground truth is manifest.xml and each file's own Flow Variant header"
+        }
+      ]
+    },
+    {
+      "heading": "MCP direct-call edges on a committed stripped ELF",
+      "axis_label": "exact toolchain-derived direct-call edges, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "precision",
+          "value": 100.0,
+          "num": 5,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs",
+            "function": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio",
+            "measured_by": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio"
+          },
+          "detail": "All 5 direct-call edges returned for the stripped ELF match the edge set derived from its distinct committed unstripped toolchain twin. The test computes the false-positive set and requires it to be empty.",
+          "source": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs, navigation_tools_round_trip_a_committed_stripped_elf_over_stdio; ground truth comes from the committed unstripped toolchain twin"
+        },
+        {
+          "label": "recall",
+          "value": 100.0,
+          "num": 5,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs",
+            "function": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio",
+            "measured_by": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio"
+          },
+          "detail": "The MCP call_graph tool returns all 5 direct-call edges derived from the committed unstripped toolchain twin. The test computes the false-negative set and requires it to be empty. This small fixture does not establish the same rate for other binaries, architectures, or toolchains.",
+          "source": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs, navigation_tools_round_trip_a_committed_stripped_elf_over_stdio; ground truth comes from the committed unstripped toolchain twin"
+        }
+      ]
+    }
+  ]
+}

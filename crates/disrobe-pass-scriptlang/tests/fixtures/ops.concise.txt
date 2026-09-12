@@ -1,0 +1,94 @@
+ops.pl syntax OK
+main::cmps:
+u  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->u
+1        <;> nextstate(main 4 ops.pl:5) v:*,&,x*,x&,x$,$ ->2
+3        <2> aassign[t5] vKS ->4
+-           <1> ex-list lK ->-
+2              <0> padrange[$a:4,10; $b:4,10] */LVINTRO,range=2 ->3
+-              <1> rv2av[t4] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lKPRM* ->3
+-              <0> pushmark sRM*/LVINTRO ->-
+-              <0> padsv[$a:4,10] sRM*/LVINTRO ->-
+-              <0> padsv[$b:4,10] sRM*/LVINTRO ->-
+4        <;> nextstate(main 5 ops.pl:6) v:*,&,x*,x&,x$,$ ->5
+8        <1> padsv_store[$p:5,10] vKS/LVINTRO ->9
+7           <2> eq sK/2 ->8
+5              <0> padsv[$a:4,10] s ->6
+6              <0> padsv[$b:4,10] s ->7
+-           <0> ex-padsv sRM*/LVINTRO ->8
+9        <;> nextstate(main 6 ops.pl:7) v:*,&,{,x*,x&,x$,$ ->a
+d        <1> padsv_store[$q:6,10] vKS/LVINTRO ->e
+c           <2> lt sK/2 ->d
+a              <0> padsv[$a:4,10] s ->b
+b              <0> padsv[$b:4,10] s ->c
+-           <0> ex-padsv sRM*/LVINTRO ->d
+e        <;> nextstate(main 7 ops.pl:8) v:*,&,{,x*,x&,x$,$ ->f
+i        <1> padsv_store[$r:7,10] vKS/LVINTRO ->j
+h           <2> ge sK/2 ->i
+f              <0> padsv[$a:4,10] s ->g
+g              <0> padsv[$b:4,10] s ->h
+-           <0> ex-padsv sRM*/LVINTRO ->i
+j        <;> nextstate(main 8 ops.pl:9) v:*,&,{,x*,x&,x$,$ ->k
+m        <+> multiconcat("",-1,-1,-1)[$s:8,10] vK/LVINTRO,TARGMY ->n
+k           <0> padsv[$a:4,10] s ->l
+l           <0> padsv[$b:4,10] s ->m
+-           <0> ex-padsv sRM*/LVINTRO ->m
+n        <;> nextstate(main 9 ops.pl:10) v:*,&,{,x*,x&,x$,$ ->o
+r        <1> padsv_store[$u:9,10] vKS/LVINTRO ->s
+q           <2> modulo[t12] sK/2 ->r
+o              <0> padsv[$a:4,10] s ->p
+p              <0> padsv[$b:4,10] s ->q
+-           <0> ex-padsv sRM*/LVINTRO ->r
+s        <;> nextstate(main 10 ops.pl:11) v:*,&,{,x*,x&,x$,$ ->t
+-        <@> return K ->-
+-           <0> pushmark s ->t
+t           <0> padsv[$p:5,10] s ->u
+main::assigns:
+1c <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->1c
+v        <;> nextstate(main 12 ops.pl:15) v:*,&,x*,x&,x$,$ ->w
+x        <2> aassign[t4] vKS ->y
+-           <1> ex-list lK ->-
+w              <0> padrange[$x:12,15] */LVINTRO,range=1 ->x
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->x
+-              <0> pushmark s ->-
+-              <0> padsv[$x:12,15] sPRM*/LVINTRO ->-
+y        <;> nextstate(main 13 ops.pl:16) v:*,&,x*,x&,x$,$ ->z
+12       <1> padsv_store[$y:13,15] vKS/LVINTRO ->13
+11          <2> multiply[t6] sK/2 ->12
+z              <0> padsv[$x:12,15] s ->10
+10             <$> const[IV 2] s ->11
+-           <0> ex-padsv sRM*/LVINTRO ->12
+13       <;> nextstate(main 14 ops.pl:17) v:*,&,{,x*,x&,x$,$ ->14
+16       <2> subtract[$y:13,15] vK/TARGMY,2 ->17
+14          <0> padsv[$y:13,15] s ->15
+15          <$> const[IV 1] s ->16
+17       <;> nextstate(main 14 ops.pl:18) v:*,&,{,x*,x&,x$,$ ->18
+19       <1> padsv_store[$z:14,15] vKS/LVINTRO ->1a
+18          <0> padsv[$x:12,15] s ->19
+-           <0> ex-padsv sRM*/LVINTRO ->19
+1a       <;> nextstate(main 15 ops.pl:19) v:*,&,{,x*,x&,x$,$ ->1b
+-        <@> return K ->-
+-           <0> pushmark s ->1b
+1b          <0> padsv[$z:14,15] s ->1c
+main program:
+1p <@> leave[1 ref] vKP/REFC ->(end)
+1d    <0> enter v ->1e
+1e    <;> nextstate(main 16 ops.pl:22) v:*,&,{,x*,x&,x$,$ ->1f
+1k    <1> padsv_store[$g:16,17] vKS/LVINTRO ->1l
+1j       <1> entersub sKS/STRICT ->1k
+-           <1> ex-list sK ->1j
+1f             <0> pushmark s ->1g
+1g             <$> const[IV 1] sM ->1h
+1h             <$> const[IV 2] sM ->1i
+-              <1> ex-rv2cv sK/STRICT,1 ->-
+1i                <#> gv[*cmps] s ->1j
+-        <0> ex-padsv sRM*/LVINTRO ->1k
+1l    <;> nextstate(main 17 ops.pl:23) v:*,&,{,x*,x&,x$,$ ->1m
+1o    <@> print vK ->1p
+1m       <0> pushmark s ->1n
+1n       <0> padsv[$g:16,17] s ->1o

@@ -1,0 +1,214 @@
+{
+  "schema": "disrobe.cli-recording.v1",
+  "capturedAt": "2026-09-12T11:57:24.585Z",
+  "binary": {
+    "version": "disrobe 0.10.6",
+    "sha256": "c3ac06a2784eefea8a771cbd8c92823ffdf1d7753eebb62a406264a49a8e161a"
+  },
+  "workspaceVersion": "0.10.6",
+  "releaseTag": "v0.10.6",
+  "presentation": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "timing": "Edited command entry and reading time; elapsedMs records each process separately."
+  },
+  "inputs": [
+    {
+      "source": "corpus/native/packers/upx/hello.packed.nrv2b.exe",
+      "name": "hello.packed.exe",
+      "bytes": 53248,
+      "sha256": "ddd7e1ca914a971b5d976e1f238c3320383ae4367845ce5e274caa6c82060a91"
+    },
+    {
+      "source": "playground/public/samples/greet.luac",
+      "name": "greet.luac",
+      "bytes": 350,
+      "sha256": "4cbd351c350df398e992841bfdfab689b40f2a823a901803c24fc24ae3a3cbda"
+    },
+    {
+      "source": "playground/public/samples/add.wasm",
+      "name": "add.wasm",
+      "bytes": 69,
+      "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+    },
+    {
+      "name": "indicators.txt",
+      "text": "https://example.org/download\nanalyst@example.org\n192.0.2.42\n",
+      "bytes": 60,
+      "sha256": "03ba0557052abd787c77de1180c6363bc623829311714919d9263a1882b3352e"
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "recovered/add.wat",
+      "bytes": 232,
+      "sha256": "71877a6f7704293f3c3336703f090732cfa23d3524b373eef4d0e0be14867dbc"
+    },
+    {
+      "name": "recovered/greet.lua",
+      "bytes": 209,
+      "sha256": "aa3f4e23f54e615638ec53c6b6b6ad490231b3b51c8d2f54c626bbc4a1d31374"
+    },
+    {
+      "name": "recovered/greet.manifest.json",
+      "bytes": 132,
+      "sha256": "2b2a27cc8b0d5dac91ea43a10fd91e8fbba5a599fb44857bcc9ce86155f42dbd"
+    },
+    {
+      "name": "recovered/hello.bin",
+      "bytes": 116810,
+      "sha256": "3e717e4e0eb2fc8dcda7e919aa7cbc7a8b61fddea975ca38de4bc6f4464b72e7"
+    },
+    {
+      "name": "recovered/auto\\anti-analysis.json",
+      "bytes": 126,
+      "sha256": "33ac853ab4d974193d67802c6ffa3ef69459d4cb05dba79c806055a9475fd499"
+    },
+    {
+      "name": "recovered/auto\\chain.json",
+      "bytes": 2139,
+      "sha256": "27f0ac3029a840ef69e88374b404e933a00b255ca48d962bb3785621933a0566"
+    },
+    {
+      "name": "recovered/auto\\recovery.json",
+      "bytes": 545,
+      "sha256": "0ca7241a857a500b162cbcad2083a6b60533d24feebac91ff90287c1ab3e5f65"
+    },
+    {
+      "name": "recovered/auto\\report.json",
+      "bytes": 3298,
+      "sha256": "e8fa17b44a2dbb3143ea6ff12837a722f9429e56dd12eb72869aa4dfd31bc993"
+    },
+    {
+      "name": "recovered/auto\\report.sarif",
+      "bytes": 15709,
+      "sha256": "99f870f995ed1004d834037c4ee220b8e1e8ee3f0116f5edacfdc1b1cfa93ee0"
+    },
+    {
+      "name": "recovered/auto\\01-wasm-deob\\output.bin",
+      "bytes": 200,
+      "sha256": "d7209e862598ad1fba595ffbc51898f9b6bd92f4e03cb6f04082b5575663f552"
+    },
+    {
+      "name": "recovered/auto\\final\\01-wasm-deob\\output.bin",
+      "bytes": 200,
+      "sha256": "d7209e862598ad1fba595ffbc51898f9b6bd92f4e03cb6f04082b5575663f552"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "native",
+      "title": "Unpack a native binary",
+      "description": "Decode the UPX payload from a packed executable.",
+      "durationMs": 6000,
+      "command": "disrobe native unpack hello.packed.exe --out recovered/hello.bin",
+      "argv": [
+        "disrobe",
+        "native",
+        "unpack",
+        "hello.packed.exe",
+        "--out",
+        "recovered/hello.bin"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 25.544600000000003,
+      "stdout": "native unpack: OK\n  input:        hello.packed.exe\n  packer:       upx\n  status:       Implemented\n  packed_size:  53248\n  recovered:    116810 bytes\n  wrote:        recovered/hello.bin\n",
+      "stderr": ""
+    },
+    {
+      "id": "indicators",
+      "title": "Extract indicators",
+      "description": "Find the URL, email address, and IP address in a file.",
+      "durationMs": 5000,
+      "command": "disrobe ioc indicators.txt",
+      "argv": [
+        "disrobe",
+        "ioc",
+        "indicators.txt"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 84.07780000000001,
+      "stdout": "url\tplain\t@0\thttps://example.org/download\nemail\tplain\t@29\tanalyst@example.org\nipv4\tplain\t@49\t192.0.2.42\n\n3 indicator(s)\n",
+      "stderr": ""
+    },
+    {
+      "id": "auto",
+      "title": "Let Disrobe choose the recovery path",
+      "description": "Identify the module and save its recovery reports and stages.",
+      "durationMs": 5000,
+      "command": "disrobe auto add.wasm --out recovered/auto --capture-stages",
+      "argv": [
+        "disrobe",
+        "auto",
+        "add.wasm",
+        "--out",
+        "recovered/auto",
+        "--capture-stages"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 170.81949999999998,
+      "stdout": "chain.json written: recovered/auto\\chain.json\nrecovery.json written: recovered/auto\\recovery.json\nanti-analysis.json written: recovered/auto\\anti-analysis.json\nreport.json written: recovered/auto\\report.json\nreport.sarif written: recovered/auto\\report.sarif\n1 stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under recovered/auto; 1 terminal stage(s) linked under recovered/auto\\final\nanti-analysis: none detected\n",
+      "stderr": ""
+    },
+    {
+      "id": "lua",
+      "title": "Decompile Lua bytecode",
+      "description": "Recover source from a compiled Lua chunk.",
+      "durationMs": 6000,
+      "command": "disrobe lua decompile greet.luac --out recovered/greet.lua",
+      "argv": [
+        "disrobe",
+        "lua",
+        "decompile",
+        "greet.luac",
+        "--out",
+        "recovered/greet.lua"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 20.01429999999999,
+      "stdout": "lua decompile: OK\n  input:        greet.luac\n  format:       Lua51\n  fidelity:     Lossless\n  warnings:     0\n  wrote:        recovered/greet.lua\n  manifest:     recovered/greet.manifest.json\n",
+      "stderr": ""
+    },
+    {
+      "id": "wasm",
+      "title": "Lift WebAssembly to WAT",
+      "description": "Write the module's functions and instructions as text.",
+      "durationMs": 6000,
+      "command": "disrobe wasm decompile add.wasm --target wat --out recovered/add.wat",
+      "argv": [
+        "disrobe",
+        "wasm",
+        "decompile",
+        "add.wasm",
+        "--target",
+        "wat",
+        "--out",
+        "recovered/add.wat"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 19.753299999999967,
+      "stdout": "wasm decompile: OK (target=wat)\n  functions:    1\n  wrote:        recovered/add.wat\n",
+      "stderr": ""
+    },
+    {
+      "id": "source",
+      "title": "Read the recovered instructions",
+      "description": "The exported add function retains its two inputs and i32.add instruction.",
+      "durationMs": 8000,
+      "command": "Get-Content -LiteralPath recovered/add.wat",
+      "argv": [
+        "powershell",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-Content -LiteralPath recovered/add.wat"
+      ],
+      "exitCode": 0,
+      "elapsedMs": 163.8628,
+      "stdout": ";; disrobe wasm lift target=wat\n(module\n  (memory $m0 1 16)\n  (table $dr_tbl_func 1 funcref)\n  (func $f0 (param $p0 i32) (param $p1 i32) (result i32)\n    local.get $p0\n    local.get $p1\n    i32.add\n  )\n  (export \"add\" (func $f0))\n)\n",
+      "stderr": ""
+    }
+  ]
+}

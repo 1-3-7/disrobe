@@ -1,0 +1,17 @@
+Compiler: Microsoft C/C++ Optimizing Compiler 19.44.35228 for x64
+Target: Windows x64 COFF
+
+cookie_guard.obj
+  cl /nologo /c /Od /GS /Brepro /experimental:deterministic /pathmap:<neutral-build-dir>=. /Fo:cookie_guard.obj cookie_guard.c
+  cookie_guard.c  sha256 d7b34061a10c5f6b811623c7300ed8cb3186d432b14a750edab5c484e2ae4e8a
+  cookie_guard.obj sha256 8ef629ff974a031c32586c4b2211bfc106b2f013174f5ceb14b2a12c2fef6d6e
+
+report_gsfailure.obj
+  cl /nologo /c /Od /GS- /Brepro /experimental:deterministic /pathmap:<neutral-build-dir>=. /Fo:report_gsfailure.obj report_gsfailure.c
+  report_gsfailure.c  sha256 1960f69e6d4400e8db41b3fc9a7f09ad015c56c1182a3ad35bd888ab2761229b
+  report_gsfailure.obj sha256 c16a0f31c3fc2d36d4d5f2b2e18adbf62de24b1247a142193e3969bd64d9fcf0
+
+returning_lookalike.obj
+  cl /nologo /c /O1 /GS- /Brepro /experimental:deterministic /pathmap:<neutral-build-dir>=. /Fo:returning_lookalike.obj returning_lookalike.c
+  returning_lookalike.c  sha256 d829e5b74a611e7ba19946457b8ffd9145c85ba11ba7b90d56d1c91f7ef9b522
+  returning_lookalike.obj sha256 f4b82fec372c0d91d86118b9a4326fc4c99f4cf5200b0b3fcb7f33990d6b1578

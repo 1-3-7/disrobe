@@ -1,0 +1,100 @@
+schema = "disrobe-corpus-v1"
+category = "beam"
+target_crate = "disrobe-pass-beam"
+fetched_utc = "2026-05-25T16:42:00Z"
+notes = """
+Real BEAM bytecode generated on Windows 11 with Erlang/OTP 29 (erts-17.0)
++ Elixir 1.18.4 (compiled with OTP 27). Two-tier coverage:
+  hello.* (smoke fixtures) - single export, minimal Code chunk.
+  megafile/edge_cases.{erl,ex} - broad coverage: gen_server behaviour,
+    records, maps, bit-syntax, list/binary comprehensions, processes
+    (spawn/link/monitor), receive/after, ets/dets, try/catch/of/after,
+    fun closures, BIFs, big ints. Elixir megafile adds GenServer/Supervisor/
+    Agent/Task/Stream/Enum/with/pipe/protocols/macros/structs/anonymous-
+    multi-clause/sigils/heredocs/Renderable protocol (4 impls).
+  .ez archive built by zipping ebin/ tree (zip-of-beams format).
+"""
+
+[[fixture]]
+name = "otp28-long-atu8-source"
+path = "otp28_long_atu8/otp28_long_atu8.erl"
+kind = "source"
+provenance = "self-authored"
+source_tool = "Erlang/OTP 28.5.0.3 erlc +deterministic"
+description = "OTP 28 long AtU8 boundary source: one atom with 255 two-byte UTF-8 characters."
+
+[[sample]]
+name = "erlang/hello.beam"
+source_tool = "Erlang/OTP 29 erlc +debug_info"
+source_file = "erlang/hello.erl"
+size_bytes = 876
+sha256 = "bae5979343c36ef4cb4d3698bd1e4127deccf9107252fe59eb28553622b5262f"
+notes = "Smoke fixture: one export main/0 printing hello world."
+
+[[sample]]
+name = "elixir/Elixir.Hello.beam"
+source_tool = "Elixir 1.18.4 elixirc"
+source_file = "elixir/hello.ex"
+size_bytes = 1568
+sha256 = "25347bf23d754eed992fc882504b48d267fcd741188bfe01ed3410306aa1e8c8"
+notes = "Smoke fixture: single Elixir module Hello with one def main."
+
+[[sample]]
+name = "ez/hello.ez"
+source_tool = "PowerShell Compress-Archive (zip-of-beams)"
+source_files = ["erlang/hello.beam", "ebin/hello.app"]
+size_bytes = 1113
+sha256 = "05395b032311c93f3a21f871f8812f516b01739e1155b957091d762dddcc8414"
+notes = "Smoke .ez archive containing hello-1.0/ebin/{hello.beam, hello.app}."
+
+[[sample]]
+name = "megafile/edge_cases.beam"
+source_tool = "Erlang/OTP 29 erlc +debug_info"
+source_file = "megafile/edge_cases.erl"
+size_bytes = 23744
+sha256 = "be12281848d95f0405a98d07d5df90f27b4c30de54d3125d4b47944c0956cfd9"
+notes = "Erlang megafile: gen_server behaviour, records, maps, bit-syntax, list/binary comprehensions, processes, ets/dets, try/catch/of/after, fun closures, BIFs, big ints."
+
+[[sample]]
+name = "megafile/Elixir.EdgeCases.beam"
+source_tool = "Elixir 1.18.4 elixirc"
+source_file = "megafile/edge_cases.ex"
+size_bytes = 44240
+sha256 = "51ca657d1df52d4586ec4c879e8baa2a3ce96775e551e2b9e17c706e41d6ae31"
+notes = "Elixir megafile root module: pipes, with, comprehensions, anonymous multi-clause, sigils, heredocs, structs, GenServer client."
+
+[[sample]]
+name = "disasm_oracle/probe.beam"
+source_tool = "Erlang/OTP 28 erlc +debug_info +deterministic"
+source_file = "disasm_oracle/probe.erl"
+size_bytes = 1820
+sha256 = "011b5c4c1ac6d8752422d34774c93a90bdd66fa7d5092f693e264bac06b2a2e8"
+notes = "Symbolic-disasm oracle fixture: arithmetic, guards, list ops, maps, tuple/string/fun literals. Graded against beam_disasm:file/1 (disasm_oracle/probe.beam_disasm.txt)."
+
+[[sample]]
+name = "disasm_oracle/probe2.beam"
+source_tool = "Erlang/OTP 28 erlc +debug_info +deterministic"
+source_file = "disasm_oracle/probe2.erl"
+size_bytes = 3248
+sha256 = "cfa922772ba7d619bd3afdb0dafa457a4274fc9036b63076a14fc2a359086ef5"
+notes = "Symbolic-disasm oracle fixture: try/catch/of, receive, bit-syntax build+match, list/binary comprehensions, records, maps, floats, fun capture, big ints, apply, select_val. Graded against beam_disasm:file/1 (disasm_oracle/probe2.beam_disasm.txt)."
+
+[[sample]]
+name = "megafile/edge_cases.ez"
+source_tool = "PowerShell Compress-Archive (zip-of-beams)"
+source_files = [
+    "megafile/edge_cases.beam",
+    "megafile/Elixir.EdgeCases.beam",
+    "megafile/Elixir.EdgeCases.MyServer.beam",
+    "megafile/Elixir.EdgeCases.MySupervisor.beam",
+    "megafile/Elixir.EdgeCases.Address.beam",
+    "megafile/Elixir.EdgeCases.Greeter.beam",
+    "megafile/Elixir.EdgeCases.Renderable.beam",
+    "megafile/Elixir.EdgeCases.Renderable.Any.beam",
+    "megafile/Elixir.EdgeCases.Renderable.BitString.beam",
+    "megafile/Elixir.EdgeCases.Renderable.Integer.beam",
+    "megafile/Elixir.EdgeCases.Renderable.List.beam",
+]
+size_bytes = 69211
+sha256 = "96dc117edc543cba958c246b0738e1db06cef42f7e4d24a84aaa51a206f9924b"
+notes = ".ez archive bundling Erlang + 11 Elixir modules into hello-1.0/ebin/."

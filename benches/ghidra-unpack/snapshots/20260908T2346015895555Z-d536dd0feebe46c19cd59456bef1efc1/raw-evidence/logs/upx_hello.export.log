@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\upx\hello.packed.nrv2b.exe
+  packer:       upx
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\upx_hello-e696e55509c3456d901ac96283e89661\hello.packed.nrv2b.unpacked.exe
+  layout:       bare-block-placement
+  unbind:       0 of 0 relocation(s) unapplied, 5 of 21 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    116810 bytes placed (1 section(s) overlaid)
+  oep:          unchanged
+  symbols:      2
+  sidecar:      ${RUN_DIRECTORY}\export\upx_hello-e696e55509c3456d901ac96283e89661\hello.packed.nrv2b.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\upx_hello-e696e55509c3456d901ac96283e89661\export.manifest.json

@@ -1,0 +1,7 @@
+  00007B84 00069EC0 00069EC4 00160988  managed_abi_net9_x86_64_ManagedAbiProbe__Add
+  00007B90 00069ED0 00069ED5 0015E800  managed_abi_net9_x86_64_ManagedAbiProbe__Negate
+  00007B9C 00069EE0 00069EE4 00160988  managed_abi_net9_x86_64_ManagedAbiProbe__Widen
+  00007BA8 00069EF0 00069EF9 00167A10  managed_abi_net9_x86_64_ManagedAbiProbe__IsPositive
+  00007BB4 00069F00 00069F08 0015FC74  managed_abi_net9_x86_64_ManagedAbiProbe__Mask
+  00007BC0 00069F10 00069F1F 00160180  managed_abi_net9_x86_64_ManagedAbiProbe__Blend
+  00007BCC 00069F20 00069F27 0016EAD0  managed_abi_net9_x86_64_ManagedAbiProbe__Scale

@@ -1,0 +1,12 @@
+source = "dotnet-BrowserNumbers.cs"
+assembly = "dotnet-BrowserNumbers.dll"
+compiler = "Microsoft C# compiler, .NET SDK 9.0.316"
+reference_pack = "Microsoft.NETCore.App.Ref 9.0.18"
+compiler_arguments = "/noconfig /nologo /target:library /deterministic+ /optimize+ /debug- /nostdlib+ /langversion:latest /reference:<reference-pack>/ref/net9.0/System.Runtime.dll /out:dotnet-BrowserNumbers.dll dotnet-BrowserNumbers.cs"
+inspect = "ilspycmd 9.1.0.7988 --disable-updatecheck -il dotnet-BrowserNumbers.dll"
+source_sha256 = "3111fb09b69f0289b1abc8f807a4935627761cd513ba76d46d744e7ac29304ce"
+assembly_sha256 = "f35b54de1a265943acb755363ad532e28bef83607fde71444a5c35364c3bda22"
+methods = 5
+instructions = 11
+integer_constants = ["9007199254740993", "-9223372036854775808"]
+double_immediate_bits = ["3ff4000000000000", "8000000000000000"]

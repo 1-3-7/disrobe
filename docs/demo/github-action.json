@@ -1,0 +1,77 @@
+{
+  "schema": "disrobe.demo.github-action/v1",
+  "captured_at": "2026-09-08T12:08:34.338Z",
+  "scope": "Local execution of the composite Action's exact run step with the built CLI, including SARIF validation and recovery grading.",
+  "python": "Python 3.14.5",
+  "python_command": "python3 invokes the supplied Python interpreter.",
+  "binary_sha256": "f3af06c4e22d9408188b344221f86ecd63deb1e60a972e92b10ea54450d2d642",
+  "action": {
+    "path": "action.yml",
+    "sha256": "f1ae7d81bc6fe7010903f19b9625804c4431207af2baf81ded58dcd0b3b6ee6e",
+    "run_step_sha256": "02e98f0167e86f08210479d3d7a516e176dd881f3198e85f1a90e35b18dc34b7"
+  },
+  "input": {
+    "path": "playground/public/samples/add.wasm",
+    "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e",
+    "bytes": 69
+  },
+  "reproduction": "node docs/demo/capture-action.mjs --binary <disrobe> --bash <bash> --python <python>",
+  "cases": [
+    {
+      "command": "detect",
+      "fail_on": "failed",
+      "exit_code": 0,
+      "elapsed_ms": 200.428,
+      "stdout": "",
+      "stderr": "",
+      "analyzer_log": "",
+      "outputs": "sarif=disrobe.sarif\nverdict=ok\nchain-verdict=unknown\nsummary=disrobe detect on add.wasm: verdict=ok (from the disrobe exit status, because no chain recovery report was written), chain-verdict=unknown, sarif-results=0\n",
+      "summary": "### disrobe\n\n- command: `detect`\n- path: `add.wasm`\n- verdict: `ok`, graded from the disrobe exit status, because no chain recovery report was written\n- chain verdict: `unknown`\n- SARIF results: `0`\n",
+      "sarif_sha256": "32560d0b41e8e95455be9fb11a09c75e57ad1af136ac6dcb6c6df1b8c58e2f11",
+      "sarif": {
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+          {
+            "tool": {
+              "driver": {
+                "name": "disrobe",
+                "version": "0.10.5",
+                "informationUri": "https://github.com/1-3-7/disrobe"
+              }
+            },
+            "results": []
+          }
+        ]
+      }
+    },
+    {
+      "command": "auto",
+      "fail_on": "failed",
+      "exit_code": 0,
+      "elapsed_ms": 441.85929999999996,
+      "stdout": "",
+      "stderr": "",
+      "analyzer_log": "",
+      "outputs": "sarif=disrobe.sarif\nverdict=ok\nchain-verdict=complete\nsummary=disrobe auto on add.wasm: verdict=ok (from the chain recovery report), chain-verdict=complete, sarif-results=0\n",
+      "summary": "### disrobe\n\n- command: `auto`\n- path: `add.wasm`\n- verdict: `ok`, graded from the chain recovery report\n- chain verdict: `complete`\n- SARIF results: `0`\n",
+      "sarif_sha256": "32560d0b41e8e95455be9fb11a09c75e57ad1af136ac6dcb6c6df1b8c58e2f11",
+      "sarif": {
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+          {
+            "tool": {
+              "driver": {
+                "name": "disrobe",
+                "version": "0.10.5",
+                "informationUri": "https://github.com/1-3-7/disrobe"
+              }
+            },
+            "results": []
+          }
+        ]
+      }
+    }
+  ]
+}

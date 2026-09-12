@@ -1,0 +1,3 @@
+disrobe rar fixture
+This is a known benign payload authored for byte-exact extraction validation.
+line three with digits 0123456789

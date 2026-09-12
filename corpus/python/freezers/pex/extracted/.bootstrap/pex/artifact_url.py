@@ -1,0 +1,287 @@
+
+
+from __future__ import absolute_import
+
+import codecs
+import hashlib
+import re
+from collections import defaultdict
+
+from pex import hashing, pex_warnings
+from pex.compatibility import PY3, url_unquote, url_unquote_plus, urlparse
+from pex.dist_metadata import is_wheel
+from pex.enum import Enum
+from pex.hashing import HashlibHasher
+from pex.tracer import TRACER
+from pex.typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from typing import (
+        BinaryIO,
+        Container,
+        DefaultDict,
+        Dict,
+        Iterable,
+        Iterator,
+        List,
+        Mapping,
+        Optional,
+        Sequence,
+        Text,
+        Tuple,
+        Union,
+    )
+
+    import attr
+else:
+    from pex.third_party import attr
+
+
+class VCS(Enum["VCS.Value"]):
+    class Value(Enum.Value):
+        pass
+
+    Bazaar = Value("bzr")
+    Git = Value("git")
+    Mercurial = Value("hg")
+    Subversion = Value("svn")
+
+
+VCS.seal()
+
+
+@attr.s(frozen=True)
+class VCSScheme(object):
+    vcs = attr.ib()
+    scheme = attr.ib()
+
+
+class ArchiveScheme(Enum["ArchiveScheme.Value"]):
+    class Value(Enum.Value):
+        pass
+
+    FTP = Value("ftp")
+    HTTP = Value("http")
+    HTTPS = Value("https")
+
+
+ArchiveScheme.seal()
+
+
+def parse_scheme(scheme):
+    # type: (str) -> Union[str, ArchiveScheme.Value, VCSScheme]
+    match = re.match(
+        r"""
+        ^
+        (?:
+            (?P<archive_scheme>
+                # Archives
+                  ftp
+                | https?
+            )
+            |
+            (?P<vcs_type>
+                # VCSs: https://pip.pypa.io/en/stable/reference/pip_install/#vcs-support
+                  bzr
+                | git
+                | hg
+                | svn
+            )\+(?P<vcs_scheme>.+)
+        )
+        $
+        """,
+        scheme,
+        re.VERBOSE,
+    )
+    if not match:
+        return scheme
+
+    archive_scheme = match.group("archive_scheme")
+    if archive_scheme:
+        return cast(ArchiveScheme.Value, ArchiveScheme.for_value(archive_scheme))
+
+    return VCSScheme(vcs=VCS.for_value(match.group("vcs_type")), scheme=match.group("vcs_scheme"))
+
+
+@attr.s(frozen=True)
+class Fingerprint(object):
+    @classmethod
+    def from_stream(
+        cls,
+        stream,
+        algorithm="sha256",
+    ):
+        # type: (...) -> Fingerprint
+        digest = hashlib.new(algorithm)
+        hashing.update_hash(filelike=stream, digest=digest)
+        return cls(algorithm=algorithm, hash=digest.hexdigest())
+
+    @classmethod
+    def from_digest(cls, digest):
+        # type: (HashlibHasher) -> Fingerprint
+        return cls.from_hashing_fingerprint(digest.hexdigest())
+
+    @classmethod
+    def from_hashing_fingerprint(cls, fingerprint):
+        # type: (hashing.Fingerprint) -> Fingerprint
+        return cls(algorithm=fingerprint.algorithm, hash=fingerprint)
+
+    algorithm = attr.ib()
+    hash = attr.ib()
+
+    def __str__(self):
+        # type: () -> str
+        return "{algorithm}:{hash}".format(algorithm=self.algorithm, hash=self.hash)
+
+
+def _guaranteed_available_algorithms():
+    # type: () -> Iterator[Tuple[str, int]]
+    for alg in frozenset(hashlib.algorithms_guaranteed) & frozenset(hashlib.algorithms_available):
+        try:
+            digest = hashlib.new(alg)
+        except ValueError as e:
+            pex_warnings.warn(
+                "Will not accept hashlib algorithm {alg} in download URL fingerprints: "
+                "{err}".format(alg=alg, err=e)
+            )
+        else:
+            yield alg, digest.digest_size
+
+
+RANKED_GUARANTEED_AVAILABLE_ALGORITHMS = tuple(
+    alg for alg, _ in sorted(_guaranteed_available_algorithms(), key=lambda tup: (-tup[1], tup[0]))
+)
+
+
+def parse_qs(query_string):
+    # type: (str) -> Dict[str, List[str]]
+    if PY3:
+        return urlparse.parse_qs(query_string)
+    else:
+
+        parameters = defaultdict(list)
+        for parameter in query_string.split("&"):
+            raw_name, sep, raw_value = parameter.partition("=")
+            if not sep:
+                continue
+            name = url_unquote_plus(raw_name)
+            value = url_unquote_plus(raw_value)
+            parameters[name].append(value)
+        return parameters
+
+
+@attr.s(frozen=True)
+class ArtifactURL(object):
+    @staticmethod
+    def create_fragment(
+        fragment_parameters,
+        excludes=(),
+    ):
+        # type: (...) -> str
+        return "&".join(
+            sorted(
+                "{name}={value}".format(name=name, value=value)
+                for name, values in fragment_parameters.items()
+                for value in values
+                if name not in excludes
+            )
+        )
+
+    @classmethod
+    def parse(cls, url):
+        # type: (Text) -> ArtifactURL
+
+        try:
+            codecs.encode(url, "ascii")
+        except ValueError as e:
+            raise ValueError(
+                "Invalid URL:{url}\n"
+                "URLs can only contain ASCII octets: {err}".format(url=url, err=e)
+            )
+        else:
+            raw_url = str(url)
+
+        url_info = urlparse.urlparse(raw_url)
+        return cls.from_url_info(url_info, raw_url)
+
+    @classmethod
+    def from_url_info(
+        cls,
+        url_info,
+        original_url=None,
+    ):
+        # type: (...) -> ArtifactURL
+
+        raw_url = original_url or str(url_info.geturl())
+        scheme = parse_scheme(url_info.scheme) if url_info.scheme else "file"
+        path = url_unquote(url_info.path)
+
+        parameters = url_unquote(url_info.params)
+
+        fingerprints = []
+        fragment_parameters = parse_qs(url_info.fragment)
+        if fragment_parameters:
+
+
+            for alg in RANKED_GUARANTEED_AVAILABLE_ALGORITHMS:
+                hashes = fragment_parameters.pop(alg, None)
+                if not hashes:
+                    continue
+                if len(hashes) > 1 and len(set(hashes)) > 1:
+                    TRACER.log(
+                        "The artifact url contains multiple distinct hash values for the {alg} "
+                        "algorithm, not trusting any of these: {url}".format(alg=alg, url=raw_url)
+                    )
+                    continue
+                fingerprints.append(Fingerprint(algorithm=alg, hash=hashes[0]))
+
+        subdirectories = fragment_parameters.get("subdirectory")
+        subdirectory = subdirectories[-1] if subdirectories else None
+
+        download_url = urlparse.urlunparse(
+            url_info._replace(fragment=cls.create_fragment(fragment_parameters))
+        )
+        normalized_url = urlparse.urlunparse(
+            url_info._replace(path=path, params="", query="", fragment="")
+        )
+        return cls(
+            raw_url=raw_url,
+            url_info=url_info,
+            download_url=download_url,
+            normalized_url=normalized_url,
+            scheme=scheme,
+            path=path,
+            subdirectory=subdirectory,
+            parameters=parameters,
+            fragment_parameters=fragment_parameters,
+            fingerprints=tuple(fingerprints),
+        )
+
+    raw_url = attr.ib(eq=False)
+    url_info = attr.ib(eq=False)
+    download_url = attr.ib(eq=False)
+    normalized_url = attr.ib()
+    scheme = attr.ib(eq=False)
+    path = attr.ib(eq=False)
+    subdirectory = attr.ib(eq=False)
+    parameters = attr.ib(eq=False)
+    fragment_parameters = attr.ib(eq=False)
+    fingerprints = attr.ib(eq=False)
+
+    def fragment(self, excludes=()):
+        # type: (Container[str]) -> str
+        return self.create_fragment(self.fragment_parameters, excludes=excludes)
+
+    @property
+    def is_wheel(self):
+        # type: () -> bool
+        return is_wheel(self.path)
+
+    @property
+    def fingerprint(self):
+        # type: () -> Optional[Fingerprint]
+        return self.fingerprints[0] if self.fingerprints else None
+
+    def __str__(self):
+        # type: () -> str
+        return self.raw_url

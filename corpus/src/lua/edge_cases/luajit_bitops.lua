@@ -1,0 +1,8 @@
+local bit = require("bit")
+local a = bit.bor(0xF0, 0x0F)
+local b = bit.band(0xCAFE, 0xFFF0)
+local c = bit.bxor(0xAA, 0x55)
+local d = bit.lshift(1, 16)
+local e = bit.rshift(0x80000000, 4)
+local f = bit.rol(0x12345678, 8)
+print(string.format("%x %x %x %x %x %x", a, b, c, d, e, f))

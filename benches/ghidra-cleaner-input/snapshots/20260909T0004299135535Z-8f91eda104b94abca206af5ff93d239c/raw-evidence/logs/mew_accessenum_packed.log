@@ -1,0 +1,356 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (455 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1607 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\mew_accessenum_packed-73d644ccfa9142c19be3a34bc2dad04d\mew_accessenum_packed (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\mew_accessenum_packed-73d644ccfa9142c19be3a34bc2dad04d\mew_accessenum_packed (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\mew_accessenum_packed-73d644ccfa9142c19be3a34bc2dad04d\mew_accessenum_packed (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe (HeadlessAnalyzer)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+ERROR Error laying down header structures ghidra.program.model.util.CodeUnitInsertionException: Could not create Data at address 0040000c (PeLoader)
+ERROR buffer error: null (MenuResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.MenuResourceDataType.addMenuItemTemplateHeaderStructure(MenuResourceDataType.java:122)
+	at ghidra.program.model.data.MenuResourceDataType.getAllComponents(MenuResourceDataType.java:74)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:366)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (MenuResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.MenuResourceDataType.addMenuItemTemplateHeaderStructure(MenuResourceDataType.java:122)
+	at ghidra.program.model.data.MenuResourceDataType.getAllComponents(MenuResourceDataType.java:74)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:366)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+ERROR buffer error: null (DialogResourceDataType) ghidra.program.model.mem.MemoryAccessException
+	at ghidra.util.GhidraLittleEndianDataConverter.getShort(GhidraLittleEndianDataConverter.java:33)
+	at ghidra.program.model.mem.MemoryBufferImpl.getShort(MemoryBufferImpl.java:162)
+	at ghidra.program.model.data.DialogResourceDataType.getAllComponents(DialogResourceDataType.java:84)
+	at ghidra.program.model.data.DynamicDataType.getComps(DynamicDataType.java:72)
+	at ghidra.program.model.data.DynamicDataType.getLength(DynamicDataType.java:149)
+	at ghidra.program.database.code.CodeManager.createCodeUnit(CodeManager.java:2033)
+	at ghidra.program.database.ListingDB.createData(ListingDB.java:268)
+	at ghidra.app.util.bin.format.pe.PeUtils.createData(PeUtils.java:58)
+	at ghidra.app.util.bin.format.pe.ResourceDataDirectory.markup(ResourceDataDirectory.java:374)
+	at ghidra.app.util.opinion.PeLoader.load(PeLoader.java:145)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.doLoad(AbstractLibrarySupportLoader.java:876)
+	at ghidra.app.util.opinion.AbstractLibrarySupportLoader.loadProgram(AbstractLibrarySupportLoader.java:148)
+	at ghidra.app.util.opinion.AbstractProgramLoader.load(AbstractProgramLoader.java:100)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:497)
+	at ghidra.app.util.importer.ProgramLoader$Builder.load(ProgramLoader.java:439)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processFileWithImport(HeadlessAnalyzer.java:1568)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithLoader(HeadlessAnalyzer.java:1755)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1696)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processWithImport(HeadlessAnalyzer.java:1780)
+	at ghidra.app.util.headless.HeadlessAnalyzer.processLocal(HeadlessAnalyzer.java:464)
+	at ghidra.app.util.headless.AnalyzeHeadless.launch(AnalyzeHeadless.java:199)
+	at ghidra.GhidraLauncher.launch(GhidraLauncher.java:81)
+	at ghidra.Ghidra.main(Ghidra.java:54)
+
+INFO  Additional info:
+Loading file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe?MD5=05daf35fd5a4bf1f47a52d6e5445c325...
+[AccessEnum.packed.mew.exe]: failed to create word at 0043511b: Conflicting data exists at address 00435110 to 0043511c
+[AccessEnum.packed.mew.exe]: failed to create word at 00435128: Conflicting data exists at address 0043511d to 00435129
+[AccessEnum.packed.mew.exe]: failed to create MenuResource at 00428690: Failed to resolve data length for MenuResource
+[AccessEnum.packed.mew.exe]: failed to create MenuResource at 004287a8: Failed to resolve data length for MenuResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00427bd0: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00427a38: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00427d30: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00427e08: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00428238: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 00427740: Failed to resolve data length for DialogResource
+[AccessEnum.packed.mew.exe]: failed to create DialogResource at 004282c8: Failed to resolve data length for DialogResource
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll?MD5=2d8ecc5a2aade7639ca790ef2e8e6e36...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Linking the External Programs of 'AccessEnum.packed.mew.exe' to imported libraries...
+  [KERNEL32.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 004353b5, pcode error at 00444001: Could not follow disassembly flow into non-existing memory at 00444001 (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.247 secs
+    Apply Data Archives                        0.395 secs
+    Call Convention ID                         0.001 secs
+    Call-Fixup Installer                       0.000 secs
+    Create Address Tables                      0.026 secs
+    Create Function                            0.000 secs
+    Data Reference                             0.002 secs
+    Decompiler Parameter ID                   60.723 secs
+    Decompiler Switch Analysis                 0.000 secs
+    Demangler Microsoft                        0.007 secs
+    Disassemble Entry Points                   0.043 secs
+    Embedded Media                             0.006 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.077 secs
+    Function Start Pre Search                  0.005 secs
+    Function Start Search                      0.045 secs
+    Function Start Search After Code           0.001 secs
+    Function Start Search After Data           0.005 secs
+    Non-Returning Functions - Discovered       0.001 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.000 secs
+    Reference                                  0.002 secs
+    Scalar Operand References                  0.001 secs
+    Shared Return Calls                        0.002 secs
+    Stack                                      0.008 secs
+    Subroutine References                      0.002 secs
+    Subroutine References - One Time           0.000 secs
+    WindowsResourceReference                   0.357 secs
+    X86 Function Callee Purge                  0.001 secs
+    x86 Constant Reference Analyzer            0.035 secs
+-----------------------------------------------------
+     Total Time   61 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\mew_accessenum_packed.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\mew_accessenum_packed.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/mew/AccessEnum.packed.mew.exe (HeadlessAnalyzer)
+INFO  /AccessEnum.packed.mew.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /AccessEnum.packed.mew.exe (mew_accessenum_packed:/AccessEnum.packed.mew.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

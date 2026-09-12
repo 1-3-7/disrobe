@@ -1,0 +1,25 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:06.000
+Unpack a native binary
+
+
+00:00:06.000 --> 00:00:11.000
+Extract indicators
+
+
+00:00:11.000 --> 00:00:16.000
+Let Disrobe choose the recovery path
+
+
+00:00:16.000 --> 00:00:22.000
+Decompile Lua bytecode
+
+
+00:00:22.000 --> 00:00:28.000
+Lift WebAssembly to WAT
+
+
+00:00:28.000 --> 00:00:36.000
+Read the recovered instructions
+

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="488" viewBox="0 0 920 488" font-family="'Manrope', sans-serif"><desc>generated from python_versions.json sha256:aa5a45a77cc4592b9a2dc7aec013bf1e</desc>
+  <rect x="0" y="0" width="920" height="488" rx="10" fill="#111111"/>
+  <rect x="0.5" y="0.5" width="919" height="487" rx="9.5" fill="none" stroke="#404040"/>
+  <text x="28.00" y="40.00" font-size="19" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Python decompiler version coverage</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">declared bytecode ranges; recovery quality and verification differ by tool</text>
+  <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#404040" stroke-width="1"/>
+<svg x="28.00" y="92.00" width="864" height="290" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 290">
+<rect width="864" height="290" x="0" y="0" fill="none"></rect>
+<path d="M224.5 34L224.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M347.5 34L347.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M470.5 34L470.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M593.5 34L593.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M717.5 34L717.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M840.5 34L840.5 282" fill="none" pointer-events="visible" stroke="#404040" stroke-dasharray="2,4" class="zr2-cls-7"></path>
+<path d="M-42.8 -19.5l42.8 0l0 13l-42.8 0Z" transform="translate(210 58.8)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:13px;font-family:'Manrope', sans-serif;font-weight:700;" y="-13" transform="translate(210 58.8)" fill="#F5F5F5">disrobe</text>
+<path d="M-164 -2.2l164 0l0 9.5l-164 0Z" transform="translate(210 58.8)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="2.5" transform="translate(210 58.8)" fill="#B3B3B3">deterministic, no LLM; + legacy 1.0-2.7</text>
+<path d="M-30.1 10.8l30.1 0l0 9.5l-30.1 0Z" transform="translate(210 58.8)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" y="15.5" transform="translate(210 58.8)" fill="#B3B3B3">disasm</text>
+<path d="M-70.3 -13l70.3 0l0 13l-70.3 0Z" transform="translate(210 108.4)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:13px;font-family:'Manrope', sans-serif;font-weight:400;" y="-6.5" transform="translate(210 108.4)" fill="#F5F5F5">uncompyle6</text>
+<path d="M-122.3 4.3l122.3 0l0 9.5l-122.3 0Z" transform="translate(210 108.4)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="9" transform="translate(210 108.4)" fill="#B3B3B3">deterministic; also covers 2.x</text>
+<path d="M-70.3 -13l70.3 0l0 13l-70.3 0Z" transform="translate(210 158)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:13px;font-family:'Manrope', sans-serif;font-weight:400;" y="-6.5" transform="translate(210 158)" fill="#F5F5F5">decompyle3</text>
+<path d="M-53.4 4.3l53.4 0l0 9.5l-53.4 0Z" transform="translate(210 158)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" y="9" transform="translate(210 158)" fill="#B3B3B3">deterministic</text>
+<path d="M-34.1 -13l34.1 0l0 13l-34.1 0Z" transform="translate(210 207.6)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:13px;font-family:'Manrope', sans-serif;font-weight:400;" y="-6.5" transform="translate(210 207.6)" fill="#F5F5F5">pycdc</text>
+<path d="M-101.6 4.3l101.6 0l0 9.5l-101.6 0Z" transform="translate(210 207.6)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="9" transform="translate(210 207.6)" fill="#B3B3B3">deterministic, best-effort</text>
+<path d="M-34.8 -13l34.8 0l0 13l-34.8 0Z" transform="translate(210 257.2)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:13px;font-family:'Manrope', sans-serif;font-weight:400;" y="-6.5" transform="translate(210 257.2)" fill="#F5F5F5">pychd</text>
+<path d="M-111.6 4.3l111.6 0l0 9.5l-111.6 0Z" transform="translate(210 257.2)" fill="none" pointer-events="visible" class="zr2-cls-7"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:9.5px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="9" transform="translate(210 257.2)" fill="#B3B3B3">rules-only or LLM-assisted</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(224 26)" fill="#B3B3B3">3.0</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(347.2 26)" fill="#B3B3B3">3.3</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(470.4 26)" fill="#B3B3B3">3.6</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(593.6 26)" fill="#B3B3B3">3.9</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(716.8 26)" fill="#B3B3B3">3.12</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:10.5px;font-family:'JetBrains Mono', monospace;" y="-5.25" transform="translate(840 26)" fill="#B3B3B3">3.15</text>
+<path d="M224 51.3l0 0l0 15l0 0Z" fill="none" pointer-events="visible" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M224 100.9l0 0l0 15l0 0Z" fill="none" pointer-events="visible" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M224 150.5l287.5 0l0 15l-287.5 0Z" fill="none" pointer-events="visible" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M224 200.1l0 0l0 15l0 0Z" fill="none" pointer-events="visible" ecmeta_series_index="0" ecmeta_data_index="3" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M224 249.7l0 0l0 15l0 0Z" fill="none" pointer-events="visible" ecmeta_series_index="0" ecmeta_data_index="4" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M227 51.3L837 51.3A3 3 0 0 1 840 54.3L840 63.3A3 3 0 0 1 837 66.3L227 66.3A3 3 0 0 1 224 63.3L224 54.3A3 3 0 0 1 227 51.3Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr2-cls-8"></path>
+<path d="M227 100.9L549.5 100.9A3 3 0 0 1 552.5 103.9L552.5 112.9A3 3 0 0 1 549.5 115.9L227 115.9A3 3 0 0 1 224 112.9L224 103.9A3 3 0 0 1 227 100.9Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr2-cls-9"></path>
+<path d="M514.5 150.5L549.5 150.5A3 3 0 0 1 552.5 153.5L552.5 162.5A3 3 0 0 1 549.5 165.5L514.5 165.5A3 3 0 0 1 511.5 162.5L511.5 153.5A3 3 0 0 1 514.5 150.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr2-cls-9"></path>
+<path d="M227.5 200.6L836.5 200.6A3 3 0 0 1 839.5 203.6L839.5 211.6A3 3 0 0 1 836.5 214.6L227.5 214.6A3 3 0 0 1 224.5 211.6L224.5 203.6A3 3 0 0 1 227.5 200.6Z" fill="#1C1C1C" stroke="#C4C4C4" stroke-dasharray="4,2" ecmeta_series_index="1" ecmeta_data_index="3" ecmeta_ssr_type="chart" class="zr2-cls-10"></path>
+<path d="M227 249.7L795.9 249.7A3 3 0 0 1 798.9 252.7L798.9 261.7A3 3 0 0 1 795.9 264.7L227 264.7A3 3 0 0 1 224 261.7L224 252.7A3 3 0 0 1 227 249.7Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="4" ecmeta_ssr_type="chart" class="zr2-cls-9"></path>
+<path d="M224 51.3l246.4 0l0 15l-246.4 0Z" fill="none" pointer-events="visible" ecmeta_series_index="2" ecmeta_data_index="0" ecmeta_ssr_type="chart" ecmeta_silent="true" class="zr2-cls-7"></path>
+<path d="M473.4 51.3L837 51.3A3 3 0 0 1 840 54.3L840 63.3A3 3 0 0 1 837 66.3L473.4 66.3A3 3 0 0 1 470.4 63.3L470.4 54.3A3 3 0 0 1 473.4 51.3Z" fill="#F5F5F5" ecmeta_series_index="3" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr2-cls-11"></path>
+
+</svg>
+  <rect x="28.00" y="391.00" width="3.50" height="12.00" fill="#F5F5F5"/>
+  <text x="39.00" y="400.00" font-size="11.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">coverage kind</text>
+  <rect x="28.00" y="411.00" width="16.00" height="10.00" rx="2.00" fill="#B3B3B3"/>
+  <text x="50.00" y="420.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">disassemble</text>
+  <rect x="135.00" y="411.00" width="16.00" height="10.00" rx="2.00" fill="#F5F5F5"/>
+  <text x="157.00" y="420.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">recompile-verified</text>
+  <rect x="268.00" y="411.00" width="16.00" height="10.00" rx="2.00" fill="#D4D4D4"/>
+  <text x="290.00" y="420.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">supported range</text>
+  <rect x="391.00" y="411.00" width="16.00" height="10.00" rx="2.00" fill="#1C1C1C" stroke="#C4C4C4" stroke-width="1"/>
+  <text x="413.00" y="420.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">broad, no guarantee</text>
+  <line x1="28.00" y1="430.00" x2="892.00" y2="430.00" stroke="#404040" stroke-width="1"/>
+  <text x="28.00" y="442.00" font-size="10" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Version support does not establish recovery accuracy or benchmark independence. pychd offers deterministic offline rules and optional LLM assistance; its reported hybrid results include a</text>
+  <text x="28.00" y="456.00" font-size="10" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">contamination caveat. Disrobe uses in-tree recovery rules. No shared-corpus accuracy comparison is shown.</text>
+</svg>

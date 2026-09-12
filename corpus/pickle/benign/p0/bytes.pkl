@@ -1,0 +1,10 @@
+c_codecs
+encode
+p0
+(V\u0000ÿ
+p1
+Vlatin1
+p2
+tp3
+Rp4
+.

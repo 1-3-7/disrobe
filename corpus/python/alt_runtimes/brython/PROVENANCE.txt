@@ -1,0 +1,32 @@
+Brython (JS) fixtures
+=====================
+
+hello.py           the original Python module that was compiled.
+hello.brython.js   real Brython 3.14.2 output for that module.
+
+Origin
+------
+Generated on this machine with the official Brython toolchain:
+
+    pip install brython            # 3.14.2
+    brython-cli make_package hellopkg   # hellopkg/__init__.py == hello.py
+
+make_package emits a browser-loadable package script that registers the module on
+the global __BRYTHON__ runtime via __BRYTHON__.loadBrythonPackage({...}). The Python
+source is carried inline (Brython tokenizer-minified) inside that call so the runtime
+can compile it to JavaScript on load.
+
+Markers
+-------
+Brython 3.14 keys its runtime off the global __BRYTHON__ object. The loadBrythonPackage
+form carries the __BRYTHON__ marker; the legacy $B.modules / $B.imported variable
+aliases are an older in-page emission shape and are not produced by make_package, so
+the static fixture carries the single authoritative __BRYTHON__ marker.
+
+Recovery
+--------
+Brython carries no separate bytecode container; the program is JavaScript plus the
+inlined Python source. Recovery surfaces the __BRYTHON__ marker and hands the source
+span to disrobe-pass-js-deob for the JS AST/identifier work. Lifting the embedded
+Python back from the generated JS is JS deobfuscation, not a bytecode decode, so the
+handoff routes that to the JS pass rather than reimplementing it here.

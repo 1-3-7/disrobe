@@ -1,0 +1,48 @@
+schema_version = 1
+crate = "disrobe-pass-jvm"
+generated = "2026-06-03"
+toolchain = "Android build-tools 34.0.0 (apksigner 0.9, aapt2, zipalign, d8), platform android-34, Eclipse Temurin JDK 25.0.3+9 keytool"
+purpose = "Real apksigner-signed APK fixtures for the in-house APK Signature Scheme v1/v2/v3/v4 verifier (A6). Built locally, benign; classes.dex is corpus/jvm/dex/Hello.dex."
+
+[provenance]
+build = [
+    "aapt2 compile + link a minimal AndroidManifest.xml (package com.disrobe.fixture) + strings.xml -> base-unsigned.apk",
+    "inject corpus/jvm/dex/Hello.dex as classes.dex, then zipalign -f 4",
+    "keytool RSA-2048 keystore (CN=Disrobe Fixture); apksigner sign with the listed schemes",
+]
+oracle = "apksigner verify --min-sdk-version 24 is the independent accept/reject oracle the in-house verifier must match."
+
+[[fixture]]
+path = "fixture-v2v3-signed.apk"
+schemes = ["v1", "v2", "v3"]
+apksigner_verdict = "Verifies (v2=true, v3=true; v1=false post-zipalign)"
+note = "primary positive fixture; in-house verifier recomputes the chunked-SHA256/SHA512 content digest and matches the signed v2/v3 block digest"
+
+[[fixture]]
+path = "fixture-v2v3-signed.apk.idsig"
+schemes = ["v4"]
+note = "apksigner v4 signature side-file (APK Signature Scheme v4) for the v2v3 fixture"
+
+[[fixture]]
+path = "fixture-v1-signed.apk"
+schemes = ["v1"]
+apksigner_verdict = "Verifies (v1=true JAR signing only)"
+note = "v1-only positive fixture; META-INF/FIXTUREK.{SF,RSA} present"
+
+[[fixture]]
+path = "fixture-tampered.apk"
+schemes = ["v2", "v3"]
+apksigner_verdict = "DOES NOT VERIFY - CHUNKED_SHA256 digest mismatch"
+note = "byte-flipped copy of fixture-v2v3-signed.apk; negative oracle, in-house verifier must report integrity failure"
+
+[[fixture]]
+path = "fixture-rich.apk"
+schemes = []
+toolchain = "aapt2 2.19 (build-tools 34) compile + link against android-34 framework"
+note = "real aapt2-linked binary AndroidManifest.xml + resources.arsc (package com.disrobe.rich, id 0x7f) covering namespace prefixes, framework-attr-id resolution, typed bools, a @string/app_name reference (0x7f030000), and bool/integer/string resource types. oracle for disrobe-pass-mobile axml/arsc decode is aapt2 dump xmltree / dump resources."
+
+[[fixture]]
+path = "fixture-res.apk"
+schemes = []
+toolchain = "aapt2 2.19 (build-tools 34) compile + link against android-34 framework"
+note = "real aapt2-linked APK (package com.disrobe.resfixture, id 0x7f) carrying a binary res/layout/activity_main.xml (LinearLayout + TextView with @dimen/@string/@color/@id references, match_parent/wrap_content/vertical enum values) plus an ARSC values table (string app_name=DisrobeRes, greeting=Hello Disrobe; color brand_primary=#ff336699, brand_accent=#ffcc0000; dimen padding_default=16dp, text_size_title=22sp; bool is_production=true; integer max_retries=5). ground truth for the disrobe-pass-mobile res/ decode oracle is the pre-compile source res/ written before aapt2 ran, NOT disrobe output. layout-v1 variant holds the linked attributes."

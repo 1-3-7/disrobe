@@ -1,0 +1,19 @@
+.class public Lcom/planted/recon/Api;
+.super Ljava/lang/Object;
+
+.field public static final BASE:Ljava/lang/String; = "https://api.planted.example.com/v2"
+
+.method public static endpoints()V
+    .locals 4
+    const-string v0, "/api/v2/users/login"
+    const-string v1, "/api/v2/admin/keys"
+    const-string v2, "/internal/debug/dump"
+    const-string v3, "https://uploads.planted.example.com/files"
+    return-void
+.end method
+
+.method public static contacts()V
+    .locals 1
+    const-string v0, "security@planted.example.com"
+    return-void
+.end method

@@ -1,0 +1,109 @@
+{
+  "schema": "disrobe.demo.precommit/v1",
+  "captured_at": "2026-09-08T10:41:52.438Z",
+  "binary_sha256": "9a62412b30c129590c974626b7d00bf3d7a2cf4a3d5901c92de86bf99c8c7dc3",
+  "pre_commit": "pre-commit 4.6.2",
+  "hook": {
+    "path": "hooks/pre-commit-gate.sh",
+    "sha256": "aec2037967ae0c6f604b15a17fc568dac29e4888ff5ffab952e33f20ed550313"
+  },
+  "configuration": "repos:\n  - repo: local\n    hooks:\n      - id: disrobe\n        name: disrobe (block packed/obfuscated artifacts)\n        description: Analyze staged files with `disrobe auto` and fail the commit when a packed or obfuscated artifact is detected. Requires the `disrobe` binary on PATH (or set DISROBE_BIN).\n        entry: hooks/pre-commit-gate.sh\n        language: script\n        types: [file]\n        require_serial: false\n        minimum_pre_commit_version: \"2.18.0\"\n",
+  "inputs": [
+    {
+      "path": "playground/public/samples/add.wasm",
+      "name": "add.wasm",
+      "expected_exit": 0,
+      "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+    },
+    {
+      "path": "corpus/native/packers/upx/hello.packed.nrv2b.exe",
+      "name": "hello.packed.exe",
+      "expected_exit": 1,
+      "sha256": "ddd7e1ca914a971b5d976e1f238c3320383ae4367845ce5e274caa6c82060a91"
+    }
+  ],
+  "steps": [
+    {
+      "argv": [
+        "git",
+        "init",
+        "--quiet"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 45.3882,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "--",
+        ".pre-commit-config.yaml",
+        "hooks/pre-commit-gate.sh",
+        "add.wasm",
+        "hello.packed.exe"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 58.47949999999999,
+      "stdout": "",
+      "stderr": "warning: in the working copy of '.pre-commit-config.yaml', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'hooks/pre-commit-gate.sh', LF will be replaced by CRLF the next time Git touches it\n"
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pre_commit",
+        "--version"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 166.30530000000002,
+      "stdout": "pre-commit 4.6.2\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pre_commit",
+        "install"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 281.1704,
+      "stdout": "pre-commit installed at .git\\hooks\\pre-commit\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pre_commit",
+        "run",
+        "disrobe",
+        "--files",
+        "add.wasm",
+        "--verbose"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 521.1397,
+      "stdout": "disrobe (block packed/obfuscated artifacts)..............................Passed\n- hook id: disrobe\n- duration: 0.25s\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "python",
+        "-m",
+        "pre_commit",
+        "run",
+        "disrobe",
+        "--files",
+        "hello.packed.exe",
+        "--verbose"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 908.0669,
+      "stdout": "disrobe (block packed/obfuscated artifacts)..............................Failed\n- hook id: disrobe\n- duration: 0.63s\n- exit code: 1\n\ndisrobe-gate: BLOCKED hello.packed.exe: native.packer-unpack (packer-archive)\ndisrobe-gate: commit blocked - packed/protected artifact(s) detected.\ndisrobe-gate: inspect with 'disrobe auto <file> --json', or skip with SKIP=disrobe git commit.\n\n",
+      "stderr": ""
+    }
+  ]
+}

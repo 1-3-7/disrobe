@@ -1,0 +1,32 @@
+schema = "disrobe.fixture.provenance/v1"
+family = "coff-bigobj"
+description = "Microsoft anonymous COFF bigobj objects above and below the legacy section ceiling"
+
+[[artifact]]
+path = "wide_65303.obj"
+producer = "clang 19.1.7 integrated assembler"
+source = "gen_wide.py"
+reproducible = true
+time_date_stamp = 0
+sections = 65303
+symbols = 130607
+bytes = 5289640
+steps = [
+  "python gen_wide.py wide_65303.s",
+  "clang --target=x86_64-pc-windows-msvc -c -o wide_65303.obj wide_65303.s",
+]
+note = """
+The generator emits 65300 one-byte data sections after a single .text section. The assembler adds
+its own, so the object carries 65303, above the 65279 a legacy 16-bit COFF section count can
+address, which is the condition that forces the anonymous bigobj layout. The assembler writes no
+build timestamp, so both steps are byte-reproducible and the generated assembly is not committed.
+"""
+
+[[artifact]]
+path = "bigobj_small.c"
+role = "source"
+note = "Compiled by cl into corpus/native/formats/bigobj.msvc.obj."
+
+[verification]
+independent_reader = "llvm-readobj 19.1.7"
+command = "llvm-readobj --file-headers --sections wide_65303.obj"

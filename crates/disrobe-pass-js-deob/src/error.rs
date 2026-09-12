@@ -1,0 +1,51 @@
+use miette::Diagnostic;
+use thiserror::Error;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::string_array::ProbeRefusal;
+
+pub type Result<T> = core::result::Result<T, Error>;
+
+#[derive(Debug, Error, Diagnostic)]
+pub enum Error {
+    #[error("DR-JSDEOB-0001: source does not match any known obfuscator pattern")]
+    NoFamilyMatched,
+
+    #[error("DR-JSDEOB-0002: I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("DR-JSDEOB-0003: oxc parse error: {0}")]
+    OxcParse(String),
+
+    #[error("DR-JSDEOB-0004: invalid UTF-8 in JS source")]
+    Utf8,
+
+    #[error("DR-JSDEOB-0005: {kind} {observed} exceeds parser limit {maximum}")]
+    SyntaxLimit {
+        kind: &'static str,
+        observed: usize,
+        maximum: usize,
+    },
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("DR-JSDEOB-0006: string-array probe refused recovery: {reason:?}")]
+    StringArrayProbe { reason: ProbeRefusal },
+
+    #[error("DR-JSDEOB-0007: invalid bundle rewrite pattern: {0}")]
+    BundlePattern(#[from] regex::Error),
+
+    #[error(
+        "DR-JSDEOB-0010: transform `{transform}` requires `--i-have-authorization`; \
+        see LEGAL.md and docs/legal/jscrambler-stance.md before bypassing protector code locks or RASP guards"
+    )]
+    AuthorizationRequired { transform: &'static str },
+
+    #[error("DR-JSDEOB-0011: transform `{transform}` not yet implemented (deferred-due-to-budget)")]
+    TransformNotYetImplemented { transform: &'static str },
+
+    #[error(
+        "DR-JS-PACE-UnsupportedPattern: PACE markers matched, but no supported static guard \
+        pattern was stripped; see {stance_doc} for the 1201(a) analysis"
+    )]
+    PaceUnsupportedPattern { stance_doc: &'static str },
+}

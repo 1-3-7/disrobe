@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\mew\Autologon.packed.mew.exe
+  packer:       mew
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\mew_autologon-a924e6274ca34c188a48d2e676cde456\Autologon.packed.mew.unpacked.exe
+  layout:       standalone-object
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    189440 bytes placed (0 section(s) overlaid)
+  oep:          unchanged
+  symbols:      1
+  sidecar:      ${RUN_DIRECTORY}\export\mew_autologon-a924e6274ca34c188a48d2e676cde456\Autologon.packed.mew.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\mew_autologon-a924e6274ca34c188a48d2e676cde456\export.manifest.json

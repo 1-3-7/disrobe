@@ -1,0 +1,1 @@
+var msg = atob("SGVsbG8sIGRpc3JvYmUh");

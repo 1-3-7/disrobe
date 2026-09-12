@@ -1,0 +1,34 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-18"
+toolchain = "obfus.h (DosX-dev/obfus.h, include/obfus.h) compiled with TinyCC (tcc) 0.9.27 win64 - obfus.h's documented target compiler"
+note = "self-authored C source compiled twice: a clean baseline and an obfus.h-protected build (-include obfus.h), graded against the clean original; obfus.h is a macro-only compile-time C obfuscator (string encryption, control-flow flattening, anti-debug, decoy sections)"
+
+[provenance]
+compiler = "tcc 0.9.27 (x86_64 Windows); clean = `tcc sample.c -o sample.clean.exe`, obfuscated = `tcc -include obfus.h sample.c -o sample.obfush.exe`"
+obfuscator = "obfus.h - macro-only, TCC-targeted; applies on -include without source changes"
+transform = "the obfuscated PE grows 2560 -> 20992 bytes, gains a `.obfh` signature section + an IsDebuggerPresent anti-debug import + control-flow obfuscation; the anti-debug fires under analysis so the obfuscated binary self-suppresses output rather than running clean"
+verified = "the `.obfh` section name (null-padded PE section, obfus.h's own marker) is present in the obfuscated build and ABSENT from the clean baseline. disrobe previously detected NOTHING (no identity/obfuscator hit) despite the .obfh marker - it now reports ObfusH, watermark-style, with zero false-positive on the clean baseline. obfus.h string encryption + control-flow are recoverable as future deobf work; this lands honest detect-and-report first"
+
+[[fixture]]
+name = "sample.c"
+path = "sample.c"
+kind = "c-source"
+provenance = "self-authored"
+description = "benign source: classify(n) + a printed string constant"
+
+[[fixture]]
+name = "sample.clean.exe"
+path = "sample.clean.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.c"
+description = "unobfuscated TCC baseline; .text only, no .obfh, runs clean (classify=8,40 / secret=...)"
+
+[[fixture]]
+name = "sample.obfush.exe"
+path = "sample.obfush.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.c"
+description = "obfus.h-protected TCC build; the .obfh signature section + anti-debug is the gauntlet target"

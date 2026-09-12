@@ -1,0 +1,7 @@
+{
+  "api_base": "https://api.planted.example.com/v2",
+  "fallback_host": "203.0.113.42",
+  "report_to": "abuse@planted.example.com",
+  "mirror_onion": "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion",
+  "cdn": "https://cdn.planted.example.com/static/app.bundle.js"
+}

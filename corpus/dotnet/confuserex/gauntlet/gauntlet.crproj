@@ -1,0 +1,8 @@
+<project outputDir="C:\Temp\confuserex_gauntlet\obf\out" baseDir="C:\Temp\confuserex_gauntlet\obf" xmlns="http://confuser.codeplex.com">
+  <rule pattern="true" preset="none" inherit="false">
+    <protection id="rename" />
+    <protection id="constants" />
+    <protection id="ctrl flow" />
+  </rule>
+  <module path="C:\Temp\confuserex_gauntlet\sample\bin\Release\net48\GauntletSample.exe" />
+</project>

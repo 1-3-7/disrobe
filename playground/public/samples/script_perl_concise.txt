@@ -1,0 +1,53 @@
+ctl.pl syntax OK
+main::bare_if:
+c  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->c
+1        <;> nextstate(main 4 ctl.pl:5) v:*,&,x*,x&,x$,$ ->2
+3        <2> aassign[t4] vKS ->4
+-           <1> ex-list lK ->-
+2              <0> padrange[$flag:4,9] */LVINTRO,range=1 ->3
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->3
+-              <0> pushmark s ->-
+-              <0> padsv[$flag:4,9] sPRM*/LVINTRO ->-
+4        <;> nextstate(main 5 ctl.pl:6) v:*,&,x*,x&,x$,$ ->5
+-        <1> null vK/1 ->a
+6           <|> and(other->7) vK/1 ->a
+5              <0> padsv[$flag:4,9] s ->6
+-              <@> scope vK ->-
+-                 <;> ex-nextstate(main 7 ctl.pl:7) v:*,&,x*,x&,x$,$ ->7
+9                 <@> return K ->a
+7                    <0> pushmark s ->8
+8                    <$> const[IV 1] s ->9
+a        <;> nextstate(main 9 ctl.pl:9) v:*,&,{,x*,x&,x$,$ ->b
+-        <@> return K ->-
+-           <0> pushmark s ->b
+b           <$> const[IV 0] s ->c
+main::use_unless:
+q  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->q
+d        <;> nextstate(main 11 ctl.pl:13) v:*,&,x*,x&,x$,$ ->e
+f        <2> aassign[t4] vKS ->g
+-           <1> ex-list lK ->-
+e              <0> padrange[$n:11,16] */LVINTRO,range=1 ->f
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->f
+-              <0> pushmark s ->-
+-              <0> padsv[$n:11,16] sPRM*/LVINTRO ->-
+g        <;> nextstate(main 12 ctl.pl:14) v:*,&,x*,x&,x$,$ ->h
+-        <1> null vK/1 ->o
+k           <|> or(other->l) vK/1 ->o
+j              <2> eq sK/2 ->k
+h                 <0> padsv[$n:11,16] s ->i
+i                 <$> const[IV 0] s ->j
+-              <@> scope vK ->-
+-                 <;> ex-nextstate(main 14 ctl.pl:15) v:*,&,x*,x&,x$,$ ->l
+n                 <@> return K ->o
+l                    <0> pushmark s ->m
+m                    <0> padsv[$n:11,16] s ->n
+o        <;> nextstate(main 16 ctl.pl:17) v:*,&,{,x*,x&,x$,$ ->p
+-        <@> return K ->-
+-           <0> pushmark s ->p
+p           <$> const[IV 99] s ->q

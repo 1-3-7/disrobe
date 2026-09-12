@@ -1,0 +1,14 @@
+object MainForm: TMainForm
+  Caption = 'Collections'
+  Columns = <
+    item
+      Caption = 'First'
+      Width = 64
+    end
+    item
+      Caption = 'Second'
+      Width = 128
+      Alignment = taRightJustify
+    end>
+  Tag = 7
+end

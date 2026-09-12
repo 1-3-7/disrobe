@@ -1,0 +1,52 @@
+arith.max.lua constant=print
+arith.max.lua original=arith.lua obfuscated_bytes=10350 opcode_table_complete=true peel_fully_recovered=true
+arith.min.lua constant=print
+arith.min.lua original=arith.lua obfuscated_bytes=9773 opcode_table_complete=true peel_fully_recovered=true
+control.max.lua constant=negative
+control.max.lua constant=positive
+control.max.lua constant=print
+control.max.lua constant=zero
+control.max.lua original=control.lua obfuscated_bytes=12039 opcode_table_complete=true peel_fully_recovered=true
+control.min.lua constant=negative
+control.min.lua constant=positive
+control.min.lua constant=print
+control.min.lua constant=zero
+control.min.lua original=control.lua obfuscated_bytes=11659 opcode_table_complete=true peel_fully_recovered=true
+edge.max.lua constant=
+edge.max.lua constant=a
+edge.max.lua constant=abcdef
+edge.max.lua constant=b
+edge.max.lua constant=c
+edge.max.lua constant=floor
+edge.max.lua constant=math
+edge.max.lua constant=print
+edge.max.lua constant=tostring
+edge.max.lua original=edge.lua obfuscated_bytes=14666 opcode_table_complete=false peel_fully_recovered=false
+edge.min.lua constant=
+edge.min.lua constant=a
+edge.min.lua constant=abcdef
+edge.min.lua constant=b
+edge.min.lua constant=c
+edge.min.lua constant=floor
+edge.min.lua constant=math
+edge.min.lua constant=print
+edge.min.lua constant=tostring
+edge.min.lua original=edge.lua obfuscated_bytes=12853 opcode_table_complete=false peel_fully_recovered=false
+hello.max.lua constant=hello from ironbrew2 corpus
+hello.max.lua constant=print
+hello.max.lua original=hello.lua obfuscated_bytes=9536 opcode_table_complete=true peel_fully_recovered=true
+hello.min.lua constant=hello from ironbrew2 corpus
+hello.min.lua constant=print
+hello.min.lua original=hello.lua obfuscated_bytes=9198 opcode_table_complete=true peel_fully_recovered=true
+tables.max.lua constant=apple
+tables.max.lua constant=banana
+tables.max.lua constant=cherry
+tables.max.lua constant=ipairs
+tables.max.lua constant=print
+tables.max.lua original=tables.lua obfuscated_bytes=12863 opcode_table_complete=false peel_fully_recovered=false
+tables.min.lua constant=apple
+tables.min.lua constant=banana
+tables.min.lua constant=cherry
+tables.min.lua constant=ipairs
+tables.min.lua constant=print
+tables.min.lua original=tables.lua obfuscated_bytes=11942 opcode_table_complete=false peel_fully_recovered=false

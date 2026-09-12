@@ -1,0 +1,51 @@
+# ManagedFpAbiProbe._ctor [0x14006B4E0, 0x14006B4E4)
+14006b4e0: 89 51 10                    	movl	%edx, 0x10(%rcx)
+14006b4e3: c3                          	retq
+# ManagedFpAbiProbe.AddDouble [0x14006B4F0, 0x14006B4F5)
+14006b4f0: f2 0f 58 c1                 	addsd	%xmm1, %xmm0
+14006b4f4: c3                          	retq
+# ManagedFpAbiProbe.ScaleFloat [0x14006B500, 0x14006B505)
+14006b500: f3 0f 59 c1                 	mulss	%xmm1, %xmm0
+14006b504: c3                          	retq
+# ManagedFpAbiProbe.Promote [0x14006B510, 0x14006B515)
+14006b510: f3 0f 5a c0                 	cvtss2sd	%xmm0, %xmm0
+14006b514: c3                          	retq
+# ManagedFpAbiProbe.Weight [0x14006B520, 0x14006B530)
+14006b520: 0f 57 c0                    	xorps	%xmm0, %xmm0
+14006b523: f3 0f 2a c1                 	cvtsi2ss	%ecx, %xmm0
+14006b527: f3 0f 59 c1                 	mulss	%xmm1, %xmm0
+14006b52b: f3 0f 58 c2                 	addss	%xmm2, %xmm0
+14006b52f: c3                          	retq
+# ManagedFpAbiProbe.Offset [0x14006B530, 0x14006B53C)
+14006b530: 0f 57 c9                    	xorps	%xmm1, %xmm1
+14006b533: f2 0f 2a ca                 	cvtsi2sd	%edx, %xmm1
+14006b537: f2 0f 58 c1                 	addsd	%xmm1, %xmm0
+14006b53b: c3                          	retq
+# ManagedFpAbiProbe.Mix [0x14006B540, 0x14006B559)
+14006b540: f3 0f 5a c9                 	cvtss2sd	%xmm1, %xmm1
+14006b544: f2 0f 58 c1                 	addsd	%xmm1, %xmm0
+14006b548: 0f 57 c9                    	xorps	%xmm1, %xmm1
+14006b54b: f2 41 0f 2a c8              	cvtsi2sd	%r8d, %xmm1
+14006b550: f2 0f 58 c1                 	addsd	%xmm1, %xmm0
+14006b554: f2 0f 58 c3                 	addsd	%xmm3, %xmm0
+14006b558: c3                          	retq
+# ManagedFpAbiProbe.SetSlot [0x14006B560, 0x14006B564)
+14006b560: 89 51 10                    	movl	%edx, 0x10(%rcx)
+14006b563: c3                          	retq
+# ManagedFpAbiProbe.SetRatio [0x14006B570, 0x14006B576)
+14006b570: f2 0f 11 49 08              	movsd	%xmm1, 0x8(%rcx)
+14006b575: c3                          	retq
+# ManagedFpAbiProbe.Clear [0x14006B580, 0x14006B586)
+14006b580: 33 c0                       	xorl	%eax, %eax
+14006b582: 89 41 10                    	movl	%eax, 0x10(%rcx)
+14006b585: c3                          	retq
+# ManagedFpAbiProbe.Store [0x14006B590, 0x14006B593)
+14006b590: 89 11                       	movl	%edx, (%rcx)
+14006b592: c3                          	retq
+# ManagedFpAbiProbe.Split [0x14006B5A0, 0x14006B5B2)
+14006b5a0: 0f b7 c2                    	movzwl	%dx, %eax
+14006b5a3: 48 c1 fa 10                 	sarq	$0x10, %rdx
+14006b5a7: 48 89 01                    	movq	%rax, (%rcx)
+14006b5aa: 48 89 51 08                 	movq	%rdx, 0x8(%rcx)
+14006b5ae: 48 8b c1                    	movq	%rcx, %rax
+14006b5b1: c3                          	retq

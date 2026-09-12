@@ -1,0 +1,62 @@
+schema = "disrobe.fixture-provenance/v1"
+format = "Aladdin StuffIt classic, compression method 5 (LZAH)"
+
+fixture = "stuffit-method5.sit"
+fixture_sha256 = "3679e712dd140778e76f7faee1183ed95f9af41a40e7628234b743c7c04053ee"
+fixture_size = 2838
+producer = "Aladdin Systems StuffIt, period Macintosh release"
+original_name = "Dlx 2.0 Convert Archive Fix.sit"
+retrieved = "2026-08-18"
+
+source_repository = "https://github.com/KarpelesLab/compcol"
+source_release = "compcol 0.6.10 crates.io package"
+source_path = "tests/fixtures/lzah/convert-archive-fix.sit"
+source_license = "MIT"
+source_note = "The archive ships inside the MIT-licensed compcol package that disrobe-binfmt already depends on, so it arrives through an existing pinned dependency rather than a new download."
+
+reference_tool = "unar 1.8.1 for Windows"
+reference_url = "https://cdn.theunarchiver.com/downloads/unarWindows.zip"
+reference_archive_sha256 = "61a6b299606282f72f51c278801eac11d3dccfac83e2d68bccce33539912e0dd"
+reference_result = "lsar -json reported three forks, every one StuffItCompressionMethod 5 named LZAH; unar extracted all three and reported OK on each, which is its CRC verdict"
+reference_manifest = "MANIFEST_METHOD5.tsv"
+reference_note = "unar routes method 5 through XADLZHDynamicHandle; its dedicated XADStuffItLZAHHandle line is commented out in XADStuffItParser.m. The substitution decodes this archive correctly, so unar is a working reference here."
+
+second_reference = "the CRC-16 stored in each 112-byte entry record"
+second_reference_note = "Those values were written by Aladdin's own encoder when the archive was produced, so they are independent of every modern decoder. MANIFEST_METHOD5.tsv records them in the crc16 column and the test recomputes them over the recovered bytes."
+
+format_source = "https://github.com/MacPaw/XADMaster/blob/master/XADStuffItParser.m"
+format_source_note = "Method numbering only: nameOfCompressionMethod maps low nibble 5 to LZAH. No implementation was taken from it."
+codec_source = "https://docs.rs/compcol/0.6.10/compcol/lzah/index.html"
+
+[[artifacts]]
+path = "Dlx 2.0 File Fixer (UnConvert)"
+fork = "rsrc"
+method = 5
+logical_size = 2594
+compressed_size = 1579
+crc16 = 23007
+sha256 = "d2a987e23bca32ca7aef75185d46097b850524f2d3efe836e9ce7faafac8393d"
+
+[[artifacts]]
+path = "Dlx 2.0 File Fixer Read Me"
+fork = "rsrc"
+method = 5
+logical_size = 438
+compressed_size = 320
+crc16 = 62316
+sha256 = "8066f725ddaa13a342c906bb66dbe7eff163e1a29f76abf6ae88e8f310eac9b9"
+
+[[artifacts]]
+path = "Dlx 2.0 File Fixer Read Me"
+fork = "data"
+method = 5
+logical_size = 1405
+compressed_size = 693
+crc16 = 5297
+sha256 = "0f2aac94ca93e47362f2a5d7e12629a1483ed797be92082c0ace0bcdc79dd3ac"
+
+[framing]
+note = "Method 5 carries no in-band end-of-stream symbol; the uncompressed length in the entry record terminates the stream. Rejecting trailing input bytes is therefore not expressible through the streaming decoder: it reports the whole supplied slice as consumed, so a consumed-versus-length comparison can never fire for this method. The declared compressed length is bounded by the record header CRC and by the archive total-length check instead."
+
+[corruption]
+note = "Flipping the low bit of each of the 693 compressed bytes of the largest data fork in turn: 690 were refused, and the 3 accepted at byte indices 2, 59 and 692 each reproduced the reference bytes exactly. No corruption produced different bytes that passed. The test asserts that property rather than a blanket refusal count."

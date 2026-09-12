@@ -1,0 +1,432 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (578 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1707 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\upx_hello_packed-887987aa5c3d46c79df6c349f475d1c1\upx_hello_packed (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\upx_hello_packed-887987aa5c3d46c79df6c349f475d1c1\upx_hello_packed (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\upx_hello_packed-887987aa5c3d46c79df6c349f475d1c1\upx_hello_packed (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe (HeadlessAnalyzer)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:64:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+INFO  TLS callbacks at 0 (TLSDirectory)
+INFO  Additional info:
+Loading file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe?MD5=c15ff75bc3d6397324a9905a6f78437b...
+[hello.packed.nrv2b.exe]: failed to create word at 14001f270: Conflicting data exists at address 14001f26c to 14001f270
+[hello.packed.nrv2b.exe]: failed to create word at 14001f298: Conflicting data exists at address 14001f288 to 14001f298
+[hello.packed.nrv2b.exe]: failed to create word at 14001f29e: Conflicting data exists at address 14001f29a to 14001f29e
+[hello.packed.nrv2b.exe]: failed to create word at 14001f2aa: Conflicting data exists at address 14001f2a0 to 14001f2aa
+[hello.packed.nrv2b.exe]: failed to create TerminatedCString at 14001f2ba: Conflicting data exists at address 14001f2c8 to 14001f2c9
+[hello.packed.nrv2b.exe]: failed to create word at 14001f2d6: Conflicting data exists at address 14001f2ca to 14001f2d6
+[hello.packed.nrv2b.exe]: failed to create word at 14001f2e6: Conflicting data exists at address 14001f2d8 to 14001f2e6
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1581cf3a2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ac5be95b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21f456648: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1408b2f5d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f8badc2d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1d6002386: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 164071bd0: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19a35053b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22c722169: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1907fc3a5: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1927fcff1: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16c78d089: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14bdc6f76: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2151c0104: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b4b351db: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 20036df22: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 15e073bd0: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ec730716: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 188168232: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 214a3845d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1e89006a8: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1fefd408d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1904db54a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 181e174ab: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22c04ca18: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 170f50a36: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21700f84c: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16946a3eb: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19427e265: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 161dbe342: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22a84b414: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22841d83d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 164049a2d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1998a0597: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 238014d87: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 184c9836f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14b00ed87: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14b8b6ed5: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18f4c4953: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c668aca9: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 236090bf2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 17d583688: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19015d82a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 150488a4b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 20700737e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f84c3f1a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b876c87d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1e91e0f0a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 20d5e0a1e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16aabbd4d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 159bd473a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18016f501: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 195013ed1: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 165eec933: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 161ec19c1: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a4190727: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1701c8e93: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 159064190: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1720cecd8: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18c8320c8: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14c8320a6: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 15e9008f2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1473b2f60: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f291c9c8: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2183290f0: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1406cbb3c: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1d1700f78: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 168921a07: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 160c83991: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 234e6ca39: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1720d909e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c21f90c2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b1200011: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c17d8349: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ad11ffff: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b157a641: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23fff4fc5: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a9642271: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b2656b63: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a5683a74: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b0087edf: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 176373038: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f5bf0b34: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 177643431: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23ff76d6b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a15c7972: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19f777dbf: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ca61630f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a672146f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 15c8760cd: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1600907b0: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c3a7746d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1428d9182: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a6010200: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 142076501: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1493a0b5b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21e0385f8: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1db080430: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 17e3a011d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 15b390209: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14f6b46be: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 239b6f35d: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1bb28390c: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1950b7e04: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f6650245: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 220a7510f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 189070b09: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14571010e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 142dbee6e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ab9b010f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 147574002: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16202754f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f5fb7f80: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14c022e30: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14c092649: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1bf850838: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 180c60203: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 146d36086: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 147500220: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16e122b0b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22e6ba2db: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22cb02fd9: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1e057ee02: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2227b5db7: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18163a501: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 144310b46: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1dbc25731: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 174b5013e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14604595f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14e89270b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21c047e7b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16dc75d75: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1aa846310: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 232f5065b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 168c22dc3: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 191bf15d6: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1baa147cc: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14534f786: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1564a0bf2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2172e0155: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1d4041e07: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22916fa5b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 173a00164: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1db6eb01a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1d7409fdb: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23a47d28e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19b8e3866: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18d837122: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 165c0b06c: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18f003e1f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 150e59095: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19bca1286: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21bed7962: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 166c02078: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16061f6b7: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19bde173b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 168200827: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 160668a29: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18e2c650f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14d2c734a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16834203e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 154ad7710: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 198f62967: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b4704f60: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21277617a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1adb6fdb1: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1404b3a02: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14ee4b06b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22119059b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1aeb320f4: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1532a111c: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18057b5b6: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a8676972: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1572036f0: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f6499adb: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a33e615b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 170310030: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2213035f5: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 172f6e17f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 179313831: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 172201933: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 162343932: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ed6d3733: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f5ad3410: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 198393438: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 175360035: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 176486f86: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ac7e695e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 177380012: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21d753446: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1797e39a2: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c4971012: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1cdf9196a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c6b36665: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1b36c310a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16144880e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c752962b: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2362c3f64: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16eff3b84: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 149080802: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 152fc1004: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23917625f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1ae026b04: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 20f02bc02: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21a02d702: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 22e02e804: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23b05fa02: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1cb7b9f9e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 146b186ba: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1581404d1: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 21bf6e035: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16912110e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18685ffa3: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1f65cdbc6: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 157140b0a: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 23fa89190: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19f6f1192: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19453fffc: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1dd552827: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14b06c4bc: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1c5cdcca7: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 227df3f3e: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1a0282625: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 196555350: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1bf7d7873: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1e5d0b52f: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 2316f0431: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14f1e1d82: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1444405da: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 18f8b7fff: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 14a160937: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 19c5897ff: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 1454b0438: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 167204007: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 189500708: Failed to resolve data length for PEx64_UnwindInfo
+[hello.packed.nrv2b.exe]: failed to create PEx64_UnwindInfo at 16606e72e: Failed to resolve data length for PEx64_UnwindInfo
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CORE-SYNCH-L1-2-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-core-synch-l1-2-0.dll?MD5=8f107a7bc018227b181a0e7e76e9ca39...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-core-synch-l1-2-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CRT-HEAP-L1-1-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-crt-heap-l1-1-0.dll?MD5=527bbbfded529ea77ee798d94ce0f243...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-heap-l1-1-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CRT-LOCALE-L1-1-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-crt-locale-l1-1-0.dll?MD5=09796dab12cbbd920f632aeb89820193...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-locale-l1-1-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CRT-MATH-L1-1-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-crt-math-l1-1-0.dll?MD5=aa9624cb27cc50a3fbbd3b223a617b1c...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-math-l1-1-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CRT-RUNTIME-L1-1-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-crt-runtime-l1-1-0.dll?MD5=bbaa58e9e1abdf7d8c4c69652d29d789...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-runtime-l1-1-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library API-MS-WIN-CRT-STDIO-L1-1-0.DLL...
+Loading file:///${JAVA_HOME}/bin/api-ms-win-crt-stdio-l1-1-0.dll?MD5=ef37235fc43157a4c93241d5e49e304b...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-stdio-l1-1-0.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Skipping library which is the wrong architecture: file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll
+Loading file:///${SYSTEM_ROOT}/System32/kernel32.dll?MD5=191cf42b2e24eec284b10aca60d0a961...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library NTDLL.DLL...
+Skipping library which is the wrong architecture: file:///${SYSTEM_ROOT}/SysWOW64/ntdll.dll
+Loading file:///${SYSTEM_ROOT}/System32/ntdll.dll?MD5=080dd73e4aaa8382aa2bf0aefb18e3b2...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\ntdll.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library VCRUNTIME140.DLL...
+Skipping library which is the wrong architecture: file:///${SYSTEM_ROOT}/SysWOW64/vcruntime140.dll
+Loading file:///${JAVA_HOME}/bin/vcruntime140.dll?MD5=caf9edded91c1f6c0022b278c16679aa...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\vcruntime140.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-core-synch-l1-2-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-heap-l1-1-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-locale-l1-1-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-math-l1-1-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-runtime-l1-1-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\api-ms-win-crt-stdio-l1-1-0.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\kernel32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\ntdll.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win64\vcruntime140.exports
+Linking the External Programs of 'hello.packed.nrv2b.exe' to imported libraries...
+  [API-MS-WIN-CORE-SYNCH-L1-2-0.DLL] -> not found in project
+  [API-MS-WIN-CRT-HEAP-L1-1-0.DLL] -> not found in project
+  [API-MS-WIN-CRT-LOCALE-L1-1-0.DLL] -> not found in project
+  [API-MS-WIN-CRT-MATH-L1-1-0.DLL] -> not found in project
+  [API-MS-WIN-CRT-RUNTIME-L1-1-0.DLL] -> not found in project
+  [API-MS-WIN-CRT-STDIO-L1-1-0.DLL] -> not found in project
+  [KERNEL32.DLL] -> not found in project
+  [NTDLL.DLL] -> not found in project
+  [VCRUNTIME140.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+WARN  Decompiling 14001e3a0, pcode error at 1400117a0: Disassembly not permitted within uninitialized memory block (DecompileCallback)
+WARN  Decompiling 14001e3a0, pcode error at 1400117a0: Disassembly not permitted within uninitialized memory block (DecompileCallback)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_64 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 14000b00a, pcode error at 14000b00a: Disassembly not permitted within uninitialized memory block (DecompileCallback)
+WARN  Decompiling 14001e3a0, pcode error at 1400117a0: Disassembly not permitted within uninitialized memory block (DecompileCallback)
+WARN  Decompiling 14001e3a0, pcode error at 1400117a0: Disassembly not permitted within uninitialized memory block (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.257 secs
+    Apply Data Archives                        0.359 secs
+    Call Convention ID                         0.000 secs
+    Call-Fixup Installer                       0.000 secs
+    Create Address Tables                      0.021 secs
+    Create Address Tables - One Time           0.001 secs
+    Create Function                            0.002 secs
+    Data Reference                             0.007 secs
+    Decompiler Parameter ID                    0.535 secs
+    Decompiler Switch Analysis                 0.359 secs
+    Demangler Microsoft                        0.005 secs
+    Disassemble Entry Points                   0.049 secs
+    Embedded Media                             0.002 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.062 secs
+    Function Start Search                      0.003 secs
+    Non-Returning Functions - Discovered       0.001 secs
+    Non-Returning Functions - Known            0.004 secs
+    PDB Universal                              0.001 secs
+    Reference                                  0.003 secs
+    Scalar Operand References                  0.002 secs
+    Shared Return Calls                        0.003 secs
+    Stack                                      0.010 secs
+    Subroutine References                      0.000 secs
+    Subroutine References - One Time           0.000 secs
+    Windows x86 PE Exception Handling          0.003 secs
+    Windows x86 PE RTTI Analyzer               0.001 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.007 secs
+    WindowsResourceReference                   0.361 secs
+    x86 Constant Reference Analyzer            0.034 secs
+-----------------------------------------------------
+     Total Time   2 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\upx_hello_packed.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\upx_hello_packed.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/upx/hello.packed.nrv2b.exe (HeadlessAnalyzer)
+INFO  /hello.packed.nrv2b.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /hello.packed.nrv2b.exe (upx_hello_packed:/hello.packed.nrv2b.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

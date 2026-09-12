@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe reaches normalized opcode-structure agreement for code objects in a 200-module pinned CPython 3.14.5 corpus.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": "6077 / 6286 code objects in the pinned 200-module CPython 3.14.5 population have matching normalized opcode structure. All 200 modules occur in the accepted 574-module measurement with the same source and comparator settings. The comparator omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. Regression threshold: 96.67%.",
+  "disrobe_leads": null,
+  "ecosystem": "python",
+  "floor": 96.51,
+  "floor_holds": true,
+  "gate_source": "evidence/results/captured/python-stdlib-full.json records the accepted capture and its pinned subset. crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs enforces OBJECT_PCT_FLOOR 96.67 and 124 wholly matching modules. The shared py_arbitrary_measure.py harness defines both populations.",
+  "id": "py-stdlib-recompile",
+  "measured": "96.67%",
+  "oracle": {
+    "external": "CPython 3.14.5 recompiles the recovered source. The comparator drops jump targets and most operands, removes and merges selected opcodes, omits __annotate__ code objects, and does not reject extra recovered objects; it does not establish semantic or emitted-bytecode equivalence.",
+    "kind": "recovery-import",
+    "note": null
+  },
+  "oracle_strength": "recompile-only",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate",
+  "title": "Python .pyc decompilation, normalized opcode-structure agreement"
+}

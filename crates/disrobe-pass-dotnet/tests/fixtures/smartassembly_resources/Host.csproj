@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>SmartAssemblyCompat</AssemblyName>
+    <RootNamespace>SmartAssemblyCompat</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Optimize>true</Optimize>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Host.cs" />
+    <EmbeddedResource Include="payload.saz" LogicalName="[z]payload" />
+    <EmbeddedResource Include="keyed.saz" LogicalName="[z]keyed" />
+    <EmbeddedResource Include="rejected.saz" LogicalName="[z]rejected" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+source = "jvm-BrowserShapes.java"
+compiler = "Eclipse Adoptium javac 25.0.4"
+compile = "javac --release 17 -g -d . jvm-BrowserShapes.java"
+inspect = "javap -v -p -c -s BrowserShapes.class"
+sha256 = "223af91132ec8f860a62ca51715e1fd8db158666851678d164578933324d9e0c"
+major_version = 61
+constant_pool_slots = 46
+constant_pool_entries = 43
+fields = 2
+methods = 5
+methods_with_code = 3
+methods_without_code = 2

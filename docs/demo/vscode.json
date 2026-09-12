@@ -1,0 +1,23 @@
+{
+  "schema": "disrobe.demo.vscode/v1",
+  "captured_at": "2026-09-08T10:27:09.149Z",
+  "vscode_version": "1.135.0",
+  "extension_version": "0.1.0",
+  "binary_sha256": "9a62412b30c129590c974626b7d00bf3d7a2cf4a3d5901c92de86bf99c8c7dc3",
+  "extension_sha256": "f38b36b0f32dd62038901ce7cacba876e819c992adee8eeea63e6f133cc19c92",
+  "registered_commands": [
+    "disrobe.auto",
+    "disrobe.detect",
+    "disrobe.strings",
+    "disrobe.ioc",
+    "disrobe.behavior",
+    "disrobe.identify",
+    "disrobe.scan",
+    "disrobe.startServer",
+    "disrobe.stopServer",
+    "disrobe.showOutput"
+  ],
+  "activation": "passed",
+  "start_stop_cycles": 3,
+  "concurrent_start_stop": "passed"
+}

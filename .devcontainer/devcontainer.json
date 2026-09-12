@@ -1,0 +1,28 @@
+{
+  "name": "disrobe",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "rustup component add rustfmt clippy && cargo install cargo-deny cargo-msrv typos-cli lefthook committed just mdbook --locked && lefthook install",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "crate-ci.typos"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        "rust-analyzer.checkOnSave.command": "clippy"
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}

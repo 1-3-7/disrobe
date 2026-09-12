@@ -1,0 +1,84 @@
+{
+  "schema": "disrobe.demo.public-collection/v1",
+  "captured_at": "2026-09-08T13:10:19.467Z",
+  "scope": "One Common Crawl archive index queried for the reserved example.org domain.",
+  "reproduction": "node docs/demo/capture-public.mjs --binary <disrobe>",
+  "binary_sha256": "f3af06c4e22d9408188b344221f86ecd63deb1e60a972e92b10ea54450d2d642",
+  "argv": [
+    "disrobe",
+    "prowl",
+    "example.org",
+    "--sources",
+    "commoncrawl",
+    "--max-pages",
+    "1",
+    "--max-urls",
+    "10",
+    "--max-iocs",
+    "10",
+    "--retries",
+    "0",
+    "--timeout",
+    "10",
+    "--concurrency",
+    "1",
+    "--per-host-rps",
+    "1",
+    "--no-iocs",
+    "--json"
+  ],
+  "exit_code": 0,
+  "elapsed_ms": 8148.9841,
+  "stdout": "{\n  \"schema\": \"disrobe.prowl/v0\",\n  \"targets\": [\n    \"example.org\"\n  ],\n  \"sources\": [\n    \"common_crawl\"\n  ],\n  \"url_total\": 4,\n  \"ioc_total\": 0,\n  \"urls\": [\n    {\n      \"url\": \"http://example.org/\",\n      \"timestamp\": \"20260808121514\",\n      \"status\": 200,\n      \"mime\": \"text/html\",\n      \"source\": \"common_crawl\"\n    },\n    {\n      \"url\": \"http://example.org/robots.txt\",\n      \"timestamp\": \"20260808121514\",\n      \"status\": 404,\n      \"mime\": \"text/html\",\n      \"source\": \"common_crawl\"\n    },\n    {\n      \"url\": \"https://example.org/\",\n      \"timestamp\": \"20260808122150\",\n      \"status\": 200,\n      \"mime\": \"text/html\",\n      \"source\": \"common_crawl\"\n    },\n    {\n      \"url\": \"https://example.org/robots.txt\",\n      \"timestamp\": \"20260808122150\",\n      \"status\": 404,\n      \"mime\": \"text/html\",\n      \"source\": \"common_crawl\"\n    }\n  ],\n  \"iocs\": [],\n  \"providers\": [\n    {\n      \"source\": \"common_crawl\",\n      \"outcome\": \"ok\",\n      \"urls\": 10,\n      \"iocs\": 0\n    }\n  ]\n}\n",
+  "stderr": "",
+  "report": {
+    "schema": "disrobe.prowl/v0",
+    "targets": [
+      "example.org"
+    ],
+    "sources": [
+      "common_crawl"
+    ],
+    "url_total": 4,
+    "ioc_total": 0,
+    "urls": [
+      {
+        "url": "http://example.org/",
+        "timestamp": "20260808121514",
+        "status": 200,
+        "mime": "text/html",
+        "source": "common_crawl"
+      },
+      {
+        "url": "http://example.org/robots.txt",
+        "timestamp": "20260808121514",
+        "status": 404,
+        "mime": "text/html",
+        "source": "common_crawl"
+      },
+      {
+        "url": "https://example.org/",
+        "timestamp": "20260808122150",
+        "status": 200,
+        "mime": "text/html",
+        "source": "common_crawl"
+      },
+      {
+        "url": "https://example.org/robots.txt",
+        "timestamp": "20260808122150",
+        "status": 404,
+        "mime": "text/html",
+        "source": "common_crawl"
+      }
+    ],
+    "iocs": [],
+    "providers": [
+      {
+        "source": "common_crawl",
+        "outcome": "ok",
+        "urls": 10,
+        "iocs": 0
+      }
+    ]
+  }
+}

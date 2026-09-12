@@ -1,0 +1,68 @@
+InstallShield cabinet fixtures for disrobe-binfmt
+
+Every file here is an unmodified byte copy of an artifact published in the unshield
+project's regression corpus (https://github.com/twogood/unshield, MIT). The archives
+themselves are third-party 1997-era installer data redistributed by that project; they
+are pinned here so the InstallShield walker is graded against real cabinets rather than
+against fixtures written from disrobe's own understanding of the layout.
+
+wireplay-user1.cab
+  sha256 30ee8b8ad02d6e1a5e1a67de039303236b7f01b4b31cea722b99255240d3834d
+  size   9668
+  source test/v0/wireplay/test_data.zip -> dpcb1197-Wireplay/DOS/_user1.cab
+  common header version 0x01000004, unshield major version 0, legacy layout
+  1 directory, 7 file groups, 8 file records: 3 recoverable, 5 marked invalid
+  compressed members use the full-flush raw-DEFLATE representation
+
+wireplay-sys1.cab
+  sha256 6036fe6e7eb763c80a63de3765b0a33e6498cd968ba582d2bd2d7bb1418a7dc2
+  size   386984
+  source test/v0/wireplay/test_data.zip -> dpcb1197-Wireplay/DOS/_sys1.cab
+  common header version 0x01000004, unshield major version 0, legacy layout
+  1 directory, 5 file groups, 7 file records, all recoverable
+  three members expand past 64 KiB, so the multi-chunk decode loop is exercised
+  _isres.dll and _IsRes.Dll differ only by case and land in different file groups,
+  so the carve paths stay distinct on a case-insensitive filesystem
+
+cve-2015-1386.hdr
+  sha256 6ed3cc2918dfb2611a112db5c88b40765c8ecdc661df40bc3c5fec0f176810c8
+  size   3113
+  source test/v5/CVE-2015-1386/data1.hdr
+  common header version 0x01005201, unshield major version 5, legacy layout
+  1 directory, 1 file group, 4 file records: 3 marked invalid, 1 carrying a
+  directory-traversal member name; unshield's own suite asserts that extracting this
+  artifact fails, and disrobe must refuse every member of it
+
+Expected inventories
+
+  <fixture>.tsv holds the reference inventory: index, disposition, carve path, declared
+  expanded size, declared compressed size, and the SHA-256 of the recovered bytes.
+
+  The inventories were produced by a reference decoder written directly from unshield's
+  published sources (lib/libunshield.c, lib/file.c, lib/directory.c, lib/file_group.c,
+  lib/helper.c, lib/cabfile.h at commit cbed3d19ef9cdf4e5fb86b9d65e48f1bf8d539db). That
+  reference decoder was graded against unshield's own recorded MD5 inventories before it
+  was used here:
+
+    test/v0/the-feeble-files-spanish   319 of 319 members matched (full-flush framing)
+    test/v5/CVE-2015-1386              extraction fails, as unshield's suite requires
+    baldurs gate patch v1.1.4315       132 of 132 members matched (chunk framing)
+
+  Those two graded archives are 26.7 MB and 13.5 MB of third-party game data and are not
+  pinned here. Reproduce the grade with:
+
+    curl -sSLO https://raw.githubusercontent.com/twogood/unshield/main/test/v0/the-feeble-files-spanish/test_data.zip
+    curl -sSLO https://raw.githubusercontent.com/twogood/unshield/main/test/v0/the-feeble-files-spanish/the-feeble-files-spanish.md5
+    curl -sSLO https://raw.githubusercontent.com/twogood/unshield/main/test/v0/baldurs_gate_patch_v1_1_4315_international/test_data.zip
+    curl -sSLO https://raw.githubusercontent.com/twogood/unshield/main/test/v0/baldurs_gate_patch_v1_1_4315_international/baldurs_gate_patch_v1_1_4315_international.md5
+
+  The MD5 lists in those directories are unshield's recorded output for `unshield -O x`
+  and `unshield x` respectively, so they are independent of both disrobe and the
+  reference decoder.
+
+Carve paths
+
+  unshield's command line writes each member to <file group>/<directory>/<name> and
+  replaces space, angle bracket and square bracket characters with underscores. Disrobe
+  keeps the same three-component path but does not rewrite characters; path safety is
+  decided by the shared entry-path sanitiser instead.

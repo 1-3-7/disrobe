@@ -1,0 +1,83 @@
+{
+  "schema": "disrobe.playground.sample-provenance.v1",
+  "files": [
+    {
+      "name": "go-embed-linux-386",
+      "license": "samples/GO-LICENSE.txt",
+      "source": "crates/disrobe-pass-go/tests/fixtures/goembed/goembed_elf32_le",
+      "originalSource": "crates/disrobe-pass-go/tests/fixtures/goembed/main.go",
+      "reference": "crates/disrobe-pass-go/tests/fixtures/goembed/PROVENANCE.md",
+      "bytes": 1396898,
+      "sha256": "7f60d1efec1de5a0c899af60ea7fbd7c6453f3f7ec77f55b1a219dc3a98a1082"
+    },
+    {
+      "name": "php-bzip2.phar",
+      "source": "corpus/php/phar/bzip2.phar",
+      "originalSource": "corpus/php/phar-bz2/src/",
+      "reference": "crates/disrobe-pass-php/tests/real_phar.rs",
+      "bytes": 7494,
+      "sha256": "03798e6ee0e13841623cdd99a2ff698c6a1cb5c6d59f28026ef9788e8d34cce6"
+    },
+    {
+      "name": "symbol-probe.dill",
+      "source": "crates/disrobe-pass-mobile/tests/fixtures/flutter_symbol_dart_3_12_2/symbol_probe.app.dill",
+      "originalSource": "crates/disrobe-pass-mobile/tests/fixtures/flutter_symbol_dart_3_12_2/symbol_probe.dart",
+      "reference": "crates/disrobe-pass-mobile/tests/fixtures/flutter_symbol_dart_3_12_2/PROVENANCE.txt",
+      "bytes": 1152,
+      "sha256": "cac616c1dad9f9033a2ac88a8637d2435c423c1bcecd022cf54fb94e6ea2ff38"
+    },
+    {
+      "name": "android-fixture.apk",
+      "source": "corpus/apk/fixture-v2v3-signed.apk",
+      "reference": "corpus/apk/MANIFEST.toml",
+      "bytes": 8595,
+      "sha256": "70009956a036796f04b759c15208c76e6d41c752c45fb0f5d3cc2c0538c789e9"
+    },
+    {
+      "name": "ruby-greeter.yarvc",
+      "source": "corpus/ruby/mri/yarv/greeter.rb.yarvc",
+      "originalSource": "corpus/ruby/greeter.rb",
+      "reference": "corpus/ruby/mri/yarv/expected_iseq_mnemonics.json",
+      "bytes": 984,
+      "sha256": "d37a142fe4f0c01f7d404fd1b73f5063c4137a70e2fea98beff4a73b299257eb"
+    },
+    {
+      "name": "hermes-shapes.hbc",
+      "source": "crates/disrobe-pass-mobile/tests/fixtures/hermes/shapes.hbc",
+      "originalSource": "crates/disrobe-pass-mobile/tests/fixtures/hermes/shapes.js",
+      "reference": "crates/disrobe-pass-mobile/tests/fixtures/hermes/shapes.hbcdump.txt",
+      "bytes": 2915,
+      "sha256": "7f0e2eab19c6a275e92a8e19b66de4c24e5c688acabc46450f666595c6852168"
+    },
+    {
+      "name": "pyarmor_known_plaintext.py",
+      "source": "corpus/python/pyarmor/v9_latest_925/default/known_plaintext.py",
+      "originalSource": "corpus/python/pyarmor/v9_latest_925/known_plaintext_original.py",
+      "bytes": 9963,
+      "sha256": "58d5782dcc3b71848d76b22c6b7f05f1b7c1c3142aabc562926d84e895a0d084"
+    },
+    {
+      "name": "pyarmor_runtime_000000.pyd",
+      "source": "corpus/python/pyarmor/v9_latest_925/default/pyarmor_runtime_000000/pyarmor_runtime.pyd",
+      "pairedWrapper": "pyarmor_known_plaintext.py",
+      "license": "https://github.com/dashingsoft/pyarmor/blob/master/LICENSE",
+      "reference": "https://pyarmor.readthedocs.io/en/stable/tutorial/getting-started.html#distributing-the-obfuscated-script",
+      "bytes": 643072,
+      "sha256": "6477c874ef38d2f9e80b6f61796a17a320ab1ab29bcff22feaa5f0f4947bff52"
+    },
+    {
+      "name": "SwiftHello",
+      "source": "corpus/mobile/macho-mac/SwiftHello.original",
+      "bytes": 61816,
+      "sha256": "24fd68f9d43a2d4e45462d300023cca1fecc30a62236ec4a74ea15b3ec783bef"
+    },
+    {
+      "name": "esbuild-bundle.js.map",
+      "source": "corpus/js/esbuild/bundle.js.map",
+      "originalSource": "corpus/js/esbuild/src",
+      "reference": "crates/disrobe-pass-js-deob/tests/sourcemap_recover_real.rs",
+      "bytes": 2338,
+      "sha256": "cb4915c37032283447c8c52bc50ca7b0335c6e3fe92ad8958e27d019034fe2aa"
+    }
+  ]
+}

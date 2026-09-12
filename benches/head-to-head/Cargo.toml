@@ -1,0 +1,33 @@
+[package]
+name = "disrobe-bench-head-to-head"
+description = "Reproducible comparisons of disrobe, JADX, CFR, and APKLeaks on pinned inputs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "disrobe-bench-head-to-head"
+path = "src/main.rs"
+
+[dependencies]
+disrobe-core = { workspace = true }
+disrobe-tool-process = { workspace = true }
+disrobe-pass-jvm = { workspace = true }
+disrobe-pass-pickle = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+eyre = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+walkdir = { workspace = true }
+zip = { workspace = true }

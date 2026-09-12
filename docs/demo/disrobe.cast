@@ -1,0 +1,7 @@
+{"version":2,"width":128,"height":24,"timestamp":1788865223,"title":"Disrobe quickstart","theme":{"fg":"#ededed","bg":"#0a0a0a"},"description":"Command output captured at process completion. Timings come from quickstart.json."}
+[0.017482300000000003,"o","$ disrobe wasm decompile playground/public/samples/add.wasm --target json --out recovered\\add.summary.json\r\n"]
+[0.0356351,"o","wasm decompile: OK (target=json)\r\n  types:        1\r\n  functions:    1\r\n  imports:      0\r\n  exports:      1\r\n  code bytes:   7\r\n  wrote:        recovered\\add.summary.json\r\n"]
+[0.035798,"o","$ disrobe wasm decompile playground/public/samples/add.wasm --target wat --out recovered\\add.lifted.wat\r\n"]
+[0.05372949999999999,"o","wasm decompile: OK (target=wat)\r\n  functions:    1\r\n  wrote:        recovered\\add.lifted.wat\r\n"]
+[0.05391050000000001,"o","$ disrobe auto playground/public/samples/add.wasm --out recovered\\auto --capture-stages\r\n"]
+[0.1898067,"o","chain.json written: recovered\\auto\\chain.json\r\nrecovery.json written: recovered\\auto\\recovery.json\r\nanti-analysis.json written: recovered\\auto\\anti-analysis.json\r\nreport.json written: recovered\\auto\\report.json\r\nreport.sarif written: recovered\\auto\\report.sarif\r\n1 stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under recovered\\auto; 1 terminal stage(s) linked under recovered\\auto\\final\r\nanti-analysis: none detected\r\n"]

@@ -1,0 +1,65 @@
+name: Lua oracle toolchains
+description: Install the Lua and Luau versions used by recovery differentials
+runs:
+  using: composite
+  steps:
+    - uses: step-security/msvc-dev-cmd@22c98154b708dbd743e6f27a933cf6ceba3305c4
+    - uses: leafo/gh-actions-lua@6919171ccf181b826f44b9bca76307b577217377
+      with:
+        luaVersion: "5.1.5"
+    - name: Keep the Lua 5.1 interpreter and compiler
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $root = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+        $source = Join-Path $root '.lua'
+        Rename-Item -LiteralPath $source -NewName '.lua51'
+        $bin = Join-Path $root '.lua51/bin'
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        foreach ($tool in @('lua', 'luac')) {
+          Copy-Item -LiteralPath (Join-Path $bin "$tool$suffix") -Destination (Join-Path $bin "${tool}5.1$suffix")
+          $version = & (Join-Path $bin "${tool}5.1$suffix") -v 2>&1
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.1\.5\b') { throw "Unexpected ${tool} version: $version" }
+        }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+    - uses: leafo/gh-actions-lua@6919171ccf181b826f44b9bca76307b577217377
+      with:
+        luaVersion: "5.4.8"
+    - name: Name and verify the Lua 5.4 interpreter and compiler
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $bin = Join-Path $env:GITHUB_WORKSPACE '.lua/bin'
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        foreach ($tool in @('lua', 'luac')) {
+          Copy-Item -LiteralPath (Join-Path $bin "$tool$suffix") -Destination (Join-Path $bin "${tool}5.4$suffix")
+          $version = & (Join-Path $bin "${tool}5.4$suffix") -v 2>&1
+          if ($LASTEXITCODE -ne 0 -or "$version" -notmatch 'Lua 5\.4\.8\b') { throw "Unexpected ${tool} version: $version" }
+        }
+    - name: Install and exercise Luau 0.725
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $platform, $digest = switch ($env:RUNNER_OS) {
+          'Windows' { 'windows'; '065688ea78bf4f2be1cd321ed670f170f528647c366c1ce3e81be22128b64143' }
+          'Linux' { 'ubuntu'; '0d408986bab1ef5555ef533f5e9b06719b5b98b88da945ee308c6300c4c309fd' }
+          'macOS' { 'macos'; 'e3384ee0e64c0855c7bf614cadbfca7cd58de080cf8c1d43f730b6678069a756' }
+          default { throw "Unsupported runner: $env:RUNNER_OS" }
+        }
+        $archive = Join-Path $env:RUNNER_TEMP "luau-0.725-$platform.zip"
+        $bin = Join-Path $env:RUNNER_TEMP 'disrobe-luau-0.725'
+        Invoke-WebRequest -Uri "https://github.com/luau-lang/luau/releases/download/0.725/luau-$platform.zip" -OutFile $archive -TimeoutSec 60
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $digest) { throw 'Luau archive checksum mismatch' }
+        Expand-Archive -LiteralPath $archive -DestinationPath $bin
+        $suffix = if ($IsWindows) { '.exe' } else { '' }
+        if (-not $IsWindows) {
+          & chmod +x (Join-Path $bin 'luau') (Join-Path $bin 'luau-compile')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot make Luau tools executable' }
+        }
+        $probe = Join-Path $bin 'probe.luau'
+        'print(6 * 7)' | Set-Content -LiteralPath $probe -Encoding utf8NoBOM
+        $result = & (Join-Path $bin "luau$suffix") $probe
+        if ($LASTEXITCODE -ne 0 -or "$result" -ne '42') { throw 'Luau runtime probe failed' }
+        & (Join-Path $bin "luau-compile$suffix") --binary $probe > (Join-Path $bin 'probe.bytecode')
+        if ($LASTEXITCODE -ne 0 -or (Get-Item -LiteralPath (Join-Path $bin 'probe.bytecode')).Length -eq 0) { throw 'Luau compiler probe failed' }
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8

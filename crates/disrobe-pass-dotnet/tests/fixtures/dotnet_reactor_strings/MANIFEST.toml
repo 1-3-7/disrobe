@@ -1,0 +1,121 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-07-12"
+toolchain = "dotnet SDK 9.0.314, net9.0, Release, Optimize=false, deterministic"
+license = "Elastic-2.0"
+note = "self-authored Roslyn compatibility fixture for statically proven AES resource flow and the pinned de4dot Int32/UTF-16 record semantics; no vendor or third-party binary bytes"
+
+[reference]
+repository = "https://github.com/de4dot/de4dot"
+commit = "b7d5728fc0c82fb0ad758e3a4c0fbb70368a4853"
+string_file = "de4dot.code/deobfuscators/dotNET_Reactor/v4/StringDecrypter.cs"
+string_url = "https://github.com/de4dot/de4dot/blob/b7d5728fc0c82fb0ad758e3a4c0fbb70368a4853/de4dot.code/deobfuscators/dotNET_Reactor/v4/StringDecrypter.cs"
+resource_file = "de4dot.code/deobfuscators/dotNET_Reactor/v4/EncryptedResource.cs"
+resource_url = "https://github.com/de4dot/de4dot/blob/b7d5728fc0c82fb0ad758e3a4c0fbb70368a4853/de4dot.code/deobfuscators/dotNET_Reactor/v4/EncryptedResource.cs"
+
+[build]
+command = "powershell -File build.ps1"
+runtime_check = "dotnet ReactorStringsCompat.dll"
+runtime_strings = 7
+
+[[fixture]]
+name = "expected.json"
+kind = "fixed-ground-truth-json"
+size = 179
+sha256 = "16c59ae88f6bedff6a6656afb6ba6dec47a4ebbc1a4c9671e5e54d1d6282b3d0"
+source = "self-authored string set"
+
+[[fixture]]
+name = "ReactorStringsCompat.dll"
+kind = "dotnet-reactor-v4-static-string-resource-compatible-managed-pe"
+size = 7168
+sha256 = "2dc53f5906042ffe72f72bf2c4d90c82dbac9e9a4d341516f9fac9fb12de6b4f"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsCompat.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStrings.csproj"
+
+[[fixture]]
+name = "ReactorStringsAmbiguous.dll"
+kind = "dotnet-reactor-v4-two-static-string-tuples-managed-pe"
+size = 7168
+sha256 = "8a5a68fbe657e23c7b7b98cad86c2091d43685be5b84e441a0bb58007fb90fb7"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsAmbiguous.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStringsAmbiguous.csproj"
+
+[[fixture]]
+name = "ReactorStringsMixedInstance.dll"
+kind = "dotnet-reactor-v4-extra-aes-instance-managed-pe"
+size = 7680
+sha256 = "2610d3ea0d62e6c37067a5076c4d2136423487025c0a0e01b5c97e07ca81abbd"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsMixedInstance.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStringsMixedInstance.csproj"
+
+[[fixture]]
+name = "ReactorStringsCatch.dll"
+kind = "dotnet-reactor-v4-catch-path-managed-pe"
+size = 7168
+sha256 = "98acdc150f2d9151975c0264056ac7b557d04d530ab815aad3dd8f47f01939c1"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsCatch.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStringsCatch.csproj"
+
+[[fixture]]
+name = "ReactorStringsDiscarded.dll"
+kind = "dotnet-reactor-v4-reachable-discarded-tuple-managed-pe"
+size = 7168
+sha256 = "ade436fd2a3e0d5fffa83596bb2d2205609e57fc3d8ca7029e23f14f6a6210b8"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsDiscarded.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStringsDiscarded.csproj"
+
+[[fixture]]
+name = "ReactorStringsPostSetReverse.dll"
+kind = "dotnet-reactor-v4-post-set-iv-reversal-managed-pe"
+size = 7680
+sha256 = "89717d35f8b2ec98c95f9556bac584b235a74fa30a08fa760d68ad32ca839538"
+source = "Host.cs"
+
+[[fixture]]
+name = "ReactorStringsPostSetReverse.runtimeconfig.json"
+kind = "runtime-config"
+size = 329
+sha256 = "ed6b2e00d44ee5e1fa0b84214dbb39a9cc4a7d7eec6683e53ddcea30284599c2"
+source = "ReactorStringsPostSetReverse.csproj"
+
+[grade]
+strings_recovered_before = 0
+strings_recovered_after = 7
+comparison = "recovered strings equal fixed expected.json and CLR runtime stdout"
+test = "reactor_static_strings_match_committed_clr_fixture"
+ambiguity_test = "reactor_two_reachable_tuples_remain_unknown"
+mixed_instance_test = "reactor_mixed_aes_instances_remain_unknown"
+exception_test = "reactor_catch_path_remains_unknown"
+discarded_test = "reactor_reachable_discarded_tuple_remains_unknown"
+reverse_order_test = "reactor_post_set_iv_reversal_remains_unknown"

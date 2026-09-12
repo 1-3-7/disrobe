@@ -1,0 +1,66 @@
+Disrobe CLI walkthrough
+disrobe 0.10.6
+
+00:00:00.000  Unpack a native binary
+> disrobe native unpack hello.packed.exe --out recovered/hello.bin
+native unpack: OK
+  input:        hello.packed.exe
+  packer:       upx
+  status:       Implemented
+  packed_size:  53248
+  recovered:    116810 bytes
+  wrote:        recovered/hello.bin
+
+
+00:00:06.000  Extract indicators
+> disrobe ioc indicators.txt
+url	plain	@0	https://example.org/download
+email	plain	@29	analyst@example.org
+ipv4	plain	@49	192.0.2.42
+
+3 indicator(s)
+
+
+00:00:11.000  Let Disrobe choose the recovery path
+> disrobe auto add.wasm --out recovered/auto --capture-stages
+chain.json written: recovered/auto\chain.json
+recovery.json written: recovered/auto\recovery.json
+anti-analysis.json written: recovered/auto\anti-analysis.json
+report.json written: recovered/auto\report.json
+report.sarif written: recovered/auto\report.sarif
+1 stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under recovered/auto; 1 terminal stage(s) linked under recovered/auto\final
+anti-analysis: none detected
+
+
+00:00:16.000  Decompile Lua bytecode
+> disrobe lua decompile greet.luac --out recovered/greet.lua
+lua decompile: OK
+  input:        greet.luac
+  format:       Lua51
+  fidelity:     Lossless
+  warnings:     0
+  wrote:        recovered/greet.lua
+  manifest:     recovered/greet.manifest.json
+
+
+00:00:22.000  Lift WebAssembly to WAT
+> disrobe wasm decompile add.wasm --target wat --out recovered/add.wat
+wasm decompile: OK (target=wat)
+  functions:    1
+  wrote:        recovered/add.wat
+
+
+00:00:28.000  Read the recovered instructions
+> Get-Content -LiteralPath recovered/add.wat
+;; disrobe wasm lift target=wat
+(module
+  (memory $m0 1 16)
+  (table $dr_tbl_func 1 funcref)
+  (func $f0 (param $p0 i32) (param $p1 i32) (result i32)
+    local.get $p0
+    local.get $p1
+    i32.add
+  )
+  (export "add" (func $f0))
+)
+

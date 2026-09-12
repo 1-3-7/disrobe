@@ -1,0 +1,12 @@
+id = "native-packer-byterecovery"
+ecosystem = "native"
+title = "Native packer unpack, byte-identity vs the original PE"
+claim = "disrobe unpacks PE packers (UPX, ASPack, PECompact, MEW, kkrunchy, Yoda's Crypter) through its own stub emulator and recovers section bytes that are byte-identical to the committed original, with no external tool participating."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "bench-native-unpack"
+external = "byte-identity against the committed known-good original PE (RVA-aligned), plus stub-emulator round-trip equivalence"
+reproduce = "cargo run -p disrobe-bench-native-unpack  (CI gates: cargo test -p disrobe-pass-native --test upx_unpack_all)"
+results_md = "benches/native-unpack/results.md"

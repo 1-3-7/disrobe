@@ -1,0 +1,64 @@
+# Responsible use
+
+This document states the project's posture, its intended use, and the procedure for legal-adjacent contact. If your use of `disrobe` may implicate copyright, computer-misuse, or contract law in your jurisdiction, obtain your own legal counsel.
+
+## Intended use
+
+`disrobe` is intended for, and supports:
+
+- **Security research and malware analysis.** Reverse-engineering hostile binaries to understand their behavior, build detections, or publish findings.
+- **Interoperability research.** Reverse-engineering an artifact you lawfully possess in order to enable interoperation with an independently created program. This applies when no information needed for that interoperation is otherwise readily available.
+- **Recovery of your own source.** Reconstructing software you authored and have lost the source for.
+- **Education, archaeology, and curation.** Studying program behavior, preserving historical bytecode, teaching reverse-engineering.
+
+`disrobe` is **not** intended for:
+
+- Bypassing technological protection measures applied to copyrighted content you do not own and have no lawful right to access.
+- Circumventing license-key validation or terms-of-service enforcement of software you have not lawfully obtained.
+- Building or distributing pirated or counterfeit software.
+- Producing derivative works that infringe a copyright holder's exclusive rights.
+
+The line between research and infringement is jurisdiction- and fact-specific. Where the line falls is your responsibility, not the project's.
+
+## Statutory framing the project relies on
+
+### United States: DMCA §1201(f)
+
+17 U.S.C. §1201(f) is the "interoperability" exemption from the anti-circumvention rule. It permits the circumvention of technological protection measures, and the development of tools for that purpose, under two conditions. The activity must be undertaken solely to identify and analyze the elements of a program necessary to achieve interoperability with an independently created program, and the information must not have previously been readily available. `disrobe` is a tool of that kind. See: <https://www.law.cornell.edu/uscode/text/17/1201>.
+
+`disrobe` also relies on the periodic anti-circumvention exemptions promulgated by the Librarian of Congress. Those include the exemptions covering security research, most recently renewed and expanded by the 2024 rulemaking.
+
+### European Union: Software Directive 2009/24/EC
+
+Article 6 of Directive 2009/24/EC ("the Software Directive") permits decompilation of a computer program where the decompilation is indispensable to obtain the information necessary to achieve the interoperability of an independently created program with other programs. The conditions of paragraphs (a)-(c) must be met. `disrobe` is a tool that supports this analysis. See: <https://eur-lex.europa.eu/eli/dir/2009/24>.
+
+Article 5(3) of the same Directive permits the lawful acquirer of a program to observe, study, or test the functioning of the program in order to determine the underlying ideas and principles. That right covers acts of loading, displaying, running, transmitting, or storing the program which the acquirer is entitled to perform.
+
+### Other jurisdictions
+
+Comparable provisions exist in the United Kingdom (CDPA §50B/50BA), Canada (Copyright Act s.30.61), Australia (Copyright Act ss.47D-47F), Japan (Copyright Act Art. 47-3/47-6), and elsewhere. Users in those jurisdictions should consult local counsel. The project does not represent that its tools fit those frameworks identically.
+
+## What `disrobe` does and does not ship
+
+- The repository **does not ship** third-party copyrighted obfuscated bytecode in its public test corpus. Test inputs include project-authored fixtures, licensed third-party regression inputs identified in [NOTICE](NOTICE), and samples referenced by hash whose bytes must be fetched separately under their applicable terms.
+- The repository **does ship** parsers, decoders, decompilers, and orchestrator wrappers (Ghidra / jadx / CFR / Vineflower / ILSpy / de4dot, headless). Applied to a sample, those can produce output that may be considered a derivative work of that sample under applicable copyright law. Producing that output lawfully is the user's responsibility.
+
+## Responsible disclosure
+
+If you believe a release of `disrobe` is being used to infringe your rights, contact the maintainer before pursuing public action. The project is operated in good faith and responds to substantiated concerns.
+
+## Takedown contact
+
+For copyright concerns, EULA concerns, or any other rights-based contact regarding this repository or its release artifacts:
+
+- Open a private security advisory at <https://github.com/1-3-7/disrobe/security/advisories/new>
+
+Please include: (1) a description of the rights you assert, (2) the specific artifact or commit at issue, (3) a clear statement of the action you are requesting, and (4) the contact information of an authorized representative. Vague or boilerplate notices may not receive a substantive response.
+
+## Warranty disclaimer
+
+The Work is licensed under the Elastic License 2.0, provided "AS IS" without warranties of any kind (see LICENSE). Nothing in this LEGAL.md modifies that disclaimer.
+
+## Limitations
+
+This document does not exhaustively enumerate every statute, case, regulation, or contract that may bear on a particular use of `disrobe`. It is a starting point, not a substitute for legal counsel.

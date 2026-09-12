@@ -1,0 +1,36 @@
+[book]
+title = "disrobe"
+description = "Deterministic static recovery for compiled and obfuscated software across 15 ecosystem catalogs, with a Rust CLI, evidence-backed limits, and opt-in external backends."
+authors = ["1-3-7"]
+language = "en"
+src = "docs/src"
+
+[build]
+build-dir = "docs/book"
+create-missing = false
+
+[output.html]
+theme = "docs/theme"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+additional-css = ["docs/theme/tokens.css", "docs/theme/disrobe.css"]
+additional-js = ["docs/theme/theme.js"]
+git-repository-url = "https://github.com/1-3-7/disrobe"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/1-3-7/disrobe/edit/main/{path}"
+site-url = "/disrobe/latest/"
+no-section-label = false
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.fold]
+enable = true
+level = 1

@@ -1,0 +1,3 @@
+HelloApp.r2r.exe	DR-DOTNET-0006: no CLR data directory - image is native, not managed
+HelloAppAot.exe	DR-DOTNET-0006: no CLR data directory - image is native, not managed
+megafile/EdgeCases.nativeaot.exe	DR-DOTNET-0006: no CLR data directory - image is native, not managed

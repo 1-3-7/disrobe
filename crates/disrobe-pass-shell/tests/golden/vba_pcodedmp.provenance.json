@@ -1,0 +1,25 @@
+{
+  "tool": "pcodedmp",
+  "version": "1.2.6",
+  "command": "pcodedmp -d <container>",
+  "dump": [
+    {
+      "file": "hello.pcodedmp.txt",
+      "container": "corpus/shell/vba/hello.docm",
+      "bytes": 319,
+      "sha256": "ca09a03c244eb699e32d276be04d9570db8d45f3615369f0b8fa29656db901b1"
+    },
+    {
+      "file": "megafile.pcodedmp.txt",
+      "container": "corpus/shell/vba/megafile.docm",
+      "bytes": 43289,
+      "sha256": "ea140518837b9c850de740633339e3209ab16b9d99f3cd70244b1297d5e638a4"
+    },
+    {
+      "file": "sourceprobe.pcodedmp.txt",
+      "container": "corpus/shell/vba/sourceprobe.docm",
+      "bytes": 4053,
+      "sha256": "1a1c6f6169198efa5edbec320950c31b484ade6bd784ab9e7cd3430b53d0ff51"
+    }
+  ]
+}

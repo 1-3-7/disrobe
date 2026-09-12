@@ -1,0 +1,1 @@
+<?php ${'GLOBALS'}['fn']='base64_decode'; $f=$GLOBALS['fn']; eval($f('ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTs='));

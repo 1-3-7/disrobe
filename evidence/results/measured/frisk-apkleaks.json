@@ -1,0 +1,92 @@
+{
+  "dataset": "corpus/recon/apk/planted-secrets.apk contains 8 planted secrets across smali, res/raw, res/values, and assets",
+  "denominator": "8 planted high-value secrets (fixed, identical for both tools)",
+  "ecosystem": "secrets",
+  "fairness": [
+    "identical input bytes: both tools scan the byte-identical committed planted-secrets.apk",
+    "same oracle: recall against the same 8-secret planted ground truth",
+    "fixed shared denominator: the count of planted secrets",
+    "apkleaks finding nothing counts as zero recall; a missing or failed live tool fails regeneration",
+    "apkleaks runs its own jadx-then-regex flow; disrobe frisk scans the extracted member tree (its real product path)"
+  ],
+  "ground_truth": [
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "AWS access key id"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "AWS secret access key"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "Google OAuth access token"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "GCP / Google Maps API key"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "HTTP Basic auth credential"
+    },
+    {
+      "found_by_apkleaks": false,
+      "found_by_disrobe": true,
+      "label": "session JWT"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "Firebase database URL"
+    },
+    {
+      "found_by_apkleaks": true,
+      "found_by_disrobe": true,
+      "label": "S3 bucket URL"
+    }
+  ],
+  "honest_note": "`disrobe frisk` recalls 100.0% of the planted secrets; apkleaks recalls 62.5%. apkleaks did not match: AWS secret access key, HTTP Basic auth credential, session JWT. This row scores only the shared 8-secret ground truth.",
+  "id": "frisk-apkleaks",
+  "oracle": "exact-token recall against the same 8 planted secrets for both tools",
+  "reproduce": "cargo run --locked -p disrobe-bench-head-to-head -- --check --only frisk-apkleaks",
+  "status": "ok",
+  "title": "Secret recall: disrobe frisk and APKLeaks",
+  "tools": [
+    {
+      "display": "8/8 (100.0%)",
+      "found": 8,
+      "metric": "recall %",
+      "name": "disrobe frisk (in-process recon engine)",
+      "recon_report_artifact": "frisk-apkleaks/disrobe/recon-report.json",
+      "recon_report_sha256": "c0fa50d96ade29ffb721312e6661fc263ea77b5a8299368e3c5bfc87cee40117",
+      "status": "ok",
+      "total": 8,
+      "value": 100.0,
+      "version": "n/a (in-process)"
+    },
+    {
+      "detail": "live apkleaks 2.6.3 planted-secret membership via cli; LF-normalized JSON SHA-256 dd530528036c7dd632b7e4886293cf3dbf2c7c52528b5ce02c1be30dcd24ddee; original JSON bytes, their checksum, launcher provenance, and process streams are retained in this run's durable artifact directory",
+      "display": "5/8 (62.5%)",
+      "execution_route": "cli",
+      "found": 5,
+      "jadx_provenance_artifact": "frisk-apkleaks/apkleaks/jadx/provenance.json",
+      "jadx_version": "1.5.5",
+      "lf_json_artifact": "frisk-apkleaks/apkleaks/apkleaks.lf.json",
+      "lf_json_sha256": "dd530528036c7dd632b7e4886293cf3dbf2c7c52528b5ce02c1be30dcd24ddee",
+      "metric": "recall %",
+      "name": "apkleaks",
+      "raw_json_artifact": "frisk-apkleaks/apkleaks/apkleaks.json",
+      "report_provenance_artifact": "frisk-apkleaks/apkleaks/report-provenance.json",
+      "status": "ok",
+      "total": 8,
+      "value": 62.5,
+      "version": "v2.6.3"
+    }
+  ]
+}

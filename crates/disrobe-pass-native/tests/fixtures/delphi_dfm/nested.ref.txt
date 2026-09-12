@@ -1,0 +1,18 @@
+object MainForm: TMainForm
+  Left = 10
+  Top = 20
+  object Panel1: TPanel
+    Left = 1
+    Caption = 'Outer'
+    object Inner1: TLabel
+      Left = 2
+      Caption = 'Inner'
+    end
+    object Inner2: TEdit
+      Text = 'edit'
+    end
+  end
+  object StatusBar1: TStatusBar
+    SimpleText = 'ready'
+  end
+end

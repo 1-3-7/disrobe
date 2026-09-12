@@ -1,0 +1,40 @@
+{
+  "schema": "disrobe.wasm.obf.expected/v1",
+  "note": "Reference outputs of the clean originals built by the real clang/wasm32 toolchain in build.sh. The live grader is tests/recover_differential.rs, which assembles the real-toolchain wat under real/ and executes clean vs recover_module(obf) under wasmtime over an input battery; these are a static cross-check of representative cases.",
+  "cases": {
+    "callind_dispatch": {
+      "formula": "run(a,b) = ((a + b) * b) - a",
+      "samples": [
+        { "export": "run", "args": [3, 5], "result": 37 },
+        { "export": "run", "args": [2, 4], "result": 22 },
+        { "export": "run", "args": [0, 0], "result": 0 },
+        { "export": "run", "args": [7, 1], "result": 1 }
+      ]
+    },
+    "cff_pipeline": {
+      "formula": "pipeline(x) = ((x + 3) * 5) ^ 17",
+      "samples": [
+        { "export": "pipeline", "args": [0], "result": 30 },
+        { "export": "pipeline", "args": [1], "result": 5 },
+        { "export": "pipeline", "args": [10], "result": 80 }
+      ]
+    },
+    "opaque_select": {
+      "formula": "pick(a,b) = (a + b) * 7 ; scale(x) = x * 3 + 11",
+      "note": "real clang -O0; the collatz(9)==1 / collatz(27)==1 guards are true so the obf computes the true arm, equal to the clean. recover_module walls the -O0 opaque predicate (it needs an interprocedural interpreter) but leaves behavior intact; values below are the clean originals.",
+      "samples": [
+        { "export": "pick", "args": [3, 5], "result": 56 },
+        { "export": "pick", "args": [2, 4], "result": 42 },
+        { "export": "scale", "args": [5], "result": 26 },
+        { "export": "scale", "args": [0], "result": 11 }
+      ]
+    },
+    "mba_checksum": {
+      "formula": "mix(a,b) = ((a + b) * 5 ^ a) * 1103515245 + 12345 (i32 wrapping); blend chains two MBA adds; checksum folds a windowed accumulator",
+      "note": "exact values are large i32-wrapping products; graded behaviorally by the differential over the battery rather than tabulated here. mix and blend each fold one real -O2 shl-form MBA add; checksum is behaviorally verified but not folded (its add is shared through a local.tee)."
+    },
+    "decrypt_stub": {
+      "note": "static-extraction case: recover_module decrypts the constant-key data section in place; the recovered data segment equals the plaintext bytes \"helloworld\". Not execution-graded (the static decrypt intentionally diverges from the live double-decrypt)."
+    }
+  }
+}

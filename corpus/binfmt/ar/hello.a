@@ -1,0 +1,6 @@
+!<arch>
+//              0           0     0     100644  54        `
+a_very_long_member_name_that_exceeds_sixteen_chars.o/
+short.o/        0           0     0     100644  30        `
+ELF short object member bytes/0              0           0     0     100644  31        `
+second object payload, distinct

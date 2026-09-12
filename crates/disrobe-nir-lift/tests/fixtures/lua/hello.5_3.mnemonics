@@ -1,0 +1,5 @@
+function 0
+GETTABUP
+LOADK
+CALL
+RETURN

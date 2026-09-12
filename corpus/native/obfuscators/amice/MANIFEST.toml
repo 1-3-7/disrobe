@@ -1,0 +1,39 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-24"
+toolchain = "fuqiuluo/amice (a Rust reimplementation of the Obfuscator-LLVM passes; LLVM plugin loaded via -fpass-plugin). amice is a from-source LLVM-version-pinned plugin (built against a matching llvm-sys/inkwell), not installable on this box without a full LLVM dev toolchain + per-version plugin build."
+note = "spec-constructed ELF objects, NOT produced by running amice. The encoded artifacts are taken verbatim from amice's source: the default XOR string-encryption key 0xAA (crates/amice/src/aotu/string_encryption/xor.rs `*byte ^= 0xAA`), and the decryptor symbol names amice emits (`__amice__decrypt_strings_<rand>__` for the XOR algo, `simd_xor_cipher_<rand>` + `simd_xor_decrypt_stub` for the SIMD-XOR algo). Detection is graded obf-vs-clean; string recovery is graded against the clean original plaintext, never against amice's own output."
+
+[provenance]
+source = "sample.c: a benign C function annotated `+string_encryption +fla +mba +bcf` (amice's EloquentConfigParser annotation grammar from docs/FunctionAnnotations_zh_CN.md, read out of llvm.global.annotations section llvm.metadata)"
+obfuscator = "fuqiuluo/amice string-encryption pass (StringEncryption, priority 1000). XOR algo: every const string global is replaced by plaintext^0xAA and a unified `__amice__decrypt_strings_<rand>__` decryptor is inserted. SIMD-XOR algo: a random 32-byte key is stored as a 256-bit vector global and a `simd_xor_cipher_<rand>` / `simd_xor_decrypt_stub` pair decrypts in place."
+transform = "the .rodata C2 literal is XOR-encrypted with the fixed 0xAA key; the .symtab carries amice's three decryptor symbols. The clean baseline keeps the plaintext and carries none of those symbols."
+verified = "non-circular: the recovery target is the clean original plaintext `https://c2.amice-demo.example/gate?id=victim-7f3a`, which is present verbatim in sample.clean.elf and absent from sample.amice.elf. disrobe re-XORs the encrypted .rodata with amice's documented 0xAA key and reproduces that exact plaintext. Detection fires on the obfuscated object (Amice family via the decryptor symbols) and NOT on the clean control."
+
+[disposition]
+detection = "SHIPPED - Amice family, keyed on the __amice__decrypt_strings_ / simd_xor_cipher_ / simd_xor_decrypt_stub decryptor symbols amice emits; zero false-positive on the clean control."
+string_recovery = "SHIPPED - amice's default XOR key is the fixed constant 0xAA, so XOR-mode encrypted strings are statically reversible; disrobe reproduces the clean plaintext byte-for-byte. The SIMD-XOR algo uses a random 32-byte key, but stores it as a plaintext vector global in the image (recoverable by locating the key global before simd_xor_cipher_); that key-locate-and-decrypt path is detection-only here and remains the honest gap below."
+cff_mba_bcf = "ROUTED - amice's flatten/MBA/bogus-control-flow output is x86 at the binary level and flows through the existing native CFF unflatten + MBA-lift + bogus-branch + substitution recovery (analyze_deobf) with no amice-specific code; not re-graded here because building real amice flatten output needs the LLVM-plugin toolchain."
+
+[[fixture]]
+name = "sample.c"
+path = "sample.c"
+kind = "c-source"
+provenance = "self-authored"
+description = "benign C source annotated with amice's +string_encryption +fla +mba +bcf grammar"
+
+[[fixture]]
+name = "sample.clean.elf"
+path = "sample.clean.elf"
+kind = "elf-obj"
+provenance = "spec-constructed"
+source = "sample.c"
+description = "pre-amice baseline: plaintext C2 literal in .rodata, no amice decryptor symbols"
+
+[[fixture]]
+name = "sample.amice.elf"
+path = "sample.amice.elf"
+kind = "elf-obj"
+provenance = "spec-constructed"
+source = "sample.clean.elf"
+description = "amice string-encryption applied per spec: .rodata literal XOR-encrypted with the fixed 0xAA key; .symtab carries __amice__decrypt_strings_a1b2c3d4__, simd_xor_cipher_9e8d7c6b, simd_xor_decrypt_stub"

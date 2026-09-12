@@ -1,0 +1,41 @@
+Flutter Symbol AOT fixture
+==========================
+
+The fixture is a benign source-authored Dart program compiled without execution.
+
+Toolchain
+---------
+
+Flutter 3.44.6 stable, framework revision ee80f08bbf, engine d3a3293399556a85388faf8c6f0723a7a5597aa8, Dart 3.12.2.
+
+Dart SDK annotated tag 3.12.2 has tag object 704629bcd35e8bc1dd6b4808b618cccbbbd8fb6a and resolves to commit d684a576a6aa954ae107a03b2b4e1d61c3bebe93. At that revision, sdk/lib/internal/symbol.dart defines the concrete dart:_internal.Symbol with one final String field named _name. runtime/vm/app_snapshot.cc serializes ordinary Instance pointer fields through the generic instance cluster.
+
+https://github.com/dart-lang/sdk/blob/d684a576a6aa954ae107a03b2b4e1d61c3bebe93/sdk/lib/internal/symbol.dart
+https://github.com/dart-lang/sdk/blob/d684a576a6aa954ae107a03b2b4e1d61c3bebe93/runtime/vm/app_snapshot.cc
+
+Flutter SDK archive:
+https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.44.6-stable.zip
+size 1899929646
+SHA-256 2e803e240c981733ec6b543752415196ff1b16e03f93474bddd59c777ac07a56
+
+dartaotruntime.exe SHA-256 480cbfb70dd0034b925fed77c22610ae551fc810ee129e20da701c62040c1b13
+gen_kernel_aot.dart.snapshot SHA-256 30c615d9916af85c8e67dfe3f6d6d93de3b8f1d7ee5972f527031f34e30d0917
+android-arm64-release gen_snapshot.exe SHA-256 f43d2db41b7bdafbf221e019be93787c31a81d2d35fe9b5c8a4818fe1ec66df7
+
+Build
+-----
+
+Run from this directory with DART set to Flutter's bin/cache/dart-sdk directory and ENGINE set to Flutter's bin/cache/artifacts/engine/android-arm64-release/windows-x64 directory.
+
+    DART/bin/dartaotruntime.exe DART/bin/snapshots/gen_kernel_aot.dart.snapshot --platform DART/lib/_internal/vm_platform_strong.dill --no-link-platform --filesystem-root=. --filesystem-scheme=disrobe-fixture -o symbol_probe.app.dill disrobe-fixture:///symbol_probe.dart
+    DART/bin/dartaotruntime.exe DART/bin/snapshots/gen_kernel_aot.dart.snapshot --platform DART/lib/_internal/vm_platform_strong.dill --aot --filesystem-root=. --filesystem-scheme=disrobe-fixture -o symbol_probe.aot.dill disrobe-fixture:///symbol_probe.dart
+    ENGINE/gen_snapshot.exe --snapshot_kind=app-aot-elf --elf=symbol_probe_arm64.so symbol_probe.aot.dill
+
+Artifacts
+---------
+
+symbol_probe.dart size 316 SHA-256 6a91c782ec555e3869f2808d673064ac0f984d37096b480743749099c6288629
+symbol_probe.app.dill size 1152 SHA-256 cac616c1dad9f9033a2ac88a8637d2435c423c1bcecd022cf54fb94e6ea2ff38
+symbol_probe_arm64.so size 1796240 SHA-256 4445e126a7f4c9fc58b681339dfcd0f9e31de81ccf5207bbb7fe3ff05921fa32
+
+The disrobe-fixture URI scheme prevents host and worktree paths from entering either artifact. The intermediate symbol_probe.aot.dill is not committed. The test parses the committed app-only kernel as the independent source witness and the Android ARM64 product ELF through the public recovery path.

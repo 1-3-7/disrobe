@@ -1,0 +1,15 @@
+schema = "disrobe.fixture.provenance/v1"
+source = "https://github.com/fragglet/lhasa"
+source_commit = "75ed83559f23e9538e0045c62f53f77ab03d03d6"
+license = "ISC"
+reference = "Lhasa test-decompress and test-extract-windows"
+
+[[fixtures]]
+archive = "test/archives/explzh_723/h1_lh0.lzh"
+file = "h1_lh0.lzh"
+sha256 = "840b459c1d9247fc7d27b9ed2702060c7b83ae966892230f9d6f87d300e33251"
+header_level = 1
+method = "-lh0-"
+output_path = "gpl-2.gz"
+output_crc32 = "e4690583"
+output_size = 6829

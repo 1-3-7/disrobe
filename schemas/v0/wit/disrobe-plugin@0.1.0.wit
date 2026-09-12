@@ -1,0 +1,63 @@
+package disrobe:plugin@0.1.0;
+
+/// Host-provided interface a disrobe plugin can call.
+interface host {
+    /// Log a message to the host's output. Level: 0=trace 1=debug 2=info 3=warn 4=error.
+    log: func(level: u8, message: string);
+
+    /// Read the full hot payload bytes of the input envelope.
+    input-bytes: func() -> list<u8>;
+
+    /// Read a named field from the input envelope's cold sidecar.
+    /// Returns none if the field is absent or the type doesn't match.
+    cold-field-string: func(key: string) -> option<string>;
+    cold-field-u64: func(key: string) -> option<u64>;
+
+    /// Read an annotation that a prior pass wrote for a symbol.
+    get-annotation: func(symbol: string) -> option<string>;
+}
+
+/// A sniffer detects whether this plugin can handle a given input.
+interface sniffer {
+    /// Examine up to 65536 bytes of the input head.
+    /// Returns confidence in [0.0, 1.0] and a human-readable format label.
+    /// Return confidence 0.0 to signal "not my format".
+    sniff: func(head: list<u8>) -> tuple<f32, string>;
+}
+
+/// A pass transforms the input envelope into an output payload.
+interface pass {
+    record pass-descriptor {
+        id: string,
+        version: string,
+        requires-rung: u8,
+        produces-rung: u8,
+        requires-capabilities: u64,
+        produces-capabilities: u64,
+    }
+
+    /// Return static metadata about this pass.
+    descriptor: func() -> pass-descriptor;
+
+    /// Run the pass. Returns the output payload bytes on success.
+    /// On error, returns an error code string (DR-*-NNNN format).
+    run: func(input: list<u8>) -> result<list<u8>, string>;
+}
+
+/// An emit formatter converts the pass output into a specific --emit kind.
+interface emit-formatter {
+    /// The --emit kind this formatter handles (e.g. "source", "report").
+    kind: func() -> string;
+
+    /// Format the pass output. Returns the formatted bytes.
+    format: func(payload: list<u8>) -> result<list<u8>, string>;
+}
+
+world plugin {
+    import host;
+
+    /// Implement at least one of these interfaces.
+    export sniffer;
+    export pass;
+    export emit-formatter;
+}

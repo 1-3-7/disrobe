@@ -1,0 +1,1 @@
+{"version":3,"file":"lazy-mZ_fD4Dv.js","names":[],"sources":["../../src/lazy.js"],"sourcesContent":["export const heavyTag = \"lazy-loaded:\" + String(Math.random()).slice(2, 8);\nexport const lazyCompute = (x) => x ** 2 + x + 1;\n"],"mappings":";AAAA,IAAa,WAAW,iBAAiB,OAAO,KAAK,OAAO,CAAC,EAAE,MAAM,GAAG,CAAC;AACzE,IAAa,eAAe,MAAM,KAAK,IAAI,IAAI"}

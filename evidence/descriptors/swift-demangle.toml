@@ -1,0 +1,15 @@
+id = "swift-demangle"
+ecosystem = "swift"
+title = "Pinned Swift symbol renderings from the committed SwiftHello Mach-O"
+claim = "disrobe recognizes and renders every Swift-mangled symbol in the committed SwiftHello Mach-O against pinned in-process output. No external demangler grades output correctness in this gate."
+oracle_strength = "coverage-self-reported"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "the committed SwiftHello Mach-O LC_SYMTAB fixes the named Swift-mangled symbol population; expected renderings are committed regression pins, not an external correctness oracle"
+reproduce = "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin"
+
+[source]
+recovery_group = "Swift symbol rendering on the committed SwiftHello Mach-O"
+recovery_bar = "pinned symbol renderings"

@@ -1,0 +1,26 @@
+{
+  "schema": "disrobe.demo.rust-library/v1",
+  "command": [
+    "cargo",
+    "run",
+    "--locked",
+    "-p",
+    "disrobe-pass-wasm-deob",
+    "--example",
+    "inspect_module",
+    "--",
+    "playground/public/samples/add.wasm"
+  ],
+  "exit_code": 0,
+  "input": {
+    "path": "playground/public/samples/add.wasm",
+    "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+  },
+  "example": {
+    "path": "crates/disrobe-pass-wasm-deob/examples/inspect_module.rs",
+    "source_sha256": "c9435c774923325b3ef6d45f59b702dd003a822ae3d27427e209155db29b72e6",
+    "binary_sha256": "d47e11a96ca8a4c0520ce017b40d11c602c1b3f85c2c591387e9243f8d7a1bec"
+  },
+  "log_sha256": "0a946a7dd2ba9b0e670e625b32d92a4efb883a359b4ebd87cfcc10b175baf17c",
+  "stdout": "functions=1 imports=0 exports=[\"add\"]\n(module\n  (type $t0 (func (param i32) (param i32) (result i32)))\n  (func $f0 (param $p0 i32) (param $p1 i32) (result i32)\n    local.get $p0\n    local.get $p1\n    i32.add\n  )\n  (export \"add\" (func $f0))\n)\n"
+}

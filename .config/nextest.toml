@@ -1,0 +1,23 @@
+nextest-version = "0.9.115"
+
+[profile.pre-push]
+retries = 0
+test-threads = "num-cpus"
+slow-timeout = { period = "30s", terminate-after = 4, grace-period = "10s" }
+leak-timeout = { period = "2s", result = "fail" }
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "fail"
+final-status-level = "fail"
+
+[test-groups]
+external-toolchain = { max-threads = 2 }
+
+[[profile.pre-push.overrides]]
+filter = 'package(disrobe-pass-native) | package(disrobe-pass-py-decompile) | package(disrobe-pass-dotnet) | package(disrobe-pass-jvm) | package(disrobe-pass-beam) | package(disrobe-pass-pyinstaller) | package(disrobe-pass-js-deob)'
+test-group = 'external-toolchain'
+slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s" }
+
+[[profile.pre-push.overrides]]
+filter = 'package(disrobe-mba) | package(disrobe-cli) | package(disrobe-binfmt)'
+slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s" }

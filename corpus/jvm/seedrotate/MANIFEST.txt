@@ -1,0 +1,57 @@
+Per-call-site seed-rotated string-decrypt fixture (benign, authored in-house)
+=============================================================================
+
+Purpose
+-------
+SeedRotateCrypt exercises the per-call-site integer-seeded shape of a
+commercial string encryptor's classic (non-flow, non-invokedynamic) mode: a
+private static decode(String, int) method whose rotating XOR key set is the
+five integer constants baked into the method body, indexed by
+(charIndex + seed) % 5. The seed is an immediate integer pushed inline at each
+call site (bipush/sipush/iconst), distinct per encrypted constant, the way the
+classic mode rotates its key per string rather than reusing a single table.
+No runtime state, no environment key, no stack-trace caller hash: the entire
+key set and every per-string seed are present in the static artifact, so the
+constrained bytecode evaluator runs the class's own decode body with the exact
+inline seed read from the call site and recovers the plaintext. The evaluator
+runs the real method; it never reimplements an invented cipher.
+
+This is the case the seed-aware call-site scanner closes. Before it, the
+call-site literal scanner reset its pending string when an integer push sat
+between the ldc and the invokestatic, so the seeded mode found zero candidates
+and over-walled to detect-only. The scanner now carries the inline integer
+through to the evaluator as the decode method's int argument, and both argument
+orders ((String, int) and (int, String)) are handled.
+
+Provenance (non-circular oracle)
+--------------------------------
+SeedRotateCrypt.java was authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by
+disrobe. The encrypted String constants are the literal ciphertext baked into
+the source (the way an obfuscator bakes an encrypted pool constant). The
+ground-truth plaintexts are listed below and in oracle.txt; the .class was run
+under the real JVM (java com.disrobe.bench.SeedRotateCrypt) and prints exactly
+these five lines. The test grades the recovered strings against these authored
+plaintexts, never against disrobe's own decoder output.
+
+Files
+-----
+SeedRotateCrypt.class (1403 B) -- DEFEATABLE. decode(String, int) rotates the
+    five inline XOR keys by (i + seed) % 5. Five reachable call sites, each with
+    its own inline seed:
+        endpoint() seed 0 -> "jdbc:mysql://10.0.0.5:3306/billing"
+        header()   seed 2 -> "X-Internal-Auth: 9f8e7d6c"
+        query()    seed 4 -> "SELECT secret FROM vault WHERE tenant = ?"
+        token()    seed 1 -> "AES/GCM/NoPadding"
+        flag()     seed 3 -> "feature.kill-switch=enabled"
+SeedRotateCrypt.java  -- the in-house source; the literals above are the oracle.
+oracle.txt            -- the five ground-truth plaintexts, one per line.
+
+Why this is not a fake wall
+---------------------------
+The key set and every per-string seed are embedded in the bytecode (run the
+method with the inline seed), so the decrypt is defeated end-to-end against the
+known plaintext. Contrast the runtime-keyed shapes (environment/clock key,
+live stack-trace caller hash, lazily-built cross-class global table) which are
+information-theoretically absent from the artifact and stay honest walls.

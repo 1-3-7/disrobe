@@ -1,0 +1,37 @@
+{
+  "title": "Ecosystem coverage",
+  "subtitle": "static recovery by default; run disrobe passes for auto-chain reachability",
+  "kinds": {
+    "source": "recovers source",
+    "bytecode": "bytecode to source",
+    "unpack": "unpack / extract",
+    "symbols": "symbols + metadata",
+    "carve": "detect + carve"
+  },
+  "cells": [
+    { "label": "Python pyc", "kind": "bytecode", "note": "1.0-3.15 supported" },
+    { "label": "PyArmor", "kind": "unpack", "note": "v6-v9 static-key" },
+    { "label": "PyInstaller", "kind": "unpack", "note": "onefile + onedir" },
+    { "label": "Nuitka", "kind": "unpack", "note": "onefile, C-bounded body" },
+    { "label": "Python pickle", "kind": "carve", "note": "symbolic VM, never runs" },
+    { "label": "JavaScript", "kind": "source", "note": "obfuscator.io, 11 bundlers" },
+    { "label": "WebAssembly", "kind": "bytecode", "note": "to Rust/TS/WAT/C" },
+    { "label": ".NET / CIL", "kind": "bytecode", "note": "C#/F#/VB, 23 protectors" },
+    { "label": "JVM classfile", "kind": "bytecode", "note": "in-house decompiler" },
+    { "label": "Android DEX", "kind": "bytecode", "note": "Dalvik, JVM-verified" },
+    { "label": "Go", "kind": "symbols", "note": "pclntab type recovery" },
+    { "label": "Lua", "kind": "bytecode", "note": "+ IronBrew2 devirt" },
+    { "label": "PHP", "kind": "source", "note": "source + bytecode" },
+    { "label": "Ruby YARV", "kind": "bytecode", "note": "MRI opcode-name recall" },
+    { "label": "BEAM", "kind": "bytecode", "note": "Erlang + Elixir" },
+    { "label": "Swift / Obj-C", "kind": "symbols", "note": "class dump" },
+    { "label": "ActionScript 3", "kind": "bytecode", "note": "SWF + ABC" },
+    { "label": "Hermes", "kind": "bytecode", "note": "RN bytecode" },
+    { "label": "Flutter", "kind": "symbols", "note": ".dill body, AOT names" },
+    { "label": "Shell / PowerShell", "kind": "source", "note": "deobfuscate" },
+    { "label": "Native PE/ELF/Mach-O", "kind": "unpack", "note": "stub-emu unpack" },
+    { "label": "Nim / Zig / Crystal", "kind": "symbols", "note": "demangle + metadata" },
+    { "label": "Containers", "kind": "carve", "note": "103 formats detected" }
+  ],
+  "footnote": "Recovery quality varies by format and input. Original comments, formatting, and names may be absent; native AOT recovery can expose symbols and metadata without reconstructing source bodies."
+}

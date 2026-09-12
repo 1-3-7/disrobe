@@ -1,0 +1,274 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (506 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1657 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-unpack
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\aspack_clockres_unpacked-b2abfbf97fdb43f3806f7d186d75495e\aspack_clockres_unpacked (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\aspack_clockres_unpacked-b2abfbf97fdb43f3806f7d186d75495e\aspack_clockres_unpacked (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\aspack_clockres_unpacked-b2abfbf97fdb43f3806f7d186d75495e\aspack_clockres_unpacked (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe (HeadlessAnalyzer)
+WARN  Section .adata begins after end of file! (FileHeader)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+WARN  Section .adata begins after end of file! (FileHeader)
+WARN  Certificate address is not valid. (SecurityDataDirectory)
+INFO  TLS callbacks at 1000374c (TLSDirectory)
+WARN  Invalid or missing function at 100ca39c (ExportDataDirectory)
+INFO  Additional info:
+Loading file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe?MD5=ca9050800a04082aab8576bb7ecbe98a...
+------------------------------------------------
+
+Searching 45 paths for library ADVAPI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/advapi32.dll?MD5=e05908f79c914e9f6915632c7a37dd91...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library COMDLG32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/comdlg32.dll?MD5=dff2875ca3b15b633c9ca94d3f6a5068...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library GDI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/gdi32.dll?MD5=37002dbb23f87dae9ebd7dd7b5051995...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll?MD5=2d8ecc5a2aade7639ca790ef2e8e6e36...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library USER32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/user32.dll?MD5=f20db7901b5acab93edf2366986a6fd3...
+[user32.dll]: failed to create WEVTResource at 100e7a70: Failed to resolve data length for WEVTResource
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library VERSION.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/version.dll?MD5=e540ee5a5c515d5c3005f0cd6d133124...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\version.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\version.exports
+Linking the External Programs of 'Clockres.packed.aspack.unpacked.exe' to imported libraries...
+  [KERNEL32.DLL] -> not found in project
+  [USER32.DLL] -> not found in project
+  [GDI32.DLL] -> not found in project
+  [COMDLG32.DLL] -> not found in project
+  [ADVAPI32.DLL] -> not found in project
+  [VERSION.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+WARN  Decompiling 00403730, pcode error at 90004039: Could not follow disassembly flow into non-existing memory at 90004039 (DecompileCallback)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 0040ab5d, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a85a, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b95a, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408f5c, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cb4e, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d442, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408a50, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ad42, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ab75, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408d40, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d669, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040aa68, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ce67, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cf63, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ad12, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a735, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00409200, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00403730, pcode error at 90004039: Could not follow disassembly flow into non-existing memory at 90004039 (DecompileCallback)
+WARN  Decompiling 0040b92e, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a529, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a4dc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a1cc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cfca, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 004092cc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a5c5, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408fc4, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040abc0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00409ffb, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a3fb, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a8f9, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a9f5, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040abf0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 004092f0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408fef, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b8e6, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c8e3, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cae2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ace2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b9e0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a7e0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a894, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408b9f, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d482, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040bb8f, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cc81, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00410e80, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c881, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00403d80, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a6be, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c8b7, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cbaa, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408ca2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408955, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.219 secs
+    Apply Data Archives                        0.393 secs
+    Call Convention ID                         0.001 secs
+    Call-Fixup Installer                       0.011 secs
+    Create Address Tables                      0.004 secs
+    Create Address Tables - One Time           0.017 secs
+    Create Function                            0.037 secs
+    Data Reference                             0.013 secs
+    Decompiler Parameter ID                  272.579 secs
+    Decompiler Switch Analysis                 3.551 secs
+    Demangler Microsoft                        0.007 secs
+    Disassemble                                0.024 secs
+    Disassemble Entry Points                   0.219 secs
+    Embedded Media                             0.003 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.184 secs
+    Function Start Pre Search                  0.006 secs
+    Function Start Search                      0.018 secs
+    Function Start Search After Code           0.003 secs
+    Function Start Search After Data           0.004 secs
+    Non-Returning Functions - Discovered       0.031 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.001 secs
+    Reference                                  0.019 secs
+    Scalar Operand References                  0.033 secs
+    Shared Return Calls                        0.024 secs
+    Stack                                      0.270 secs
+    Subroutine References                      0.019 secs
+    Windows x86 PE Exception Handling          0.005 secs
+    Windows x86 PE RTTI Analyzer               0.005 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.007 secs
+    WindowsResourceReference                   0.335 secs
+    X86 Function Callee Purge                  0.017 secs
+    x86 Constant Reference Analyzer            0.325 secs
+-----------------------------------------------------
+     Total Time   278 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: DisrobeMetrics.java '${RUN_DIRECTORY}\metrics\aspack_clockres_unpacked.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-unpack\DisrobeMetrics.java (HeadlessAnalyzer)
+WARN  Decompiling 00403730, pcode error at 90004039: Could not follow disassembly flow into non-existing memory at 90004039 (DecompileCallback)
+WARN  Decompiling 00403d80, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408b9f, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408a50, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408955, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408ca2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408f5c, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408fc4, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408d40, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00408fef, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 004092f0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 004092cc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00409200, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00409ffb, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a4dc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a3fb, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a1cc, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a529, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a6be, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a5c5, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a735, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a7e0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a894, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a85a, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a8f9, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040a9f5, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ab5d, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040aa68, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ab75, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040abc0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ad12, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040abf0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ace2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ad42, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b8e6, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b92e, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b95a, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040b9e0, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040bb8f, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c881, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c8b7, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040c8e3, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cae2, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cb4e, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cbaa, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cc81, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040ce67, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cf63, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040cfca, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d442, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d482, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 0040d669, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+WARN  Decompiling 00410e80, pcode error at 004110b0: Unable to resolve constructor at 004110b0 (DecompileCallback)
+INFO  DisrobeMetrics.java> DisrobeMetrics wrote ${RUN_DIRECTORY}\metrics\aspack_clockres_unpacked.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${RUN_DIRECTORY}/export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da/Clockres.packed.aspack.unpacked.exe (HeadlessAnalyzer)
+INFO  /Clockres.packed.aspack.unpacked.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /Clockres.packed.aspack.unpacked.exe (aspack_clockres_unpacked:/Clockres.packed.aspack.unpacked.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

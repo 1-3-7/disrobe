@@ -1,0 +1,36 @@
+PyPy .pyc fixtures
+==================
+
+hello.py                       source greeting used to compile the fixtures.
+hello_pypy39_legacy.pypy39.pyc PyPy 3.9 module-level .pyc (legacy RPython magic 0xC0DEF512).
+methods.py                     source for methods.pypy27.pyc (run/Box with a box.double() call).
+methods.pypy27.pyc             real PyPy 2.7 bytecode (LOOKUP_METHOD/CALL_METHOD opcodes) re-headered with the PyPy 2.7 magic 0xC0DEF517.
+
+Origin
+------
+The marshaled code-object body is real CPython 3.9 output:
+  py -3.9 -c "import marshal; open(...,'wb').write(marshal.dumps(compile(src,'pypy_legacy.py','exec')))"
+PyPy 3.9 shares CPython 3.9's marshal format and opcode table, so the byte stream
+and its instruction decoding are identical to what PyPy 3.9 emits. The 16-byte
+0xC0DEF512 header is the PyPy interp-level magic; the disassembler strips it, loads
+the marshal at the cpython-compat version, and disassembles through the shared
+CPython opcode engine.
+
+Oracle
+------
+Non-circular: the recovered instruction stream (module + nested greet) is graded
+against the real `dis.dis` of the same code object under CPython 3.9. Modern PyPy3
+(3.7+) actually ships CPython-style magics ending in 0d0a (e.g. PyPy 3.10 = 0x0A0D0180),
+so those .pyc files are already recognized as CPython and disassembled directly; this
+legacy-magic fixture exercises the alt-runtime PyPy branch specifically.
+
+Decompile origin
+----------------
+methods.pypy27.pyc is real PyPy 2.7.18 (PyPy 7.3.17) output: the body was compiled
+with the official PyPy 2.7 interpreter from methods.py, so its raw bytecode tree
+contains the genuine PyPy-private opcodes LOOKUP_METHOD (201) and CALL_METHOD (202)
+for the `box.double()` call. The 8-byte 0xC0DEF517 PyPy 2.7 magic header lets the
+detector route it through the alt-runtime PyPy branch, which strips the header, loads
+the Python 2.7 marshal body, and lifts it onto the decompiler IR with the PyPy
+opcode map. The recovered source is graded by recompiling it (it round-trips to valid
+Python) and by matching the known methods.py structure (def run, class Box, box.double()).

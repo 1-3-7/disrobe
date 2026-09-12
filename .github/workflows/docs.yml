@@ -1,0 +1,199 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "book.toml"
+      - "README.md"
+      - "playground/**"
+      - "crates/disrobe-wasm/**"
+      - "docs/gen-llms-full.sh"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.4.40"
+  PLAYGROUND_BASE: "/disrobe/playground/"
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Use the latest released walkthrough
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MEDIA_DIR="$RUNNER_TEMP/disrobe-release-walkthrough"
+          mkdir -p "$MEDIA_DIR"
+          gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets > "$MEDIA_DIR/release.json"
+          RELEASE_TAG="$(jq -er '.tagName' "$MEDIA_DIR/release.json")"
+          ASSET="disrobe-${RELEASE_TAG}-walkthrough.tar.zst"
+          if ! jq -e --arg name "$ASSET" '.assets | any(.name == $name)' "$MEDIA_DIR/release.json" > /dev/null; then
+            if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+              echo "::error::successful release has no versioned walkthrough archive"
+              exit 1
+            fi
+            echo "::notice::latest release predates walkthrough archives; using the recorded source assets"
+            exit 0
+          fi
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$MEDIA_DIR" --pattern "$ASSET" --pattern "${ASSET}.cosign.bundle" --pattern SHA256SUMS
+          (
+            cd "$MEDIA_DIR"
+            awk -v file="$ASSET" '$2 == file {print; found++} END {if (found != 1) exit 1}' SHA256SUMS > walkthrough.sha256
+            sha256sum --check --strict walkthrough.sha256
+            cosign verify-blob --bundle "${ASSET}.cosign.bundle" \
+              --certificate-identity-regexp "^https://github[.]com/${GITHUB_REPOSITORY}/[.]github/workflows/release[.]yml@" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" "$ASSET"
+            gh attestation verify "$ASSET" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+            ulimit -f 32768
+            timeout --kill-after=5s 30s zstd --decompress --stdout -M32MB "$ASSET" > walkthrough.tar
+          )
+          python3 docs/demo/extract_release_media.py "$MEDIA_DIR/walkthrough.tar" "$MEDIA_DIR/walkthrough"
+          node docs/demo/verify-release-media.mjs "$MEDIA_DIR/walkthrough" "$RELEASE_TAG"
+          for name in walkthrough.mp4 teaser.mp4 preview.gif poster.png captions.vtt chapters.vtt teaser.vtt transcript.txt media.json cli-recording.json; do
+            cp -- "$MEDIA_DIR/walkthrough/$name" "docs/src/assets/walkthrough/$name"
+          done
+
+      - name: Install mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: ${{ env.MDBOOK_VERSION }}
+
+      - name: Build book
+        run: mdbook build
+
+      - name: Index with Pagefind
+        run: npx -y pagefind --site docs/book
+
+      - name: Install Rust (wasm target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-playground
+
+      - name: Guard the native binary-analysis stack out of the wasm graph
+        run: |
+          graph="$(cargo tree -p disrobe-wasm --target wasm32-unknown-unknown -e no-dev --prefix none --locked)"
+          if printf '%s\n' "$graph" | grep -E '^(capstone-sys|disrobe-pass-native|disrobe-binfmt) v'; then
+            echo "a native-only crate re-entered the disrobe-wasm graph"
+            exit 1
+          fi
+
+      - name: Build disrobe-wasm
+        env:
+          RUSTFLAGS: '-D warnings --cfg getrandom_backend="custom"'
+        run: cargo build -p disrobe-wasm --target wasm32-unknown-unknown --release --locked
+
+      - name: Stage wasm into playground
+        run: cp target/wasm32-unknown-unknown/release/disrobe_wasm.wasm playground/src/wasm/disrobe_wasm.wasm
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install playground deps
+        working-directory: playground
+        run: bun install --frozen-lockfile
+
+      - name: Build playground
+        working-directory: playground
+        run: bun run build
+
+      - name: Install browser for documentation checks
+        working-directory: playground
+        run: bun x --no-install playwright install --with-deps chromium --only-shell
+
+      - name: Check documentation and playground on desktop and mobile
+        working-directory: playground
+        run: bun run test:browser
+
+      - name: Assemble Pages site with /latest/ doc root and /playground/
+        run: |
+          set -euo pipefail
+          rm -rf site
+          mkdir -p site/latest
+          cp -a docs/book/. site/latest/
+          mkdir -p site/playground
+          cp -a playground/dist/. site/playground/
+          cp docs/theme/sitemap.xml site/sitemap.xml
+          cp docs/theme/sitemap.xml site/latest/sitemap.xml
+          cp docs/theme/robots.txt site/robots.txt
+          cp docs/theme/robots.txt site/latest/robots.txt
+          cat > site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="color-scheme" content="dark" />
+              <style>body { background: #111111; color: #f5f5f5; } a { color: inherit; }</style>
+              <meta name="google-site-verification" content="fdcg9WgF_Qn1yn7B35093wWjC4kSWrfHH3ra_lQO85s" />
+              <meta http-equiv="refresh" content="0; url=./latest/" />
+              <link rel="canonical" href="https://1-3-7.github.io/disrobe/" />
+              <meta name="description" content="disrobe: deterministic multi-language decompiler, deobfuscator, and unpacker in a single Rust binary for malware analysis and reverse engineering." />
+              <title>disrobe documentation</title>
+            </head>
+            <body>
+              <p>Redirecting to the <a href="./latest/">latest disrobe documentation</a>.</p>
+            </body>
+          </html>
+          HTML
+
+      - name: Publish llms.txt and llms-full.txt at site root and under /latest/ for AI crawlers
+        run: |
+          set -euo pipefail
+          cp docs/theme/llms.txt site/llms.txt
+          cp docs/theme/llms.txt site/latest/llms.txt
+          bash docs/gen-llms-full.sh site/llms-full.txt
+          cp site/llms-full.txt site/latest/llms-full.txt
+          test -s site/llms.txt
+          test -s site/latest/llms.txt
+          test -s site/llms-full.txt
+          test -s site/latest/llms-full.txt
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,97 @@
+# Anti-analysis defeat
+
+`disrobe` analyzes samples statically by default. It recognizes obfuscation and anti-analysis patterns, recovers the available code and data, and reports missing runtime keys or unsupported transformations.
+
+## Signature defeat
+
+Identification never trusts a single magic byte. A zeroed or flipped magic, renamed `UPX0`/`UPX1` sections, or a corrupt `UPX!` marker is re-identified from internal self-consistency:
+
+- **PE** through `e_lfanew` to the COFF and optional headers.
+- **ELF / Mach-O** by header offsets that close against the file length.
+- **ZIP** by its end-of-central-directory anchor.
+- **DEX** by section-offset consistency.
+- **Classfile** by a constant-pool walk.
+- **wasm** by the LEB section stream.
+
+A real UPX executable with a flipped `MZ` and renamed sections still unpacks byte-identically, because the structural `PackHeader` (method id, self-consistent compressed and uncompressed lengths, plausible version) is the signal a scrambler cannot remove without breaking the stub's own ability to self-extract.
+
+## Code-signing verification
+
+Malware often ships with a broken, expired, self-signed, or mismatched Authenticode signature to look trustworthy at a glance. For a signed PE, `disrobe native identify` verifies the signature end to end rather than trusting its presence: it recomputes the Authenticode hash and compares it to the claimed digest, walks the PKCS#7/CMS certificate chain to an embedded bundle of trusted code-signing roots, requires the code-signing extended key usage on the leaf, and cryptographically verifies any RFC 3161 timestamp before letting it extend validity. The result is a single verdict (Valid, HashMismatch, Expired, SelfSigned, UntrustedChain, WrongKeyUsage, and the rest), so a tampered `.text`, a forged timestamp, or a chain that does not reach a trusted root is surfaced instead of silently accepted. The [native guide](./languages/native.md) lists the signed-fixture and `osslsigncode` cross-checks behind it.
+
+## String and data encryption
+
+| Scheme | What `disrobe` does |
+|---|---|
+| Single-byte XOR stack strings | Recovers them with English-likeness key detection, on native via the in-house x86 emulator driving each decoder-shaped function. |
+| Per-family keyed strings | Mirai, Dridex, and Trickbot keyed-string schemes decoded from their known transforms. |
+| JVM string encryption | Emulates the in-class `decrypt(String)` / `decrypt(int, String)` method over the encrypted constants, running `<clinit>` for a static key or constructing the receiver for an instance key. |
+| .NET constant decryption | ConfuserEx2 constants reversed on a real committed sample by emulating the in-assembly decryptor. |
+| JS string-array rotation | The rotated string array is rebuilt and call sites inlined. |
+| Python `exec`/`eval`/`compile` payloads | Unwrapped through base64/85/16/32 and zlib/lzma decode chains. |
+
+Recovery stops when a required key exists only in a system property, environment variable, clock value, random source, or runtime table.
+
+## Control-flow obfuscation
+
+- **BlackObfuscator DEX flattening** is recognized: the `String.hashCode()`-keyed dispatcher and its `const-string` block names are used to annotate the recovered block order. The flattened method body remains in the emitted source.
+- **OLLVM-style control-flow flattening** is deflattened on native, and the result is reported as a cover rather than as an equivalence. `disrobe` enumerates every state the dispatcher can select out of the sample's own compare tree or jump table, resolves the state transition out of each case region by value-set analysis over the state variable, and reports which states the recovered program reaches. A state it cannot reach stays in the denominator and carries a named reason. The `deobf.json` sidecar publishes the whole cover: the state list, the recovered state-to-state edge set, the case regions with their block spans, and one reason per uncovered state. Its `fully_recovered` flag is true only when all three of these hold: every dispatcher state is reached, no reached state has an unresolved transition, and the recovered edge set passes its consistency check. It is not a claim that the recovered program and the flattened one agree on every input. **Bogus control flow and instruction substitution** are reversed on the same path.
+- **Proven-dead conditional arms** are folded on the AArch64 `native decompile` path by a symbolic devirtualizer that runs before structuring (on by default, disabled with `--no-devirt`). The fold is transactional: on any proof miss or budget exhaustion it reverts to the original function, so it only ever replaces a construct with a proven-equivalent one and never invents an edge.
+- **Obfuscator-planted out-of-range exception entries** that poison the JVM control-flow graph are dropped before structuring.
+- **Flattened JS dispatchers** are collapsed back to structured control flow.
+
+## Anti-disassembly and MBA
+
+The JVM, Dalvik, and CIL decoders tolerate broken `StackMapTable`, fake exception ranges, and illegal-but-verifiable bytecode. On native, jump-into-the-middle desync, overlapping instructions, and opaque predicates are resolved in-tree. A mixed-boolean-arithmetic simplifier, wired through the JS and WebAssembly decoders as well, collapses MBA expressions back to their algebraic form through a layered stack: linear signature solving, nonlinear reduction modulo the null-polynomial ideal, e-graph equality saturation over proven ring identities, bounded enumerative synthesis for opaque leaves, and permutation-polynomial inversion. Each layer is sound or abstains, and a rewrite is emitted only after equivalence is proven over the full bitvector domain, so an expression the stack cannot prove is left untouched rather than approximated.
+
+Indirect dispatch is resolved before the SMT tier is ever consulted. A strided-interval value-set analysis reads the masked, compare-guarded, or position-independent index bound off the path constraints and enumerates the jump table to a concrete target set that over-approximates, and usually equals, the reachable targets. It abstains when the table is writable or the index is unbounded, and defers to the solver only for a disequality residual, rather than narrowing past what it can justify. The over-approximation property is unit-tested and graded against a real gcc-compiled switch; it is not proved for every input. The value-set tier carries no solver dependency and compiles without one.
+
+Every SMT verdict the simplifier and the devirtualizer depend on is independently checked before it is trusted. A SAT verdict is re-evaluated against the model the solver returned; an UNSAT verdict is reconfirmed by BDD bit-blasting, or, for the multiply-heavy opaque predicates the bit-blaster cannot settle, by a finite-difference polynomial certificate. A verdict that fails its own check, or a solver that panics or exhausts its budget, degrades to abstain, so a solver bug the independent check catches costs a recovery rather than producing a wrong answer. The external differential runs against pinned Z3 4.16.0 in CI and includes a seeded wrong rewrite as its control. The same harness supports Bitwuzla for local runs, but CI does not provision it. A defect shared by both the solver and its checker is outside what the differential can rule out.
+
+## Bytecode virtualization
+
+| Target | Status |
+|---|---|
+| **Lua (IronBrew2 2.7.0)** | Devirtualized in standard and MAX mode, graded by a real-`lua` execution differential. |
+| **Native generic VM** | `disrobe native devirt` locates the interpreter, fingerprints each handler's micro-op behaviorally through the in-tree x86 emulator, and lifts to a re-executable IR plus pseudo-code, validated end-to-end on a self-authored Tigress-shape VM (the recovered IR re-executes byte-identically from machine code alone). |
+| **VMProtect / Themida / Enigma front-ends** | Detection and structural analysis based on published format research. Recovery of a machine-keyed handler stream requires its key. |
+
+## Overlay inflation
+
+The PE overlay carve computes the true end of the executable image and isolates any trailing archive (gzip, xz, zstd, bzip2, tar, 7z, cab, rar) into its own segment, so padding cannot mask an appended payload.
+
+## Symbol stripping
+
+ProGuard/R8 mappings are replayed into `name-restoration.json` with overload matching; the emitted Java names are unchanged. Go type and stdlib names are recovered from surviving `pclntab`/`moduledata` on stripped binaries, Rust/C++/Swift/Itanium symbols are demangled, and structure is recovered from DWARF. garble's hashed user names remain unresolved without the required naming information; the report retains the structure and metadata that can be recovered.
+
+## What grades each capability
+
+The table links each capability to its compiler, runtime, verifier, or repository test. Partial and Detect-only rows identify the remaining recovery limits.
+
+| Capability | What it does | Grading oracle |
+|---|---|---|
+| Opaque-predicate fold | Folds OLLVM bogus-control-flow always-taken / always-dead branches to their constant outcome | `crates/disrobe-pass-native/tests/ollvm_passes.rs` (`OpaqueResult::AlwaysTaken`, real `classify_fla.bin` and self-authored predicate) |
+| Control-flow-flattening deflatten | Enumerates every state an OLLVM-flattened dispatcher can select, resolves the transition out of each case region, and places the reachable ones as a direct-edge program. Each state it does not reach is reported with a named reason instead of being dropped | `crates/disrobe-pass-native/tests/cff_dispatcher_cover.rs`. Cover is <!-- m:native_cff_cover_states -->9<!-- /m --> of the <!-- m:native_cff_dispatcher_states -->9<!-- /m --> dispatcher states across the two committed OLLVM `*_fla.bin` functions, with each denominator read back out of that sample's own compare tree rather than typed into the test. Separately a bounded `stub_emu` differential runs the flattened bytes and the re-emitted recovered bytes on 15 arguments per function and compares the return value against `corpus/native/ollvm/probe_src.c`, which is 60 executions under a 200000-step and 16 KiB-stack budget. A seeded missing state and a seeded wrong edge each turn one of those gates red |
+| Verified MBA simplify | Collapses mixed-boolean-arithmetic back to algebraic form through the layered simplifier described above, then proves equivalence over the full bitvector domain before emitting | The acceptance gate records a proof at the expression's actual width through exhaustive enumeration where the domain is runnable, exact linear-column identity, BDD bit-blasting, or a finite-difference polynomial identity. A candidate is emitted only with one of those proven verdicts; otherwise the input is left untouched |
+| OLLVM substitution undo | Lifts substituted arithmetic sequences (including shift-encoded carries and `movzx`/`xchg`-loaded narrow operands) back to the original operation, proven minimal | `ollvm_passes.rs` (`undo_ollvm_substitution`, asserts `changed && proven`, `simplified_nodes < original_nodes`) |
+| Jump-table + PIC switch recovery | Resolves register-indirect dispatch and position-independent switch tables to concrete case-to-target lists | `disrobe-pass-native` deobf, graded by stub-emulator dispatch equivalence with clobbered-base and out-of-image counter-tests |
+| Stack-string reconstruction | Drives each decoder-shaped function through the in-house x86 emulator to recover plaintext that only exists after the decoder runs | `crates/disrobe-pass-native/tests/stack_string_oracle.rs` (gcc-compiled object, `stub_emu` CPU memory state) |
+| ABI / calling-convention inference | Infers calling convention, argument count, and return value from liveness on stripped code | `crates/disrobe-pass-native/tests/abi_inference_oracle.rs` (real clang-compiled prototypes, graded vs the source prototype) |
+| Static type recovery | Recovers per-slot integer width and signedness from instruction semantics, splits a reused stack slot into distinct objects through region-typed memory-SSA and live-range analysis, and reconstructs struct, array, and union shape from access paths. Types resolved from a known library or OS prototype propagate backward into the caller's locals with `library!function` provenance; a slot with no sign signal, or an unresolved or conflicting call target, is reported unknown rather than guessed. `native decompile` emits the result as a `types.json` sidecar | `crates/disrobe-typerec` graded against an unstripped sibling's DWARF on an O0 corpus: width and struct field offset/width recall 1.0, live-range splitting lifts signedness recall from 0.25 to 1.0 on slot-reuse cases, with mutation checks that reject seeded-wrong widths, signs, offsets, and merged or invented fields |
+| Solver-free indirect-dispatch resolution | A strided-interval value-set analysis resolves masked, compare-guarded, and position-independent indirect jumps to a concrete target set that over-approximates the reachable targets, usually exactly. It abstains, or defers to the SMT tier on a disequality residual, rather than narrowing past what it can justify | `disrobe-mba` jump-table VSA, unit-tested for the over-approximation property and graded against a real gcc-compiled switch (`crates/disrobe-mba/tests/jumptable_compiler_oracle.rs`, `crates/disrobe-mba/src/jumptable/vsa.rs`) |
+| Copy-prop + branch-fold cleanup | Register copy-propagation and dead-store elimination over junk-shuffle blocks | `crates/disrobe-pass-native/tests/copyprop_oracle.rs` (concrete re-execution, live register equal before and after across seeds) |
+| Path-sensitive dead-code removal | Drops blocks unreachable under the resolved predicate constraints | `disrobe-pass-native` `deobf/pathsense.rs`, applied only on a proven path constraint |
+| Anti-disasm tolerance | Resolves jump-into-the-middle desync, overlapping instructions, and junk bytes; the JVM/Dalvik/CIL decoders tolerate broken `StackMapTable` and fake exception ranges | in-tree, exercised on real obfuscator output and malformed-bytecode fixtures |
+| noreturn propagation | Propagates non-returning calls so the disassembler stops decoding junk past a terminal call | `disrobe-pass-native` flow analysis on the disassembled call graph |
+| Generic VM devirt | Locates the interpreter, behaviorally fingerprints each handler through the x86 emulator, and lifts to re-executable IR plus pseudo-code | `crates/disrobe-pass-native/tests/vm_devirt_oracle.rs` (clang-compiled synthetic VM, recovered IR re-executes byte-identically from machine code alone); Lua IronBrew2 2.7.0 graded by a real-`lua` execution differential |
+| Source-to-sink taint tracking | Tracks values from configured source calls to sink calls through register, stack, and inter-procedural propagation over the normalized IR | On NIST SARD Juliet v1.3, the native path detects 93 of 190 labeled CWE-78 flows (48.9%) with gcc 16.2.0 `-O2`, and 12 of 190 (6.3%) with `-O0`. Both runs produce zero false positives. Detection across more than one call remains 0 of 15 at either optimization level. The grader uses Juliet's `manifest.xml` and `Flow Variant` headers. Wasm, JVM, Dalvik and CIL inputs reach the same engine; these figures cover native input only |
+
+## Warning the analyst before anything runs
+
+`disrobe` also flags the evasion a sample attempts. `disrobe behavior` and `disrobe capabilities` surface al-khaser / Pafish-class anti-debug, anti-VM, anti-sandbox, and timing checks, mapped to MITRE ATT&CK and MBC, with a confidence grade per technique. This is detection only: `disrobe` never executes the sample on its default path and never implements any of these techniques itself.
+
+## Runtime-keyed protection
+
+With a matching `pyarmor_runtime`, the static path supports the variants listed in the Python guide. The 72-of-72 structural result covers the manifest's v8/v9 default-trial wrappers: each decodes to a complete header-anchored root `CodeObject`. That measurement does not grade source recovery, original `.pyc` identity, or semantic equivalence. Some v6/v7 variants require the opt-in, sandboxed dynamic-capture path. For ionCube, SourceGuardian, Zend Guard, ILProtector, and MaxToCode, a required key may reside in a native loader or live process outside the artifact. Disrobe reports the missing key and leaves that content unrecovered.
+
+See the [forensics and malware-safety posture](./forensics-safety.md) for how the default static path stays safe on untrusted input.

@@ -1,0 +1,548 @@
+#![cfg(feature = "chain")]
+#![allow(clippy::module_name_repetitions)]
+use std::path::{Path, PathBuf};
+
+use disrobe_core::Artifact;
+use disrobe_core::Rung;
+use disrobe_core::chain::{
+    CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
+    DetectorOutput, FAMILY_NATIVE_FORMAT, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+};
+use disrobe_core::error::{CoreError, Result as CoreResult};
+use disrobe_core::pass::{PassContext, PassId};
+use disrobe_core::provenance::Language;
+
+use crate::dyld_cache::subcache::CacheFamily;
+use crate::dyld_cache::{
+    self, DyldSharedCache, ReconstructBatch, ReconstructOptions, ReconstructedDylib,
+    UnresolvedImage,
+};
+use crate::macho::{
+    DylibReference, FatArchEntry, MachoKind, ParsedSlice, Section, Segment, detect_magic,
+    parse_slice, slice_bytes, walk_fat,
+};
+use crate::pass::{SwiftObjcReport, analyze as analyze_swift_objc};
+
+pub const PASS_ID: PassId = "swift-objc.classify";
+
+const TAG_MACHO_SLICE32: &str = "macho-slice-32";
+const TAG_MACHO_SLICE64: &str = "macho-slice-64";
+const TAG_MACHO_FAT32: &str = "macho-fat-32";
+const TAG_MACHO_FAT64: &str = "macho-fat-64";
+const TAG_DYLD_SHARED_CACHE: &str = "dyld-shared-cache";
+
+const MAX_CHAIN_CHILDREN: usize = 256;
+
+#[derive(Debug)]
+pub struct SwiftObjcDetector;
+
+impl Detector for SwiftObjcDetector {
+    #[inline]
+    fn id(&self) -> PassId {
+        PASS_ID
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        if dyld_cache::is_dyld_shared_cache(ctx.bytes) {
+            return dyld_cache::parse(ctx.bytes).ok().map(
+                |parsed: DyldSharedCache| -> DetectVerdict {
+                    DetectVerdict::new(
+                        PASS_ID,
+                        TAG_DYLD_SHARED_CACHE,
+                        FAMILY_NATIVE_FORMAT,
+                        0.99,
+                        45,
+                        vec!["dyld-v1-magic"],
+                        format!(
+                            "dyld shared cache arch={} layout={} images={}",
+                            parsed.arch,
+                            parsed.layout.label(),
+                            parsed.images.len()
+                        ),
+                    )
+                },
+            );
+        }
+        let kind: MachoKind = detect_magic(ctx.bytes)?;
+        let marker: &'static str = semantic_marker(ctx.bytes, kind)?;
+        Some(verdict_for(kind, marker))
+    }
+}
+
+#[derive(Debug)]
+pub struct SwiftObjcPassAdapter;
+
+impl Pass for SwiftObjcPassAdapter {
+    #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        META
+    }
+    #[inline]
+    fn id(&self) -> PassId {
+        PASS_ID
+    }
+
+    #[inline]
+    fn detector(&self) -> &'static dyn Detector {
+        &SwiftObjcDetector
+    }
+
+    fn output_kind(&self, output: &Artifact) -> OutputKind {
+        if is_dyld_cache_report(output.envelope.as_slice()) {
+            return OutputKind::Mixed {
+                children: Vec::new(),
+            };
+        }
+        OutputKind::Source {
+            language: Language::Swift,
+            formatted: true,
+        }
+    }
+
+    fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        self.extract_children_with_context(input, PassContext::with_path_hint(None))
+    }
+
+    fn extract_children_with_context(
+        &self,
+        input: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        if !dyld_cache::is_dyld_shared_cache(bytes) {
+            return Ok(Vec::new());
+        }
+        let batch: ReconstructBatch = reconstruct_cache(bytes, context.path_hint)?;
+        if !batch.unresolved.is_empty() {
+            let named: Vec<String> = batch
+                .unresolved
+                .iter()
+                .take(8)
+                .map(|image: &UnresolvedImage| format!("{}: {}", image.install_name, image.reason))
+                .collect();
+            let reason: String = batch
+                .partial_reason
+                .unwrap_or_else(|| "some images could not be reached".to_owned());
+            return Err(CoreError::PassFailure(format!(
+                "DR-SWOBJ-0906: swift-objc.classify: {} of {} dyld cache images could not be reconstructed ({reason}); unreached: {}",
+                batch.unresolved.len(),
+                batch.unresolved.len() + batch.dylibs.len(),
+                named.join("; ")
+            )));
+        }
+        let mut out: Vec<ChildArtifact> = Vec::with_capacity(batch.dylibs.len());
+        for dylib in batch.dylibs {
+            out.push(ChildArtifact {
+                handle: ChildHandle {
+                    artifact_index: 0,
+                    relative_path: child_path(&dylib.install_name),
+                    hint: None,
+                },
+                bytes: dylib.bytes,
+            });
+        }
+        Ok(out)
+    }
+
+    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        let bytes: &[u8] = artifact.envelope.as_slice();
+        if dyld_cache::is_dyld_shared_cache(bytes) {
+            let report: SwiftObjcReport =
+                analyze_swift_objc(bytes).map_err(|e: crate::error::Error| {
+                    CoreError::PassFailure(format!("DR-SWOBJ-0905: dyld shared cache analyze: {e}"))
+                })?;
+            let payload: Vec<u8> =
+                serde_json::to_vec_pretty(&report).map_err(|e: serde_json::Error| {
+                    CoreError::PassFailure(format!("DR-SWOBJ-0904: serialize report: {e}"))
+                })?;
+            return Ok(Artifact::new(Rung::Disasm, payload, artifact.root_hash));
+        }
+        if detect_magic(bytes).is_none() {
+            return Err(CoreError::PassFailure(
+                "DR-SWOBJ-0902: swift-objc.classify: input is not a recognized Mach-O magic"
+                    .to_string(),
+            ));
+        }
+        let report: SwiftObjcReport =
+            analyze_swift_objc(bytes).map_err(|e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0903: swift-objc analyze: {e}"))
+            })?;
+        if let Some(source) = render_class_dump(&report) {
+            return Ok(Artifact::new(
+                Rung::Surface,
+                source.into_bytes(),
+                artifact.root_hash,
+            ));
+        }
+        let payload: Vec<u8> =
+            serde_json::to_vec_pretty(&report).map_err(|e: serde_json::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0904: serialize report: {e}"))
+            })?;
+        Ok(Artifact::new(Rung::Disasm, payload, artifact.root_hash))
+    }
+}
+
+pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    PASS_ID,
+    disrobe_core::chain::Ecosystem::Swift,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
+pub static SWIFT_OBJC_PASS: SwiftObjcPassAdapter = SwiftObjcPassAdapter;
+
+const DYLD_REPORT_MARKER: &[u8] = br#""container": "DyldSharedCache""#;
+const DYLD_REPORT_MARKER_WINDOW: usize = 256;
+
+fn is_dyld_cache_report(bytes: &[u8]) -> bool {
+    let window: &[u8] = &bytes[..bytes.len().min(DYLD_REPORT_MARKER_WINDOW)];
+    window
+        .windows(DYLD_REPORT_MARKER.len())
+        .any(|candidate: &[u8]| candidate == DYLD_REPORT_MARKER)
+}
+
+fn reconstruct_cache(bytes: &[u8], path_hint: Option<&str>) -> CoreResult<ReconstructBatch> {
+    let parsed: DyldSharedCache = dyld_cache::parse(bytes).map_err(|e: crate::error::Error| {
+        CoreError::PassFailure(format!("DR-SWOBJ-0907: dyld shared cache parse: {e}"))
+    })?;
+    if parsed.images.len() > MAX_CHAIN_CHILDREN {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0908: swift-objc.classify: the cache bundles {} images, which exceeds the {MAX_CHAIN_CHILDREN}-child chain cap; recover it with the dedicated dyld cache command instead",
+            parsed.images.len()
+        )));
+    }
+    if let Some(family) = family_for(path_hint, &parsed)? {
+        return dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+            .map_err(|e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
+            });
+    }
+    let dylibs: Vec<ReconstructedDylib> =
+        dyld_cache::reconstruct_all_with(bytes, &parsed, ReconstructOptions::LOAD_READY).map_err(
+            |e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
+            },
+        )?;
+    Ok(ReconstructBatch {
+        dylibs,
+        unresolved: Vec::new(),
+        missing_sub_caches: Vec::new(),
+        partial_reason: None,
+    })
+}
+
+fn family_for(
+    path_hint: Option<&str>,
+    parsed: &DyldSharedCache,
+) -> CoreResult<Option<CacheFamily>> {
+    if parsed.sub_caches.is_empty() {
+        return Ok(None);
+    }
+    let Some(hint): Option<&str> = path_hint else {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0910: swift-objc.classify: the cache declares {} sibling files but the chain supplied no path to compute their names from",
+            parsed.sub_caches.len()
+        )));
+    };
+    let path: PathBuf = PathBuf::from(hint);
+    if !Path::new(&path).is_file() {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0911: swift-objc.classify: the cache declares {} sibling files but '{hint}' is not a readable file to compute their names from",
+            parsed.sub_caches.len()
+        )));
+    }
+    let (family, _reparsed): (CacheFamily, DyldSharedCache) = dyld_cache::open_family(&path)
+        .map_err(|e: crate::error::Error| {
+            CoreError::PassFailure(format!("DR-SWOBJ-0912: dyld cache sibling files: {e}"))
+        })?;
+    Ok(Some(family))
+}
+
+fn child_path(install_name: &str) -> String {
+    let mut out: String = String::with_capacity(install_name.len());
+    for part in install_name.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('/');
+        }
+        for character in part.chars() {
+            if character.is_ascii_graphic()
+                && !matches!(character, ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            {
+                out.push(character);
+            } else {
+                out.push('_');
+            }
+        }
+    }
+    if out.is_empty() {
+        "dyld-cache-image".to_owned()
+    } else {
+        out
+    }
+}
+
+fn render_class_dump(report: &SwiftObjcReport) -> Option<String> {
+    let mut out: String =
+        String::from("// disrobe swift/objc class-dump (recovered reflection metadata)\n\n");
+    let mut emitted: usize = 0;
+    for slice in &report.slices {
+        for ty in &slice.swift.reflected_types {
+            out.push_str(&ty.render());
+            out.push('\n');
+            emitted += 1;
+        }
+        for iface in &slice.objc.interfaces {
+            out.push_str(&iface.render());
+            out.push('\n');
+            emitted += 1;
+        }
+    }
+    if emitted == 0 { None } else { Some(out) }
+}
+
+fn semantic_marker(bytes: &[u8], kind: MachoKind) -> Option<&'static str> {
+    match kind {
+        MachoKind::Fat32 | MachoKind::Fat64 => walk_fat(bytes)
+            .ok()?
+            .iter()
+            .filter_map(|entry: &FatArchEntry| slice_bytes(bytes, entry))
+            .filter_map(|slice: &[u8]| parse_slice(slice).ok())
+            .find_map(|parsed: ParsedSlice| parsed_semantic_marker(&parsed)),
+        MachoKind::Slice32Le
+        | MachoKind::Slice32Be
+        | MachoKind::Slice64Le
+        | MachoKind::Slice64Be => {
+            let parsed: ParsedSlice = parse_slice(bytes).ok()?;
+            parsed_semantic_marker(&parsed)
+        }
+    }
+}
+
+fn parsed_semantic_marker(parsed: &ParsedSlice) -> Option<&'static str> {
+    let has_swift_section: bool = parsed
+        .segments
+        .iter()
+        .flat_map(|segment: &Segment| segment.sections.iter())
+        .any(|section: &Section| section.name.starts_with("__swift5_"));
+    if has_swift_section {
+        return Some("swift-metadata-section");
+    }
+    let has_objc_section: bool = parsed
+        .segments
+        .iter()
+        .flat_map(|segment: &Segment| segment.sections.iter())
+        .any(|section: &Section| section.name.starts_with("__objc_"));
+    if has_objc_section {
+        return Some("objc-metadata-section");
+    }
+    let has_swift_runtime: bool = parsed
+        .dylibs
+        .iter()
+        .any(|dylib: &DylibReference| dylib.name.starts_with("/usr/lib/swift/libswift"));
+    if has_swift_runtime {
+        return Some("swift-runtime-link");
+    }
+    parsed
+        .dylibs
+        .iter()
+        .any(|dylib: &DylibReference| dylib.name == "/usr/lib/libobjc.A.dylib")
+        .then_some("objc-runtime-link")
+}
+
+fn verdict_for(kind: MachoKind, marker: &'static str) -> DetectVerdict {
+    let tag: &'static str = match kind {
+        MachoKind::Fat32 => TAG_MACHO_FAT32,
+        MachoKind::Fat64 => TAG_MACHO_FAT64,
+        MachoKind::Slice32Le | MachoKind::Slice32Be => TAG_MACHO_SLICE32,
+        MachoKind::Slice64Le | MachoKind::Slice64Be => TAG_MACHO_SLICE64,
+    };
+    DetectVerdict::new(
+        PASS_ID,
+        tag,
+        FAMILY_NATIVE_FORMAT,
+        0.95,
+        40,
+        vec![marker],
+        format!("macho kind={tag}"),
+    )
+}
+
+#[derive(Debug)]
+pub struct SwiftObjcCatalogEntry {
+    id: &'static str,
+    display_name: &'static str,
+    aliases: &'static [&'static str],
+    quality: SupportQuality,
+}
+
+impl CatalogEntry for SwiftObjcCatalogEntry {
+    #[inline]
+    fn id(&self) -> &'static str {
+        self.id
+    }
+    #[inline]
+    fn display_name(&self) -> &'static str {
+        self.display_name
+    }
+    #[inline]
+    fn aliases(&self) -> &'static [&'static str] {
+        self.aliases
+    }
+    #[inline]
+    fn support_quality(&self) -> SupportQuality {
+        self.quality
+    }
+}
+
+const CATALOG_COUNT: usize = 3;
+
+static CATALOG: [SwiftObjcCatalogEntry; CATALOG_COUNT] = [
+    SwiftObjcCatalogEntry {
+        id: "swift-macho",
+        display_name: "Mach-O Swift / Objective-C metadata",
+        aliases: &["macho", "swift", "objc", "objective-c"],
+        quality: SupportQuality::Full,
+    },
+    SwiftObjcCatalogEntry {
+        id: "swift-macho-fat",
+        display_name: "Mach-O fat (universal) binary",
+        aliases: &["fat", "universal", "lipo"],
+        quality: SupportQuality::Full,
+    },
+    SwiftObjcCatalogEntry {
+        id: "dyld-shared-cache",
+        display_name: "dyld shared cache",
+        aliases: &["dyld", "dsc", "shared-cache", "dyld_shared_cache"],
+        quality: SupportQuality::Full,
+    },
+];
+
+fn catalog_id_for_tag(tag: &str) -> Option<&'static str> {
+    match tag {
+        TAG_MACHO_SLICE32 | TAG_MACHO_SLICE64 => Some("swift-macho"),
+        TAG_MACHO_FAT32 | TAG_MACHO_FAT64 => Some("swift-macho-fat"),
+        TAG_DYLD_SHARED_CACHE => Some("dyld-shared-cache"),
+        _ => None,
+    }
+}
+
+impl ObfuscatorCatalog for SwiftObjcDetector {
+    #[inline]
+    fn pass_id(&self) -> PassId {
+        PASS_ID
+    }
+
+    fn catalog(&self) -> Vec<&'static dyn CatalogEntry> {
+        CATALOG
+            .iter()
+            .map(|e: &'static SwiftObjcCatalogEntry| e as &'static dyn CatalogEntry)
+            .collect()
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectorOutput> {
+        let verdict: DetectVerdict = Detector::detect(self, ctx)?;
+        let entry_id: &'static str = catalog_id_for_tag(verdict.format_tag)?;
+        let markers: Vec<String> = verdict
+            .markers
+            .iter()
+            .map(|m: &&str| (*m).to_owned())
+            .collect();
+        Some(DetectorOutput::new(entry_id, verdict.confidence, markers))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use disrobe_core::Rung;
+
+    fn ctx(bytes: &[u8]) -> DetectContext<'_> {
+        DetectContext {
+            bytes,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn detector_id_is_stable() {
+        assert_eq!(SwiftObjcDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn magic_without_swift_or_objc_evidence_is_not_claimed() {
+        let bytes: Vec<u8> = vec![0xCF, 0xFA, 0xED, 0xFE, 0u8, 0u8, 0u8, 0u8];
+        assert!(Detector::detect(&SwiftObjcDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn detect_misses_random_bytes() {
+        let bytes: Vec<u8> = vec![0u8; 8];
+        assert!(Detector::detect(&SwiftObjcDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn pass_output_kind_is_swift_source() {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![], [0u8; 32]);
+        match SWIFT_OBJC_PASS.output_kind(&a) {
+            OutputKind::Source {
+                language,
+                formatted,
+            } => {
+                assert_eq!(language, Language::Swift);
+                assert!(formatted);
+            }
+            _ => panic!("expected Source"),
+        }
+    }
+
+    #[test]
+    fn pass_run_rejects_synthetic_macho_without_load_commands() {
+        let bytes: Vec<u8> = vec![0xCF, 0xFA, 0xED, 0xFE, 0u8, 0u8, 0u8, 0u8];
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let err: CoreError = SWIFT_OBJC_PASS
+            .run(&a)
+            .expect_err("synthetic mach-o has no load commands");
+        let msg: String = format!("{err}");
+        assert!(msg.contains("DR-SWOBJ-0903") || msg.contains("DR-SWOBJ-0904"));
+    }
+
+    #[test]
+    fn pass_run_rejects_unknown_bytes() {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 16], [0u8; 32]);
+        let err: CoreError = SWIFT_OBJC_PASS.run(&a).expect_err("must reject");
+        assert!(format!("{err}").contains("DR-SWOBJ-0902"));
+    }
+
+    #[test]
+    fn catalog_lists_macho_targets() {
+        let entries: Vec<&'static dyn CatalogEntry> =
+            ObfuscatorCatalog::catalog(&SwiftObjcDetector);
+        assert_eq!(entries.len(), CATALOG_COUNT);
+        let ids: Vec<&'static str> = entries.iter().map(|e| e.id()).collect();
+        assert!(ids.contains(&"swift-macho"), "got {ids:?}");
+        assert!(ids.contains(&"swift-macho-fat"), "got {ids:?}");
+    }
+
+    #[test]
+    fn catalog_detect_maps_objc_macho_slice() {
+        let bytes: &[u8] =
+            include_bytes!("../tests/fixtures/objc_dispatch/dispatch_sends_x86_64.macho");
+        let out: DetectorOutput = ObfuscatorCatalog::detect(&SwiftObjcDetector, &ctx(bytes))
+            .expect("macho catalog detect");
+        assert_eq!(out.entry_id, "swift-macho");
+        assert_eq!(out.markers, vec!["objc-metadata-section"]);
+    }
+
+    #[test]
+    fn catalog_detect_misses_random_bytes() {
+        let bytes: Vec<u8> = vec![0u8; 8];
+        assert!(ObfuscatorCatalog::detect(&SwiftObjcDetector, &ctx(&bytes)).is_none());
+    }
+}

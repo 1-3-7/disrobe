@@ -1,0 +1,98 @@
+[source]
+obfuscator = "IronBrew2"
+version = "2.7.0"
+upstream = "github.com/Trollicus/ironbrew-2"
+license = "MIT"
+language = "C# (.NET) obfuscator emitting a Lua 5.1 register-VM"
+target = "Lua 5.1"
+provenance = "Built from source with dotnet and run on the author's own benign Lua scripts (originals below). Samples are produced by the real IronBrew2 tool, never by disrobe. No third-party or malicious code."
+
+[note]
+modes = "Each original is obfuscated twice. `.min` runs IronBrew2 with ControlFlow, Mutate, SuperOperators and BytecodeCompress all OFF; `.max` is the stock 2.7.0 default settings (all four ON)."
+oracle = "Non-circular: the recovered Lua is run under a real Lua interpreter and its stdout compared to the known original's stdout. There is no encode-then-decode self-test."
+recovery_status = ".min: full opcode + control-flow recovery, every sample validated output-equivalent against its original. .max: bytestring/key/constant/opcode-permutation/super-operator recovery (hello and arith reach output-equivalence; control/tables/edge recover the opcode table but the control-flow-flattening + number-mutation layer is not yet fully reversed and is flagged honestly)."
+
+[[original]]
+name = "hello.lua"
+sha256 = "244456e9a81278e58c205888920f4a019daa71dd69e1c62c7fa984e0403f8a64"
+covers = "single global call"
+
+[[original]]
+name = "arith.lua"
+sha256 = "5032214003a9d4f3f89cd5683e4bfb39cc76d11f6c8376e6fdff5e8cc1e3bf23"
+covers = "locals, arithmetic, multi-value call"
+
+[[original]]
+name = "control.lua"
+sha256 = "a74cd85b250e4950d6dd2f87a6beee9ef1327c904dff617033fd8509ba001f14"
+covers = "function, if/elseif/else, numeric for, while"
+
+[[original]]
+name = "tables.lua"
+sha256 = "1cc9fa5e8df12b39bf88fe6d8d60f2659bb8e6f15e4c70ae04443fb428e7da74"
+covers = "array + hash tables, ipairs generic-for, concat, length"
+
+[[original]]
+name = "edge.lua"
+sha256 = "95a29ef43d04b13e65e756fae28a61b0442a31f0031e7928c2f96b2924b3afae"
+covers = "recursive closure (upvalue self-reference), nested tables, boolean logic, unary minus, library calls"
+
+[[obfuscated]]
+name = "hello.min.lua"
+sha256 = "a2e412ead3fb759d5a7b5b63c5d72501ceea7771e1c5950d1e3c3581609b884f"
+mode = "min"
+from = "hello.lua"
+
+[[obfuscated]]
+name = "hello.max.lua"
+sha256 = "7686a0547bffeea82dd5a1331bade3fd2d2a289e9a1cf8319d69224f4d10ab70"
+mode = "max"
+from = "hello.lua"
+
+[[obfuscated]]
+name = "arith.min.lua"
+sha256 = "291951841ddb0dceb579a0ee9f51ac903985f07a27f8728669bddfd17ae8e7a5"
+mode = "min"
+from = "arith.lua"
+
+[[obfuscated]]
+name = "arith.max.lua"
+sha256 = "feb1c9be87f190d85dfe0170b4ddb26471402683234a6fac1685c198125d2e96"
+mode = "max"
+from = "arith.lua"
+
+[[obfuscated]]
+name = "control.min.lua"
+sha256 = "6c1040ef2b638ac0ad6b1939128ba35a904118f41970aaf4a717f30f5f07daeb"
+mode = "min"
+from = "control.lua"
+
+[[obfuscated]]
+name = "control.max.lua"
+sha256 = "1877447b4e9f8038477be5b4ec42b1802fa6710ac966b27198323a58d54d4d92"
+mode = "max"
+from = "control.lua"
+
+[[obfuscated]]
+name = "tables.min.lua"
+sha256 = "d3c0a9f81c4074b7733655fae1af80ac5120520cf8c65a44d9602c34235ad5d9"
+mode = "min"
+from = "tables.lua"
+
+[[obfuscated]]
+name = "tables.max.lua"
+sha256 = "5aaf8bd5212b5a9ff3c8e526d5f0511f73423d337b21b268578d09d4c77cae23"
+mode = "max"
+from = "tables.lua"
+
+[[obfuscated]]
+name = "edge.min.lua"
+sha256 = "6b0e48973c88e9cb538e4041c2f6e1913305fefdfe30c9badf91aa1308cceb04"
+mode = "min"
+from = "edge.lua"
+
+[[obfuscated]]
+name = "edge.max.lua"
+sha256 = "8a797ca249e7d314e40b37dd9090b1760738b1c6af974a1e4a931b505fff342d"
+mode = "max"
+from = "edge.lua"

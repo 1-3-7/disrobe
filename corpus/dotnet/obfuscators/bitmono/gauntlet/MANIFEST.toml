@@ -1,0 +1,34 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-06-18"
+toolchain = "BitMono CLI v0.41.1+fa99f580 (sunnamed434/BitMono), run under the .NET 10.0.9 runtime"
+note = "self-authored .NET 8 console sample (PriceCalculator with Classify/SumTo/Pick, real branches, a loop, a switch, string + numeric constants) obfuscated with BitMono --preset Maximum (17 protections), graded against the clean pre-obfuscation original"
+
+[provenance]
+compiler = "dotnet SDK 9.0.314, TargetFramework=net8.0, -c Release, Deterministic=true, DebugType=none"
+obfuscator = "BitMono 0.41.1 --preset Maximum --no-watermark: FullRenamer, NoNamespaces, StringsEncryption, ObjectReturnType, AntiDe4dot, AntiILdasm, BillionNops, AntiDebugBreakpoints, UnmanagedString, DotNetHook, CallToCalli, BitMethodDotnet, AntiDecompiler, BitTimeDateStamp, BitDecompiler, BitDotNet, BitMono"
+transform = "rename: every type/method renamed; NoNamespaces collapses namespaces; StringsEncryption + UnmanagedString move literals off the plaintext heap; AntiILdasm flips bit 16 of the PE NT signature (0x00004550 -> 0x00014550); BitDotNet/BitTimeDateStamp zero the CLR data-directory size AND the CLI-header metadata size while keeping valid RVAs"
+verified = "the real BitMono anti-static-tooling tricks are present: NT signature = 0x00014550 (AntiILdasm bit-16 flip, clean = 0x00004550); COM/CLR data-directory size = 0 with valid rva 0x2008 (clean size = 72); CLI-header metadata size = 0 with valid rva 0x1ACF8 and an intact BSJB metadata root at that offset. disrobe now tolerates all three (NT-sig low-16-bit match, CLR-dir size-0-with-rva, metadata size-0 fallback to section end) and detects BitMono structurally (AntiILdasm + zeroed-CLR-size) - watermark-independent, no false-positive on the clean baseline. behavioral oracle: the obfuscated assembly runs identical to the clean original (8,40 / 10 / one,many)"
+
+[[fixture]]
+name = "clean_original.cs"
+path = "clean_original.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source: PriceCalculator.Classify/SumTo/Pick with a real if, for-loop, and switch plus known string + numeric constants"
+
+[[fixture]]
+name = "GauntletBitMono.clean.dll"
+path = "GauntletBitMono.clean.dll"
+kind = "managed-pe-dll"
+provenance = "real"
+source = "clean_original.cs"
+description = "unobfuscated baseline (net8.0, Release); NT sig 0x00004550, CLR + metadata sizes intact"
+
+[[fixture]]
+name = "GauntletBitMono.bitmono.dll"
+path = "GauntletBitMono.bitmono.dll"
+kind = "managed-pe-dll"
+provenance = "real"
+source = "GauntletBitMono.clean.dll"
+description = "BitMono --preset Maximum output; the AntiILdasm/BitDotNet anti-static-tooling header corruption is the gauntlet target"

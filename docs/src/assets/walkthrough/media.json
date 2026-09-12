@@ -1,0 +1,149 @@
+{
+  "schema": "disrobe.walkthrough-media.v3",
+  "capturedAt": "2026-09-12T11:57:24.585Z",
+  "binary": {
+    "version": "disrobe 0.10.6",
+    "sha256": "c3ac06a2784eefea8a771cbd8c92823ffdf1d7753eebb62a406264a49a8e161a"
+  },
+  "workspaceVersion": "0.10.6",
+  "releaseTag": "v0.10.6",
+  "recordingSha256": "b3c64027c2cccee988506a8ca00daee6e19ff933360d3a2940ad2ceb7050d5f6",
+  "presentation": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "timing": "Edited command entry and reading time; elapsedMs records each process separately."
+  },
+  "durationSeconds": 36,
+  "teaserDurationSeconds": 20,
+  "cues": [
+    {
+      "id": "native",
+      "title": "Unpack a native binary",
+      "description": "Decode the UPX payload from a packed executable.",
+      "startMs": 0,
+      "endMs": 6000,
+      "command": "disrobe native unpack hello.packed.exe --out recovered/hello.bin"
+    },
+    {
+      "id": "indicators",
+      "title": "Extract indicators",
+      "description": "Find the URL, email address, and IP address in a file.",
+      "startMs": 6000,
+      "endMs": 11000,
+      "command": "disrobe ioc indicators.txt"
+    },
+    {
+      "id": "auto",
+      "title": "Let Disrobe choose the recovery path",
+      "description": "Identify the module and save its recovery reports and stages.",
+      "startMs": 11000,
+      "endMs": 16000,
+      "command": "disrobe auto add.wasm --out recovered/auto --capture-stages"
+    },
+    {
+      "id": "lua",
+      "title": "Decompile Lua bytecode",
+      "description": "Recover source from a compiled Lua chunk.",
+      "startMs": 16000,
+      "endMs": 22000,
+      "command": "disrobe lua decompile greet.luac --out recovered/greet.lua"
+    },
+    {
+      "id": "wasm",
+      "title": "Lift WebAssembly to WAT",
+      "description": "Write the module's functions and instructions as text.",
+      "startMs": 22000,
+      "endMs": 28000,
+      "command": "disrobe wasm decompile add.wasm --target wat --out recovered/add.wat"
+    },
+    {
+      "id": "source",
+      "title": "Read the recovered instructions",
+      "description": "The exported add function retains its two inputs and i32.add instruction.",
+      "startMs": 28000,
+      "endMs": 36000,
+      "command": "Get-Content -LiteralPath recovered/add.wat"
+    }
+  ],
+  "excerpts": [
+    {
+      "id": "native",
+      "sourceStartMs": 0,
+      "startMs": 0,
+      "endMs": 5000
+    },
+    {
+      "id": "indicators",
+      "sourceStartMs": 6000,
+      "startMs": 5000,
+      "endMs": 10000
+    },
+    {
+      "id": "lua",
+      "sourceStartMs": 16000,
+      "startMs": 10000,
+      "endMs": 15000
+    },
+    {
+      "id": "source",
+      "sourceStartMs": 28000,
+      "startMs": 15000,
+      "endMs": 20000
+    }
+  ],
+  "tools": {
+    "ffmpeg": "ffmpeg version 9.0-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers\r"
+  },
+  "files": [
+    {
+      "name": "walkthrough.mp4",
+      "bytes": 1042442,
+      "sha256": "05dbf93be83eaf4a67d7745b745d2f3dd8018a21ae510aaa8280ae0391e75b5d"
+    },
+    {
+      "name": "teaser.mp4",
+      "bytes": 581112,
+      "sha256": "1a41a96766c0b6e6b95f17b739857922f2bda8ecb7392f5fe85fbcc36716a4e1"
+    },
+    {
+      "name": "preview.gif",
+      "bytes": 529811,
+      "sha256": "a28dda75798012964828fa93cd5e1ea010e2d3c3cd715535a6b2bd676406d8be"
+    },
+    {
+      "name": "poster.png",
+      "bytes": 73468,
+      "sha256": "07156ebb1f169acefb5003da898e05a879e9af35bd62fce6643a780ad26149c7"
+    },
+    {
+      "name": "captions.vtt",
+      "bytes": 688,
+      "sha256": "96c61107f51507855fe98795a2c6c034779730cb5e1ad760b53fb76bac6ac8e3"
+    },
+    {
+      "name": "chapters.vtt",
+      "bytes": 357,
+      "sha256": "a736c29e362232acded60992698fe6658f9522bc1bf3fbd477a21b630de1b381"
+    },
+    {
+      "name": "teaser.vtt",
+      "bytes": 448,
+      "sha256": "0f42cb1692b0dc02cf5b746bc1a7a9bef466a955331ea6e8a9538323d521e63f"
+    },
+    {
+      "name": "transcript.txt",
+      "bytes": 1864,
+      "sha256": "249879767fb3042dd64f52efa58def1f31db85c7efbbd92f2d197f70eaa41840"
+    }
+  ],
+  "preview": {
+    "source": "teaser.mp4",
+    "sourceSha256": "1a41a96766c0b6e6b95f17b739857922f2bda8ecb7392f5fe85fbcc36716a4e1",
+    "width": 960,
+    "height": 540,
+    "fps": 10,
+    "durationSeconds": 20,
+    "loop": true
+  }
+}

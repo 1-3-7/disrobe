@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "Autologon.packed.mew.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 4,
+  "thunks": 1,
+  "instructions": 125,
+  "instruction_bytes": 233,
+  "defined_data_bytes": 326,
+  "defined_bytes": 559,
+  "defined_strings": 3,
+  "undefined_in_exec": 0,
+  "executable_block_bytes": 0,
+  "total_block_bytes": 246272
+}

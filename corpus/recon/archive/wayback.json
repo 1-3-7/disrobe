@@ -1,0 +1,6 @@
+[["original","timestamp","statuscode","mimetype"],
+["https://planted.example.com/","20230101120000","200","text/html"],
+["https://planted.example.com/login?next=/home","20230115093000","200","text/html"],
+["https://planted.example.com/assets/logo.png","20230201080000","200","image/png"],
+["https://planted.example.com/old/page","20221201000000","404","text/html"],
+["https://api.planted.example.com/v2/users","20230310101010","200","application/json"]]

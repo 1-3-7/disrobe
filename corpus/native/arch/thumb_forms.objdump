@@ -1,0 +1,38 @@
+
+thumb_forms.elf:	file format elf32-littlearm
+
+Disassembly of section .text:
+
+000200f4 <checksum>:
+   200f4:      	cmp	r1, #0x1
+   200f6:      	blt	0x20114 <checksum+0x20> @ imm = #0x1a
+   200f8:      	mov	r2, r0
+   200fa:      	movs	r0, #0x0
+   200fc:      	ldrb	r3, [r2], #1
+   20100:      	add.w	r3, r3, r3, lsl #1
+   20104:      	add	r3, r0
+   20106:      	subs.w	r0, r3, #0x1000
+   2010a:      	it	le
+   2010c:      	movle	r0, r3
+   2010e:      	subs	r1, #0x1
+   20110:      	bne	0x200fc <checksum+0x8>  @ imm = #-0x18
+   20112:      	bx	lr
+   20114:      	movs	r0, #0x0
+   20116:      	bx	lr
+
+00020118 <scale>:
+   20118:      	muls	r0, r1, r0
+   2011a:      	adds	r0, #0x7
+   2011c:      	bx	lr
+
+0002011e <_start>:
+   2011e:      	sub	sp, #0x4
+   20120:      	movs	r0, #0x1e
+   20122:      	str	r0, [sp]
+   20124:      	ldr	r0, [sp]
+   20126:      	add.w	r0, r0, r0, lsl #1
+   2012a:      	adds	r0, #0x7
+   2012c:      	str	r0, [sp]
+   2012e:      	ldr	r0, [sp]
+   20130:      	add	sp, #0x4
+   20132:      	bx	lr

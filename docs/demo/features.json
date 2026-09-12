@@ -1,0 +1,373 @@
+{
+  "schema": "disrobe.demo.features/v1",
+  "captured_at": "2026-09-08T12:49:30.681Z",
+  "reproduction": "node docs/demo/capture-features.mjs --binary <disrobe> --python <python> --lua <lua5.1>",
+  "binary_sha256": "f3af06c4e22d9408188b344221f86ecd63deb1e60a972e92b10ea54450d2d642",
+  "interpreters": {
+    "python_sha256": "5556f2048a17b14693ffadeb25dc0add537933873cee2ca623cf981ca65a6168",
+    "lua_sha256": "4bb1375341ffa35c49e3a628e9896f1d22923b179aea91d04533b754fde6f7c3"
+  },
+  "normalization": "Executable names, the owned output directory and LF newlines are normalized; command output is otherwise retained.",
+  "inputs": [
+    {
+      "path": "playground/public/samples/add.wasm",
+      "bytes": 69,
+      "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+    },
+    {
+      "path": "docs/demo/fixtures/add.py",
+      "bytes": 100,
+      "sha256": "a5e4fbbcfa1c0f7befe80bda5743633277c08d313c3e3136ff8e92ce42d8d60d"
+    },
+    {
+      "path": "corpus/native/packers/upx/hello.packed.nrv2b.exe",
+      "bytes": 53248,
+      "sha256": "ddd7e1ca914a971b5d976e1f238c3320383ae4367845ce5e274caa6c82060a91"
+    },
+    {
+      "path": "corpus/native/packers/upx/hello.original.exe",
+      "bytes": 104448,
+      "sha256": "37d55b50d63cc0005e0ec2b3070e4d16019f8358ac48c54b4f8e71fc114ee70a"
+    },
+    {
+      "path": "corpus/apk/fixture-v2v3-signed.apk",
+      "bytes": 8595,
+      "sha256": "70009956a036796f04b759c15208c76e6d41c752c45fb0f5d3cc2c0538c789e9"
+    },
+    {
+      "path": "corpus/lua/obfuscators/hello.prometheus.lua",
+      "bytes": 26763,
+      "sha256": "570578dca81216160d8a98fc7c9a6b2f076481055e526041c07ddb93556bd36d"
+    },
+    {
+      "path": "corpus/lua/baseline/hello.lua",
+      "bytes": 21,
+      "sha256": "4660ab1ff310887b8f4727933f68eeb74012a5fbc7107d500b146796f0d95b6b"
+    }
+  ],
+  "checks": {
+    "indicators": {
+      "matched": 3,
+      "expected": 3,
+      "input": "https://example.org/download\nanalyst@example.org\n192.0.2.42\n",
+      "report": {
+        "schema": "disrobe.ioc/v0",
+        "uri": "recovered\\indicators.txt",
+        "byte_len": 60,
+        "total": 3,
+        "indicators": [
+          {
+            "kind": "url",
+            "value": "https://example.org/download",
+            "offset": 0,
+            "encoding": "plain",
+            "context": "https://example.org/download analyst@example"
+          },
+          {
+            "kind": "email",
+            "value": "analyst@example.org",
+            "offset": 29,
+            "encoding": "plain",
+            "context": "le.org/download analyst@example.org 192.0.2.42"
+          },
+          {
+            "kind": "ipv4",
+            "value": "192.0.2.42",
+            "offset": 49,
+            "encoding": "plain",
+            "context": "yst@example.org 192.0.2.42"
+          }
+        ]
+      }
+    },
+    "archive": {
+      "matched_files": 2,
+      "expected_files": 2,
+      "report": {
+        "kind": "zip",
+        "entries": [
+          {
+            "name": "add.wasm",
+            "disk_path": "recovered\\extracted\\add.wasm",
+            "uncompressed_size": 69,
+            "compressed_size": 65,
+            "compression": "deflate",
+            "is_executable": false
+          },
+          {
+            "name": "add.py",
+            "disk_path": "recovered\\extracted\\add.py",
+            "uncompressed_size": 100,
+            "compressed_size": 82,
+            "compression": "deflate",
+            "is_executable": false
+          }
+        ],
+        "encoding": {
+          "add.py": "deflate",
+          "add.wasm": "deflate"
+        },
+        "integrity_violations": [],
+        "quota": {
+          "entries_accepted": 2,
+          "total_uncompressed_bytes": 169,
+          "total_compressed_bytes": 147,
+          "max_observed_ratio": 1
+        }
+      }
+    },
+    "native": {
+      "matched_text_bytes": 73160,
+      "expected_text_bytes": 73160,
+      "text_offset_in_payload": 0,
+      "decoded_payload_bytes": 116810,
+      "text_sha256": "51b4f29ec5b79bde14962c55907974dd29cf128df5ea5112b344228489846444",
+      "execution": "The packed PE, original PE and decoded payload are read statically."
+    },
+    "apk": {
+      "package": "com.disrobe.fixture",
+      "manifest": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" android:versionCode=\"1\" android:versionName=\"1.0\" android:compileSdkVersion=\"34\" android:compileSdkVersionCodename=\"14\" package=\"com.disrobe.fixture\" platformBuildVersionCode=\"34\" platformBuildVersionName=\"14\">\n    <application android:label=\"DisrobeFixture\">\n    </application>\n</manifest>\n",
+      "report": {
+        "manifest_xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\" android:versionCode=\"1\" android:versionName=\"1.0\" android:compileSdkVersion=\"34\" android:compileSdkVersionCodename=\"14\" package=\"com.disrobe.fixture\" platformBuildVersionCode=\"34\" platformBuildVersionName=\"14\">\n    <application android:label=\"DisrobeFixture\">\n    </application>\n</manifest>\n",
+        "package": "com.disrobe.fixture",
+        "resource_table_present": true,
+        "package_count": 1,
+        "resource_entry_count": 1,
+        "resources": [
+          {
+            "id": 2130771968,
+            "name": "com.disrobe.fixture.string.app_name"
+          }
+        ],
+        "certificates": [
+          {
+            "subject": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "issuer": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "serial_hex": "05560D9A91BC1468",
+            "sha256_fingerprint": "F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C"
+          },
+          {
+            "subject": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "issuer": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "serial_hex": "05560D9A91BC1468",
+            "sha256_fingerprint": "F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C"
+          },
+          {
+            "subject": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "issuer": "CN=Disrobe Fixture,O=disrobe,C=US",
+            "serial_hex": "05560D9A91BC1468",
+            "sha256_fingerprint": "F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C"
+          }
+        ],
+        "dex_count": 1,
+        "native_lib_count": 0,
+        "jni": {
+          "native_method_count": 0,
+          "native_methods": [],
+          "libraries": [],
+          "resolved_statically": 0,
+          "dynamic_only": 0,
+          "registered_natives": [],
+          "code_scan_complete": true,
+          "decode_error_count": 0
+        },
+        "jni_unresolved": [],
+        "jni_ambiguous": []
+      }
+    },
+    "lua": {
+      "compared_programs": 2,
+      "matching_outputs": 2,
+      "stdout": "hello world\n",
+      "recovered_sha256": "6760aeb071ee1339281b8668eb3d740e9b16c8349f9b49754d2ac28c3b6157e7",
+      "execution": "Only the baseline and the reviewed recovered greeting are run. The obfuscated input is read statically."
+    },
+    "envelope": {
+      "verified_original": true,
+      "rejected_changed_payload": true,
+      "changed_payload_bytes": 1
+    }
+  },
+  "steps": [
+    {
+      "id": "indicators",
+      "argv": [
+        "disrobe",
+        "ioc",
+        "recovered\\indicators.txt",
+        "--json"
+      ],
+      "exit_code": 0,
+      "started_ms": 1.0894000000000013,
+      "elapsed_ms": 83.2753,
+      "stdout": "{\n  \"schema\": \"disrobe.ioc/v0\",\n  \"uri\": \"recovered\\\\indicators.txt\",\n  \"byte_len\": 60,\n  \"total\": 3,\n  \"indicators\": [\n    {\n      \"kind\": \"url\",\n      \"value\": \"https://example.org/download\",\n      \"offset\": 0,\n      \"encoding\": \"plain\",\n      \"context\": \"https://example.org/download analyst@example\"\n    },\n    {\n      \"kind\": \"email\",\n      \"value\": \"analyst@example.org\",\n      \"offset\": 29,\n      \"encoding\": \"plain\",\n      \"context\": \"le.org/download analyst@example.org 192.0.2.42\"\n    },\n    {\n      \"kind\": \"ipv4\",\n      \"value\": \"192.0.2.42\",\n      \"offset\": 49,\n      \"encoding\": \"plain\",\n      \"context\": \"yst@example.org 192.0.2.42\"\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "id": "archive-create",
+      "argv": [
+        "python",
+        "-m",
+        "zipfile",
+        "-c",
+        "recovered\\bundle.zip",
+        "playground/public/samples/add.wasm",
+        "docs/demo/fixtures/add.py"
+      ],
+      "exit_code": 0,
+      "started_ms": 84.41460000000001,
+      "elapsed_ms": 63.3505,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "id": "archive-extract",
+      "argv": [
+        "disrobe",
+        "extract",
+        "recovered\\bundle.zip",
+        "--out",
+        "recovered\\extracted",
+        "--json"
+      ],
+      "exit_code": 0,
+      "started_ms": 147.79020000000003,
+      "elapsed_ms": 19.3074,
+      "stdout": "{\n  \"kind\": \"zip\",\n  \"entries\": [\n    {\n      \"name\": \"add.wasm\",\n      \"disk_path\": \"recovered\\\\extracted\\\\add.wasm\",\n      \"uncompressed_size\": 69,\n      \"compressed_size\": 65,\n      \"compression\": \"deflate\",\n      \"is_executable\": false\n    },\n    {\n      \"name\": \"add.py\",\n      \"disk_path\": \"recovered\\\\extracted\\\\add.py\",\n      \"uncompressed_size\": 100,\n      \"compressed_size\": 82,\n      \"compression\": \"deflate\",\n      \"is_executable\": false\n    }\n  ],\n  \"encoding\": {\n    \"add.py\": \"deflate\",\n    \"add.wasm\": \"deflate\"\n  },\n  \"integrity_violations\": [],\n  \"quota\": {\n    \"entries_accepted\": 2,\n    \"total_uncompressed_bytes\": 169,\n    \"total_compressed_bytes\": 147,\n    \"max_observed_ratio\": 1\n  }\n}\n",
+      "stderr": ""
+    },
+    {
+      "id": "native-unpack",
+      "argv": [
+        "disrobe",
+        "native",
+        "unpack",
+        "corpus/native/packers/upx/hello.packed.nrv2b.exe",
+        "--out",
+        "recovered\\hello.unpacked.bin"
+      ],
+      "exit_code": 0,
+      "started_ms": 167.54610000000002,
+      "elapsed_ms": 25.793299999999988,
+      "stdout": "native unpack: OK\n  input:        corpus/native/packers/upx/hello.packed.nrv2b.exe\n  packer:       upx\n  status:       Implemented\n  packed_size:  53248\n  recovered:    116810 bytes\n  wrote:        recovered\\hello.unpacked.bin\n",
+      "stderr": ""
+    },
+    {
+      "id": "apk-resources",
+      "argv": [
+        "disrobe",
+        "apk",
+        "corpus/apk/fixture-v2v3-signed.apk",
+        "--out",
+        "recovered\\android",
+        "--json"
+      ],
+      "exit_code": 0,
+      "started_ms": 193.80040000000002,
+      "elapsed_ms": 19.752399999999994,
+      "stdout": "{\n  \"manifest_xml\": \"<?xml version=\\\"1.0\\\" encoding=\\\"utf-8\\\"?>\\n<manifest xmlns:android=\\\"http://schemas.android.com/apk/res/android\\\" android:versionCode=\\\"1\\\" android:versionName=\\\"1.0\\\" android:compileSdkVersion=\\\"34\\\" android:compileSdkVersionCodename=\\\"14\\\" package=\\\"com.disrobe.fixture\\\" platformBuildVersionCode=\\\"34\\\" platformBuildVersionName=\\\"14\\\">\\n    <application android:label=\\\"DisrobeFixture\\\">\\n    </application>\\n</manifest>\\n\",\n  \"package\": \"com.disrobe.fixture\",\n  \"resource_table_present\": true,\n  \"package_count\": 1,\n  \"resource_entry_count\": 1,\n  \"resources\": [\n    {\n      \"id\": 2130771968,\n      \"name\": \"com.disrobe.fixture.string.app_name\"\n    }\n  ],\n  \"certificates\": [\n    {\n      \"subject\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"issuer\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"serial_hex\": \"05560D9A91BC1468\",\n      \"sha256_fingerprint\": \"F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C\"\n    },\n    {\n      \"subject\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"issuer\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"serial_hex\": \"05560D9A91BC1468\",\n      \"sha256_fingerprint\": \"F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C\"\n    },\n    {\n      \"subject\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"issuer\": \"CN=Disrobe Fixture,O=disrobe,C=US\",\n      \"serial_hex\": \"05560D9A91BC1468\",\n      \"sha256_fingerprint\": \"F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C\"\n    }\n  ],\n  \"dex_count\": 1,\n  \"native_lib_count\": 0,\n  \"jni\": {\n    \"native_method_count\": 0,\n    \"native_methods\": [],\n    \"libraries\": [],\n    \"resolved_statically\": 0,\n    \"dynamic_only\": 0,\n    \"registered_natives\": [],\n    \"code_scan_complete\": true,\n    \"decode_error_count\": 0\n  },\n  \"jni_unresolved\": [],\n  \"jni_ambiguous\": []\n}\n",
+      "stderr": "  wrote manifest:  recovered\\android\\AndroidManifest.xml (399 bytes)\n  wrote resources: recovered\\android\\resources.txt (1 entry)\n"
+    },
+    {
+      "id": "lua-recover",
+      "argv": [
+        "disrobe",
+        "lua",
+        "deobfuscate",
+        "corpus/lua/obfuscators/hello.prometheus.lua",
+        "--out",
+        "recovered\\hello.recovered.lua"
+      ],
+      "exit_code": 0,
+      "started_ms": 213.95600000000002,
+      "elapsed_ms": 39.05629999999999,
+      "stdout": "lua deobfuscate: OK\n  input:        corpus/lua/obfuscators/hello.prometheus.lua\n  family:       Auto\n  detected:     Prometheus (confidence=85)\n  passes run:   6\n    - prometheus-constant-array-alphabet-discover\n    - prometheus-base64-variant-string-decode\n    - prometheus-base85-variant-string-decode\n    - prometheus-constant-array-rotation-undo\n    - prometheus-numbers-to-expressions-fold\n    - prometheus-vmify-container-devirt\n  recovered:    46 string(s)\n  fully peeled: true\n  residual:     4\n    ! prometheus: 44/46 constant-array entries decoded (19 base64, 25 base85) from the static per-script alphabet table(s)\n    ! prometheus: 2 constant-array entries are the original program's binary string data (non-printable bytes), kept in their raw encoded form\n    ! prometheus: folded 764 NumbersToExpressions arithmetic wrappers back to numeric literals (1105 -> 341 arithmetic operators), runtime-equivalent under a real Lua interpreter\n    ! prometheus: Vmify container devirtualized over 1 layer(s), handlers 98/98 (100%), functions 9/9; 7 dispatch-tree leaf(ves) with real statements were never reached from a discovered function entry (excluded from the handler count above; likely dead or decoy code)\n  wrote:        recovered\\hello.recovered.lua\n",
+      "stderr": ""
+    },
+    {
+      "id": "lua-baseline",
+      "argv": [
+        "lua",
+        "corpus/lua/baseline/hello.lua"
+      ],
+      "exit_code": 0,
+      "started_ms": 253.11969999999997,
+      "elapsed_ms": 12.769300000000044,
+      "stdout": "hello world\n",
+      "stderr": ""
+    },
+    {
+      "id": "lua-recovered-output",
+      "argv": [
+        "lua",
+        "recovered\\hello.recovered.lua"
+      ],
+      "exit_code": 0,
+      "started_ms": 265.8963,
+      "elapsed_ms": 13.49309999999997,
+      "stdout": "hello world\n",
+      "stderr": ""
+    },
+    {
+      "id": "envelope-create",
+      "argv": [
+        "disrobe",
+        "envelope",
+        "create",
+        "playground/public/samples/add.wasm",
+        "--out",
+        "recovered\\add.dr",
+        "--format",
+        "wasm",
+        "--no-cache"
+      ],
+      "exit_code": 0,
+      "started_ms": 279.43919999999997,
+      "elapsed_ms": 21.211099999999988,
+      "stdout": "disrobe envelope create: OK\n  input:      playground/public/samples/add.wasm\n  out:        recovered\\add.dr\n  rung:       Raw\n  source hash: 5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4\n  root hash:  4975b68b6c54a09d23f6751fce3cbd4b7ad764b08df8ef459bc3aa3ca290c2aa\n",
+      "stderr": ""
+    },
+    {
+      "id": "envelope-inspect",
+      "argv": [
+        "disrobe",
+        "envelope",
+        "inspect",
+        "recovered\\add.dr"
+      ],
+      "exit_code": 0,
+      "started_ms": 300.655,
+      "elapsed_ms": 23.935699999999997,
+      "stdout": "disrobe envelope inspect\n  file:               recovered\\add.dr\n  version:            1\n  rung:               Raw\n  flags:              0x00\n  hot payload:        164 bytes\n  cold sidecar:       27 bytes\n  root hash (blake3): 4975b68b6c54a09d23f6751fce3cbd4b7ad764b08df8ef459bc3aa3ca290c2aa\n  produced by:        disrobe-cli v0.10.5\n  capabilities:\n    - Produces raw v1\n",
+      "stderr": ""
+    },
+    {
+      "id": "envelope-verify",
+      "argv": [
+        "disrobe",
+        "envelope",
+        "verify",
+        "recovered\\add.dr"
+      ],
+      "exit_code": 0,
+      "started_ms": 324.6433,
+      "elapsed_ms": 18.30019999999996,
+      "stdout": "disrobe envelope verify: OK\n  file:               recovered\\add.dr\n  version:            1\n  rung:               Raw\n  hot payload:        164 bytes\n  cold sidecar:       27 bytes\n  root hash (blake3): 4975b68b6c54a09d23f6751fce3cbd4b7ad764b08df8ef459bc3aa3ca290c2aa\n",
+      "stderr": ""
+    },
+    {
+      "id": "envelope-changed-payload",
+      "argv": [
+        "disrobe",
+        "envelope",
+        "verify",
+        "recovered\\add.changed.dr"
+      ],
+      "exit_code": 1,
+      "started_ms": 343.27869999999996,
+      "elapsed_ms": 18.43130000000002,
+      "stdout": "",
+      "stderr": "Error:   × DR-CLI-0087: envelope failed verification: BLAKE3 root hash mismatch:\n  │ header [73, 117, 182, 139, 108, 84, 160, 157, 35, 246, 117, 31, 206, 60,\n  │ 189, 75, 122, 215, 100, 176, 141, 248, 239, 69, 155, 195, 170, 60, 162,\n  │ 144, 194, 170], computed [106, 218, 97, 163, 238, 42, 118, 37, 131, 5,\n  │ 8, 8, 28, 184, 173, 0, 80, 138, 87, 156, 18, 237, 135, 59, 149, 130, 157,\n  │ 100, 9, 57, 233, 96]\n\n"
+    }
+  ]
+}

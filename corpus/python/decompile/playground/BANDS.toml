@@ -1,0 +1,209 @@
+schema_version = "1"
+generated = "2026-05-25"
+purpose = "version-band manifest for the Python decompiler corpus; every Tier-1 interpreter has a parseable target"
+inherit_via = "from edge_cases_<prev> import *  (transitive through the 3.6 -> 3.13 chain)"
+kitchen_sink_file = "edge_cases.py"
+kitchen_sink_floor = "3.13"
+frontier_file = "known_open.py"
+
+[[bands]]
+file = "edge_cases_2_7.py"
+floor = "2.7"
+ceiling_parseable = "2.7"
+loc = 238
+band_marker = [2, 7]
+constructs = [
+  "PEP-3105-reversal: print statement (no parens)",
+  "PEP-3110-reversal: except X, e: comma binding",
+  "PEP-3137-reversal: long literals 123L, <> operator",
+  "PEP-252-partial: old-style class (no object base)",
+  "PEP-234-partial: xrange, has_key, iteritems",
+  "PEP-3131-reversal: bytes-is-str (b'...' is str)",
+  "PEP-3113-removed: tuple parameter unpacking",
+  "exec as statement",
+  "backtick repr",
+  "u-prefix unicode literals + unicode_literals future",
+  "print chevron redirection",
+  "% string formatting",
+  "raise X, msg, tb three-arg form",
+  "from __future__ import division",
+]
+
+[[bands]]
+file = "edge_cases_3_6.py"
+floor = "3.6"
+ceiling_parseable = "3.14"
+loc = 468
+band_marker = [3, 6]
+inherits_from = []
+constructs = [
+  "PEP-498: f-strings (no nesting, no = debug, no PEP-701)",
+  "PEP-492: async / await",
+  "PEP-484: parameter + return annotations",
+  "PEP-526: variable annotations",
+  "PEP-525: async generators (yield in async def)",
+  "PEP-530: async comprehensions",
+  "PEP-515: underscores in numeric literals",
+  "PEP-468: kwargs ordering",
+  "typing.NamedTuple class syntax",
+  "typing.Generic / TypeVar / Callable / ClassVar",
+  "secrets / asyncio / contextlib stdlib",
+  "for/else, while/else",
+  "PEP-448 starred unpacking",
+  "PEP-3132 starred assignment",
+  "dataclass-like classes (no @dataclass yet - 3.7)",
+  "decorators (basic + parametrized + lru_cache)",
+  "closure with nonlocal, global, generator with yield",
+]
+
+[[bands]]
+file = "edge_cases_3_8.py"
+floor = "3.8"
+ceiling_parseable = "3.14"
+loc = 205
+band_marker = [3, 8]
+inherits_from = ["edge_cases_3_6.py"]
+constructs = [
+  "PEP-572: walrus / named-expression := (if, while, comprehension, call arg, membership)",
+  "PEP-570: positional-only parameters (def f(a, b, /, c, d))",
+  "PEP-498 extension: f-string = debug form (f\"{x=}\")",
+  "PEP-586: typing.Literal",
+  "PEP-589: typing.TypedDict (basic; Required/NotRequired land in 3.11)",
+  "PEP-544: typing.Protocol (structural typing)",
+  "PEP-591: typing.Final",
+]
+
+[[bands]]
+file = "edge_cases_3_9.py"
+floor = "3.9"
+ceiling_parseable = "3.14"
+loc = 173
+band_marker = [3, 9]
+inherits_from = ["edge_cases_3_8.py"]
+constructs = [
+  "PEP-585: builtin generic types (list[int], dict[str, int]) - no typing.List",
+  "PEP-584: dict merge | and |= operators",
+  "PEP-593: typing.Annotated[T, metadata...]",
+  "PEP-614: relaxed decorator grammar (any expression)",
+  "PEP-616: str.removeprefix / str.removesuffix",
+  "builtin generic in class-body annotation",
+]
+
+[[bands]]
+file = "edge_cases_3_10.py"
+floor = "3.10"
+ceiling_parseable = "3.14"
+loc = 359
+band_marker = [3, 10]
+inherits_from = ["edge_cases_3_9.py"]
+constructs = [
+  "PEP-634/636: structural pattern matching (match/case)",
+  "  - LITERAL pattern (case 0:, case None:)",
+  "  - CAPTURE pattern (case name:)",
+  "  - WILDCARD pattern (case _:)",
+  "  - VALUE pattern (case Status.OK:)",
+  "  - GROUP pattern (case (P):)",
+  "  - SEQUENCE pattern (case [], case [a, b, *rest])",
+  "  - MAPPING pattern (case {'k': v, **rest})",
+  "  - CLASS pattern (case ClassName(attr=v))",
+  "  - GUARD (case pat if cond:)",
+  "  - OR pattern (case A | B | C:)",
+  "  - AS pattern (case Pattern() as name:)",
+  "  - NESTED patterns (class-in-mapping-in-sequence)",
+  "PEP-617 PEG parser: parenthesized with (a as x, b as y, c as z)",
+  "PEP-604: union types X | Y in annotations",
+  "PEP-613: typing.TypeAlias (explicit form; type-keyword statement is 3.12)",
+  "PEP-612: typing.ParamSpec + Concatenate",
+  "typing.TypeGuard",
+]
+
+[[bands]]
+file = "edge_cases_3_11.py"
+floor = "3.11"
+ceiling_parseable = "3.14"
+loc = 249
+band_marker = [3, 11]
+inherits_from = ["edge_cases_3_10.py"]
+notes = "PyPy 3.10 (Tier-1) CANNOT parse this band; PyPy stops at 3.10."
+constructs = [
+  "PEP-654: ExceptionGroup, BaseExceptionGroup, try/except* syntax",
+  "PEP-678: BaseException.add_note (__notes__)",
+  "PEP-673: typing.Self return type",
+  "PEP-655: typing.Required / typing.NotRequired on TypedDict",
+  "asyncio.TaskGroup (structured concurrency)",
+  "asyncio.timeout (replaces wait_for)",
+  "enum.StrEnum (members ARE str instances)",
+]
+
+[[bands]]
+file = "edge_cases_3_12.py"
+floor = "3.12"
+ceiling_parseable = "3.14"
+loc = 202
+band_marker = [3, 12]
+inherits_from = ["edge_cases_3_11.py"]
+constructs = [
+  "PEP-695: type parameter syntax (def f[T], class C[T]:)",
+  "PEP-695 ParamSpec syntactic position (def f[**P, U])",
+  "PEP-695 TypeVarTuple syntactic position (def f[*Ts])",
+  "PEP-695 type statement (type Vector = list[float])",
+  "PEP-698: @typing.override decorator",
+  "PEP-701: nested same-quote f-strings (f\"{f\\\"inner\\\"}\")",
+  "PEP-701: multi-line expressions inside f-strings",
+  "PEP-701: backslashes inside f-string expressions",
+  "PEP-692: typing.Unpack[TypedDict] for **kwargs typing",
+]
+
+[[bands]]
+file = "edge_cases_3_13.py"
+floor = "3.13"
+ceiling_parseable = "3.14"
+loc = 130
+band_marker = [3, 13]
+inherits_from = ["edge_cases_3_12.py"]
+constructs = [
+  "PEP-696: TypeVar defaults (def f[T = int], class C[T = str]:)",
+  "PEP-696: ParamSpec default (**P = ...)",
+  "PEP-696: TypeVarTuple default (*Ts = *tuple[int, ...])",
+  "PEP-696: default on parameterized type alias",
+  "3.13 class introspection: __firstlineno__, __static_attributes__",
+  "PEP-762: copy.replace(obj, **overrides)",
+]
+
+[[bands]]
+file = "edge_cases_3_14.py"
+floor = "3.14"
+ceiling_parseable = "3.14"
+loc = 77
+band_marker = [3, 14]
+inherits_from = []
+notes = "Standalone (does NOT inherit prior bands; the kitchen-sink edge_cases.py covers 3.13 surface). exercise() not provided per project constraint."
+constructs = [
+  "PEP-750: t-strings (template strings) basic form",
+  "PEP-750: t-string with !r/!s/!a conversion",
+  "PEP-750: t-string with format spec including nested expression",
+  "PEP-750: t-string concatenation with embedded comprehension",
+  "PEP-750: Template iteration via .strings / .interpolations",
+  "PEP-750: safe-HTML templating pattern",
+]
+
+[interpreter_floor_map]
+"2.7"      = "edge_cases_2_7.py"
+"3.6"      = "edge_cases_3_6.py"
+"3.7"      = "edge_cases_3_6.py"
+"3.8"      = "edge_cases_3_8.py"
+"3.9"      = "edge_cases_3_9.py"
+"3.10"     = "edge_cases_3_10.py"
+"3.11"     = "edge_cases_3_11.py"
+"3.12"     = "edge_cases_3_12.py"
+"3.13"     = "edge_cases_3_13.py"
+"3.14"     = "edge_cases_3_14.py"
+"pypy3.10" = "edge_cases_3_10.py"
+
+[summary]
+total_band_files = 10
+total_loc = 4181
+tier1_interpreters_covered = 11
+tier1_interpreters_total = 11
+parse_verified = true
+execute_verified = true

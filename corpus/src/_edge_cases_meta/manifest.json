@@ -1,0 +1,217 @@
+{
+  "schema": "disrobe.corpus.edge-cases/v1",
+  "description": "Cross-language edge-case playground for disrobe pass crates.",
+  "languages": {
+    "python": {
+      "pass_crates": [
+        "disrobe-pass-py-disasm",
+        "disrobe-pass-py-deob"
+      ],
+      "extension": ".py",
+      "fixtures": [
+        "_invisible_RTL.py",
+        "async_for_with_comp.py",
+        "async_gen_send_throw.py",
+        "bytes_and_raw.py",
+        "circular_import_safe.py",
+        "comments_only.py",
+        "context_managers_nested.py",
+        "dataclass_kwonly_frozen.py",
+        "decorator_chains.py",
+        "descriptors.py",
+        "diamond_mro.py",
+        "docstring_only.py",
+        "empty_module.py",
+        "exception_groups.py",
+        "fstring_deep.py",
+        "fstring_with_comments.py",
+        "future_imports.py",
+        "generators_send.py",
+        "genexpr_mutates.py",
+        "init_subclass_abstract.py",
+        "large_dispatch.py",
+        "large_int_arith.py",
+        "match_case_patterns.py",
+        "metaclass.py",
+        "overload_dispatch.py",
+        "pep695_aliases.py",
+        "positional_only.py",
+        "protocol_runtime.py",
+        "recursion_decorators.py",
+        "slots_property_cached.py",
+        "star_unpack.py",
+        "try_else_finally_return.py",
+        "type_params_bounds.py",
+        "typeddict_unpack.py",
+        "unicode_identifiers.py",
+        "walrus_comprehensions.py",
+        "walrus_lambda.py",
+        "walrus_while.py"
+      ]
+    },
+    "javascript": {
+      "pass_crates": [
+        "disrobe-pass-js-deob"
+      ],
+      "extension": ".js / .mjs",
+      "fixtures": [
+        "atomics_sab.js",
+        "bigint_arith.js",
+        "circular_module_safe.js",
+        "class_fields_self_ref.js",
+        "destructuring_advanced.js",
+        "dynamic_import_meta.js",
+        "eval_strict.js",
+        "for_await_of.js",
+        "generators_async.js",
+        "getter_setter_dyn.js",
+        "json_replacer_reviver.js",
+        "labelled_break_continue.js",
+        "map_set_weak.js",
+        "mixed_line_endings.js",
+        "new_target.js",
+        "numeric_separators.js",
+        "object_literal_computed.js",
+        "optional_nullish_chaining.js",
+        "private_fields.js",
+        "promise_combinators.js",
+        "proxy_all_traps.js",
+        "reflect_api.js",
+        "regex_backrefs.js",
+        "sloppy_with.js",
+        "symbol_iterator_custom.js",
+        "tagged_template_raw.js",
+        "throw_async.js",
+        "top_level_await.mjs",
+        "try_finally_return.js",
+        "typed_arrays.js",
+        "weakref_finalization.js",
+        "whitespace_categories.js"
+      ]
+    },
+    "typescript": {
+      "pass_crates": [
+        "disrobe-pass-js-deob"
+      ],
+      "extension": ".ts",
+      "fixtures": [
+        "abstract_members.ts",
+        "branded_type.ts",
+        "conditional_distributive.ts",
+        "const_type_params.ts",
+        "decorator_metadata.ts",
+        "discriminated_unions.ts",
+        "enums_computed.ts",
+        "erasable_syntax.ts",
+        "hkt_simulation.ts",
+        "import_type.ts",
+        "infer_conditional.ts",
+        "mapped_as_rename.ts",
+        "module_augmentation.ts",
+        "overload_signatures.ts",
+        "recursive_type.ts",
+        "satisfies_operator.ts",
+        "template_literal_types.ts",
+        "triple_slash.ts",
+        "unique_symbol.ts",
+        "using_declarations.ts",
+        "variadic_tuple.ts"
+      ]
+    },
+    "wasm": {
+      "pass_crates": [
+        "disrobe-pass-wasm-deob"
+      ],
+      "extension": ".wat",
+      "fixtures": [
+        "br_table_large.wat",
+        "branch_hints.wat",
+        "bulk_memory.wat",
+        "component_adapter.wat",
+        "component_preamble.wat",
+        "dwarf_custom_section.wat",
+        "eh_try_table.wat",
+        "gc_types.wat",
+        "memory64.wat",
+        "multi_memory.wat",
+        "reference_types.wat",
+        "segments_modes.wat",
+        "simd128.wat",
+        "table_ops.wat",
+        "tail_calls.wat",
+        "threads_atomics.wat"
+      ]
+    },
+    "native": {
+      "pass_crates": [
+        "disrobe-binfmt"
+      ],
+      "extensions": [
+        ".c",
+        ".cpp",
+        ".go",
+        ".rs"
+      ],
+      "fixtures": [
+        "custom_section.c",
+        "cxx_rtti_dyncast.cpp",
+        "cxx_virtual_inheritance.cpp",
+        "go_hello.go",
+        "hidden_visibility.c",
+        "pe_tls_callback.c",
+        "pie_binary.c",
+        "rust_hello.rs",
+        "stripped_elf.c",
+        "stripped_macho.c"
+      ]
+    },
+    "java": {
+      "pass_crates": [
+        "(future jvm pass)"
+      ],
+      "extension": ".java",
+      "fixtures": [
+        "GenericBound.java",
+        "LambdaCapture.java",
+        "module-info.java",
+        "NestedClasses.java",
+        "RecordCompact.java",
+        "RuntimeAnnotation.java",
+        "SealedHierarchy.java",
+        "SwitchPattern.java",
+        "TextBlock.java",
+        "VarInference.java",
+        "WildcardVariance.java"
+      ]
+    },
+    "lua": {
+      "pass_crates": [
+        "(future lua pass)"
+      ],
+      "extension": ".lua",
+      "fixtures": [
+        "closure_upvalue.lua",
+        "coroutines.lua",
+        "goto_label.lua",
+        "luajit_bitops.lua",
+        "luajit_ffi.lua",
+        "metatable_chain.lua",
+        "multi_return.lua",
+        "require_cycle.lua",
+        "sandboxed_env.lua",
+        "string_pattern_magic.lua",
+        "table_ops.lua"
+      ]
+    }
+  },
+  "totals": {
+    "python": 38,
+    "javascript": 32,
+    "typescript": 21,
+    "wasm": 16,
+    "native": 10,
+    "java": 11,
+    "lua": 11
+  },
+  "grand_total": 139
+}

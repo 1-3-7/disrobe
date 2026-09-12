@@ -1,0 +1,1007 @@
+# compiler: R8
+# compiler_version: 9.1.31
+# common_typos_disable
+# {"id":"com.android.tools.r8.mapping","version":"2.2"}
+# pg_map_id: 46afc9acdb9d3753c68848e93d2c63bf409a482232c3c6aa3ef761fbb0c74b1d
+# pg_map_hash: SHA-256 46afc9acdb9d3753c68848e93d2c63bf409a482232c3c6aa3ef761fbb0c74b1d
+Animal -> a:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.String name -> a
+    1:1:void <init>(java.lang.String):382:382 -> <init>
+    1:1:java.lang.String describe():384:384 -> a
+    java.lang.String speak() -> b
+ApiResult -> e:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+ApiResult$Err -> b:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(int,java.lang.String):45:45 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+ApiResult$Ok -> c:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.Object value -> a
+    1:1:void <init>(java.lang.Object):44:44 -> <init>
+ApiResult$Pending -> d:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    ApiResult$Pending INSTANCE -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ld;"}
+    1:1:void <init>():46:46 -> <init>
+CachedSquare -> R8$$REMOVED$$CLASS$$0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+Cat -> f:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(java.lang.String):392:392 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    1:1:java.lang.String speak():393:393 -> b
+Container -> R8$$REMOVED$$CLASS$$1:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+CountingMap -> h:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.util.Map store -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/util/LinkedHashMap;"}
+    1:2:void <init>():121:122 -> <init>
+    1:1:java.util.Map snapshot():130:130 -> a
+CountingMap$Companion -> g:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:703:CountingMap of(kotlin.Pair[]):138:840 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"([Lkotlin/Pair;)Lh;"}
+    704:838:void CountingMap.set(java.lang.Object,int):0:134 -> a
+    704:838:CountingMap of(kotlin.Pair[]):139 -> a
+Direction -> i:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    Direction NORTH -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Li;"}
+    Direction EAST -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Li;"}
+    Direction SOUTH -> c
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Li;"}
+    Direction WEST -> d
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Li;"}
+    Direction[] $VALUES -> e
+      # {"id":"com.android.tools.r8.residualsignature","signature":"[Li;"}
+    1:4:void <clinit>():106:109 -> <clinit>
+    5:5:Direction[] $values():0:0 -> <clinit>
+    5:5:void <clinit>():109 -> <clinit>
+    6:6:void <clinit>():109:109 -> <clinit>
+    1:1:void <init>(java.lang.String,int,int,int):105:105 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/String;I)V"}
+    1:5:Direction turn():111:115 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Li;"}
+    6:6:Direction turn():114:114 -> a
+    7:7:Direction turn():113:113 -> a
+    8:8:Direction turn():112:112 -> a
+    1:1:Direction valueOf(java.lang.String):119:119 -> valueOf
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/String;)Li;"}
+    1:1:Direction[] values():119:119 -> values
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()[Li;"}
+Dog -> j:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.String breed -> b
+    1:1:void <init>(java.lang.String,java.lang.String):387:387 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    1:1:java.lang.String describe():389:389 -> a
+    1:1:java.lang.String speak():388:388 -> b
+EdgeCasesKt -> EdgeCasesKt:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:int lambdaAsValue$lambda$30(int,int):0:0 -> a
+    2:2:java.lang.Object unwrapOr(ApiResult,java.lang.Object):50:50 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Le;Ljava/lang/Object;)Ljava/lang/Object;"}
+    3:3:java.lang.Object ApiResult$Ok.getValue():44:44 -> a
+    3:3:java.lang.Object unwrapOr(ApiResult,java.lang.Object):50 -> a
+    4:5:java.lang.Object unwrapOr(ApiResult,java.lang.Object):51:52 -> a
+    6:6:java.lang.Object unwrapOr(ApiResult,java.lang.Object):49:49 -> a
+    7:9:java.lang.Object asyncDouble(int,kotlin.coroutines.Continuation):201:203 -> a
+    10:10:java.lang.Object asyncSum(java.util.List,kotlin.coroutines.Continuation):206:206 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/util/List;Lw;)Ljava/lang/Object;"}
+    11:12:java.lang.Object consumeFlow(kotlin.coroutines.Continuation):221:222 -> a
+    13:13:kotlinx.coroutines.flow.Flow simpleFlow(int):215:215 -> a
+    13:13:java.lang.Object consumeFlow(kotlin.coroutines.Continuation):223 -> a
+    14:15:java.lang.Object consumeFlow(kotlin.coroutines.Continuation):223:224 -> a
+    16:645:java.lang.Object chainFlow(kotlin.coroutines.Continuation):227:856 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lw;)Ljava/lang/Object;"}
+    646:646:java.lang.Object chainFlow(kotlin.coroutines.Continuation):230:230 -> a
+    647:657:java.lang.String typeTag(java.lang.Object):245:255 -> a
+    658:665:java.lang.String typeTag(java.lang.Object):248:255 -> a
+    666:668:java.lang.String typeTag(java.lang.Object):253:255 -> a
+    669:669:java.lang.String typeTag(java.lang.Object):254:254 -> a
+    670:670:int lambdas$lambda$13(kotlin.jvm.functions.Function2,kotlin.jvm.functions.Function2,int,int):328:328 -> a
+    671:671:int closureCapture$lambda$14(kotlin.jvm.internal.Ref$IntRef):336:336 -> a
+    672:672:java.lang.CharSequence useStrings$lambda$21(java.lang.String):533:533 -> a
+    673:673:java.lang.String Person.getName():609:609 -> a
+    673:673:java.lang.CharSequence sortPeople$lambda$34(Person):613 -> a
+      # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/NullPointerException;)"],"actions":["removeInnerFrames(1)"]}
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ll0;)Ljava/lang/CharSequence;"}
+    674:674:java.lang.CharSequence usePolymorphism$lambda$36(Animal):651:651 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(La;)Ljava/lang/CharSequence;"}
+    675:677:java.lang.String apiResultDemo():727:729 -> a
+    678:678:java.lang.String apiResultDemo$lambda$38(int):730:730 -> a
+    678:678:java.lang.String apiResultDemo():730 -> a
+    679:735:ApiResult mapOk(ApiResult,kotlin.jvm.functions.Function1):0:56 -> a
+    679:735:java.lang.String apiResultDemo():730 -> a
+    736:736:java.lang.String apiResultDemo():731:731 -> a
+    737:737:java.lang.String apiResultDemo$lambda$38(int):730:730 -> a
+    1:1:int lambdaAsValue$lambda$31(int,int):0:0 -> b
+    2:2:boolean isPrime(int):154:154 -> b
+    3:3:java.lang.Object parallelMap(java.util.List,kotlin.coroutines.Continuation):211:211 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/util/List;Lw;)Ljava/lang/Object;"}
+    4:13:java.util.Map arithmetic(double,double):637:646 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ljava/util/Map;"}
+    14:14:java.util.Map arithmetic(double,double):636:636 -> b
+    1:1:int lambdaAsValue$lambda$32(int,int):0:0 -> c
+    2:2:int main$lambda$41(int):0:0 -> c
+    3:3:int closureCapture():335:335 -> c
+    4:4:int closureCapture$lambda$14(kotlin.jvm.internal.Ref$IntRef):336:336 -> c
+    4:4:int closureCapture():336 -> c
+    5:6:int closureCapture():337:338 -> c
+    1:1:int lambdas$lambda$11(int,int):0:0 -> d
+    2:2:java.lang.String coroutineMain():697:697 -> d
+    1:1:int lambdas$lambda$12(int,int):0:0 -> e
+    2:2:int flowFoldExample():722:722 -> e
+    1:1:int lambdaAsValue():571:571 -> f
+    2:2:int lambdaAsValue$lambda$31(int,int):568:568 -> f
+    2:2:int lambdaAsValue():568 -> f
+    3:3:int lambdaAsValue$lambda$32(int,int):569:569 -> f
+    3:3:int lambdaAsValue():569 -> f
+    4:10:int lambdaAsValue():566:572 -> f
+    11:11:int lambdaAsValue():571:571 -> f
+    1:1:int lambdas$lambda$11(int,int):326:326 -> g
+    1:1:int lambdas():326 -> g
+    2:2:int lambdas$lambda$13(kotlin.jvm.functions.Function2,kotlin.jvm.functions.Function2,int,int):328:328 -> g
+    2:2:int lambdas():328 -> g
+    3:3:int lambdas():329:329 -> g
+    1:1:int launchExample():705:705 -> h
+    1:1:kotlinx.coroutines.flow.Flow simpleFlow(int):215:215 -> i
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Lkotlinx/coroutines/flow/Flow;"}
+    1:1:java.lang.CharSequence sortPeople$lambda$34(Person):613:613 -> j
+    1:1:java.lang.String sortPeople():613 -> j
+    1:1:java.lang.String useNotNull$lambda$37():670:670 -> k
+    1:1:java.lang.String useNotNull():670 -> k
+    2:442:java.lang.Object notNullChain(java.lang.Object,kotlin.jvm.functions.Function0):0:440 -> k
+    2:442:java.lang.String useNotNull():670 -> k
+    443:443:java.lang.String useNotNull$lambda$37():670:670 -> k
+    443:443:java.lang.String useNotNull():670 -> k
+    1:1:java.lang.String useNotNull$lambda$37():670:670 -> l
+    1:1:java.lang.String usePolymorphism():650:650 -> m
+    2:2:java.lang.CharSequence usePolymorphism$lambda$36(Animal):651:651 -> m
+    2:2:java.lang.String usePolymorphism():651 -> m
+    1:1:void main(java.lang.String[]):0:0 -> main
+    2:7:void main():735:740 -> main
+    8:8:double Point.getMagnitude():32:32 -> main
+    8:8:void main():740 -> main
+    9:19:void main():740:750 -> main
+    20:193:void main():746:919 -> main
+    194:294:java.lang.String describeShape(Shape):0:100 -> main
+    194:294:void main():752 -> main
+    295:295:void main():919:919 -> main
+    296:296:java.lang.String describeShape(Shape):96:96 -> main
+    296:296:void main():752 -> main
+    297:297:void main():752:752 -> main
+    298:298:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21910,"2":21911,"3":21912},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    299:299:double totalArea(java.util.List):103:103 -> main
+    299:299:void main():753 -> main
+    300:300:void main():753:753 -> main
+    301:301:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21913,"2":21915,"3":21916},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    1056:1056:void main():755:755 -> main
+    1057:1057:Direction Direction.opposite():118:118 -> main
+    1057:1057:void main():755 -> main
+    1058:1061:void main():755:758 -> main
+    1062:1063:int CountingMap.bump(java.lang.Object):125:126 -> main
+    1062:1063:void main():758 -> main
+    1064:1064:void main():759:759 -> main
+    1065:1066:int CountingMap.bump(java.lang.Object):125:126 -> main
+    1065:1066:void main():759 -> main
+    1067:1069:void main():760:762 -> main
+    1070:1070:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21923,"2":21924,"3":21925},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    1071:1768:int wordCount(java.lang.String):146:843 -> main
+    1071:1768:void main():763 -> main
+    1769:2466:int wordCount(java.lang.String):146:843 -> main
+    1769:2466:void main():763 -> main
+    2467:2467:void main():763:763 -> main
+    2468:2468:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21926,"2":21927,"3":21928},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    3232:3232:void main():764:764 -> main
+    3233:3233:kotlin.Pair withTiming(java.lang.String,kotlin.jvm.functions.Function0):164:164 -> main
+    3233:3233:void main():766 -> main
+    3234:3234:void main():766:766 -> main
+    3235:3235:kotlin.Pair withTiming(java.lang.String,kotlin.jvm.functions.Function0):166:166 -> main
+    3235:3235:void main():766 -> main
+    3236:3240:void main():766:770 -> main
+    3241:3241:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21934,"2":21935,"3":21936},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    4012:4012:void main():771:771 -> main
+    4013:4016:java.lang.String safeCast():258:261 -> main
+    4013:4016:void main():772 -> main
+    4017:4017:void main():772:772 -> main
+    4018:4018:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21937,"2":21938,"3":21939},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    4791:4791:void main():773:773 -> main
+    4792:5058:int smartCast(java.lang.Object):0:266 -> main
+    4792:5058:void main():773 -> main
+    5059:5061:void main():773:775 -> main
+    5062:5339:java.lang.String destructureMap(java.util.Map):0:277 -> main
+    5062:5339:void main():775 -> main
+    5340:5340:void main():775:775 -> main
+    5341:5343:java.lang.String useTriple():281:283 -> main
+    5341:5343:void main():776 -> main
+    5344:5344:void main():776:776 -> main
+    5345:5345:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21942,"2":21943,"3":21944},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    5346:5346:int nullableChain(java.lang.String):286:286 -> main
+    5346:5346:void main():777 -> main
+    5347:5348:void main():777:778 -> main
+    5349:5349:java.lang.String letApplyAlso():298:298 -> main
+    5349:5349:void main():779 -> main
+    5350:5350:void main():779:779 -> main
+    5351:5354:java.lang.String useScope():303:306 -> main
+    5351:5354:void main():780 -> main
+    5355:5361:java.lang.String useScope():303:309 -> main
+    5355:5361:void main():780 -> main
+    5362:5362:void main():780:780 -> main
+    5363:5363:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21947,"2":21948,"3":21949},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    5364:5367:int useRunWith():313:316 -> main
+    5364:5367:void main():781 -> main
+    5368:5368:void main():781:781 -> main
+    5369:5369:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21950,"2":21951,"3":21952},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    5370:5370:int rangeProgression():321:321 -> main
+    5370:5370:void main():782 -> main
+    5371:5372:void main():782:783 -> main
+    5373:5373:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21953,"2":21955,"3":21956},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    6158:6158:void main():785:785 -> main
+    6159:6159:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21957,"2":21958,"3":21959},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    6160:6160:int main$lambda$41(int):786:786 -> main
+    6160:6160:void main():786 -> main
+    6161:7022:java.util.List higherOrder(java.util.List,kotlin.jvm.functions.Function1):0:861 -> main
+    6161:7022:void main():786 -> main
+    7023:7023:int main$lambda$41(int):786:786 -> main
+    7023:7023:void main():786 -> main
+    7024:7024:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21960,"2":21961,"3":21962},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7811:7811:void main():787:787 -> main
+    7812:7812:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21963,"2":21964,"3":21965},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7813:7818:java.lang.String useTryCatch():342:347 -> main
+    7813:7818:void main():788 -> main
+    7819:7819:java.lang.String useTryCatch():346:346 -> main
+    7819:7819:void main():788 -> main
+    7820:7820:void main():788:788 -> main
+    7821:7821:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21966,"2":21967,"3":21968},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7822:7822:java.lang.String useResource():361:361 -> main
+    7822:7822:void main():789 -> main
+    7823:7823:java.lang.String Resource.read():355:355 -> main
+    7823:7823:java.lang.String useResource():361 -> main
+    7823:7823:void main():789 -> main
+    7824:7824:java.lang.String useResource():361:361 -> main
+    7824:7824:void main():789 -> main
+    7825:7825:void main():789:789 -> main
+    7826:7834:TreeNode buildTree():370:378 -> main
+    7826:7834:void main():791 -> main
+    7835:7837:void main():792:794 -> main
+    7838:7838:java.lang.String Greeter$DefaultImpls.greetLoud(Greeter):398:398 -> main
+    7838:7838:java.lang.String Robot.greetLoud():405 -> main
+    7838:7838:java.lang.String useInterfaceDefault():654 -> main
+    7838:7838:void main():795 -> main
+    7839:7839:void main():795:795 -> main
+    7840:7840:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21974,"2":21975,"3":21976},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7841:7842:int useSingleton():657:658 -> main
+    7841:7842:void main():796 -> main
+    7843:7843:int SingletonRegistry.size():413:413 -> main
+    7843:7843:int useSingleton():659 -> main
+    7843:7843:void main():796 -> main
+    7844:7845:void main():796:797 -> main
+    7846:7846:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21977,"2":21978,"3":21979},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7847:7849:int useGenericBox():663:665 -> main
+    7847:7849:void main():798 -> main
+    7850:7850:void main():798:798 -> main
+    7851:7851:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21980,"2":21981,"3":21982},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    7852:7852:double useGenericFn():668:668 -> main
+    7852:7852:void main():799 -> main
+    7853:8291:double sumNumbers(java.util.List):0:438 -> main
+    7853:8291:double useGenericFn():668 -> main
+    7853:8291:void main():799 -> main
+    8292:8292:void main():799:799 -> main
+    8293:8293:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21983,"2":21984,"3":21985},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9093:9094:void main():800:801 -> main
+    9095:9095:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21986,"2":21987,"3":21988},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9096:9096:java.lang.String useLazy():674:674 -> main
+    9096:9096:void main():802 -> main
+    9097:9097:void main():802:802 -> main
+    9098:9098:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21989,"2":21990,"3":21991},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9099:9101:java.lang.String useProperty():677:679 -> main
+    9099:9101:void main():803 -> main
+    9102:9102:void main():803:803 -> main
+    9103:9103:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21992,"2":21994,"3":21995},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9104:9104:java.util.List fibFirst(int):474:474 -> main
+    9104:9104:java.util.List useFib():682 -> main
+    9104:9104:void main():805 -> main
+    9105:9106:void main():805:806 -> main
+    9107:9107:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21996,"2":21997,"3":21998},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9108:9108:long UserId.constructor-impl(long):64:64 -> main
+    9108:9108:long UserId.next-w0BlNpU(long):66 -> main
+    9108:9108:long userIdProgression():485 -> main
+    9108:9108:void main():807 -> main
+    9109:9109:void main():807:807 -> main
+    9110:9110:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":21999,"2":22000,"3":22001},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9111:9111:java.lang.String useStateMachine():685:685 -> main
+    9111:9111:void main():808 -> main
+    9112:9112:StateMachine$State StateMachine.start():499:499 -> main
+    9112:9112:java.lang.String useStateMachine():686 -> main
+    9112:9112:void main():808 -> main
+    9113:9117:java.lang.String useStateMachine():687:691 -> main
+    9113:9117:void main():808 -> main
+    9118:9118:int StateMachine$State$Running.getTicks():492:492 -> main
+    9118:9118:java.lang.String useStateMachine():691 -> main
+    9118:9118:void main():808 -> main
+    9119:9121:java.lang.String useStateMachine():691:693 -> main
+    9119:9121:void main():808 -> main
+    9122:9122:void main():808:808 -> main
+    9123:9123:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22002,"2":22004,"3":22005},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    9124:9124:void CachedSquare.<init>():522:522 -> main
+    9124:9124:int fastSumOfSquares(int):527 -> main
+    9124:9124:void main():810 -> main
+    9125:9125:int fastSumOfSquares(int):528:528 -> main
+    9125:9125:void main():810 -> main
+    9126:9443:int CachedSquare.get(int):523:840 -> main
+    9126:9443:int fastSumOfSquares(int):528 -> main
+    9126:9443:void main():810 -> main
+    9444:9764:int CachedSquare.get(int):523:843 -> main
+    9444:9764:int fastSumOfSquares(int):528 -> main
+    9444:9764:void main():810 -> main
+    9765:9765:int CachedSquare.get(int):841:841 -> main
+    9765:9765:int fastSumOfSquares(int):528 -> main
+    9765:9765:void main():810 -> main
+    9766:9766:void main():810:810 -> main
+    9767:9767:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22006,"2":22007,"3":22008},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    10578:10578:void main():811:811 -> main
+    10579:10579:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22009,"2":22010,"3":22011},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    10580:10910:java.util.Map mapTransform():536:866 -> main
+    10580:10910:void main():812 -> main
+    10911:10913:java.util.Map mapTransform():864:866 -> main
+    10911:10913:void main():812 -> main
+    10914:11249:java.util.Map mapTransform():537:872 -> main
+    10914:11249:void main():812 -> main
+    11250:11250:void main():812:812 -> main
+    11251:11251:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22012,"2":22013,"3":22014},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    11252:11590:java.util.Map groupExample():540:878 -> main
+    11252:11590:void main():813 -> main
+    11591:11931:java.util.Map groupExample():540:880 -> main
+    11591:11931:void main():813 -> main
+    11932:11936:java.util.Map groupExample():879:883 -> main
+    11932:11936:void main():813 -> main
+    11937:11945:java.util.Map groupExample():879:887 -> main
+    11937:11945:void main():813 -> main
+    11946:11946:void main():813:813 -> main
+    11947:11947:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22015,"2":22016,"3":22017},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    11948:12297:int foldExample():542:891 -> main
+    11948:12297:void main():814 -> main
+    12298:12298:void main():814:814 -> main
+    12299:12299:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22018,"2":22019,"3":22020},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    12300:12655:java.util.List runningExample():544:899 -> main
+    12300:12655:void main():815 -> main
+    12656:13012:java.util.List runningExample():544:900 -> main
+    12656:13012:void main():815 -> main
+    13013:13013:void main():815:815 -> main
+    13014:13014:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22021,"2":22022,"3":22023},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    13015:13015:java.util.List zipExample():546:546 -> main
+    13015:13015:void main():816 -> main
+    13016:13016:void main():816:816 -> main
+    13017:13017:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22024,"2":22025,"3":22026},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    13018:13376:kotlin.Pair partitionExample():548:906 -> main
+    13018:13376:void main():817 -> main
+    13377:13741:kotlin.Pair partitionExample():548:912 -> main
+    13377:13741:void main():817 -> main
+    13742:13742:void main():817:817 -> main
+    13743:13743:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22027,"2":22028,"3":22029},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    13744:13744:java.util.List distinctExample():550:550 -> main
+    13744:13744:void main():818 -> main
+    13745:13745:void main():818:818 -> main
+    13746:13746:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22030,"2":22031,"3":22032},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    13747:14108:java.util.List sortedByExample():552:913 -> main
+    13747:14108:void main():819 -> main
+    14109:14109:void main():819:819 -> main
+    14110:14110:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22033,"2":22034,"3":22035},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    14111:14111:int[][] makeGrid(int,int):557:557 -> main
+    14111:14111:void main():820 -> main
+    14112:14112:int fold2D(int[][]):554:554 -> main
+    14112:14112:void main():820 -> main
+    14113:14113:void main():820:820 -> main
+    14114:14116:java.lang.String usePair():560:562 -> main
+    14114:14116:void main():821 -> main
+    14117:14117:void main():821:821 -> main
+    14118:14118:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22036,"2":22037,"3":22038},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    14940:14940:void main():822:822 -> main
+    14941:14941:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22039,"2":22040,"3":22041},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    14942:14942:int spreadCall():576:576 -> main
+    14942:14942:void main():823 -> main
+    14943:14943:int varargsUse(int[]):575:575 -> main
+    14943:14943:int spreadCall():576 -> main
+    14943:14943:void main():823 -> main
+    14944:14944:void main():823:823 -> main
+    14945:14945:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22042,"2":22043,"3":22044},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    15769:15769:void main():824:824 -> main
+    15770:15770:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22045,"2":22046,"3":22047},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    15771:15771:java.lang.String times(int,java.lang.String):586:586 -> main
+    15771:15771:java.lang.String operatorOverload():587 -> main
+    15771:15771:void main():825 -> main
+    15772:15772:void main():825:825 -> main
+    15773:15773:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22048,"2":22049,"3":22050},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    15774:15774:void Container.<init>():590:590 -> main
+    15774:15774:int useContainer():600 -> main
+    15774:15774:void main():826 -> main
+    15775:15775:int useContainer():601:601 -> main
+    15775:15775:void main():826 -> main
+    15776:15776:void Container.add(java.lang.Object):591:591 -> main
+    15776:15776:int useContainer():601 -> main
+    15776:15776:void main():826 -> main
+    15777:15777:int useContainer():602:602 -> main
+    15777:15777:void main():826 -> main
+    15778:15778:void Container.add(java.lang.Object):591:591 -> main
+    15778:15778:int useContainer():602 -> main
+    15778:15778:void main():826 -> main
+    15779:15779:int useContainer():603:603 -> main
+    15779:15779:void main():826 -> main
+    15780:15780:void Container.add(java.lang.Object):591:591 -> main
+    15780:15780:int useContainer():603 -> main
+    15780:15780:void main():826 -> main
+    15781:15781:java.util.Iterator Container.iterator():595:595 -> main
+    15781:15781:int useContainer():605 -> main
+    15781:15781:void main():826 -> main
+    15782:15783:int useContainer():605:606 -> main
+    15782:15783:void main():826 -> main
+    15784:15784:boolean Container.contains(java.lang.Object):594:594 -> main
+    15784:15784:int useContainer():606 -> main
+    15784:15784:void main():826 -> main
+    15785:15785:void main():826:826 -> main
+    15786:15786:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22051,"2":22052,"3":22053},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    16613:16614:void main():827:828 -> main
+    16615:16615:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22054,"2":22055,"3":22056},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    17444:17444:void main():829:829 -> main
+    17445:17729:int useReturn():630:914 -> main
+    17445:17729:void main():830 -> main
+    17730:17730:void main():830:830 -> main
+    17731:17731:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22057,"2":22058,"3":22059},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    18562:18563:void main():831:832 -> main
+    18564:18564:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22060,"2":22061,"3":22062},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    19397:19397:void main():833:833 -> main
+    19398:19398:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22063,"2":22064,"3":22065},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    20232:20232:void main():834:834 -> main
+    20233:20233:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22066,"2":22067,"3":22068},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    21068:21068:void main():835:835 -> main
+    21069:21069:void main():0:0 -> main
+      # {"id":"com.android.tools.r8.outlineCallsite","positions":{"1":22069,"2":22070,"3":22071},"outline":"Lk;a(Ljava/io/PrintStream;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/StringBuilder;"}
+    21905:21906:void main():836:837 -> main
+    21907:21907:java.lang.String useStateMachine():690:690 -> main
+    21907:21907:void main():808 -> main
+    21908:21908:java.lang.String Resource.read():355:355 -> main
+    21908:21908:java.lang.String useResource():361 -> main
+    21908:21908:void main():789 -> main
+    21909:21909:java.lang.String useResource():361:361 -> main
+    21909:21909:void main():789 -> main
+    21910:21910:void main():752:752 -> main
+    21911:21911:void main():753:753 -> main
+    21912:21912:void main():753:753 -> main
+    21913:21913:void main():753:753 -> main
+    21915:21915:void main():755:755 -> main
+    21916:21916:void main():755:755 -> main
+    21923:21923:void main():762:762 -> main
+    21924:21924:void main():763:763 -> main
+    21925:21925:void main():763:763 -> main
+    21926:21926:void main():763:763 -> main
+    21927:21927:void main():764:764 -> main
+    21928:21928:void main():764:764 -> main
+    21934:21934:void main():770:770 -> main
+    21935:21935:void main():771:771 -> main
+    21936:21936:void main():771:771 -> main
+    21937:21937:void main():772:772 -> main
+    21938:21938:void main():773:773 -> main
+    21939:21939:void main():773:773 -> main
+    21942:21942:void main():776:776 -> main
+    21943:21943:void main():777:777 -> main
+    21944:21944:void main():777:777 -> main
+    21947:21947:void main():780:780 -> main
+    21948:21948:void main():781:781 -> main
+    21949:21949:void main():781:781 -> main
+    21950:21950:void main():781:781 -> main
+    21951:21951:void main():782:782 -> main
+    21952:21952:void main():782:782 -> main
+    21953:21953:void main():783:783 -> main
+    21955:21955:void main():785:785 -> main
+    21956:21956:void main():785:785 -> main
+    21957:21957:void main():785:785 -> main
+    21958:21958:void main():786:786 -> main
+    21959:21959:void main():786:786 -> main
+    21960:21960:void main():786:786 -> main
+    21961:21961:void main():787:787 -> main
+    21962:21962:void main():787:787 -> main
+    21963:21963:void main():787:787 -> main
+    21964:21964:void main():788:788 -> main
+    21965:21965:void main():788:788 -> main
+    21966:21966:void main():788:788 -> main
+    21967:21967:void main():789:789 -> main
+    21968:21968:void main():789:789 -> main
+    21974:21974:void main():795:795 -> main
+    21975:21975:void main():796:796 -> main
+    21976:21976:void main():796:796 -> main
+    21977:21977:void main():797:797 -> main
+    21978:21978:void main():798:798 -> main
+    21979:21979:void main():798:798 -> main
+    21980:21980:void main():798:798 -> main
+    21981:21981:void main():799:799 -> main
+    21982:21982:void main():799:799 -> main
+    21983:21983:void main():799:799 -> main
+    21984:21984:void main():800:800 -> main
+    21985:21985:void main():800:800 -> main
+    21986:21986:void main():801:801 -> main
+    21987:21987:void main():802:802 -> main
+    21988:21988:void main():802:802 -> main
+    21989:21989:void main():802:802 -> main
+    21990:21990:void main():803:803 -> main
+    21991:21991:void main():803:803 -> main
+    21992:21992:void main():803:803 -> main
+    21994:21994:void main():805:805 -> main
+    21995:21995:void main():805:805 -> main
+    21996:21996:void main():806:806 -> main
+    21997:21997:void main():807:807 -> main
+    21998:21998:void main():807:807 -> main
+    21999:21999:void main():807:807 -> main
+    22000:22000:void main():808:808 -> main
+    22001:22001:void main():808:808 -> main
+    22002:22002:void main():808:808 -> main
+    22004:22004:void main():810:810 -> main
+    22005:22005:void main():810:810 -> main
+    22006:22006:void main():810:810 -> main
+    22007:22007:void main():811:811 -> main
+    22008:22008:void main():811:811 -> main
+    22009:22009:void main():811:811 -> main
+    22010:22010:void main():812:812 -> main
+    22011:22011:void main():812:812 -> main
+    22012:22012:void main():812:812 -> main
+    22013:22013:void main():813:813 -> main
+    22014:22014:void main():813:813 -> main
+    22015:22015:void main():813:813 -> main
+    22016:22016:void main():814:814 -> main
+    22017:22017:void main():814:814 -> main
+    22018:22018:void main():814:814 -> main
+    22019:22019:void main():815:815 -> main
+    22020:22020:void main():815:815 -> main
+    22021:22021:void main():815:815 -> main
+    22022:22022:void main():816:816 -> main
+    22023:22023:void main():816:816 -> main
+    22024:22024:void main():816:816 -> main
+    22025:22025:void main():817:817 -> main
+    22026:22026:void main():817:817 -> main
+    22027:22027:void main():817:817 -> main
+    22028:22028:void main():818:818 -> main
+    22029:22029:void main():818:818 -> main
+    22030:22030:void main():818:818 -> main
+    22031:22031:void main():819:819 -> main
+    22032:22032:void main():819:819 -> main
+    22033:22033:void main():819:819 -> main
+    22034:22034:void main():820:820 -> main
+    22035:22035:void main():820:820 -> main
+    22036:22036:void main():821:821 -> main
+    22037:22037:void main():822:822 -> main
+    22038:22038:void main():822:822 -> main
+    22039:22039:void main():822:822 -> main
+    22040:22040:void main():823:823 -> main
+    22041:22041:void main():823:823 -> main
+    22042:22042:void main():823:823 -> main
+    22043:22043:void main():824:824 -> main
+    22044:22044:void main():824:824 -> main
+    22045:22045:void main():824:824 -> main
+    22046:22046:void main():825:825 -> main
+    22047:22047:void main():825:825 -> main
+    22048:22048:void main():825:825 -> main
+    22049:22049:void main():826:826 -> main
+    22050:22050:void main():826:826 -> main
+    22051:22051:void main():826:826 -> main
+    22052:22052:void main():827:827 -> main
+    22053:22053:void main():827:827 -> main
+    22054:22054:void main():828:828 -> main
+    22055:22055:void main():829:829 -> main
+    22056:22056:void main():829:829 -> main
+    22057:22057:void main():830:830 -> main
+    22058:22058:void main():831:831 -> main
+    22059:22059:void main():831:831 -> main
+    22060:22060:void main():832:832 -> main
+    22061:22061:void main():833:833 -> main
+    22062:22062:void main():833:833 -> main
+    22063:22063:void main():833:833 -> main
+    22064:22064:void main():834:834 -> main
+    22065:22065:void main():834:834 -> main
+    22066:22066:void main():834:834 -> main
+    22067:22067:void main():835:835 -> main
+    22068:22068:void main():835:835 -> main
+    22069:22069:void main():835:835 -> main
+    22070:22070:void main():836:836 -> main
+    22071:22071:void main():836:836 -> main
+    1:1:java.lang.String useStrings():532:532 -> n
+    2:2:java.lang.CharSequence useStrings$lambda$21(java.lang.String):533:533 -> n
+    2:2:java.lang.String useStrings():533 -> n
+    1:1:int withContextExample():716:716 -> o
+EdgeCasesKt$0 -> k:
+# {"id":"sourceFile","fileName":"R8$$SyntheticClass"}
+# {"id":"com.android.tools.r8.synthesized"}
+    1:3:java.lang.StringBuilder m(java.io.PrintStream,java.lang.String,java.lang.String):0:2 -> a
+      # {"id":"com.android.tools.r8.synthesized"}
+      # {"id":"com.android.tools.r8.outline"}
+EdgeCasesKt$asyncDouble$1 -> l:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int I$0 -> a
+    java.lang.Object result -> b
+    int label -> c
+EdgeCasesKt$asyncSum$2 -> n:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int label -> a
+    java.lang.Object L$0 -> b
+    java.util.List $items -> c
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:637:java.lang.Object invokeSuspend(java.lang.Object):206:842 -> invokeSuspend
+    638:1273:java.lang.Object invokeSuspend(java.lang.Object):207:842 -> invokeSuspend
+    1274:1275:java.lang.Object invokeSuspend(java.lang.Object):208:208 -> invokeSuspend
+EdgeCasesKt$asyncSum$2$deferreds$1$1 -> m:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int label -> a
+    int $it -> b
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:1:java.lang.Object invokeSuspend(java.lang.Object):207:207 -> invokeSuspend
+EdgeCasesKt$chainFlow$$inlined$map$1 -> q:
+# {"id":"sourceFile","fileName":"SafeCollector.common.kt"}
+    kotlinx.coroutines.flow.Flow $this_unsafeTransform$inlined -> a
+    1:1:void <init>(kotlinx.coroutines.flow.Flow):105:105 -> <init>
+    1:1:java.lang.Object collect(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):109:109 -> collect
+    2:2:java.lang.Object collect(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):107:107 -> collect
+EdgeCasesKt$chainFlow$$inlined$map$1$2 -> p:
+# {"id":"sourceFile","fileName":"Emitters.kt"}
+    kotlinx.coroutines.flow.FlowCollector $this_unsafeFlow -> a
+    1:1:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):227:227 -> emit
+    2:3:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):49:50 -> emit
+    4:4:java.lang.Object EdgeCasesKt.chainFlow(kotlin.coroutines.Continuation):228:228 -> emit
+    4:4:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):51 -> emit
+    5:5:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):50:50 -> emit
+    6:6:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):49:49 -> emit
+EdgeCasesKt$chainFlow$$inlined$map$1$2$1 -> o:
+    java.lang.Object result -> a
+    int label -> b
+    EdgeCasesKt$chainFlow$$inlined$map$1$2 this$0 -> c
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Lp;"}
+EdgeCasesKt$chainFlow$$inlined$map$2 -> t:
+# {"id":"sourceFile","fileName":"SafeCollector.common.kt"}
+    kotlinx.coroutines.flow.Flow $this_unsafeTransform$inlined -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Lq;"}
+    1:1:void <init>(kotlinx.coroutines.flow.Flow):105:105 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lq;)V"}
+    1:1:java.lang.Object collect(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):109:109 -> collect
+    2:2:java.lang.Object collect(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):107:107 -> collect
+EdgeCasesKt$chainFlow$$inlined$map$2$2 -> s:
+# {"id":"sourceFile","fileName":"Emitters.kt"}
+    kotlinx.coroutines.flow.FlowCollector $this_unsafeFlow -> a
+    1:1:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):228:228 -> emit
+    2:3:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):49:50 -> emit
+    4:4:java.lang.Object EdgeCasesKt.chainFlow(kotlin.coroutines.Continuation):229:229 -> emit
+    4:4:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):51 -> emit
+    5:5:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):50:50 -> emit
+    6:6:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):49:49 -> emit
+EdgeCasesKt$chainFlow$$inlined$map$2$2$1 -> r:
+    java.lang.Object result -> a
+    int label -> b
+    EdgeCasesKt$chainFlow$$inlined$map$2$2 this$0 -> c
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ls;"}
+EdgeCasesKt$consumeFlow$1 -> u:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.Object L$0 -> a
+    java.lang.Object result -> b
+    int label -> c
+EdgeCasesKt$consumeFlow$2 -> v:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    kotlin.jvm.internal.Ref$IntRef $acc -> a
+    1:1:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):223:223 -> emit
+    2:2:java.lang.Object emit(int,kotlin.coroutines.Continuation):223:223 -> emit
+    2:2:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):223 -> emit
+EdgeCasesKt$coroutineMain$1 -> w:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int I$0 -> a
+    int I$1 -> b
+    java.lang.Object L$0 -> c
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/util/List;"}
+    int label -> d
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:3:java.lang.Object invokeSuspend(java.lang.Object):697:699 -> invokeSuspend
+    4:8:java.lang.Object invokeSuspend(java.lang.Object):697:701 -> invokeSuspend
+    9:14:java.lang.Object invokeSuspend(java.lang.Object):697:702 -> invokeSuspend
+EdgeCasesKt$flowFoldExample$1 -> y:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.Object L$0 -> a
+    int label -> b
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:123:java.lang.Object invokeSuspend(java.lang.Object):722:844 -> invokeSuspend
+EdgeCasesKt$flowFoldExample$1$invokeSuspend$$inlined$fold$1 -> x:
+# {"id":"sourceFile","fileName":"Reduce.kt"}
+    kotlin.jvm.internal.Ref$ObjectRef $accumulator -> a
+    1:1:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):41:41 -> emit
+    2:2:java.lang.Object EdgeCasesKt$flowFoldExample$1.invokeSuspend(java.lang.Object):723:723 -> emit
+    2:2:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):43 -> emit
+    3:4:java.lang.Object emit(java.lang.Object,kotlin.coroutines.Continuation):41:42 -> emit
+EdgeCasesKt$launchExample$1 -> a0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.Object L$1 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/util/Iterator;"}
+    int label -> b
+    java.lang.Object L$0 -> c
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:137:java.lang.Object invokeSuspend(java.lang.Object):705:841 -> invokeSuspend
+    138:274:java.lang.Object invokeSuspend(java.lang.Object):708:844 -> invokeSuspend
+    275:276:java.lang.Object invokeSuspend(java.lang.Object):712:713 -> invokeSuspend
+EdgeCasesKt$launchExample$1$jobs$1$1 -> z:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    kotlin.jvm.internal.Ref$IntRef $counter -> a
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:3:java.lang.Object invokeSuspend(java.lang.Object):708:710 -> invokeSuspend
+EdgeCasesKt$parallelMap$2 -> c0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int label -> a
+    java.lang.Object L$0 -> b
+    java.util.List $items -> c
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:2:java.lang.Object invokeSuspend(java.lang.Object):211:211 -> invokeSuspend
+    3:633:java.lang.Object invokeSuspend(java.lang.Object):212:842 -> invokeSuspend
+    634:1264:java.lang.Object invokeSuspend(java.lang.Object):212:842 -> invokeSuspend
+    1265:1265:java.lang.Object invokeSuspend(java.lang.Object):212:212 -> invokeSuspend
+EdgeCasesKt$parallelMap$2$1$1 -> b0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int $it -> a
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:1:java.lang.Object invokeSuspend(java.lang.Object):212:212 -> invokeSuspend
+EdgeCasesKt$simpleFlow$1 -> d0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int I$0 -> a
+    int label -> b
+    java.lang.Object L$0 -> c
+    int $n -> d
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.flow.FlowCollector,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:5:java.lang.Object invokeSuspend(java.lang.Object):215:219 -> invokeSuspend
+EdgeCasesKt$sortedByExample$$inlined$sortedBy$1 -> e0:
+# {"id":"sourceFile","fileName":"Comparisons.kt"}
+    1:1:int compare(java.lang.Object,java.lang.Object):102:102 -> compare
+    2:2:java.util.List EdgeCasesKt.sortedByExample():552:552 -> compare
+    2:2:int compare(java.lang.Object,java.lang.Object):103 -> compare
+    3:3:int compare(java.lang.Object,java.lang.Object):102:102 -> compare
+    4:4:java.util.List EdgeCasesKt.sortedByExample():552:552 -> compare
+    4:4:int compare(java.lang.Object,java.lang.Object):103 -> compare
+    5:5:int compare(java.lang.Object,java.lang.Object):102:102 -> compare
+EdgeCasesKt$withContextExample$1 -> g0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int label -> a
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:2:java.lang.Object invokeSuspend(java.lang.Object):716:716 -> invokeSuspend
+    3:3:java.lang.Object invokeSuspend(java.lang.Object):717:717 -> invokeSuspend
+EdgeCasesKt$withContextExample$1$1 -> f0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:kotlin.coroutines.Continuation create(java.lang.Object,kotlin.coroutines.Continuation):0:0 -> invoke
+    1:1:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0 -> invoke
+    1:1:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    2:2:java.lang.Object invoke(kotlinx.coroutines.CoroutineScope,kotlin.coroutines.Continuation):0:0 -> invoke
+    2:2:java.lang.Object invoke(java.lang.Object,java.lang.Object):0 -> invoke
+    1:2:java.lang.Object invokeSuspend(java.lang.Object):717:718 -> invokeSuspend
+FibSeq -> i0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>():459:459 -> <init>
+    1:1:java.util.Iterator iterator():460:460 -> iterator
+FibSeq$iterator$1 -> h0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:3:void <init>():460:462 -> <init>
+    1:5:java.lang.Long next():465:469 -> next
+    1:5:java.lang.Object next():460 -> next
+GenericBox -> j0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.Comparable value -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/lang/Integer;"}
+    1:1:void <init>(java.lang.Comparable):434:434 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/Integer;)V"}
+    1:1:int compareWith(GenericBox):435:435 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lj0;)I"}
+Greeter$DefaultImpls -> R8$$REMOVED$$CLASS$$2:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+LazyHolder -> k0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    kotlin.Lazy cached$delegate -> a
+    1:2:void <init>():444:445 -> <init>
+    1:2:java.lang.String cached_delegate$lambda$0():446:447 -> a
+    1:1:java.lang.String getCached():445:445 -> b
+Person -> l0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.String name -> a
+    int age -> b
+    1:1:void <init>(java.lang.String,int):609:609 -> <init>
+    1:1:int compareTo(java.lang.Object):609:609 -> compareTo
+    2:612:int compareTo(Person):0:610 -> compareTo
+    2:612:int compareTo(java.lang.Object):609 -> compareTo
+Point -> m0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    double x -> a
+    double y -> b
+    1:1:void <init>(double,double):31:31 -> <init>
+    1:1:double dot(Point):36:36 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lm0;)D"}
+    1:1:Point plus(Point):33:33 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Lm0;)Lm0;"}
+Property -> n0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.lang.String stored -> a
+    1:2:void <init>():451:452 -> <init>
+    1:1:java.lang.String getStored():456:456 -> a
+    1:1:void setStored(java.lang.String):454:454 -> b
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+Resource -> o0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    boolean closed -> a
+    1:1:void <init>(java.lang.String):352:352 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    1:1:void close():358:358 -> close
+Robot -> R8$$REMOVED$$CLASS$$3:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+Shape -> t0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>():76:76 -> <init>
+    1:1:void <init>(kotlin.jvm.internal.DefaultConstructorMarker):0 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+Shape$Circle -> p0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(double):79:79 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+Shape$Empty -> q0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    Shape$Empty INSTANCE -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Lq0;"}
+    1:1:void <init>():91:91 -> <init>
+    double area() -> a
+Shape$Rectangle -> r0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(double,double):83:83 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+Shape$Triangle -> s0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(double,double):87:87 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+    double area() -> a
+SingletonRegistry -> u0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.util.Map store -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ljava/util/LinkedHashMap;"}
+    1:1:void <clinit>():410:410 -> <clinit>
+    1:1:void put(java.lang.String,java.lang.Object):411:411 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/String;Ljava/lang/Integer;)V"}
+StateMachine -> z0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    StateMachine$State state -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Ly0;"}
+    1:8:void <init>():489:496 -> <init>
+    1:4:StateMachine$State tick():504:507 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Ly0;"}
+    5:5:int StateMachine$State$Running.getTicks():492:492 -> a
+    5:5:StateMachine$State tick():507 -> a
+    6:7:StateMachine$State tick():507:508 -> a
+    8:9:StateMachine$State tick():505:505 -> a
+StateMachine$State -> y0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>():490:490 -> <init>
+    1:1:void <init>(kotlin.jvm.internal.DefaultConstructorMarker):0 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+StateMachine$State$Failed -> v0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    1:1:void <init>(java.lang.String):493:493 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}
+StateMachine$State$Idle -> w0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    StateMachine$State$Idle INSTANCE -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"Lw0;"}
+    1:1:void <init>():491:491 -> <init>
+StateMachine$State$Running -> x0:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    int ticks -> a
+    1:1:void <init>(int):492:492 -> <init>
+TreeNode -> a1:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    java.util.List children -> a
+    1:1:void <init>(java.lang.Object,java.util.List,int,kotlin.jvm.internal.DefaultConstructorMarker):363:363 -> <init>
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(Ljava/lang/Integer;)V"}
+    2:2:void <init>(java.lang.Object,java.util.List):363:363 -> <init>
+    2:2:void <init>(java.lang.Object,java.util.List,int,kotlin.jvm.internal.DefaultConstructorMarker):363 -> <init>
+    1:1:void add(TreeNode):364:364 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"(La1;)V"}
+    2:2:int depth():365:365 -> a
+    1:1:int size():366:366 -> b
+User -> b1:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}
+    long id -> a
+    java.lang.String name -> b
+    java.util.Set tags -> c
+    1:1:void <init>(long,java.lang.String,java.util.Set):39:39 -> <init>
+    1:1:User copy$default(User,long,java.lang.String,java.util.Set,int,java.lang.Object):0:0 -> a
+    1:1:User renameTo(java.lang.String):40 -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"()Lb1;"}
+    2:2:User copy(long,java.lang.String,java.util.Set):0:0 -> a
+    2:2:User copy$default(User,long,java.lang.String,java.util.Set,int,java.lang.Object):0 -> a
+    2:2:User renameTo(java.lang.String):40 -> a
+UserId -> R8$$REMOVED$$CLASS$$4:
+# {"id":"sourceFile","fileName":"EdgeCases.kt"}

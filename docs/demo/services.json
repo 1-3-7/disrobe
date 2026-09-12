@@ -1,0 +1,2490 @@
+{
+  "schema": "disrobe.demo.services/v1",
+  "captured_at": "2026-09-08T11:02:15.784Z",
+  "binary_sha256": "a29596adf78d560f830609e1c0f2bd2150e0a21b331e66b6117eef067f5933e5",
+  "grpcurl_sha256": "28e4e948f182501dfd87be6edc76c5a50ef8166ec36c351292461315845b5de7",
+  "inputs": [
+    {
+      "path": "playground/public/samples/add.wasm",
+      "bytes": 69,
+      "sha256": "41590e7a5a80a64230506645b52617f1978df6e07132f96839cb96b753d7ab9e"
+    },
+    {
+      "text": "Documentation: https://docs.example.com/guide Contact: help@example.com",
+      "bytes": 71,
+      "sha256": "c26440e6121237eab75c111909f0763d68855c137f9345ee896be799f8669280"
+    }
+  ],
+  "sessions": [
+    {
+      "command": [
+        "disrobe",
+        "serve",
+        "--mcp"
+      ],
+      "stderr": "",
+      "exit_code": 0,
+      "signal": null
+    },
+    {
+      "command": [
+        "disrobe",
+        "serve",
+        "--stdio"
+      ],
+      "stderr": "",
+      "exit_code": 0,
+      "signal": null
+    },
+    {
+      "command": [
+        "disrobe",
+        "serve",
+        "--bind",
+        "127.0.0.1:8850",
+        "--grpc"
+      ],
+      "stderr": "",
+      "exit_code": null,
+      "signal": "SIGTERM"
+    }
+  ],
+  "exchanges": [
+    {
+      "transport": "mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "disrobe-demo",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": "2025-06-18",
+          "capabilities": {
+            "tools": {}
+          },
+          "serverInfo": {
+            "name": "disrobe",
+            "version": "0.10.5"
+          },
+          "instructions": "disrobe MCP companion: auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings), verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Analysis tools take inline base64 or inline JSON and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root."
+        }
+      }
+    },
+    {
+      "transport": "mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "tools": [
+            {
+              "name": "annot",
+              "description": "Regenerate and validate a disrobe.annotations/v1 sidecar for a target file under .disrobe/annotations/.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "target"
+                ],
+                "title": "AnnotParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "annotation_path": {
+                    "type": "string"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "symbol_count": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "target",
+                  "annotation_path",
+                  "schema",
+                  "symbol_count"
+                ],
+                "title": "AnnotOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "auto",
+              "description": "Auto-detect and chain disrobe's Python + native-packer passes over inline base64 bytes; returns the chain verdict, detected formats, and per-pass recovery summary. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "max_depth": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "AutoParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "ChainPassOut": {
+                    "properties": {
+                      "confidence": {
+                        "type": "string"
+                      },
+                      "duration_ms": {
+                        "format": "uint128",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "format_in": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "format_out": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status",
+                      "confidence"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "detected": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "final_format": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "layers": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "passes": {
+                    "items": {
+                      "$ref": "#/$defs/ChainPassOut"
+                    },
+                    "type": "array"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "verdict",
+                  "detected",
+                  "layers",
+                  "passes"
+                ],
+                "title": "AutoOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "behavior",
+              "description": "Static capability / behavior summary across network, filesystem, process-exec, registry-persistence, crypto, anti-analysis, and dynamic-code categories with MITRE ATT&CK ids, from inline base64 bytes plus optional import names. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "imports": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "BehaviorParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "CategoryFindingOut": {
+                    "properties": {
+                      "attack_ids": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "evidence": {
+                        "items": {
+                          "$ref": "#/$defs/EvidenceOut"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "description",
+                      "evidence",
+                      "attack_ids"
+                    ],
+                    "type": "object"
+                  },
+                  "EvidenceOut": {
+                    "properties": {
+                      "attack_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "signal": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "signal",
+                      "source"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "attack_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "byte_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "categories": {
+                    "items": {
+                      "$ref": "#/$defs/CategoryFindingOut"
+                    },
+                    "type": "array"
+                  },
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "byte_len",
+                  "categories",
+                  "attack_ids"
+                ],
+                "title": "BehaviorOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "call_graph",
+              "description": "Page through function summaries and explicitly classified call edges from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "CallGraphParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "CallOutcomeOut": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "function_id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "function-start",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "function_id",
+                          "name",
+                          "address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "function_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "function_id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "function-interior",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "target_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "function_id",
+                          "name",
+                          "function_address",
+                          "target_address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "candidates": {
+                            "items": {
+                              "$ref": "#/$defs/FunctionIdentityOut"
+                            },
+                            "type": "array"
+                          },
+                          "kind": {
+                            "const": "ambiguous-function",
+                            "type": "string"
+                          },
+                          "omitted_candidates": {
+                            "format": "uint",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "target_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "target_address",
+                          "candidates",
+                          "omitted_candidates"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "kind": {
+                            "const": "symbol",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "symbol_kind": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "name",
+                          "address",
+                          "symbol_kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "kind": {
+                            "const": "unresolved",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "indirect",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "FunctionIdentityOut": {
+                    "properties": {
+                      "address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "address"
+                    ],
+                    "type": "object"
+                  },
+                  "FunctionSummaryOut": {
+                    "properties": {
+                      "address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "basic_block_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "cyclomatic_complexity": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "end": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "incoming_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "indirect_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "instruction_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "is_export": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "outgoing_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "address",
+                      "end",
+                      "is_export",
+                      "instruction_count",
+                      "basic_block_count",
+                      "cyclomatic_complexity",
+                      "incoming_calls",
+                      "outgoing_calls",
+                      "indirect_calls"
+                    ],
+                    "type": "object"
+                  },
+                  "NavigationCallOut": {
+                    "properties": {
+                      "call_site": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caller_address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caller_id": {
+                        "type": "string"
+                      },
+                      "caller_name": {
+                        "type": "string"
+                      },
+                      "outcome": {
+                        "$ref": "#/$defs/CallOutcomeOut"
+                      }
+                    },
+                    "required": [
+                      "caller_id",
+                      "caller_name",
+                      "caller_address",
+                      "call_site",
+                      "outcome"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "budget_measure": {
+                    "type": "string"
+                  },
+                  "calls": {
+                    "items": {
+                      "$ref": "#/$defs/NavigationCallOut"
+                    },
+                    "type": "array"
+                  },
+                  "functions": {
+                    "items": {
+                      "$ref": "#/$defs/FunctionSummaryOut"
+                    },
+                    "type": "array"
+                  },
+                  "next_cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokenizer": {
+                    "type": "string"
+                  },
+                  "total_calls": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_functions": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "source_hash",
+                  "token_budget",
+                  "tokenizer",
+                  "budget_measure",
+                  "total_functions",
+                  "total_calls",
+                  "functions",
+                  "calls",
+                  "truncated"
+                ],
+                "title": "CallGraphOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "coverage",
+              "description": "Account for every byte of an inline base64 PE / ELF / Mach-O image against the structures its format declares: bytes a structure claims, alignment slack, bytes nothing claims (where an appended overlay shows up), bytes a structure declares past the end of the file, and structures that overlap. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "CoverageParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "CoverageRegionOut": {
+                    "properties": {
+                      "claimant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "class": {
+                        "type": "string"
+                      },
+                      "end": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "start": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "start",
+                      "end",
+                      "class"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "claimed_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  },
+                  "coverage_ratio": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "file_len": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "format": {
+                    "type": "string"
+                  },
+                  "overlap_detected": {
+                    "type": "boolean"
+                  },
+                  "region_count": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "regions": {
+                    "items": {
+                      "$ref": "#/$defs/CoverageRegionOut"
+                    },
+                    "type": "array"
+                  },
+                  "regions_truncated": {
+                    "type": "boolean"
+                  },
+                  "slack_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "unclaimed_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "format",
+                  "file_len",
+                  "claimed_bytes",
+                  "slack_bytes",
+                  "unclaimed_bytes",
+                  "truncated_bytes",
+                  "coverage_ratio",
+                  "complete",
+                  "overlap_detected",
+                  "region_count",
+                  "regions_truncated",
+                  "regions"
+                ],
+                "title": "CoverageOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "decompile",
+              "description": "Auto-chain inline base64 bytes and return every terminal recovered-source artifact (language-keyed text), e.g. a .pyc decompiled to Python. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "max_depth": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "DecompileParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "RecoveredSourceOut": {
+                    "properties": {
+                      "formatted": {
+                        "type": "boolean"
+                      },
+                      "language": {
+                        "type": "string"
+                      },
+                      "pass": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "pass",
+                      "language",
+                      "formatted",
+                      "source"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "recovered": {
+                    "items": {
+                      "$ref": "#/$defs/RecoveredSourceOut"
+                    },
+                    "type": "array"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "verdict",
+                  "recovered"
+                ],
+                "title": "DecompileOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "function_summary",
+              "description": "Return one structural summary for a content-bound function id in an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "function_id": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64",
+                  "function_id"
+                ],
+                "title": "FunctionSummaryParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "FunctionSummaryOut": {
+                    "properties": {
+                      "address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "basic_block_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "cyclomatic_complexity": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "end": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "incoming_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "indirect_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "instruction_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "is_export": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "outgoing_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "address",
+                      "end",
+                      "is_export",
+                      "instruction_count",
+                      "basic_block_count",
+                      "cyclomatic_complexity",
+                      "incoming_calls",
+                      "outgoing_calls",
+                      "indirect_calls"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "budget_measure": {
+                    "type": "string"
+                  },
+                  "function": {
+                    "$ref": "#/$defs/FunctionSummaryOut"
+                  },
+                  "next_cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokenizer": {
+                    "type": "string"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "source_hash",
+                  "token_budget",
+                  "tokenizer",
+                  "budget_measure",
+                  "function",
+                  "truncated"
+                ],
+                "title": "FunctionSummaryResponse",
+                "type": "object"
+              }
+            },
+            {
+              "name": "ioc",
+              "description": "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants) from inline base64 bytes, decoding one layer of base64/hex. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "IocParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "IndicatorOut": {
+                    "properties": {
+                      "context": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "encoding": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "offset": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "value",
+                      "offset",
+                      "encoding"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "byte_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "indicators": {
+                    "items": {
+                      "$ref": "#/$defs/IndicatorOut"
+                    },
+                    "type": "array"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "total": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "byte_len",
+                  "total",
+                  "indicators"
+                ],
+                "title": "IocOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "native_match",
+              "description": "Match functions across two inline base64 native images. Optional stage, function address, and row limit select a bounded disrobe.native.match/v2 report. The tool never reads disk or executes either image.",
+              "inputSchema": {
+                "$defs": {
+                  "NativeMatchStage": {
+                    "enum": [
+                      "data-reference",
+                      "control-flow",
+                      "propagation",
+                      "refused"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "a_bytes_b64": {
+                    "type": "string"
+                  },
+                  "b_bytes_b64": {
+                    "type": "string"
+                  },
+                  "function": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "limit": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "stage": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/NativeMatchStage"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "a_bytes_b64",
+                  "b_bytes_b64"
+                ],
+                "title": "NativeMatchParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": true,
+                "title": "Map_of_AnyValue",
+                "type": "object"
+              }
+            },
+            {
+              "name": "neighborhood",
+              "description": "Page through a cycle-safe caller, callee, or bidirectional function neighborhood from content-bound entry ids under a hard o200k_base token budget. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "depth": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "direction": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "entry_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64",
+                  "entry_ids",
+                  "depth"
+                ],
+                "title": "NeighborhoodParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "CallOutcomeOut": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "function_id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "function-start",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "function_id",
+                          "name",
+                          "address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "function_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "function_id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "const": "function-interior",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "target_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "function_id",
+                          "name",
+                          "function_address",
+                          "target_address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "candidates": {
+                            "items": {
+                              "$ref": "#/$defs/FunctionIdentityOut"
+                            },
+                            "type": "array"
+                          },
+                          "kind": {
+                            "const": "ambiguous-function",
+                            "type": "string"
+                          },
+                          "omitted_candidates": {
+                            "format": "uint",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "target_address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "target_address",
+                          "candidates",
+                          "omitted_candidates"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "kind": {
+                            "const": "symbol",
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "symbol_kind": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "name",
+                          "address",
+                          "symbol_kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "address": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "kind": {
+                            "const": "unresolved",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "address"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "indirect",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "FunctionIdentityOut": {
+                    "properties": {
+                      "address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "address"
+                    ],
+                    "type": "object"
+                  },
+                  "FunctionSummaryOut": {
+                    "properties": {
+                      "address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "basic_block_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "cyclomatic_complexity": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "end": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "incoming_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "indirect_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "instruction_count": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "is_export": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "outgoing_calls": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "address",
+                      "end",
+                      "is_export",
+                      "instruction_count",
+                      "basic_block_count",
+                      "cyclomatic_complexity",
+                      "incoming_calls",
+                      "outgoing_calls",
+                      "indirect_calls"
+                    ],
+                    "type": "object"
+                  },
+                  "NavigationCallOut": {
+                    "properties": {
+                      "call_site": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caller_address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "caller_id": {
+                        "type": "string"
+                      },
+                      "caller_name": {
+                        "type": "string"
+                      },
+                      "outcome": {
+                        "$ref": "#/$defs/CallOutcomeOut"
+                      }
+                    },
+                    "required": [
+                      "caller_id",
+                      "caller_name",
+                      "caller_address",
+                      "call_site",
+                      "outcome"
+                    ],
+                    "type": "object"
+                  },
+                  "NeighborhoodFunctionOut": {
+                    "properties": {
+                      "depth": {
+                        "format": "uint8",
+                        "maximum": 255,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "function": {
+                        "$ref": "#/$defs/FunctionSummaryOut"
+                      }
+                    },
+                    "required": [
+                      "depth",
+                      "function"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "budget_measure": {
+                    "type": "string"
+                  },
+                  "calls": {
+                    "items": {
+                      "$ref": "#/$defs/NavigationCallOut"
+                    },
+                    "type": "array"
+                  },
+                  "depth": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "direction": {
+                    "type": "string"
+                  },
+                  "functions": {
+                    "items": {
+                      "$ref": "#/$defs/NeighborhoodFunctionOut"
+                    },
+                    "type": "array"
+                  },
+                  "next_cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokenizer": {
+                    "type": "string"
+                  },
+                  "total_calls": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_functions": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "source_hash",
+                  "direction",
+                  "depth",
+                  "token_budget",
+                  "tokenizer",
+                  "budget_measure",
+                  "total_functions",
+                  "total_calls",
+                  "functions",
+                  "calls",
+                  "truncated"
+                ],
+                "title": "NeighborhoodOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "provenance_lookup",
+              "description": "Look up the LineProvenance entry for a line number in a disrobe.provenance-map/v1 JSON document supplied inline.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "line": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "map_json": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "map_json",
+                  "line"
+                ],
+                "title": "ProvenanceLookupParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "LineProvenanceOut": {
+                    "properties": {
+                      "confidence": {
+                        "type": "string"
+                      },
+                      "line": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "opcode_range": {
+                        "items": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "maxItems": 2,
+                        "minItems": 2,
+                        "type": [
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "pass": {
+                        "type": "string"
+                      },
+                      "source_offset": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "pass",
+                      "confidence"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "entry": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/LineProvenanceOut"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "found": {
+                    "type": "boolean"
+                  },
+                  "tool_version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "found",
+                  "file",
+                  "tool_version"
+                ],
+                "title": "ProvenanceLookupOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "rename",
+              "description": "Append a symbol rename record (disrobe.renames/v1) to .disrobe/notes/renames.json in the current workspace.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "new": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "old": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "old",
+                  "new"
+                ],
+                "title": "RenameParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "new": {
+                    "type": "string"
+                  },
+                  "old": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "record_count": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "schema": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "schema",
+                  "old",
+                  "new",
+                  "record_count"
+                ],
+                "title": "RenameOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "secret_scan",
+              "description": "Detect secrets in inline base64 bytes and optionally replace matched values in the response with stable redaction tokens. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "redact": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "SecretScanParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "SecretFindingOut": {
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "level": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "offset": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "preview": {
+                        "type": "string"
+                      },
+                      "uri": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "validation": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "message",
+                      "level",
+                      "kind",
+                      "offset",
+                      "value",
+                      "preview"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "byte_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "findings": {
+                    "items": {
+                      "$ref": "#/$defs/SecretFindingOut"
+                    },
+                    "type": "array"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "uri": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schema",
+                  "byte_len",
+                  "findings"
+                ],
+                "title": "SecretScanOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "strings",
+              "description": "Extract printable strings (ASCII + UTF-16) from inline base64 bytes, optionally decoding base64/rot/stack-string obfuscation, tagged with their encoding. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "decode": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "min_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "StringsParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "ExtractedStringOut": {
+                    "properties": {
+                      "offset": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "tagging": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "value",
+                      "offset",
+                      "tagging"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "byte_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "min_len": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "strings": {
+                    "items": {
+                      "$ref": "#/$defs/ExtractedStringOut"
+                    },
+                    "type": "array"
+                  },
+                  "total": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "byte_len",
+                  "min_len",
+                  "total",
+                  "strings"
+                ],
+                "title": "StringsOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "verify",
+              "description": "Verify a disrobe .dr envelope (blake3 root hash, rung, hot/cold sizes) from inline base64 bytes; never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "bytes_b64"
+                ],
+                "title": "VerifyParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "cold_bytes": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "hot_bytes": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "root_hash_blake3": {
+                    "type": "string"
+                  },
+                  "rung": {
+                    "type": "string"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  },
+                  "version": {
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "verified",
+                  "version",
+                  "rung",
+                  "hot_bytes",
+                  "cold_bytes",
+                  "root_hash_blake3"
+                ],
+                "title": "VerifyOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "wasm_lift",
+              "description": "Lift inline WebAssembly bytes to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never reads disk or executes the module.",
+              "inputSchema": {
+                "$defs": {
+                  "WasmLiftTarget": {
+                    "enum": [
+                      "rust",
+                      "typescript",
+                      "c",
+                      "wat"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/$defs/WasmLiftTarget"
+                  }
+                },
+                "required": [
+                  "bytes_b64",
+                  "target"
+                ],
+                "title": "WasmLiftParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "WasmLiftCoverageOut": {
+                    "properties": {
+                      "fully_recovered": {
+                        "type": "boolean"
+                      },
+                      "total_ops": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "translated_ops": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "untranslated": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "total_ops",
+                      "translated_ops",
+                      "fully_recovered",
+                      "untranslated"
+                    ],
+                    "type": "object"
+                  },
+                  "WasmLiftTarget": {
+                    "enum": [
+                      "rust",
+                      "typescript",
+                      "c",
+                      "wat"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "coverage": {
+                    "$ref": "#/$defs/WasmLiftCoverageOut"
+                  },
+                  "function_count": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "$ref": "#/$defs/WasmLiftTarget"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "target",
+                  "function_count",
+                  "coverage",
+                  "source"
+                ],
+                "title": "WasmLiftOut",
+                "type": "object"
+              }
+            },
+            {
+              "name": "xrefs",
+              "description": "Page through cross-references to a content-bound function id from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk.",
+              "inputSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "bytes_b64": {
+                    "type": "string"
+                  },
+                  "cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "function_id": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "bytes_b64",
+                  "function_id"
+                ],
+                "title": "XrefsParams",
+                "type": "object"
+              },
+              "outputSchema": {
+                "$defs": {
+                  "XrefOut": {
+                    "properties": {
+                      "from_function": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "from_function_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "from_offset": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "mnemonic": {
+                        "type": "string"
+                      },
+                      "to_address": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "from_offset",
+                      "mnemonic",
+                      "to_address"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "properties": {
+                  "budget_measure": {
+                    "type": "string"
+                  },
+                  "function_id": {
+                    "type": "string"
+                  },
+                  "next_cursor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "schema": {
+                    "type": "string"
+                  },
+                  "source_hash": {
+                    "type": "string"
+                  },
+                  "token_budget": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "tokenizer": {
+                    "type": "string"
+                  },
+                  "total": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  },
+                  "xrefs": {
+                    "items": {
+                      "$ref": "#/$defs/XrefOut"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "schema",
+                  "source_hash",
+                  "function_id",
+                  "token_budget",
+                  "tokenizer",
+                  "budget_measure",
+                  "total",
+                  "xrefs",
+                  "truncated"
+                ],
+                "title": "XrefsOut",
+                "type": "object"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "transport": "mcp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "ioc",
+          "arguments": {
+            "bytes_b64": "RG9jdW1lbnRhdGlvbjogaHR0cHM6Ly9kb2NzLmV4YW1wbGUuY29tL2d1aWRlIENvbnRhY3Q6IGhlbHBAZXhhbXBsZS5jb20="
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"byte_len\":71,\"indicators\":[{\"context\":\"Documentation: https://docs.example.com/guide Contact: help@e\",\"encoding\":\"plain\",\"kind\":\"url\",\"offset\":15,\"value\":\"https://docs.example.com/guide\"},{\"context\":\"/guide Contact: help@example.com\",\"encoding\":\"plain\",\"kind\":\"email\",\"offset\":55,\"value\":\"help@example.com\"}],\"schema\":\"disrobe.ioc/v0\",\"total\":2}"
+            }
+          ],
+          "structuredContent": {
+            "byte_len": 71,
+            "indicators": [
+              {
+                "context": "Documentation: https://docs.example.com/guide Contact: help@e",
+                "encoding": "plain",
+                "kind": "url",
+                "offset": 15,
+                "value": "https://docs.example.com/guide"
+              },
+              {
+                "context": "/guide Contact: help@example.com",
+                "encoding": "plain",
+                "kind": "email",
+                "offset": 55,
+                "value": "help@example.com"
+              }
+            ],
+            "schema": "disrobe.ioc/v0",
+            "total": 2
+          },
+          "isError": false
+        }
+      }
+    },
+    {
+      "transport": "lsp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "processId": null,
+          "rootUri": null,
+          "capabilities": {},
+          "clientInfo": {
+            "name": "disrobe-demo",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "capabilities": {
+            "experimental": {
+              "disrobe": {
+                "methods": [
+                  "disrobe/analyze",
+                  "disrobe/explain"
+                ],
+                "note": "custom request methods; this server does not implement the standard textDocument LSP surface",
+                "transport": "lsp-framed stdio json-rpc"
+              }
+            }
+          },
+          "serverInfo": {
+            "name": "disrobe-serve",
+            "version": "0.10.5"
+          }
+        }
+      }
+    },
+    {
+      "transport": "lsp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "disrobe/analyze",
+        "params": {
+          "bytes_b64": "AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABagsAGgRuYW1lAAsKc2FtcGxlX2FkZAEGAQADYWRk",
+          "label": "add.wasm"
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "action": "Decompile { lang: Wasm }",
+          "blake3": "5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4",
+          "bytes": 69,
+          "label": "add.wasm",
+          "reason": "wasm \\0asm magic detected"
+        }
+      }
+    },
+    {
+      "transport": "lsp",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "shutdown",
+        "params": null
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": null
+      }
+    },
+    {
+      "transport": "http",
+      "request": {
+        "method": "GET",
+        "path": "/v1/health"
+      },
+      "response": {
+        "status": "serving",
+        "version": "0.10.5"
+      }
+    },
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "body": {
+          "bytes_b64": "AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABagsAGgRuYW1lAAsKc2FtcGxlX2FkZAEGAQADYWRk"
+        }
+      },
+      "response": {
+        "routed_action": "Decompile { lang: Wasm }",
+        "bytes_read": 69,
+        "blake3_hash": "5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4",
+        "reason": "wasm \\0asm magic detected",
+        "candidates": [
+          "Decompile { lang: Wasm } (confidence=0.95)"
+        ]
+      }
+    },
+    {
+      "transport": "grpc",
+      "request": {
+        "method": "Health",
+        "body": {}
+      },
+      "response": {
+        "status": "serving",
+        "version": "0.10.5"
+      }
+    },
+    {
+      "transport": "grpc",
+      "request": {
+        "method": "Analyze",
+        "body": {
+          "bytesInline": "AGFzbQEAAAABBwFgAn9/AX8DAgEABwcBA2FkZAAACgkBBwAgACABagsAGgRuYW1lAAsKc2FtcGxlX2FkZAEGAQADYWRk"
+        }
+      },
+      "response": {
+        "routedAction": "Decompile { lang: Wasm }",
+        "bytesRead": "69",
+        "blake3Hash": "5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4",
+        "reason": "wasm \\0asm magic detected",
+        "candidates": [
+          "Decompile { lang: Wasm } (confidence=0.95)"
+        ]
+      }
+    }
+  ]
+}

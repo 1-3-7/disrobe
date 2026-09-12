@@ -1,0 +1,6 @@
+reference|e85bed95e61deb1295972fc76f9180d37fc33b76|XADStuffItOldHandles.m:26-89|LGPL-2.1-or-later
+dictionary|4184000c08|41424142424142|1
+reset|4184041c02|414243|1
+initial-reset|008300|41|1
+repeated-resets|00010601|41|1
+width-9-to-10|codes:65@9,65@9*256,65@10|41|258

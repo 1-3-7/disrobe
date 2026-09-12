@@ -1,0 +1,38 @@
+schema = "disrobe-corpus-v1"
+category = "mobile.flutter"
+target_crate = "disrobe-pass-mobile"
+fetched_utc = "2026-08-07T00:00:00Z"
+notes = """
+Flutter Dart AOT corpus. disrobe_sample/ (self-authored, see BUILD.txt) and
+pinned_graph_fixture/ (real flutter build apk --release across a source/renamed/obfuscated
+set, see oracle.json) are committed. rustdesk/ below is a real third-party app that is
+never committed: crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs fetches it by
+this pinned URL and sha256 into a scratch cache at test time and extracts the two ARM64
+shared objects from the APK zip in memory, so the corpus never carries the 26 MB asset.
+"""
+
+[[sample]]
+name = "rustdesk/rustdesk-1.4.9-aarch64-signed.apk"
+source_url = "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/rustdesk-1.4.9-aarch64-signed.apk"
+upstream_repo = "https://github.com/rustdesk/rustdesk"
+license = "AGPL-3.0 (redistributable; not committed here only because of size, fetched at test time by pinned URL and sha256)"
+size_bytes = 26871021
+sha256 = "285b4f0735c000e5155b9a6f087b57744e46c960f4332963f51add1804982102"
+target = "android-arm64-v8a"
+notes = """
+Real RustDesk 1.4.9 Android build. lib/arm64-v8a/libapp.so (12190624 bytes) and
+lib/arm64-v8a/libflutter.so (10714752 bytes) are read directly out of this APK zip by
+crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs, which grades the RAW static
+recovery path (ARM64 frame-prologue function boundaries, isolate-data class and method
+name strings, an independent whole-file `package:*.dart` uri oracle). This build's Dart
+snapshot version does not match the Dart 3.12.2 android-arm64 product tuple pinned in
+crates/disrobe-pass-mobile/src/flutter/dart_graph_layout.rs. The declaration-graph path
+(`flutter inventory`) correctly reports unsupported-version on it, which this file also
+grades, but it never recovers a name from this build; declaration-graph NAME recovery is
+graded separately against the pinned pinned_graph_fixture/ set. Reproduce with:
+mkdir -p "$TMPDIR/disrobe-scratch/rustdesk-flutter-cache" && curl -sSL -o
+"$TMPDIR/disrobe-scratch/rustdesk-flutter-cache/rustdesk-1.4.9-aarch64-signed.apk"
+"https://github.com/rustdesk/rustdesk/releases/download/1.4.9/rustdesk-1.4.9-aarch64-signed.apk"
+then run: cargo test -p disrobe-pass-mobile --test real_flutter_rustdesk. Never fetched or
+verified in CI, so every figure this sample produces is [local] only.
+"""

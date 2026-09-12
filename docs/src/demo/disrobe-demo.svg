@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1064" height="516" viewBox="0 0 1064 516" font-family="'JetBrains Mono', ui-monospace, 'Fira Code', SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+  <rect x="0" y="0" width="1064" height="516" rx="10" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="1063" height="515" rx="9.5" fill="none" stroke="#262626"/>
+  <rect x="0.5" y="0.5" width="1063" height="34.0" rx="9.5" fill="#161616"/>
+  <rect x="0.5" y="22.0" width="1063" height="12" fill="#161616"/>
+  <line x1="0.5" y1="34.0" x2="1063.5" y2="34.0" stroke="#262626"/>
+  <circle cx="20.0" cy="17.0" r="4.5" fill="#828282" opacity="0.85"/>
+  <circle cx="36.0" cy="17.0" r="4.5" fill="#a1a1a1" opacity="0.85"/>
+  <circle cx="52.0" cy="17.0" r="4.5" fill="#ededed" opacity="0.85"/>
+  <text x="532.0" y="21.5" font-size="12.5" fill="#a1a1a1" text-anchor="middle" font-weight="600" letter-spacing="0.5">disrobe</text>
+  <clipPath id="screen"><rect x="1" y="45.0" width="1062" height="471.0"/></clipPath>
+  <g clip-path="url(#screen)">
+    <g transform="translate(20.0,48.0)">
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.006266"/>
+        <text x="0.00" y="9.88" fill="#a1a1a1" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">$ </text>
+        <text x="16.00" y="9.88" fill="#ededed" xml:space="preserve" textLength="184.00" lengthAdjust="spacing">disrobe wasm decompile </text>
+        <text x="200.00" y="9.88" fill="#a1a1a1" xml:space="preserve" textLength="272.00" lengthAdjust="spacing">playground/public/samples/add.wasm</text>
+        <text x="480.00" y="9.88" fill="#828282" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">--target</text>
+        <text x="544.00" y="9.88" fill="#ededed" xml:space="preserve" textLength="48.00" lengthAdjust="spacing"> json </text>
+        <text x="592.00" y="9.88" fill="#828282" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">--out</text>
+        <text x="640.00" y="9.88" fill="#a1a1a1" xml:space="preserve" textLength="208.00" lengthAdjust="spacing">recovered\add.summary.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="28.88" fill="#ededed" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">wasm</text>
+        <text x="32.00" y="28.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing"> decompile: </text>
+        <text x="128.00" y="28.88" fill="#ededed" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">OK</text>
+        <text x="144.00" y="28.88" fill="#a1a1a1" xml:space="preserve" textLength="112.00" lengthAdjust="spacing"> (target=json)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="47.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  types:</text>
+        <text x="64.00" y="47.88" fill="#ededed" xml:space="preserve" textLength="72.00" lengthAdjust="spacing">        1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="66.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">  functions:</text>
+        <text x="96.00" y="66.88" fill="#ededed" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">    1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="85.88" fill="#a1a1a1" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">  imports:</text>
+        <text x="80.00" y="85.88" fill="#ededed" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">      0</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="104.88" fill="#a1a1a1" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">  exports:</text>
+        <text x="80.00" y="104.88" fill="#ededed" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">      1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="16.00" y="123.88" fill="#ededed" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">code</text>
+        <text x="48.00" y="123.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing"> bytes:   7</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012773"/>
+        <text x="0.00" y="142.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  wrote:</text>
+        <text x="64.00" y="142.88" fill="#ededed" xml:space="preserve" textLength="272.00" lengthAdjust="spacing">        recovered\add.summary.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012832"/>
+        <text x="0.00" y="161.88" fill="#a1a1a1" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">$ </text>
+        <text x="16.00" y="161.88" fill="#ededed" xml:space="preserve" textLength="184.00" lengthAdjust="spacing">disrobe wasm decompile </text>
+        <text x="200.00" y="161.88" fill="#a1a1a1" xml:space="preserve" textLength="272.00" lengthAdjust="spacing">playground/public/samples/add.wasm</text>
+        <text x="480.00" y="161.88" fill="#828282" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">--target</text>
+        <text x="544.00" y="161.88" fill="#ededed" xml:space="preserve" textLength="40.00" lengthAdjust="spacing"> wat </text>
+        <text x="584.00" y="161.88" fill="#828282" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">--out</text>
+        <text x="632.00" y="161.88" fill="#a1a1a1" xml:space="preserve" textLength="192.00" lengthAdjust="spacing">recovered\add.lifted.wat</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.019259"/>
+        <text x="0.00" y="180.88" fill="#ededed" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">wasm</text>
+        <text x="32.00" y="180.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing"> decompile: </text>
+        <text x="128.00" y="180.88" fill="#ededed" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">OK</text>
+        <text x="144.00" y="180.88" fill="#a1a1a1" xml:space="preserve" textLength="104.00" lengthAdjust="spacing"> (target=wat)</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.019259"/>
+        <text x="0.00" y="199.88" fill="#a1a1a1" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">  functions:</text>
+        <text x="96.00" y="199.88" fill="#ededed" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">    1</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.019259"/>
+        <text x="0.00" y="218.88" fill="#a1a1a1" xml:space="preserve" textLength="64.00" lengthAdjust="spacing">  wrote:</text>
+        <text x="64.00" y="218.88" fill="#ededed" xml:space="preserve" textLength="256.00" lengthAdjust="spacing">        recovered\add.lifted.wat</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.019324"/>
+        <text x="0.00" y="237.88" fill="#a1a1a1" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">$ </text>
+        <text x="16.00" y="237.88" fill="#ededed" xml:space="preserve" textLength="104.00" lengthAdjust="spacing">disrobe auto </text>
+        <text x="120.00" y="237.88" fill="#a1a1a1" xml:space="preserve" textLength="272.00" lengthAdjust="spacing">playground/public/samples/add.wasm</text>
+        <text x="400.00" y="237.88" fill="#828282" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">--out</text>
+        <text x="440.00" y="237.88" fill="#ededed" xml:space="preserve" textLength="128.00" lengthAdjust="spacing"> recovered\auto </text>
+        <text x="568.00" y="237.88" fill="#828282" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">--capture-stages</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="256.88" fill="#ededed" xml:space="preserve" textLength="80.00" lengthAdjust="spacing">chain.json</text>
+        <text x="80.00" y="256.88" fill="#a1a1a1" xml:space="preserve" textLength="280.00" lengthAdjust="spacing"> written: recovered\auto\chain.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="275.88" fill="#ededed" xml:space="preserve" textLength="104.00" lengthAdjust="spacing">recovery.json</text>
+        <text x="104.00" y="275.88" fill="#a1a1a1" xml:space="preserve" textLength="304.00" lengthAdjust="spacing"> written: recovered\auto\recovery.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="294.88" fill="#ededed" xml:space="preserve" textLength="144.00" lengthAdjust="spacing">anti-analysis.json</text>
+        <text x="144.00" y="294.88" fill="#a1a1a1" xml:space="preserve" textLength="344.00" lengthAdjust="spacing"> written: recovered\auto\anti-analysis.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="313.88" fill="#ededed" xml:space="preserve" textLength="88.00" lengthAdjust="spacing">report.json</text>
+        <text x="88.00" y="313.88" fill="#a1a1a1" xml:space="preserve" textLength="288.00" lengthAdjust="spacing"> written: recovered\auto\report.json</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="332.88" fill="#ededed" xml:space="preserve" textLength="96.00" lengthAdjust="spacing">report.sarif</text>
+        <text x="96.00" y="332.88" fill="#a1a1a1" xml:space="preserve" textLength="296.00" lengthAdjust="spacing"> written: recovered\auto\report.sarif</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="351.88" fill="#ededed" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">1</text>
+        <text x="8.00" y="351.88" fill="#a1a1a1" xml:space="preserve" textLength="1016.00" lengthAdjust="spacing"> stage artifact(s) mirrored as out/NN-&lt;pass&gt;/ step dir(s) under recovered\auto; 1 terminal stage(s) linked under recovered\auto</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="370.88" fill="#ededed" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">\final</text>
+      </g>
+      <g opacity="0">
+        <animate attributeName="opacity" dur="2.790s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.068036"/>
+        <text x="0.00" y="389.88" fill="#a1a1a1" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">anti-analysis:</text>
+        <text x="112.00" y="389.88" fill="#ededed" xml:space="preserve" textLength="112.00" lengthAdjust="spacing"> none detected</text>
+      </g>
+    </g>
+  </g>
+</svg>

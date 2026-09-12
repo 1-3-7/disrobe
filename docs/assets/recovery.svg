@@ -1,0 +1,435 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="2459" viewBox="0 0 920 2459" font-family="'Manrope', sans-serif"><desc>generated from recovery.json sha256:afe22248500d3674407396e024fc83a7</desc>
+  <rect x="0" y="0" width="920" height="2459" rx="10" fill="#111111"/>
+  <rect x="0.5" y="0.5" width="919" height="2458" rx="9.5" fill="none" stroke="#404040"/>
+  <desc>graded from evidence/descriptors sha256:e08bd40fe34d0b93a4ae23eb360d0de7</desc>
+  <text x="28.00" y="40.00" font-size="19" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Measured recovery by ecosystem</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">measured numbers, disrobe&#39;s own except where a row names another tool; sources cited per value in this file</text>
+  <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="95.00" width="3.50" height="12.00" fill="#F5F5F5"/>
+  <text x="39.00" y="104.00" font-size="12" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">measured recovery</text>
+  <text x="892.00" y="104.00" font-size="10.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="end" font-weight="400">color and tag = how the number was checked, %</text>
+  <rect x="28.00" y="113.50" width="9.00" height="9.00" rx="2.00" fill="#F5F5F5"/>
+  <text x="42.00" y="121.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">strong</text>
+  <rect x="90.00" y="113.50" width="9.00" height="9.00" rx="2.00" fill="#D4D4D4"/>
+  <text x="104.00" y="121.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">recompile-only</text>
+  <rect x="191.00" y="113.50" width="9.00" height="9.00" rx="2.00" fill="#B3B3B3"/>
+  <text x="205.00" y="121.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">coverage-self-reported</text>
+  <rect x="28.00" y="128.50" width="9.00" height="9.00" rx="2.00" fill="#B3B3B3"/>
+  <text x="42.00" y="136.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">CI, CI gate on documented triggers</text>
+  <rect x="223.50" y="129.00" width="8.00" height="8.00" rx="2.00" fill="none" stroke="#B3B3B3" stroke-width="1"/>
+  <text x="237.00" y="136.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">local, local measurement; see input prerequisites</text>
+<svg x="28.00" y="145.00" width="864" height="1840" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 1840">
+<rect width="864" height="1840" x="0" y="0" fill="none"></rect>
+<path d="M-201.7 -7l201.7 0l0 14l-201.7 0Z" transform="translate(232 27)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 27)" fill="#B3B3B3">python fixed 574-mod core population</text>
+<path d="M-126.6 -7l126.6 0l0 14l-126.6 0Z" transform="translate(232 65)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 65)" fill="#B3B3B3">python 200-mod corpus</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 103)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 103)" fill="#B3B3B3">python CPython 3.10</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 141)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 141)" fill="#B3B3B3">python CPython 3.11</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 179)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 179)" fill="#B3B3B3">python CPython 3.12</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 217)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 217)" fill="#B3B3B3">python CPython 3.13</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 255)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 255)" fill="#B3B3B3">python CPython 3.14</text>
+<path d="M-112.7 -7l112.7 0l0 14l-112.7 0Z" transform="translate(232 293)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 293)" fill="#B3B3B3">python CPython 3.15</text>
+<path d="M-155.3 -7l155.3 0l0 14l-155.3 0Z" transform="translate(232 331)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 331)" fill="#B3B3B3">python legacy proven-correct</text>
+<path d="M-101.6 -7l101.6 0l0 14l-101.6 0Z" transform="translate(232 369)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 369)" fill="#B3B3B3">wasm op-coverage</text>
+<path d="M-154.6 -7l154.6 0l0 14l-154.6 0Z" transform="translate(232 407)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 407)" fill="#B3B3B3">wasm execution-equivalence</text>
+<path d="M-83.5 -7l83.5 0l0 14l-83.5 0Z" transform="translate(232 445)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 445)" fill="#B3B3B3">jvm per-method</text>
+<path d="M-184.6 -7l184.6 0l0 14l-184.6 0Z" transform="translate(232 483)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 483)" fill="#B3B3B3">jvm per-method, execution-verified</text>
+<path d="M-141.1 -7l141.1 0l0 14l-141.1 0Z" transform="translate(232 521)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 521)" fill="#B3B3B3">beam recompile-execution</text>
+<path d="M-79.1 -7l79.1 0l0 14l-79.1 0Z" transform="translate(232 559)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 559)" fill="#B3B3B3">go type names</text>
+<path d="M-102.8 -7l102.8 0l0 14l-102.8 0Z" transform="translate(232 597)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 597)" fill="#B3B3B3">dalvik verifier-clean</text>
+<path d="M-69.6 -7l69.6 0l0 14l-69.6 0Z" transform="translate(232 635)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 635)" fill="#B3B3B3">dalvik bodies</text>
+<path d="M-164.2 -7l164.2 0l0 14l-164.2 0Z" transform="translate(232 673)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 673)" fill="#B3B3B3">dotnet Obfuscar hidden strings</text>
+<path d="M-181.4 -14l181.4 0l0 28l-181.4 0Z" transform="translate(232 711)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 711)" fill="#B3B3B3">dotnet SmartAssembly embedded</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" y="7" transform="translate(232 711)" fill="#B3B3B3">resources</text>
+<path d="M-150.6 -7l150.6 0l0 14l-150.6 0Z" transform="translate(232 749)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 749)" fill="#B3B3B3">dotnet whole-type recompile</text>
+<path d="M-181.7 -14l181.7 0l0 28l-181.7 0Z" transform="translate(232 787)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 787)" fill="#B3B3B3">luau Luau declared-table opcodes</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" y="7" transform="translate(232 787)" fill="#B3B3B3">lifted</text>
+<path d="M-64.9 -7l64.9 0l0 14l-64.9 0Z" transform="translate(232 825)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 825)" fill="#B3B3B3">ruby greeter</text>
+<path d="M-72.2 -7l72.2 0l0 14l-72.2 0Z" transform="translate(232 863)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 863)" fill="#B3B3B3">ruby megafile</text>
+<path d="M-110.4 -7l110.4 0l0 14l-110.4 0Z" transform="translate(232 901)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 901)" fill="#B3B3B3">hermes op-coverage</text>
+<path d="M-103.1 -7l103.1 0l0 14l-103.1 0Z" transform="translate(232 939)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 939)" fill="#B3B3B3">go windows/amd64</text>
+<path d="M-86.4 -7l86.4 0l0 14l-86.4 0Z" transform="translate(232 977)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 977)" fill="#B3B3B3">go windows/386</text>
+<path d="M-81.7 -7l81.7 0l0 14l-81.7 0Z" transform="translate(232 1015)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1015)" fill="#B3B3B3">go linux/amd64</text>
+<path d="M-65 -7l65 0l0 14l-65 0Z" transform="translate(232 1053)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1053)" fill="#B3B3B3">go linux/386</text>
+<path d="M-79 -7l79 0l0 14l-79 0Z" transform="translate(232 1091)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1091)" fill="#B3B3B3">go linux/arm64</text>
+<path d="M-92.4 -7l92.4 0l0 14l-92.4 0Z" transform="translate(232 1129)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1129)" fill="#B3B3B3">go darwin/amd64</text>
+<path d="M-89.6 -7l89.6 0l0 14l-89.6 0Z" transform="translate(232 1167)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1167)" fill="#B3B3B3">go darwin/arm64</text>
+<path d="M-130.6 -7l130.6 0l0 14l-130.6 0Z" transform="translate(232 1205)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1205)" fill="#B3B3B3">planted apk disrobe frisk</text>
+<path d="M-143.5 -7l143.5 0l0 14l-143.5 0Z" transform="translate(232 1243)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1243)" fill="#B3B3B3">planted apk apkleaks 2.6.3</text>
+<path d="M-183.5 -7l183.5 0l0 14l-183.5 0Z" transform="translate(232 1281)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1281)" fill="#B3B3B3">planted non-secret IOC categories</text>
+<path d="M-173.9 -7l173.9 0l0 14l-173.9 0Z" transform="translate(232 1319)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1319)" fill="#B3B3B3">pickle pickletools-graded fixtures</text>
+<path d="M-163.9 -14l163.9 0l0 28l-163.9 0Z" transform="translate(232 1357)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1357)" fill="#B3B3B3">pickle reconstruction roundtrip,</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" y="7" transform="translate(232 1357)" fill="#B3B3B3">re-executed</text>
+<path d="M-125.6 -7l125.6 0l0 14l-125.6 0Z" transform="translate(232 1395)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1395)" fill="#B3B3B3">swift symbol renderings</text>
+<path d="M-138.5 -7l138.5 0l0 14l-138.5 0Z" transform="translate(232 1433)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1433)" fill="#B3B3B3">native direct flow, gcc -O2</text>
+<path d="M-185.5 -7l185.5 0l0 14l-185.5 0Z" transform="translate(232 1471)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1471)" fill="#B3B3B3">native flow through a field, gcc -O2</text>
+<path d="M-198.2 -14l198.2 0l0 28l-198.2 0Z" transform="translate(232 1509)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1509)" fill="#B3B3B3">native flow through an array element,</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="7" transform="translate(232 1509)" fill="#B3B3B3">gcc -O2</text>
+<path d="M-194.9 -14l194.9 0l0 28l-194.9 0Z" transform="translate(232 1547)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1547)" fill="#B3B3B3">native flow across a function pointer,</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="7" transform="translate(232 1547)" fill="#B3B3B3">gcc -O2</text>
+<path d="M-190.7 -14l190.7 0l0 28l-190.7 0Z" transform="translate(232 1585)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1585)" fill="#B3B3B3">native implicit flow through a control</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="7" transform="translate(232 1585)" fill="#B3B3B3">dependence, gcc -O2</text>
+<path d="M-186.2 -7l186.2 0l0 14l-186.2 0Z" transform="translate(232 1623)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1623)" fill="#B3B3B3">native flow through a loop, gcc -O2</text>
+<path d="M-191.5 -14l191.5 0l0 28l-191.5 0Z" transform="translate(232 1661)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1661)" fill="#B3B3B3">native inter-procedural flow at depth</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="7" transform="translate(232 1661)" fill="#B3B3B3">one, gcc -O2</text>
+<path d="M-191.5 -14l191.5 0l0 28l-191.5 0Z" transform="translate(232 1699)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="-7" transform="translate(232 1699)" fill="#B3B3B3">native inter-procedural flow at depth</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" y="7" transform="translate(232 1699)" fill="#B3B3B3">greater than one, gcc -O2</text>
+<path d="M-142.1 -7l142.1 0l0 14l-142.1 0Z" transform="translate(232 1737)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1737)" fill="#B3B3B3">native aggregate , gcc -O2</text>
+<path d="M-74.2 -7l74.2 0l0 14l-74.2 0Z" transform="translate(232 1775)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1775)" fill="#B3B3B3">mcp precision</text>
+<path d="M-54.7 -7l54.7 0l0 14l-54.7 0Z" transform="translate(232 1813)" fill="none" pointer-events="visible" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(232 1813)" fill="#B3B3B3">mcp recall</text>
+<path d="M243 20.5L664 20.5A3 3 0 0 1 667 23.5L667 30.5A3 3 0 0 1 664 33.5L243 33.5A3 3 0 0 1 240 30.5L240 23.5A3 3 0 0 1 243 20.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 58.5L664 58.5A3 3 0 0 1 667 61.5L667 68.5A3 3 0 0 1 664 71.5L243 71.5A3 3 0 0 1 240 68.5L240 61.5A3 3 0 0 1 243 58.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 96.5L664 96.5A3 3 0 0 1 667 99.5L667 106.5A3 3 0 0 1 664 109.5L243 109.5A3 3 0 0 1 240 106.5L240 99.5A3 3 0 0 1 243 96.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 134.5L664 134.5A3 3 0 0 1 667 137.5L667 144.5A3 3 0 0 1 664 147.5L243 147.5A3 3 0 0 1 240 144.5L240 137.5A3 3 0 0 1 243 134.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="3" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 172.5L664 172.5A3 3 0 0 1 667 175.5L667 182.5A3 3 0 0 1 664 185.5L243 185.5A3 3 0 0 1 240 182.5L240 175.5A3 3 0 0 1 243 172.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="4" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 210.5L664 210.5A3 3 0 0 1 667 213.5L667 220.5A3 3 0 0 1 664 223.5L243 223.5A3 3 0 0 1 240 220.5L240 213.5A3 3 0 0 1 243 210.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="5" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 248.5L664 248.5A3 3 0 0 1 667 251.5L667 258.5A3 3 0 0 1 664 261.5L243 261.5A3 3 0 0 1 240 258.5L240 251.5A3 3 0 0 1 243 248.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="6" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 286.5L664 286.5A3 3 0 0 1 667 289.5L667 296.5A3 3 0 0 1 664 299.5L243 299.5A3 3 0 0 1 240 296.5L240 289.5A3 3 0 0 1 243 286.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="7" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 324.5L664 324.5A3 3 0 0 1 667 327.5L667 334.5A3 3 0 0 1 664 337.5L243 337.5A3 3 0 0 1 240 334.5L240 327.5A3 3 0 0 1 243 324.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="8" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 362.5L664 362.5A3 3 0 0 1 667 365.5L667 372.5A3 3 0 0 1 664 375.5L243 375.5A3 3 0 0 1 240 372.5L240 365.5A3 3 0 0 1 243 362.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="9" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 400.5L664 400.5A3 3 0 0 1 667 403.5L667 410.5A3 3 0 0 1 664 413.5L243 413.5A3 3 0 0 1 240 410.5L240 403.5A3 3 0 0 1 243 400.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="10" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 438.5L664 438.5A3 3 0 0 1 667 441.5L667 448.5A3 3 0 0 1 664 451.5L243 451.5A3 3 0 0 1 240 448.5L240 441.5A3 3 0 0 1 243 438.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="11" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 476.5L664 476.5A3 3 0 0 1 667 479.5L667 486.5A3 3 0 0 1 664 489.5L243 489.5A3 3 0 0 1 240 486.5L240 479.5A3 3 0 0 1 243 476.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="12" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 514.5L664 514.5A3 3 0 0 1 667 517.5L667 524.5A3 3 0 0 1 664 527.5L243 527.5A3 3 0 0 1 240 524.5L240 517.5A3 3 0 0 1 243 514.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="13" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 552.5L664 552.5A3 3 0 0 1 667 555.5L667 562.5A3 3 0 0 1 664 565.5L243 565.5A3 3 0 0 1 240 562.5L240 555.5A3 3 0 0 1 243 552.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="14" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 590.5L664 590.5A3 3 0 0 1 667 593.5L667 600.5A3 3 0 0 1 664 603.5L243 603.5A3 3 0 0 1 240 600.5L240 593.5A3 3 0 0 1 243 590.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="15" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 628.5L664 628.5A3 3 0 0 1 667 631.5L667 638.5A3 3 0 0 1 664 641.5L243 641.5A3 3 0 0 1 240 638.5L240 631.5A3 3 0 0 1 243 628.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="16" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 666.5L664 666.5A3 3 0 0 1 667 669.5L667 676.5A3 3 0 0 1 664 679.5L243 679.5A3 3 0 0 1 240 676.5L240 669.5A3 3 0 0 1 243 666.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="17" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 704.5L664 704.5A3 3 0 0 1 667 707.5L667 714.5A3 3 0 0 1 664 717.5L243 717.5A3 3 0 0 1 240 714.5L240 707.5A3 3 0 0 1 243 704.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="18" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 742.5L664 742.5A3 3 0 0 1 667 745.5L667 752.5A3 3 0 0 1 664 755.5L243 755.5A3 3 0 0 1 240 752.5L240 745.5A3 3 0 0 1 243 742.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="19" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 780.5L664 780.5A3 3 0 0 1 667 783.5L667 790.5A3 3 0 0 1 664 793.5L243 793.5A3 3 0 0 1 240 790.5L240 783.5A3 3 0 0 1 243 780.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="20" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 818.5L664 818.5A3 3 0 0 1 667 821.5L667 828.5A3 3 0 0 1 664 831.5L243 831.5A3 3 0 0 1 240 828.5L240 821.5A3 3 0 0 1 243 818.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="21" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 856.5L664 856.5A3 3 0 0 1 667 859.5L667 866.5A3 3 0 0 1 664 869.5L243 869.5A3 3 0 0 1 240 866.5L240 859.5A3 3 0 0 1 243 856.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="22" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 894.5L664 894.5A3 3 0 0 1 667 897.5L667 904.5A3 3 0 0 1 664 907.5L243 907.5A3 3 0 0 1 240 904.5L240 897.5A3 3 0 0 1 243 894.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="23" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 932.5L664 932.5A3 3 0 0 1 667 935.5L667 942.5A3 3 0 0 1 664 945.5L243 945.5A3 3 0 0 1 240 942.5L240 935.5A3 3 0 0 1 243 932.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="24" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 970.5L664 970.5A3 3 0 0 1 667 973.5L667 980.5A3 3 0 0 1 664 983.5L243 983.5A3 3 0 0 1 240 980.5L240 973.5A3 3 0 0 1 243 970.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="25" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1008.5L664 1008.5A3 3 0 0 1 667 1011.5L667 1018.5A3 3 0 0 1 664 1021.5L243 1021.5A3 3 0 0 1 240 1018.5L240 1011.5A3 3 0 0 1 243 1008.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="26" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1046.5L664 1046.5A3 3 0 0 1 667 1049.5L667 1056.5A3 3 0 0 1 664 1059.5L243 1059.5A3 3 0 0 1 240 1056.5L240 1049.5A3 3 0 0 1 243 1046.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="27" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1084.5L664 1084.5A3 3 0 0 1 667 1087.5L667 1094.5A3 3 0 0 1 664 1097.5L243 1097.5A3 3 0 0 1 240 1094.5L240 1087.5A3 3 0 0 1 243 1084.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="28" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1122.5L664 1122.5A3 3 0 0 1 667 1125.5L667 1132.5A3 3 0 0 1 664 1135.5L243 1135.5A3 3 0 0 1 240 1132.5L240 1125.5A3 3 0 0 1 243 1122.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="29" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1160.5L664 1160.5A3 3 0 0 1 667 1163.5L667 1170.5A3 3 0 0 1 664 1173.5L243 1173.5A3 3 0 0 1 240 1170.5L240 1163.5A3 3 0 0 1 243 1160.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="30" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1198.5L664 1198.5A3 3 0 0 1 667 1201.5L667 1208.5A3 3 0 0 1 664 1211.5L243 1211.5A3 3 0 0 1 240 1208.5L240 1201.5A3 3 0 0 1 243 1198.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="31" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1236.5L664 1236.5A3 3 0 0 1 667 1239.5L667 1246.5A3 3 0 0 1 664 1249.5L243 1249.5A3 3 0 0 1 240 1246.5L240 1239.5A3 3 0 0 1 243 1236.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="32" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1274.5L664 1274.5A3 3 0 0 1 667 1277.5L667 1284.5A3 3 0 0 1 664 1287.5L243 1287.5A3 3 0 0 1 240 1284.5L240 1277.5A3 3 0 0 1 243 1274.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="33" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1312.5L664 1312.5A3 3 0 0 1 667 1315.5L667 1322.5A3 3 0 0 1 664 1325.5L243 1325.5A3 3 0 0 1 240 1322.5L240 1315.5A3 3 0 0 1 243 1312.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="34" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1350.5L664 1350.5A3 3 0 0 1 667 1353.5L667 1360.5A3 3 0 0 1 664 1363.5L243 1363.5A3 3 0 0 1 240 1360.5L240 1353.5A3 3 0 0 1 243 1350.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="35" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1388.5L664 1388.5A3 3 0 0 1 667 1391.5L667 1398.5A3 3 0 0 1 664 1401.5L243 1401.5A3 3 0 0 1 240 1398.5L240 1391.5A3 3 0 0 1 243 1388.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="36" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1426.5L664 1426.5A3 3 0 0 1 667 1429.5L667 1436.5A3 3 0 0 1 664 1439.5L243 1439.5A3 3 0 0 1 240 1436.5L240 1429.5A3 3 0 0 1 243 1426.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="37" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1464.5L664 1464.5A3 3 0 0 1 667 1467.5L667 1474.5A3 3 0 0 1 664 1477.5L243 1477.5A3 3 0 0 1 240 1474.5L240 1467.5A3 3 0 0 1 243 1464.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="38" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1502.5L664 1502.5A3 3 0 0 1 667 1505.5L667 1512.5A3 3 0 0 1 664 1515.5L243 1515.5A3 3 0 0 1 240 1512.5L240 1505.5A3 3 0 0 1 243 1502.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="39" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1540.5L664 1540.5A3 3 0 0 1 667 1543.5L667 1550.5A3 3 0 0 1 664 1553.5L243 1553.5A3 3 0 0 1 240 1550.5L240 1543.5A3 3 0 0 1 243 1540.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="40" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1578.5L664 1578.5A3 3 0 0 1 667 1581.5L667 1588.5A3 3 0 0 1 664 1591.5L243 1591.5A3 3 0 0 1 240 1588.5L240 1581.5A3 3 0 0 1 243 1578.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="41" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1616.5L664 1616.5A3 3 0 0 1 667 1619.5L667 1626.5A3 3 0 0 1 664 1629.5L243 1629.5A3 3 0 0 1 240 1626.5L240 1619.5A3 3 0 0 1 243 1616.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="42" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1654.5L664 1654.5A3 3 0 0 1 667 1657.5L667 1664.5A3 3 0 0 1 664 1667.5L243 1667.5A3 3 0 0 1 240 1664.5L240 1657.5A3 3 0 0 1 243 1654.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="43" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1692.5L664 1692.5A3 3 0 0 1 667 1695.5L667 1702.5A3 3 0 0 1 664 1705.5L243 1705.5A3 3 0 0 1 240 1702.5L240 1695.5A3 3 0 0 1 243 1692.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="44" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1730.5L664 1730.5A3 3 0 0 1 667 1733.5L667 1740.5A3 3 0 0 1 664 1743.5L243 1743.5A3 3 0 0 1 240 1740.5L240 1733.5A3 3 0 0 1 243 1730.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="45" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1768.5L664 1768.5A3 3 0 0 1 667 1771.5L667 1778.5A3 3 0 0 1 664 1781.5L243 1781.5A3 3 0 0 1 240 1778.5L240 1771.5A3 3 0 0 1 243 1768.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="46" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 1806.5L664 1806.5A3 3 0 0 1 667 1809.5L667 1816.5A3 3 0 0 1 664 1819.5L243 1819.5A3 3 0 0 1 240 1816.5L240 1809.5A3 3 0 0 1 243 1806.5Z" fill="#1C1C1C" ecmeta_series_index="0" ecmeta_data_index="47" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M243 20.5L643.4 20.5A3 3 0 0 1 646.4 23.5L646.4 30.5A3 3 0 0 1 643.4 33.5L243 33.5A3 3 0 0 1 240 30.5L240 23.5A3 3 0 0 1 243 20.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 58.5L649.8 58.5A3 3 0 0 1 652.8 61.5L652.8 68.5A3 3 0 0 1 649.8 71.5L243 71.5A3 3 0 0 1 240 68.5L240 61.5A3 3 0 0 1 243 58.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 96.5L646.1 96.5A3 3 0 0 1 649.1 99.5L649.1 106.5A3 3 0 0 1 646.1 109.5L243 109.5A3 3 0 0 1 240 106.5L240 99.5A3 3 0 0 1 243 96.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 134.5L649.1 134.5A3 3 0 0 1 652.1 137.5L652.1 144.5A3 3 0 0 1 649.1 147.5L243 147.5A3 3 0 0 1 240 144.5L240 137.5A3 3 0 0 1 243 134.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="3" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 172.5L645.9 172.5A3 3 0 0 1 648.9 175.5L648.9 182.5A3 3 0 0 1 645.9 185.5L243 185.5A3 3 0 0 1 240 182.5L240 175.5A3 3 0 0 1 243 172.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="4" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 210.5L647.2 210.5A3 3 0 0 1 650.2 213.5L650.2 220.5A3 3 0 0 1 647.2 223.5L243 223.5A3 3 0 0 1 240 220.5L240 213.5A3 3 0 0 1 243 210.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="5" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 248.5L649.8 248.5A3 3 0 0 1 652.8 251.5L652.8 258.5A3 3 0 0 1 649.8 261.5L243 261.5A3 3 0 0 1 240 258.5L240 251.5A3 3 0 0 1 243 248.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="6" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 286.5L647.3 286.5A3 3 0 0 1 650.3 289.5L650.3 296.5A3 3 0 0 1 647.3 299.5L243 299.5A3 3 0 0 1 240 296.5L240 289.5A3 3 0 0 1 243 286.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="7" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 324.5L572.2 324.5A3 3 0 0 1 575.2 327.5L575.2 334.5A3 3 0 0 1 572.2 337.5L243 337.5A3 3 0 0 1 240 334.5L240 327.5A3 3 0 0 1 243 324.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="8" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 362.5L664 362.5A3 3 0 0 1 667 365.5L667 372.5A3 3 0 0 1 664 375.5L243 375.5A3 3 0 0 1 240 372.5L240 365.5A3 3 0 0 1 243 362.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="9" ecmeta_ssr_type="chart" class="zr0-cls-4"></path>
+<path d="M243 400.5L664 400.5A3 3 0 0 1 667 403.5L667 410.5A3 3 0 0 1 664 413.5L243 413.5A3 3 0 0 1 240 410.5L240 403.5A3 3 0 0 1 243 400.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="10" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 438.5L664 438.5A3 3 0 0 1 667 441.5L667 448.5A3 3 0 0 1 664 451.5L243 451.5A3 3 0 0 1 240 448.5L240 441.5A3 3 0 0 1 243 438.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="11" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 476.5L618.4 476.5A3 3 0 0 1 621.4 479.5L621.4 486.5A3 3 0 0 1 618.4 489.5L243 489.5A3 3 0 0 1 240 486.5L240 479.5A3 3 0 0 1 243 476.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="12" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 514.5L664 514.5A3 3 0 0 1 667 517.5L667 524.5A3 3 0 0 1 664 527.5L243 527.5A3 3 0 0 1 240 524.5L240 517.5A3 3 0 0 1 243 514.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="13" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 552.5L664 552.5A3 3 0 0 1 667 555.5L667 562.5A3 3 0 0 1 664 565.5L243 565.5A3 3 0 0 1 240 562.5L240 555.5A3 3 0 0 1 243 552.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="14" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 590.5L664 590.5A3 3 0 0 1 667 593.5L667 600.5A3 3 0 0 1 664 603.5L243 603.5A3 3 0 0 1 240 600.5L240 593.5A3 3 0 0 1 243 590.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="15" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 628.5L662.7 628.5A3 3 0 0 1 665.7 631.5L665.7 638.5A3 3 0 0 1 662.7 641.5L243 641.5A3 3 0 0 1 240 638.5L240 631.5A3 3 0 0 1 243 628.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="16" ecmeta_ssr_type="chart" class="zr0-cls-4"></path>
+<path d="M243 666.5L664 666.5A3 3 0 0 1 667 669.5L667 676.5A3 3 0 0 1 664 679.5L243 679.5A3 3 0 0 1 240 676.5L240 669.5A3 3 0 0 1 243 666.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="17" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 704.5L664 704.5A3 3 0 0 1 667 707.5L667 714.5A3 3 0 0 1 664 717.5L243 717.5A3 3 0 0 1 240 714.5L240 707.5A3 3 0 0 1 243 704.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="18" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 742.5L456.6 742.5A3 3 0 0 1 459.6 745.5L459.6 752.5A3 3 0 0 1 456.6 755.5L243 755.5A3 3 0 0 1 240 752.5L240 745.5A3 3 0 0 1 243 742.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="19" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 780.5L654.3 780.5A3 3 0 0 1 657.3 783.5L657.3 790.5A3 3 0 0 1 654.3 793.5L243 793.5A3 3 0 0 1 240 790.5L240 783.5A3 3 0 0 1 243 780.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="20" ecmeta_ssr_type="chart" class="zr0-cls-4"></path>
+<path d="M243 818.5L664 818.5A3 3 0 0 1 667 821.5L667 828.5A3 3 0 0 1 664 831.5L243 831.5A3 3 0 0 1 240 828.5L240 821.5A3 3 0 0 1 243 818.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="21" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 856.5L658.3 856.5A3 3 0 0 1 661.3 859.5L661.3 866.5A3 3 0 0 1 658.3 869.5L243 869.5A3 3 0 0 1 240 866.5L240 859.5A3 3 0 0 1 243 856.5Z" fill="#D4D4D4" ecmeta_series_index="1" ecmeta_data_index="22" ecmeta_ssr_type="chart" class="zr0-cls-2"></path>
+<path d="M243 894.5L664 894.5A3 3 0 0 1 667 897.5L667 904.5A3 3 0 0 1 664 907.5L243 907.5A3 3 0 0 1 240 904.5L240 897.5A3 3 0 0 1 243 894.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="23" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 932.5L642.3 932.5A3 3 0 0 1 645.3 935.5L645.3 942.5A3 3 0 0 1 642.3 945.5L243 945.5A3 3 0 0 1 240 942.5L240 935.5A3 3 0 0 1 243 932.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="24" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 970.5L664 970.5A3 3 0 0 1 667 973.5L667 980.5A3 3 0 0 1 664 983.5L243 983.5A3 3 0 0 1 240 980.5L240 973.5A3 3 0 0 1 243 970.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="25" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1008.5L637.6 1008.5A3 3 0 0 1 640.6 1011.5L640.6 1018.5A3 3 0 0 1 637.6 1021.5L243 1021.5A3 3 0 0 1 240 1018.5L240 1011.5A3 3 0 0 1 243 1008.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="26" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1046.5L663.7 1046.5A3 3 0 0 1 666.7 1049.5L666.7 1056.5A3 3 0 0 1 663.7 1059.5L243 1059.5A3 3 0 0 1 240 1056.5L240 1049.5A3 3 0 0 1 243 1046.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="27" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1084.5L639.1 1084.5A3 3 0 0 1 642.1 1087.5L642.1 1094.5A3 3 0 0 1 639.1 1097.5L243 1097.5A3 3 0 0 1 240 1094.5L240 1087.5A3 3 0 0 1 243 1084.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="28" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1122.5L616.1 1122.5A3 3 0 0 1 619.1 1125.5L619.1 1132.5A3 3 0 0 1 616.1 1135.5L243 1135.5A3 3 0 0 1 240 1132.5L240 1125.5A3 3 0 0 1 243 1122.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="29" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1160.5L621.3 1160.5A3 3 0 0 1 624.3 1163.5L624.3 1170.5A3 3 0 0 1 621.3 1173.5L243 1173.5A3 3 0 0 1 240 1170.5L240 1163.5A3 3 0 0 1 243 1160.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="30" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1198.5L664 1198.5A3 3 0 0 1 667 1201.5L667 1208.5A3 3 0 0 1 664 1211.5L243 1211.5A3 3 0 0 1 240 1208.5L240 1201.5A3 3 0 0 1 243 1198.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="31" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1236.5L503.9 1236.5A3 3 0 0 1 506.9 1239.5L506.9 1246.5A3 3 0 0 1 503.9 1249.5L243 1249.5A3 3 0 0 1 240 1246.5L240 1239.5A3 3 0 0 1 243 1236.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="32" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1274.5L664 1274.5A3 3 0 0 1 667 1277.5L667 1284.5A3 3 0 0 1 664 1287.5L243 1287.5A3 3 0 0 1 240 1284.5L240 1277.5A3 3 0 0 1 243 1274.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="33" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1312.5L664 1312.5A3 3 0 0 1 667 1315.5L667 1322.5A3 3 0 0 1 664 1325.5L243 1325.5A3 3 0 0 1 240 1322.5L240 1315.5A3 3 0 0 1 243 1312.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="34" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1350.5L664 1350.5A3 3 0 0 1 667 1353.5L667 1360.5A3 3 0 0 1 664 1363.5L243 1363.5A3 3 0 0 1 240 1360.5L240 1353.5A3 3 0 0 1 243 1350.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="35" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1388.5L664 1388.5A3 3 0 0 1 667 1391.5L667 1398.5A3 3 0 0 1 664 1401.5L243 1401.5A3 3 0 0 1 240 1398.5L240 1391.5A3 3 0 0 1 243 1388.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="36" ecmeta_ssr_type="chart" class="zr0-cls-4"></path>
+<path d="M243 1426.5L493.2 1426.5A3 3 0 0 1 496.2 1429.5L496.2 1436.5A3 3 0 0 1 493.2 1439.5L243 1439.5A3 3 0 0 1 240 1436.5L240 1429.5A3 3 0 0 1 243 1426.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="37" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1464.5L493.2 1464.5A3 3 0 0 1 496.2 1467.5L496.2 1474.5A3 3 0 0 1 493.2 1477.5L243 1477.5A3 3 0 0 1 240 1474.5L240 1467.5A3 3 0 0 1 243 1464.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="38" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1502.5L322.4 1502.5A3 3 0 0 1 325.4 1505.5L325.4 1512.5A3 3 0 0 1 322.4 1515.5L243 1515.5A3 3 0 0 1 240 1512.5L240 1505.5A3 3 0 0 1 243 1502.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="39" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1540.5L493.2 1540.5A3 3 0 0 1 496.2 1543.5L496.2 1550.5A3 3 0 0 1 493.2 1553.5L243 1553.5A3 3 0 0 1 240 1550.5L240 1543.5A3 3 0 0 1 243 1540.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="40" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1578.5L483 1578.5A3 3 0 0 1 486 1581.5L486 1588.5A3 3 0 0 1 483 1591.5L243 1591.5A3 3 0 0 1 240 1588.5L240 1581.5A3 3 0 0 1 243 1578.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="41" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1616.5L493.2 1616.5A3 3 0 0 1 496.2 1619.5L496.2 1626.5A3 3 0 0 1 493.2 1629.5L243 1629.5A3 3 0 0 1 240 1626.5L240 1619.5A3 3 0 0 1 243 1616.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="42" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1654.5L407.8 1654.5A3 3 0 0 1 410.8 1657.5L410.8 1664.5A3 3 0 0 1 407.8 1667.5L243 1667.5A3 3 0 0 1 240 1664.5L240 1657.5A3 3 0 0 1 243 1654.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="43" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M240 1692.5L240 1705.5L240 1692.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="44" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1730.5L445.8 1730.5A3 3 0 0 1 448.8 1733.5L448.8 1740.5A3 3 0 0 1 445.8 1743.5L243 1743.5A3 3 0 0 1 240 1740.5L240 1733.5A3 3 0 0 1 243 1730.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="45" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1768.5L664 1768.5A3 3 0 0 1 667 1771.5L667 1778.5A3 3 0 0 1 664 1781.5L243 1781.5A3 3 0 0 1 240 1778.5L240 1771.5A3 3 0 0 1 243 1768.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="46" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+<path d="M243 1806.5L664 1806.5A3 3 0 0 1 667 1809.5L667 1816.5A3 3 0 0 1 664 1819.5L243 1819.5A3 3 0 0 1 240 1816.5L240 1809.5A3 3 0 0 1 243 1806.5Z" fill="#F5F5F5" ecmeta_series_index="1" ecmeta_data_index="47" ecmeta_ssr_type="chart" class="zr0-cls-3"></path>
+
+</svg>
+  <text x="703.00" y="172.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-0" dominant-baseline="central" xml:space="preserve">95.18%</text>
+  <text x="703.00" y="210.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-1" dominant-baseline="central" xml:space="preserve">96.67%</text>
+  <text x="703.00" y="248.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-2" dominant-baseline="central" xml:space="preserve">95.80%</text>
+  <text x="703.00" y="286.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-3" dominant-baseline="central" xml:space="preserve">96.52%</text>
+  <text x="703.00" y="324.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-4" dominant-baseline="central" xml:space="preserve">95.77%</text>
+  <text x="703.00" y="362.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-5" dominant-baseline="central" xml:space="preserve">96.07%</text>
+  <text x="703.00" y="400.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-6" dominant-baseline="central" xml:space="preserve">96.67%</text>
+  <text x="703.00" y="438.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-7" dominant-baseline="central" xml:space="preserve">96.09%</text>
+  <text x="703.00" y="476.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-8" dominant-baseline="central" xml:space="preserve">78.50%</text>
+  <text x="703.00" y="514.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-9" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="552.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-10" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="590.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-11" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="628.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-12" dominant-baseline="central" xml:space="preserve">89.31%</text>
+  <text x="703.00" y="666.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-13" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="704.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-14" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="742.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-15" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="780.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-16" dominant-baseline="central" xml:space="preserve">99.70%</text>
+  <text x="703.00" y="818.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-17" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="856.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-18" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="894.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-19" dominant-baseline="central" xml:space="preserve">51.43%</text>
+  <text x="703.00" y="932.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-20" dominant-baseline="central" xml:space="preserve">97.73%</text>
+  <text x="703.00" y="970.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-21" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1008.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-22" dominant-baseline="central" xml:space="preserve">98.67%</text>
+  <text x="703.00" y="1046.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-23" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1084.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-24" dominant-baseline="central" xml:space="preserve">94.92%</text>
+  <text x="703.00" y="1122.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-25" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1160.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-26" dominant-baseline="central" xml:space="preserve">93.81%</text>
+  <text x="703.00" y="1198.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-27" dominant-baseline="central" xml:space="preserve">99.94%</text>
+  <text x="703.00" y="1236.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-28" dominant-baseline="central" xml:space="preserve">94.16%</text>
+  <text x="703.00" y="1274.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-29" dominant-baseline="central" xml:space="preserve">88.78%</text>
+  <text x="703.00" y="1312.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-30" dominant-baseline="central" xml:space="preserve">90.01%</text>
+  <text x="703.00" y="1350.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-31" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1388.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-32" dominant-baseline="central" xml:space="preserve">62.50%</text>
+  <text x="703.00" y="1426.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-33" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1464.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-34" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1502.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-35" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1540.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-36" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1578.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-37" dominant-baseline="central" xml:space="preserve">60.00%</text>
+  <text x="703.00" y="1616.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-38" dominant-baseline="central" xml:space="preserve">60.00%</text>
+  <text x="703.00" y="1654.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-39" dominant-baseline="central" xml:space="preserve">20.00%</text>
+  <text x="703.00" y="1692.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-40" dominant-baseline="central" xml:space="preserve">60.00%</text>
+  <text x="703.00" y="1730.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-41" dominant-baseline="central" xml:space="preserve">57.60%</text>
+  <text x="703.00" y="1768.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-42" dominant-baseline="central" xml:space="preserve">60.00%</text>
+  <text x="703.00" y="1806.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-43" dominant-baseline="central" xml:space="preserve">40.00%</text>
+  <text x="703.00" y="1844.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-44" dominant-baseline="central" xml:space="preserve">0.00%</text>
+  <text x="703.00" y="1882.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-45" dominant-baseline="central" xml:space="preserve">48.90%</text>
+  <text x="703.00" y="1920.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-46" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <text x="703.00" y="1958.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-percent-value-47" dominant-baseline="central" xml:space="preserve">100.00%</text>
+  <rect x="760.50" y="168.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#D4D4D4" stroke-width="1"/>
+  <text x="773.00" y="172.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-0" dominant-baseline="central" xml:space="preserve">recompile local</text>
+  <rect x="760.00" y="206.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="210.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-1" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="244.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="248.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-2" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="282.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="286.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-3" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="320.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="324.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-4" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="358.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="362.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-5" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.50" y="396.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#D4D4D4" stroke-width="1"/>
+  <text x="773.00" y="400.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-6" dominant-baseline="central" xml:space="preserve">recompile local</text>
+  <rect x="760.00" y="434.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="438.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-7" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="472.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="476.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-8" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="510.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="773.00" y="514.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-9" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="760.00" y="548.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="552.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-10" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="586.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="590.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-11" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="624.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="628.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-12" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="662.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="666.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-13" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="700.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="704.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-14" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="738.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="742.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-15" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.50" y="776.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#B3B3B3" stroke-width="1"/>
+  <text x="773.00" y="780.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-16" dominant-baseline="central" xml:space="preserve">self-reported local</text>
+  <rect x="760.00" y="814.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="818.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-17" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="852.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="856.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-18" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="890.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="894.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-19" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="928.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="773.00" y="932.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-20" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="760.00" y="966.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="970.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-21" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="1004.00" width="8.00" height="8.00" rx="1.50" fill="#D4D4D4"/>
+  <text x="773.00" y="1008.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-22" dominant-baseline="central" xml:space="preserve">recompile CI</text>
+  <rect x="760.00" y="1042.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1046.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-23" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1080.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1084.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-24" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1118.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1122.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-25" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1156.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1160.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-26" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1194.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1198.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-27" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1232.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1236.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-28" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1270.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1274.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-29" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1308.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1312.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-30" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1346.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1350.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-31" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1384.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1388.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-32" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1422.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1426.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-33" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1460.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1464.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-34" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1498.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1502.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-35" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1536.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="773.00" y="1540.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-36" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="760.50" y="1574.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1578.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-37" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1612.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1616.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-38" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1650.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1654.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-39" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1688.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1692.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-40" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1726.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1730.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-41" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1764.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1768.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-42" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1802.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1806.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-43" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1840.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1844.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-44" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.50" y="1878.50" width="7.00" height="7.00" rx="1.50" fill="none" stroke="#F5F5F5" stroke-width="1"/>
+  <text x="773.00" y="1882.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-45" dominant-baseline="central" xml:space="preserve">strong local</text>
+  <rect x="760.00" y="1916.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1920.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-46" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="760.00" y="1954.00" width="8.00" height="8.00" rx="1.50" fill="#F5F5F5"/>
+  <text x="773.00" y="1958.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-percent-tier-47" dominant-baseline="central" xml:space="preserve">strong CI</text>
+  <rect x="28.00" y="1998.00" width="3.50" height="12.00" fill="#F5F5F5"/>
+  <text x="39.00" y="2007.00" font-size="12" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">detection and coverage breadth</text>
+  <text x="892.00" y="2007.00" font-size="10.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="end" font-weight="400">numerator / denominator</text>
+<svg x="28.00" y="2019.00" width="864" height="122" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 864 122">
+<rect width="864" height="122" x="0" y="0" fill="none"></rect>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" transform="translate(158 25)" fill="#B3B3B3">containers</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(158 61)" fill="#B3B3B3">v8/v9 default-trial wrappers</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:'Manrope', sans-serif;" xml:space="preserve" transform="translate(158 97)" fill="#B3B3B3">ollvm -fla dispatcher states</text>
+<path d="M169 18.5L560 18.5A3 3 0 0 1 563 21.5L563 28.5A3 3 0 0 1 560 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
+<path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
+<path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#404040" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-5"></path>
+<path d="M169 18.5L324.9 18.5A3 3 0 0 1 327.9 21.5L327.9 28.5A3 3 0 0 1 324.9 31.5L169 31.5A3 3 0 0 1 166 28.5L166 21.5A3 3 0 0 1 169 18.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
+<path d="M169 54.5L560 54.5A3 3 0 0 1 563 57.5L563 64.5A3 3 0 0 1 560 67.5L169 67.5A3 3 0 0 1 166 64.5L166 57.5A3 3 0 0 1 169 54.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
+<path d="M169 90.5L560 90.5A3 3 0 0 1 563 93.5L563 100.5A3 3 0 0 1 560 103.5L169 103.5A3 3 0 0 1 166 100.5L166 93.5A3 3 0 0 1 169 90.5Z" fill="#B3B3B3" ecmeta_series_index="1" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr1-cls-6"></path>
+
+</svg>
+  <text x="601.00" y="2036.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-0" dominant-baseline="central" xml:space="preserve">42 extracted from a committed input / 103</text>
+  <text x="601.00" y="2072.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-1" dominant-baseline="central" xml:space="preserve">72 decoded root CodeObjects / 72</text>
+  <text x="601.00" y="2108.00" font-size="11.5" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="500" id="disrobe-recovery-count-pair-value-2" dominant-baseline="central" xml:space="preserve">9 reached by the recovered program / 9</text>
+  <rect x="601.00" y="2048.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="614.00" y="2052.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-count-pair-tier-0" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="601.00" y="2084.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="614.00" y="2088.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-count-pair-tier-1" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="601.00" y="2120.00" width="8.00" height="8.00" rx="1.50" fill="#B3B3B3"/>
+  <text x="614.00" y="2124.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-count-pair-tier-2" dominant-baseline="central" xml:space="preserve">self-reported CI</text>
+  <rect x="28.00" y="2156.00" width="3.50" height="12.00" fill="#F5F5F5"/>
+  <text x="39.00" y="2165.00" font-size="12" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">families and scale</text>
+  <text x="28.00" y="2185.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">23</text>
+  <text x="58.00" y="2185.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">.net protectors</text>
+  <text x="58.00" y="2199.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-0" xml:space="preserve">self-reported CI</text>
+  <text x="28.00" y="2223.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">20</text>
+  <text x="58.00" y="2223.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">python source obfuscators</text>
+  <text x="58.00" y="2237.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-1" xml:space="preserve">self-reported CI</text>
+  <text x="28.00" y="2261.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">10</text>
+  <text x="58.00" y="2261.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">jvm / android families</text>
+  <text x="58.00" y="2275.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-2" xml:space="preserve">self-reported CI</text>
+  <text x="28.00" y="2299.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">19</text>
+  <text x="58.00" y="2299.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">shell obfuscation modes</text>
+  <text x="58.00" y="2313.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-3" xml:space="preserve">self-reported CI</text>
+  <text x="28.00" y="2337.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">11</text>
+  <text x="58.00" y="2337.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">js bundlers</text>
+  <text x="58.00" y="2351.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-4" xml:space="preserve">self-reported CI</text>
+  <text x="28.00" y="2375.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">16</text>
+  <text x="58.00" y="2375.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">lua chain entries</text>
+  <text x="58.00" y="2389.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-5" xml:space="preserve">self-reported CI</text>
+  <text x="460.00" y="2185.00" font-size="15" fill="#F5F5F5" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">1</text>
+  <text x="481.00" y="2185.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">lua vm-devirt on real tool output</text>
+  <text x="481.00" y="2199.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-6" xml:space="preserve">strong CI</text>
+  <text x="460.00" y="2223.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">1</text>
+  <text x="481.00" y="2223.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">lua vm-devirt on an in-house sample only</text>
+  <text x="481.00" y="2237.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-7" xml:space="preserve">self-reported CI</text>
+  <text x="460.00" y="2261.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">4</text>
+  <text x="481.00" y="2261.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">wasm direct transformation helper families</text>
+  <text x="481.00" y="2275.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-8" xml:space="preserve">self-reported CI</text>
+  <text x="460.00" y="2299.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">122,633</text>
+  <text x="535.00" y="2299.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">hermes fns parsed</text>
+  <text x="535.00" y="2313.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-9" xml:space="preserve">self-reported local</text>
+  <text x="460.00" y="2337.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">23,471</text>
+  <text x="526.00" y="2337.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">flutter fns parsed</text>
+  <text x="526.00" y="2351.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-10" xml:space="preserve">self-reported local</text>
+  <text x="460.00" y="2375.00" font-size="15" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="600">316</text>
+  <text x="499.00" y="2375.00" font-size="12" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">mixed boolean arithmetic</text>
+  <text x="499.00" y="2389.00" font-size="9.5" fill="#B3B3B3" font-family="'JetBrains Mono', monospace" text-anchor="start" font-weight="400" id="disrobe-recovery-stat-tier-11" xml:space="preserve">self-reported CI</text>
+  <line x1="28.00" y1="2415.00" x2="892.00" y2="2415.00" stroke="#404040" stroke-width="1"/>
+  <text x="28.00" y="2427.00" font-size="10" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Measurements name their source harness and input population.</text>
+</svg>

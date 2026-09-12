@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Briefcase-Version: 0.4.2
+Name: hello
+Formal-Name: Hello
+App-ID: org.disrobe.hello
+Version: 0.0.1
+Home-page: https://example.com
+Download-URL: https://example.com
+Author: Disrobe
+Author-email: hello@disrobe.dev
+Summary: My first application

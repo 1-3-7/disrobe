@@ -1,0 +1,72 @@
+[package]
+name = "disrobe-core"
+description = "Shared traits, error types, capability model, and pass-dispatch primitives for the disrobe decompiler/deobfuscator suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+chain = []
+cache = []
+redact = []
+
+[dependencies]
+disrobe-bytes = { workspace = true }
+disrobe-tool-process = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+memchr = { workspace = true }
+regex = { workspace = true }
+aho-corasick = { version = "1.1" }
+base64 = { workspace = true }
+rand = { workspace = true }
+blake3 = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+cipher = { version = "0.4", features = ["block-padding"] }
+crc32fast = { workspace = true }
+chacha20poly1305 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+pbkdf2 = { workspace = true }
+md5 = { workspace = true }
+scrypt = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+bzip2-rs = { workspace = true }
+tar = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wait-timeout = { workspace = true }
+liblzma = { workspace = true }
+gix = { workspace = true }
+iced-x86 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+divan = { workspace = true }
+goblin = { workspace = true }
+toml = { workspace = true }
+
+[[bin]]
+name = "disrobe-core-mock-proc"
+path = "src/bin/mock_proc.rs"
+
+[[bench]]
+name = "chain_bench"
+harness = false
+required-features = ["chain"]

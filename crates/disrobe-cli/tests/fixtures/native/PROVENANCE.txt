@@ -1,0 +1,18 @@
+plain_x86_64.macho provenance
+
+Source: corpus/src/native/edge_cases/stripped_macho.c.
+
+Compiler: clang 19.1.7.
+
+Command, run from the repository root:
+  clang --target=x86_64-apple-darwin -O2 -c \
+    corpus/src/native/edge_cases/stripped_macho.c \
+    -o crates/disrobe-cli/tests/fixtures/native/plain_x86_64.macho
+
+SHA-256:
+  7DCBE27132DCB1CB5B4C6E90ABA1720E175EB53C6373958075FC934C592B6DE9
+
+A fresh build with the command above produced byte-identical output.
+
+The source and generated fixture are part of Disrobe and are distributed under
+the repository's Elastic License 2.0 file.

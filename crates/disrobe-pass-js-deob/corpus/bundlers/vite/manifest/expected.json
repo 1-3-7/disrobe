@@ -1,0 +1,7 @@
+{
+  "kind": "vite",
+  "entry": "src/main.ts",
+  "chunks": ["src/main.ts", "src/pages/lazy.tsx", "_shared-CAFEBABE.js"],
+  "main_imports": ["_shared-CAFEBABE.js"],
+  "main_dynamic_imports": ["src/pages/lazy.tsx"]
+}

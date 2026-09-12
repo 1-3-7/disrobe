@@ -1,0 +1,1074 @@
+#![deny(unreachable_pub)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::redundant_pub_crate
+)]
+
+mod artifact_map;
+mod attack_surface;
+mod capability_reachability;
+mod card;
+mod catalog_counts;
+mod codegen;
+mod comments;
+mod crossdata;
+mod datamodel;
+mod demo;
+mod denominator_floor;
+mod doc_region;
+mod dotnet_string_evidence;
+mod errdocs;
+mod evidence;
+mod evidence_tiers;
+mod facts;
+mod feature_gated_tests;
+mod figures;
+mod fileio;
+mod floors;
+mod fuzz_scope;
+mod fuzz_seeds;
+mod fuzz_surface;
+mod graph_disjointness;
+mod graphs;
+mod health;
+mod local_tags;
+mod metrics;
+mod packer_roster;
+#[cfg(feature = "playground")]
+mod playground;
+mod plugins;
+mod prepush;
+mod regen;
+mod roster_breadth;
+mod skip_census;
+mod sync;
+mod typography;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+
+use camino::Utf8PathBuf;
+use clap::{Parser, Subcommand};
+use eyre::{Result, WrapErr, bail};
+use serde_json::{Map, Value, json};
+
+use crate::codegen::{CodegenSummary, SchemaArtifact, load_schemas, write_bindings};
+
+#[derive(Parser, Debug)]
+#[command(name = "xtask", about = "disrobe repo automation")]
+struct Cli {
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    GenBindings {
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    BakeFixtures {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        dry_run: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        edge_cases: bool,
+    },
+    ReleasePackage,
+    Schemas {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    GenErrorDocs {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Regen {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    FuzzSurface {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    SkipCensus,
+    FuzzSeeds {
+        #[arg(long)]
+        target: Option<String>,
+    },
+    Metrics {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        write: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Graphs {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Demo {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Card {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Plugins {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Sync {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+    },
+    Evidence {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        check: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        list: bool,
+    },
+    Prepush {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        full: bool,
+    },
+    Health {
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        json: bool,
+    },
+    SetupHooks,
+    #[cfg(feature = "playground")]
+    Playground {
+        #[arg(long)]
+        sample_per_kind: Option<usize>,
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        fail_on_circular: bool,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli: Cli = Cli::parse();
+    let result: Result<()> = match cli.command {
+        Cmd::GenBindings { out_dir, check } => run_gen_bindings(out_dir, check),
+        Cmd::BakeFixtures {
+            dry_run,
+            edge_cases,
+        } => run_bake_fixtures(dry_run, edge_cases),
+        Cmd::ReleasePackage => run_release_package(),
+        Cmd::Schemas { check } => run_schemas(check),
+        Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
+        Cmd::Regen { check } => run_regen(check),
+        Cmd::FuzzSurface { check } => run_fuzz_surface(check),
+        Cmd::SkipCensus => run_skip_census(),
+        Cmd::FuzzSeeds { target } => run_fuzz_seeds(target.as_deref()),
+        Cmd::Metrics { write, check } => run_metrics(write, check),
+        Cmd::Graphs { check } => run_graphs(check),
+        Cmd::Demo { check } => run_demo(check),
+        Cmd::Card { check } => run_card(check),
+        Cmd::Plugins { check } => run_plugins(check),
+        Cmd::Sync { check } => run_sync(check),
+        Cmd::Evidence { check, list } => run_evidence(check, list),
+        Cmd::Prepush { full } => run_prepush(full),
+        Cmd::Health { json } => run_health(json),
+        Cmd::SetupHooks => run_setup_hooks(),
+        #[cfg(feature = "playground")]
+        Cmd::Playground {
+            sample_per_kind,
+            fail_on_circular,
+        } => run_playground(sample_per_kind, fail_on_circular),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("xtask: {err:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn workspace_root() -> Result<PathBuf> {
+    let manifest: &str = env!("CARGO_MANIFEST_DIR");
+    let here: PathBuf = PathBuf::from(manifest);
+    let Some(parent): Option<&Path> = here.parent() else {
+        bail!("xtask manifest dir has no parent: {}", here.display());
+    };
+    Ok(parent.to_path_buf())
+}
+
+fn run_health(as_json: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    health::run(&root, as_json)
+}
+
+fn run_bake_fixtures(dry_run: bool, edge_cases: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let corpus_dir: PathBuf = root.join("corpus");
+    if !corpus_dir.is_dir() {
+        bail!("corpus dir missing: {}", corpus_dir.display());
+    }
+    let plan: BakePlan = if cfg!(windows) {
+        let script: PathBuf = corpus_dir.join("generate.ps1");
+        if !script.is_file() {
+            bail!("corpus/generate.ps1 missing");
+        }
+        let mut flags: Vec<&'static str> = Vec::with_capacity(2);
+        if dry_run {
+            flags.push("-DryRun");
+        }
+        if edge_cases {
+            flags.push("-EdgeCases");
+        }
+        BakePlan {
+            program: "powershell".to_owned(),
+            script,
+            extra_flags: flags,
+            powershell_wrap: true,
+        }
+    } else {
+        let script: PathBuf = corpus_dir.join("generate.sh");
+        if !script.is_file() {
+            bail!("corpus/generate.sh missing");
+        }
+        let mut flags: Vec<&'static str> = Vec::with_capacity(2);
+        if dry_run {
+            flags.push("--dry-run");
+        }
+        if edge_cases {
+            flags.push("--edge-cases");
+        }
+        BakePlan {
+            program: "bash".to_owned(),
+            script,
+            extra_flags: flags,
+            powershell_wrap: false,
+        }
+    };
+
+    let mut cmd: Command = Command::new(&plan.program);
+    if plan.powershell_wrap {
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
+    }
+    cmd.arg(&plan.script);
+    for flag in &plan.extra_flags {
+        cmd.arg(flag);
+    }
+    cmd.current_dir(&corpus_dir);
+    cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    println!(
+        "xtask bake-fixtures: invoking {} {} ({}dry-run{})",
+        plan.program,
+        plan.script.display(),
+        if dry_run { "" } else { "no " },
+        if edge_cases { ", edge-cases only" } else { "" }
+    );
+    let status: std::process::ExitStatus = cmd
+        .status()
+        .with_context_msg(|| format!("spawning {}", plan.program))?;
+    if !status.success() {
+        bail!("corpus generator exited with {status}");
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct BakePlan {
+    program: String,
+    script: PathBuf,
+    extra_flags: Vec<&'static str>,
+    powershell_wrap: bool,
+}
+
+#[cfg(feature = "playground")]
+fn run_playground(sample_per_kind: Option<usize>, fail_on_circular: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let opts: playground::PlaygroundOptions = playground::PlaygroundOptions {
+        sample_per_kind,
+        fail_under_circularity: fail_on_circular,
+    };
+    playground::run(&root, &opts)
+}
+
+pub(crate) fn run_schemas(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let out_dir: PathBuf = root.join("schemas").join("v0").join("json");
+    let envelope: Value = envelope_schema();
+    let manifest: Value = freezer_manifest_schema();
+    let extraction: Value = extraction_result_schema();
+    let detection: Value = pyarmor_detection_schema();
+    let native_aot: Value = native_aot_symbols_schema();
+    let rendered: [(&str, &Value); 5] = [
+        ("dr-envelope.schema.json", &envelope),
+        ("freezer-manifest.schema.json", &manifest),
+        ("extraction-result.schema.json", &extraction),
+        ("pyarmor-detection.schema.json", &detection),
+        ("native-aot-symbols.schema.json", &native_aot),
+    ];
+
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for schemas check".to_owned())?;
+        for (name, value) in rendered {
+            write_json(&tmp.path().join(name), value)?;
+        }
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_tree(tmp.path(), &out_dir, &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask schemas --check: {} JSON Schema(s) match regeneration",
+                rendered.len()
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed JSON Schemas are stale; run `cargo run -p xtask -- schemas`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        fs::create_dir_all(&out_dir)
+            .with_context_msg(|| format!("creating {}", out_dir.display()))?;
+        for (name, value) in rendered {
+            write_json(&out_dir.join(name), value)?;
+        }
+        println!(
+            "xtask schemas: wrote {} JSON Schemas under {}",
+            rendered.len(),
+            out_dir.display()
+        );
+        Ok(())
+    }
+}
+
+pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for error-docs check".to_owned())?;
+        let written: usize = errdocs::generate_into(&root, tmp.path())?;
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_tree(tmp.path(), &errdocs::errors_doc_dir(&root), &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask gen-error-docs --check: {written} error-code page(s) + index match regeneration"
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed error docs are stale; run `cargo run -p xtask -- gen-error-docs`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        let written: usize = errdocs::generate(&root)?;
+        println!(
+            "xtask gen-error-docs: wrote {written} error-code page(s) + index under {}",
+            errdocs::errors_doc_dir(&root).display()
+        );
+        Ok(())
+    }
+}
+
+fn run_skip_census() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    skip_census::run(&root)
+}
+
+fn run_fuzz_surface(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    fuzz_surface::run(&root, check)
+}
+
+fn run_fuzz_seeds(target: Option<&str>) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    fuzz_seeds::run(&root, target)
+}
+
+fn run_regen(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    regen::run(&root, check)
+}
+
+fn run_metrics(write: bool, check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let mode: metrics::Mode = match (write, check) {
+        (_, true) => metrics::Mode::Check,
+        (true, false) => metrics::Mode::Write,
+        (false, false) => bail!("specify --write to rewrite markers or --check to verify them"),
+    };
+    metrics::run(&root, mode)
+}
+
+fn run_graphs(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    graphs::run(&root, check)
+}
+
+fn run_demo(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    demo::run(&root, check)
+}
+
+fn run_card(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    card::run(&root, check)
+}
+
+fn run_plugins(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    plugins::run(&root, check)
+}
+
+fn run_sync(check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    sync::run(&root, check)
+}
+
+fn run_prepush(full: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    prepush::run(&root, full)
+}
+
+fn run_setup_hooks() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    prepush::setup_hooks(&root)
+}
+
+fn run_evidence(check: bool, list: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let mode: evidence::Mode = if list {
+        evidence::Mode::List
+    } else if check {
+        evidence::Mode::Check
+    } else {
+        evidence::Mode::Render
+    };
+    evidence::run(&root, mode)
+}
+
+pub(crate) fn run_gen_bindings(out_dir: Option<PathBuf>, check: bool) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let schemas_dir: PathBuf = root.join("schemas").join("v0").join("json");
+    if !schemas_dir.is_dir() {
+        run_schemas(false)?;
+    }
+    let bindings_root: PathBuf = out_dir.unwrap_or_else(|| root.join("bindings"));
+    let py_dir: PathBuf = bindings_root.join("python");
+    let ts_dir: PathBuf = bindings_root.join("typescript");
+    let schemas: Vec<SchemaArtifact> = load_schemas(&schemas_dir)?;
+
+    if check {
+        let tmp: tempfile::TempDir = tempfile::tempdir()
+            .with_context_msg(|| "creating temp dir for bindings check".to_owned())?;
+        let tmp_py: PathBuf = tmp.path().join("python");
+        let tmp_ts: PathBuf = tmp.path().join("typescript");
+        write_bindings(&schemas, &tmp_py, &tmp_ts)?;
+        let mut stale: Vec<String> = Vec::new();
+        fileio::diff_generated_flat(&tmp_py, &py_dir, is_python_binding_artifact, &mut stale)?;
+        fileio::diff_generated_flat(&tmp_ts, &ts_dir, is_typescript_binding_artifact, &mut stale)?;
+        if stale.is_empty() {
+            println!(
+                "xtask gen-bindings --check: {} schema(s) match regeneration",
+                schemas.len()
+            );
+            Ok(())
+        } else {
+            bail!(
+                "committed bindings are stale; run `cargo run -p xtask -- gen-bindings`:\n  {}",
+                stale.join("\n  ")
+            )
+        }
+    } else {
+        let summary: CodegenSummary = write_bindings(&schemas, &py_dir, &ts_dir)?;
+        println!(
+            "xtask gen-bindings: python {written_py} written, {skipped_py} skipped in {py_path}; typescript {written_ts} written, {skipped_ts} skipped in {ts_path}",
+            written_py = summary.py_written,
+            skipped_py = summary.py_skipped,
+            written_ts = summary.ts_written,
+            skipped_ts = summary.ts_skipped,
+            py_path = py_dir.display(),
+            ts_path = ts_dir.display()
+        );
+        Ok(())
+    }
+}
+
+fn has_suffix_ci(name: &str, suffix: &str) -> bool {
+    let split_at: usize = name.len().saturating_sub(suffix.len());
+    name.get(split_at..)
+        .is_some_and(|candidate: &str| candidate.eq_ignore_ascii_case(suffix))
+}
+
+fn is_python_binding_artifact(name: &str) -> bool {
+    has_suffix_ci(name, ".pyi") || name == ".checksum.json"
+}
+
+fn is_typescript_binding_artifact(name: &str) -> bool {
+    has_suffix_ci(name, ".d.ts") || name == ".checksum.json"
+}
+
+fn run_release_package() -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    let dist_dir: PathBuf = root.join("dist");
+    fs::create_dir_all(&dist_dir)
+        .with_context_msg(|| format!("creating {}", dist_dir.display()))?;
+    println!(
+        "xtask release-package: running cargo build --release --workspace --bins (root {})",
+        root.display()
+    );
+    let status: std::process::ExitStatus = Command::new(cargo_bin())
+        .args(["build", "--release", "--workspace", "--bins"])
+        .current_dir(&root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context_msg(|| "spawning cargo build".to_owned())?;
+    if !status.success() {
+        bail!("cargo build exited with {status}");
+    }
+    let target_release: PathBuf = root.join("target").join("release");
+    let mut copied: usize = 0;
+    for entry in walkdir::WalkDir::new(&target_release)
+        .min_depth(1)
+        .max_depth(1)
+    {
+        let dirent: walkdir::DirEntry = entry?;
+        let path: &Path = dirent.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("disrobe") {
+            continue;
+        }
+        let ext_lower: Option<String> = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        let is_artifact: bool = !matches!(
+            ext_lower.as_deref(),
+            Some("d" | "pdb" | "rlib" | "rmeta" | "dwp")
+        );
+        if !is_artifact {
+            continue;
+        }
+        let dst: PathBuf = dist_dir.join(name);
+        fs::copy(path, &dst)
+            .with_context_msg(|| format!("copying {} to {}", path.display(), dst.display()))?;
+        copied += 1;
+    }
+    println!(
+        "xtask release-package: copied {copied} artifact(s) into {}",
+        dist_dir.display()
+    );
+    Ok(())
+}
+
+fn cargo_bin() -> Utf8PathBuf {
+    let env_cargo: Option<String> = std::env::var("CARGO").ok();
+    env_cargo.map_or_else(|| Utf8PathBuf::from("cargo"), Utf8PathBuf::from)
+}
+
+fn write_json(path: &Path, value: &Value) -> Result<()> {
+    let pretty: String = serde_json::to_string_pretty(value)
+        .with_context_msg(|| format!("serializing JSON for {}", path.display()))?;
+    fs::write(path, format!("{pretty}\n"))
+        .with_context_msg(|| format!("writing {}", path.display()))?;
+    Ok(())
+}
+
+fn envelope_schema() -> Value {
+    let mut properties: Map<String, Value> = Map::new();
+    properties.insert(
+        "magic".to_owned(),
+        json!({"type": "string", "const": "DISROBE\0"}),
+    );
+    properties.insert(
+        "version".to_owned(),
+        json!({"type": "integer", "minimum": 1, "maximum": 65535}),
+    );
+    properties.insert(
+        "rung".to_owned(),
+        json!({"type": "string", "enum": ["raw", "disasm", "mir", "hir", "surface"]}),
+    );
+    properties.insert(
+        "flags".to_owned(),
+        json!({"type": "integer", "minimum": 0, "maximum": 255}),
+    );
+    properties.insert(
+        "hot_len".to_owned(),
+        json!({"type": "integer", "minimum": 0}),
+    );
+    properties.insert(
+        "cold_len".to_owned(),
+        json!({"type": "integer", "minimum": 0}),
+    );
+    properties.insert(
+        "root_hash".to_owned(),
+        json!({"type": "string", "pattern": "^[0-9a-f]{64}$"}),
+    );
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/dr-envelope.schema.json",
+        "title": "DrEnvelope",
+        "description": "Header layout of the disrobe .dr envelope (rkyv hot + postcard cold + BLAKE3 root).",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["magic", "version", "rung", "flags", "hot_len", "cold_len", "root_hash"],
+        "properties": properties,
+    })
+}
+
+fn freezer_manifest_schema() -> Value {
+    let entry_schema: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "size", "origin"],
+        "properties": {
+            "name": {"type": "string"},
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "python-module",
+                    "python-byte-code",
+                    "native-extension",
+                    "resource",
+                    "wheel",
+                    "metadata",
+                    "other"
+                ]
+            },
+            "size": {"type": "integer", "minimum": 0},
+            "compressed_size": {"type": ["integer", "null"], "minimum": 0},
+            "python_major": {"type": ["integer", "null"], "minimum": 0},
+            "python_minor": {"type": ["integer", "null"], "minimum": 0},
+            "source_path": {"type": ["string", "null"]},
+            "origin": {
+                "type": "string",
+                "enum": [
+                    "library-zip",
+                    "sibling-file",
+                    "pe-resource",
+                    "trailing-zip",
+                    "deps",
+                    "other"
+                ]
+            }
+        }
+    });
+    let module_inventory_schema: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "name",
+            "is_package",
+            "has_source",
+            "has_bytecode",
+            "has_bytecode_opt1",
+            "has_bytecode_opt2",
+            "has_extension"
+        ],
+        "properties": {
+            "name": {"type": "string"},
+            "is_package": {"type": "boolean"},
+            "has_source": {"type": "boolean"},
+            "has_bytecode": {"type": "boolean"},
+            "has_bytecode_opt1": {"type": "boolean"},
+            "has_bytecode_opt2": {"type": "boolean"},
+            "has_extension": {"type": "boolean"}
+        }
+    });
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/freezer-manifest.schema.json",
+        "title": "FreezerManifest",
+        "description": "Normalized manifest emitted by pyfreeze passes. The py-oxidizer kind is experimental and unvalidated.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "kind", "source_path", "entry_count", "entries"],
+        "properties": {
+            "schema": {"type": "string", "const": "disrobe.pyfreeze.manifest/v0"},
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "cx-freeze",
+                    "py2exe",
+                    "bbfreeze",
+                    "shiv",
+                    "pex",
+                    "zipapp",
+                    "pyc",
+                    "py-oxidizer",
+                    "briefcase",
+                    "unknown"
+                ]
+            },
+            "source_path": {"type": "string"},
+            "python_major": {"type": ["integer", "null"], "minimum": 0},
+            "python_minor": {"type": ["integer", "null"], "minimum": 0},
+            "interpreter_hint": {"type": ["string", "null"]},
+            "entry_count": {"type": "integer", "minimum": 0},
+            "primary_module": {"type": ["string", "null"]},
+            "entries": {"type": "array", "items": entry_schema},
+            "module_inventory": {"type": "array", "items": module_inventory_schema}
+        }
+    })
+}
+
+fn extraction_result_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/extraction-result.schema.json",
+        "title": "ExtractionResult",
+        "description": "Result returned by disrobe-binfmt::extract for any container kind.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "entries", "encoding", "integrity_violations", "quota"],
+        "properties": {
+            "kind": {"type": "string"},
+            "entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "uncompressed_size", "compressed_size", "compression", "is_executable"],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "disk_path": {"type": ["string", "null"]},
+                        "uncompressed_size": {"type": "integer", "minimum": 0},
+                        "compressed_size": {"type": "integer", "minimum": 0},
+                        "compression": {
+                            "type": "string",
+                            "enum": ["stored", "deflate", "deflate64", "bzip2", "lzma", "xz", "zstd", "other"]
+                        },
+                        "is_executable": {"type": "boolean"}
+                    }
+                }
+            },
+            "encoding": {
+                "type": "object",
+                "additionalProperties": {"type": "string"}
+            },
+            "integrity_violations": {"type": "array", "items": {"type": "string"}},
+            "quota": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "entries_accepted",
+                    "total_uncompressed_bytes",
+                    "total_compressed_bytes",
+                    "max_observed_ratio"
+                ],
+                "properties": {
+                    "entries_accepted": {"type": "integer", "minimum": 0},
+                    "total_uncompressed_bytes": {"type": "integer", "minimum": 0},
+                    "total_compressed_bytes": {"type": "integer", "minimum": 0},
+                    "max_observed_ratio": {"type": "integer", "minimum": 0}
+                }
+            }
+        }
+    })
+}
+
+const NATIVE_AOT_SIGNATURE_ABSTENTIONS: [&str; 23] = [
+    "absent-managed-signature",
+    "unsupported-calling-convention",
+    "explicit-this",
+    "generic-signature",
+    "vararg-signature",
+    "argument-positions-exceeded",
+    "type-signature-kind-unsupported",
+    "type-record-absent",
+    "type-namespace-not-system",
+    "type-outside-primitive-table",
+    "non-microsoft-x64-recovery",
+    "hidden-struct-return",
+    "return-class-disagreement",
+    "argument-count-disagreement",
+    "argument-register-disagreement",
+    "floating-point-register-disagreement",
+    "unobserved-argument-position",
+    "vector-argument-binding",
+    "prototype-not-isolated",
+    "argument-binding-not-isolated",
+    "return-statement-not-isolated",
+    "shared-code-range",
+    "allocation-failed",
+];
+
+fn native_aot_metadata_status_defs() -> Vec<(&'static str, Value)> {
+    let unsupported: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["UnsupportedVersion"],
+        "properties": {
+            "UnsupportedVersion": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["major_version", "minor_version"],
+                "properties": {
+                    "major_version": {"type": "integer", "minimum": 0, "maximum": 65535},
+                    "minor_version": {"type": "integer", "minimum": 0, "maximum": 65535}
+                }
+            }
+        }
+    });
+    let rejected: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["Rejected"],
+        "properties": {
+            "Rejected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["section_offset", "reason"],
+                "properties": {
+                    "section_offset": {"type": ["integer", "null"], "minimum": 0},
+                    "reason": {"type": "string"}
+                }
+            }
+        }
+    });
+    let status: Value = json!({
+        "description": "Recovered and NotPresent are bare strings; the other states carry their detail in a single-key object.",
+        "oneOf": [
+            {"type": "string", "enum": ["NotPresent", "Recovered"]},
+            {"$ref": "#/$defs/UnsupportedVersionStatus"},
+            {"$ref": "#/$defs/RejectedStatus"}
+        ]
+    });
+    vec![
+        ("MetadataStatus", status),
+        ("UnsupportedVersionStatus", unsupported),
+        ("RejectedStatus", rejected),
+    ]
+}
+
+fn native_aot_signature_defs() -> Vec<(&'static str, Value)> {
+    let type_signature: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "record_offset"],
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["definition", "reference", "specification", "modified"]
+            },
+            "record_offset": {"type": "integer", "minimum": 0}
+        }
+    });
+    let method_signature: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "record_offset",
+            "calling_convention",
+            "generic_parameter_count",
+            "return_type",
+            "parameter_types",
+            "vararg_parameter_types"
+        ],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "calling_convention": {"type": "integer", "minimum": 0},
+            "generic_parameter_count": {"type": "integer", "minimum": 0},
+            "return_type": {"$ref": "#/$defs/TypeSignature"},
+            "parameter_types": {"type": "array", "items": {"$ref": "#/$defs/TypeSignature"}},
+            "vararg_parameter_types": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/TypeSignature"}
+            }
+        }
+    });
+    vec![
+        ("TypeSignature", type_signature),
+        ("MethodSignature", method_signature),
+    ]
+}
+
+fn native_aot_body_defs() -> Vec<(&'static str, Value)> {
+    let body: Value = json!({
+        "description": "A recovered body records how its signature was determined; a refused body records why no body was produced.",
+        "oneOf": [
+            {"$ref": "#/$defs/ManagedSignatureBody"},
+            {"$ref": "#/$defs/RegisterSignatureBody"},
+            {"$ref": "#/$defs/RefusedBody"}
+        ]
+    });
+    let managed: Value = json!({
+        "description": "The declared managed signature was proven to agree with the lifted register bindings and was reattached.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "pseudo_c", "signature_source"],
+        "properties": {
+            "status": {"type": "string", "const": "recovered"},
+            "pseudo_c": {"type": "string"},
+            "signature_source": {"type": "string", "const": "managed"}
+        }
+    });
+    let registers: Value = json!({
+        "description": "Reattachment was declined, so the body keeps the register-typed signature the lifter inferred, and signature_abstention names the rule that declined it.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "pseudo_c", "signature_source", "signature_abstention"],
+        "properties": {
+            "status": {"type": "string", "const": "recovered"},
+            "pseudo_c": {"type": "string"},
+            "signature_source": {"type": "string", "const": "registers"},
+            "signature_abstention": {
+                "type": "string",
+                "enum": NATIVE_AOT_SIGNATURE_ABSTENTIONS
+            }
+        }
+    });
+    let refused: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "reason"],
+        "properties": {
+            "status": {"type": "string", "const": "refused"},
+            "reason": {"type": "string"}
+        }
+    });
+    vec![
+        ("MethodBody", body),
+        ("ManagedSignatureBody", managed),
+        ("RegisterSignatureBody", registers),
+        ("RefusedBody", refused),
+    ]
+}
+
+fn native_aot_entry_defs() -> Vec<(&'static str, Value)> {
+    let counts: Value = json!({
+        "description": "How many recovered bodies carry a reattached managed signature and how many kept the lifted register-typed one. A numerator and a denominator, never a rate.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["managed", "registers"],
+        "properties": {
+            "managed": {"type": "integer", "minimum": 0},
+            "registers": {"type": "integer", "minimum": 0}
+        }
+    });
+    let type_entry: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_offset", "qualified_name", "method_record_offsets"],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "qualified_name": {"type": "string"},
+            "method_record_offsets": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+        }
+    });
+    let code_range: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_rva", "end_rva"],
+        "properties": {
+            "start_rva": {"type": "integer", "minimum": 0},
+            "end_rva": {"type": "integer", "minimum": 0}
+        }
+    });
+    let method_entry: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_offset", "declaring_type", "declaring_types", "name", "signature"],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "declaring_type": {"type": ["string", "null"]},
+            "declaring_types": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "signature": {"oneOf": [{"$ref": "#/$defs/MethodSignature"}, {"type": "null"}]},
+            "entrypoint_rva": {"type": "integer", "minimum": 0},
+            "code_range": {"$ref": "#/$defs/CodeRange"},
+            "body": {"$ref": "#/$defs/MethodBody"}
+        }
+    });
+    vec![
+        ("SignatureSourceCounts", counts),
+        ("TypeEntry", type_entry),
+        ("CodeRange", code_range),
+        ("MethodEntry", method_entry),
+    ]
+}
+
+fn native_aot_symbols_schema() -> Value {
+    let mut defs: Map<String, Value> = Map::new();
+    for (name, value) in native_aot_metadata_status_defs()
+        .into_iter()
+        .chain(native_aot_signature_defs())
+        .chain(native_aot_body_defs())
+        .chain(native_aot_entry_defs())
+    {
+        defs.insert(name.to_owned(), value);
+    }
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/native-aot-symbols.schema.json",
+        "title": "NativeAotSymbols",
+        "description": "Names, signatures, code ranges and recovered bodies emitted for a .NET NativeAOT image by disrobe-pass-dotnet.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "schema",
+            "runtime",
+            "metadata_status",
+            "signature_source_counts",
+            "types",
+            "methods"
+        ],
+        "properties": {
+            "schema": {"type": "string", "const": "disrobe.dotnet.native-aot-symbols/v1"},
+            "runtime": {"type": "string", "enum": ["net7", "net8", "net9", "net10", "unknown"]},
+            "metadata_status": {"$ref": "#/$defs/MetadataStatus"},
+            "signature_source_counts": {"$ref": "#/$defs/SignatureSourceCounts"},
+            "types": {"type": "array", "items": {"$ref": "#/$defs/TypeEntry"}},
+            "methods": {"type": "array", "items": {"$ref": "#/$defs/MethodEntry"}}
+        },
+        "$defs": Value::Object(defs)
+    })
+}
+
+fn pyarmor_detection_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/pyarmor-detection.schema.json",
+        "title": "PyarmorDetection",
+        "description": "Detection summary emitted by disrobe-pass-pyarmor::detect.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "protection", "confidence"],
+        "properties": {
+            "version": {"type": "string", "enum": ["v3", "v4", "v5", "v6", "v7", "v8", "v9"]},
+            "protection": {
+                "type": "string",
+                "enum": ["standard", "super-mode", "bcc", "no-wrap"]
+            },
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "serial": {"type": ["string", "null"]},
+            "diagnostics": {"type": "array", "items": {"type": "string"}}
+        }
+    })
+}
+
+trait WithContext<T> {
+    fn with_context_msg<F: FnOnce() -> String>(self, f: F) -> Result<T>;
+}
+
+impl<T, E> WithContext<T> for core::result::Result<T, E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn with_context_msg<F: FnOnce() -> String>(self, f: F) -> Result<T> {
+        self.wrap_err_with(f)
+    }
+}

@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe lifts 86 of the 88 opcode entries in its declared Luau table; BREAK and NEWCLASSMEMBER are decoded and reported as unresolved.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": "86 of the 88 opcode entries in disrobe's declared Luau table are lifted. BREAK debugger instrumentation and NEWCLASSMEMBER are decoded and reported as unresolved rather than lifted.",
+  "disrobe_leads": null,
+  "ecosystem": "lua",
+  "floor": null,
+  "floor_holds": null,
+  "gate_source": "crates/disrobe-pass-lua/tests/published_luau_opcode_roster.rs enumerates all 88 declared opcode values through the real lifter, pins the exact two-entry unresolved set, and checks an undeclared opcode as the mutation-kill control. This is coverage of disrobe's declared table, not an external claim about every opcode in an upstream Luau release.",
+  "id": "lua-luau-opcode-coverage",
+  "measured": "97.73%",
+  "oracle": {
+    "external": "none: the committed test enumerates disrobe's own declared opcode table and counts entries that avoid its unresolved-reporting path. No external semantic or upstream-format reference grades the result.",
+    "kind": "recovery-import",
+    "note": "This is coverage of disrobe's declared table, not semantic correctness or a claim about every opcode in an upstream Luau release."
+  },
+  "oracle_strength": "coverage-self-reported",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-pass-lua --test published_luau_opcode_roster",
+  "title": "Luau declared-table opcode lifting coverage"
+}

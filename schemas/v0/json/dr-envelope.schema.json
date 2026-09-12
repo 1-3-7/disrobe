@@ -1,0 +1,55 @@
+{
+  "$id": "https://disrobe.dev/schemas/v0/dr-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Header layout of the disrobe .dr envelope (rkyv hot + postcard cold + BLAKE3 root).",
+  "properties": {
+    "cold_len": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "flags": {
+      "maximum": 255,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "hot_len": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "magic": {
+      "const": "DISROBE\u0000",
+      "type": "string"
+    },
+    "root_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "rung": {
+      "enum": [
+        "raw",
+        "disasm",
+        "mir",
+        "hir",
+        "surface"
+      ],
+      "type": "string"
+    },
+    "version": {
+      "maximum": 65535,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "magic",
+    "version",
+    "rung",
+    "flags",
+    "hot_len",
+    "cold_len",
+    "root_hash"
+  ],
+  "title": "DrEnvelope",
+  "type": "object"
+}

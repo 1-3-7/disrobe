@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\mew\AccessEnum.packed.mew.exe
+  packer:       mew
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\mew_accessenum-978587c8248b407cb378b514a379303f\AccessEnum.packed.mew.unpacked.exe
+  layout:       standalone-object
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    218112 bytes placed (0 section(s) overlaid)
+  oep:          unchanged
+  symbols:      1
+  sidecar:      ${RUN_DIRECTORY}\export\mew_accessenum-978587c8248b407cb378b514a379303f\AccessEnum.packed.mew.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\mew_accessenum-978587c8248b407cb378b514a379303f\export.manifest.json
