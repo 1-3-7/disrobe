@@ -177,9 +177,8 @@ pub fn resolve_macho_stub_imports(bytes: &[u8]) -> Vec<ImportStub> {
             Ok(None) => break,
             Err(_) => return Vec::new(),
         };
-        let symtab = match command.symtab() {
-            Ok(symtab) => symtab,
-            Err(_) => return Vec::new(),
+        let Ok(symtab) = command.symtab() else {
+            return Vec::new();
         };
         if let Some(symtab) = symtab {
             if has_symbol_table {
@@ -204,9 +203,8 @@ pub fn resolve_macho_stub_imports(bytes: &[u8]) -> Vec<ImportStub> {
             }
             string_table = Some((string_offset, string_end));
         }
-        let dysymtab = match command.dysymtab() {
-            Ok(dysymtab) => dysymtab,
-            Err(_) => return Vec::new(),
+        let Ok(dysymtab) = command.dysymtab() else {
+            return Vec::new();
         };
         if let Some(dysymtab) = dysymtab {
             if indirect_table.is_some() {
@@ -298,15 +296,16 @@ pub fn resolve_macho_stub_imports(bytes: &[u8]) -> Vec<ImportStub> {
                 continue;
             }
             let name_index: u32 = symbol.n_strx(file.endian());
-            if !cached_names.contains_key(&name_index) {
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                cached_names.entry(name_index)
+            {
                 let name_start: Option<usize> = usize::try_from(name_index)
                     .ok()
                     .and_then(|index: usize| string_offset.checked_add(index));
                 let raw_name: Option<&[u8]> = name_start.and_then(|start: usize| {
-                    let end: usize = match start.checked_add(MAX_MACHO_SYMBOL_NAME_BYTES) {
-                        Some(end) => end.min(string_end),
-                        None => string_end,
-                    };
+                    let end: usize = start
+                        .checked_add(MAX_MACHO_SYMBOL_NAME_BYTES)
+                        .map_or(string_end, |end: usize| end.min(string_end));
                     bytes.get(start..end)
                 });
                 let resolved: Option<String> = if let Some(raw_name) = raw_name {
@@ -317,20 +316,15 @@ pub fn resolve_macho_stub_imports(bytes: &[u8]) -> Vec<ImportStub> {
                     let bounded_name: &[u8] = &raw_name[..raw_name.len().min(remaining)];
                     let nul: Option<usize> = bounded_name.iter().position(|byte: &u8| *byte == 0);
                     scanned_name_bytes += nul.map_or(bounded_name.len(), |index: usize| index + 1);
-                    match nul {
-                        Some(nul) => match core::str::from_utf8(&raw_name[..nul]).ok() {
-                            Some(name) => {
-                                let name: &str = name.strip_prefix('_').unwrap_or(name);
-                                (!name.is_empty()).then(|| name.to_owned())
-                            }
-                            None => None,
-                        },
-                        None => None,
-                    }
+                    nul.and_then(|nul: usize| core::str::from_utf8(&raw_name[..nul]).ok())
+                        .and_then(|name: &str| {
+                            let name: &str = name.strip_prefix('_').unwrap_or(name);
+                            (!name.is_empty()).then(|| name.to_owned())
+                        })
                 } else {
                     None
                 };
-                cached_names.insert(name_index, resolved);
+                entry.insert(resolved);
             }
             let Some(name): Option<&String> =
                 cached_names.get(&name_index).and_then(Option::as_ref)

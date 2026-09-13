@@ -57,6 +57,9 @@ impl Flavor {
     fn flags(self, compiler: Compiler) -> Vec<&'static str> {
         match (self, compiler) {
             (Self::Hosted, Compiler::Gcc) => Vec::new(),
+            (Self::Hosted, Compiler::Clang) if cfg!(target_os = "macos") => {
+                vec!["--target=x86_64-w64-windows-gnu", "-fuse-ld=lld"]
+            }
             (Self::Hosted, Compiler::Clang) => vec!["--target=x86_64-w64-windows-gnu"],
             (Self::FreestandingElf64, _) => vec![
                 "--target=x86_64-unknown-linux-gnu",

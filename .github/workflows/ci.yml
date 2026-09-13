@@ -7,9 +7,16 @@ on:
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: CI coverage to run
+        required: false
+        default: full
+        type: choice
+        options: [full, clippy]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || '' }}
   cancel-in-progress: true
 
 env:
@@ -19,6 +26,7 @@ env:
 
 jobs:
   check:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -40,6 +48,7 @@ jobs:
       - run: cargo check --workspace --all-targets --all-features
 
   fmt:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: fmt
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -69,6 +78,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
 
   process-containment:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: process containment (macos)
     runs-on: macos-latest
     timeout-minutes: 15
@@ -82,6 +92,7 @@ jobs:
       - run: cargo test -p disrobe-tool-process --all-targets -- --nocapture
 
   graphs:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: graphs
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -114,7 +125,7 @@ jobs:
         run: cargo run -p xtask -- health
 
   test:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
     name: test (${{ matrix.os }} / ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -641,7 +652,7 @@ jobs:
           probe="$RUNNER_TEMP/disrobe-mingw-link-probe"
           trap 'rm -f -- "$probe.c" "$probe.exe"' EXIT
           printf '#include <stdio.h>\nint main(void) { return puts("probe") < 0; }\n' > "$probe.c"
-          clang --target=x86_64-w64-windows-gnu "$probe.c" -o "$probe.exe"
+          clang --target=x86_64-w64-windows-gnu -fuse-ld=lld "$probe.c" -o "$probe.exe"
           llvm-readobj --file-headers "$probe.exe"
           test "$(head -c 2 "$probe.exe")" = 'MZ'
       - name: restore the MSVC environment after reference tool setup
@@ -814,7 +825,7 @@ jobs:
           cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
 
   beam-otp28-long-atu8:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
     name: beam OTP 28 long AtU8
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -850,7 +861,7 @@ jobs:
         run: cargo test -p disrobe-pass-beam --test otp28_long_atu8 -- --ignored --nocapture
 
   determinism-cross-platform:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
     name: determinism cross-platform proof
     needs: [test]
     runs-on: ubuntu-latest
@@ -911,7 +922,7 @@ jobs:
           PY
 
   py-recompile-gate:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
     name: py recompile-equivalence gate
     runs-on: ubuntu-latest
     steps:
@@ -951,6 +962,7 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
 
   py-band-gate:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: py band gate (3.10, 3.12, 3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -1000,7 +1012,7 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
 
   execution-differentials:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
     name: execution differentials
     runs-on: ubuntu-latest
     env:
@@ -1164,6 +1176,7 @@ jobs:
         run: cargo test -p disrobe-pass-js-deob --test v8_codeserializer_real -- --nocapture
 
   deny:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: deny
     runs-on: ubuntu-latest
     steps:
@@ -1173,6 +1186,7 @@ jobs:
       - run: cargo deny --all-features check
 
   typos:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: typos
     runs-on: ubuntu-latest
     steps:
@@ -1180,6 +1194,7 @@ jobs:
       - uses: crate-ci/typos@master
 
   hygiene:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: source hygiene
     runs-on: ubuntu-latest
     steps:
@@ -1221,6 +1236,7 @@ jobs:
           echo "comment count matches the baseline exactly"
 
   msrv:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: msrv
     runs-on: ubuntu-latest
     steps:
@@ -1236,6 +1252,7 @@ jobs:
       - run: cargo +1.95.0 check --workspace --all-features
 
   slim:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
     name: slim (no-default-features)
     runs-on: ubuntu-latest
     timeout-minutes: 60

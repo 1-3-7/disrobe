@@ -92,8 +92,35 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         Some("0 6 * * 1")
     );
     assert_eq!(schedule.len(), 1);
+    let dispatch: &Value = on
+        .get("workflow_dispatch")
+        .expect("ci.yml workflow_dispatch trigger");
+    let scope: &Value = dispatch
+        .get("inputs")
+        .and_then(|value: &Value| value.get("scope"))
+        .expect("ci.yml workflow_dispatch scope input");
+    assert_eq!(
+        scope.get("type").and_then(Value::as_str),
+        Some("choice"),
+        "manual CI scope must stay selectable"
+    );
+    assert_eq!(
+        scope.get("default").and_then(Value::as_str),
+        Some("full"),
+        "a manual CI run without a selection must retain full coverage"
+    );
+    assert_eq!(
+        scope.get("options").and_then(Value::as_sequence),
+        Some(&vec![
+            Value::String("full".to_owned()),
+            Value::String("clippy".to_owned()),
+        ]),
+        "manual CI must expose only the full and clippy scopes"
+    );
     let jobs: &Value = ci.get("jobs").expect("ci.yml jobs");
-    let full_route: &str = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'";
+    let default_route: &str =
+        "github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'";
+    let full_route: &str = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')";
     assert!(
         !full_route.contains("push"),
         "the full route must never admit a push to main; that is what keeps the main-push \
@@ -116,7 +143,6 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     for job in [
         "check",
         "fmt",
-        "clippy",
         "process-containment",
         "graphs",
         "py-band-gate",
@@ -126,14 +152,22 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         "msrv",
         "slim",
     ] {
-        assert!(
+        assert_eq!(
             jobs.get(job)
                 .unwrap_or_else(|| panic!("ci.yml {job} required job"))
                 .get("if")
-                .is_none(),
-            "ci.yml {job} must remain on the fast main route"
+                .and_then(Value::as_str),
+            Some(default_route),
+            "ci.yml {job} must run for pushes and full manual runs, and skip only manual clippy runs"
         );
     }
+    assert!(
+        jobs.get("clippy")
+            .expect("ci.yml clippy required job")
+            .get("if")
+            .is_none(),
+        "ci.yml clippy must run for every trigger, including the manual clippy scope"
+    );
     let py_band: &Value = jobs.get("py-band-gate").expect("ci.yml py-band-gate job");
     let py_band_environment: &Value = py_band.get("env").expect("ci.yml py-band-gate environment");
     assert_eq!(
@@ -199,8 +233,8 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .expect("ci.yml concurrency group");
     assert_eq!(
         group,
-        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}",
-        "ci.yml must keep scheduled and manually requested full coverage out of the main-push cancellation group"
+        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || '' }}",
+        "ci.yml must keep clippy-only dispatches out of the matching full-run cancellation group"
     );
     assert_eq!(
         concurrency
