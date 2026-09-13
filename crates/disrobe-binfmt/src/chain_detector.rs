@@ -667,7 +667,13 @@ fn materialized_appimage_members(
                 .replace('\\', "/");
             let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path)
                 .map_err(|error| fail(format!("AppImage member `{name}` metadata: {error}")))?;
-            let unix_mode: Option<u32> = materialized_unix_mode(&metadata);
+            #[cfg(unix)]
+            let unix_mode: Option<u32> = {
+                use std::os::unix::fs::PermissionsExt as _;
+                Some(metadata.permissions().mode() & 0o777)
+            };
+            #[cfg(not(unix))]
+            let unix_mode: Option<u32> = None;
             let (materialization, data): (ChildMaterialization, Vec<u8>) = if metadata.is_dir() {
                 pending.push(path);
                 (ChildMaterialization::Directory { unix_mode }, Vec::new())
@@ -715,17 +721,6 @@ fn materialized_appimage_members(
         left.handle.relative_path.cmp(&right.handle.relative_path)
     });
     Ok(members)
-}
-
-#[cfg(unix)]
-fn materialized_unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
-    use std::os::unix::fs::PermissionsExt as _;
-    Some(metadata.permissions().mode() & 0o777)
-}
-
-#[cfg(not(unix))]
-const fn materialized_unix_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
-    None
 }
 
 const fn fail(msg: String) -> CoreError {
