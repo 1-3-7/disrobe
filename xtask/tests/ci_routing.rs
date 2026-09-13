@@ -114,22 +114,54 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         Some(&vec![
             Value::String("full".to_owned()),
             Value::String("clippy".to_owned()),
+            Value::String("tests".to_owned()),
         ]),
-        "manual CI must expose only the full and clippy scopes"
+        "manual CI must expose only the full, clippy, and tests scopes"
     );
+    for (name, options) in [
+        (
+            "os",
+            vec!["all", "ubuntu-latest", "macos-latest", "windows-latest"],
+        ),
+        ("shard", vec!["all", "one", "two", "three"]),
+    ] {
+        let selector: &Value = dispatch
+            .get("inputs")
+            .and_then(|value: &Value| value.get(name))
+            .unwrap_or_else(|| panic!("ci.yml workflow_dispatch {name} input"));
+        assert_eq!(
+            selector.get("type").and_then(Value::as_str),
+            Some("choice"),
+            "manual CI {name} selector must stay selectable"
+        );
+        assert_eq!(
+            selector.get("default").and_then(Value::as_str),
+            Some("all"),
+            "manual CI {name} selector must retain the complete matrix by default"
+        );
+        assert_eq!(
+            selector.get("options").and_then(Value::as_sequence),
+            Some(
+                &options
+                    .into_iter()
+                    .map(|value: &str| Value::String(value.to_owned()))
+                    .collect::<Vec<Value>>(),
+            ),
+            "manual CI {name} selector options"
+        );
+    }
     let jobs: &Value = ci.get("jobs").expect("ci.yml jobs");
-    let default_route: &str =
-        "github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'";
-    let full_route: &str = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')";
+    let default_route: &str = "github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')";
+    let full_route: &str = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))";
+    let test_route: &str = "((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests')";
+    let determinism_route: &str = "((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os == 'all' && github.event.inputs.shard == 'all')";
     assert!(
         !full_route.contains("push"),
         "the full route must never admit a push to main; that is what keeps the main-push \
          legs fast and is the reason these jobs are gated at all"
     );
     for job in [
-        "test",
         "beam-otp28-long-atu8",
-        "determinism-cross-platform",
         "py-recompile-gate",
         "execution-differentials",
     ] {
@@ -140,6 +172,20 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             .unwrap_or_else(|| panic!("ci.yml {job} full-route condition"));
         assert_eq!(configured, full_route, "ci.yml {job} full-route condition");
     }
+    assert_eq!(
+        jobs.get("test")
+            .and_then(|value: &Value| value.get("if"))
+            .and_then(Value::as_str),
+        Some(test_route),
+        "ci.yml test must retain the full matrix while permitting an explicit scoped matrix selection"
+    );
+    assert_eq!(
+        jobs.get("determinism-cross-platform")
+            .and_then(|value: &Value| value.get("if"))
+            .and_then(Value::as_str),
+        Some(determinism_route),
+        "ci.yml determinism proof must not run for a partial manual test matrix"
+    );
     for job in [
         "check",
         "fmt",
@@ -161,12 +207,13 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "ci.yml {job} must run for pushes and full manual runs, and skip only manual clippy runs"
         );
     }
-    assert!(
+    assert_eq!(
         jobs.get("clippy")
             .expect("ci.yml clippy required job")
             .get("if")
-            .is_none(),
-        "ci.yml clippy must run for every trigger, including the manual clippy scope"
+            .and_then(Value::as_str),
+        Some("github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'tests'"),
+        "ci.yml clippy must run for full and clippy scopes, and skip the manual tests scope"
     );
     let py_band: &Value = jobs.get("py-band-gate").expect("ci.yml py-band-gate job");
     let py_band_environment: &Value = py_band.get("env").expect("ci.yml py-band-gate environment");
@@ -233,8 +280,8 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .expect("ci.yml concurrency group");
     assert_eq!(
         group,
-        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || '' }}",
-        "ci.yml must keep clippy-only dispatches out of the matching full-run cancellation group"
+        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}",
+        "ci.yml must keep clippy-only and scoped-test dispatches out of matching full-run cancellation groups"
     );
     assert_eq!(
         concurrency
@@ -243,41 +290,24 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         Some(true),
         "ci.yml must cancel obsolete runs within each event route"
     );
-    let test_matrix: &Vec<Value> = jobs
+    let test_matrix: &Value = jobs
         .get("test")
         .and_then(|value: &Value| value.get("strategy"))
         .and_then(|value: &Value| value.get("matrix"))
-        .and_then(|value: &Value| value.get("include"))
-        .and_then(Value::as_sequence)
-        .expect("ci.yml test matrix entries");
-    let test_routes: Vec<(&str, &str)> = test_matrix
-        .iter()
-        .map(|entry: &Value| {
-            (
-                entry
-                    .get("os")
-                    .and_then(Value::as_str)
-                    .expect("test matrix os"),
-                entry
-                    .get("shard")
-                    .and_then(Value::as_str)
-                    .expect("test matrix shard"),
-            )
-        })
-        .collect();
+        .expect("ci.yml test matrix");
     assert_eq!(
-        test_routes,
-        vec![
-            ("ubuntu-latest", "one"),
-            ("ubuntu-latest", "two"),
-            ("ubuntu-latest", "three"),
-            ("macos-latest", "one"),
-            ("macos-latest", "two"),
-            ("macos-latest", "three"),
-            ("windows-latest", "one"),
-            ("windows-latest", "two"),
-            ("windows-latest", "three"),
-        ]
+        test_matrix.get("os").and_then(Value::as_str),
+        Some(
+            "${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os != 'all' && format('[\"{0}\"]', github.event.inputs.os) || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}"
+        ),
+        "test scope must select one requested OS while full/default runs retain all operating systems"
+    );
+    assert_eq!(
+        test_matrix.get("shard").and_then(Value::as_str),
+        Some(
+            "${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard != 'all' && format('[\"{0}\"]', github.event.inputs.shard) || '[\"one\",\"two\",\"three\"]') }}"
+        ),
+        "test scope must select one requested shard while full/default runs retain all shards"
     );
     let test_steps: &Vec<Value> = jobs
         .get("test")

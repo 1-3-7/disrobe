@@ -13,10 +13,22 @@ on:
         required: false
         default: full
         type: choice
-        options: [full, clippy]
+        options: [full, clippy, tests]
+      os:
+        description: Operating system for a manual test scope
+        required: false
+        default: all
+        type: choice
+        options: [all, ubuntu-latest, macos-latest, windows-latest]
+      shard:
+        description: Shard for a manual test scope
+        required: false
+        default: all
+        type: choice
+        options: [all, one, two, three]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || '' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}
   cancel-in-progress: true
 
 env:
@@ -26,7 +38,7 @@ env:
 
 jobs:
   check:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -48,7 +60,7 @@ jobs:
       - run: cargo check --workspace --all-targets --all-features
 
   fmt:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: fmt
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -60,6 +72,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'tests'
     name: clippy
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -78,7 +91,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
 
   process-containment:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: process containment (macos)
     runs-on: macos-latest
     timeout-minutes: 15
@@ -92,7 +105,7 @@ jobs:
       - run: cargo test -p disrobe-tool-process --all-targets -- --nocapture
 
   graphs:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: graphs
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -125,7 +138,7 @@ jobs:
         run: cargo run -p xtask -- health
 
   test:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
+    if: ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests')
     name: test (${{ matrix.os }} / ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -136,25 +149,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            shard: one
-          - os: ubuntu-latest
-            shard: two
-          - os: ubuntu-latest
-            shard: three
-          - os: macos-latest
-            shard: one
-          - os: macos-latest
-            shard: two
-          - os: macos-latest
-            shard: three
-          - os: windows-latest
-            shard: one
-          - os: windows-latest
-            shard: two
-          - os: windows-latest
-            shard: three
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os != 'all' && format('["{0}"]', github.event.inputs.os) || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        shard: ${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard != 'all' && format('["{0}"]', github.event.inputs.shard) || '["one","two","three"]') }}
     steps:
       - uses: actions/checkout@v6
       - name: provision Lua and Luau reference toolchains
@@ -825,7 +821,7 @@ jobs:
           cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
 
   beam-otp28-long-atu8:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))
     name: beam OTP 28 long AtU8
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -861,7 +857,7 @@ jobs:
         run: cargo test -p disrobe-pass-beam --test otp28_long_atu8 -- --ignored --nocapture
 
   determinism-cross-platform:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
+    if: ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os == 'all' && github.event.inputs.shard == 'all')
     name: determinism cross-platform proof
     needs: [test]
     runs-on: ubuntu-latest
@@ -922,7 +918,7 @@ jobs:
           PY
 
   py-recompile-gate:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))
     name: py recompile-equivalence gate
     runs-on: ubuntu-latest
     steps:
@@ -962,7 +958,7 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_315 -- --nocapture
 
   py-band-gate:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: py band gate (3.10, 3.12, 3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -1012,7 +1008,7 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
 
   execution-differentials:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy')
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))
     name: execution differentials
     runs-on: ubuntu-latest
     env:
@@ -1176,7 +1172,7 @@ jobs:
         run: cargo test -p disrobe-pass-js-deob --test v8_codeserializer_real -- --nocapture
 
   deny:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: deny
     runs-on: ubuntu-latest
     steps:
@@ -1186,7 +1182,7 @@ jobs:
       - run: cargo deny --all-features check
 
   typos:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: typos
     runs-on: ubuntu-latest
     steps:
@@ -1194,7 +1190,7 @@ jobs:
       - uses: crate-ci/typos@master
 
   hygiene:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: source hygiene
     runs-on: ubuntu-latest
     steps:
@@ -1236,7 +1232,7 @@ jobs:
           echo "comment count matches the baseline exactly"
 
   msrv:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: msrv
     runs-on: ubuntu-latest
     steps:
@@ -1252,7 +1248,7 @@ jobs:
       - run: cargo +1.95.0 check --workspace --all-features
 
   slim:
-    if: github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'clippy'
+    if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: slim (no-default-features)
     runs-on: ubuntu-latest
     timeout-minutes: 60

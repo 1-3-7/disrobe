@@ -792,7 +792,7 @@ fn a_real_compiler_emits_the_pinned_freestanding_macro_filename() {
             .arg(developer.join("Library/Frameworks"))
             .arg("-I")
             .arg(developer.join("usr/lib"));
-        let compiler: PathBuf = if swiftc == Path::new("/usr/bin/swiftc") {
+        let resolved_compiler: Option<PathBuf> = if swiftc == Path::new("/usr/bin/swiftc") {
             let resolved: Output = Command::new("/usr/bin/xcrun")
                 .args(["--find", "swiftc"])
                 .output()
@@ -804,11 +804,13 @@ fn a_real_compiler_emits_the_pinned_freestanding_macro_filename() {
             );
             let path: String =
                 String::from_utf8(resolved.stdout).expect("xcrun emits a UTF-8 compiler path");
-            PathBuf::from(path.trim())
+            Some(PathBuf::from(path.trim()))
         } else {
-            swiftc.clone()
+            None
         };
-        let plugins: PathBuf = compiler
+        let plugins: PathBuf = resolved_compiler
+            .as_deref()
+            .unwrap_or(&swiftc)
             .parent()
             .and_then(Path::parent)
             .expect("the Swift compiler belongs to a toolchain bin directory")
