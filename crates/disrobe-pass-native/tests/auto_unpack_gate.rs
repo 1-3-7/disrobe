@@ -302,7 +302,7 @@ fn bounded_fixture_output(command: &Command) -> CapturedOutput {
     run_captured(
         Path::new(command.get_program()),
         &args,
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         64 * 1024,
     )
     .expect("launch bounded fixture tool")
