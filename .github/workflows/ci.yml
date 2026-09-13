@@ -25,7 +25,7 @@ on:
         required: false
         default: all
         type: choice
-        options: [all, one, two, three]
+        options: [all, one, two, three, javascript]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}
@@ -137,8 +137,40 @@ jobs:
       - name: Check workspace structure and dependencies
         run: cargo run -p xtask -- health
 
+  javascript:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard == 'javascript'
+    name: javascript (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event.inputs.os != 'all' && format('["{0}"]', github.event.inputs.os) || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_TEST_THREADS: "1"
+      DISROBE_PROBE_PHASE_TIMING: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Require JavaScript fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d corpus/js/javascript-obfuscator
+          test -d corpus/js/jsconfuser
+          test -d corpus/src/javascript/obfuscator-io-samples/controls
+          test -s corpus/src/javascript/obfuscator-io-high.js
+          for preset in low medium high; do
+            test -s "corpus/src/javascript/obfuscator-io-samples/presets/$preset.js"
+          done
+      - name: JavaScript recovery and execution differentials
+        run: cargo test -p disrobe-pass-js-deob --all-features --test obfuscator_io_e2e --test reeval_corpus_oracle --no-fail-fast -- --nocapture
+
   test:
-    if: ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests')
+    if: ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard != 'javascript')
     name: test (${{ matrix.os }} / ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180

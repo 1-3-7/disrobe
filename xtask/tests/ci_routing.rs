@@ -123,7 +123,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "os",
             vec!["all", "ubuntu-latest", "macos-latest", "windows-latest"],
         ),
-        ("shard", vec!["all", "one", "two", "three"]),
+        ("shard", vec!["all", "one", "two", "three", "javascript"]),
     ] {
         let selector: &Value = dispatch
             .get("inputs")
@@ -153,7 +153,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     let jobs: &Value = ci.get("jobs").expect("ci.yml jobs");
     let default_route: &str = "github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')";
     let full_route: &str = "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))";
-    let test_route: &str = "((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests')";
+    let test_route: &str = "((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard != 'javascript')";
     let determinism_route: &str = "((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os == 'all' && github.event.inputs.shard == 'all')";
     assert!(
         !full_route.contains("push"),
@@ -186,6 +186,35 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         Some(determinism_route),
         "ci.yml determinism proof must not run for a partial manual test matrix"
     );
+    let javascript: &Value = jobs.get("javascript").expect("ci.yml javascript job");
+    assert_eq!(
+        javascript.get("if").and_then(Value::as_str),
+        Some(
+            "github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard == 'javascript'"
+        )
+    );
+    assert_eq!(javascript["env"]["RUST_TEST_THREADS"].as_str(), Some("1"));
+    let javascript_steps: &Vec<Value> = javascript["steps"]
+        .as_sequence()
+        .expect("ci.yml javascript steps");
+    assert_eq!(
+        test_step_command(
+            javascript_steps,
+            "JavaScript recovery and execution differentials"
+        ),
+        "cargo test -p disrobe-pass-js-deob --all-features --test obfuscator_io_e2e --test reeval_corpus_oracle --no-fail-fast -- --nocapture"
+    );
+    let fixtures: &str = test_step_command(javascript_steps, "Require JavaScript fixtures");
+    for prerequisite in [
+        "test -d corpus/js/javascript-obfuscator",
+        "test -d corpus/js/jsconfuser",
+        "test -d corpus/src/javascript/obfuscator-io-samples/controls",
+        "test -s corpus/src/javascript/obfuscator-io-high.js",
+        "for preset in low medium high",
+        "test -s \"corpus/src/javascript/obfuscator-io-samples/presets/$preset.js\"",
+    ] {
+        assert!(fixtures.contains(prerequisite), "missing {prerequisite}");
+    }
     for job in [
         "check",
         "fmt",

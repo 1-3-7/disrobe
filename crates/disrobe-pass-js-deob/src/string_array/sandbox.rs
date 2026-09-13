@@ -1584,11 +1584,16 @@ fn evaluate(
     source: &str,
     deadline: ProbeDeadline,
 ) -> Result<boa_engine::JsValue, ProbeRefusal> {
+    let phase_timing: bool = std::env::var_os("DISROBE_PROBE_PHASE_TIMING").is_some();
+    let parse_started: Instant = Instant::now();
     if deadline.expired() {
         return Err(ProbeRefusal::WallTimeout);
     }
     let script: Script = Script::parse(Source::from_bytes(source.as_bytes()), None, context)
         .map_err(|error: JsError| refusal_from_error(&error, context))?;
+    let parse_elapsed: Duration = parse_started.elapsed();
+    let evaluation_started: Instant = Instant::now();
+    let mut polls: u64 = 0;
     if deadline.expired() {
         return Err(ProbeRefusal::WallTimeout);
     }
@@ -1598,14 +1603,33 @@ fn evaluate(
         let mut task_context: TaskContext<'_> = TaskContext::from_waker(waker);
         loop {
             if deadline.expired() {
+                if phase_timing {
+                    eprintln!(
+                        "probe-phase bytes={} parse-us={} evaluation-us={} polls={polls} timeout=true",
+                        source.len(),
+                        parse_elapsed.as_micros(),
+                        evaluation_started.elapsed().as_micros()
+                    );
+                }
                 return Err(ProbeRefusal::WallTimeout);
             }
+            polls = polls.saturating_add(1);
             match evaluation.as_mut().poll(&mut task_context) {
                 Poll::Ready(result) => break result,
                 Poll::Pending => {}
             }
         }
     };
+    if phase_timing
+        && (source.len() > 1_000 || evaluation_started.elapsed() > Duration::from_millis(10))
+    {
+        eprintln!(
+            "probe-phase bytes={} parse-us={} evaluation-us={} polls={polls} timeout=false",
+            source.len(),
+            parse_elapsed.as_micros(),
+            evaluation_started.elapsed().as_micros()
+        );
+    }
     let outcome: Result<boa_engine::JsValue, ProbeRefusal> =
         outcome.map_err(|error: JsError| refusal_from_error(&error, context));
     if outcome.is_ok() && deadline.expired() {
