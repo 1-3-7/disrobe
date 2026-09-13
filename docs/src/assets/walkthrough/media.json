@@ -1,13 +1,13 @@
 {
   "schema": "disrobe.walkthrough-media.v4",
-  "capturedAt": "2026-09-13T00:01:20.183Z",
+  "capturedAt": "2026-09-13T07:57:21.615Z",
   "binary": {
     "version": "disrobe 0.10.6",
-    "sha256": "8b7440d06e6b9ae5fa148561ce20a43a3b6dfdfe2691cf067b53bcc490baf891"
+    "sha256": "a3fd6c25df0bf051d2dcc81abc939ca3298093d98c6dc52a6ddc8ff468a5bf39"
   },
   "workspaceVersion": "0.10.6",
-  "releaseTag": "v0.10.6",
-  "recordingSha256": "c408828e25ee62b40259b5a70e698575462daa19775cd4a05cc732b4c8b6c950",
+  "releaseTag": null,
+  "recordingSha256": "fd61c5bf57c736c5f5bd180477a872b774267170338d536c177d8027dd387b7b",
   "socialCardSha256": "d8f9327a19ed994192031c0d896d62d4b00f963da233ea7aa3a057f89a4f33d7",
   "presentation": {
     "width": 1920,
@@ -262,8 +262,8 @@
   "files": [
     {
       "name": "walkthrough.mp4",
-      "bytes": 4069276,
-      "sha256": "06d6f20ae7daf3b413473db893bbf49fe1d8723f83ec4cf01aac90575298bd2a"
+      "bytes": 4068386,
+      "sha256": "d6cbc645cc2bd0c9d9b2b506a8b5f6deaa4289d31f26f42b4600d69482e85f43"
     },
     {
       "name": "teaser.mp4",
@@ -297,8 +297,8 @@
     },
     {
       "name": "transcript.txt",
-      "bytes": 17434,
-      "sha256": "3abcb994942eed21f83defdbdd3d940e92588debb174173f70498830bd7ce985"
+      "bytes": 17430,
+      "sha256": "89d3cef9c1b88064f76130d725f4a16ed8201b50b35081ed51f3b8f2f7f0acbf"
     }
   ],
   "preview": {

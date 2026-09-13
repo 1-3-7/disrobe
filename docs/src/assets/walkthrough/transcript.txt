@@ -258,10 +258,10 @@ disrobe context  (recovered/auto)
   tool:      0.10.6
   input:     add.wasm (69 bytes, blake3 5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4)
   verdict:   Complete
-  total_ms:  121
+  total_ms:  80
   tiers:     exact=0 semantic=1 partial=0 skeleton=0 (total 1)
   passes:
-    wasm.deob                    recovered  semantic  102ms
+    wasm.deob                    recovered  semantic  68ms
 
 
 00:01:22.000  Export the completed run
@@ -279,13 +279,13 @@ File: recovered/report.md
 | topology | Linear |
 | verdict | Complete |
 | recovery | 67% (semantic) |
-| total | 121 ms |
+| total | 80 ms |
 
 ## Stages
 
 | # | pass | confidence | score | duration |
 |---:|---|---|---:|---:|
-| 1 | `wasm.deob` | semantic | 67% | 102 ms |
+| 1 | `wasm.deob` | semantic | 67% | 68 ms |
 
 ## Capabilities
 
@@ -381,7 +381,7 @@ File: .disrobe/notes/renames.json
       "old": "func_0",
       "new": "add",
       "note": "two integer inputs",
-      "recorded_at": "2026-09-13T00:01:21.449681200Z"
+      "recorded_at": "2026-09-13T07:57:22.321827100Z"
     }
   ]
 }

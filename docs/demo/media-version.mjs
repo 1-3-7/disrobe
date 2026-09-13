@@ -16,7 +16,7 @@ export function verifyMediaVersion(binaryOutput, expectedVersion, releaseTag) {
   const version = binaryOutput.match(/^disrobe ([^\s]+)$/u)?.[1];
   assert.ok(version && versionPattern.test(version), "binary --version must report an exact disrobe version");
   assert.equal(version, expectedVersion, `binary version ${version} does not match workspace version ${expectedVersion}`);
-  if (releaseTag !== undefined && releaseTag !== "latest") {
+  if (releaseTag !== undefined && releaseTag !== null && releaseTag !== "latest") {
     assert.ok(releaseTag.startsWith("v") && versionPattern.test(releaseTag.slice(1)), "release tag must be v<version> or latest");
     assert.equal(releaseTag.slice(1), expectedVersion, `release tag ${releaseTag} does not match workspace version ${expectedVersion}`);
   }

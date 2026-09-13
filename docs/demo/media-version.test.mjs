@@ -15,6 +15,15 @@ test("version agreement supports release tags, prereleases, and rolling latest",
   }
 });
 
+test("development recordings accept absent or null tags while enforcing version agreement", () => {
+  for (const releaseTag of [undefined, null]) {
+    const recording = JSON.parse(JSON.stringify({ binary: { version: "disrobe 1.2.3" }, workspaceVersion: "1.2.3", releaseTag }));
+    assert.equal(verifyMediaVersion(recording.binary.version, recording.workspaceVersion, recording.releaseTag), "1.2.3");
+    assert.throws(() => verifyMediaVersion("disrobe 1.2.2", recording.workspaceVersion, recording.releaseTag), /binary version .* does not match/u);
+    assert.throws(() => verifyMediaVersion("disrobe 1.2.3 extra", recording.workspaceVersion, recording.releaseTag), /exact disrobe version/u);
+  }
+});
+
 test("version agreement rejects old binaries, mismatched tags, and ambiguous labels", () => {
   assert.throws(() => verifyMediaVersion("disrobe 1.2.2", "1.2.3", "v1.2.3"), /binary version .* does not match/u);
   assert.throws(() => verifyMediaVersion("disrobe 1.2.2", "1.2.3", "latest"), /binary version .* does not match/u);
