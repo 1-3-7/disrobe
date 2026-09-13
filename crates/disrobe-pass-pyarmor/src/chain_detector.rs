@@ -222,6 +222,7 @@ fn push_child(
             artifact_index,
             relative_path: relative_path.to_owned(),
             hint: hint.map(str::to_owned),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     });

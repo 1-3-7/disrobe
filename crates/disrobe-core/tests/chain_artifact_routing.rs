@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use disrobe_core::chain::detection::{
-    ChildArtifact, ChildHandle, DetectContext, DetectVerdict, OutputKind, PassRunOutcome,
-    TERMINAL_HINT,
+    ChildArtifact, ChildHandle, ChildMaterialization, DetectContext, DetectVerdict, OutputKind,
+    PassRunOutcome, TERMINAL_HINT,
 };
 use disrobe_core::chain::detector::{Detector, Pass};
 use disrobe_core::chain::registry::DetectorPick;
@@ -171,6 +171,7 @@ fn mixed_outcome() -> PassRunOutcome {
     let (kind, children): (OutputKind, Vec<Vec<u8>>) = OutputKind::mixed_from_children(vec![
         ChildArtifact {
             handle: ChildHandle {
+                materialization: ChildMaterialization::default(),
                 artifact_index: u32::MAX,
                 relative_path: "recovered.bin".to_string(),
                 hint: None,
@@ -179,6 +180,7 @@ fn mixed_outcome() -> PassRunOutcome {
         },
         ChildArtifact {
             handle: ChildHandle {
+                materialization: ChildMaterialization::default(),
                 artifact_index: u32::MAX,
                 relative_path: "pass.report.json".to_string(),
                 hint: Some(TERMINAL_HINT.to_string()),

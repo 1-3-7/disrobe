@@ -21,6 +21,8 @@ pub(crate) mod catalog_registry;
 #[cfg(feature = "chain")]
 pub(crate) mod chain_compare;
 #[cfg(feature = "chain")]
+mod chain_materialization;
+#[cfg(feature = "chain")]
 pub(crate) mod chain_v1;
 pub(crate) mod completions;
 pub(crate) mod config;

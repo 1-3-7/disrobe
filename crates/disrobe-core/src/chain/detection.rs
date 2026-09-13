@@ -81,11 +81,32 @@ impl DetectVerdict {
 
 pub type Detection = DetectVerdict;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ChildMaterialization {
+    Regular { unix_mode: Option<u32> },
+    Directory { unix_mode: Option<u32> },
+}
+
+impl Default for ChildMaterialization {
+    fn default() -> Self {
+        Self::Regular { unix_mode: None }
+    }
+}
+
+impl ChildMaterialization {
+    const fn is_default(&self) -> bool {
+        matches!(self, Self::Regular { unix_mode: None })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildHandle {
     pub artifact_index: u32,
     pub relative_path: String,
     pub hint: Option<String>,
+    #[serde(default, skip_serializing_if = "ChildMaterialization::is_default")]
+    pub materialization: ChildMaterialization,
 }
 
 pub const TERMINAL_HINT: &str = "disrobe.terminal";
@@ -94,6 +115,7 @@ impl ChildHandle {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         self.hint.as_deref() == Some(TERMINAL_HINT)
+            || matches!(self.materialization, ChildMaterialization::Directory { .. })
     }
 }
 
@@ -184,6 +206,37 @@ pub struct PassRunOutcome {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_regular_child_json_keeps_its_shape() {
+        let json: &str = r#"{"artifact_index":2,"relative_path":"file.bin","hint":null}"#;
+        let child: ChildHandle = serde_json::from_str(json).expect("legacy child handle");
+        assert_eq!(child.materialization, ChildMaterialization::default());
+        assert!(!child.is_terminal());
+        assert_eq!(
+            serde_json::to_string(&child).expect("serialize legacy child"),
+            json
+        );
+    }
+
+    #[test]
+    fn directory_child_json_preserves_its_mode_and_terminal_kind() {
+        let child: ChildHandle = ChildHandle {
+            artifact_index: 3,
+            relative_path: "tree/empty".to_owned(),
+            hint: None,
+            materialization: ChildMaterialization::Directory {
+                unix_mode: Some(0o750),
+            },
+        };
+        let json: String = serde_json::to_string(&child).expect("serialize directory child");
+        let decoded: ChildHandle =
+            serde_json::from_str(&json).expect("deserialize directory child");
+        assert_eq!(decoded.materialization, child.materialization);
+        assert_eq!(decoded.relative_path, child.relative_path);
+        assert!(decoded.is_terminal());
+        assert!(json.contains("\"kind\":\"directory\""));
+    }
 
     #[test]
     fn band_threshold_high() {

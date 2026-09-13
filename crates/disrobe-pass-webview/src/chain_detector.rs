@@ -229,6 +229,7 @@ fn to_children(assets: &[RecoveredAsset]) -> Vec<ChildArtifact> {
                 artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
                 relative_path: asset.path.clone(),
                 hint: Some(hint_for(&asset.path).to_owned()),
+                materialization: disrobe_core::chain::ChildMaterialization::default(),
             },
             bytes: asset.bytes.clone(),
         })

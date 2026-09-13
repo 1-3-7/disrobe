@@ -140,6 +140,7 @@ fn terminal_child(index: u32, relative_path: String, bytes: Vec<u8>) -> ChildArt
             artifact_index: index,
             relative_path,
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }

@@ -106,6 +106,7 @@ impl Pass for PyfreezePass {
                     artifact_index: 0,
                     relative_path: "module.pyc".to_string(),
                     hint: Some("python-bytecode".to_string()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: bytes.to_vec(),
             }]);
@@ -119,6 +120,7 @@ impl Pass for PyfreezePass {
                     artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
                     relative_path: member.name,
                     hint: Some("python-freezer-entry".to_string()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: member.data,
             })

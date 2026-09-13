@@ -53,11 +53,10 @@ fn debug_str_set(bytes: &[u8]) -> BTreeSet<String> {
 
 #[test]
 fn zig_reconstructed_type_names_are_grounded_in_own_debug_str() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!("missing committed fixture corpus/native/zig/hello.zig.elf");
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig");
-    let truth: BTreeSet<String> = debug_str_set(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
+    let truth: BTreeSet<String> = debug_str_set(bytes);
     assert!(
         !truth.is_empty(),
         "the zig binary's own .debug_str must carry type-name strings (the oracle)",
@@ -98,10 +97,8 @@ fn zig_reconstructed_type_names_are_grounded_in_own_debug_str() {
 #[test]
 fn debug_fixtures_disassemble_named_functions_with_demangled_bodies() {
     for rel in [common::ZIG_ELF, common::NIM_ELF] {
-        let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(rel) else {
-            panic!("missing committed fixture {rel}");
-        };
-        let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze");
+        let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(rel);
+        let analysis: &NativeLangAnalysis = &fixture.analysis;
         assert!(
             analysis.disasm.arch_supported,
             "{rel}: x86-64 in-house decoder must be available",

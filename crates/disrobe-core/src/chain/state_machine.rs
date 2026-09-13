@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::detection::{DetectContext, OutputKind, PassRunOutcome};
+use super::detection::{
+    ChildHandle, ChildMaterialization, DetectContext, OutputKind, PassRunOutcome,
+};
 use super::registry::{DetectorPick, PassRegistry, PickOutcome, SelectionPolicy};
 use super::spec::{ChainSpec, SpecCursor};
 
@@ -76,6 +78,7 @@ impl Default for ChainConfig {
 pub struct ExtractedArtifact {
     pub node_id: NodeId,
     pub relative_path: String,
+    pub materialization: ChildMaterialization,
     pub bytes: Vec<u8>,
 }
 
@@ -156,7 +159,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
 
     #[must_use]
     pub fn run(&self, seed: Vec<u8>, spec: &ChainSpec, path_hint: Option<String>) -> ChainPlan {
-        let mut noop = |_: &ExtractedArtifact| {};
+        let mut noop = |_: &ExtractedArtifact, _: &[ChildHandle]| {};
         self.run_with_sink(seed, spec, path_hint, &mut noop)
     }
 
@@ -167,7 +170,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         seed: Vec<u8>,
         spec: &ChainSpec,
         path_hint: Option<String>,
-        sink: &mut dyn FnMut(&ExtractedArtifact),
+        sink: &mut dyn FnMut(&ExtractedArtifact, &[ChildHandle]),
     ) -> ChainPlan {
         let started: Instant = Instant::now();
         let mut nodes: Vec<Node> = Vec::new();
@@ -319,6 +322,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     Some(ExtractedArtifact {
                         node_id: item.parent,
                         relative_path: stage_artifact_path(&nodes, item.parent),
+                        materialization: ChildMaterialization::default(),
                         bytes: item.bytes.clone(),
                     })
                 } else {
@@ -331,7 +335,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             match pass_run {
                 Err(msg) => {
                     if let Some(artifact) = rescue {
-                        sink(&artifact);
+                        sink(&artifact, &[]);
                         if !self.config.stream_extracted {
                             extracted.push(artifact);
                         }
@@ -599,9 +603,10 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 let artifact: ExtractedArtifact = ExtractedArtifact {
                                     node_id: layer_id,
                                     relative_path,
+                                    materialization: ChildMaterialization::default(),
                                     bytes: outcome.output_bytes,
                                 };
-                                sink(&artifact);
+                                sink(&artifact, &[]);
                                 if !self.config.stream_extracted {
                                     extracted.push(artifact);
                                 }
@@ -627,7 +632,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     pick,
                                 )
                             });
-                            for ch in children {
+                            for ch in &children {
                                 let child_branch: String = next_branch_id(&mut branch_seq);
                                 let next_bytes: Vec<u8> = if let Some(bytes) =
                                     child_bytes.get_mut(ch.artifact_index as usize)
@@ -655,9 +660,10 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         let artifact: ExtractedArtifact = ExtractedArtifact {
                                             node_id: layer_id,
                                             relative_path: ch.relative_path.clone(),
+                                            materialization: ch.materialization,
                                             bytes: Vec::new(),
                                         };
-                                        sink(&artifact);
+                                        sink(&artifact, &children);
                                         if !self.config.stream_extracted {
                                             extracted.push(artifact);
                                         }
@@ -680,9 +686,10 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                         let artifact: ExtractedArtifact = ExtractedArtifact {
                                             node_id: layer_id,
                                             relative_path: ch.relative_path.clone(),
+                                            materialization: ch.materialization,
                                             bytes: next_bytes,
                                         };
-                                        sink(&artifact);
+                                        sink(&artifact, &children);
                                         if !self.config.stream_extracted {
                                             extracted.push(artifact);
                                         }
@@ -704,9 +711,10 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     let artifact: ExtractedArtifact = ExtractedArtifact {
                                         node_id: layer_id,
                                         relative_path: ch.relative_path.clone(),
+                                        materialization: ch.materialization,
                                         bytes: next_bytes.clone(),
                                     };
-                                    sink(&artifact);
+                                    sink(&artifact, &children);
                                     if !self.config.stream_extracted {
                                         extracted.push(artifact);
                                     }
@@ -722,8 +730,8 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                     history: child_history,
                                     container_lineage: child_container_lineage,
                                     spec_cursor: item.spec_cursor.advance(),
-                                    path_hint: Some(ch.relative_path),
-                                    parent_hint: ch.hint,
+                                    path_hint: Some(ch.relative_path.clone()),
+                                    parent_hint: ch.hint.clone(),
                                 });
                             }
                         }
@@ -1100,11 +1108,13 @@ mod tests {
                     kind: OutputKind::Mixed {
                         children: vec![
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 0,
                                 relative_path: "main.dll".to_string(),
                                 hint: None,
                             },
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 1,
                                 relative_path: "sub/_wmi.pyd".to_string(),
                                 hint: None,
@@ -1169,6 +1179,7 @@ mod tests {
                 output_bytes: Vec::new(),
                 kind: OutputKind::Mixed {
                     children: vec![ChildHandle {
+                        materialization: ChildMaterialization::default(),
                         artifact_index: 0,
                         relative_path: "extracted/big_app.dll".to_string(),
                         hint: Some(super::super::detection::TERMINAL_HINT.to_string()),
@@ -1195,7 +1206,7 @@ mod tests {
         };
         let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
         let mut streamed: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut sink = |a: &ExtractedArtifact| {
+        let mut sink = |a: &ExtractedArtifact, _: &[ChildHandle]| {
             streamed.push((a.relative_path.clone(), a.bytes.clone()));
         };
         let plan: ChainPlan = d.run_with_sink(
@@ -1225,6 +1236,70 @@ mod tests {
                 .any(|n: &Node| matches!(n.verdict, Verdict::Extracted)),
             "terminal child node must carry the Extracted verdict"
         );
+    }
+
+    #[test]
+    fn empty_directory_metadata_reaches_streamed_and_retained_sinks() {
+        for stream_extracted in [false, true] {
+            let registry: PassRegistry = registry_with_a();
+            let runner: CountingRunner = CountingRunner {
+                calls: AtomicU32::new(0),
+                produce: Box::new(|_, _| {
+                    Ok(PassRunOutcome {
+                        output_bytes: Vec::new(),
+                        kind: OutputKind::Mixed {
+                            children: vec![ChildHandle {
+                                artifact_index: 0,
+                                relative_path: "tree/empty".to_owned(),
+                                hint: None,
+                                materialization: ChildMaterialization::Directory {
+                                    unix_mode: Some(0o750),
+                                },
+                            }],
+                        },
+                        duration: Duration::ZERO,
+                        metadata: BTreeMap::new(),
+                        children: vec![Vec::new()],
+                    })
+                }),
+            };
+            let driver: ChainDriver<'_, CountingRunner> = ChainDriver::new(
+                &registry,
+                &runner,
+                ChainConfig {
+                    persist_children: true,
+                    stream_extracted,
+                    ..ChainConfig::default()
+                },
+            );
+            let mut streamed: Vec<ExtractedArtifact> = Vec::new();
+            let mut sink = |artifact: &ExtractedArtifact, siblings: &[ChildHandle]| {
+                assert_eq!(siblings.len(), 1);
+                assert_eq!(siblings[0].materialization, artifact.materialization);
+                streamed.push(artifact.clone());
+            };
+            let plan: ChainPlan = driver.run_with_sink(
+                b"root-onefile".to_vec(),
+                &ChainSpec::Auto { cap: 8 },
+                None,
+                &mut sink,
+            );
+            assert_eq!(runner.calls.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(streamed.len(), 1);
+            assert_eq!(
+                streamed[0].materialization,
+                ChildMaterialization::Directory {
+                    unix_mode: Some(0o750)
+                }
+            );
+            assert!(streamed[0].bytes.is_empty());
+            assert_eq!(plan.extracted.len(), usize::from(!stream_extracted));
+            assert!(
+                plan.nodes
+                    .iter()
+                    .any(|node: &Node| matches!(node.verdict, Verdict::Extracted))
+            );
+        }
     }
 
     #[test]
@@ -1609,11 +1684,13 @@ mod tests {
                         kind: OutputKind::Mixed {
                             children: vec![
                                 ChildHandle {
+                                    materialization: ChildMaterialization::default(),
                                     artifact_index: 0,
                                     relative_path: "a.pyc".to_string(),
                                     hint: Some("interpreter-bytecode".to_string()),
                                 },
                                 ChildHandle {
+                                    materialization: ChildMaterialization::default(),
                                     artifact_index: 1,
                                     relative_path: "b.pyc".to_string(),
                                     hint: Some("interpreter-bytecode".to_string()),
@@ -1694,6 +1771,7 @@ mod tests {
                     output_bytes: Vec::new(),
                     kind: OutputKind::Mixed {
                         children: vec![ChildHandle {
+                            materialization: ChildMaterialization::default(),
                             artifact_index: 7,
                             relative_path: "missing.bin".to_string(),
                             hint: None,
@@ -1845,6 +1923,7 @@ mod tests {
                 output_bytes: Vec::new(),
                 kind: OutputKind::Mixed {
                     children: vec![ChildHandle {
+                        materialization: ChildMaterialization::default(),
                         artifact_index: 0,
                         relative_path: "self-echo.bin".to_string(),
                         hint: None,
@@ -1913,16 +1992,19 @@ mod tests {
                     kind: OutputKind::Mixed {
                         children: vec![
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 0,
                                 relative_path: "a.bin".to_string(),
                                 hint: None,
                             },
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 1,
                                 relative_path: "b.bin".to_string(),
                                 hint: None,
                             },
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 2,
                                 relative_path: "c.bin".to_string(),
                                 hint: None,
@@ -2266,6 +2348,7 @@ mod tests {
                         output_bytes: Vec::new(),
                         kind: OutputKind::Mixed {
                             children: vec![ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 0,
                                 relative_path: "member.bin".to_string(),
                                 hint: None,
@@ -2310,11 +2393,13 @@ mod tests {
                     kind: OutputKind::Mixed {
                         children: vec![
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 0,
                                 relative_path: "tree/empty.txt".to_string(),
                                 hint: Some(super::super::detection::TERMINAL_HINT.to_string()),
                             },
                             ChildHandle {
+                                materialization: ChildMaterialization::default(),
                                 artifact_index: 1,
                                 relative_path: "tree/filled.txt".to_string(),
                                 hint: Some(super::super::detection::TERMINAL_HINT.to_string()),
@@ -2368,6 +2453,7 @@ mod tests {
                     output_bytes: Vec::new(),
                     kind: OutputKind::Mixed {
                         children: vec![ChildHandle {
+                            materialization: ChildMaterialization::default(),
                             artifact_index: 0,
                             relative_path: "tree/empty.bin".to_string(),
                             hint: Some("archive-member".to_string()),

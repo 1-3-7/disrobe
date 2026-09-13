@@ -16,8 +16,8 @@ pub use chain_json::{
     OutputKindDoc, SCHEMA_VERSION, Topology, VerdictDoc, VerdictGrade, VerdictThreshold,
 };
 pub use detection::{
-    ArtifactRef, ChildArtifact, ChildHandle, ConfidenceBand, DetectContext, DetectVerdict,
-    Detection, OutputKind, PassRunOutcome,
+    ArtifactRef, ChildArtifact, ChildHandle, ChildMaterialization, ConfidenceBand, DetectContext,
+    DetectVerdict, Detection, OutputKind, PassRunOutcome,
 };
 pub use detector::{Detector, Pass};
 pub use ecosystem::{Ecosystem, ecosystem_for};

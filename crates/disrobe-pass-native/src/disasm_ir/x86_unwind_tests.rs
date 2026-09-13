@@ -143,11 +143,11 @@ fn unwind_entry_budget_counts_cies_as_well_as_fdes() {
     let file: object::File<'_> = object::File::parse(image.as_slice()).expect("parse image");
     let mut ranges: Vec<(u64, u64)> = Vec::new();
     unwind::visit_frame_ranges(&file, 0, 1, |address, length| {
-        ranges.push((address, length))
+        ranges.push((address, length));
     });
     assert!(ranges.is_empty());
     unwind::visit_frame_ranges(&file, 0, 2, |address, length| {
-        ranges.push((address, length))
+        ranges.push((address, length));
     });
     assert_eq!(ranges, vec![(2, 4)]);
 }

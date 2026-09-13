@@ -270,6 +270,7 @@ fn push_terminal_child(children: &mut Vec<ChildArtifact>, relative_path: String,
             artifact_index: index,
             relative_path,
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     });

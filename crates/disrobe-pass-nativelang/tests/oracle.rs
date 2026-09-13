@@ -280,12 +280,9 @@ fn crystal_class_anchor_types(bytes: &[u8]) -> BTreeSet<String> {
 
 #[test]
 fn zig_detects_and_demangles_matching_independent_symtab() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert_eq!(
         analysis.fingerprint.lang,
         NativeLang::Zig,
@@ -310,7 +307,7 @@ fn zig_detects_and_demangles_matching_independent_symtab() {
         analysis.types.line_coverage_pct,
     );
 
-    let independent: BTreeSet<String> = elf_symtab_names(&bytes);
+    let independent: BTreeSet<String> = elf_symtab_names(bytes);
     assert!(
         independent.contains("hello.fib"),
         "independent oracle missing hello.fib"
@@ -359,13 +356,10 @@ fn zig_detects_and_demangles_matching_independent_symtab() {
 
 #[test]
 fn zig_nested_modules_match_real_compiler_symbols() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
-    let independent: BTreeMap<String, (u64, u64)> = elf_func_symbols(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
+    let independent: BTreeMap<String, (u64, u64)> = elf_func_symbols(bytes);
     let nested: BTreeMap<String, (u64, u64)> = independent
         .into_iter()
         .filter(|(symbol, _): &(String, (u64, u64))| symbol.starts_with("os.linux."))
@@ -398,8 +392,7 @@ fn zig_nested_modules_match_real_compiler_symbols() {
             recovered.name, name,
             "real Zig symbol {symbol} must retain its leaf name"
         );
-        let Some(function): Option<&RecoveredFunction> = recovered_by_start(&analysis, start)
-        else {
+        let Some(function): Option<&RecoveredFunction> = recovered_by_start(analysis, start) else {
             panic!("pass did not recover real Zig function {symbol} at 0x{start:x}");
         };
         assert_eq!(
@@ -412,12 +405,9 @@ fn zig_nested_modules_match_real_compiler_symbols() {
 
 #[test]
 fn nim_detects_and_demangles_itanium_matching_known_source() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/nim/hello.nim.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze nim elf");
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::NIM_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert_eq!(
         analysis.fingerprint.lang,
         NativeLang::Nim,
@@ -434,7 +424,7 @@ fn nim_detects_and_demangles_itanium_matching_known_source() {
         "nim debug binary grades source_recoverable=true off real DWARF, not a hardcoded false",
     );
 
-    let independent: BTreeSet<String> = elf_symtab_names(&bytes);
+    let independent: BTreeSet<String> = elf_symtab_names(bytes);
     assert!(
         independent.contains("_ZN5hello5greetE6string"),
         "independent oracle missing mangled greet"
@@ -482,12 +472,9 @@ fn nim_detects_and_demangles_itanium_matching_known_source() {
 
 #[test]
 fn nim_operators_and_generics_demangle_to_source_forms() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/nim/hello.nim.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let independent: BTreeSet<String> = elf_symtab_names(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::NIM_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let independent: BTreeSet<String> = elf_symtab_names(bytes);
     for raw in [
         "_ZN6system13minuspercent_E3int3int",
         "_ZN7dollars7dollar_E3int",
@@ -499,7 +486,7 @@ fn nim_operators_and_generics_demangle_to_source_forms() {
         );
     }
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze nim elf");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     let by_name = |demangled: &str| -> bool {
         analysis
             .recovery
@@ -548,12 +535,9 @@ fn nim_operators_and_generics_demangle_to_source_forms() {
 
 #[test]
 fn zig_compiler_reflection_thunks_excluded_from_user_modules() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let independent: BTreeSet<String> = elf_symtab_names(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let independent: BTreeSet<String> = elf_symtab_names(bytes);
     assert!(
         independent
             .iter()
@@ -561,7 +545,7 @@ fn zig_compiler_reflection_thunks_excluded_from_user_modules() {
         "independent oracle: real zig binary must carry __zig_ reflection thunks"
     );
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(
         analysis
             .recovery
@@ -697,14 +681,12 @@ fn crystal_demangler_reverses_spec_constructed_mangling() {
 
 #[test]
 fn crystal_detect_and_demangle_on_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::CRYSTAL_PE) else {
-        panic!(
-            "missing committed fixture corpus/native/crystal/hello.cr.exe (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::CRYSTAL_PE);
+    let bytes: &[u8] = &fixture.bytes;
     assert_eq!(&bytes[..2], b"MZ", "crystal fixture must be a real PE");
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze crystal pe");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert_eq!(
         analysis.fingerprint.lang,
         NativeLang::Crystal,
@@ -740,7 +722,7 @@ fn crystal_detect_and_demangle_on_real_binary() {
         );
     }
 
-    let anchor_types: BTreeSet<String> = crystal_class_anchor_types(&bytes);
+    let anchor_types: BTreeSet<String> = crystal_class_anchor_types(bytes);
     assert!(
         anchor_types.contains("Greeter"),
         "independent .class oracle must see Greeter; it saw {} types",
@@ -853,11 +835,9 @@ fn parse_d_source(src: &str) -> SourceTruth {
 
 #[test]
 fn d_object_detects_and_demangles_matching_known_source() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.o.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let bytes: &[u8] = &fixture.bytes;
     let src: String = std::fs::read_to_string(d_source_path()).expect("read hello.d source");
     let truth: SourceTruth = parse_d_source(&src);
     assert!(
@@ -871,7 +851,7 @@ fn d_object_detects_and_demangles_matching_known_source() {
         truth.methods
     );
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert_eq!(analysis.fingerprint.lang, NativeLang::D, "lang must be d");
     assert_eq!(
         analysis.recovery.source_grade,
@@ -894,7 +874,7 @@ fn d_object_detects_and_demangles_matching_known_source() {
         "real d object must carry a symbol table"
     );
 
-    let independent: BTreeSet<String> = elf_symtab_names(&bytes);
+    let independent: BTreeSet<String> = elf_symtab_names(bytes);
     assert!(
         independent
             .iter()
@@ -946,12 +926,10 @@ fn d_object_detects_and_demangles_matching_known_source() {
 
 #[test]
 fn d_object_recovers_per_section_relocatable_functions() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.o.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let sized: BTreeMap<String, u64> = elf_func_symbol_sizes(&bytes);
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let sized: BTreeMap<String, u64> = elf_func_symbol_sizes(bytes);
     let comdat_funcs: usize = sized.len();
     assert!(
         comdat_funcs > 50,
@@ -959,7 +937,7 @@ fn d_object_recovers_per_section_relocatable_functions() {
          got {comdat_funcs}"
     );
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     let recovered_reloc: usize = analysis
         .function_recovery
         .functions
@@ -1020,16 +998,14 @@ fn d_object_recovers_per_section_relocatable_functions() {
 
 #[test]
 fn d_object_dwarf_present_with_subprograms() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.o.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let bytes: &[u8] = &fixture.bytes;
     assert!(
-        elf_has_section(&bytes, ".debug_info"),
+        elf_has_section(bytes, ".debug_info"),
         "real d object must carry .debug_info"
     );
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(
         analysis.dwarf.present,
         "dwarf must be recovered from d object"
@@ -1130,16 +1106,16 @@ fn zig_origin_truth(bytes: &[u8], expected_name: &str) -> Option<OriginTruth> {
 
 #[test]
 fn dwarf_inherits_concrete_subprogram_metadata_from_real_compiler_output() {
-    let Some(zig): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!("missing committed fixture corpus/native/zig/hello.zig.elf");
-    };
+    let zig_fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::ZIG_ELF);
+    let zig: &[u8] = &zig_fixture.bytes;
     let truth: OriginTruth =
-        zig_origin_truth(&zig, "__divti3").expect("independent abstract-origin truth");
+        zig_origin_truth(zig, "__divti3").expect("independent abstract-origin truth");
     assert_eq!(truth.producer, "zig 0.13.0");
     assert_ne!(truth.concrete_offset, truth.origin_offset);
     assert_eq!(truth.target_name, "__divti3");
     assert_eq!(truth.target_linkage_name, "compiler_rt.divti3.__divti3");
-    let zig_analysis: NativeLangAnalysis = analyze(&zig).expect("analyze zig elf");
+    let zig_analysis: &NativeLangAnalysis = &zig_fixture.analysis;
     let zig_divti3: &disrobe_pass_nativelang::DwarfFunction = zig_analysis
         .dwarf
         .functions
@@ -1159,10 +1135,9 @@ fn dwarf_inherits_concrete_subprogram_metadata_from_real_compiler_output() {
     assert_eq!(zig_divti3.decl_line, Some(17));
     assert_eq!(zig_divti3.params, ["a".to_owned(), "b".to_owned()]);
 
-    let Some(d): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
-    };
-    let d_analysis: NativeLangAnalysis = analyze(&d).expect("analyze d object");
+    let d_fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let d_analysis: &NativeLangAnalysis = &d_fixture.analysis;
     let d_addu: &disrobe_pass_nativelang::DwarfFunction = d_analysis
         .dwarf
         .functions
@@ -1188,11 +1163,11 @@ fn dwarf_inherits_concrete_subprogram_metadata_from_real_compiler_output() {
 
 #[test]
 fn d_object_never_assigns_relocatable_section_offsets() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
-    };
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let bytes: &[u8] = &fixture.bytes;
     let image: disrobe_pass_nativelang::NativeImage<'_> =
-        disrobe_pass_nativelang::NativeImage::parse(&bytes).expect("parse d object");
+        disrobe_pass_nativelang::NativeImage::parse(bytes).expect("parse d object");
     assert!(image.relocatable);
     assert!(
         image
@@ -1200,7 +1175,7 @@ fn d_object_never_assigns_relocatable_section_offsets() {
             .iter()
             .all(|symbol: &disrobe_pass_nativelang::image::FuncSymbol| symbol.relocatable)
     );
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(
         analysis
             .function_recovery
@@ -1234,36 +1209,31 @@ fn assert_member_type(analysis: &NativeLangAnalysis, agg: &str, member: &str, ex
 
 #[test]
 fn array_typed_members_recover_dimensions_across_languages() {
-    let Some(d_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!("missing committed fixture corpus/native/d/hello.d.o.elf");
-    };
-    let d: NativeLangAnalysis = analyze(&d_bytes).expect("analyze d object");
-    assert_member_type(&d, "_IO_FILE", "_unused2", "char[20]");
-    assert_member_type(&d, "_IO_FILE", "_shortbuf", "char[1]");
-    assert_member_type(&d, "UTFException", "sequence", "uint[4]");
-    assert_member_type(&d, "LockingTextWriter", "rbuf8", "char[4]");
+    let d_fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let d: &NativeLangAnalysis = &d_fixture.analysis;
+    assert_member_type(d, "_IO_FILE", "_unused2", "char[20]");
+    assert_member_type(d, "_IO_FILE", "_shortbuf", "char[1]");
+    assert_member_type(d, "UTFException", "sequence", "uint[4]");
+    assert_member_type(d, "LockingTextWriter", "rbuf8", "char[4]");
 
-    let Some(nim_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!("missing committed fixture corpus/native/nim/hello.nim.elf");
-    };
-    let nim: NativeLangAnalysis = analyze(&nim_bytes).expect("analyze nim elf");
-    assert_member_type(&nim, "NimStrPayload", "data", "NIM_CHAR[]");
+    let nim_fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::NIM_ELF);
+    let nim: &NativeLangAnalysis = &nim_fixture.analysis;
+    assert_member_type(nim, "NimStrPayload", "data", "NIM_CHAR[]");
 
-    let Some(zig_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!("missing committed fixture corpus/native/zig/hello.zig.elf");
-    };
-    let zig: NativeLangAnalysis = analyze(&zig_bytes).expect("analyze zig elf");
-    assert_member_type(&zig, "elf.Elf64_Ehdr", "e_ident", "u8[16]");
-    assert_member_type(&zig, "dwarf.FileEntry", "md5", "u8[16]");
+    let zig_fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::ZIG_ELF);
+    let zig: &NativeLangAnalysis = &zig_fixture.analysis;
+    assert_member_type(zig, "elf.Elf64_Ehdr", "e_ident", "u8[16]");
+    assert_member_type(zig, "dwarf.FileEntry", "md5", "u8[16]");
 }
 
 #[test]
 fn d_object_recovers_class_type_with_field_and_base_from_dwarf() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.o.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let fixture: &common::CachedFixtureAnalysis =
+        common::cached_fixture_analysis(common::D_OBJ_ELF);
+    let bytes: &[u8] = &fixture.bytes;
     let src: String = std::fs::read_to_string(d_source_path()).expect("read hello.d source");
     let truth: SourceTruth = parse_d_source(&src);
     assert!(
@@ -1271,13 +1241,13 @@ fn d_object_recovers_class_type_with_field_and_base_from_dwarf() {
         "source oracle must contain class Greeter"
     );
 
-    let independent: BTreeSet<String> = elf_debug_str_set(&bytes);
+    let independent: BTreeSet<String> = elf_debug_str_set(bytes);
     assert!(
         independent.contains("Greeter") && independent.contains("name"),
         "independent .debug_str oracle must carry the Greeter type and its name field"
     );
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d object");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     let greeter: &DwarfAggregate = find_aggregate(&analysis.dwarf.aggregates, "Greeter")
         .expect("Greeter aggregate must be recovered from dwarf");
     assert_eq!(greeter.byte_size, Some(32), "Greeter instance size");
@@ -1358,12 +1328,9 @@ fn d_object_recovers_class_type_with_field_and_base_from_dwarf() {
 
 #[test]
 fn nim_recovers_record_types_with_named_fields_from_dwarf() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/nim/hello.nim.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let independent: BTreeSet<String> = elf_debug_str_set(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::NIM_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let independent: BTreeSet<String> = elf_debug_str_set(bytes);
     for want in ["NimStringV2", "RootObj", "Exception"] {
         assert!(
             independent.contains(want),
@@ -1371,7 +1338,7 @@ fn nim_recovers_record_types_with_named_fields_from_dwarf() {
         );
     }
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze nim elf");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(
         analysis.dwarf.aggregates.len() > 10,
         "expected the nim runtime type table, got {}",
@@ -1405,18 +1372,15 @@ fn nim_recovers_record_types_with_named_fields_from_dwarf() {
 
 #[test]
 fn zig_recovers_enum_variants_matching_independent_debug_str() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let independent: BTreeSet<String> = elf_debug_str_set(&bytes);
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let independent: BTreeSet<String> = elf_debug_str_set(bytes);
     assert!(
         independent.contains("SemanticVersion"),
         "independent oracle must carry std SemanticVersion type"
     );
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     let arch: &DwarfAggregate = find_aggregate(&analysis.dwarf.aggregates, "Target.Cpu.Arch")
         .expect("zig Target.Cpu.Arch enum recovered");
     assert_eq!(arch.kind, AggregateKind::Enum);
@@ -1439,12 +1403,8 @@ fn zig_recovers_enum_variants_matching_independent_debug_str() {
 
 #[test]
 fn d_linked_pe_detected_on_stripped_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::D_PE) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.exe (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze d pe");
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::D_PE);
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert_eq!(
         analysis.fingerprint.lang,
         NativeLang::D,
@@ -1508,11 +1468,8 @@ fn d_classinfo_names_from_symtab(bytes: &[u8]) -> BTreeSet<String> {
 
 #[test]
 fn d_linked_pe_recovers_structural_classinfo_names_matching_symtab() {
-    let Some(pe): Option<Vec<u8>> = common::fixture_or_skip(common::D_PE) else {
-        panic!(
-            "missing committed fixture corpus/native/d/hello.d.exe (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let pe_fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::D_PE);
+    let pe: &[u8] = &pe_fixture.bytes;
     let Some(obj): Option<Vec<u8>> = common::fixture_or_skip(common::D_OBJ_ELF) else {
         panic!(
             "missing committed fixture corpus/native/d/hello.d.o.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
@@ -1520,7 +1477,7 @@ fn d_linked_pe_recovers_structural_classinfo_names_matching_symtab() {
     };
     assert_eq!(&pe[..2], b"MZ", "d fixture must be a real linked PE");
 
-    let analysis: NativeLangAnalysis = analyze(&pe).expect("analyze d pe");
+    let analysis: &NativeLangAnalysis = &pe_fixture.analysis;
     assert_eq!(
         analysis.fingerprint.lang,
         NativeLang::D,
@@ -1679,10 +1636,8 @@ fn cross_language_fingerprints_do_not_collide() {
         (common::D_PE, NativeLang::D),
     ];
     for (rel, expected) in langs {
-        let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(rel) else {
-            panic!("missing committed fixture {rel} (a tracked corpus file)");
-        };
-        let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze");
+        let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(rel);
+        let analysis: &NativeLangAnalysis = &fixture.analysis;
         assert_eq!(
             analysis.fingerprint.lang, expected,
             "fingerprint collision for {rel}"
@@ -1700,14 +1655,11 @@ fn recovered_by_start(analysis: &NativeLangAnalysis, start: u64) -> Option<&Reco
 
 #[test]
 fn nim_function_boundaries_match_independent_symtab() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/nim/hello.nim.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze nim elf");
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::NIM_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
 
-    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(&bytes);
+    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(bytes);
     let (fib_addr, fib_size): (u64, u64) = *truth
         .get("_ZN5hello3fibE3int")
         .expect("oracle missing fib symbol");
@@ -1716,7 +1668,7 @@ fn nim_function_boundaries_match_independent_symtab() {
         .expect("oracle missing greet symbol");
 
     let fib: &RecoveredFunction =
-        recovered_by_start(&analysis, fib_addr).expect("fib not recovered at oracle address");
+        recovered_by_start(analysis, fib_addr).expect("fib not recovered at oracle address");
     assert_eq!(
         fib.end,
         Some(fib_addr + fib_size),
@@ -1726,7 +1678,7 @@ fn nim_function_boundaries_match_independent_symtab() {
     assert_eq!(fib.params, vec!["int".to_owned()]);
 
     let greet: &RecoveredFunction =
-        recovered_by_start(&analysis, greet_addr).expect("greet not recovered at oracle address");
+        recovered_by_start(analysis, greet_addr).expect("greet not recovered at oracle address");
     assert_eq!(greet.end, Some(greet_addr + greet_size));
     assert_eq!(greet.demangled.as_deref(), Some("hello.greet"));
     assert_eq!(greet.params, vec!["string".to_owned()]);
@@ -1750,18 +1702,15 @@ fn nim_function_boundaries_match_independent_symtab() {
 
 #[test]
 fn nim_dwarf_present_and_low_pc_matches_independent_symtab() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/nim/hello.nim.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::NIM_ELF);
+    let bytes: &[u8] = &fixture.bytes;
     assert!(
-        elf_has_section(&bytes, ".debug_info"),
+        elf_has_section(bytes, ".debug_info"),
         "independent oracle: nim binary must carry .debug_info"
     );
-    assert!(elf_has_section(&bytes, ".debug_line"));
+    assert!(elf_has_section(bytes, ".debug_line"));
 
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze nim elf");
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(analysis.dwarf.present, "dwarf must be recovered");
     assert_eq!(analysis.dwarf.dwarf_version, Some(4));
     assert!(
@@ -1770,7 +1719,7 @@ fn nim_dwarf_present_and_low_pc_matches_independent_symtab() {
         analysis.dwarf.functions.len()
     );
 
-    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(&bytes);
+    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(bytes);
     let (fib_addr, _): (u64, u64) = *truth.get("_ZN5hello3fibE3int").unwrap();
 
     let dwarf_fib: &_ = analysis
@@ -1792,7 +1741,7 @@ fn nim_dwarf_present_and_low_pc_matches_independent_symtab() {
     );
     assert_eq!(dwarf_fib.params, vec!["n_p0".to_owned()]);
 
-    let fib: &RecoveredFunction = recovered_by_start(&analysis, fib_addr).unwrap();
+    let fib: &RecoveredFunction = recovered_by_start(analysis, fib_addr).unwrap();
     let lines = fib.source_lines.as_ref().expect("fib must have line range");
     assert_eq!(lines.file.as_deref(), Some("hello.nim"));
     assert_eq!(lines.lo, 1, "fib source line range starts at decl line 1");
@@ -1800,21 +1749,18 @@ fn nim_dwarf_present_and_low_pc_matches_independent_symtab() {
 
 #[test]
 fn zig_function_boundaries_and_dwarf_lines_match_source() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::ZIG_ELF) else {
-        panic!(
-            "missing committed fixture corpus/native/zig/hello.zig.elf (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
-        );
-    };
-    assert!(elf_has_section(&bytes, ".debug_info"));
-    let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze zig elf");
+    let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(common::ZIG_ELF);
+    let bytes: &[u8] = &fixture.bytes;
+    assert!(elf_has_section(bytes, ".debug_info"));
+    let analysis: &NativeLangAnalysis = &fixture.analysis;
     assert!(analysis.dwarf.present);
 
-    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(&bytes);
+    let truth: BTreeMap<String, (u64, u64)> = elf_func_symbols(bytes);
     let (fib_addr, fib_size): (u64, u64) =
         *truth.get("hello.fib").expect("oracle missing hello.fib");
 
     let fib: &RecoveredFunction =
-        recovered_by_start(&analysis, fib_addr).expect("fib not recovered");
+        recovered_by_start(analysis, fib_addr).expect("fib not recovered");
     assert_eq!(
         fib.end,
         Some(fib_addr + fib_size),
@@ -1831,10 +1777,8 @@ fn zig_function_boundaries_and_dwarf_lines_match_source() {
 #[test]
 fn debug_binaries_recover_types_lines_and_disassembly_but_not_source_text() {
     for rel in [common::NIM_ELF, common::ZIG_ELF] {
-        let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(rel) else {
-            panic!("missing committed fixture {rel} (a tracked corpus file)");
-        };
-        let analysis: NativeLangAnalysis = analyze(&bytes).expect("analyze");
+        let fixture: &common::CachedFixtureAnalysis = common::cached_fixture_analysis(rel);
+        let analysis: &NativeLangAnalysis = &fixture.analysis;
         assert_eq!(
             analysis.recovery.source_grade,
             SourceGrade::TypesAndLines,

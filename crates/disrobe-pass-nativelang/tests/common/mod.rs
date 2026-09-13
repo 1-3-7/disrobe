@@ -7,6 +7,21 @@
 )]
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+use disrobe_pass_nativelang::{NativeLangAnalysis, analyze};
+
+#[derive(Debug)]
+pub struct CachedFixtureAnalysis {
+    pub bytes: Vec<u8>,
+    pub analysis: NativeLangAnalysis,
+}
+
+static ZIG_ANALYSIS: OnceLock<CachedFixtureAnalysis> = OnceLock::new();
+static NIM_ANALYSIS: OnceLock<CachedFixtureAnalysis> = OnceLock::new();
+static CRYSTAL_ANALYSIS: OnceLock<CachedFixtureAnalysis> = OnceLock::new();
+static D_OBJECT_ANALYSIS: OnceLock<CachedFixtureAnalysis> = OnceLock::new();
+static D_PE_ANALYSIS: OnceLock<CachedFixtureAnalysis> = OnceLock::new();
 
 pub fn corpus_path(rel: &str) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,6 +55,23 @@ pub fn fixture_or_fail(rel: &str) -> Vec<u8> {
             p.display()
         ),
     }
+}
+
+pub fn cached_fixture_analysis(rel: &'static str) -> &'static CachedFixtureAnalysis {
+    let cache: &'static OnceLock<CachedFixtureAnalysis> = match rel {
+        ZIG_ELF => &ZIG_ANALYSIS,
+        NIM_ELF => &NIM_ANALYSIS,
+        CRYSTAL_PE => &CRYSTAL_ANALYSIS,
+        D_OBJ_ELF => &D_OBJECT_ANALYSIS,
+        D_PE => &D_PE_ANALYSIS,
+        _ => panic!("unsupported cached native fixture {rel}"),
+    };
+    cache.get_or_init(|| {
+        let bytes: Vec<u8> = fixture_or_fail(rel);
+        let analysis: NativeLangAnalysis = analyze(&bytes)
+            .unwrap_or_else(|error| panic!("analyze committed fixture {rel}: {error}"));
+        CachedFixtureAnalysis { bytes, analysis }
+    })
 }
 
 pub const REQUIRE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";

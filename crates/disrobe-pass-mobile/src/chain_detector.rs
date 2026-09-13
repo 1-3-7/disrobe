@@ -139,6 +139,8 @@ impl Pass for MobilePassAdapter {
                                 artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
                                 relative_path: name,
                                 hint: Some(hint.to_string()),
+                                materialization: disrobe_core::chain::ChildMaterialization::default(
+                                ),
                             },
                             bytes: data,
                         }
@@ -237,6 +239,7 @@ fn android_jni_sidecar(
             artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
             relative_path: "jni-link.json".to_string(),
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes: encoded,
     })
@@ -289,6 +292,7 @@ fn to_children(entries: Vec<(String, Vec<u8>)>, hint: &str) -> Vec<ChildArtifact
                     artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
                     relative_path: name,
                     hint: Some(hint.to_string()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: data,
             },

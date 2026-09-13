@@ -381,6 +381,7 @@ fn recovery_manifest_child(bytes: &[u8]) -> Option<ChildArtifact> {
             artifact_index: u32::MAX,
             relative_path: RECOVERY_MANIFEST_CHILD.to_string(),
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes: json,
     })

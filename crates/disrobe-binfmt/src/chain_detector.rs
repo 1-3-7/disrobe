@@ -1,10 +1,13 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{
-    ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector, FAMILY_CONTAINER,
-    FAMILY_NATIVE_FORMAT, OutputKind, Pass,
+    ChildArtifact, ChildHandle, ChildMaterialization, DetectContext, DetectVerdict, Detector,
+    FAMILY_CONTAINER, FAMILY_NATIVE_FORMAT, OutputKind, Pass,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
@@ -71,6 +74,7 @@ impl Pass for NePass {
         let bytes: Vec<u8> = render_ne(artifact)?;
         Ok(vec![ChildArtifact {
             handle: ChildHandle {
+                materialization: ChildMaterialization::default(),
                 artifact_index: 0,
                 relative_path: "ne-structure.json".to_owned(),
                 hint: Some(disrobe_core::chain::detection::TERMINAL_HINT.to_owned()),
@@ -238,16 +242,13 @@ impl Pass for ContainerPass {
             .members
             .into_iter()
             .enumerate()
-            .map(
-                |(index, (name, data)): (usize, (String, Vec<u8>))| ChildArtifact {
-                    handle: ChildHandle {
-                        artifact_index: u32::try_from(index).map_or(u32::MAX, |value: u32| value),
-                        relative_path: name,
-                        hint: Some(tag.to_string()),
-                    },
-                    bytes: data,
-                },
-            )
+            .map(|(index, mut child): (usize, ChildArtifact)| {
+                child.handle.artifact_index = u32::try_from(index).unwrap_or(u32::MAX);
+                if !child.handle.is_terminal() {
+                    child.handle.hint = Some(tag.to_owned());
+                }
+                child
+            })
             .collect();
         Ok(children)
     }
@@ -506,14 +507,25 @@ const MAX_STREAM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug)]
 struct MemberExtraction {
-    members: Vec<(String, Vec<u8>)>,
+    members: Vec<ChildArtifact>,
     refusals: Vec<String>,
 }
 
 impl MemberExtraction {
-    const fn complete(members: Vec<(String, Vec<u8>)>) -> Self {
+    fn complete(members: Vec<(String, Vec<u8>)>) -> Self {
         Self {
-            members,
+            members: members
+                .into_iter()
+                .map(|(name, bytes): (String, Vec<u8>)| ChildArtifact {
+                    handle: ChildHandle {
+                        artifact_index: 0,
+                        relative_path: name,
+                        hint: None,
+                        materialization: ChildMaterialization::default(),
+                    },
+                    bytes,
+                })
+                .collect(),
             refusals: Vec::new(),
         }
     }
@@ -588,6 +600,12 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         crate::quota::ExtractionQuota::default_safe(),
     )
     .map_err(|error: crate::error::Error| fail(format!("{tag} payload: {error}")))?;
+    if kind == crate::container::ContainerKind::AppImage {
+        return Ok(MemberExtraction {
+            members: materialized_appimage_members(scratch.path(), &result)?,
+            refusals: result.integrity_violations,
+        });
+    }
     let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(result.entries.len());
     for entry in result.entries {
         if entry.origin == crate::extract::ExtractedEntryOrigin::GeneratedSidecar {
@@ -601,10 +619,113 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         })?;
         members.push((entry.name, data));
     }
-    Ok(MemberExtraction {
-        members,
-        refusals: result.integrity_violations,
-    })
+    let mut extraction: MemberExtraction = MemberExtraction::complete(members);
+    extraction.refusals = result.integrity_violations;
+    Ok(extraction)
+}
+
+fn materialized_appimage_members(
+    root: &Path,
+    result: &crate::extract::ExtractionResult,
+) -> CoreResult<Vec<ChildArtifact>> {
+    let archive_members: BTreeSet<&str> = result
+        .entries
+        .iter()
+        .filter_map(|entry: &crate::extract::ExtractedEntry| {
+            (entry.origin == crate::extract::ExtractedEntryOrigin::ArchiveMember)
+                .then_some(entry.name.as_str())
+        })
+        .collect();
+    let sidecars: BTreeSet<&str> = result
+        .encoding
+        .keys()
+        .map(String::as_str)
+        .filter(|name: &&str| !archive_members.contains(name))
+        .collect();
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota::default_safe();
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut members: Vec<ChildArtifact> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    while let Some(directory) = pending.pop() {
+        let listing: std::fs::ReadDir = std::fs::read_dir(&directory)
+            .map_err(|error| fail(format!("AppImage directory read: {error}")))?;
+        for entry in listing {
+            if members.len() >= MAX_MEMBER_COUNT {
+                return Err(fail(format!(
+                    "AppImage materialized entry count exceeds {MAX_MEMBER_COUNT}"
+                )));
+            }
+            let path: PathBuf = entry
+                .map_err(|error| fail(format!("AppImage directory entry: {error}")))?
+                .path();
+            let relative: &Path = path.strip_prefix(root).map_err(|error| {
+                fail(format!("AppImage member escaped extraction root: {error}"))
+            })?;
+            let name: String = relative
+                .to_str()
+                .ok_or_else(|| fail("AppImage member path is not UTF-8".to_owned()))?
+                .replace('\\', "/");
+            let metadata: std::fs::Metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| fail(format!("AppImage member `{name}` metadata: {error}")))?;
+            let unix_mode: Option<u32> = materialized_unix_mode(&metadata);
+            let (materialization, data): (ChildMaterialization, Vec<u8>) = if metadata.is_dir() {
+                pending.push(path);
+                (ChildMaterialization::Directory { unix_mode }, Vec::new())
+            } else if metadata.is_file() {
+                if metadata.len() > quota.max_per_entry_uncompressed {
+                    return Err(fail(format!(
+                        "AppImage materialized member `{name}` exceeds the file quota"
+                    )));
+                }
+                let mut file: std::fs::File = std::fs::File::open(&path)
+                    .map_err(|error| fail(format!("AppImage member `{name}` open: {error}")))?;
+                let data: Vec<u8> = read_capped(
+                    &mut file,
+                    metadata.len(),
+                    crate::quota::bounded_prealloc(metadata.len()),
+                    &format!("AppImage member `{name}`"),
+                )?;
+                total_bytes = total_bytes
+                    .checked_add(data.len() as u64)
+                    .filter(|total: &u64| *total <= quota.max_total_uncompressed)
+                    .ok_or_else(|| {
+                        fail("AppImage materialized bytes exceed the aggregate quota".to_owned())
+                    })?;
+                (ChildMaterialization::Regular { unix_mode }, data)
+            } else {
+                return Err(fail(format!(
+                    "AppImage materialized member `{name}` is neither a regular file nor a directory"
+                )));
+            };
+            let hint: Option<String> = sidecars
+                .contains(name.as_str())
+                .then(|| disrobe_core::chain::detection::TERMINAL_HINT.to_owned());
+            members.push(ChildArtifact {
+                handle: ChildHandle {
+                    artifact_index: 0,
+                    relative_path: name,
+                    hint,
+                    materialization,
+                },
+                bytes: data,
+            });
+        }
+    }
+    members.sort_by(|left: &ChildArtifact, right: &ChildArtifact| {
+        left.handle.relative_path.cmp(&right.handle.relative_path)
+    });
+    Ok(members)
+}
+
+#[cfg(unix)]
+fn materialized_unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt as _;
+    Some(metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+const fn materialized_unix_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
 }
 
 const fn fail(msg: String) -> CoreError {
@@ -813,16 +934,79 @@ mod tests {
     }
 
     #[test]
+    fn appimage_children_preserve_manifest_members_and_generated_layouts() {
+        use sha2::{Digest as _, Sha256};
+
+        let fixture: &[u8] =
+            include_bytes!("../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage");
+        let manifest: &str = include_str!("../../../corpus/binfmt/appimage-type1/MANIFEST.tsv");
+        let recovery: MemberExtraction =
+            extract_members(TAG_APPIMAGE, fixture).expect("extract AppImage children");
+        assert!(recovery.refusals.is_empty());
+        assert_eq!(manifest.lines().skip(1).count(), 49);
+        assert_eq!(recovery.members.len(), 51);
+        assert!(recovery.members.windows(2).all(|pair: &[ChildArtifact]| {
+            pair[0].handle.relative_path < pair[1].handle.relative_path
+        }));
+        for row in manifest.lines().skip(1) {
+            let fields: Vec<&str> = row.split('\t').collect();
+            assert_eq!(fields.len(), 6);
+            let child: &ChildArtifact = recovery
+                .members
+                .iter()
+                .find(|child: &&ChildArtifact| child.handle.relative_path == fields[0])
+                .expect("manifest member reaches the chain");
+            #[cfg(unix)]
+            let unix_mode: Option<u32> =
+                Some(u32::from_str_radix(fields[2], 8).expect("manifest mode"));
+            #[cfg(not(unix))]
+            let unix_mode: Option<u32> = None;
+            match fields[1] {
+                "directory" => {
+                    assert_eq!(
+                        child.handle.materialization,
+                        ChildMaterialization::Directory { unix_mode }
+                    );
+                    assert!(child.handle.is_terminal());
+                    assert!(child.bytes.is_empty());
+                }
+                "regular" | "hardlink" => {
+                    assert_eq!(
+                        child.handle.materialization,
+                        ChildMaterialization::Regular { unix_mode }
+                    );
+                    assert_eq!(
+                        child.bytes.len(),
+                        fields[3].parse::<usize>().expect("manifest size")
+                    );
+                    assert_eq!(format!("{:x}", Sha256::digest(&child.bytes)), fields[4]);
+                }
+                other => panic!("unexpected manifest kind: {other}"),
+            }
+        }
+        for name in [".disrobe-appimage-layout.json", ".disrobe-iso-layout.json"] {
+            let child: &ChildArtifact = recovery
+                .members
+                .iter()
+                .find(|child: &&ChildArtifact| child.handle.relative_path == name)
+                .expect("generated layout reaches the chain");
+            assert!(child.handle.is_terminal());
+            let _: serde_json::Value =
+                serde_json::from_slice(&child.bytes).expect("valid generated layout");
+        }
+    }
+
+    #[test]
     fn a_filtered_rar3_member_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_RAR3_FILTER), Some(TAG_RAR));
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
+        let members: Vec<ChildArtifact> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
             .expect("extract rar3 filter members")
             .members;
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].0, "bsdcat.exe");
-        assert_eq!(members[0].1.len(), 204_288);
+        assert_eq!(members[0].handle.relative_path, "bsdcat.exe");
+        assert_eq!(members[0].bytes.len(), 204_288);
         assert_eq!(
-            crc32fast::hash(&members[0].1),
+            crc32fast::hash(&members[0].bytes),
             0x4db1_0349,
             "the chain must publish the bytes the archive header declares"
         );
@@ -839,10 +1023,10 @@ mod tests {
             .expect("one file member");
         let direct: Vec<u8> = crate::containers::rar_entry_bytes(REAL_RAR3_FILTER, entry, 1 << 30)
             .expect("direct extraction");
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
+        let members: Vec<ChildArtifact> = extract_members(TAG_RAR, REAL_RAR3_FILTER)
             .expect("chain extraction")
             .members;
-        assert_eq!(members[0].1, direct);
+        assert_eq!(members[0].bytes, direct);
     }
 
     #[test]
@@ -880,23 +1064,23 @@ mod tests {
     #[test]
     fn level3_lzh_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_LZH_LEVEL3), Some(TAG_LZH));
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_LZH, REAL_LZH_LEVEL3)
+        let members: Vec<ChildArtifact> = extract_members(TAG_LZH, REAL_LZH_LEVEL3)
             .expect("extract level-3 LZH members")
             .members;
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].0, "subdir/subdir2/HELLO.TXT");
-        assert_eq!(members[0].1, b"hello world!\r\n");
+        assert_eq!(members[0].handle.relative_path, "subdir/subdir2/HELLO.TXT");
+        assert_eq!(members[0].bytes, b"hello world!\r\n");
     }
 
     #[test]
     fn method13_stuffit_reaches_the_container_chain() {
         assert_eq!(sniff_container_tag(REAL_STUFFIT), Some(TAG_STUFFIT));
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_STUFFIT, REAL_STUFFIT)
+        let members: Vec<ChildArtifact> = extract_members(TAG_STUFFIT, REAL_STUFFIT)
             .expect("extract StuffIt members")
             .members;
         assert_eq!(members.len(), 9);
-        assert!(members.iter().any(|(name, bytes): &(String, Vec<u8>)| {
-            name == "testfile.txt" && bytes.len() == 12
+        assert!(members.iter().any(|member: &ChildArtifact| {
+            member.handle.relative_path == "testfile.txt" && member.bytes.len() == 12
         }));
     }
 
@@ -906,13 +1090,12 @@ mod tests {
             crate::containers::arc::synth_stored_arc("hello.txt", b"verified ARC child bytes")
                 .expect("build ARC fixture");
         assert_eq!(sniff_container_tag(&archive), Some(TAG_ARC));
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_ARC, &archive)
+        let members: Vec<ChildArtifact> = extract_members(TAG_ARC, &archive)
             .expect("extract ARC members")
             .members;
-        assert_eq!(
-            members,
-            vec![("hello.txt".to_owned(), b"verified ARC child bytes".to_vec())]
-        );
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].handle.relative_path, "hello.txt");
+        assert_eq!(members[0].bytes, b"verified ARC child bytes");
         let manifest: String = render_container_manifest(TAG_ARC, &archive);
         assert!(manifest.contains("entries=1 listing=read-only"));
         assert!(manifest.contains("hello.txt\tbytes=24"));
@@ -932,7 +1115,7 @@ mod tests {
         let recovery: MemberExtraction =
             extract_members(TAG_ARC, &archive).expect("recover the verified ARC sibling");
         assert_eq!(recovery.members.len(), 1);
-        assert_eq!(recovery.members[0].0, "good.bin");
+        assert_eq!(recovery.members[0].handle.relative_path, "good.bin");
         assert_eq!(recovery.refusals.len(), 1);
         assert!(recovery.refusals[0].contains("bad.bin"));
         assert!(recovery.refusals[0].contains("CRC"));
@@ -1044,19 +1227,24 @@ mod tests {
     #[test]
     fn inno_setup_real_members_reach_the_container_pass() {
         assert_eq!(sniff_container_tag(REAL_INNOSETUP), Some(TAG_INNOSETUP));
-        let members: Vec<(String, Vec<u8>)> = extract_members(TAG_INNOSETUP, REAL_INNOSETUP)
+        let members: Vec<ChildArtifact> = extract_members(TAG_INNOSETUP, REAL_INNOSETUP)
             .expect("Inno Setup members")
             .members;
         assert_eq!(members.len(), 94);
-        assert!(members.iter().all(|(path, _data): &(String, Vec<u8>)| path
-            != "setup-headers.bin"
-            && path != "setup-engine.lzma"));
-        let compiler: &(String, Vec<u8>) = members
+        assert!(
+            members
+                .iter()
+                .all(
+                    |member: &ChildArtifact| member.handle.relative_path != "setup-headers.bin"
+                        && member.handle.relative_path != "setup-engine.lzma"
+                )
+        );
+        let compiler: &ChildArtifact = members
             .iter()
-            .find(|(path, _data): &&(String, Vec<u8>)| path == "app/Compil32.exe")
+            .find(|member: &&ChildArtifact| member.handle.relative_path == "app/Compil32.exe")
             .expect("compiler member");
-        assert_eq!(compiler.1.len(), 3_940_272);
-        assert!(compiler.1.starts_with(b"MZ"));
+        assert_eq!(compiler.bytes.len(), 3_940_272);
+        assert!(compiler.bytes.starts_with(b"MZ"));
     }
 
     #[test]
@@ -1152,11 +1340,13 @@ mod tests {
             "prealloc hint {clamped} must be clamped far below the declared {NEAR_4GIB}"
         );
 
-        let members: Vec<(String, Vec<u8>)> = match extract_members(TAG_ZIP, &zip_bytes) {
+        let members: Vec<ChildArtifact> = match extract_members(TAG_ZIP, &zip_bytes) {
             Ok(m) => m.members,
             Err(_) => return,
         };
-        for (name, data) in &members {
+        for member in &members {
+            let name: &str = &member.handle.relative_path;
+            let data: &Vec<u8> = &member.bytes;
             assert!(
                 (data.len() as u64) < NEAR_4GIB && data.capacity() <= clamped.max(data.len()),
                 "member `{name}` must be bounded, not gigabytes: len={} cap={}",

@@ -875,6 +875,7 @@ const fn chain_sample_child(relative_path: String, bytes: Vec<u8>) -> ChildArtif
             artifact_index: u32::MAX,
             relative_path,
             hint: None,
+            materialization: disrobe_core::chain::ChildMaterialization::Regular { unix_mode: None },
         },
         bytes,
     }
@@ -886,6 +887,7 @@ fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
             artifact_index: u32::MAX,
             relative_path,
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }

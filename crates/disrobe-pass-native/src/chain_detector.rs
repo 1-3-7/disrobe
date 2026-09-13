@@ -624,6 +624,7 @@ fn child(index: u32, path: &str, hint: Option<&str>, bytes: Vec<u8>) -> ChildArt
             artifact_index: index,
             relative_path: path.to_string(),
             hint: hint.map(str::to_string),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }

@@ -162,6 +162,7 @@ impl Pass for PhpPass {
                     artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
                     relative_path: name.clone(),
                     hint: Some("php-phar-entry".to_string()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: data,
             });
@@ -178,6 +179,7 @@ fn peel_manifest_child(bytes: &[u8], detection: &PhpDetection) -> Option<ChildAr
             artifact_index: u32::MAX,
             relative_path: PEEL_MANIFEST_CHILD.to_string(),
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes: json,
     })

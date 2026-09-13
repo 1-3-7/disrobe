@@ -100,6 +100,7 @@ impl Pass for PyInstallerPass {
                         artifact_index: index,
                         relative_path: entry.toc.name.clone(),
                         hint: Some("interpreter-bytecode".to_string()),
+                        materialization: disrobe_core::chain::ChildMaterialization::default(),
                     },
                     bytes: entry.data.clone(),
                 });
@@ -114,6 +115,7 @@ impl Pass for PyInstallerPass {
                             artifact_index: index,
                             relative_path: artifact.relative_path,
                             hint: Some(TERMINAL_HINT.to_string()),
+                            materialization: disrobe_core::chain::ChildMaterialization::default(),
                         },
                         bytes: artifact.bytes,
                     });
@@ -129,6 +131,7 @@ impl Pass for PyInstallerPass {
                     artifact_index: index,
                     relative_path: "native/recovery-manifest.json".to_string(),
                     hint: Some(TERMINAL_HINT.to_string()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: json,
             });

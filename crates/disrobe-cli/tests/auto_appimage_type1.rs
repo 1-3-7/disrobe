@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -285,5 +286,93 @@ fn extract_and_auto_recover_type1_appimage_members_deterministically() {
         );
         assert_materialized_tree(&serial_recovery.members, &expected, &context);
         assert_materialized_tree(&parallel_recovery.members, &expected, &context);
+    }
+}
+
+#[test]
+fn nested_appimage_collision_keeps_the_complete_member_tree_together() {
+    let input: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("nested-appimage-input").expect("input scratch");
+    let archive_path: PathBuf = input.path().join("outer.zip");
+    let mut archive: zip::ZipWriter<std::fs::File> =
+        zip::ZipWriter::new(std::fs::File::create(&archive_path).expect("outer archive"));
+    let options: zip::write::SimpleFileOptions =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive
+        .start_file("bundle.AppImage", options)
+        .expect("AppImage entry");
+    archive.write_all(FIXTURE).expect("nested AppImage bytes");
+    archive
+        .start_file("AppRun", options)
+        .expect("colliding outer member");
+    archive
+        .write_all(b"outer member")
+        .expect("outer member bytes");
+    archive.finish().expect("finish outer archive");
+    let image_path: PathBuf = input.path().join("reference.AppImage");
+    std::fs::write(&image_path, FIXTURE).expect("reference image");
+    let reference: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("nested-appimage-reference").expect("reference");
+    let extracted: CapturedOutput = run_disrobe(&[
+        OsString::from("extract"),
+        image_path.into_os_string(),
+        OsString::from("--out"),
+        reference.path().as_os_str().to_owned(),
+    ]);
+    assert_eq!(
+        extracted.exit_code,
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&extracted.stderr)
+    );
+    let expected: MaterializedTree = materialized_member_tree(reference.path());
+    assert_eq!(expected.len(), 49);
+    let mut serial: Option<MaterializedTree> = None;
+    for jobs in [1, 4] {
+        let output: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("nested-appimage-output").expect("output");
+        let recovered: CapturedOutput = run_disrobe(&[
+            OsString::from("auto"),
+            archive_path.as_os_str().to_owned(),
+            OsString::from("--out"),
+            output.path().as_os_str().to_owned(),
+            OsString::from("--jobs"),
+            OsString::from(jobs.to_string()),
+            OsString::from("--max-depth"),
+            OsString::from("3"),
+        ]);
+        assert_eq!(
+            recovered.exit_code,
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&recovered.stderr)
+        );
+        let root: PathBuf = output.path().join("extracted");
+        assert_eq!(
+            std::fs::read(root.join("AppRun")).expect("outer member survives"),
+            b"outer member"
+        );
+        let groups: Vec<PathBuf> = std::fs::read_dir(&root)
+            .expect("extraction root")
+            .map(|entry: std::io::Result<std::fs::DirEntry>| entry.expect("group entry").path())
+            .filter(|path: &PathBuf| path.is_dir() && path.join("AppRun").is_file())
+            .collect();
+        assert_eq!(
+            groups.len(),
+            1,
+            "the nested AppImage must have one complete destination"
+        );
+        let members: MaterializedTree = materialized_member_tree(&groups[0]);
+        assert_materialized_tree(&members, &expected, "nested AppImage direct/auto parity");
+        let complete: MaterializedTree = materialized_tree(&root);
+        if let Some(expected_serial) = serial.as_ref() {
+            assert_materialized_tree(
+                &complete,
+                expected_serial,
+                "nested AppImage jobs 1/4 parity",
+            );
+        } else {
+            serial = Some(complete);
+        }
     }
 }

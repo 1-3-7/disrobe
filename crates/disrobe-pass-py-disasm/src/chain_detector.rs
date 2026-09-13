@@ -163,6 +163,7 @@ fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
             artifact_index: u32::MAX,
             relative_path,
             hint: Some(TERMINAL_HINT.to_owned()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }

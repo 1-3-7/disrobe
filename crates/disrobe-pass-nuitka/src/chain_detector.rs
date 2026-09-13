@@ -108,6 +108,7 @@ impl Pass for NuitkaPass {
                         artifact_index: index,
                         relative_path,
                         hint: Some(TERMINAL_HINT.to_string()),
+                        materialization: disrobe_core::chain::ChildMaterialization::default(),
                     },
                     bytes: entry.data.to_vec(),
                 });
@@ -129,6 +130,7 @@ impl Pass for NuitkaPass {
                         artifact_index: index,
                         relative_path: recovered.handle.relative_path,
                         hint: Some(TERMINAL_HINT.to_string()),
+                        materialization: disrobe_core::chain::ChildMaterialization::default(),
                     },
                     bytes: recovered.bytes,
                 });
@@ -349,6 +351,7 @@ fn child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
             artifact_index: u32::MAX,
             relative_path,
             hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
         },
         bytes,
     }

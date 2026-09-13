@@ -137,6 +137,7 @@ impl Pass for SwiftObjcPassAdapter {
                     artifact_index: 0,
                     relative_path: child_path(&dylib.install_name),
                     hint: None,
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
                 },
                 bytes: dylib.bytes,
             });

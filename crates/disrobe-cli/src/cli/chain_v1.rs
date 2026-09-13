@@ -1,7 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::needless_pass_by_value)]
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use disrobe_core::anti_analysis::{
@@ -19,6 +19,7 @@ use disrobe_core::pass::PassContext;
 use disrobe_core::{Artifact, Redactor, Rung};
 
 use super::backend_export::{BackendExportTarget, SupplementalOutput, write_supplemental_output};
+use super::chain_materialization::ExtractedWriter;
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
@@ -639,17 +640,17 @@ pub(crate) fn run_with_disk(
     let config: ChainConfig = options.chain_config(stream_out_dir.is_some());
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let mut streamed: Vec<String> = Vec::new();
-    let mut seen_paths: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut extracted_writer: Option<ExtractedWriter> =
+        stream_out_dir.as_deref().map(ExtractedWriter::new);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let mut stream_error: Option<miette::Report> = None;
     let plan: ChainPlan = {
-        let stream_dir: Option<&Path> = stream_out_dir.as_deref();
-        let mut sink = |art: &disrobe_core::chain::ExtractedArtifact| {
+        let mut sink = |art: &disrobe_core::chain::ExtractedArtifact, siblings: &[ChildHandle]| {
             if stream_error.is_some() {
                 return;
             }
-            if let Some(dir) = stream_dir {
-                match write_extracted_artifact(dir, art, &mut seen_paths) {
+            if let Some(writer) = extracted_writer.as_mut() {
+                match writer.write(art, siblings) {
                     Ok(path) => streamed.push(path),
                     Err(error) => stream_error = Some(error),
                 }
@@ -659,6 +660,9 @@ pub(crate) fn run_with_disk(
     };
     if let Some(error) = stream_error {
         return Err(error);
+    }
+    if let Some(writer) = extracted_writer {
+        writer.finish()?;
     }
     let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
         let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
@@ -899,60 +903,27 @@ fn maybe_py_deob_guidance(spec_raw: &str, plan: &ChainPlan, bytes: &[u8]) -> Opt
     }
 }
 
-fn sanitize_extract_path(rel: &str) -> PathBuf {
-    let mut safe: PathBuf = PathBuf::new();
-    for comp in Path::new(rel).components() {
-        if let Component::Normal(part) = comp {
-            safe.push(part);
-        }
-    }
-    if safe.as_os_str().is_empty() {
-        safe.push("unnamed.bin");
-    }
-    safe
-}
-
-fn write_extracted_artifact(
-    out_dir: &Path,
-    art: &disrobe_core::chain::ExtractedArtifact,
-    seen: &mut BTreeSet<PathBuf>,
-) -> miette::Result<String> {
-    let root: PathBuf = out_dir.join("extracted");
-    let rel: PathBuf = sanitize_extract_path(&art.relative_path);
-    let mut dest: PathBuf = root.join(&rel);
-    if !seen.insert(dest.clone()) {
-        let mut attempt: usize = 0;
-        loop {
-            let node_dir: String = if attempt == 0 {
-                format!("node{}", art.node_id)
-            } else {
-                format!("node{}-{attempt}", art.node_id)
-            };
-            dest = root.join(node_dir).join(&rel);
-            if seen.insert(dest.clone()) {
-                break;
-            }
-            attempt = attempt.saturating_add(1);
-        }
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| miette::miette!("DR-CLI-0309: cannot create extract dir: {e}"))?;
-    }
-    std::fs::write(&dest, &art.bytes)
-        .map_err(|e| miette::miette!("DR-CLI-0310: cannot write extracted file: {e}"))?;
-    Ok(dest.display().to_string())
-}
-
 fn write_extracted_children(out_dir: &Path, plan: &ChainPlan) -> miette::Result<Vec<String>> {
     if plan.extracted.is_empty() {
         return Ok(Vec::new());
     }
     let mut written: Vec<String> = Vec::new();
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut writer: ExtractedWriter = ExtractedWriter::new(out_dir);
     for art in &plan.extracted {
-        written.push(write_extracted_artifact(out_dir, art, &mut seen)?);
+        let siblings: &[ChildHandle] = match plan
+            .nodes
+            .get(art.node_id as usize)
+            .and_then(|node: &Node| node.output_kind.as_ref())
+        {
+            Some(OutputKind::Mixed { children }) => children,
+            Some(
+                OutputKind::Source { .. } | OutputKind::Bytes { .. } | OutputKind::Report { .. },
+            )
+            | None => &[],
+        };
+        written.push(writer.write(art, siblings)?);
     }
+    writer.finish()?;
     Ok(written)
 }
 
@@ -1245,9 +1216,10 @@ fn combine_chain_and_pin_owned(chain_arg: String, pin_arg: &str) -> miette::Resu
 mod tests {
     use super::*;
     use disrobe_core::chain::detection::{DetectContext, DetectVerdict};
-    use disrobe_core::chain::{Detector, Pass};
+    use disrobe_core::chain::{ChildMaterialization, Detector, Pass};
     use disrobe_core::error::Result as CoreResult;
     use disrobe_core::pass::PassId;
+    use std::collections::BTreeSet;
     use std::io::Write as _;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1558,6 +1530,50 @@ mod tests {
         builder.into_inner().expect("finish TAR")
     }
 
+    fn materialized_matrix_members(root: &Path) -> Vec<(String, ChildMaterialization, [u8; 32])> {
+        let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+        let mut members: Vec<(String, ChildMaterialization, [u8; 32])> = Vec::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).expect("read matrix directory") {
+                let path: PathBuf = entry.expect("matrix directory entry").path();
+                let name: String = path
+                    .strip_prefix(root)
+                    .expect("matrix relative path")
+                    .to_str()
+                    .expect("matrix UTF-8 path")
+                    .replace('\\', "/");
+                let metadata: std::fs::Metadata =
+                    std::fs::symlink_metadata(&path).expect("matrix metadata");
+                #[cfg(unix)]
+                let unix_mode: Option<u32> = {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    Some(metadata.permissions().mode() & 0o777)
+                };
+                #[cfg(not(unix))]
+                let unix_mode: Option<u32> = None;
+                let (kind, hash): (ChildMaterialization, [u8; 32]) = if metadata.is_dir() {
+                    pending.push(path);
+                    (
+                        ChildMaterialization::Directory { unix_mode },
+                        blake3_hash(&[]),
+                    )
+                } else {
+                    assert!(metadata.is_file());
+                    (
+                        ChildMaterialization::Regular { unix_mode },
+                        blake3_hash(&std::fs::read(path).expect("matrix file bytes")),
+                    )
+                };
+                members.push((name, kind, hash));
+            }
+        }
+        members.sort_by(
+            |left: &(String, ChildMaterialization, [u8; 32]),
+             right: &(String, ChildMaterialization, [u8; 32])| left.0.cmp(&right.0),
+        );
+        members
+    }
+
     fn assert_real_auto_container_parity(
         label: &str,
         extension: &str,
@@ -1625,6 +1641,32 @@ mod tests {
         let children: &[serde_json::Value] = node["output_kind"]["children"]
             .as_array()
             .expect("mixed children");
+        if kind == disrobe_binfmt::container::ContainerKind::AppImage {
+            let expected: Vec<(String, ChildMaterialization, [u8; 32])> =
+                materialized_matrix_members(&direct_out);
+            assert_eq!(
+                materialized_matrix_members(&out.join("extracted")),
+                expected,
+                "{label} complete materialized tree"
+            );
+            let actual_handles: Vec<(String, ChildMaterialization)> = children
+                .iter()
+                .map(|child: &serde_json::Value| {
+                    let handle: ChildHandle =
+                        serde_json::from_value(child.clone()).expect("typed matrix child");
+                    (handle.relative_path, handle.materialization)
+                })
+                .collect();
+            let expected_handles: Vec<(String, ChildMaterialization)> = expected
+                .into_iter()
+                .map(|(name, kind, _): (String, ChildMaterialization, [u8; 32])| (name, kind))
+                .collect();
+            assert_eq!(
+                actual_handles, expected_handles,
+                "{label} complete child metadata"
+            );
+            return;
+        }
         let actual_members: Vec<(String, [u8; 32])> = children
             .iter()
             .map(|child: &serde_json::Value| {
@@ -1849,11 +1891,13 @@ mod tests {
             disrobe_core::chain::ExtractedArtifact {
                 node_id: 1,
                 relative_path: "main.dll".to_string(),
+                materialization: ChildMaterialization::default(),
                 bytes: b"MZ-main".to_vec(),
             },
             disrobe_core::chain::ExtractedArtifact {
                 node_id: 1,
                 relative_path: "../../escape.bin".to_string(),
+                materialization: ChildMaterialization::default(),
                 bytes: b"PWNED".to_vec(),
             },
         ];
@@ -1879,16 +1923,19 @@ mod tests {
             disrobe_core::chain::ExtractedArtifact {
                 node_id: 9,
                 relative_path: "main.dll".to_string(),
+                materialization: ChildMaterialization::default(),
                 bytes: b"primary".to_vec(),
             },
             disrobe_core::chain::ExtractedArtifact {
                 node_id: 8,
                 relative_path: "node1/main.dll".to_string(),
+                materialization: ChildMaterialization::default(),
                 bytes: b"occupied".to_vec(),
             },
             disrobe_core::chain::ExtractedArtifact {
                 node_id: 1,
                 relative_path: "main.dll".to_string(),
+                materialization: ChildMaterialization::default(),
                 bytes: b"fallback".to_vec(),
             },
         ];
@@ -1953,6 +2000,7 @@ mod tests {
                 artifact_index: 0,
                 relative_path: path.to_string(),
                 hint: Some(disrobe_core::chain::detection::TERMINAL_HINT.to_string()),
+                materialization: ChildMaterialization::default(),
             },
             bytes,
         }
