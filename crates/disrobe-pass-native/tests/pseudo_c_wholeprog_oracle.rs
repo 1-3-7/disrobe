@@ -537,6 +537,127 @@ fn object_backed_value_switches_keep_the_proven_switch_route() {
 }
 
 #[test]
+fn gcc_notrack_value_switch_recovers_through_the_whole_program_consumer() {
+    let compiler: String = clang().expect("clang assembler");
+    let host_compiler: String = cc().expect("native C compiler");
+    let program: &WholeProgram = PROGRAMS
+        .iter()
+        .find(|program: &&WholeProgram| program.name == "wp_vswitch")
+        .expect("value-switch fixture");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp-notrack-switch");
+    let object: Vec<u8> = compile_object(
+        &compiler,
+        &["--target=x86_64-unknown-linux-gnu", "-x", "assembler", "-c"],
+        r#"
+.text
+.globl wp_vswitch_pick
+.type wp_vswitch_pick,@function
+wp_vswitch_pick:
+    endbr64
+    cmpq $6, %rdi
+    ja .Ldefault
+    leaq .Ltable(%rip), %rdx
+    movslq (%rdx,%rdi,4), %rax
+    addq %rdx, %rax
+    notrack jmp *%rax
+.Lcase0:
+    movl $7, %eax
+    ret
+.Lcase2:
+    movl $91, %eax
+    ret
+.Lcase3:
+    movl $5, %eax
+    ret
+.Lcase4:
+    movl $42, %eax
+    ret
+.Lcase5:
+    movl $8, %eax
+    ret
+.Lcase6:
+    movl $64, %eax
+    ret
+.Ldefault:
+    movq $-1, %rax
+    ret
+.Lcase1:
+    movl $3, %eax
+    ret
+.size wp_vswitch_pick,.-wp_vswitch_pick
+.globl wp_vswitch_entry
+.type wp_vswitch_entry,@function
+wp_vswitch_entry:
+    endbr64
+    pushq %rbx
+    movq %rdi, %rbx
+    call wp_vswitch_pick
+    addq %rbx, %rax
+    popq %rbx
+    ret
+.size wp_vswitch_entry,.-wp_vswitch_entry
+.section .rodata
+.p2align 2
+.Ltable:
+    .long .Lcase0-.Ltable
+    .long .Lcase1-.Ltable
+    .long .Lcase2-.Ltable
+    .long .Lcase3-.Ltable
+    .long .Lcase4-.Ltable
+    .long .Lcase5-.Ltable
+    .long .Lcase6-.Ltable
+.section .note.GNU-stack,"",@progbits
+"#,
+        &scratch.path().join("notrack_switch.o"),
+    )
+    .expect("GNU NOTRACK switch object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object, "wp_vswitch_pick").expect("NOTRACK picker code");
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("NOTRACK picker instructions");
+    assert!(instructions.iter().any(|instruction: &DisasmInsn| {
+        instruction.bytes == [0x3e, 0xff, 0xe0]
+            && instruction.mnemonic == "notrack"
+            && instruction.operands == "jmp rax"
+    }));
+    let recovered: RecoveredProgram = recover_program(&object, program, PseudoAbi::SysV)
+        .expect("NOTRACK object-backed whole-program recovery");
+    assert!(recovered.tu.contains("switch ("), "{}", recovered.tu);
+    assert_eq!(recovered.entry_params, 1);
+    assert_eq!(recovered.entry_return_width, ENTRY_RETURN_WIDTH);
+    let reference: Vec<u8> = compile_object(
+        &host_compiler,
+        &["-c"],
+        program.c_source,
+        &scratch.path().join("notrack_reference.o"),
+    )
+    .expect("native value-switch reference");
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <stdio.h>\n{}\n\
+         extern long long wp_vswitch_entry(long long);\n\
+         int main(void) {{\n\
+         const long long inputs[] = {{-9223372036854775807LL,-2,-1,0,1,2,3,4,5,6,7,8,9223372036854775807LL}};\n\
+         for (unsigned int i = 0; i < sizeof(inputs)/sizeof(inputs[0]); ++i) {{\n\
+         uint64_t want = (uint64_t)wp_vswitch_entry(inputs[i]);\n\
+         uint64_t got = (uint64_t)rec_wp_vswitch_entry((uint64_t)inputs[i]);\n\
+         if (want != got) {{ printf(\"MISMATCH %u\\n\", i); return 1; }}\n\
+         }}\nputs(\"OK\");\nreturn 0;\n}}\n",
+        recovered.tu
+    );
+    let stdout: String = link_and_run(
+        &host_compiler,
+        &driver,
+        &reference,
+        "notrack_value_switch",
+        10,
+    );
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "NOTRACK whole-program differential: {stdout}"
+    );
+}
+
+#[test]
 fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
     if !cfg!(windows) {
         eprintln!(

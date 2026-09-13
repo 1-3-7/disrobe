@@ -37,7 +37,7 @@ fn macho_stub_fixture() -> Vec<u8> {
     put_u32(&mut bytes, 192, 312);
     put_u32(&mut bytes, 196, 2);
     put_u32(&mut bytes, 200, 344);
-    put_u32(&mut bytes, 204, 15);
+    put_u32(&mut bytes, 204, 16);
 
     put_u32(&mut bytes, 208, 0xb);
     put_u32(&mut bytes, 212, 80);
@@ -48,7 +48,7 @@ fn macho_stub_fixture() -> Vec<u8> {
     bytes[316] = 1;
     put_u32(&mut bytes, 328, 9);
     bytes[332] = 1;
-    bytes[344..359].copy_from_slice(b"\0_system\0_fgets\0");
+    bytes[344..360].copy_from_slice(b"\0_system\0_fgets\0");
     put_u32(&mut bytes, 360, 0);
     put_u32(&mut bytes, 364, 1);
     bytes
@@ -173,7 +173,7 @@ fn macho_short_distinct_names_charge_only_consumed_bytes() {
 #[test]
 fn macho_unterminated_and_invalid_utf8_names_are_not_imports() {
     let mut unterminated: Vec<u8> = macho_stub_fixture();
-    unterminated[344..359].fill(b'x');
+    unterminated[344..360].fill(b'x');
     assert!(resolve_macho_stub_imports(&unterminated).is_empty());
     let mut invalid: Vec<u8> = macho_stub_fixture();
     invalid[346] = 0xff;

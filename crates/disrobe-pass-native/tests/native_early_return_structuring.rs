@@ -22,8 +22,10 @@ use common::{
 };
 use disrobe_core::rng::seeded;
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, recover_program,
+    Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, disassemble,
+    recover_program,
 };
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 use rand::RngExt as _;
 
 const MASTER_SEED: u64 = 0x0EA7_1E5E_7C0D_E001;
@@ -1468,10 +1470,10 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         tag: "stack_check_failure_exit",
         entry: "er_stack_chk",
         functions: &["er_stack_chk"],
-        c_source: "long long DISROBE_EARLY_RETURN_ABI er_stack_chk(long long a, long long b, long long c){ char buf[64]; for (int i = 0; i < 64; i++) buf[i] = (char)(a + i); if (b < 0) return -1; return buf[(unsigned)(c & 63)] + a; }",
+        c_source: "long long DISROBE_EARLY_RETURN_ABI er_stack_chk(long long a, long long b, long long c){ volatile char buf[64]; for (int i = 0; i < 64; i++) buf[i] = (char)(a + i); if (b < 0) return -1; return buf[(unsigned)(c & 63)] + a; }",
         opt: "-O2",
         drops_stack_protector_suppression: true,
-        preconditions: &["unsupported leaf instruction", "[rel"],
+        preconditions: &["unsupported leaf instruction"],
     },
     AbstentionCase {
         tag: "floating_point_literal_guards",
@@ -1492,6 +1494,62 @@ const DECLARED_ABSTENTIONS: &[AbstentionCase] = &[
         preconditions: &["carries a relocation", "lies outside this function"],
     },
 ];
+
+fn assert_stack_guard_abstention(object: &[u8], entry: &str, reason: &str) {
+    let file: object::File<'_> = object::File::parse(object).expect("stack-check object");
+    assert!(
+        file.symbols()
+            .any(|symbol: object::Symbol<'_, '_>| { symbol.name() == Ok("__stack_chk_fail") })
+    );
+    let symbol: object::Symbol<'_, '_> = file
+        .symbols()
+        .find(|symbol: &object::Symbol<'_, '_>| symbol.name() == Ok(entry))
+        .expect("stack-check function symbol");
+    let section: object::Section<'_, '_> = file
+        .section_by_index(symbol.section_index().expect("function section"))
+        .expect("stack-check text section");
+    let (code, base): (Vec<u8>, u64) = function_code(object, entry).expect("stack-check code");
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("stack-check instructions");
+    let guard: &DisasmInsn = instructions
+        .iter()
+        .find(|instruction: &&DisasmInsn| {
+            instruction.mnemonic == "mov"
+                && (instruction.operands.contains("[fs:28h]")
+                    || section.relocations().any(
+                        |(offset, relocation): (u64, object::Relocation)| {
+                            let field: u64 = section.address() + offset;
+                            let end: u64 = instruction.address
+                                + u64::try_from(instruction.bytes.len())
+                                    .expect("instruction length");
+                            if !(instruction.address..end).contains(&field) {
+                                return false;
+                            }
+                            let object::RelocationTarget::Symbol(index) = relocation.target()
+                            else {
+                                return false;
+                            };
+                            file.symbol_by_index(index).is_ok_and(
+                                |symbol: object::Symbol<'_, '_>| {
+                                    matches!(
+                                        symbol.name(),
+                                        Ok("__stack_chk_guard" | ".refptr.__stack_chk_guard")
+                                    )
+                                },
+                            )
+                        },
+                    ))
+        })
+        .expect("the compiler must emit a TLS or relocation-backed stack guard load");
+    let expected: String = format!(
+        "unsupported leaf instruction `{} {}` at {:#x}",
+        guard.mnemonic, guard.operands, guard.address
+    );
+    assert!(
+        reason.contains(&expected),
+        "expected {expected}, got {reason}"
+    );
+}
 
 #[test]
 fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition() {
@@ -1531,6 +1589,9 @@ fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition()
         };
         match recover_shape(&object, &shape, PseudoAbi::MsX64) {
             RecoverOutcome::Abstained(reason) => {
+                if case.drops_stack_protector_suppression {
+                    assert_stack_guard_abstention(&object, case.entry, &reason);
+                }
                 for precondition in case.preconditions {
                     assert!(
                         reason.contains(precondition),

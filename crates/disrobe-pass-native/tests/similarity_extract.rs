@@ -723,8 +723,18 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
     let low_path: PathBuf = scratch.path().join("probe_o0.exe");
     let high_path: PathBuf = scratch.path().join("probe_o2.exe");
     let (Some(low), Some(high)): (Option<Vec<u8>>, Option<Vec<u8>>) = (
-        compile(&compiler, &source, &low_path, &["-O0"]),
-        compile(&compiler, &source, &high_path, &["-O2"]),
+        compile(
+            &compiler,
+            &source,
+            &low_path,
+            &["-O0", "-fno-builtin-fputs"],
+        ),
+        compile(
+            &compiler,
+            &source,
+            &high_path,
+            &["-O2", "-fno-builtin-fputs"],
+        ),
     ) else {
         eprintln!("skipping: host C compiler cannot link a hosted executable");
         return;

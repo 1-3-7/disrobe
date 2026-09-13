@@ -601,6 +601,23 @@ jobs:
           llvm-readobj --version
           echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
+      - name: provision the Linux hosted PE comparison compilers
+        if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install --yes gcc-mingw-w64-x86-64
+          x86_64-w64-mingw32-gcc --version
+          test "$(x86_64-w64-mingw32-gcc -dumpmachine)" = 'x86_64-w64-mingw32'
+          probe="$RUNNER_TEMP/disrobe-hosted-pe-probe"
+          trap 'rm -f -- "$probe.c" "$probe-gcc.exe" "$probe-clang.exe"' EXIT
+          printf '#include <stdio.h>\nint main(void) { return puts("probe") < 0; }\n' > "$probe.c"
+          x86_64-w64-mingw32-gcc "$probe.c" -o "$probe-gcc.exe"
+          clang --target=x86_64-w64-windows-gnu "$probe.c" -o "$probe-clang.exe"
+          for image in "$probe-gcc.exe" "$probe-clang.exe"; do
+            llvm-readobj --file-headers "$image"
+            test "$(head -c 2 "$image")" = 'MZ'
+          done
       - name: provision the macOS LLVM ELF cross-linker
         if: runner.os == 'macOS'
         shell: bash

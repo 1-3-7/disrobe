@@ -280,10 +280,10 @@ fn locate(name: &str) -> Option<PathBuf> {
 
 fn locate_gnu_gcc() -> Option<PathBuf> {
     let configured: Option<std::ffi::OsString> = std::env::var_os("DISROBE_SIMILARITY_GCC");
-    let fallback: PathBuf = PathBuf::from(if cfg!(target_os = "macos") {
-        "x86_64-w64-mingw32-gcc"
-    } else {
+    let fallback: PathBuf = PathBuf::from(if cfg!(target_os = "windows") {
         "gcc"
+    } else {
+        "x86_64-w64-mingw32-gcc"
     });
     configured
         .map(PathBuf::from)

@@ -618,6 +618,16 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         },
     },
     Entry {
+        path: "plt_resolve::resolve_macho_stub_imports",
+        cheap: true,
+        drive: |ctx: &Ctx<'_>| {
+            bounded_len(
+                plt_resolve::resolve_macho_stub_imports(ctx.bytes).len(),
+                ctx,
+            )
+        },
+    },
+    Entry {
         path: "plt_resolve::resolve_pe_iat_imports",
         cheap: true,
         drive: |ctx: &Ctx<'_>| {

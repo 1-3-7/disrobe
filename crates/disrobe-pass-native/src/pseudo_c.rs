@@ -7454,16 +7454,10 @@ fn is_indirect_jmp(insn: &DisasmInsn, reg: Reg) -> bool {
     {
         return true;
     }
-    insn.mnemonic == "notrack jmp"
+    insn.mnemonic == "notrack"
         && reg == Reg::Rax
         && insn.bytes == [0x3e, 0xff, 0xe0]
-        && parse_reg(insn.operands.trim()).is_some_and(|target: RegRef| {
-            target
-                == RegRef {
-                    reg: Reg::Rax,
-                    width: Width::W64,
-                }
-        })
+        && insn.operands == "jmp rax"
 }
 
 fn is_xchg_self(mnemonic: &str, operands: &str) -> bool {
@@ -12924,7 +12918,7 @@ fn absorb_private_exit_tails(
             0 => return None,
             _ => {}
         }
-        let absorbable: Vec<usize> = targets
+        let mut absorbable: Vec<usize> = targets
             .iter()
             .copied()
             .filter(|target: &usize| {
@@ -12936,6 +12930,15 @@ fn absorb_private_exit_tails(
             .collect();
         if absorbable.is_empty() {
             return None;
+        }
+        if absorbable.len() == targets.len()
+            && absorbable
+                .iter()
+                .all(|target: &usize| matches!(blocks[*target].term, BlockTerm::Ret))
+        {
+            let follow: usize = absorbable.pop()?;
+            extended.extend(absorbable);
+            return Some((extended, follow));
         }
         extended.extend(absorbable);
     }
@@ -27526,19 +27529,28 @@ mod tests {
 
     #[test]
     fn notrack_switch_jump_requires_the_exact_rax_encoding() {
-        let known: DisasmInsn = DisasmInsn {
-            address: 0,
-            bytes: vec![0x3e, 0xff, 0xe0],
-            mnemonic: "notrack jmp".to_owned(),
-            operands: "rax".to_owned(),
-        };
-        assert!(is_indirect_jmp(&known, Reg::Rax));
+        let decoded: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0, &[0x3e, 0xff, 0xe0]).expect("NOTRACK dispatch");
+        assert_eq!(decoded.len(), 1);
+        let known: &DisasmInsn = &decoded[0];
+        assert_eq!(known.mnemonic, "notrack");
+        assert_eq!(known.operands, "jmp rax");
+        assert!(is_indirect_jmp(known, Reg::Rax));
         let wrong_prefix: DisasmInsn = DisasmInsn {
             bytes: vec![0x26, 0xff, 0xe0],
             ..known.clone()
         };
         assert!(!is_indirect_jmp(&wrong_prefix, Reg::Rax));
-        assert!(!is_indirect_jmp(&known, Reg::Rdx));
+        assert!(!is_indirect_jmp(known, Reg::Rdx));
+        let wrong_register: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0, &[0x3e, 0xff, 0xe2]).expect("NOTRACK RDX dispatch");
+        assert_eq!(wrong_register.len(), 1);
+        assert!(!is_indirect_jmp(&wrong_register[0], Reg::Rdx));
+        let wrong_operation: DisasmInsn = DisasmInsn {
+            operands: "call rax".to_owned(),
+            ..known.clone()
+        };
+        assert!(!is_indirect_jmp(&wrong_operation, Reg::Rax));
     }
 
     #[test]
@@ -30054,6 +30066,104 @@ mod tests {
             count_node(&body, &|node: &Node| matches!(node, Node::Continue)),
             3,
             "each latch edge must render as its own continue: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn a_loop_with_two_private_returns_keeps_both_exit_effects() {
+        let normal: Stmt = Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: Source::Imm(17),
+        };
+        let early: Stmt = Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: Source::Imm(-3),
+        };
+        let items: Vec<Item> = vec![
+            Item {
+                address: 0,
+                kind: ItemKind::Stmt(assign_tail()),
+            },
+            Item {
+                address: 1,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rcx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 6,
+                },
+            },
+            Item {
+                address: 2,
+                kind: ItemKind::Stmt(store_tail()),
+            },
+            Item {
+                address: 3,
+                kind: ItemKind::Branch {
+                    kind: CondKind::Ne,
+                    flags: Flags::Test {
+                        operand: RegRef {
+                            reg: Reg::Rdx,
+                            width: Width::W64,
+                        },
+                    },
+                    target: 1,
+                },
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Stmt(normal.clone()),
+            },
+            Item {
+                address: 5,
+                kind: ItemKind::Ret,
+            },
+            Item {
+                address: 6,
+                kind: ItemKind::Stmt(early.clone()),
+            },
+            Item {
+                address: 7,
+                kind: ItemKind::Ret,
+            },
+        ];
+        let mut refusal: Option<&'static str> = None;
+        let body: Block = structure_reducible_cfg(
+            &items,
+            lowest_item_address(&items),
+            ExitPolicy::EarlyAndMultipleExits,
+            &mut refusal,
+        )
+        .expect("no hard error")
+        .expect("one terminal return must remain the loop follow");
+        assert_eq!(loop_count(&body), 1, "{body:#?}");
+        assert_eq!(count_stmt(&body, &normal), 1, "{body:#?}");
+        assert_eq!(count_stmt(&body, &early), 1, "{body:#?}");
+        assert_eq!(count_stmt(&body, &store_tail()), 1, "{body:#?}");
+        assert_eq!(
+            count_node(&body, &|node: &Node| matches!(node, Node::Return)),
+            2,
+            "{body:#?}"
+        );
+        assert!(
+            structure_reducible_cfg(
+                &items,
+                lowest_item_address(&items),
+                ExitPolicy::ForwardSkipOnly,
+                &mut refusal,
+            )
+            .expect("no hard error")
+            .is_none()
         );
     }
 
