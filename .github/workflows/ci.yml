@@ -743,6 +743,7 @@ jobs:
         timeout-minutes: 160
         env:
           RUST_TEST_THREADS: "1"
+          DISROBE_DEBUG: "js-deob"
       - name: workspace shard three
         if: matrix.shard == 'three'
         run: >-
