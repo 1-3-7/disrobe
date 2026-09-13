@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 #[path = "support/x86_toolchain.rs"]
-mod x86_toolchain;
+pub mod x86_toolchain;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::CapturedOutput;
@@ -197,10 +197,11 @@ struct Toolchain {
 impl Toolchain {
     fn command(&self, compiler: &str) -> Command {
         let mut command: Command = x86_toolchain::command(compiler);
-        if cfg!(target_os = "windows") && compiler == "clang" {
-            if let Some(sysroot) = &self.clang_sysroot {
-                command.arg("--sysroot").arg(sysroot);
-            }
+        if cfg!(target_os = "windows")
+            && compiler == "clang"
+            && let Some(sysroot) = &self.clang_sysroot
+        {
+            command.arg("--sysroot").arg(sysroot);
         }
         command
     }

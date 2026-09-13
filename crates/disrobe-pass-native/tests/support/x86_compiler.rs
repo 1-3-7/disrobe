@@ -31,7 +31,7 @@ fn cc_family() -> &'static str {
     })
 }
 
-pub(crate) fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'static str>) {
+pub fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'static str>) {
     let ms_abi: bool = match abi {
         PseudoAbi::MsX64 => true,
         PseudoAbi::SysV => false,
@@ -71,7 +71,7 @@ pub(crate) fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'
     }
 }
 
-pub(crate) fn assert_x86_artifact(bytes: &[u8]) {
+pub fn assert_x86_artifact(bytes: &[u8]) {
     let file: object::File<'_> = object::File::parse(bytes).expect("parse compiler artifact");
     assert_eq!(
         file.architecture(),

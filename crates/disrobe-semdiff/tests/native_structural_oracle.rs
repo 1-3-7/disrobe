@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 #[path = "support/x86_toolchain.rs"]
-mod x86_toolchain;
+pub mod x86_toolchain;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_nir::NirModule;

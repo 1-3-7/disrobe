@@ -7,7 +7,7 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::PseudoAbi;
 
 #[path = "../../../disrobe-pass-native/tests/support/x86_compiler.rs"]
-mod x86_compiler;
+pub mod x86_compiler;
 
 pub(crate) use x86_compiler::assert_x86_artifact;
 

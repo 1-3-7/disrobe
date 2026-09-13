@@ -64,6 +64,8 @@ const CLANG_SUPPRESS_IF_CONVERSION: [&str; 2] =
 
 const GENERIC_SUPPRESS_IF_CONVERSION: [&str; 1] = ["-fno-stack-protector"];
 
+static HOST_GCC_FAMILY: std::sync::OnceLock<CompilerFamily> = std::sync::OnceLock::new();
+
 #[must_use]
 pub const fn codegen_flags(family: CompilerFamily) -> &'static [&'static str] {
     match family {
@@ -179,7 +181,6 @@ pub fn host_compiler_family(compiler: &CompilerId) -> CompilerFamily {
     if cfg!(target_arch = "x86_64") || compiler.bin != "gcc" {
         return compiler.family;
     }
-    static HOST_GCC_FAMILY: std::sync::OnceLock<CompilerFamily> = std::sync::OnceLock::new();
     *HOST_GCC_FAMILY.get_or_init(|| {
         classify_family(
             &probe_version(compiler.bin).unwrap_or_else(|| {

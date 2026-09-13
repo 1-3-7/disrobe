@@ -280,23 +280,23 @@ fn locate(name: &str) -> Option<PathBuf> {
 
 fn locate_gnu_gcc() -> Option<PathBuf> {
     let configured: Option<std::ffi::OsString> = std::env::var_os("DISROBE_SIMILARITY_GCC");
-    let candidates: Vec<PathBuf> = configured
+    let fallback: PathBuf = PathBuf::from(if cfg!(target_os = "macos") {
+        "x86_64-w64-mingw32-gcc"
+    } else {
+        "gcc"
+    });
+    configured
         .map(PathBuf::from)
         .into_iter()
-        .chain(if cfg!(target_os = "macos") {
-            vec![PathBuf::from("x86_64-w64-mingw32-gcc")]
-        } else {
-            vec![PathBuf::from("gcc")]
+        .chain(std::iter::once(fallback))
+        .find_map(|candidate: PathBuf| {
+            let output: Output = Command::new(&candidate).arg("--version").output().ok()?;
+            let version: String = String::from_utf8(output.stdout).ok()?;
+            (output.status.success()
+                && version.to_ascii_lowercase().contains("gcc")
+                && !version.to_ascii_lowercase().contains("clang"))
+            .then_some(candidate)
         })
-        .collect();
-    candidates.into_iter().find_map(|candidate: PathBuf| {
-        let output: Output = Command::new(&candidate).arg("--version").output().ok()?;
-        let version: String = String::from_utf8(output.stdout).ok()?;
-        (output.status.success()
-            && version.to_ascii_lowercase().contains("gcc")
-            && !version.to_ascii_lowercase().contains("clang"))
-        .then_some(candidate)
-    })
 }
 
 fn first_line(path: &Path) -> String {

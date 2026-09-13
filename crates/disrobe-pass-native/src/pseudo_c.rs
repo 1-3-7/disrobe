@@ -2927,8 +2927,7 @@ fn direct_stack_guard_sequence_sites(
             && let Some(compare) = insns.get(check_index + 1)
             && direct_stack_guard_compare(compare, check_register, relocation_load_sites)
             && let Some(branch) = insns.get(check_index + 2)
-            && branch.mnemonic.starts_with('j')
-            && branch.mnemonic != "jmp"
+            && matches!(branch.mnemonic.as_str(), "jne" | "jnz")
             && let Some(failure_target) = parse_branch_target(&branch.operands)
             && let Some(failure) = insns
                 .iter()
@@ -27597,6 +27596,16 @@ mod tests {
         )]);
         let sites: BTreeSet<u64> = stack_guard_sequence_sites(&insns, &relocations, &failures);
         assert_eq!(sites, BTreeSet::from([0, 7, 13, 17, 24, 26]));
+        let mut reversed: Vec<DisasmInsn> = insns.clone();
+        reversed[5].bytes = vec![0x74, 0x00];
+        reversed[5].mnemonic = "je".to_owned();
+        assert!(stack_guard_sequence_sites(&reversed, &relocations, &failures).is_empty());
+        let mut alias: Vec<DisasmInsn> = insns.clone();
+        alias[5].mnemonic = "jnz".to_owned();
+        assert_eq!(
+            stack_guard_sequence_sites(&alias, &relocations, &failures),
+            sites
+        );
         let unproven: BTreeSet<u64> = BTreeSet::from([0]);
         assert!(stack_guard_sequence_sites(&insns, &unproven, &failures).is_empty());
     }

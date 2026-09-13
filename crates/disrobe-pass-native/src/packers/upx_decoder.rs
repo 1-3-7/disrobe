@@ -1584,14 +1584,14 @@ mod tests {
     fn elf_loader_gap_fixture() -> (Vec<u8>, UpxPackHeader, Vec<u8>) {
         let mut packed: Vec<u8> = vec![0u8; 4096];
         packed[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
-        packed[0x18..0x20].copy_from_slice(&0x404100u64.to_le_bytes());
+        packed[0x18..0x20].copy_from_slice(&0x0040_4100_u64.to_le_bytes());
         packed[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
         packed[0x34..0x36].copy_from_slice(&64u16.to_le_bytes());
         packed[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
         packed[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes());
         for (at, flags, address, size) in [
-            (64usize, 6u32, 0x400000u64, 4096u64),
-            (120, 5, 0x404000, 1024),
+            (64usize, 6u32, 0x0040_0000_u64, 4096u64),
+            (120, 5, 0x0040_4000, 1024),
         ] {
             packed[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
             packed[at + 4..at + 8].copy_from_slice(&flags.to_le_bytes());
@@ -1678,7 +1678,7 @@ mod tests {
             (152, 4097),
             (160, 1025),
             (136, u64::MAX),
-            (0x18, 0x404400),
+            (0x18, 0x0040_4400),
         ] {
             let mut invalid: Vec<u8> = packed.clone();
             invalid[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
@@ -1717,7 +1717,7 @@ mod tests {
         stack[176..232].fill(0);
         stack[176..180].copy_from_slice(&0x6474_e551u32.to_le_bytes());
         assert_eq!(elf_c_base_loader_end(&stack), Some(1024));
-        let mut notes: Vec<u8> = packed.clone();
+        let mut notes: Vec<u8> = packed;
         notes[0x38..0x3a].copy_from_slice(&7u16.to_le_bytes());
         for extra in notes[176..456].chunks_exact_mut(56) {
             extra.fill(0);
@@ -1742,7 +1742,7 @@ mod tests {
             (112, 4095),
             (112, 4097),
             (168, 8192),
-            (136, 0x404001),
+            (136, 0x0040_4001),
         ] {
             let mut invalid: Vec<u8> = packed.clone();
             invalid[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
