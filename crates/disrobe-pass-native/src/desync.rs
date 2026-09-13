@@ -672,6 +672,7 @@ pub struct DiscoveredFunctions {
 }
 
 pub(crate) const MAX_DISCOVERY_FUNCTIONS: usize = 1 << 18;
+const MAX_INTERIOR_PROLOGUE_PROVENANCE: usize = MAX_DISCOVERY_FUNCTIONS;
 const MAX_JUMP_TABLE_ENTRIES: usize = 1 << 12;
 const MAX_DIRECT_CALL_SWEEP_OFFSETS: usize = 32 * 1024 * 1024;
 const MAX_REL32_FORWARD_DISTANCE: u64 = (1_u64 << 31) - 1;
@@ -745,10 +746,19 @@ fn discover_functions_impl(
     if enable_direct_call_sweep && matches!(input.bitness, Bitness::Bits64) {
         let swept_targets: BTreeMap<u64, usize> = direct_call_target_counts(input);
         for target in swept_targets.keys().copied() {
-            if starts.len() >= MAX_DISCOVERY_FUNCTIONS {
-                break;
+            let at_capacity: bool = starts.len() >= MAX_DISCOVERY_FUNCTIONS;
+            match starts.entry(target) {
+                std::collections::btree_map::Entry::Vacant(slot) if !at_capacity => {
+                    slot.insert(StartOrigin::CallTarget);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot)
+                    if *slot.get() == StartOrigin::Prologue =>
+                {
+                    slot.insert(StartOrigin::CallTarget);
+                }
+                std::collections::btree_map::Entry::Vacant(_)
+                | std::collections::btree_map::Entry::Occupied(_) => {}
             }
-            starts.entry(target).or_insert(StartOrigin::CallTarget);
         }
     }
 
@@ -762,6 +772,8 @@ fn discover_functions_impl(
     let mut unresolved: Vec<UnresolvedTarget> = Vec::new();
     let mut visited: BTreeSet<u64> = BTreeSet::new();
     let mut queue: VecDeque<u64> = starts.keys().copied().collect::<VecDeque<u64>>();
+    let mut fallthrough_prologue_owners: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    let mut provenance_count: usize = 0;
 
     while let Some(address) = queue.pop_front() {
         if !visited.insert(address) {
@@ -779,9 +791,23 @@ fn discover_functions_impl(
             &mut jump_tables,
             &mut unresolved,
             &mut queue,
+            &mut fallthrough_prologue_owners,
+            &mut provenance_count,
         );
         if starts.len() >= MAX_DISCOVERY_FUNCTIONS {
             break;
+        }
+    }
+
+    for (address, owners) in fallthrough_prologue_owners {
+        if owners.iter().any(|owner: &u64| {
+            matches!(
+                starts.get(owner),
+                Some(StartOrigin::Seed | StartOrigin::CallTarget | StartOrigin::JumpTable)
+            )
+        }) && matches!(starts.get(&address), Some(StartOrigin::Prologue))
+        {
+            starts.remove(&address);
         }
     }
 
@@ -1206,17 +1232,30 @@ fn traverse_function(
     jump_tables: &mut Vec<JumpTableHit>,
     unresolved: &mut Vec<UnresolvedTarget>,
     queue: &mut VecDeque<u64>,
+    fallthrough_prologue_owners: &mut BTreeMap<u64, BTreeSet<u64>>,
+    provenance_count: &mut usize,
 ) {
     let base: u64 = window.address;
     let end_addr: u64 = base.saturating_add(window.bytes.len() as u64);
-    let mut local: VecDeque<u64> = VecDeque::new();
-    local.push_back(entry);
+    let mut local: VecDeque<(u64, bool)> = VecDeque::new();
+    local.push_back((entry, false));
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut formatter: NasmFormatter = NasmFormatter::new();
 
-    while let Some(address) = local.pop_front() {
+    while let Some((address, arrived_by_fallthrough)) = local.pop_front() {
         if address < base || address >= end_addr {
             continue;
+        }
+        if address != entry
+            && arrived_by_fallthrough
+            && matches!(starts.get(&address), Some(StartOrigin::Prologue))
+            && *provenance_count < MAX_INTERIOR_PROLOGUE_PROVENANCE
+        {
+            let owners: &mut BTreeSet<u64> =
+                fallthrough_prologue_owners.entry(address).or_default();
+            if owners.insert(entry) {
+                *provenance_count = provenance_count.saturating_add(1);
+            }
         }
         if !seen.insert(address) {
             continue;
@@ -1243,14 +1282,14 @@ fn traverse_function(
 
         match insn.flow_control() {
             FlowControl::Next => {
-                local.push_back(insn_end);
+                local.push_back((insn_end, true));
             }
             FlowControl::XbeginXabortXend => {
                 let target: u64 = insn.near_branch_target();
                 if target >= base && target < end_addr {
-                    local.push_back(target);
+                    local.push_back((target, false));
                 }
-                local.push_back(insn_end);
+                local.push_back((insn_end, true));
             }
             FlowControl::Call => {
                 let target: u64 = insn.near_branch_target();
@@ -1262,26 +1301,26 @@ fn traverse_function(
                     record_call_target(input, target, starts, queue);
                 }
                 if !(direct && noreturn.contains(&target)) {
-                    local.push_back(insn_end);
+                    local.push_back((insn_end, true));
                 }
             }
             FlowControl::ConditionalBranch => {
                 let target: u64 = insn.near_branch_target();
                 if target >= base && target < end_addr {
-                    local.push_back(target);
+                    local.push_back((target, false));
                 }
-                local.push_back(insn_end);
+                local.push_back((insn_end, true));
             }
             FlowControl::UnconditionalBranch => {
                 let target: u64 = insn.near_branch_target();
                 if target >= base && target < end_addr {
-                    local.push_back(target);
+                    local.push_back((target, false));
                 }
             }
             FlowControl::IndirectBranch => {
                 if let Some(hit) = resolve_jump_table(input, &insn, base, end_addr) {
                     for target in &hit.targets {
-                        local.push_back(*target);
+                        local.push_back((*target, false));
                     }
                     jump_tables.push(hit);
                 } else {
@@ -1298,11 +1337,11 @@ fn traverse_function(
                     kind: UnresolvedKind::IndirectCall,
                     mnemonic: mnemonic_of(&mut formatter, &insn),
                 });
-                local.push_back(insn_end);
+                local.push_back((insn_end, true));
             }
             FlowControl::Return => {}
             FlowControl::Interrupt => {
-                local.push_back(insn_end);
+                local.push_back((insn_end, true));
             }
             FlowControl::Exception => {}
         }
@@ -1596,12 +1635,19 @@ fn record_call_target(
     if window_for(&input.code, target).is_none() {
         return;
     }
-    if starts.len() >= MAX_DISCOVERY_FUNCTIONS {
-        return;
-    }
-    if let std::collections::btree_map::Entry::Vacant(slot) = starts.entry(target) {
-        slot.insert(StartOrigin::CallTarget);
-        queue.push_back(target);
+    let at_capacity: bool = starts.len() >= MAX_DISCOVERY_FUNCTIONS;
+    match starts.entry(target) {
+        std::collections::btree_map::Entry::Vacant(slot) if !at_capacity => {
+            slot.insert(StartOrigin::CallTarget);
+            queue.push_back(target);
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot)
+            if *slot.get() == StartOrigin::Prologue =>
+        {
+            slot.insert(StartOrigin::CallTarget);
+        }
+        std::collections::btree_map::Entry::Vacant(_)
+        | std::collections::btree_map::Entry::Occupied(_) => {}
     }
 }
 
@@ -1833,6 +1879,125 @@ mod tests {
             out.starts
         );
         assert!(out.from_call_target >= 1);
+    }
+
+    fn shrink_wrapped_prologue_code(explicitly_called: bool) -> [u8; 49] {
+        let mut code: [u8; 49] = [0xCC; 49];
+        code[..19].copy_from_slice(&[
+            0x85, 0xF6, 0x74, 0x0B, 0x55, 0x48, 0x89, 0xE5, 0xE8, 0x23, 0x00, 0x00, 0x00, 0x5D,
+            0xC3, 0x8D, 0x47, 0x02, 0xC3,
+        ]);
+        code[32..37].copy_from_slice(&[0xE8, 0xDB, 0xFF, 0xFF, 0xFF]);
+        if explicitly_called {
+            code[37..42].copy_from_slice(&[0xE8, 0xDA, 0xFF, 0xFF, 0xFF]);
+            code[42] = 0xC3;
+        } else {
+            code[37] = 0xC3;
+        }
+        code[48] = 0xC3;
+        code
+    }
+
+    #[test]
+    fn discovery_does_not_split_a_shrink_wrapped_prologue_reachable_from_the_named_entry() {
+        let code: [u8; 49] = shrink_wrapped_prologue_code(false);
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1020],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![0x1000, 0x1020, 0x1030]);
+        assert_eq!(discovered.from_prologue, 0);
+        assert_eq!(discovered.from_call_target, 2);
+    }
+
+    #[test]
+    fn discovery_keeps_a_shrink_wrapped_prologue_when_a_direct_call_independently_targets_it() {
+        let code: [u8; 49] = shrink_wrapped_prologue_code(true);
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1020],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![0x1000, 0x1004, 0x1020, 0x1030]);
+        assert_eq!(discovered.from_prologue, 0);
+        assert_eq!(discovered.from_call_target, 3);
+    }
+
+    #[test]
+    fn discovery_keeps_a_prologue_reached_by_a_tail_jump() {
+        let code: [u8; 22] = [
+            0xE9, 0x0B, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC,
+            0xCC, 0xCC, 0x55, 0x48, 0x89, 0xE5, 0x5D, 0xC3,
+        ];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1000],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![0x1000, 0x1010]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_prologue, 1);
+    }
+
+    #[test]
+    fn discovery_records_fallthrough_provenance_when_it_converges_with_a_branch_target() {
+        let code: [u8; 8] = [0x74, 0x00, 0x55, 0x48, 0x89, 0xE5, 0x5D, 0xC3];
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1000],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![0x1000]);
+        assert_eq!(discovered.from_seed, 1);
+        assert_eq!(discovered.from_prologue, 0);
+    }
+
+    #[test]
+    fn discovery_removes_an_interior_prologue_after_late_direct_call_promotion() {
+        let mut code: [u8; 38] = [0xCC; 38];
+        code[4..8].copy_from_slice(&[0x55, 0x48, 0x89, 0xE5]);
+        code[8..14].copy_from_slice(&[0x55, 0x48, 0x89, 0xE5, 0x5D, 0xC3]);
+        code[32..37].copy_from_slice(&[0xE8, 0xDF, 0xFF, 0xFF, 0xFF]);
+        code[37] = 0xC3;
+        let input: DiscoveryInput<'_> = DiscoveryInput {
+            bitness: Bitness::Bits64,
+            code: vec![CodeWindow {
+                address: 0x1000,
+                bytes: &code,
+            }],
+            rodata: Vec::new(),
+            seeds: vec![0x1020],
+            noreturn: BTreeSet::new(),
+        };
+        let discovered: DiscoveredFunctions = discover_functions(&input);
+        assert_eq!(discovered.starts, vec![0x1004, 0x1020]);
+        assert_eq!(discovered.from_prologue, 0);
+        assert_eq!(discovered.from_call_target, 1);
     }
 
     #[test]

@@ -4720,14 +4720,20 @@ fn build_leaf_items(
                     Some(Flags::Snapshot { var })
                 } else {
                     match flag_effect_bin(*op) {
-                        FlagEffect::Sign => Some(Flags::Sign { result: *dest }),
+                        FlagEffect::Sign => {
+                            flags_mark = items.len() + 1;
+                            Some(Flags::Sign { result: *dest })
+                        }
                         FlagEffect::Clobber => None,
                     }
                 };
             }
             Stmt::UnAssign { dest, op } => {
                 flags = match op {
-                    UnOp::Neg => Some(Flags::Sign { result: *dest }),
+                    UnOp::Neg => {
+                        flags_mark = items.len() + 1;
+                        Some(Flags::Sign { result: *dest })
+                    }
                     UnOp::Not
                     | UnOp::Bswap
                     | UnOp::Clz
@@ -13926,8 +13932,7 @@ fn resolve_conditional_flags(
             "condition not sound against tracked flags at {addr:#x}"
         )));
     };
-    if flags_are_comparison(&live_flags)
-        && condition_is_sound(kind, &live_flags)
+    if condition_is_sound(kind, &live_flags)
         && comparison_operand_clobbered(items, flags_mark, &live_flags)
     {
         let var: u32 = *next_sel;

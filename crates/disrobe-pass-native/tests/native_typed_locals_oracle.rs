@@ -39,7 +39,7 @@ fn signed_slot_is_typed_and_unknown_sign_slot_falls_back_to_word() {
         .expect("the rbp-frame spill/shift/add leaf must lift");
     let source: &str = &rec.source;
     assert!(
-        source.contains("(int64_t*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-8LL)"),
+        source.contains("(struct __attribute__((packed, may_alias)) { int64_t value; }*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-8LL)"),
         "the soundly-typed signed slot must render with its recovered int64_t type: {source}",
     );
     assert!(
@@ -47,7 +47,7 @@ fn signed_slot_is_typed_and_unknown_sign_slot_falls_back_to_word() {
         "the undetermined-sign slot must keep the uint64_t word type: {source}",
     );
     assert!(
-        !source.contains("(int64_t*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL)"),
+        !source.contains("(struct __attribute__((packed, may_alias)) { int64_t value; }*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL)"),
         "the undetermined-sign slot must never be emitted as a signed type: {source}",
     );
 }

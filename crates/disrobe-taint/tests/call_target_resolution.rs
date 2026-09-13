@@ -1,8 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use disrobe_ir::payload::{DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind};
 use disrobe_nir::{
     BinaryOp, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang, SourceRef, SymbolKind,
 };
+use disrobe_pass_native::{Arch, DisasmInsn, disassemble};
 use disrobe_taint::{
     ImportThunks, TaintConfig, TaintReport, UnresolvedCall, UnresolvedCallKind, analyze,
     analyze_with_import_thunks,
@@ -322,6 +324,95 @@ fn materializing_an_aarch64_page_address_in_x0_kills_the_flow() {
         0,
         "aarch64 address materialization overwrites the source result before the sink: {report:?}"
     );
+}
+
+fn aarch64_spilled_result(overwrite: bool) -> NirModule {
+    let fourth_word: u32 = if overwrite { 0xf900_03e8 } else { 0xaa1f_03e0 };
+    let words: [u32; 5] = [
+        0xf900_03e0,
+        0x9000_0008,
+        0x9100_0108,
+        fourth_word,
+        0xf940_03e0,
+    ];
+    let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    let decoded: Vec<DisasmInsn> =
+        disassemble(Arch::Aarch64, 0x2004, &bytes).expect("decode compiled spill instructions");
+    assert_eq!(decoded.len(), words.len());
+    let instructions: Vec<DisasmInstruction> = decoded
+        .into_iter()
+        .map(|instruction: DisasmInsn| DisasmInstruction {
+            offset: instruction.address,
+            bytes: instruction.bytes,
+            mnemonic: instruction.mnemonic,
+            operands: instruction
+                .operands
+                .split(',')
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect(),
+            ..DisasmInstruction::default()
+        })
+        .collect();
+    let payload: DisasmPayload = DisasmPayload {
+        source_hash: [0; 32],
+        instructions,
+        symbol_table: vec![DisasmSymbol {
+            address: 0x2000,
+            name: "taint_entry".to_owned(),
+            kind: DisasmSymbolKind::Function,
+        }],
+    };
+    let mut module: NirModule = disrobe_query::disasm_to_nir_as(&payload, SourceLang::NativeArm);
+    let function: &mut NirFunction = module.functions.first_mut().expect("lift spill function");
+    function.end = 0x2020;
+    function
+        .instructions
+        .insert(0, call(0x2000, "bl", AARCH64_FGETS_STUB));
+    function.instructions.extend([
+        call(0x2018, "bl", AARCH64_SYSTEM_STUB),
+        instr(0x201c, NirOp::Return, "ret", &[]),
+    ]);
+    module
+        .symbols
+        .extend(named_stubs(AARCH64_FGETS_STUB, AARCH64_SYSTEM_STUB));
+    module
+}
+
+#[test]
+fn an_aarch64_spill_and_reload_carries_source_taint_after_the_return_register_is_cleared() {
+    let report: TaintReport = analyze(&aarch64_spilled_result(false), &config());
+    assert_eq!(
+        report.count(),
+        1,
+        "the spill must carry the source value: {report:?}"
+    );
+    assert!(report.flow_in("taint_entry", "fgets", "system"));
+    assert!(!report.has_unresolved_calls());
+    let finding: &disrobe_taint::TaintFinding = &report.findings()[0];
+    assert!(
+        finding
+            .path
+            .iter()
+            .any(|step: &disrobe_taint::TaintStep| step.address == 0x2004 && step.symbol == "str")
+    );
+    assert!(
+        finding
+            .path
+            .iter()
+            .any(|step: &disrobe_taint::TaintStep| step.address == 0x2014 && step.symbol == "ldr")
+    );
+}
+
+#[test]
+fn overwriting_an_aarch64_spilled_source_pointer_kills_the_flow() {
+    let report: TaintReport = analyze(&aarch64_spilled_result(true), &config());
+    assert_eq!(
+        report.count(),
+        0,
+        "the clean spill overwrite must kill the source: {report:?}"
+    );
+    assert!(!report.has_unresolved_calls());
 }
 
 #[test]

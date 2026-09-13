@@ -22,8 +22,8 @@ use common::{
 };
 use disrobe_core::rng::seeded;
 use disrobe_pass_native::{
-    Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, disassemble,
-    recover_program,
+    Arch, DisasmInsn, LeafRecovery, ProgramFunction, PseudoAbi, RecoveredFunction,
+    RecoveredProgram, disassemble, recover_leaf_function, recover_program,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 use rand::RngExt as _;
@@ -787,7 +787,10 @@ fn corrupt_every_pointer_store(tu: &str, fn_marker: &str) -> Option<String> {
         let stored: Option<(&str, &str)> = statement
             .strip_suffix(';')
             .filter(|write: &&str| {
-                write.starts_with("(*(") && !write.contains("r_rsp") && !write.contains("r_rbp")
+                (write.starts_with("(*(")
+                    || write.starts_with("(((struct __attribute__((packed, may_alias)) { "))
+                    && !write.contains("r_rsp")
+                    && !write.contains("r_rbp")
             })
             .and_then(|write: &str| write.split_once(") = "));
         if let Some((lhs, rhs)) = stored {
@@ -804,6 +807,61 @@ fn corrupt_every_pointer_store(tu: &str, fn_marker: &str) -> Option<String> {
         out.push_str(&tu[body_close.saturating_add(1)..]);
         out
     })
+}
+
+#[test]
+fn pointer_store_mutation_changes_recovered_typed_output() {
+    let code: [u8; 10] = [0x48, 0x89, 0xd0, 0x48, 0x03, 0x01, 0x48, 0x89, 0x01, 0xc3];
+    let recovered: LeafRecovery =
+        recover_leaf_function(&code, 0x1000).expect("recover pointer store");
+    assert_eq!(recovered.signature.callable_arity(), 2);
+    assert!(recovered.source.contains("packed, may_alias"));
+    let mutated: String = corrupt_every_pointer_store(&recovered.source, "recovered(")
+        .expect("the recovered typed store must be mutated");
+    let compiler: String = common::cc().expect("a C compiler is required for mutation grading");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("native-pointer-store-mutation");
+    let object: Vec<u8> = match compile_object_reasoned(
+        &compiler,
+        "-O1",
+        &["-c"],
+        "#include <stdint.h>\nvoid original(uint64_t *value, uint64_t addend) { *value += addend; }",
+        &scratch.path().join("original.o"),
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("mutation reference failed to compile: {reason}")
+        }
+    };
+    for (source, exit_code, marker) in [(&recovered.source, 0, "OK"), (&mutated, 1, "MISMATCH")] {
+        let driver: String = format!(
+            "#include <stdio.h>\n{source}\nvoid original(uint64_t *, uint64_t);\nint main(void) {{ uint64_t want = 40, got = 40; original(&want, 2); (void)recovered((uint64_t)(uintptr_t)&got, 2); if (want != got) {{ puts(\"MISMATCH\"); return 1; }} puts(\"OK\"); return 0; }}"
+        );
+        let outcome: RunOutcome =
+            link_and_run_reasoned(&compiler, &driver, &object, "typed_store", RUN_TIMEOUT_SECS);
+        let RunOutcome::Completed(captured) = outcome else {
+            panic!("mutation harness must complete: {outcome:?}");
+        };
+        assert_eq!(captured.exit_code, Some(exit_code));
+        assert_eq!(String::from_utf8_lossy(&captured.stdout).trim(), marker);
+    }
+}
+
+#[test]
+fn pointer_store_mutation_preserves_stack_stores_and_loads() {
+    for statement in [
+        "(*(uint64_t*)(uintptr_t)(r_rsp)) = r_rax;",
+        "(*(uint64_t*)(uintptr_t)(r_rbp)) = r_rax;",
+        "(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rsp))->value) = r_rax;",
+        "(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rbp))->value) = r_rax;",
+        "r_rax = (((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx))->value);",
+    ] {
+        let source: String = format!("void recovered(void) {{\n    {statement}\n}}\n");
+        assert!(corrupt_every_pointer_store(&source, "recovered(").is_none());
+    }
+    let legacy: &str = "void recovered(void) {\n    (*(uint64_t*)(uintptr_t)(r_rcx)) = r_rax;\n}\n";
+    let mutated: String = corrupt_every_pointer_store(legacy, "recovered(")
+        .expect("legacy external pointer stores remain eligible");
+    assert!(mutated.contains("(*(uint64_t*)(uintptr_t)(r_rcx)) = (r_rax) + 1;"));
 }
 
 fn corrupt_every_return(tu: &str, fn_marker: &str) -> Option<String> {
@@ -1051,13 +1109,26 @@ fn grade_row(
         abi,
     );
     match link_and_run_reasoned(compiler.bin, &driver, &host_object, &tag, RUN_TIMEOUT_SECS) {
-        RunOutcome::Ok(stdout) => {
-            if stdout.contains("OK") && !stdout.contains("MISMATCH") {
+        RunOutcome::Completed(captured) => {
+            let stdout: String = String::from_utf8_lossy(&captured.stdout).into_owned();
+            if captured.exit_code == Some(0)
+                && stdout.contains("OK")
+                && !stdout.contains("MISMATCH")
+            {
                 row.verdict = Verdict::Equivalent;
             } else {
-                row.verdict = Verdict::Mismatch(stdout.trim().to_owned());
+                row.verdict = Verdict::Mismatch(format!(
+                    "exit_code={:?} stdout={} stderr={}",
+                    captured.exit_code,
+                    stdout.trim(),
+                    String::from_utf8_lossy(&captured.stderr).trim()
+                ));
             }
         }
+        RunOutcome::TimedOut { seconds } => {
+            row.verdict = Verdict::Mismatch(format!("harness timed out after {seconds}s"));
+        }
+        RunOutcome::ExecutionFailed(reason) => row.verdict = Verdict::Mismatch(reason),
         RunOutcome::Failed(reason) => {
             row.verdict = Verdict::NotGraded(format!("link/run: {reason}"));
         }
@@ -1091,15 +1162,22 @@ fn grade_row(
             &format!("{tag}_teeth"),
             RUN_TIMEOUT_SECS,
         ) {
-            RunOutcome::Ok(stdout) => {
+            RunOutcome::Completed(captured) => {
+                let stdout: String = String::from_utf8_lossy(&captured.stdout).into_owned();
                 assert!(
-                    stdout.contains("MISMATCH") && !stdout.contains("OK"),
-                    "teeth failed for {}: corrupting every observed write in the recovered body must diverge, got: {stdout}",
-                    shape.tag
+                    captured.exit_code == Some(1)
+                        && stdout.contains("MISMATCH")
+                        && !stdout.contains("OK"),
+                    "teeth failed for {}: corrupting every observed write in the recovered body must diverge, exit_code={:?}, got: {stdout}",
+                    shape.tag,
+                    captured.exit_code
                 );
                 row.teeth_confirmed = true;
             }
-            RunOutcome::Failed(reason) => {
+            RunOutcome::TimedOut { seconds } => {
+                panic!("teeth harness for {} timed out after {seconds}s", shape.tag)
+            }
+            RunOutcome::ExecutionFailed(reason) | RunOutcome::Failed(reason) => {
                 panic!("teeth harness for {} failed: {reason}", shape.tag)
             }
         }

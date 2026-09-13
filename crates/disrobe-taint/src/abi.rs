@@ -145,6 +145,36 @@ impl CallAbi {
             uses: source.into_iter().collect(),
         })
     }
+
+    pub(crate) fn memory_transfer(self, instr: &NirInstr) -> Option<DefUse> {
+        if self != Self::Aarch64 || !is_native(instr.source.lang) {
+            return None;
+        }
+        let load: bool = match instr.mnemonic.to_ascii_lowercase().as_str() {
+            "ldr" | "ldur" => true,
+            "str" | "stur" => false,
+            _ => return None,
+        };
+        let operand: String = instr.operands.first()?.trim().to_ascii_lowercase();
+        if !operand.starts_with('x') && !matches!(operand.as_str(), "fp" | "lr") {
+            return None;
+        }
+        let register: ValueId = self.register_value(&operand)?;
+        let address: String = instr.operands.get(1..)?.join(", ");
+        if !address.starts_with('[') || !address.ends_with(']') {
+            return None;
+        }
+        let memory: ValueId = ValueId::memory(&address);
+        let (definition, source): (ValueId, ValueId) = if load {
+            (register, memory)
+        } else {
+            (memory, register)
+        };
+        Some(DefUse {
+            defs: vec![definition],
+            uses: vec![source],
+        })
+    }
 }
 
 pub(crate) const fn is_native(lang: SourceLang) -> bool {
@@ -418,6 +448,38 @@ mod tests {
     fn an_x86_abi_does_not_treat_aarch64_address_materialization_as_a_move() {
         let adrp: NirInstr = instr(SourceLang::NativeArm, "adrp", &["x0", "0x10000"]);
         assert!(CallAbi::X86.register_move(&adrp).is_none());
+    }
+
+    #[test]
+    fn aarch64_pointer_transfers_define_the_destination_and_read_only_the_value() {
+        for mnemonic in ["str", "stur", "ldr", "ldur"] {
+            let transfer: NirInstr = instr(SourceLang::NativeArm, mnemonic, &["x0", "[sp", "0x8]"]);
+            let defuse: DefUse = CallAbi::Aarch64
+                .memory_transfer(&transfer)
+                .expect("scalar pointer memory transfer");
+            let (definition, source): (ValueId, ValueId) = if mnemonic.starts_with('l') {
+                (ValueId::register("x0"), ValueId::memory("[sp, 0x8]"))
+            } else {
+                (ValueId::memory("[sp, 0x8]"), ValueId::register("x0"))
+            };
+            assert_eq!(defuse.defs, vec![definition]);
+            assert_eq!(defuse.uses, vec![source]);
+            assert!(CallAbi::X86.memory_transfer(&transfer).is_none());
+        }
+    }
+
+    #[test]
+    fn pointer_transfers_do_not_apply_whole_cell_kills_to_partial_or_writeback_stores() {
+        for operands in [
+            vec!["w0", "[sp]"],
+            vec!["x0", "[sp", "0x8]!"],
+            vec!["x0", "[sp]", "0x8"],
+        ] {
+            let store: NirInstr = instr(SourceLang::NativeArm, "str", &operands);
+            assert!(CallAbi::Aarch64.memory_transfer(&store).is_none());
+        }
+        let store: NirInstr = instr(SourceLang::Wasm, "str", &["x0", "[sp]"]);
+        assert!(CallAbi::Aarch64.memory_transfer(&store).is_none());
     }
 
     #[test]

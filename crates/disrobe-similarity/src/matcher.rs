@@ -326,7 +326,8 @@ fn decide(features: &FunctionFeatures, own: &SideIndex<'_>, other: &SideIndex<'_
             cause: UnmatchedCause::NoCandidate,
         },
         |candidates: &BTreeSet<FunctionId>| {
-            let independent: bool = !features.requires_reference_corroboration()
+            let independent: bool = anchor_strength(anchor) == AnchorStrength::Distinctive
+                && !features.requires_reference_corroboration()
                 && candidates
                     .first()
                     .and_then(|counterpart: &FunctionId| other.unique.get(counterpart))

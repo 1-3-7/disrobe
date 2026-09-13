@@ -11,6 +11,7 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,8 @@ use common::{
 };
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, recover_program,
+    Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, disassemble,
+    recover_program,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -239,22 +241,96 @@ fn noreturn_object_diagnostic(bytes: &[u8], entry: &str) -> String {
     out
 }
 
+fn reachable_shape_functions(
+    object: &[u8],
+    shape: &'static NoreturnShape,
+) -> Result<Vec<ProgramFunction>, String> {
+    let file: object::File<'_> = object::File::parse(object).map_err(|error| error.to_string())?;
+    let mut pending: Vec<(String, String)> = shape
+        .functions
+        .iter()
+        .map(|name: &&str| ((*name).to_owned(), format!("rec_{name}")))
+        .collect();
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(shape.functions.len());
+    while let Some((symbol_name, recovered_name)) = pending.pop() {
+        let decorated: String = format!("_{symbol_name}");
+        let symbol: object::Symbol<'_, '_> = file
+            .symbols()
+            .find(|symbol: &object::Symbol<'_, '_>| {
+                symbol
+                    .name()
+                    .is_ok_and(|name: &str| name == symbol_name || name == decorated)
+            })
+            .ok_or_else(|| format!("{symbol_name} symbol not located in object"))?;
+        if !visited.insert(symbol.index().0) {
+            continue;
+        }
+        let (code, base): (Vec<u8>, u64) = function_code(object, &symbol_name)
+            .ok_or_else(|| format!("{symbol_name} code not located in object"))?;
+        let section_index: object::SectionIndex = symbol
+            .section_index()
+            .ok_or_else(|| format!("{symbol_name} has no text section"))?;
+        let section: object::Section<'_, '_> = file
+            .section_by_index(section_index)
+            .map_err(|error| error.to_string())?;
+        let instructions: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).map_err(|error| error.to_string())?;
+        for instruction in instructions {
+            if !matches!(instruction.bytes.as_slice(), [0xe8 | 0xe9, _, _, _, _]) {
+                continue;
+            }
+            let Some(offset): Option<u64> = instruction
+                .address
+                .checked_add(1)
+                .and_then(|address: u64| address.checked_sub(section.address()))
+            else {
+                continue;
+            };
+            let Some((_, relocation)): Option<(u64, object::Relocation)> = section
+                .relocations()
+                .find(|(address, _): &(u64, object::Relocation)| *address == offset)
+            else {
+                continue;
+            };
+            let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                continue;
+            };
+            let callee: object::Symbol<'_, '_> = file
+                .symbol_by_index(index)
+                .map_err(|error| error.to_string())?;
+            if callee.is_undefined()
+                || callee.kind() != object::SymbolKind::Text
+                || visited.contains(&index.0)
+            {
+                continue;
+            }
+            let name: String = callee.name().map_err(|error| error.to_string())?.to_owned();
+            let recovered: String = shape
+                .functions
+                .iter()
+                .find(|root: &&&str| name == **root || name == format!("_{root}"))
+                .map_or_else(
+                    || format!("rec_local_{}", index.0),
+                    |root: &&str| format!("rec_{root}"),
+                );
+            pending.push((name, recovered));
+        }
+        functions.push(ProgramFunction {
+            name: recovered_name,
+            address: base,
+            code,
+        });
+    }
+    Ok(functions)
+}
+
 fn recover_shape(
     object: &[u8],
     shape: &'static NoreturnShape,
     abi: PseudoAbi,
 ) -> Result<RecoveredShape, String> {
-    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(shape.functions.len());
-    for &name in shape.functions {
-        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, name) else {
-            return Err(format!("{name} symbol not located in object"));
-        };
-        functions.push(ProgramFunction {
-            name: format!("rec_{name}"),
-            address: base,
-            code,
-        });
-    }
+    let functions: Vec<ProgramFunction> = reachable_shape_functions(object, shape)?;
     let result: RecoveredProgram = recover_program(object, &functions, abi);
     if !result.unrecovered.is_empty() {
         return Err(result
@@ -266,11 +342,11 @@ fn recover_shape(
     }
     let mut tu: String = String::new();
     let mut entry_params: usize = 0;
-    for (index, &name) in shape.functions.iter().enumerate() {
-        let recovered: &RecoveredFunction = &result.recovered[index];
+    let entry_name: String = format!("rec_{}", shape.entry);
+    for recovered in &result.recovered {
         tu.push_str(&strip_includes(&recovered.source));
         tu.push('\n');
-        if name == shape.entry {
+        if recovered.name == entry_name {
             entry_params = recovered.signature.callable_arity();
         }
     }
@@ -822,6 +898,85 @@ fn assemble_object(compiler: &str, source: &str, tag: &str) -> Result<Vec<u8>, S
         Ok(None) => Err("assembler did not complete within the watchdog".to_owned()),
         Err(e) => Err(format!("assembler failed to spawn: {e}")),
     }
+}
+
+#[test]
+fn relocated_local_exit_helpers_join_the_recovered_shape() {
+    let compiler: String = common::clang().expect("clang is required for the outlined-exit oracle");
+    let assembly: &str = ".text\n\
+        .def nr_exit_guard; .scl 2; .type 32; .endef\n\
+        .globl nr_exit_guard\n\
+        nr_exit_guard:\n\
+            subq $40, %rsp\n\
+            cmpq $4242, %rcx\n\
+            je 1f\n\
+            addq %rdx, %rcx\n\
+            addq %r8, %rcx\n\
+            testq %rdx, %rdx\n\
+            movq $-1, %rax\n\
+            cmovnsq %rcx, %rax\n\
+            addq $40, %rsp\n\
+            ret\n\
+        1: call local_exit_proxy\n\
+            int3\n\
+        .def local_exit_proxy; .scl 2; .type 32; .endef\n\
+        .globl local_exit_proxy\n\
+        local_exit_proxy:\n\
+            subq $40, %rsp\n\
+            movl $7, %ecx\n\
+            call exit\n\
+            int3\n\
+        .def unrelated; .scl 2; .type 32; .endef\n\
+        .globl unrelated\n\
+        unrelated: ud2\n";
+    let object: Vec<u8> = assemble_object(&compiler, assembly, "outlined_exit")
+        .expect("assemble an exit reached through a defined local function");
+    let shape: &'static NoreturnShape = SHAPES
+        .iter()
+        .find(|shape: &&NoreturnShape| shape.tag == "exit_guard")
+        .expect("exit guard shape");
+    let functions: Vec<ProgramFunction> =
+        reachable_shape_functions(&object, shape).expect("discover the relocated local callee");
+    assert_eq!(
+        functions.len(),
+        2,
+        "include the reachable helper and exclude unrelated code"
+    );
+    let recovered: RecoveredShape =
+        recover_shape(&object, shape, PseudoAbi::MsX64).expect("recover the complete exit shape");
+    assert_eq!(recovered.entry_params, 3);
+    assert!(
+        recovered.tu.contains("extern void exit(int);"),
+        "{}",
+        recovered.tu
+    );
+    assert!(!recovered.tu.contains("sub_"), "{}", recovered.tu);
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("outlined-exit-reference");
+    let reference_path: PathBuf = scratch.path().join("reference.o");
+    let reference: Vec<u8> =
+        match compile_object_reasoned(&compiler, "-O1", &["-c"], TRANSLATION_UNIT, &reference_path)
+        {
+            CompileOutcome::Object(bytes) => bytes,
+            CompileOutcome::Rejected(reason) => panic!("compile outlined-exit reference: {reason}"),
+        };
+    let values: RunResult = link_and_run(
+        &compiler,
+        &value_driver(shape, recovered.entry_params, &recovered.tu),
+        &reference,
+        "outlined_exit_values",
+    )
+    .expect("run outlined-exit values");
+    assert_eq!(values.exit_code, Some(0), "{}", values.stdout);
+    assert_eq!(values.stdout.trim(), "OK");
+    let status: RunResult = link_and_run(
+        &compiler,
+        &status_driver(shape, recovered.entry_params, &recovered.tu, (4242, 1, 1)),
+        &reference,
+        "outlined_exit_status",
+    )
+    .expect("run outlined-exit status");
+    assert_eq!(status.exit_code, Some(7));
+    assert_eq!(status.stdout.trim(), "REACHED");
 }
 
 #[test]

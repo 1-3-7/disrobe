@@ -410,6 +410,114 @@ impl Verdict {
     }
 }
 
+fn verdict_for_run(outcome: RunOutcome, row_seed: u64) -> Verdict {
+    match outcome {
+        RunOutcome::Completed(captured) => {
+            let stdout: String = String::from_utf8_lossy(&captured.stdout).into_owned();
+            if captured.exit_code == Some(0)
+                && stdout.contains("OK")
+                && !stdout.contains("MISMATCH")
+            {
+                Verdict::Equivalent
+            } else {
+                Verdict::Mismatch(format!(
+                    "seed={row_seed} exit_code={:?} stdout={} stderr={}",
+                    captured.exit_code,
+                    stdout.trim(),
+                    String::from_utf8_lossy(&captured.stderr).trim()
+                ))
+            }
+        }
+        RunOutcome::TimedOut { seconds } => Verdict::Mismatch(format!(
+            "seed={row_seed} harness timed out after {seconds}s"
+        )),
+        RunOutcome::ExecutionFailed(reason) => {
+            Verdict::Mismatch(format!("seed={row_seed} {reason}"))
+        }
+        RunOutcome::Failed(reason) => Verdict::NotGraded(format!("link/run: {reason}")),
+    }
+}
+
+#[test]
+fn launched_harness_failures_are_mismatches() {
+    let compiler: String =
+        common::cc().expect("a C compiler is required for harness classification");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("native-run-classification");
+    let object: Vec<u8> = match compile_object_reasoned(
+        &compiler,
+        "-O1",
+        &["-c"],
+        "int baseline(void) { return 0; }",
+        &scratch.path().join("baseline.o"),
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("classification fixture failed to compile: {reason}")
+        }
+    };
+
+    let timed_out: RunOutcome = link_and_run_reasoned(
+        &compiler,
+        "int main(void) { for (;;) {} }",
+        &object,
+        "timeout",
+        1,
+    );
+    assert!(matches!(timed_out, RunOutcome::TimedOut { seconds: 1 }));
+    assert!(matches!(
+        verdict_for_run(timed_out, MASTER_SEED),
+        Verdict::Mismatch(_)
+    ));
+
+    for exit_code in [0, 7] {
+        let driver: String =
+            format!("#include <stdio.h>\nint main(void) {{ puts(\"OK\"); return {exit_code}; }}");
+        let outcome: RunOutcome =
+            link_and_run_reasoned(&compiler, &driver, &object, "exit_status", 5);
+        let RunOutcome::Completed(captured) = &outcome else {
+            panic!("exit-status fixture did not complete: {outcome:?}");
+        };
+        assert_eq!(captured.exit_code, Some(exit_code));
+        assert_eq!(String::from_utf8_lossy(&captured.stdout).trim(), "OK");
+        let verdict: Verdict = verdict_for_run(outcome, MASTER_SEED);
+        if exit_code == 0 {
+            assert!(matches!(verdict, Verdict::Equivalent));
+        } else {
+            assert!(matches!(verdict, Verdict::Mismatch(_)));
+        }
+    }
+
+    let capture_failed: RunOutcome = link_and_run_reasoned(
+        &compiler,
+        "#include <stdio.h>\nint main(void) { char block[4096] = {0}; for (int i = 0; i < 1025; ++i) fwrite(block, 1, sizeof block, stdout); return 0; }",
+        &object,
+        "capture_failure",
+        5,
+    );
+    assert!(matches!(capture_failed, RunOutcome::ExecutionFailed(_)));
+    assert!(matches!(
+        verdict_for_run(capture_failed, MASTER_SEED),
+        Verdict::Mismatch(_)
+    ));
+
+    let unavailable: RunOutcome = link_and_run_reasoned(
+        scratch
+            .path()
+            .join("missing-compiler")
+            .to_str()
+            .expect("compiler path"),
+        "int main(void) { return 0; }",
+        &object,
+        "unavailable",
+        5,
+    );
+    assert!(matches!(unavailable, RunOutcome::Failed(_)));
+    assert!(matches!(
+        verdict_for_run(unavailable, MASTER_SEED),
+        Verdict::NotGraded(_)
+    ));
+}
+
 #[derive(Debug, Clone)]
 struct MatrixRow {
     shape: &'static str,
@@ -943,19 +1051,10 @@ fn grade_row(
         &strip_includes(&recovered.tu),
     );
 
-    match link_and_run_reasoned(compiler.bin, &driver, &plain_object, &tag, 20) {
-        RunOutcome::Ok(stdout) => {
-            if stdout.contains("OK") && !stdout.contains("MISMATCH") {
-                row.verdict = Verdict::Equivalent;
-            } else {
-                row.verdict =
-                    Verdict::Mismatch(format!("seed={row_seed} stdout={}", stdout.trim()));
-            }
-        }
-        RunOutcome::Failed(reason) => {
-            row.verdict = Verdict::NotGraded(format!("link/run: {reason}"));
-        }
-    }
+    row.verdict = verdict_for_run(
+        link_and_run_reasoned(compiler.bin, &driver, &plain_object, &tag, 20),
+        row_seed,
+    );
 
     if matches!(row.verdict, Verdict::Equivalent) {
         let marker: String = format!("rec_{}(", shape.entry);
@@ -973,15 +1072,25 @@ fn grade_row(
         );
         let teeth_tag: String = format!("{tag}_teeth");
         match link_and_run_reasoned(compiler.bin, &mutated_driver, &plain_object, &teeth_tag, 20) {
-            RunOutcome::Ok(stdout) => {
+            RunOutcome::Completed(captured) => {
+                let stdout: String = String::from_utf8_lossy(&captured.stdout).into_owned();
                 assert!(
-                    stdout.contains("MISMATCH") && !stdout.contains("OK"),
-                    "teeth FAILED for shape {}: corrupting every return in the recovered body must diverge from the original, got: {stdout}",
-                    shape.shape_tag
+                    captured.exit_code == Some(1)
+                        && stdout.contains("MISMATCH")
+                        && !stdout.contains("OK"),
+                    "teeth FAILED for shape {}: corrupting every return in the recovered body must diverge from the original, exit_code={:?}, got: {stdout}",
+                    shape.shape_tag,
+                    captured.exit_code
                 );
                 row.teeth_confirmed = true;
             }
-            RunOutcome::Failed(reason) => {
+            RunOutcome::TimedOut { seconds } => {
+                panic!(
+                    "teeth harness for shape {} timed out after {seconds}s",
+                    shape.shape_tag
+                );
+            }
+            RunOutcome::ExecutionFailed(reason) | RunOutcome::Failed(reason) => {
                 panic!(
                     "teeth harness for shape {} failed to build/run: {reason}",
                     shape.shape_tag

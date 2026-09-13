@@ -734,6 +734,9 @@ fn walk_block(
 }
 
 fn taint_def_use(abi: CallAbi, instr: &NirInstr) -> DefUse {
+    if let Some(transfer) = abi.memory_transfer(instr) {
+        return transfer;
+    }
     if matches!(instr.op, NirOp::Nop)
         && let Some(moved) = abi.register_move(instr)
     {

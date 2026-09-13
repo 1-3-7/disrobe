@@ -808,6 +808,32 @@ fn a_small_shape_without_a_reference_still_cannot_anchor_a_match() {
     assert_eq!(match_functions(&left, &right).matched_count(), 0);
 }
 
+#[test]
+fn a_single_import_call_without_structure_cannot_anchor_a_match() {
+    let references: [DataReference; 1] = [DataReference::imported_call("shared_service")];
+    let left: [FunctionFeatures; 1] = [FunctionFeatures::new(FunctionId(10), references.clone())];
+    let right: [FunctionFeatures; 1] = [FunctionFeatures::new(FunctionId(20), references)];
+    let report: MatchReport = match_functions(&left, &right);
+    assert_eq!(report.exact_count(), 0);
+    assert_eq!(report.matched_count(), 0);
+    assert_eq!(
+        report.left_verdict(FunctionId(10)),
+        Some(&Verdict::Ambiguous {
+            candidates: BTreeSet::from([FunctionId(20)]),
+            own_side: 1,
+            other_side: 1,
+        })
+    );
+    assert_eq!(
+        report.right_verdict(FunctionId(20)),
+        Some(&Verdict::Ambiguous {
+            candidates: BTreeSet::from([FunctionId(10)]),
+            own_side: 1,
+            other_side: 1,
+        })
+    );
+}
+
 fn callback_loop_shape(operation: InstructionCategory) -> ControlFlowGraph {
     ControlFlowGraph::new(
         0,
@@ -878,7 +904,7 @@ fn an_uncorroborated_callback_loop_keeps_shape_candidates_without_matching() {
 }
 
 #[test]
-fn a_callback_loop_can_use_independent_references_and_call_free_shapes_still_anchor() {
+fn a_callback_loop_uses_import_references_with_structural_corroboration() {
     let shape: ControlFlowGraph = callback_loop_shape(InstructionCategory::Call);
     let references: [DataReference; 1] = [DataReference::imported_call("shared_service")];
     let left: [FunctionFeatures; 1] = [FunctionFeatures::with_structure(
@@ -892,10 +918,11 @@ fn a_callback_loop_can_use_independent_references_and_call_free_shapes_still_anc
         shape,
     )];
     let report: MatchReport = match_functions(&left, &right);
-    assert_eq!(report.exact_count(), 1);
+    assert_eq!(report.exact_count(), 0);
+    assert_eq!(report.structural_count(), 1);
     assert!(matches!(
         report.left_verdict(FunctionId(10)),
-        Some(Verdict::Exact { shared_references, .. })
+        Some(Verdict::Structural { shared_references, .. })
             if shared_references == &BTreeSet::from(references.clone())
     ));
     let inferred: [FunctionFeatures; 1] =

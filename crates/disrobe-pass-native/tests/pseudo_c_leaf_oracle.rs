@@ -3530,6 +3530,119 @@ fn build_loop_driver(recovered_decls: &str, driver_body: &str) -> String {
 }
 
 #[test]
+fn overwritten_arithmetic_flags_preserve_branches_setcc_and_cmov() {
+    let compiler: String = clang().expect("clang is required for the arithmetic flags oracle");
+    let loop_code: &[u8] = &[
+        0x48, 0x85, 0xc9, 0x7e, 0x33, 0x48, 0x8d, 0x04, 0x11, 0x83, 0xe1, 0x01, 0xb9, 0x00, 0x00,
+        0x00, 0x00, 0x74, 0x0d, 0x48, 0x89, 0xd1, 0x48, 0x83, 0xc2, 0x01, 0x48, 0x39, 0xc2, 0x74,
+        0x0f, 0x90, 0x48, 0x8d, 0x4c, 0x51, 0x01, 0x48, 0x83, 0xc2, 0x02, 0x48, 0x39, 0xc2, 0x75,
+        0xf2, 0x49, 0x8d, 0x04, 0x08, 0xc3, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x4c, 0x89, 0xc0, 0xc3,
+    ];
+    let and_setcc: &[u8] = &[
+        0x83, 0xe1, 0x01, 0xb9, 0, 0, 0, 0, 0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3,
+    ];
+    let neg_setcc: &[u8] = &[
+        0x48, 0xf7, 0xd9, 0xb9, 0, 0, 0, 0, 0x0f, 0x98, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3,
+    ];
+    let and_cmov: &[u8] = &[
+        0x83, 0xe1, 0x01, 0xb9, 0, 0, 0, 0, 0xb8, 11, 0, 0, 0, 0xba, 22, 0, 0, 0, 0x0f, 0x45, 0xc2,
+        0xc3,
+    ];
+    let mut declarations: String = String::new();
+    for (name, code, arity) in [
+        ("rec_loop", loop_code, 3),
+        ("rec_and", and_setcc, 1),
+        ("rec_neg", neg_setcc, 1),
+        ("rec_cmov", and_cmov, 1),
+    ] {
+        let recovery: LeafRecovery = recover_leaf_function_abi(code, 0, PseudoAbi::MsX64)
+            .expect("arithmetic flags survive intervening flag-preserving writes");
+        assert_eq!(recovery.signature.callable_arity(), arity, "{name}");
+        declarations.push_str(
+            &recovery
+                .source
+                .replacen("recovered(", &format!("{name}("), 1),
+        );
+        declarations.push('\n');
+    }
+    let scratch: ScratchDir = scratch_dir();
+    let reference_path: PathBuf = scratch.path().join("arithmetic_flags_reference.c");
+    let reference_object: PathBuf = scratch.path().join("arithmetic_flags_reference.o");
+    std::fs::write(&reference_path,
+        "long long original_loop(long long a, long long b, long long c) { long long s = 0; for (long long i = 0; i < a; ++i) s += i + b; return s + c; }\n")
+        .expect("write independent loop reference");
+    let compiled: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-c", "-o"])
+        .arg(&reference_object)
+        .arg(&reference_path)
+        .output()
+        .expect("compile independent loop reference");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let driver: String = format!(
+        "#include <stdint.h>\n#include <stdio.h>\n{declarations}\n\
+         extern long long original_loop(long long, long long, long long);\n\
+         int main(void) {{\n\
+             unsigned compared = 0;\n\
+             for (long long a = -40; a <= 40; ++a) {{\n\
+                 if (rec_and(a) != ((uint64_t)a & 1ULL)) return 1;\n\
+                 if (rec_neg(a) != (uint64_t)(a > 0)) return 2;\n\
+                 if (rec_cmov(a) != (((uint64_t)a & 1ULL) ? 22ULL : 11ULL)) return 3;\n\
+                 compared += 3;\n\
+                 for (long long b = -4; b <= 4; ++b) {{\n\
+                     for (long long c = -4; c <= 4; ++c) {{\n\
+                         uint64_t want = (uint64_t)original_loop(a,b,c);\n\
+                         uint64_t got = rec_loop(a,b,c);\n\
+                         if (want != got) {{\n\
+                             printf(\"MISMATCH %lld,%lld,%lld want=%llu got=%llu\\n\", a,b,c,(unsigned long long)want,(unsigned long long)got);\n\
+                             return 4;\n\
+                         }}\n\
+                         ++compared;\n\
+                     }}\n\
+                 }}\n\
+             }}\n\
+             printf(\"COMPARED %u\\n\", compared);\n\
+             return compared == 6804 ? 0 : 5;\n\
+         }}\n"
+    );
+    let driver_path: PathBuf = scratch.path().join("arithmetic_flags_driver.c");
+    let executable: PathBuf = scratch.path().join(if cfg!(windows) {
+        "arithmetic_flags.exe"
+    } else {
+        "arithmetic_flags"
+    });
+    std::fs::write(&driver_path, driver.as_bytes()).expect("write arithmetic flags driver");
+    let linked: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&executable)
+        .arg(&driver_path)
+        .arg(&reference_object)
+        .output()
+        .expect("link arithmetic flags driver");
+    assert!(
+        linked.status.success(),
+        "{}\n{driver}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    let BoundedRun::Exited(output) = run_bounded(&executable, 20) else {
+        panic!("arithmetic flags recovery produced a nonterminating loop");
+    };
+    assert!(
+        output.status.success(),
+        "arithmetic flags oracle failed: {}\n{}\n{driver}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "COMPARED 6804"
+    );
+}
+
+#[test]
 fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
     if !host_native_class_is_graded(
         "natural_loop_leaf_functions_recompile_to_behavioral_equivalence",

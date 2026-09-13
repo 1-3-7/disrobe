@@ -170,7 +170,7 @@ const EXPECTED_BODIES: [(&str, &str); 7] = [
     ),
     (
         "Scale",
-        "#include <stdint.h>\nint32_t recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rdx) & 0xffffffffULL;\n    r_rax = (r_rax * ((uint64_t)(*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL)))) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n",
+        "#include <stdint.h>\nint32_t recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rdx) & 0xffffffffULL;\n    r_rax = (r_rax * ((uint64_t)(((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL))->value))) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n",
     ),
 ];
 
@@ -179,7 +179,7 @@ const FP_PREAMBLE: &str = "#include <stdint.h>\n#include <string.h>\nstatic inli
 const FP_EXPECTED_BODIES: [(&str, &str); 12] = [
     (
         "_ctor",
-        "#include <stdint.h>\nvoid recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL)) = (r_rdx) & 0xffffffffULL;\n}\n",
+        "#include <stdint.h>\nvoid recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL))->value) = (r_rdx) & 0xffffffffULL;\n}\n",
     ),
     (
         "AddDouble",
@@ -207,23 +207,23 @@ const FP_EXPECTED_BODIES: [(&str, &str); 12] = [
     ),
     (
         "SetSlot",
-        "#include <stdint.h>\nvoid recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL)) = (r_rdx) & 0xffffffffULL;\n}\n",
+        "#include <stdint.h>\nvoid recovered(uintptr_t a0, int32_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL))->value) = (r_rdx) & 0xffffffffULL;\n}\n",
     ),
     (
         "SetRatio",
-        "void recovered(uintptr_t a0, double a1) {\n    uint64_t r_rcx = a0;\n    uint64_t x_xmm1 = fp_d_to_bits((double)(a1));\n    (*(uint64_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL)) = x_xmm1;\n}\n",
+        "void recovered(uintptr_t a0, double a1) {\n    uint64_t r_rcx = a0;\n    uint64_t x_xmm1 = fp_d_to_bits((double)(a1));\n    (((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL))->value) = x_xmm1;\n}\n",
     ),
     (
         "Clear",
-        "#include <stdint.h>\nvoid recovered(uintptr_t a0) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rax = 0;\n    r_rax = ((uint64_t)(int64_t)0LL) & 0xffffffffULL;\n    (*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL)) = (r_rax) & 0xffffffffULL;\n}\n",
+        "#include <stdint.h>\nvoid recovered(uintptr_t a0) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rax = 0;\n    r_rax = ((uint64_t)(int64_t)0LL) & 0xffffffffULL;\n    (((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)16LL))->value) = (r_rax) & 0xffffffffULL;\n}\n",
     ),
     (
         "Store",
-        "#include <stdint.h>\nvoid recovered(intptr_t a0, int32_t a1) {\n    uint64_t r_rcx = (uintptr_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (*(uint32_t*)(uintptr_t)(r_rcx)) = (r_rdx) & 0xffffffffULL;\n}\n",
+        "#include <stdint.h>\nvoid recovered(intptr_t a0, int32_t a1) {\n    uint64_t r_rcx = (uintptr_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    (((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx))->value) = (r_rdx) & 0xffffffffULL;\n}\n",
     ),
     (
         "Split",
-        "#include <stdint.h>\ntypedef struct {\n    uint64_t f0;\n    uint64_t f1;\n} recovered_sret_t;\nrecovered_sret_t recovered(uint64_t a0) {\n    recovered_sret_t __sret;\n    uint64_t r_rdx = a0;\n    uint64_t r_rax = 0;\n    uint64_t r_rcx = (uint64_t)(uintptr_t)&__sret;\n    r_rax = ((uint32_t)(uint16_t)((r_rdx) & 0xffffULL)) & 0xffffffffULL;\n    r_rdx = (uint64_t)((int64_t)(int64_t)r_rdx >> (((uint64_t)(int64_t)16LL) & 63));\n    (*(uint64_t*)(uintptr_t)(r_rcx)) = r_rax;\n    (*(uint64_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL)) = r_rdx;\n    r_rax = r_rcx;\n    return __sret;\n}\n",
+        "#include <stdint.h>\ntypedef struct {\n    uint64_t f0;\n    uint64_t f1;\n} recovered_sret_t;\nrecovered_sret_t recovered(uint64_t a0) {\n    recovered_sret_t __sret;\n    uint64_t r_rdx = a0;\n    uint64_t r_rax = 0;\n    uint64_t r_rcx = (uint64_t)(uintptr_t)&__sret;\n    r_rax = ((uint32_t)(uint16_t)((r_rdx) & 0xffffULL)) & 0xffffffffULL;\n    r_rdx = (uint64_t)((int64_t)(int64_t)r_rdx >> (((uint64_t)(int64_t)16LL) & 63));\n    (((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx))->value) = r_rax;\n    (((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)8LL))->value) = r_rdx;\n    r_rax = r_rcx;\n    return __sret;\n}\n",
     ),
 ];
 

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_core::subprocess::{CapturedOutput, ExecutionError, run_captured};
 use disrobe_pass_native::PseudoAbi;
 
 #[path = "../support/compiler_toolchain.rs"]
@@ -423,7 +423,9 @@ pub fn compile_object(compiler: &str, extra: &[&str], source: &str, out: &Path) 
 
 #[derive(Debug)]
 pub enum RunOutcome {
-    Ok(String),
+    Completed(CapturedOutput),
+    TimedOut { seconds: u64 },
+    ExecutionFailed(String),
     Failed(String),
 }
 
@@ -475,13 +477,18 @@ pub fn link_and_run_reasoned(
     }
     let no_args: [&str; 0] = [];
     match run_captured(&exe, &no_args, Duration::from_secs(secs), MAX_CAPTURE_BYTES) {
-        Ok(Some(captured)) => {
-            RunOutcome::Ok(String::from_utf8_lossy(&captured.stdout).into_owned())
+        Ok(Some(captured)) => RunOutcome::Completed(captured),
+        Ok(None) => RunOutcome::TimedOut { seconds: secs },
+        Err(e)
+            if matches!(
+                e.get_ref()
+                    .and_then(|source| source.downcast_ref::<ExecutionError>()),
+                Some(ExecutionError::Launch(_))
+            ) =>
+        {
+            RunOutcome::Failed(format!("harness failed to spawn: {e}"))
         }
-        Ok(None) => RunOutcome::Failed(format!(
-            "harness did not terminate within the {secs}s watchdog; a recovered loop is non-terminating"
-        )),
-        Err(e) => RunOutcome::Failed(format!("harness failed to spawn: {e}")),
+        Err(e) => RunOutcome::ExecutionFailed(format!("harness execution failed: {e}")),
     }
 }
 
@@ -494,8 +501,11 @@ pub fn link_and_run(
     secs: u64,
 ) -> String {
     match link_and_run_reasoned(compiler, driver, link_object, tag, secs) {
-        RunOutcome::Ok(stdout) => stdout,
-        RunOutcome::Failed(reason) => {
+        RunOutcome::Completed(captured) => String::from_utf8_lossy(&captured.stdout).into_owned(),
+        RunOutcome::TimedOut { seconds } => {
+            panic!("{tag} harness timed out after {seconds}s\n--- {tag} driver ---\n{driver}")
+        }
+        RunOutcome::ExecutionFailed(reason) | RunOutcome::Failed(reason) => {
             panic!("{tag} link/run failed: {reason}\n--- {tag} driver ---\n{driver}")
         }
     }
