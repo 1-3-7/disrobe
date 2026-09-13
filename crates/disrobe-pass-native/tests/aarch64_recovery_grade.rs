@@ -1199,12 +1199,17 @@ fn corpus_grade_report() {
     let harness_exe: PathBuf = dir
         .path()
         .join(if cfg!(windows) { "grade.exe" } else { "grade" });
-    let link: std::process::Output = Command::new(&compiler)
+    let mut link_command: Command = Command::new(&compiler);
+    link_command
         .args(ORACLE_FLAGS)
         .args(["-o"])
         .arg(&harness_exe)
         .arg(&driver_c)
-        .arg(&battery_o)
+        .arg(&battery_o);
+    if !cfg!(windows) {
+        link_command.arg("-lm");
+    }
+    let link: std::process::Output = link_command
         .output()
         .expect("invoke cc to link grade harness");
     assert!(
