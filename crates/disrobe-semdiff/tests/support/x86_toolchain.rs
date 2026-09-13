@@ -7,9 +7,11 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::PseudoAbi;
 
 #[path = "../../../disrobe-pass-native/tests/support/x86_compiler.rs"]
-pub mod x86_compiler;
+mod x86_compiler;
 
-pub(crate) use x86_compiler::assert_x86_artifact;
+pub(crate) fn assert_x86_artifact(bytes: &[u8]) {
+    x86_compiler::assert_x86_artifact(bytes);
+}
 
 pub(crate) fn command(compiler: &str) -> Command {
     if cfg!(target_arch = "x86_64") {

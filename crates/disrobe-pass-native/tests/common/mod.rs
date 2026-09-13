@@ -23,7 +23,7 @@ use disrobe_pass_native::PseudoAbi;
 mod compiler_toolchain;
 
 #[path = "../support/x86_compiler.rs"]
-pub mod x86_compiler;
+mod x86_compiler;
 
 pub const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
