@@ -592,6 +592,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          macos_sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          test -d "$macos_sdk"
+          export SDKROOT="$macos_sdk"
           package="$RUNNER_TEMP/disrobe-swift-6.3.2.pkg"
           trap 'rm -f -- "$package"' EXIT
           curl --fail --location --max-time 600 --output "$package" \
@@ -608,6 +611,7 @@ jobs:
           grep -Fq 'Swift version 6.3.2 (swift-6.3.2-RELEASE)' <<< "$version"
           swiftc -typecheck - <<< 'import _Differentiation'
           echo "$toolchain" >> "$GITHUB_PATH"
+          echo "SDKROOT=$SDKROOT" >> "$GITHUB_ENV"
           echo "DISROBE_REQUIRE_SWIFTC=1" >> "$GITHUB_ENV"
           echo "DISROBE_REQUIRE_SWIFT_DEMANGLE=1" >> "$GITHUB_ENV"
       - name: provision LLVM 18 for the aarch64 dense-switch CLI differential and the bigobj reader differential
