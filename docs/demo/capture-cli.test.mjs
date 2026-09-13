@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSy
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fixtures, presentation, scenes } from "./cli-plan.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const binary = process.env.DISROBE_BIN;
@@ -16,9 +17,8 @@ function withCheckout(version, inspect) {
     for (const path of [
       "docs/demo/capture-cli.mjs",
       "docs/demo/media-version.mjs",
-      "corpus/native/packers/upx/hello.packed.nrv2b.exe",
-      "playground/public/samples/greet.luac",
-      "playground/public/samples/add.wasm",
+      "docs/demo/cli-plan.mjs",
+      ...fixtures.map(([path]) => path),
     ]) {
       mkdirSync(dirname(join(scratch, path)), { recursive: true });
       copyFileSync(join(root, path), join(scratch, path));
@@ -33,7 +33,7 @@ function withCheckout(version, inspect) {
 
 function runCapture(scratch, ...args) {
   const result = spawnSync(process.execPath, [join(scratch, "docs/demo/capture-cli.mjs"), "--binary", resolve(binary), ...args], {
-    encoding: "utf8", timeout: 120_000, maxBuffer: 128 * 1024, windowsHide: true,
+    encoding: "utf8", timeout: 720_000, maxBuffer: 128 * 1024, windowsHide: true,
   });
   if (result.error) throw result.error;
   return result;
@@ -66,7 +66,7 @@ test("capture rejects a release tag mismatch without publishing a recording", ()
   });
 });
 
-test("matching release capture records the real binary and all six static commands", () => {
+test("matching release capture records the real binary, complete public inventory and twenty static commands", () => {
   const version = binaryVersion();
   withCheckout(version, (scratch) => {
     const result = runCapture(scratch, "--release-tag", `v${version}`);
@@ -76,13 +76,15 @@ test("matching release capture records the real binary and all six static comman
     assert.equal(receipt.binary.sha256, createHash("sha256").update(readFileSync(resolve(binary))).digest("hex"));
     assert.equal(receipt.workspaceVersion, version);
     assert.equal(receipt.releaseTag, `v${version}`);
-    assert.deepEqual(receipt.scenes.map((scene) => scene.id), ["native", "indicators", "auto", "lua", "wasm", "source"]);
-    assert.equal(receipt.scenes.reduce((sum, scene) => sum + scene.durationMs, 0), 36_000);
+    assert.deepEqual(receipt.scenes.map((scene) => scene.id), scenes.map((scene) => scene.id));
+    assert.equal(receipt.scenes.reduce((sum, scene) => sum + scene.durationMs, 0) + presentation.openingMs + presentation.closingMs, 132_000);
     assert.deepEqual([receipt.presentation.width, receipt.presentation.height, receipt.presentation.fps], [1920, 1080, 60]);
     for (const scene of receipt.scenes) assert.equal(scene.exitCode, 0);
     assert.ok(receipt.artifacts.some((artifact) => artifact.name === "recovered/add.wat"));
-    const source = receipt.scenes.at(-1);
-    assert.equal(source.command, process.platform === "win32" ? "Get-Content -LiteralPath recovered/add.wat" : "cat recovered/add.wat");
-    assert.match(source.stdout, /i32\.add/u);
+    assert.equal(receipt.catalog.commands.length, 66);
+    assert.equal(receipt.catalog.commands.includes("subcommand-tree"), false);
+    assert.match(receipt.scenes.find((scene) => scene.id === "wasm").preview.text, /i32\.add/u);
+    assert.ok(receipt.scenes.find((scene) => scene.id === "python").argv.includes("--no-roundtrip"));
+    assert.equal(receipt.scenes.some((scene) => scene.argv.includes("--help")), false);
   });
 });

@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{
-    CompileOutcome, CompilerFamily, CompilerId, MAX_CAPTURE_BYTES, available_compilers,
-    codegen_flags, compile_object_reasoned, function_code, scratch_dir, strip_includes,
+    CompileOutcome, CompilerFamily, CompilerId, MAX_CAPTURE_BYTES, available_x86_compilers,
+    codegen_flags, compile_object_reasoned, compile_x86_object_reasoned, function_code,
+    scratch_dir, strip_includes,
 };
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::{
@@ -456,7 +457,7 @@ fn grade_row(
         opt.trim_start_matches('-'),
         abi.tag()
     );
-    let host_flags: Vec<&str> = compile_flags(compiler.family);
+    let host_flags: Vec<&str> = compile_flags(common::host_compiler_family(compiler));
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-noreturn-host");
     let host_out: PathBuf = scratch.path().join(format!("{tag}_host.o"));
     let host_object: Vec<u8> = match compile_object_reasoned(
@@ -472,25 +473,23 @@ fn grade_row(
             return row;
         }
     };
-    let object_for_recovery: Vec<u8> = match abi {
-        AbiTarget::MsX64 => host_object.clone(),
-        AbiTarget::SysV => {
-            let sysv_flags: [&str; 4] = [
-                "--target=x86_64-unknown-linux-gnu",
-                "-fno-stack-protector",
-                "-fcf-protection=none",
-                "-c",
-            ];
-            let sysv_scratch: disrobe_core::scratch::ScratchDir =
-                scratch_dir("disrobe-noreturn-sysv");
-            let sysv_out: PathBuf = sysv_scratch.path().join(format!("{tag}_sysv.o"));
-            match compile_object_reasoned("clang", opt, &sysv_flags, TRANSLATION_UNIT, &sysv_out) {
-                CompileOutcome::Object(bytes) => bytes,
-                CompileOutcome::Rejected(reason) => {
-                    row.verdict = Verdict::NotGraded(format!("sysv cross-compile: {reason}"));
-                    return row;
-                }
-            }
+    let recovery_out: PathBuf = scratch.path().join(format!("{tag}_recovery.o"));
+    let mut recovery_flags: Vec<&str> = compile_flags(compiler.family);
+    if matches!(abi, AbiTarget::SysV) {
+        recovery_flags.push("-fcf-protection=none");
+    }
+    let object_for_recovery: Vec<u8> = match compile_x86_object_reasoned(
+        compiler.bin,
+        abi.as_pseudo(),
+        opt,
+        &recovery_flags,
+        TRANSLATION_UNIT,
+        &recovery_out,
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            row.verdict = Verdict::NotGraded(format!("x86 recovery compile: {reason}"));
+            return row;
         }
     };
     let recovered: RecoveredShape =
@@ -618,7 +617,7 @@ fn grade_row(
 
 #[test]
 fn noreturn_library_exits_recover_and_reproduce_the_source_exit_status() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     assert!(
         !compilers.is_empty(),
         "the non-returning exit grade needs a host C compiler: none of gcc/clang/cc answered --version"
@@ -750,20 +749,26 @@ fn assemble_object(compiler: &str, source: &str, tag: &str) -> Result<Vec<u8>, S
     let asm_path: PathBuf = scratch.path().join(format!("{tag}.s"));
     std::fs::write(&asm_path, source.as_bytes()).map_err(|e| format!("write assembly: {e}"))?;
     let out_path: PathBuf = scratch.path().join(format!("{tag}.o"));
-    let args: [OsString; 4] = [
+    let (program, flags): (String, Vec<&str>) =
+        common::x86_compiler::object_compiler(compiler, PseudoAbi::MsX64);
+    let mut args: Vec<OsString> = flags.into_iter().map(OsString::from).collect();
+    args.extend([
         OsStr::new("-c").to_owned(),
         asm_path.as_os_str().to_owned(),
         OsStr::new("-o").to_owned(),
         out_path.as_os_str().to_owned(),
-    ];
+    ]);
     match run_captured(
-        Path::new(compiler),
+        Path::new(&program),
         &args,
         Duration::from_mins(1),
         MAX_CAPTURE_BYTES,
     ) {
         Ok(Some(captured)) if captured.exit_code == Some(0) => {
-            std::fs::read(&out_path).map_err(|e| format!("read assembled object: {e}"))
+            let bytes: Vec<u8> =
+                std::fs::read(&out_path).map_err(|e| format!("read assembled object: {e}"))?;
+            common::x86_compiler::assert_x86_artifact(&bytes);
+            Ok(bytes)
         }
         Ok(Some(captured)) => Err(format!(
             "assembler rejected the source: {}",
@@ -776,7 +781,7 @@ fn assemble_object(compiler: &str, source: &str, tag: &str) -> Result<Vec<u8>, S
 
 #[test]
 fn a_conditional_branch_to_a_non_returning_import_is_refused_not_taken_unconditionally() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     assert!(
         !compilers.is_empty(),
         "the conditional-exit grade needs a host assembler: none of gcc/clang/cc answered --version"
@@ -862,7 +867,7 @@ fn rustc_path() -> Option<PathBuf> {
 
 #[test]
 fn recovered_rust_declares_the_non_returning_import_as_divergent() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     assert!(
         !compilers.is_empty(),
         "the recovered Rust leg needs a host C compiler to produce an object"
@@ -874,8 +879,9 @@ fn recovered_rust_declares_the_non_returning_import_as_divergent() {
     let host_flags: Vec<&str> = compile_flags(compiler.family);
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-noreturn-rust");
     let host_out: PathBuf = scratch.path().join("rust_host.o");
-    let CompileOutcome::Object(object) = compile_object_reasoned(
+    let CompileOutcome::Object(object) = compile_x86_object_reasoned(
         compiler.bin,
+        PseudoAbi::MsX64,
         "-O1",
         &host_flags,
         TRANSLATION_UNIT,

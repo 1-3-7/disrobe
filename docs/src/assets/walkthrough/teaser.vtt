@@ -1,17 +1,17 @@
 WEBVTT
 
 00:00:00.000 --> 00:00:05.000
-Unpack a native binary
-Decode the UPX payload from a packed executable.
+Unpack the native payload
+Recover the UPX payload as a separate binary.
 
 00:00:05.000 --> 00:00:10.000
-Extract indicators
-Find the URL, email address, and IP address in a file.
+Restore the embedded originals
+Write the original sources retained in the source map.
 
 00:00:10.000 --> 00:00:15.000
-Decompile Lua bytecode
-Recover source from a compiled Lua chunk.
+Read WebAssembly instructions
+The WAT retains the exported add function and its i32.add instruction.
 
 00:00:15.000 --> 00:00:20.000
-Read the recovered instructions
-The exported add function retains its two inputs and i32.add instruction.
+Create an IDE workspace
+Generate the workspace and Claude integration files in this project.

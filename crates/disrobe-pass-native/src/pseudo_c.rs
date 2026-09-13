@@ -2803,6 +2803,19 @@ fn stack_guard_sequence_sites(
         if !relocation_load_sites.contains(&prologue.address) {
             continue;
         }
+        if let Some(guard_value) = exact_rip_relative_mov_load_destination(prologue) {
+            let direct_sites: BTreeSet<u64> = direct_stack_guard_sequence_sites(
+                insns,
+                prologue_index,
+                guard_value,
+                relocation_load_sites,
+                noreturn_exit_sites,
+            );
+            if !direct_sites.is_empty() {
+                sequence_sites.extend(direct_sites);
+                continue;
+            }
+        }
         let Some(guard_pointer): Option<RegRef> = mov_register_destination(prologue) else {
             continue;
         };
@@ -2881,6 +2894,97 @@ fn stack_guard_sequence_sites(
         ]);
     }
     sequence_sites
+}
+
+fn exact_rip_relative_mov_load_destination(insn: &DisasmInsn) -> Option<RegRef> {
+    let [rex, opcode, modrm, _, _, _, _]: &[u8; 7] = insn.bytes.as_slice().try_into().ok()?;
+    if insn.mnemonic != "mov" || *rex & 0xf8 != 0x48 || *opcode != 0x8b || *modrm & 0xc7 != 0x05 {
+        return None;
+    }
+    mov_register_destination(insn)
+}
+
+fn direct_stack_guard_sequence_sites(
+    insns: &[DisasmInsn],
+    prologue_index: usize,
+    guard_value: RegRef,
+    relocation_load_sites: &BTreeSet<u64>,
+    noreturn_exit_sites: &NoreturnCallSites,
+) -> BTreeSet<u64> {
+    let mut sites: BTreeSet<u64> = BTreeSet::new();
+    let prologue: &DisasmInsn = &insns[prologue_index];
+    let Some((saved_guard, saved_value)): Option<(MemRef, RegRef)> =
+        insns.get(prologue_index + 1).and_then(mov_mem_reg)
+    else {
+        return sites;
+    };
+    if saved_value != guard_value {
+        return sites;
+    }
+    for (check_index, check) in insns.iter().enumerate().skip(prologue_index + 2) {
+        if let Some((check_register, memory)) = mov_reg_mem(check)
+            && memory == saved_guard
+            && let Some(compare) = insns.get(check_index + 1)
+            && direct_stack_guard_compare(compare, check_register, relocation_load_sites)
+            && let Some(branch) = insns.get(check_index + 2)
+            && branch.mnemonic.starts_with('j')
+            && branch.mnemonic != "jmp"
+            && let Some(failure_target) = parse_branch_target(&branch.operands)
+            && let Some(failure) = insns
+                .iter()
+                .find(|candidate: &&DisasmInsn| candidate.address == failure_target)
+            && matches!(
+                noreturn_exit_sites.get(&failure.address),
+                Some(NoreturnCallSite::Library(failure_evidence))
+                    if failure_evidence.function().name == "__stack_chk_fail"
+            )
+        {
+            sites.extend([
+                prologue.address,
+                insns[prologue_index + 1].address,
+                check.address,
+                compare.address,
+                branch.address,
+                failure.address,
+            ]);
+            return sites;
+        }
+        if !stack_guard_direct_intervening_instruction_is_safe(check, saved_guard) {
+            break;
+        }
+    }
+    sites
+}
+
+fn direct_stack_guard_compare(
+    insn: &DisasmInsn,
+    check_register: RegRef,
+    relocation_load_sites: &BTreeSet<u64>,
+) -> bool {
+    let [rex, opcode, modrm, _, _, _, _]: &[u8; 7] = match insn.bytes.as_slice().try_into() {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    if *rex & 0xf8 != 0x48
+        || !matches!(*opcode, 0x2b | 0x33)
+        || *modrm & 0xc7 != 0x05
+        || !relocation_load_sites.contains(&insn.address)
+    {
+        return false;
+    }
+    let Some((left, _)): Option<(&str, &str)> = insn.operands.split_once(',') else {
+        return false;
+    };
+    parse_reg(left.trim()) == Some(check_register)
+}
+
+fn stack_guard_direct_intervening_instruction_is_safe(
+    insn: &DisasmInsn,
+    saved_guard: MemRef,
+) -> bool {
+    !is_direct_transfer(insn)
+        && insn.mnemonic != "ret"
+        && !instruction_writes_memory(insn, saved_guard)
 }
 
 fn mov_reg_mem(insn: &DisasmInsn) -> Option<(RegRef, MemRef)> {
@@ -7346,7 +7450,21 @@ fn is_add_regs(insn: &DisasmInsn, dest: Reg, src: Reg) -> bool {
 }
 
 fn is_indirect_jmp(insn: &DisasmInsn, reg: Reg) -> bool {
-    insn.mnemonic == "jmp" && parse_reg(insn.operands.trim()).is_some_and(|r: RegRef| r.reg == reg)
+    if insn.mnemonic == "jmp"
+        && parse_reg(insn.operands.trim()).is_some_and(|r: RegRef| r.reg == reg)
+    {
+        return true;
+    }
+    insn.mnemonic == "notrack jmp"
+        && reg == Reg::Rax
+        && insn.bytes == [0x3e, 0xff, 0xe0]
+        && parse_reg(insn.operands.trim()).is_some_and(|target: RegRef| {
+            target
+                == RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                }
+        })
 }
 
 fn is_xchg_self(mnemonic: &str, operands: &str) -> bool {
@@ -10593,7 +10711,10 @@ fn render_cfg_blocks(
         sources.push((eblocks.as_slice(), elabels));
     }
     for (source, source_labels) in sources {
-        for plan in forward_join_lowering_candidates(source, source_labels) {
+        for plan in forward_join_lowering_candidates(source, source_labels)
+            .into_iter()
+            .chain(acyclic_join_lowering_plan(source, source_labels))
+        {
             let Some(merged) = merge_label_targets(label_targets, &plan.label_targets) else {
                 continue;
             };
@@ -11772,6 +11893,116 @@ fn irreducible_lowering_candidates(
 }
 
 const FORWARD_JOIN_PLAN_CAP: usize = 32;
+const ACYCLIC_JOIN_BLOCK_CAP: usize = 256;
+
+fn join_plan_preserves_blocks(original: &[CfgBlock], plan: &IrreduciblePlan) -> bool {
+    if original.is_empty()
+        || plan.blocks.len() > ACYCLIC_JOIN_BLOCK_CAP
+        || plan.blocks.len() != original.len().saturating_add(plan.residual.len())
+        || plan.labels.len() != plan.residual.len()
+    {
+        return false;
+    }
+    for (index, source) in original.iter().enumerate() {
+        let Some(transformed): Option<&CfgBlock> = plan.blocks.get(index) else {
+            return false;
+        };
+        if source.stmts != transformed.stmts {
+            return false;
+        }
+        let mut restored: BlockTerm = transformed.term.clone();
+        for successor in transformed.successors() {
+            if let Some(target) = plan.residual.get(&successor) {
+                retarget_block(&mut restored, successor, *target);
+            }
+        }
+        if restored != source.term {
+            return false;
+        }
+    }
+    let mut targets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for index in original.len()..plan.blocks.len() {
+        let Some(target): Option<&usize> = plan.residual.get(&index) else {
+            return false;
+        };
+        let Some(label): Option<&u32> = plan.label_targets.get(target) else {
+            return false;
+        };
+        if *target >= original.len()
+            || !plan.blocks[index].stmts.is_empty()
+            || plan.blocks[index].term != BlockTerm::Ret
+            || plan.labels.get(&index) != Some(&SinkLabel::Goto(*label))
+        {
+            return false;
+        }
+        targets.insert(*target);
+    }
+    let preserved_reachable: std::collections::BTreeSet<usize> = reachable_blocks(&plan.blocks)
+        .into_iter()
+        .filter(|index: &usize| *index < original.len())
+        .collect();
+    preserved_reachable == reachable_blocks(original)
+        && targets.len() == plan.label_targets.len()
+        && plan
+            .label_targets
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<u32>>()
+            .len()
+            == plan.label_targets.len()
+}
+
+fn acyclic_join_lowering_plan(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Option<IrreduciblePlan> {
+    if blocks.is_empty() || blocks.len() > ACYCLIC_JOIN_BLOCK_CAP || !labels.is_empty() {
+        return None;
+    }
+    let cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
+    let components: Vec<Vec<u32>> = structuring::strongly_connected_components(&cfg);
+    if components.iter().any(|component: &Vec<u32>| {
+        component.len() != 1
+            || component.first().is_some_and(|node: &u32| {
+                usize::try_from(*node)
+                    .ok()
+                    .is_none_or(|index: usize| blocks[index].successors().contains(&index))
+            })
+    }) {
+        return None;
+    }
+    let reachable: std::collections::BTreeSet<usize> = reachable_blocks(blocks);
+    let predecessors: Vec<Vec<usize>> = block_predecessors(blocks);
+    let mut plan: IrreduciblePlan = IrreduciblePlan {
+        blocks: blocks.to_vec(),
+        labels: std::collections::BTreeMap::new(),
+        label_targets: std::collections::BTreeMap::new(),
+        residual: std::collections::BTreeMap::new(),
+    };
+    for join in reachable.iter().copied().filter(|join: &usize| *join != 0) {
+        let label: u32 = u32::try_from(join).ok()?;
+        for predecessor in predecessors[join]
+            .iter()
+            .copied()
+            .filter(|predecessor: &usize| reachable.contains(predecessor))
+            .skip(1)
+        {
+            let stub: usize = plan.blocks.len();
+            if stub == ACYCLIC_JOIN_BLOCK_CAP {
+                return None;
+            }
+            plan.blocks.push(CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Ret,
+            });
+            plan.labels.insert(stub, SinkLabel::Goto(label));
+            plan.label_targets.insert(join, label);
+            plan.residual.insert(stub, join);
+            retarget_block(&mut plan.blocks[predecessor].term, join, stub);
+        }
+    }
+    (!plan.residual.is_empty() && join_plan_preserves_blocks(blocks, &plan)).then_some(plan)
+}
 
 fn forward_join_lowering_candidates(
     blocks: &[CfgBlock],
@@ -16099,7 +16330,7 @@ fn lift_packed(
                 op: PackedOp::UnpackLowQ(src),
             }))
         }
-        _ => reject("xmm-touching instruction outside the recovered packed-integer class"),
+        _ => Ok(None),
     }
 }
 
@@ -24999,6 +25230,167 @@ fn rs_emit_outer_resume(
     Some(())
 }
 
+const RUST_RESUME_NODE_CAP: usize = 4096;
+const RUST_RESUME_LABEL_CAP: usize = 32;
+
+struct RsLoopResume<'a> {
+    body: &'a Block,
+    paths: BTreeMap<u32, Vec<&'a Block>>,
+}
+
+struct RsBlockScope<'a> {
+    resume: Option<RsLoopResume<'a>>,
+    active: bool,
+}
+
+fn rs_jump_count(body: &Block) -> Option<usize> {
+    let mut pending: Vec<(&Block, usize)> = vec![(body, 0)];
+    let mut jumps: usize = 0;
+    while let Some((block, depth)) = pending.pop() {
+        if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+            return None;
+        }
+        for node in block {
+            match node {
+                Node::Label(_) | Node::Goto(_) => jumps = jumps.checked_add(1)?,
+                Node::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    pending.push((then_body, depth + 1));
+                    if let Some(arm) = else_body {
+                        pending.push((arm, depth + 1));
+                    }
+                }
+                Node::While { body, .. } | Node::DoWhile { body, .. } => {
+                    pending.push((body, depth + 1));
+                }
+                Node::Switch { cases, default, .. } => {
+                    pending.push((default, depth + 1));
+                    pending.extend(
+                        cases
+                            .iter()
+                            .map(|case: &SwitchCase| (&case.body, depth + 1)),
+                    );
+                }
+                Node::Stmt(_)
+                | Node::CondSnapshot { .. }
+                | Node::Break
+                | Node::Continue
+                | Node::BreakLoop(_)
+                | Node::ContinueLoop(_)
+                | Node::ResumeAt(_)
+                | Node::OuterResume(_)
+                | Node::Return => {}
+            }
+        }
+    }
+    Some(jumps)
+}
+
+fn rs_resume_paths<'a>(body: &'a Block) -> Option<BTreeMap<u32, Vec<&'a Block>>> {
+    let mut paths: BTreeMap<u32, Vec<&'a Block>> = BTreeMap::new();
+    let mut pending: Vec<(&Block, Vec<&Block>, bool, usize)> = vec![(body, vec![body], true, 0)];
+    let mut visited: usize = 0;
+    while let Some((block, path, labels_allowed, depth)) = pending.pop() {
+        if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+            return None;
+        }
+        visited = visited.checked_add(block.len())?;
+        if visited > RUST_RESUME_NODE_CAP {
+            return None;
+        }
+        for node in block {
+            match node {
+                Node::Label(label) => {
+                    if !labels_allowed
+                        || paths.len() >= RUST_RESUME_LABEL_CAP
+                        || paths.insert(*label, path.clone()).is_some()
+                    {
+                        return None;
+                    }
+                }
+                Node::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    let mut then_path: Vec<&Block> = path.clone();
+                    then_path.push(then_body);
+                    pending.push((then_body, then_path, labels_allowed, depth + 1));
+                    if let Some(arm) = else_body {
+                        let mut else_path: Vec<&Block> = path.clone();
+                        else_path.push(arm);
+                        pending.push((arm, else_path, labels_allowed, depth + 1));
+                    }
+                }
+                Node::While { body, .. } | Node::DoWhile { body, .. } => {
+                    pending.push((body, Vec::new(), false, depth + 1));
+                }
+                Node::Switch { cases, default, .. } => {
+                    pending.push((default, Vec::new(), false, depth + 1));
+                    pending.extend(
+                        cases
+                            .iter()
+                            .map(|case: &SwitchCase| (&case.body, Vec::new(), false, depth + 1)),
+                    );
+                }
+                Node::OuterResume(_)
+                | Node::BreakLoop(_)
+                | Node::ContinueLoop(_)
+                | Node::ResumeAt(_) => return None,
+                Node::Stmt(_)
+                | Node::CondSnapshot { .. }
+                | Node::Break
+                | Node::Continue
+                | Node::Return
+                | Node::Goto(_) => {}
+            }
+        }
+    }
+    Some(paths)
+}
+
+fn rs_block_scope(body: &Block) -> Option<RsBlockScope<'_>> {
+    let total_jumps: usize = rs_jump_count(body)?;
+    if total_jumps == 0 {
+        return Some(RsBlockScope {
+            resume: None,
+            active: false,
+        });
+    }
+    if !gotos_have_unique_targets(body) {
+        return None;
+    }
+    for node in body {
+        let Node::While { body, cond: None } = node else {
+            continue;
+        };
+        if rs_jump_count(body)? != total_jumps {
+            continue;
+        }
+        let paths: BTreeMap<u32, Vec<&Block>> = rs_resume_paths(body)?;
+        if paths.is_empty() {
+            return None;
+        }
+        return Some(RsBlockScope {
+            resume: Some(RsLoopResume { body, paths }),
+            active: false,
+        });
+    }
+    None
+}
+
+fn rs_resume_membership(plan: &RsLoopResume<'_>, body: &Block) -> String {
+    plan.paths
+        .iter()
+        .filter(|(_, path)| path.iter().any(|ancestor| std::ptr::eq(*ancestor, body)))
+        .map(|(label, _)| format!("recover_pending == Some({label}u32)"))
+        .collect::<Vec<String>>()
+        .join(" || ")
+}
+
 fn rs_emit_block(
     out: &mut String,
     body: &Block,
@@ -25006,7 +25398,18 @@ fn rs_emit_block(
     ret_expr: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let indent: String = "    ".repeat(depth);
+    let mut scope: RsBlockScope<'_> = rs_block_scope(body)?;
+    rs_emit_block_at(out, body, depth, ret_expr, aggregates, &mut scope)
+}
+
+fn rs_emit_block_at(
+    out: &mut String,
+    body: &Block,
+    depth: usize,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+    scope: &mut RsBlockScope<'_>,
+) -> Option<()> {
     for (index, node) in body.iter().enumerate() {
         if matches!(node, Node::Return)
             && index
@@ -25016,6 +25419,27 @@ fn rs_emit_block(
         {
             continue;
         }
+        let guarded: bool = scope.active && !matches!(node, Node::Label(_));
+        if guarded {
+            let mut enabled: String = "recover_pending.is_none()".to_owned();
+            if let Node::If {
+                then_body,
+                else_body,
+                ..
+            } = node
+            {
+                let plan: &RsLoopResume<'_> = scope.resume.as_ref()?;
+                for arm in std::iter::once(then_body).chain(else_body.iter()) {
+                    let membership: String = rs_resume_membership(plan, arm);
+                    if !membership.is_empty() {
+                        let _ = write!(enabled, " || {membership}");
+                    }
+                }
+            }
+            let _ = writeln!(out, "{}if {enabled} {{", "    ".repeat(depth));
+        }
+        let node_depth: usize = depth + usize::from(guarded);
+        let indent: String = "    ".repeat(node_depth);
         match node {
             Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent, aggregates)?,
             Node::If {
@@ -25023,12 +25447,21 @@ fn rs_emit_block(
                 then_body,
                 else_body,
             } => {
-                let cond_text: String = rs_if_cond_expr(cond, aggregates)?;
+                let mut cond_text: String = rs_if_cond_expr(cond, aggregates)?;
+                if scope.active {
+                    let plan: &RsLoopResume<'_> = scope.resume.as_ref()?;
+                    let membership: String = rs_resume_membership(plan, then_body);
+                    cond_text = if membership.is_empty() {
+                        format!("recover_pending.is_none() && ({cond_text})")
+                    } else {
+                        format!("({membership}) || (recover_pending.is_none() && ({cond_text}))")
+                    };
+                }
                 let _ = writeln!(out, "{indent}if {cond_text} {{");
-                rs_emit_block(out, then_body, depth + 1, ret_expr, aggregates)?;
+                rs_emit_block_at(out, then_body, node_depth + 1, ret_expr, aggregates, scope)?;
                 if let Some(else_b) = else_body {
                     let _ = writeln!(out, "{indent}}} else {{");
-                    rs_emit_block(out, else_b, depth + 1, ret_expr, aggregates)?;
+                    rs_emit_block_at(out, else_b, node_depth + 1, ret_expr, aggregates, scope)?;
                 }
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -25037,9 +25470,9 @@ fn rs_emit_block(
                     LoopCond::Direct { cond, flags } => rs_cond_expr(*cond, flags, aggregates)?,
                     LoopCond::Snapshot { var } => format!("{} != 0", loop_cond_var(*var)),
                 };
-                let inner: String = "    ".repeat(depth + 1);
+                let inner: String = "    ".repeat(node_depth + 1);
                 let _ = writeln!(out, "{indent}loop {{");
-                rs_emit_block(out, body, depth + 1, ret_expr, aggregates)?;
+                rs_emit_block_at(out, body, node_depth + 1, ret_expr, aggregates, scope)?;
                 let _ = writeln!(out, "{inner}if !({cond_text}) {{ break; }}");
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -25053,8 +25486,22 @@ fn rs_emit_block(
                     }
                     None => "loop".to_owned(),
                 };
-                let _ = writeln!(out, "{indent}{header} {{");
-                rs_emit_block(out, body, depth + 1, ret_expr, aggregates)?;
+                let resumes_here: bool = !scope.active
+                    && scope
+                        .resume
+                        .as_ref()
+                        .is_some_and(|plan: &RsLoopResume<'_>| std::ptr::eq(plan.body, body));
+                if resumes_here {
+                    let _ = writeln!(out, "{indent}let mut recover_pending: Option<u32> = None;");
+                    let _ = writeln!(out, "{indent}'recover_outer: {header} {{");
+                    scope.active = true;
+                } else {
+                    let _ = writeln!(out, "{indent}{header} {{");
+                }
+                rs_emit_block_at(out, body, node_depth + 1, ret_expr, aggregates, scope)?;
+                if resumes_here {
+                    scope.active = false;
+                }
                 let _ = writeln!(out, "{indent}}}");
             }
             Node::Switch {
@@ -25075,20 +25522,34 @@ fn rs_emit_block(
                     let mut cursor: usize = idx;
                     loop {
                         let arm: &SwitchCase = &cases[cursor];
-                        rs_emit_block(out, &arm.body, depth + 2, ret_expr, aggregates)?;
+                        rs_emit_block_at(
+                            out,
+                            &arm.body,
+                            node_depth + 2,
+                            ret_expr,
+                            aggregates,
+                            scope,
+                        )?;
                         if !arm.fallthrough {
                             break;
                         }
                         cursor += 1;
                         if cursor >= cases.len() {
-                            rs_emit_block(out, default, depth + 2, ret_expr, aggregates)?;
+                            rs_emit_block_at(
+                                out,
+                                default,
+                                node_depth + 2,
+                                ret_expr,
+                                aggregates,
+                                scope,
+                            )?;
                             break;
                         }
                     }
                     let _ = writeln!(out, "{indent}    }}");
                 }
                 let _ = writeln!(out, "{indent}    _ => {{");
-                rs_emit_block(out, default, depth + 2, ret_expr, aggregates)?;
+                rs_emit_block_at(out, default, node_depth + 2, ret_expr, aggregates, scope)?;
                 let _ = writeln!(out, "{indent}    }}");
                 let _ = writeln!(out, "{indent}}}");
             }
@@ -25107,16 +25568,180 @@ fn rs_emit_block(
                 let _ = writeln!(out, "{indent}continue;");
             }
             Node::OuterResume(tree) => {
-                rs_emit_outer_resume(out, tree, depth, aggregates)?;
+                rs_emit_outer_resume(out, tree, node_depth, aggregates)?;
             }
             Node::BreakLoop(_) | Node::ContinueLoop(_) | Node::ResumeAt(_) => return None,
             Node::Return => {
                 let _ = writeln!(out, "{indent}return {ret_expr};");
             }
+            Node::Label(label) if scope.active => {
+                let _ = writeln!(out, "{indent}if recover_pending == Some({label}u32) {{");
+                let _ = writeln!(out, "{indent}    recover_pending = None;");
+                let _ = writeln!(out, "{indent}}}");
+            }
+            Node::Goto(label) if scope.active => {
+                let _ = writeln!(out, "{indent}recover_pending = Some({label}u32);");
+                let _ = writeln!(out, "{indent}continue 'recover_outer;");
+            }
             Node::Label(_) | Node::Goto(_) => return None,
+        }
+        if guarded {
+            let _ = writeln!(out, "{}}}", "    ".repeat(depth));
         }
     }
     Some(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod rust_loop_resume_tests {
+    use super::*;
+
+    fn condition() -> Cond {
+        Cond::leaf(
+            CondKind::E,
+            Flags::Cmp {
+                lhs: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                rhs: Source::Imm(0),
+            },
+        )
+    }
+
+    fn outer(body: Block) -> Block {
+        vec![Node::While { body, cond: None }, Node::Return]
+    }
+
+    #[test]
+    fn resumption_forces_both_if_arms_and_keeps_nested_loop_transfers() {
+        let body: Block = outer(vec![
+            Node::CondSnapshot {
+                var: 0,
+                cond: CondKind::E,
+                flags: Flags::Cmp {
+                    lhs: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    rhs: Source::Imm(0),
+                },
+            },
+            Node::If {
+                cond: condition(),
+                then_body: vec![
+                    Node::Label(0),
+                    Node::While {
+                        body: vec![
+                            Node::If {
+                                cond: condition(),
+                                then_body: vec![Node::Goto(1)],
+                                else_body: Some(vec![Node::Continue]),
+                            },
+                            Node::Break,
+                        ],
+                        cond: None,
+                    },
+                ],
+                else_body: Some(vec![Node::Label(1), Node::Goto(0)]),
+            },
+            Node::Break,
+        ]);
+        let mut source: String = String::new();
+        rs_emit_block(&mut source, &body, 1, "r_rax", &AggregatePlan::default())
+            .expect("scoped outer-loop targets");
+        assert!(source.contains("'recover_outer: loop {"), "{source}");
+        assert!(
+            source.contains("(recover_pending == Some(0u32)) || (recover_pending.is_none() &&"),
+            "{source}"
+        );
+        assert!(source.contains("recover_pending.is_none() || recover_pending == Some(0u32) || recover_pending == Some(1u32)"), "{source}");
+        assert_eq!(source.matches("continue 'recover_outer;").count(), 2);
+        assert!(source.contains("continue;"), "{source}");
+        assert_eq!(source.matches("break;").count(), 2);
+        assert_eq!(source.matches("recover_pending = None;").count(), 2);
+        assert!(
+            source.contains("if recover_pending == Some(0u32) {"),
+            "{source}"
+        );
+        assert!(
+            source.contains("if recover_pending == Some(1u32) {"),
+            "{source}"
+        );
+    }
+
+    #[test]
+    fn resumption_rejects_missing_duplicate_and_out_of_scope_labels() {
+        for body in [
+            outer(vec![Node::Goto(1)]),
+            outer(vec![Node::Label(1), Node::Label(1), Node::Goto(1)]),
+            vec![
+                Node::Label(1),
+                Node::While {
+                    body: vec![Node::Goto(1)],
+                    cond: None,
+                },
+            ],
+            vec![
+                Node::Goto(1),
+                Node::While {
+                    body: vec![Node::Label(1)],
+                    cond: None,
+                },
+            ],
+            vec![Node::While {
+                body: vec![Node::Label(1), Node::Goto(1)],
+                cond: Some(LoopCond::Snapshot { var: 0 }),
+            }],
+            outer(vec![
+                Node::Goto(1),
+                Node::While {
+                    body: vec![Node::Label(1)],
+                    cond: None,
+                },
+            ]),
+            outer(vec![
+                Node::Goto(1),
+                Node::Switch {
+                    disc: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    cases: Vec::new(),
+                    default: vec![Node::Label(1)],
+                },
+            ]),
+        ] {
+            assert!(rs_block_scope(&body).is_none(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn resumption_preserves_node_label_and_depth_bounds() {
+        let mut labels: Block = (0..32u32).map(Node::Label).collect();
+        labels.push(Node::Goto(0));
+        assert!(rs_block_scope(&outer(labels.clone())).is_some());
+        labels.push(Node::Label(32));
+        assert!(rs_block_scope(&outer(labels)).is_none());
+
+        let mut nodes: Block = vec![Node::Break; RUST_RESUME_NODE_CAP - 2];
+        nodes.extend([Node::Label(0), Node::Goto(0)]);
+        assert!(rs_block_scope(&outer(nodes.clone())).is_some());
+        nodes.push(Node::Break);
+        assert!(rs_block_scope(&outer(nodes)).is_none());
+        assert!(rs_block_scope(&vec![Node::Return; RUST_RESUME_NODE_CAP + 1]).is_some());
+
+        let mut deep: Block = vec![Node::Label(0), Node::Goto(0)];
+        for _ in 0..VARIABLE_COLLECTION_MAX_DEPTH {
+            deep = vec![Node::If {
+                cond: condition(),
+                then_body: deep,
+                else_body: None,
+            }];
+        }
+        assert!(rs_block_scope(&outer(deep)).is_none());
+    }
 }
 
 fn rs_emit_reg_assign(out: &mut String, dest: RegRef, body: &str, indent: &str) {
@@ -26899,6 +27524,82 @@ fn lowest_item_address(items: &[Item]) -> u64 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notrack_switch_jump_requires_the_exact_rax_encoding() {
+        let known: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: vec![0x3e, 0xff, 0xe0],
+            mnemonic: "notrack jmp".to_owned(),
+            operands: "rax".to_owned(),
+        };
+        assert!(is_indirect_jmp(&known, Reg::Rax));
+        let wrong_prefix: DisasmInsn = DisasmInsn {
+            bytes: vec![0x26, 0xff, 0xe0],
+            ..known.clone()
+        };
+        assert!(!is_indirect_jmp(&wrong_prefix, Reg::Rax));
+        assert!(!is_indirect_jmp(&known, Reg::Rdx));
+    }
+
+    #[test]
+    fn direct_global_stack_guard_sequence_requires_both_guard_relocations() {
+        let insns: Vec<DisasmInsn> = vec![
+            DisasmInsn {
+                address: 0,
+                bytes: vec![0x48, 0x8b, 0x05, 0, 0, 0, 0],
+                mnemonic: "mov".to_owned(),
+                operands: "rax,[rel 7h]".to_owned(),
+            },
+            DisasmInsn {
+                address: 7,
+                bytes: vec![0x48, 0x89, 0x45, 0xf8],
+                mnemonic: "mov".to_owned(),
+                operands: "[rbp-8],rax".to_owned(),
+            },
+            DisasmInsn {
+                address: 11,
+                bytes: vec![0x31, 0xc0],
+                mnemonic: "xor".to_owned(),
+                operands: "eax,eax".to_owned(),
+            },
+            DisasmInsn {
+                address: 13,
+                bytes: vec![0x48, 0x8b, 0x55, 0xf8],
+                mnemonic: "mov".to_owned(),
+                operands: "rdx,[rbp-8]".to_owned(),
+            },
+            DisasmInsn {
+                address: 17,
+                bytes: vec![0x48, 0x2b, 0x15, 0, 0, 0, 0],
+                mnemonic: "sub".to_owned(),
+                operands: "rdx,[rel 18h]".to_owned(),
+            },
+            DisasmInsn {
+                address: 24,
+                bytes: vec![0x75, 0x00],
+                mnemonic: "jne".to_owned(),
+                operands: "000000000000001Ah".to_owned(),
+            },
+            DisasmInsn {
+                address: 26,
+                bytes: vec![0xe8, 0, 0, 0, 0],
+                mnemonic: "call".to_owned(),
+                operands: "1Fh".to_owned(),
+            },
+        ];
+        let relocations: BTreeSet<u64> = BTreeSet::from([0, 17]);
+        let failures: NoreturnCallSites = BTreeMap::from([(
+            26,
+            NoreturnCallSite::Library(
+                noreturn_import_evidence("__stack_chk_fail").expect("known stack failure"),
+            ),
+        )]);
+        let sites: BTreeSet<u64> = stack_guard_sequence_sites(&insns, &relocations, &failures);
+        assert_eq!(sites, BTreeSet::from([0, 7, 13, 17, 24, 26]));
+        let unproven: BTreeSet<u64> = BTreeSet::from([0]);
+        assert!(stack_guard_sequence_sites(&insns, &unproven, &failures).is_empty());
+    }
 
     #[test]
     fn stack_guard_sequence_refuses_pointer_slot_and_control_flow_interference() {
@@ -30816,6 +31517,18 @@ mod tests {
         let err: Error = recover_leaf_function_abi(&CODE, 0xb620, Abi::SysV)
             .expect_err("the high-qword unpack is outside the accepted copy shape");
         assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn unmodeled_packed_opcode_stays_a_leaf_rejection() {
+        const CODE: [u8; 9] = [0x66, 0x0f, 0x6f, 0xc0, 0x66, 0x0f, 0x60, 0xe4, 0xc3];
+        let err: Error = recover_leaf_function_abi(&CODE, 0xb628, Abi::SysV)
+            .expect_err("an unmodeled packed opcode must not recover");
+        assert!(
+            err.to_string()
+                .contains("unsupported leaf instruction `punpcklbw xmm4,xmm4`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -35848,6 +36561,150 @@ mod forward_join_scope {
 
     fn no_labels() -> BTreeMap<usize, SinkLabel> {
         BTreeMap::new()
+    }
+
+    fn joined_dag() -> Vec<CfgBlock> {
+        vec![
+            branch(1, 2),
+            branch(3, 4),
+            branch(4, 5),
+            jump(6),
+            branch(6, 7),
+            jump(7),
+            ret(),
+            ret(),
+        ]
+    }
+
+    fn branch_trace(
+        blocks: &[CfgBlock],
+        labels: &BTreeMap<usize, SinkLabel>,
+        targets: &BTreeMap<usize, u32>,
+        choices: u16,
+    ) -> Vec<usize> {
+        let mut current: usize = 0;
+        let mut trace: Vec<usize> = Vec::new();
+        for _ in 0..blocks.len() * 2 {
+            if let Some(SinkLabel::Goto(label)) = labels.get(&current) {
+                current = *targets
+                    .iter()
+                    .find(|(_, target): &(&usize, &u32)| *target == label)
+                    .expect("every goto has its original block")
+                    .0;
+                continue;
+            }
+            trace.push(current);
+            current = match &blocks[current].term {
+                BlockTerm::Ret => return trace,
+                BlockTerm::Jump(target) | BlockTerm::Fall(target) => *target,
+                BlockTerm::Branch {
+                    taken, fallthrough, ..
+                } => {
+                    if choices & (1 << current) != 0 {
+                        *taken
+                    } else {
+                        *fallthrough
+                    }
+                }
+            };
+        }
+        panic!("the finite DAG must reach its original return");
+    }
+
+    #[test]
+    fn acyclic_join_plan_preserves_every_branch_trace_and_terminal_identity() {
+        let blocks: Vec<CfgBlock> = joined_dag();
+        let plan: super::IrreduciblePlan =
+            super::acyclic_join_lowering_plan(&blocks, &no_labels()).expect("joined DAG");
+        assert_eq!(
+            plan.label_targets.keys().copied().collect::<Vec<usize>>(),
+            [4, 6, 7]
+        );
+        for choices in 0u16..256 {
+            assert_eq!(
+                branch_trace(&blocks, &no_labels(), &BTreeMap::new(), choices),
+                branch_trace(&plan.blocks, &plan.labels, &plan.label_targets, choices)
+            );
+        }
+        let body: super::Block = super::render_cfg_blocks_once(
+            &plan.blocks,
+            &plan.labels,
+            false,
+            &plan.label_targets,
+            super::ResumeProof::Original {
+                source: &blocks,
+                residual: &plan.residual,
+                resume: None,
+            },
+        )
+        .expect("the joined DAG must render through the existing proof checks");
+        assert!(super::gotos_have_unique_targets(&body));
+    }
+
+    #[test]
+    fn acyclic_join_proof_rejects_branch_statement_goto_and_reachability_mutations() {
+        let blocks: Vec<CfgBlock> = joined_dag();
+        let fresh = || super::acyclic_join_lowering_plan(&blocks, &no_labels()).expect("DAG");
+        let mut changed: super::IrreduciblePlan = fresh();
+        if let BlockTerm::Branch {
+            taken, fallthrough, ..
+        } = &mut changed.blocks[0].term
+        {
+            std::mem::swap(taken, fallthrough);
+        } else {
+            panic!("entry is a branch");
+        }
+        assert!(!super::join_plan_preserves_blocks(&blocks, &changed));
+        let mut changed: super::IrreduciblePlan = fresh();
+        changed.blocks[0].stmts.push(effect(99));
+        assert!(!super::join_plan_preserves_blocks(&blocks, &changed));
+        let mut changed: super::IrreduciblePlan = fresh();
+        let stub: usize = *changed.residual.keys().next().expect("redirected edge");
+        changed.labels.insert(stub, SinkLabel::Goto(7));
+        assert!(!super::join_plan_preserves_blocks(&blocks, &changed));
+        let mut changed: super::IrreduciblePlan = fresh();
+        let stub: usize = *changed
+            .residual
+            .iter()
+            .find(|(_, target): &(&usize, &usize)| **target == 4)
+            .expect("join 4 stub")
+            .0;
+        super::retarget_block(&mut changed.blocks[1].term, 4, stub);
+        assert!(!super::join_plan_preserves_blocks(&blocks, &changed));
+    }
+
+    #[test]
+    fn acyclic_join_plan_bounds_expansion_and_refuses_cycles() {
+        fn ladder(count: usize) -> Vec<CfgBlock> {
+            (0..count)
+                .map(|index: usize| {
+                    if index + 2 < count {
+                        branch(index + 1, index + 2)
+                    } else if index + 1 < count {
+                        jump(index + 1)
+                    } else {
+                        ret()
+                    }
+                })
+                .collect()
+        }
+        let plan: super::IrreduciblePlan =
+            super::acyclic_join_lowering_plan(&ladder(129), &no_labels()).expect("256 blocks");
+        assert_eq!(plan.blocks.len(), super::ACYCLIC_JOIN_BLOCK_CAP);
+        assert!(super::acyclic_join_lowering_plan(&ladder(130), &no_labels()).is_none());
+        assert!(super::acyclic_join_lowering_plan(&[branch(0, 1), ret()], &no_labels()).is_none());
+        assert!(
+            super::acyclic_join_lowering_plan(
+                &[jump(1), branch(2, 3), jump(1), ret()],
+                &no_labels()
+            )
+            .is_none()
+        );
+        let same_arms: Vec<CfgBlock> = vec![branch(1, 2), branch(2, 2), ret()];
+        let plan: super::IrreduciblePlan =
+            super::acyclic_join_lowering_plan(&same_arms, &no_labels()).expect("duplicate arms");
+        assert_eq!(plan.residual.len(), 1);
+        assert!(super::join_plan_preserves_blocks(&same_arms, &plan));
     }
 
     #[test]

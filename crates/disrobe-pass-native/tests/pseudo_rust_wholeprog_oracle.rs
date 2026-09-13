@@ -99,6 +99,157 @@ const CC_FLAGS: [&str; 6] = [
     "-c",
 ];
 
+#[cfg(windows)]
+const GCC15_NESTED_LOOP_ASM: &str = r#"
+    .text
+    .p2align 4
+    .globl wp_nested_loop_h
+    .def wp_nested_loop_h; .scl 2; .type 32; .endef
+    .seh_proc wp_nested_loop_h
+wp_nested_loop_h:
+    pushq %rsi
+    .seh_pushreg %rsi
+    pushq %rbx
+    .seh_pushreg %rbx
+    .seh_endprologue
+    testq %rcx, %rcx
+    movq %rcx, %r11
+    movq %rdx, %r9
+    jle .L11
+    testq %rdx, %rdx
+    jle .L11
+    movq %r9, %rcx
+    movl $2, %eax
+    movq %r9, %rsi
+    leaq -1(%rdx), %rbx
+    movq %rax, %xmm4
+    xorl %r8d, %r8d
+    xorl %edx, %edx
+    shrq %rcx
+    andq $-2, %rsi
+    punpcklqdq %xmm4, %xmm4
+    .p2align 4,,10
+    .p2align 3
+.L3:
+    cmpq $7, %rbx
+    jbe .L15
+.L8:
+    movdqa .LC0(%rip), %xmm0
+    movq %r8, %xmm5
+    xorl %eax, %eax
+    pxor %xmm1, %xmm1
+    .p2align 5
+    .p2align 4,,10
+    .p2align 3
+.L5:
+    addq $1, %rax
+    movddup %xmm5, %xmm2
+    paddq %xmm0, %xmm2
+    paddq %xmm2, %xmm1
+    cmpq %rax, %rcx
+    paddq %xmm4, %xmm0
+    jne .L5
+    movdqa %xmm1, %xmm0
+    psrldq $8, %xmm0
+    paddq %xmm0, %xmm1
+    movq %xmm1, %rax
+    addq %rax, %rdx
+    cmpq %rsi, %r9
+    movq %rsi, %rax
+    je .L6
+.L9:
+    leaq (%rax,%r8), %r10
+    addq %r10, %rdx
+    leaq 1(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 2(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+.L16:
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 3(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 4(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 5(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 6(%rax), %r10
+    cmpq %r10, %r9
+    jle .L6
+    addq %r8, %r10
+    addq $7, %rax
+    addq %r10, %rdx
+    cmpq %rax, %r9
+    jle .L6
+    addq %r8, %rax
+    addq $1, %r8
+    addq %rax, %rdx
+    cmpq %r8, %r11
+    je .L1
+    cmpq $7, %rbx
+    jne .L8
+    movl $1, %r10d
+    addq %r8, %rdx
+    xorl %eax, %eax
+    addq %r8, %r10
+    addq %r10, %rdx
+    leaq 2(%rax), %r10
+    cmpq %r10, %r9
+    jg .L16
+    .p2align 4,,10
+    .p2align 3
+.L6:
+    addq $1, %r8
+    cmpq %r8, %r11
+    jne .L3
+.L1:
+    movq %rdx, %rax
+    popq %rbx
+    popq %rsi
+    ret
+.L15:
+    xorl %eax, %eax
+    jmp .L9
+.L11:
+    xorl %edx, %edx
+    movq %rdx, %rax
+    popq %rbx
+    popq %rsi
+    ret
+    .seh_endproc
+    .p2align 4
+    .globl wp_nested_loop_entry
+    .def wp_nested_loop_entry; .scl 2; .type 32; .endef
+    .seh_proc wp_nested_loop_entry
+wp_nested_loop_entry:
+    subq $40, %rsp
+    .seh_stackalloc 40
+    .seh_endprologue
+    call wp_nested_loop_h
+    addq $1, %rax
+    addq $40, %rsp
+    ret
+    .seh_endproc
+    .section .rdata,"dr"
+    .align 16
+.LC0:
+    .quad 0
+    .quad 1
+"#;
+
 struct WholeProgram {
     name: &'static str,
     entry: &'static str,
@@ -414,8 +565,8 @@ fn recover_program(
         let rec: &LibRecoveredFunction = &result.recovered[idx];
         let Some(rust): Option<&String> = rec.rust_source.as_ref() else {
             eprintln!(
-                "sound-reject {}: {fname} not pure-safe rust-emittable (sret/block-op)",
-                program.name
+                "sound-reject {}: {fname} Rust emission refused the recovered body:\n{}",
+                program.name, rec.source
             );
             return None;
         };
@@ -763,6 +914,42 @@ fn host_o3_nested_loop_recompiles_to_rust_equivalence() {
             "-O3",
             &dir,
             "wp_nested_loop_o3_rust",
+            &mut frame_seen,
+        ),
+        Outcome::Equivalent
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn gcc15_nested_loop_recompiles_to_rust_equivalence() {
+    let host_cc: String = gcc().expect("host gcc");
+    let rustc_bin: String = rustc().expect("host rustc");
+    let program: &WholeProgram = SHAPE_PROGRAMS
+        .iter()
+        .find(|program: &&WholeProgram| program.name == "wp_nested_loop")
+        .expect("nested-loop fixture");
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let object: Vec<u8> = compile_object_opt(
+        &host_cc,
+        "-O3",
+        &["-x", "assembler", "-c"],
+        GCC15_NESTED_LOOP_ASM,
+        &dir.join("gcc15_nested_loop.o"),
+    )
+    .expect("assemble the GCC15 nested-loop artifact");
+    let env: Env = Env { host_cc, rustc_bin };
+    let mut frame_seen: bool = false;
+    assert!(matches!(
+        measure(
+            &env,
+            &object,
+            program,
+            HOST_ABI,
+            "-O3",
+            &dir,
+            "gcc15_nested_loop_rust",
             &mut frame_seen,
         ),
         Outcome::Equivalent

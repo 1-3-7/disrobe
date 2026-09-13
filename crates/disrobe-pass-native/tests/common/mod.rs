@@ -22,6 +22,9 @@ use disrobe_pass_native::PseudoAbi;
 #[allow(clippy::redundant_pub_crate)]
 mod compiler_toolchain;
 
+#[path = "../support/x86_compiler.rs"]
+pub mod x86_compiler;
+
 pub const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
 } else {
@@ -118,6 +121,72 @@ pub fn available_compilers() -> Vec<CompilerId> {
         });
     }
     out
+}
+
+#[must_use]
+pub fn available_x86_compilers() -> Vec<CompilerId> {
+    if cfg!(target_arch = "x86_64") {
+        return available_compilers();
+    }
+    let mut compilers: Vec<CompilerId> = Vec::new();
+    for bin in ["gcc", "clang", "cc"] {
+        let (program, _): (String, Vec<&str>) = x86_compiler::object_compiler(bin, HOST_ABI);
+        let version: String = probe_version(&program)
+            .unwrap_or_else(|| panic!("the x86 oracle requires {program} to answer --version"));
+        let family: CompilerFamily = classify_family(&version);
+        assert!(
+            matches!(family, CompilerFamily::Gcc | CompilerFamily::Clang),
+            "{program} must identify its GNU or Clang compiler family: {version}"
+        );
+        if bin == "gcc" {
+            assert_eq!(
+                family,
+                CompilerFamily::Gcc,
+                "{program} must supply genuine GNU coverage"
+            );
+        }
+        if compilers
+            .iter()
+            .any(|compiler: &CompilerId| compiler.version == version)
+        {
+            continue;
+        }
+        for abi in [PseudoAbi::MsX64, PseudoAbi::SysV] {
+            let (other, _): (String, Vec<&str>) = x86_compiler::object_compiler(bin, abi);
+            if other == program {
+                continue;
+            }
+            let other_version: String = probe_version(&other).unwrap_or_else(|| {
+                panic!("the {abi:?} oracle requires {other} to answer --version")
+            });
+            assert_eq!(
+                classify_family(&other_version),
+                family,
+                "{other} must be a genuine {family:?} compiler: {other_version}"
+            );
+        }
+        compilers.push(CompilerId {
+            bin,
+            family,
+            version,
+        });
+    }
+    compilers
+}
+
+#[must_use]
+pub fn host_compiler_family(compiler: &CompilerId) -> CompilerFamily {
+    if cfg!(target_arch = "x86_64") || compiler.bin != "gcc" {
+        return compiler.family;
+    }
+    static HOST_GCC_FAMILY: std::sync::OnceLock<CompilerFamily> = std::sync::OnceLock::new();
+    *HOST_GCC_FAMILY.get_or_init(|| {
+        classify_family(
+            &probe_version(compiler.bin).unwrap_or_else(|| {
+                panic!("{} must compile the host-native reference", compiler.bin)
+            }),
+        )
+    })
 }
 
 #[must_use]
@@ -283,6 +352,41 @@ pub fn compile_object_reasoned(
             "{compiler} did not complete within {COMPILE_TIMEOUT:?}"
         )),
         Err(e) => CompileOutcome::Rejected(format!("{compiler} failed to spawn: {e}")),
+    }
+}
+
+#[must_use]
+pub fn compile_x86_object_reasoned(
+    compiler: &str,
+    abi: PseudoAbi,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> CompileOutcome {
+    let (program, mut flags): (String, Vec<&str>) = x86_compiler::object_compiler(compiler, abi);
+    flags.extend_from_slice(extra);
+    let outcome: CompileOutcome = compile_object_reasoned(&program, opt, &flags, source, out);
+    if let CompileOutcome::Object(bytes) = &outcome {
+        x86_compiler::assert_x86_artifact(bytes);
+    }
+    outcome
+}
+
+#[must_use]
+pub fn compile_x86_object(
+    compiler: &str,
+    abi: PseudoAbi,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> Vec<u8> {
+    match compile_x86_object_reasoned(compiler, abi, opt, extra, source, out) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("{compiler} {abi:?} {opt} must compile its declared oracle row: {reason}")
+        }
     }
 }
 

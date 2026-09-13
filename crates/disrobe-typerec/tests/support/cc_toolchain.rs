@@ -4,6 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::subprocess::{self, CapturedOutput};
+use object::{Architecture, BinaryFormat, Object, ObjectKind};
 
 pub(crate) const REQUIREMENT_VAR: &str = "DISROBE_TYPEREC_CC";
 pub(crate) const GCC_BIN_VAR: &str = "DISROBE_GCC_BIN";
@@ -22,11 +23,61 @@ pub(crate) enum Requirement {
     Optional,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CcTarget {
+    X86_64Elf,
+    X86_64Pe,
+}
+
+impl CcTarget {
+    fn from_triple(triple: &str) -> Option<Self> {
+        let (architecture, platform): (&str, &str) = triple.split_once('-')?;
+        if architecture != "x86_64" {
+            return None;
+        }
+        if platform.split('-').any(|part: &str| part == "mingw32") {
+            Some(Self::X86_64Pe)
+        } else if platform
+            .split('-')
+            .any(|part: &str| matches!(part, "linux" | "elf"))
+        {
+            Some(Self::X86_64Elf)
+        } else {
+            None
+        }
+    }
+
+    const fn format(self) -> BinaryFormat {
+        match self {
+            Self::X86_64Elf => BinaryFormat::Elf,
+            Self::X86_64Pe => BinaryFormat::Pe,
+        }
+    }
+
+    fn verify_image(self, bytes: &[u8]) -> Result<(), String> {
+        let file: object::File<'_> = object::File::parse(bytes)
+            .map_err(|error: object::Error| format!("parse compiled image: {error}"))?;
+        if file.architecture() != Architecture::X86_64
+            || file.format() != self.format()
+            || !matches!(file.kind(), ObjectKind::Executable | ObjectKind::Dynamic)
+        {
+            return Err(format!(
+                "expected a linked {self:?} image, found {:?} {:?} {:?}",
+                file.architecture(),
+                file.format(),
+                file.kind()
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CcToolchain {
     pub(crate) gcc: PathBuf,
     pub(crate) objcopy: PathBuf,
     pub(crate) identity: String,
+    target: CcTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +85,7 @@ pub(crate) enum Probe {
     Usable(Box<CcToolchain>),
     NotGnu { identity: String },
     Missing { defect: String },
+    InvalidTarget { defect: String },
 }
 
 pub(crate) fn requirement() -> Requirement {
@@ -127,6 +179,36 @@ fn announces_gnu(identity: &str) -> bool {
     lowered.contains("gcc") || lowered.contains("free software foundation")
 }
 
+fn target_of(program: &Path) -> Result<(CcTarget, String), String> {
+    let mut command: Command = Command::new(program);
+    command.arg("-dumpmachine");
+    let output: CapturedOutput = run_bounded(command).ok_or_else(|| {
+        format!(
+            "`{} -dumpmachine` did not exit within {CALL_TIMEOUT:?}",
+            program.display()
+        )
+    })?;
+    if output.exit_code != Some(0) {
+        return Err(describe(
+            program,
+            &[OsString::from("-dumpmachine")],
+            &output,
+        ));
+    }
+    let triple: &str = std::str::from_utf8(&output.stdout)
+        .map_err(|error: std::str::Utf8Error| format!("invalid compiler target: {error}"))?
+        .trim();
+    let target: CcTarget = CcTarget::from_triple(triple).ok_or_else(|| {
+        format!(
+            "`{} -dumpmachine` reported {triple:?}; these grades require linked x86-64 ELF or \
+             PE images. Set {GCC_BIN_VAR} and {OBJCOPY_BIN_VAR} to matching x86_64-elf GNU \
+             cross tools, or use an x86-64 Linux or MinGW GNU toolchain",
+            program.display()
+        )
+    })?;
+    Ok((target, triple.to_owned()))
+}
+
 pub(crate) fn probe() -> Probe {
     let Some(gcc): Option<PathBuf> = find_on_path(&GCC_NAMES, GCC_BIN_VAR) else {
         return Probe::Missing {
@@ -143,6 +225,10 @@ pub(crate) fn probe() -> Probe {
     if !announces_gnu(&identity) {
         return Probe::NotGnu { identity };
     }
+    let (target, triple): (CcTarget, String) = match target_of(&gcc) {
+        Ok(target) => target,
+        Err(defect) => return Probe::InvalidTarget { defect },
+    };
     let Some(objcopy): Option<PathBuf> = find_on_path(&OBJCOPY_NAMES, OBJCOPY_BIN_VAR) else {
         return Probe::Missing {
             defect: format!(
@@ -159,7 +245,8 @@ pub(crate) fn probe() -> Probe {
     Probe::Usable(Box::new(CcToolchain {
         gcc,
         objcopy,
-        identity,
+        identity: format!("{identity}; target={triple}"),
+        target,
     }))
 }
 
@@ -167,6 +254,9 @@ pub(crate) fn probe() -> Probe {
 pub(crate) fn require(graded: &str) -> Option<CcToolchain> {
     match probe() {
         Probe::Usable(toolchain) => Some(*toolchain),
+        Probe::InvalidTarget { defect } => {
+            panic!("{graded} cannot use the selected GNU compiler: {defect}");
+        }
         Probe::NotGnu { identity } => {
             assert!(
                 requirement() != Requirement::RequireGnu,
@@ -241,10 +331,15 @@ pub(crate) fn compile(
         work.display()
     ))];
     arguments.extend(flags.iter().map(OsString::from));
+    arguments.push(OsString::from("-Wl,-e,_start"));
     arguments.push(OsString::from("-o"));
     arguments.push(output.to_owned());
     arguments.push(source.to_owned());
-    call(&toolchain.gcc, &arguments, work)
+    call(&toolchain.gcc, &arguments, work)?;
+    let path: PathBuf = work.join(output);
+    let bytes: Vec<u8> = std::fs::read(&path)
+        .map_err(|error: std::io::Error| format!("read {}: {error}", path.display()))?;
+    toolchain.target.verify_image(&bytes)
 }
 
 pub(crate) fn strip_debug(
@@ -290,4 +385,53 @@ pub(crate) fn stage_source(work: &Path, source: &Path) -> Result<OsString, Strin
         format!("copy {} to {}: {error}", source.display(), staged.display())
     })?;
     Ok(name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CcTarget;
+
+    #[test]
+    fn compiler_targets_preserve_the_x86_64_image_contract() {
+        for triple in ["x86_64-elf", "x86_64-unknown-linux-gnu", "x86_64-linux-gnu"] {
+            assert_eq!(CcTarget::from_triple(triple), Some(CcTarget::X86_64Elf));
+        }
+        assert_eq!(
+            CcTarget::from_triple("x86_64-w64-mingw32"),
+            Some(CcTarget::X86_64Pe)
+        );
+        for triple in [
+            "aarch64-apple-darwin24",
+            "x86_64-apple-darwin24",
+            "aarch64-linux-gnu",
+            "i686-w64-mingw32",
+            "x86_64-unknown-unknown",
+            "",
+        ] {
+            assert_eq!(CcTarget::from_triple(triple), None, "{triple}");
+        }
+    }
+
+    #[test]
+    fn compiled_images_must_match_the_compiler_target() {
+        let elf: &[u8] = include_bytes!("../fixtures/region_corpus.unstripped.elf");
+        let pe: &[u8] = include_bytes!("../fixtures/types_corpus.unstripped.exe");
+        assert!(CcTarget::X86_64Elf.verify_image(elf).is_ok());
+        assert!(CcTarget::X86_64Pe.verify_image(pe).is_ok());
+        assert!(CcTarget::X86_64Elf.verify_image(pe).is_err());
+        assert!(CcTarget::X86_64Pe.verify_image(elf).is_err());
+        assert!(CcTarget::X86_64Elf.verify_image(b"not an image").is_err());
+
+        let mut wrong_architecture: Vec<u8> = elf.to_vec();
+        wrong_architecture[18..20].copy_from_slice(&183u16.to_le_bytes());
+        assert!(
+            CcTarget::X86_64Elf
+                .verify_image(&wrong_architecture)
+                .is_err()
+        );
+
+        let mut unlinked: Vec<u8> = elf.to_vec();
+        unlinked[16..18].copy_from_slice(&1u16.to_le_bytes());
+        assert!(CcTarget::X86_64Elf.verify_image(&unlinked).is_err());
+    }
 }

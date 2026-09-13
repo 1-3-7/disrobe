@@ -9,6 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+#[path = "support/x86_toolchain.rs"]
+mod x86_toolchain;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_nir::NirModule;
@@ -76,16 +80,14 @@ const TRACKED_NAMES: &[&str] = &[
 fn available_compilers() -> Vec<&'static str> {
     ["gcc", "clang"]
         .into_iter()
-        .filter(|c: &&str| {
-            Command::new(c)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
-        })
+        .filter(|c: &&str| x86_toolchain::compiler_available(c))
         .collect()
 }
 
 fn strip_tool() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        return Command::new("strip").output().ok().map(|_| "strip");
+    }
     ["llvm-strip", "strip"].into_iter().find(|tool: &&str| {
         Command::new(tool)
             .arg("--version")
@@ -102,26 +104,32 @@ fn scratch_dir() -> (ScratchDir, PathBuf) {
 }
 
 fn compile(compiler: &str, opt: &str, source: &Path, out: &Path) -> bool {
-    let target_args: &[&str] = if cfg!(target_os = "windows") && compiler == "clang" {
-        &["-target", "x86_64-w64-mingw32"]
-    } else {
-        &[]
-    };
-    let status = Command::new(compiler)
-        .args(target_args)
-        .args([opt, "-g", "-o"])
-        .arg(out)
-        .arg(source)
-        .status();
-    status.is_ok_and(|s: std::process::ExitStatus| s.success())
+    let mut command: Command = x86_toolchain::command(compiler);
+    command.args([opt, "-g", "-o"]).arg(out).arg(source);
+    let output: disrobe_core::subprocess::CapturedOutput =
+        x86_toolchain::run(&command, Duration::from_mins(1))
+            .expect("compile the declared x86 structural oracle row");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "{compiler} {opt}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
 }
 
 fn strip_copy(strip: &str, source: &Path, out: &Path) -> bool {
-    std::fs::copy(source, out).is_ok()
-        && Command::new(strip)
-            .arg(out)
-            .status()
-            .is_ok_and(|s: std::process::ExitStatus| s.success())
+    if std::fs::copy(source, out).is_err() {
+        return false;
+    }
+    let mut command: Command = Command::new(strip);
+    if cfg!(target_os = "macos") && strip == "strip" {
+        command.arg("-N");
+    }
+    command
+        .arg(out)
+        .status()
+        .is_ok_and(|status: std::process::ExitStatus| status.success())
 }
 
 fn named_addresses(bytes: &[u8]) -> BTreeMap<String, u64> {
@@ -152,6 +160,7 @@ fn anonymized(mut module: NirModule) -> NirModule {
 }
 
 fn lift(bytes: &[u8]) -> NirModule {
+    x86_toolchain::assert_x86_artifact(bytes);
     let payload = build_disasm_payload(bytes).expect("disasm payload");
     anonymized(disasm_to_nir(&payload))
 }
@@ -264,7 +273,7 @@ fn grade_pair(
 #[test]
 fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
     let compilers: Vec<&str> = available_compilers();
-    let Some(strip): Option<&str> = strip_tool() else {
+    let Some(strip): Option<&str> = x86_toolchain::strip_tool(strip_tool()) else {
         eprintln!("skipping: no strip tool (llvm-strip/strip) found on PATH");
         return;
     };

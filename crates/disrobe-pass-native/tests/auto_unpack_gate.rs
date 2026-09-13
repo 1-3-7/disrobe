@@ -12,11 +12,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{ChildArtifact, Pass};
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::chain_detector::PACKER_PASS;
 use disrobe_pass_native::{UpxUnpackOutput, unpack_upx};
 
@@ -158,13 +160,11 @@ fn write_source(dir: &Path) -> PathBuf {
     src
 }
 
-fn try_run_pass(bytes: &[u8]) -> Option<Vec<ChildArtifact>> {
-    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
-    PACKER_PASS.extract_children(&input).ok()
-}
-
 fn run_pass(bytes: &[u8]) -> Vec<ChildArtifact> {
-    try_run_pass(bytes).expect("packer-unpack children extraction")
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
+    PACKER_PASS
+        .extract_children(&input)
+        .expect("packer-unpack children extraction")
 }
 
 fn recovered_image(children: &[ChildArtifact]) -> Option<&[u8]> {
@@ -295,6 +295,129 @@ fn auto_surfaces_upx_unpacked_image_matching_upx_d_reference() {
     );
 
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+fn bounded_fixture_output(command: &Command) -> CapturedOutput {
+    let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+    run_captured(
+        Path::new(command.get_program()),
+        &args,
+        Duration::from_secs(60),
+        64 * 1024,
+    )
+    .expect("launch bounded fixture tool")
+    .expect("fixture tool must complete within its bound")
+}
+
+#[test]
+fn auto_surfaces_dynamic_elf_load_gaps_matching_upx_d_reference() {
+    for tool in ["clang", "upx"] {
+        if tool_is_unmeasured(
+            tool_available(tool, "--version"),
+            required_by_env(REQUIRE_UPX),
+            tool,
+            REQUIRE_UPX,
+            "the dynamic ELF UPX fixture compiler or packer is unavailable",
+        ) {
+            return;
+        }
+    }
+    let scratch: ScratchDir = ScratchDir::create("disrobe-auto-upx-elf-gaps")
+        .expect("create dynamic ELF scratch directory");
+    let library_source: PathBuf = scratch.path().join("libc.c");
+    let library: PathBuf = scratch.path().join("libc.so");
+    std::fs::write(
+        &library_source,
+        "int puts(const char *text) { return text[0]; }\n",
+    )
+    .expect("write authored import target");
+    let library_build: CapturedOutput = bounded_fixture_output(
+        Command::new("clang")
+            .args([
+                "--target=x86_64-unknown-linux-gnu",
+                "-fuse-ld=lld",
+                "-nostdlib",
+                "-shared",
+                "-fPIC",
+                "-O2",
+                "-Wl,-soname,libc.so",
+            ])
+            .arg(&library_source)
+            .arg("-o")
+            .arg(&library),
+    );
+    assert!(
+        library_build.exit_code == Some(0),
+        "ELF shared target compiler: {}",
+        String::from_utf8_lossy(&library_build.stderr)
+    );
+    let source: PathBuf = scratch.path().join("main.c");
+    let marker: &str = std::str::from_utf8(KNOWN_MARKER).expect("ASCII marker");
+    std::fs::write(&source, format!("extern int puts(const char *);\nconst char g_marker[] = \"{marker}\";\nint main(void) {{ puts(g_marker); return 0; }}\nvoid _start(void) {{ main(); }}\n"))
+        .expect("write authored dynamic ELF caller");
+    for mode in ["-no-pie", "-pie"] {
+        let original: PathBuf = scratch.path().join(format!("{mode}.elf"));
+        let packed: PathBuf = scratch.path().join(format!("{mode}.packed.elf"));
+        let reference: PathBuf = scratch.path().join(format!("{mode}.reference.elf"));
+        let compile: CapturedOutput = bounded_fixture_output(
+            Command::new("clang")
+                .args([
+                    "--target=x86_64-unknown-linux-gnu",
+                    "-fuse-ld=lld",
+                    "-nostdlib",
+                    "-Wl,-e,_start",
+                    "-Wl,-z,separate-code",
+                    "-O2",
+                    mode,
+                ])
+                .arg(&source)
+                .arg("-L")
+                .arg(scratch.path())
+                .arg("-lc")
+                .arg("-o")
+                .arg(&original),
+        );
+        assert!(
+            compile.exit_code == Some(0),
+            "{mode} ELF compiler: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let pack: CapturedOutput = bounded_fixture_output(
+            Command::new("upx")
+                .args(["--best", "-o"])
+                .arg(&packed)
+                .arg(&original),
+        );
+        assert!(
+            pack.exit_code == Some(0),
+            "{mode} UPX pack: {}",
+            String::from_utf8_lossy(&pack.stderr)
+        );
+        let unpack: CapturedOutput = bounded_fixture_output(
+            Command::new("upx")
+                .args(["-d", "-o"])
+                .arg(&reference)
+                .arg(&packed),
+        );
+        assert!(
+            unpack.exit_code == Some(0),
+            "{mode} UPX reference: {}",
+            String::from_utf8_lossy(&unpack.stderr)
+        );
+        let packed_bytes: Vec<u8> = std::fs::read(&packed).expect("read packed dynamic ELF");
+        let reference_bytes: Vec<u8> =
+            std::fs::read(&reference).expect("read dynamic ELF reference");
+        assert!(contains(&reference_bytes, KNOWN_MARKER));
+        let direct: UpxUnpackOutput =
+            direct_elf_recovery_matches_reference(&packed_bytes, &reference_bytes);
+        assert!(direct.adler_verified);
+        let children: Vec<ChildArtifact> = run_pass(&packed_bytes);
+        assert_eq!(
+            recovered_image(&children),
+            Some(reference_bytes.as_slice()),
+            "{mode} child must match independent UPX output byte-for-byte"
+        );
+    }
 }
 
 fn write_go_source(dir: &Path) {

@@ -4,6 +4,7 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyMediaVersion } from "./media-version.mjs";
+import { presentation, validateRecording } from "./cli-plan.mjs";
 
 const fileNames = ["walkthrough.mp4", "teaser.mp4", "preview.gif", "poster.png", "captions.vtt", "chapters.vtt", "teaser.vtt", "transcript.txt"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -19,8 +20,8 @@ export function verifyReleaseMedia(directory, releaseTag) {
   const manifest = JSON.parse(readFileSync(join(directory, "media.json"), "utf8"));
   const recordingBytes = readFileSync(join(directory, "cli-recording.json"));
   const recording = JSON.parse(recordingBytes);
-  assert.equal(manifest.schema, "disrobe.walkthrough-media.v3");
-  assert.equal(recording.schema, "disrobe.cli-recording.v1");
+  assert.equal(manifest.schema, "disrobe.walkthrough-media.v4");
+  validateRecording(recording);
   verifyMediaVersion(manifest.binary.version, manifest.workspaceVersion, releaseTag);
   assert.equal(manifest.releaseTag, releaseTag, "media was not captured for this release tag");
   assert.equal(recording.releaseTag, releaseTag, "recording was not captured for this release tag");
@@ -30,10 +31,14 @@ export function verifyReleaseMedia(directory, releaseTag) {
   assert.equal(manifest.capturedAt, recording.capturedAt);
   assert.deepEqual(manifest.presentation, recording.presentation);
   assert.deepEqual([manifest.presentation.width, manifest.presentation.height, manifest.presentation.fps], [1920, 1080, 60]);
-  assert.deepEqual([manifest.durationSeconds, manifest.teaserDurationSeconds], [36, 20]);
-  assert.deepEqual(recording.scenes.map((scene) => scene.id), ["native", "indicators", "auto", "lua", "wasm", "source"]);
-  assert.equal(recording.scenes.reduce((sum, scene) => sum + scene.durationMs, 0), 36_000);
-  for (const scene of recording.scenes) assert.equal(scene.exitCode, 0);
+  const durationMs = presentation.openingMs + presentation.closingMs + recording.scenes.reduce((sum, scene) => sum + scene.durationMs, 0);
+  assert.deepEqual([manifest.durationSeconds, manifest.teaserDurationSeconds], [durationMs / 1000, 20]);
+  assert.equal(manifest.commandCount, recording.scenes.length);
+  assert.equal(manifest.publicCommandCount, recording.catalog.commands.length);
+  assert.equal(manifest.chapters.length, 5);
+  assert.equal(manifest.chapters[0].startMs, 0);
+  assert.equal(manifest.chapters.at(-1).endMs, durationMs);
+  assert.deepEqual(manifest.cues.map((cue) => cue.command), recording.scenes.map((scene) => scene.command));
   assert.deepEqual(manifest.files.map((file) => file.name), fileNames);
   assert.deepEqual(manifest.preview, { source: "teaser.mp4", sourceSha256: manifest.files.find((file) => file.name === "teaser.mp4").sha256, width: 960, height: 540, fps: 10, durationSeconds: 20, loop: true });
   for (const file of manifest.files) {

@@ -257,7 +257,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     assert!(!windows_one.is_empty());
     assert!(!windows_two.is_empty());
     assert!(windows_one.is_disjoint(&windows_two));
-    let dedicated_steps: [(&str, &str, &str); 3] = [
+    let dedicated_steps: [(&str, &str, &str); 4] = [
         (
             "elixir recompile differential, printing the graded export count",
             "disrobe-pass-beam",
@@ -272,6 +272,11 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "XLM formula differential against an independent deobfuscator, printing the graded cell count",
             "disrobe-pass-shell",
             "matrix.shard == 'two'",
+        ),
+        (
+            "JavaScript differentials within the Boa CPU budget",
+            "disrobe-pass-js-deob",
+            "matrix.shard == 'three'",
         ),
     ];
     let dedicated_packages: BTreeSet<String> = dedicated_steps
@@ -297,6 +302,17 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "{name} must run once per operating system"
         );
     }
+    assert_eq!(
+        test_step(
+            test_steps,
+            "JavaScript differentials within the Boa CPU budget"
+        )
+        .get("env")
+        .and_then(|env: &Value| env.get("RUST_TEST_THREADS"))
+        .and_then(Value::as_str),
+        Some("1"),
+        "Boa reference evaluations must not contend with the recovery probe deadline"
+    );
     let selected: BTreeSet<String> = windows_one
         .union(&windows_two)
         .cloned()

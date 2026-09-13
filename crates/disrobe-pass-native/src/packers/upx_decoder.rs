@@ -717,7 +717,18 @@ fn decode_elf_extents_with_budget(
     let mut expansion_credit: u64 = 0;
     let mut blocks: usize = 0;
     let mut scanned: usize = 0;
+    let loader_end: Option<usize> = elf_c_base_loader_end(packed);
+    let mut load_bytes: Option<usize> = None;
     while image.len() < target {
+        if load_bytes == Some(image.len())
+            && let Some(end) = loader_end
+        {
+            if end < cursor {
+                return None;
+            }
+            cursor = end;
+            load_bytes = None;
+        }
         let remaining: usize = target - image.len();
         let mut block: Option<ElfBlock> = elf_block_at(
             packed,
@@ -747,6 +758,10 @@ fn decode_elf_extents_with_budget(
         }
         let found: ElfBlock = block?;
         image.extend_from_slice(&found.bytes);
+        if blocks == 0 && loader_end.is_some() {
+            load_bytes =
+                elf_extent_layout(&image, target).map(|layout: ElfExtentLayout| layout.load_bytes);
+        }
         cursor = found.next;
         expansion_credit = found.expansion_credit;
         blocks += 1;
@@ -757,8 +772,64 @@ fn decode_elf_extents_with_budget(
     Some((image, blocks))
 }
 
-fn elf_load_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>> {
-    let total: usize = image.len();
+#[derive(Debug)]
+struct ElfExtentLayout {
+    order: Vec<(usize, usize)>,
+    load_bytes: usize,
+}
+
+fn elf_c_base_loader_end(packed: &[u8]) -> Option<usize> {
+    if packed.get(..7)? != b"\x7fELF\x02\x01\x01" || read_u16(packed, 0x34).ok()? != 64 {
+        return None;
+    }
+    let ph_off: usize = usize::try_from(read_u64(packed, 0x20)?).ok()?;
+    let ph_ent: usize = usize::from(read_u16(packed, 0x36).ok()?);
+    let ph_num: usize = usize::from(read_u16(packed, 0x38).ok()?);
+    if ph_off != 64 || ph_ent != 56 || !(2..=7).contains(&ph_num) {
+        return None;
+    }
+    let table: &[u8] = packed.get(ph_off..ph_off.checked_add(ph_ent.checked_mul(ph_num)?)?)?;
+    let first: &[u8] = table.get(..ph_ent)?;
+    let second: &[u8] = table.get(ph_ent..ph_ent.checked_mul(2)?)?;
+    for extra in table.get(ph_ent.checked_mul(2)?..)?.chunks_exact(ph_ent) {
+        if !matches!(read_u32(extra, 0).ok()?, 4 | 0x6474_e551) {
+            return None;
+        }
+        let offset: usize = usize::try_from(read_u64(extra, 8)?).ok()?;
+        let size: usize = usize::try_from(read_u64(extra, 0x20)?).ok()?;
+        packed.get(offset..offset.checked_add(size)?)?;
+    }
+    let first_flags: u32 = read_u32(first, 4).ok()?;
+    let second_flags: u32 = read_u32(second, 4).ok()?;
+    let filesz: u64 = read_u64(second, 0x20)?;
+    let alignment: u64 = read_u64(first, 0x30)?;
+    if read_u32(first, 0).ok()? != 1
+        || read_u32(second, 0).ok()? != 1
+        || read_u64(first, 8)? != 0
+        || read_u64(second, 8)? != 0
+        || read_u64(first, 0x20)? != 0x1000
+        || first_flags != 6
+        || second_flags != 5
+        || alignment < 0x1000
+        || !alignment.is_power_of_two()
+        || alignment != read_u64(second, 0x30)?
+        || read_u64(first, 0x10)? % alignment != 0
+        || read_u64(second, 0x10)? % alignment != 0
+        || filesz == 0
+        || filesz != read_u64(second, 0x28)?
+    {
+        return None;
+    }
+    let entry: u64 = read_u64(packed, 0x18)?;
+    let address: u64 = read_u64(second, 0x10)?;
+    if !(address..address.checked_add(filesz)?).contains(&entry) {
+        return None;
+    }
+    let end: usize = usize::try_from(filesz).ok()?.checked_add(3)? & !3usize;
+    (end <= packed.len() && packed.len() >= 0x1000).then_some(end)
+}
+
+fn elf_extent_layout(image: &[u8], total: usize) -> Option<ElfExtentLayout> {
     let elf64: bool = match image.get(4)? {
         1 => false,
         2 => true,
@@ -818,6 +889,9 @@ fn elf_load_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>> {
     if loads.first().map(|&(o, _): &(usize, usize)| o) != Some(0) {
         return None;
     }
+    let load_bytes: usize = loads
+        .iter()
+        .try_fold(0usize, |sum: usize, &(_, len)| sum.checked_add(len))?;
     let mut order: Vec<(usize, usize)> = loads.clone();
     let mut cursor: usize = 0;
     for &(offset, filesz) in &loads {
@@ -834,7 +908,7 @@ fn elf_load_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>> {
         .map(|&(_, l): &(usize, usize)| l)
         .sum::<usize>()
         == total)
-        .then_some(order)
+        .then_some(ElfExtentLayout { order, load_bytes })
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
@@ -843,10 +917,10 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 }
 
 fn relayout_elf_extents(stream: &[u8]) -> Option<Vec<u8>> {
-    let order: Vec<(usize, usize)> = elf_load_ranges(stream)?;
+    let layout: ElfExtentLayout = elf_extent_layout(stream, stream.len())?;
     let mut out: Vec<u8> = vec![0u8; stream.len()];
     let mut cursor: usize = 0;
-    for &(offset, len) in &order {
+    for &(offset, len) in &layout.order {
         let src: &[u8] = stream.get(cursor..cursor.checked_add(len)?)?;
         out.get_mut(offset..offset.checked_add(len)?)?
             .copy_from_slice(src);
@@ -1505,6 +1579,184 @@ mod tests {
     fn packheader_rejects_input_without_magic() {
         let buf: Vec<u8> = vec![0u8; 256];
         assert!(UpxPackHeader::locate_and_parse(&buf).is_err());
+    }
+
+    fn elf_loader_gap_fixture() -> (Vec<u8>, UpxPackHeader, Vec<u8>) {
+        let mut packed: Vec<u8> = vec![0u8; 4096];
+        packed[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        packed[0x18..0x20].copy_from_slice(&0x404100u64.to_le_bytes());
+        packed[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+        packed[0x34..0x36].copy_from_slice(&64u16.to_le_bytes());
+        packed[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+        packed[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes());
+        for (at, flags, address, size) in [
+            (64usize, 6u32, 0x400000u64, 4096u64),
+            (120, 5, 0x404000, 1024),
+        ] {
+            packed[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+            packed[at + 4..at + 8].copy_from_slice(&flags.to_le_bytes());
+            packed[at + 16..at + 24].copy_from_slice(&address.to_le_bytes());
+            packed[at + 32..at + 40].copy_from_slice(&size.to_le_bytes());
+            packed[at + 40..at + 48].copy_from_slice(&size.to_le_bytes());
+            packed[at + 48..at + 56].copy_from_slice(&4096u64.to_le_bytes());
+        }
+        let mut original: Vec<u8> = packed[..256].to_vec();
+        original[96..104].copy_from_slice(&256u64.to_le_bytes());
+        original[128..136].copy_from_slice(&512u64.to_le_bytes());
+        original[152..160].copy_from_slice(&16u64.to_le_bytes());
+        original.extend_from_slice(&[0x37u8; 16]);
+        original.extend_from_slice(&[0x5du8; 256]);
+        original.extend_from_slice(&[0x71u8; 1520]);
+        packed[236..240].copy_from_slice(UPX_MAGIC);
+        packed[248..252].copy_from_slice(&2048u32.to_le_bytes());
+        let mut cursor: usize = 256;
+        for bytes in [&original[..256], &original[256..272], &[0xabu8; 16]] {
+            cursor = write_stored_elf_block(&mut packed, cursor, bytes);
+        }
+        assert!(cursor < 1024);
+        cursor = write_stored_elf_block(&mut packed, 1024, &original[272..528]);
+        write_stored_elf_block(&mut packed, cursor, &original[528..]);
+        (packed, header_with_lengths(2048, 2048, 14), original)
+    }
+
+    fn write_stored_elf_block(packed: &mut [u8], cursor: usize, bytes: &[u8]) -> usize {
+        let size: u32 = u32::try_from(bytes.len()).expect("small fixture block");
+        packed[cursor..cursor + 4].copy_from_slice(&size.to_le_bytes());
+        packed[cursor + 4..cursor + 8].copy_from_slice(&size.to_le_bytes());
+        let start: usize = cursor + B_INFO_LEN;
+        packed[start..start + bytes.len()].copy_from_slice(bytes);
+        start + bytes.len()
+    }
+
+    #[test]
+    fn elf_gap_decode_skips_the_packed_loader_after_original_loads() {
+        let (packed, header, original): (Vec<u8>, UpxPackHeader, Vec<u8>) =
+            elf_loader_gap_fixture();
+        let mut budget: DecompressionBudget = DecompressionBudget::with_quotas(
+            DecodeQuota::new(4, original.len()),
+            DecodeQuota::new(0, 0),
+        );
+        let (decoded, blocks): (Vec<u8>, usize) =
+            decode_elf_extents_with_budget(&packed, &header, &mut budget)
+                .expect("the loader's valid-looking block is not original file data");
+        assert_eq!(decoded, original);
+        assert_eq!(blocks, 4);
+        assert_eq!(budget.attempts(DecodeRoute::ElfExtents), 4);
+        assert_eq!(budget.remaining_output_bytes(DecodeRoute::ElfExtents), 0);
+    }
+
+    #[test]
+    fn elf_loader_gap_still_requires_the_extent_budget() {
+        let (packed, header, original): (Vec<u8>, UpxPackHeader, Vec<u8>) =
+            elf_loader_gap_fixture();
+        for (attempts, bytes) in [(3usize, original.len()), (4, original.len() - 1)] {
+            let mut budget: DecompressionBudget = DecompressionBudget::with_quotas(
+                DecodeQuota::new(attempts, bytes),
+                DecodeQuota::new(0, 0),
+            );
+            assert!(decode_elf_extents_with_budget(&packed, &header, &mut budget).is_none());
+            assert!(budget.attempts(DecodeRoute::ElfExtents) <= attempts);
+        }
+    }
+
+    #[test]
+    fn elf_loader_end_rejects_unverified_bounds_and_layouts() {
+        let (packed, _, _): (Vec<u8>, UpxPackHeader, Vec<u8>) = elf_loader_gap_fixture();
+        assert_eq!(elf_c_base_loader_end(&packed), Some(1024));
+        for end in [0usize, 63, 119, 175, 4095] {
+            assert_eq!(
+                elf_c_base_loader_end(&packed[..end]),
+                None,
+                "truncated at {end}"
+            );
+        }
+        for (offset, value) in [
+            (0x20usize, u64::MAX),
+            (72, 1),
+            (128, 1),
+            (96, 4095),
+            (152, 4097),
+            (160, 1025),
+            (136, u64::MAX),
+            (0x18, 0x404400),
+        ] {
+            let mut invalid: Vec<u8> = packed.clone();
+            invalid[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(
+                elf_c_base_loader_end(&invalid),
+                None,
+                "field {offset:#x}={value:#x}"
+            );
+        }
+        for (offset, value) in [(64usize, 0u32), (120, 0), (68, 7), (124, 6)] {
+            let mut invalid: Vec<u8> = packed.clone();
+            invalid[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(
+                elf_c_base_loader_end(&invalid),
+                None,
+                "field {offset:#x}={value:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn elf_loader_end_cannot_overlap_decoded_load_blocks() {
+        let (mut packed, header, _): (Vec<u8>, UpxPackHeader, Vec<u8>) = elf_loader_gap_fixture();
+        for offset in [152usize, 160] {
+            packed[offset..offset + 8].copy_from_slice(&512u64.to_le_bytes());
+        }
+        assert_eq!(elf_c_base_loader_end(&packed), Some(512));
+        assert!(decode_elf_extents(&packed, &header).is_none());
+    }
+
+    #[test]
+    fn elf_loader_end_requires_the_upx_extra_header_topology() {
+        let (packed, _, _): (Vec<u8>, UpxPackHeader, Vec<u8>) = elf_loader_gap_fixture();
+        let mut stack: Vec<u8> = packed.clone();
+        stack[0x38..0x3a].copy_from_slice(&3u16.to_le_bytes());
+        stack[176..232].fill(0);
+        stack[176..180].copy_from_slice(&0x6474_e551u32.to_le_bytes());
+        assert_eq!(elf_c_base_loader_end(&stack), Some(1024));
+        let mut notes: Vec<u8> = packed.clone();
+        notes[0x38..0x3a].copy_from_slice(&7u16.to_le_bytes());
+        for extra in notes[176..456].chunks_exact_mut(56) {
+            extra.fill(0);
+            extra[..4].copy_from_slice(&4u32.to_le_bytes());
+        }
+        assert_eq!(elf_c_base_loader_end(&notes), Some(1024));
+        notes[0x38..0x3a].copy_from_slice(&8u16.to_le_bytes());
+        assert_eq!(elf_c_base_loader_end(&notes), None);
+        for kind in [0u32, 1, 2, 6] {
+            stack[176..180].copy_from_slice(&kind.to_le_bytes());
+            assert_eq!(elf_c_base_loader_end(&stack), None, "extra type {kind}");
+        }
+    }
+
+    #[test]
+    fn elf_loader_end_requires_matching_page_alignment() {
+        let (packed, _, _): (Vec<u8>, UpxPackHeader, Vec<u8>) = elf_loader_gap_fixture();
+        for (offset, value) in [
+            (112usize, 0u64),
+            (112, 1),
+            (112, 2048),
+            (112, 4095),
+            (112, 4097),
+            (168, 8192),
+            (136, 0x404001),
+        ] {
+            let mut invalid: Vec<u8> = packed.clone();
+            invalid[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(
+                elf_c_base_loader_end(&invalid),
+                None,
+                "field {offset:#x}={value:#x}"
+            );
+        }
+        let mut larger_pages: Vec<u8> = packed;
+        for offset in [112usize, 168] {
+            larger_pages[offset..offset + 8].copy_from_slice(&8192u64.to_le_bytes());
+        }
+        assert_eq!(elf_c_base_loader_end(&larger_pages), Some(1024));
     }
 
     fn generic_elf_fixture(valid_header: bool) -> Vec<u8> {

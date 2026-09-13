@@ -239,14 +239,13 @@ fn recompiled_corpus_reproduces_measured_floors() {
             );
             continue;
         }
-        let flags: [&str; 7] = [
+        let flags: [&str; 6] = [
             "-g",
             "-O0",
             leg.dwarf_flag,
             leg.protection,
             "-fno-asynchronous-unwind-tables",
             "-nostdlib",
-            "-Wl,-e,_start",
         ];
         let image: DebugImage = build_and_load(&toolchain, &work, &source, leg.id, &flags);
         let measured: Measured = measure(&image, leg);
@@ -337,14 +336,13 @@ fn optimised_build_names_every_location_form_it_cannot_place() {
         ("forms-o1-dwarf4", "-O1", "-gdwarf-4"),
         ("forms-o2-dwarf5", "-O2", "-gdwarf-5"),
     ] {
-        let flags: [&str; 7] = [
+        let flags: [&str; 6] = [
             "-g",
             level,
             dwarf_flag,
             "-fno-omit-frame-pointer",
             "-fno-asynchronous-unwind-tables",
             "-nostdlib",
-            "-Wl,-e,_start",
         ];
         let image: DebugImage = build_and_load(&toolchain, &work, &source, id, &flags);
         let survey: LocationSurvey = image.locations.clone();

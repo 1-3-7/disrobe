@@ -502,10 +502,15 @@ fn a_real_compiler_emits_every_pinned_reabstraction_thunk_symbol() {
             fixture.symbol
         );
         let table: String = compiled_symbol_table(&swiftc, *fixture);
+        let object_symbol: String = if cfg!(target_os = "macos") {
+            format!("_{}", fixture.symbol)
+        } else {
+            fixture.symbol.to_owned()
+        };
         assert!(
-            table
-                .lines()
-                .any(|line: &str| line.split(' ').next_back() == Some(fixture.symbol)),
+            table.lines().any(|line: &str| {
+                line.split_whitespace().next_back() == Some(object_symbol.as_str())
+            }),
             "{} compiled {} without emitting {}, so the pinned mangling is not what this \
              compiler produces",
             swiftc.display(),
@@ -764,6 +769,53 @@ fn a_real_compiler_emits_the_pinned_freestanding_macro_filename() {
             .join("swift")
             .join("windows");
         command.arg("-sdk").arg(sdk).arg("-I").arg(testing);
+    }
+    if cfg!(target_os = "macos") {
+        let platform: Output = Command::new("/usr/bin/xcrun")
+            .args(["--sdk", "macosx", "--show-sdk-platform-path"])
+            .output()
+            .expect("resolve the macOS SDK platform for Swift Testing");
+        assert!(
+            platform.status.success(),
+            "xcrun could not locate the macOS SDK platform: {}",
+            String::from_utf8_lossy(&platform.stderr)
+        );
+        let platform_path: String =
+            String::from_utf8(platform.stdout).expect("xcrun emits a UTF-8 platform path");
+        let developer: PathBuf = Path::new(platform_path.trim()).join("Developer");
+        assert!(
+            developer.is_dir(),
+            "the SDK platform must contain Developer"
+        );
+        command
+            .arg("-F")
+            .arg(developer.join("Library/Frameworks"))
+            .arg("-I")
+            .arg(developer.join("usr/lib"));
+        let compiler: PathBuf = if swiftc == Path::new("/usr/bin/swiftc") {
+            let resolved: Output = Command::new("/usr/bin/xcrun")
+                .args(["--find", "swiftc"])
+                .output()
+                .expect("resolve the selected Swift toolchain");
+            assert!(
+                resolved.status.success(),
+                "xcrun could not locate swiftc: {}",
+                String::from_utf8_lossy(&resolved.stderr)
+            );
+            let path: String =
+                String::from_utf8(resolved.stdout).expect("xcrun emits a UTF-8 compiler path");
+            PathBuf::from(path.trim())
+        } else {
+            swiftc.clone()
+        };
+        let plugins: PathBuf = compiler
+            .parent()
+            .and_then(Path::parent)
+            .expect("the Swift compiler belongs to a toolchain bin directory")
+            .join("lib/swift/host/plugins/testing");
+        if plugins.is_dir() {
+            command.arg("-plugin-path").arg(plugins);
+        }
     }
     let compiled: Output = command
         .arg("-g")

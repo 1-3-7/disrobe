@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { commandTimeoutMs, fixtures, presentation, publicCommands, scenes as plan, validateRecording } from "./cli-plan.mjs";
 import { verifyMediaVersion, workspaceVersion } from "./media-version.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -17,50 +18,64 @@ const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const inputs = [];
 const scenes = [];
 const capturedAt = new Date().toISOString();
+const normalize = (text) => text.replaceAll("\r\n", "\n").replaceAll(scratch.replaceAll("\\", "\\\\"), ".").replaceAll(scratch, ".");
+const shellWord = (word) => /^[\w./-]+$/u.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 
-function checkTree(directory) {
-  let bytes = 0;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+function files(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       assert.ok(realpathSync(path).startsWith(scratch + sep), "Capture link escapes its output directory");
-      bytes += lstatSync(path).size;
-    } else {
-      bytes += entry.isDirectory() ? checkTree(path) : statSync(path).size;
+      return [];
     }
-    assert.ok(bytes < 16 * 1024 * 1024, "Capture output exceeds 16 MiB");
-  }
-  return bytes;
+    return entry.isDirectory() ? files(path) : [path];
+  }).sort();
 }
 
-function run(executable, argv) {
+function checkTree() {
+  let bytes = 0;
+  for (const path of files(scratch)) {
+    bytes += statSync(path).size;
+    assert.ok(bytes < 16 * 1024 * 1024, "Capture output exceeds 16 MiB");
+  }
+}
+
+function run(argv) {
   const start = performance.now();
-  const result = spawnSync(executable, argv, {
+  const result = spawnSync(binary, argv, {
     cwd: scratch, encoding: "utf8", shell: false, windowsHide: true,
     env: { ...process.env, NO_COLOR: "1", RUST_LOG: "off" },
-    timeout: 15_000, maxBuffer: 128 * 1024,
+    timeout: commandTimeoutMs, maxBuffer: 1024 * 1024,
   });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${argv.join(" ")}: ${result.stdout}${result.stderr}`);
-  checkTree(scratch);
-  return { exitCode: result.status, elapsedMs: performance.now() - start, stdout: result.stdout.replaceAll("\r\n", "\n"), stderr: result.stderr.replaceAll("\r\n", "\n") };
+  checkTree();
+  return { exitCode: result.status, elapsedMs: performance.now() - start, stdout: normalize(result.stdout), stderr: normalize(result.stderr) };
 }
 
-function scene(id, title, description, durationMs, argv, markers) {
-  const result = run(binary, argv);
-  for (const marker of markers) assert.ok((result.stdout + result.stderr).includes(marker), `${id} is missing ${marker}: ${result.stdout}${result.stderr}`);
-  scenes.push({ id, title, description, durationMs, command: ["disrobe", ...argv].join(" "), argv: ["disrobe", ...argv], ...result });
+function preview(spec) {
+  let path;
+  if (spec.path) path = join(scratch, spec.path);
+  else {
+    const candidates = files(join(scratch, spec.directory)).filter((path) => path.endsWith(spec.suffix));
+    assert.equal(candidates.length, 1, `Expected one recovered ${spec.suffix} in ${spec.directory}; found ${files(join(scratch, spec.directory)).map((path) => relative(scratch, path)).join(", ")}`);
+    [path] = candidates;
+  }
+  const bytes = readFileSync(path);
+  assert.ok(bytes.length > 0 && bytes.length < 1024 * 1024, `Recovered text preview must fit 1 MiB: ${path} has ${bytes.length} bytes`);
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).replaceAll("\r\n", "\n");
+  const startLine = spec.contains ? text.split("\n").findIndex((line) => line.includes(spec.contains)) : 0;
+  assert.ok(startLine >= 0, `Preview marker missing in ${path}`);
+  return { name: relative(scratch, path).replaceAll("\\", "/"), bytes: bytes.length, sha256: hash(bytes), text, startLine, lineCount: spec.lineCount ?? null, maximumRows: spec.maximumRows ?? 10 };
 }
 
 try {
-  const version = run(binary, ["--version"]).stdout.trim();
+  const version = run(["--version"]).stdout.trim();
   verifyMediaVersion(version, expectedVersion, values["release-tag"]);
+  const help = run(["--help"]);
+  const catalog = { command: "disrobe --help", commands: publicCommands(help.stdout), ...help };
   mkdirSync(join(scratch, "recovered"));
-  for (const [source, name] of [
-    ["corpus/native/packers/upx/hello.packed.nrv2b.exe", "hello.packed.exe"],
-    ["playground/public/samples/greet.luac", "greet.luac"],
-    ["playground/public/samples/add.wasm", "add.wasm"],
-  ]) {
+  for (const [source, name] of fixtures) {
     const bytes = readFileSync(join(root, source));
     assert.ok(bytes.length < 1024 * 1024);
     copyFileSync(join(root, source), join(scratch, name));
@@ -69,32 +84,25 @@ try {
   const indicators = "https://example.org/download\nanalyst@example.org\n192.0.2.42\n";
   writeFileSync(join(scratch, "indicators.txt"), indicators, { flag: "wx" });
   inputs.push({ name: "indicators.txt", text: indicators, bytes: Buffer.byteLength(indicators), sha256: hash(indicators) });
-  scene("native", "Unpack a native binary", "Decode the UPX payload from a packed executable.", 6_000,
-    ["native", "unpack", "hello.packed.exe", "--out", "recovered/hello.bin"], ["upx"]);
-  scene("indicators", "Extract indicators", "Find the URL, email address, and IP address in a file.", 5_000,
-    ["ioc", "indicators.txt"], ["https://example.org/download", "analyst@example.org", "192.0.2.42"]);
-  scene("auto", "Let Disrobe choose the recovery path", "Identify the module and save its recovery reports and stages.", 5_000,
-    ["auto", "add.wasm", "--out", "recovered/auto", "--capture-stages"], ["chain.json", "recovery.json"]);
-  scene("lua", "Decompile Lua bytecode", "Recover source from a compiled Lua chunk.", 6_000,
-    ["lua", "decompile", "greet.luac", "--out", "recovered/greet.lua"], ["fidelity"]);
-  scene("wasm", "Lift WebAssembly to WAT", "Write the module's functions and instructions as text.", 6_000,
-    ["wasm", "decompile", "add.wasm", "--target", "wat", "--out", "recovered/add.wat"], ["target=wat"]);
-  const wat = readFileSync(join(scratch, "recovered/add.wat"), "utf8").replaceAll("\r\n", "\n");
+  for (const spec of plan) {
+    const result = run(spec.argv);
+    if (spec.redirect) writeFileSync(join(scratch, spec.redirect), result.stdout, { flag: "wx" });
+    const command = ["disrobe", ...spec.argv].map(shellWord).join(" ") + (spec.redirect ? ` > ${spec.redirect}` : "");
+    scenes.push({ id: spec.id, chapter: spec.chapter, title: spec.title, description: spec.description, durationMs: spec.durationMs, command, argv: ["disrobe", ...spec.argv], redirect: spec.redirect ?? null, outputLineCount: spec.outputLineCount ?? null, ...result, preview: spec.preview ? preview(spec.preview) : null });
+    process.stdout.write(`captured ${scenes.length}/${plan.length}: ${spec.id}\n`);
+  }
+  const wat = scenes.find((scene) => scene.id === "wasm").preview.text;
   assert.ok(wat.includes("i32.add") && wat.includes('(export "add"'));
-  const windows = process.platform === "win32";
-  const shell = windows ? join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe") : "cat";
-  const command = windows ? "Get-Content -LiteralPath recovered/add.wat" : "cat recovered/add.wat";
-  const argv = windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] : ["recovered/add.wat"];
-  const result = run(shell, argv);
-  assert.equal(result.stdout.trimEnd(), wat.trimEnd());
-  scenes.push({ id: "source", title: "Read the recovered instructions", description: "The exported add function retains its two inputs and i32.add instruction.", durationMs: 8_000, command, argv: [windows ? "powershell" : "cat", ...argv], ...result });
-  const artifacts = readdirSync(join(scratch, "recovered"), { recursive: true }).filter((name) => statSync(join(scratch, "recovered", name)).isFile()).map((name) => {
-    const bytes = readFileSync(join(scratch, "recovered", name));
-    return { name: "recovered/" + name, bytes: bytes.length, sha256: hash(bytes) };
+  const sourceMap = JSON.parse(readFileSync(join(scratch, "bundle.js.map"), "utf8"));
+  assert.equal(scenes.find((scene) => scene.id === "sourcemap").preview.text, sourceMap.sourcesContent[sourceMap.sources.indexOf("../src/math.js")]);
+  const artifacts = files(scratch).filter((path) => !inputs.some((input) => path === join(scratch, input.name))).map((path) => {
+    const bytes = readFileSync(path);
+    return { name: relative(scratch, path).replaceAll("\\", "/"), bytes: bytes.length, sha256: hash(bytes) };
   });
-  const receipt = { schema: "disrobe.cli-recording.v1", capturedAt, binary: { version, sha256: hash(readFileSync(binary)) }, workspaceVersion: expectedVersion, releaseTag: values["release-tag"] ?? null, presentation: { width: 1920, height: 1080, fps: 60, timing: "Edited command entry and reading time; elapsedMs records each process separately." }, inputs, artifacts, scenes };
+  const receipt = { schema: "disrobe.cli-recording.v2", capturedAt, binary: { version, sha256: hash(readFileSync(binary)) }, workspaceVersion: expectedVersion, releaseTag: values["release-tag"] ?? null, presentation, normalization: "Executable name is disrobe; the temporary workspace prefix is '.'; newlines are LF. Redirected stdout is saved as shown. Output excerpts are labeled; complete captured output and preview text are retained here.", catalog, inputs, artifacts, scenes };
+  validateRecording(receipt);
   writeFileSync(join(root, "docs/demo/cli-recording.json"), JSON.stringify(receipt, null, 2) + "\n");
-  process.stdout.write(JSON.stringify({ commands: scenes.length, durationSeconds: scenes.reduce((sum, value) => sum + value.durationMs, 0) / 1000, binary: receipt.binary, scenes: scenes.map(({ id, stdout, stderr }) => ({ id, stdout, stderr })) }, null, 2) + "\n");
+  process.stdout.write(JSON.stringify({ commands: scenes.length, publicCommands: catalog.commands.length, durationSeconds: (presentation.openingMs + presentation.closingMs + scenes.reduce((sum, value) => sum + value.durationMs, 0)) / 1000, binary: receipt.binary }, null, 2) + "\n");
 } finally {
   assert.ok(resolve(scratch).startsWith(resolve(root, "docs/demo") + sep) && basename(scratch).startsWith(".cli-") && !lstatSync(scratch).isSymbolicLink());
   rmSync(scratch, { recursive: true });

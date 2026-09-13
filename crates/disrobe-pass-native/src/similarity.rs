@@ -22,7 +22,9 @@ use crate::disasm_ir::{
 };
 use crate::error::{Error, Result};
 use crate::fingerprint::{ASCII_XREF_MIN_LEN, StringXref, extract_ascii_xrefs};
-use crate::plt_resolve::{ImportStub, resolve_elf_plt_imports, resolve_pe_iat_imports};
+use crate::plt_resolve::{
+    ImportStub, resolve_elf_plt_imports, resolve_macho_stub_imports, resolve_pe_iat_imports,
+};
 use crate::pseudo_c::aarch64::{
     AARCH64_INSTRUCTION_BYTES, Aarch64DirectTransfer, aarch64_adr_target, aarch64_adrp_target,
     aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return, aarch64_is_trap,
@@ -519,6 +521,10 @@ fn index_imports(
     for stub in resolve_pe_iat_imports(bytes) {
         let stub: ImportStub = stub;
         slots.insert(stub.slot_address, stub.name);
+    }
+    for stub in resolve_macho_stub_imports(bytes) {
+        let stub: ImportStub = stub;
+        stubs.insert(stub.stub_address, stub.name);
     }
     (slots, stubs)
 }

@@ -617,6 +617,33 @@ jobs:
             -fuse-ld=lld -Wl,-e,_start "$probe.c" -o "$probe.elf"
           llvm-readobj --file-headers "$probe.elf"
           test "$(head -c 4 "$probe.elf" | od -An -tx1 | tr -d ' \n')" = '7f454c46'
+      - name: provision the macOS GNU x86 fixture compilers
+        if: runner.os == 'macOS' && (matrix.shard == 'two' || matrix.shard == 'three')
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install x86_64-elf-gcc x86_64-elf-binutils
+          gcc_bin="$(brew --prefix x86_64-elf-gcc)/bin/x86_64-elf-gcc"
+          objcopy_bin="$(brew --prefix x86_64-elf-binutils)/bin/x86_64-elf-objcopy"
+          "$gcc_bin" --version
+          test "$("$gcc_bin" -dumpmachine)" = 'x86_64-elf'
+          "$objcopy_bin" --version
+          echo "DISROBE_GCC_BIN=$gcc_bin" >> "$GITHUB_ENV"
+          echo "DISROBE_OBJCOPY_BIN=$objcopy_bin" >> "$GITHUB_ENV"
+          brew install mingw-w64
+          mingw_bin="$(brew --prefix mingw-w64)/toolchain-x86_64/bin"
+          mingw_gcc="$mingw_bin/x86_64-w64-mingw32-gcc"
+          "$mingw_gcc" --version
+          test "$("$mingw_gcc" -dumpmachine)" = 'x86_64-w64-mingw32'
+          export PATH="$mingw_bin:$PATH"
+          echo "$mingw_bin" >> "$GITHUB_PATH"
+          echo "DISROBE_SIMILARITY_GCC=$mingw_gcc" >> "$GITHUB_ENV"
+          probe="$RUNNER_TEMP/disrobe-mingw-link-probe"
+          trap 'rm -f -- "$probe.c" "$probe.exe"' EXIT
+          printf '#include <stdio.h>\nint main(void) { return puts("probe") < 0; }\n' > "$probe.c"
+          clang --target=x86_64-w64-windows-gnu "$probe.c" -o "$probe.exe"
+          llvm-readobj --file-headers "$probe.exe"
+          test "$(head -c 2 "$probe.exe")" = 'MZ'
       - name: restore the MSVC environment after reference tool setup
         if: runner.os == 'Windows'
         uses: step-security/msvc-dev-cmd@22c98154b708dbd743e6f27a933cf6ceba3305c4
@@ -703,6 +730,12 @@ jobs:
         timeout-minutes: 160
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+      - name: JavaScript differentials within the Boa CPU budget
+        if: matrix.shard == 'three'
+        run: cargo test -p disrobe-pass-js-deob --all-features --no-fail-fast -- --nocapture
+        timeout-minutes: 160
+        env:
+          RUST_TEST_THREADS: "1"
       - name: workspace shard three
         if: matrix.shard == 'three'
         run: >-
@@ -726,6 +759,7 @@ jobs:
           --exclude disrobe-python --exclude disrobe-pyarmor-pytrace --exclude disrobe-wasm
           --exclude disrobe-tool-process --exclude disrobe-pass-beam
           --exclude disrobe-pass-scriptlang --exclude disrobe-pass-shell
+          --exclude disrobe-pass-js-deob
         timeout-minutes: 160
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}

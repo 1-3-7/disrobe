@@ -1,10 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
+use object::read::SymbolIndex;
+use object::read::macho::Nlist as _;
 use object::{Object, ObjectSection};
 use serde::{Deserialize, Serialize};
 
 use crate::elf::{RelocSource, analyze as analyze_elf_dynamic};
+
+const MAX_MACHO_IMPORT_STUBS: usize = 65_536;
+const MAX_MACHO_IMPORT_NAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MACHO_SCANNED_NAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MACHO_SYMBOL_NAME_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportStub {
@@ -149,6 +156,234 @@ pub fn resolve_pe_iat_imports(bytes: &[u8]) -> Vec<ImportStub> {
     out.sort_by_key(|a: &ImportStub| a.slot_address);
     out.dedup();
     out
+}
+
+#[must_use]
+pub fn resolve_macho_stub_imports(bytes: &[u8]) -> Vec<ImportStub> {
+    let Ok(file): object::read::Result<object::read::macho::MachOFile64<'_>> =
+        object::read::macho::MachOFile64::parse(bytes)
+    else {
+        return Vec::new();
+    };
+    let mut indirect_table: Option<(usize, usize)> = None;
+    let mut has_symbol_table: bool = false;
+    let mut string_table: Option<(usize, usize)> = None;
+    let Ok(mut commands) = file.macho_load_commands() else {
+        return Vec::new();
+    };
+    loop {
+        let command = match commands.next() {
+            Ok(Some(command)) => command,
+            Ok(None) => break,
+            Err(_) => return Vec::new(),
+        };
+        let symtab = match command.symtab() {
+            Ok(symtab) => symtab,
+            Err(_) => return Vec::new(),
+        };
+        if let Some(symtab) = symtab {
+            if has_symbol_table {
+                return Vec::new();
+            }
+            has_symbol_table = true;
+            let Some(string_offset): Option<usize> =
+                usize::try_from(symtab.stroff.get(file.endian())).ok()
+            else {
+                return Vec::new();
+            };
+            let Some(string_size): Option<usize> =
+                usize::try_from(symtab.strsize.get(file.endian())).ok()
+            else {
+                return Vec::new();
+            };
+            let Some(string_end): Option<usize> = string_offset.checked_add(string_size) else {
+                return Vec::new();
+            };
+            if string_end > bytes.len() {
+                return Vec::new();
+            }
+            string_table = Some((string_offset, string_end));
+        }
+        let dysymtab = match command.dysymtab() {
+            Ok(dysymtab) => dysymtab,
+            Err(_) => return Vec::new(),
+        };
+        if let Some(dysymtab) = dysymtab {
+            if indirect_table.is_some() {
+                return Vec::new();
+            }
+            indirect_table = Some((
+                dysymtab.indirectsymoff.get(file.endian()) as usize,
+                dysymtab.nindirectsyms.get(file.endian()) as usize,
+            ));
+        }
+    }
+    let Some((indirect_offset, indirect_count)) = indirect_table else {
+        return Vec::new();
+    };
+    let Some((string_offset, string_end)) = string_table else {
+        return Vec::new();
+    };
+    let Some(indirect_bytes): Option<usize> = indirect_count.checked_mul(4) else {
+        return Vec::new();
+    };
+    let Some(indirect_end): Option<usize> = indirect_offset.checked_add(indirect_bytes) else {
+        return Vec::new();
+    };
+    let Some(indirect_data): Option<&[u8]> = bytes.get(indirect_offset..indirect_end) else {
+        return Vec::new();
+    };
+    let symbols = file.macho_symbol_table();
+    let mut out: Vec<ImportStub> = Vec::new();
+    let mut cached_names: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    let mut stub_entries: usize = 0;
+    let mut name_bytes: usize = 0;
+    let mut scanned_name_bytes: usize = 0;
+    for section in file.sections() {
+        let raw = section.macho_section();
+        if raw.flags.get(file.endian()) & object::macho::SECTION_TYPE
+            != object::macho::S_SYMBOL_STUBS
+        {
+            continue;
+        }
+        let stub_size: usize = raw.reserved2.get(file.endian()) as usize;
+        let Ok(stub_data) = section.data() else {
+            continue;
+        };
+        if stub_size == 0 || stub_data.len() % stub_size != 0 {
+            continue;
+        }
+        let indirect_start: usize = raw.reserved1.get(file.endian()) as usize;
+        for (position, _) in stub_data.chunks_exact(stub_size).enumerate() {
+            let Some(next_entries): Option<usize> = stub_entries.checked_add(1) else {
+                return Vec::new();
+            };
+            if next_entries > MAX_MACHO_IMPORT_STUBS {
+                return Vec::new();
+            }
+            stub_entries = next_entries;
+            let Some(indirect_index): Option<usize> = indirect_start.checked_add(position) else {
+                break;
+            };
+            let Some(entry_offset): Option<usize> = indirect_index.checked_mul(4) else {
+                break;
+            };
+            let Some(entry_end): Option<usize> = entry_offset.checked_add(4) else {
+                break;
+            };
+            let Some(entry): Option<&[u8]> = indirect_data.get(entry_offset..entry_end) else {
+                break;
+            };
+            let Ok(entry): Result<[u8; 4], _> = entry.try_into() else {
+                break;
+            };
+            let symbol_index: usize = if file.is_little_endian() {
+                u32::from_le_bytes(entry) as usize
+            } else {
+                u32::from_be_bytes(entry) as usize
+            };
+            if symbol_index
+                & ((object::macho::INDIRECT_SYMBOL_LOCAL | object::macho::INDIRECT_SYMBOL_ABS)
+                    as usize)
+                != 0
+            {
+                continue;
+            }
+            let Some(symbol) = symbols.symbol(SymbolIndex(symbol_index)).ok() else {
+                continue;
+            };
+            if symbol.n_type() & object::macho::N_TYPE != object::macho::N_UNDF
+                || symbol.n_type() & object::macho::N_EXT == 0
+            {
+                continue;
+            }
+            let name_index: u32 = symbol.n_strx(file.endian());
+            if !cached_names.contains_key(&name_index) {
+                let name_start: Option<usize> = usize::try_from(name_index)
+                    .ok()
+                    .and_then(|index: usize| string_offset.checked_add(index));
+                let raw_name: Option<&[u8]> = name_start.and_then(|start: usize| {
+                    let end: usize = match start.checked_add(MAX_MACHO_SYMBOL_NAME_BYTES) {
+                        Some(end) => end.min(string_end),
+                        None => string_end,
+                    };
+                    bytes.get(start..end)
+                });
+                let resolved: Option<String> = if let Some(raw_name) = raw_name {
+                    let remaining: usize = MAX_MACHO_SCANNED_NAME_BYTES - scanned_name_bytes;
+                    if remaining == 0 {
+                        return Vec::new();
+                    }
+                    let bounded_name: &[u8] = &raw_name[..raw_name.len().min(remaining)];
+                    let nul: Option<usize> = bounded_name.iter().position(|byte: &u8| *byte == 0);
+                    scanned_name_bytes += nul.map_or(bounded_name.len(), |index: usize| index + 1);
+                    match nul {
+                        Some(nul) => match core::str::from_utf8(&raw_name[..nul]).ok() {
+                            Some(name) => {
+                                let name: &str = name.strip_prefix('_').unwrap_or(name);
+                                (!name.is_empty()).then(|| name.to_owned())
+                            }
+                            None => None,
+                        },
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                cached_names.insert(name_index, resolved);
+            }
+            let Some(name): Option<&String> =
+                cached_names.get(&name_index).and_then(Option::as_ref)
+            else {
+                continue;
+            };
+            let Some(next_name_bytes): Option<usize> = name_bytes.checked_add(name.len()) else {
+                return Vec::new();
+            };
+            if next_name_bytes > MAX_MACHO_IMPORT_NAME_BYTES {
+                return Vec::new();
+            }
+            let Some(offset): Option<u64> = u64::try_from(position)
+                .ok()
+                .and_then(|position: u64| u64::try_from(stub_size).ok()?.checked_mul(position))
+            else {
+                continue;
+            };
+            let Some(stub_address): Option<u64> = section.address().checked_add(offset) else {
+                continue;
+            };
+            out.push(ImportStub {
+                stub_address,
+                slot_address: stub_address,
+                name: name.to_owned(),
+            });
+            name_bytes = next_name_bytes;
+        }
+    }
+    let mut unique: BTreeMap<u64, Option<String>> = BTreeMap::new();
+    for stub in out {
+        match unique.entry(stub.stub_address) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(stub.name));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry)
+                if entry.get().as_deref() != Some(stub.name.as_str()) =>
+            {
+                entry.insert(None);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+    unique
+        .into_iter()
+        .filter_map(|(stub_address, name): (u64, Option<String>)| {
+            name.map(|name: String| ImportStub {
+                stub_address,
+                slot_address: stub_address,
+                name,
+            })
+        })
+        .collect()
 }
 
 #[must_use]

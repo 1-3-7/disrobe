@@ -32,12 +32,12 @@ test("walkthrough and teaser decode, play and expose their captions", async ({ p
     if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
   });
   await page.goto("/assets/walkthrough/watch.html");
-  for (const [id, captions] of [["walkthrough", 6], ["teaser", 4]] as const) {
+  for (const [id, captions] of [["walkthrough", 22], ["teaser", 4]] as const) {
     const player = page.locator(`video#${id}`);
     await player.evaluate(async (video: HTMLVideoElement): Promise<void> => { video.muted = true; await video.play(); });
     await expect.poll(async (): Promise<number> => player.evaluate((video: HTMLVideoElement): number => video.readyState)).toBeGreaterThanOrEqual(2);
     const duration: number = await player.evaluate((video: HTMLVideoElement): number => video.duration);
-    expect(duration).toBeCloseTo(id === "walkthrough" ? 36 : 20, 1);
+    expect(duration).toBeCloseTo(id === "walkthrough" ? 132 : 20, 1);
     expect(await player.evaluate((video: HTMLVideoElement): number => video.videoWidth)).toBe(1920);
     expect(await player.evaluate((video: HTMLVideoElement): number => video.videoHeight)).toBe(1080);
     await expect.poll(async (): Promise<number> => player.evaluate((video: HTMLVideoElement): number => video.textTracks[0]?.cues?.length ?? 0)).toBe(captions);
@@ -57,7 +57,7 @@ test("media page has neutral themes, accessible controls and reachable source fi
   });
   await page.goto("/assets/walkthrough/watch.html");
   await waitForPosters(page);
-  for (const [theme, background] of [["dark", "rgb(16, 16, 16)"], ["light", "rgb(250, 250, 250)"]] as const) {
+  for (const [theme, background] of [["dark", "rgb(17, 17, 17)"], ["light", "rgb(255, 255, 255)"]] as const) {
     if (theme === "light") await page.getByRole("button", { name: "Light mode", exact: true }).click();
     await expect(page.locator("body")).toHaveCSS("background-color", background);
     expect(await page.evaluate((): boolean => document.documentElement.scrollWidth > innerWidth)).toBe(false);
@@ -85,8 +85,8 @@ test("introduction plays the complete walkthrough without looping", async ({ pag
   expect(await player.evaluate((video: HTMLVideoElement): boolean => video.loop)).toBe(false);
   await player.evaluate(async (video: HTMLVideoElement): Promise<void> => { video.muted = true; await video.play(); });
   await expect.poll(() => player.evaluate((video: HTMLVideoElement): number => video.currentTime), { timeout: 12_000 }).toBeGreaterThan(5);
-  expect(await player.evaluate((video: HTMLVideoElement): number => video.duration)).toBeCloseTo(36, 1);
-  await expect.poll(() => player.evaluate((video: HTMLVideoElement): number => video.textTracks[0]?.cues?.length ?? 0)).toBe(6);
+  expect(await player.evaluate((video: HTMLVideoElement): number => video.duration)).toBeCloseTo(132, 1);
+  await expect.poll(() => player.evaluate((video: HTMLVideoElement): number => video.textTracks[0]?.cues?.length ?? 0)).toBe(22);
   await player.evaluate((video: HTMLVideoElement): void => { video.pause(); video.currentTime = video.duration - 0.5; });
   await expect.poll(() => player.evaluate((video: HTMLVideoElement): boolean => !video.seeking && video.readyState >= 2)).toBe(true);
   await player.evaluate(async (video: HTMLVideoElement): Promise<void> => { await video.play(); });

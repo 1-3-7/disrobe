@@ -18,8 +18,8 @@ use disrobe_pass_native::{
 };
 
 use common::{
-    CompilerId, available_compilers, compile_object_opt, function_code, link_and_run, scratch_dir,
-    strip_includes,
+    CompilerId, available_x86_compilers, compile_object_opt, compile_x86_object, function_code,
+    link_and_run, scratch_dir, strip_includes,
 };
 use disrobe_core::scratch::ScratchDir;
 
@@ -146,11 +146,14 @@ fn grade_battery(
     let object_path: PathBuf = scratch
         .path()
         .join(format!("division_{}_{opt}_{bits}.o", compiler.bin));
-    let Some(object): Option<Vec<u8>> =
-        compile_object_opt(compiler.bin, opt, &["-c"], &source, &object_path)
-    else {
-        return;
-    };
+    let object: Vec<u8> = compile_x86_object(
+        compiler.bin,
+        common::HOST_ABI,
+        opt,
+        &["-c"],
+        &source,
+        &object_path,
+    );
     for divisor in divisors {
         for prefix in ["ud", "sd"] {
             if prefix == "sd" && *divisor >= (1u64 << (bits - 1)) {
@@ -207,7 +210,7 @@ fn grade_battery(
 
 #[test]
 fn magic_lowered_division_recovers_the_compiler_divisor() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     if compilers.is_empty() {
         eprintln!("skipping constant-division battery: no C compiler on PATH");
         return;
@@ -366,7 +369,7 @@ const DIFFERENTIAL_INPUTS: &str = "0, 1, 2, 3, 6, 7, 8, 13, 14, 41, 100, 1000, 6
 
 #[test]
 fn recovered_constant_division_matches_the_compiled_function() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     if compilers.is_empty() {
         eprintln!("skipping constant-division differential: no C compiler on PATH");
         return;
@@ -385,11 +388,21 @@ fn recovered_constant_division_matches_the_compiled_function() {
             let object_path: PathBuf = scratch
                 .path()
                 .join(format!("differential_{}_{opt}.o", compiler.bin));
-            let Some(object): Option<Vec<u8>> =
-                compile_object_opt(compiler.bin, opt, &["-c"], &program, &object_path)
-            else {
-                continue;
-            };
+            let object: Vec<u8> = compile_x86_object(
+                compiler.bin,
+                common::HOST_ABI,
+                opt,
+                &["-c"],
+                &program,
+                &object_path,
+            );
+            let host_path: PathBuf = scratch
+                .path()
+                .join(format!("differential_{}_{opt}_host.o", compiler.bin));
+            let host_object: Vec<u8> =
+                compile_object_opt(compiler.bin, opt, &["-c"], &program, &host_path).expect(
+                    "compile the host-native reference for the constant-division differential",
+                );
             let mut declarations: String = String::new();
             let mut body: String = String::new();
             let mut lifted: usize = 0;
@@ -465,7 +478,7 @@ fn recovered_constant_division_matches_the_compiled_function() {
                  }}\n"
             );
             let tag: String = format!("constdiv_{}_{}", compiler.bin, opt.trim_start_matches('-'));
-            let stdout: String = link_and_run(compiler.bin, &driver, &object, &tag, 60);
+            let stdout: String = link_and_run(compiler.bin, &driver, &host_object, &tag, 60);
             assert!(
                 stdout.contains("OK"),
                 "{} {opt}: a recovered constant division disagreed with the compiled function:\n{stdout}",
@@ -497,7 +510,7 @@ fn recovered_constant_division_matches_the_compiled_function() {
 
 #[test]
 fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     if compilers.is_empty() {
         eprintln!("skipping fixed-point near-miss: no C compiler on PATH");
         return;
@@ -512,11 +525,14 @@ fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
             let object_path: PathBuf = scratch
                 .path()
                 .join(format!("nearmiss_{}_{opt}.o", compiler.bin));
-            let Some(object): Option<Vec<u8>> =
-                compile_object_opt(compiler.bin, opt, &["-c"], program, &object_path)
-            else {
-                continue;
-            };
+            let object: Vec<u8> = compile_x86_object(
+                compiler.bin,
+                common::HOST_ABI,
+                opt,
+                &["-c"],
+                program,
+                &object_path,
+            );
             for name in ["near_a", "near_b", "near_c"] {
                 let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object, name)
                 else {
@@ -550,7 +566,7 @@ fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
 
 #[test]
 fn division_inside_a_loop_never_names_the_wrong_divisor() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     if compilers.is_empty() {
         eprintln!("skipping loop-context constant division: no C compiler on PATH");
         return;
@@ -564,11 +580,14 @@ fn division_inside_a_loop_never_names_the_wrong_divisor() {
             let object_path: PathBuf = scratch
                 .path()
                 .join(format!("loopdiv_{}_{opt}.o", compiler.bin));
-            let Some(object): Option<Vec<u8>> =
-                compile_object_opt(compiler.bin, opt, &["-c"], program, &object_path)
-            else {
-                continue;
-            };
+            let object: Vec<u8> = compile_x86_object(
+                compiler.bin,
+                common::HOST_ABI,
+                opt,
+                &["-c"],
+                program,
+                &object_path,
+            );
             let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object, "lp_div")
             else {
                 continue;
@@ -603,7 +622,7 @@ fn division_inside_a_loop_never_names_the_wrong_divisor() {
 
 #[test]
 fn whole_program_recovery_reaches_constant_division() {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     if compilers.is_empty() {
         eprintln!("skipping whole-program constant division: no C compiler on PATH");
         return;
@@ -614,11 +633,14 @@ fn whole_program_recovery_reaches_constant_division() {
     let mut measured: usize = 0;
     for compiler in &compilers {
         let object_path: PathBuf = scratch.path().join(format!("wholeprog_{}.o", compiler.bin));
-        let Some(object): Option<Vec<u8>> =
-            compile_object_opt(compiler.bin, "-O2", &["-c"], program, &object_path)
-        else {
-            continue;
-        };
+        let object: Vec<u8> = compile_x86_object(
+            compiler.bin,
+            common::HOST_ABI,
+            "-O2",
+            &["-c"],
+            program,
+            &object_path,
+        );
         let mut functions: Vec<ProgramFunction> = Vec::new();
         for name in ["wp_div", "wp_entry"] {
             let Some((code, address)): Option<(Vec<u8>, u64)> = function_code(&object, name) else {

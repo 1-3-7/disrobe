@@ -166,7 +166,7 @@ jobs:
           pnpm --dir xtask/graphgen install --frozen-lockfile
           BIN="$PWD/target/${{ matrix.target }}/release/disrobe"
           python -m unittest discover -s docs/demo -p test_extract_release_media.py -v
-          DISROBE_BIN="$BIN" node --test docs/demo/capture-cli.test.mjs docs/demo/media-version.test.mjs docs/demo/verify-release-media.test.mjs docs/demo/render-preview.test.mjs
+          DISROBE_BIN="$BIN" node --test docs/demo/cli-plan.test.mjs docs/demo/capture-cli.test.mjs docs/demo/media-version.test.mjs docs/demo/verify-release-media.test.mjs docs/demo/render-preview.test.mjs
           node docs/demo/capture-cli.mjs --binary "$BIN" --release-tag "$REL_TAG"
           node docs/demo/render-media.mjs --release-tag "$REL_TAG"
           mkdir -p dist/walkthrough

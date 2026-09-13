@@ -455,11 +455,16 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
 
 fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
     let host_cc: String = cc()?;
-    let clang_cc: String = clang()?;
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let host_path: PathBuf = dir.join(format!("{}_gt.o", program.name));
     let host_obj: Vec<u8> = compile_object(&host_cc, &CC_FLAGS, program.c_source, &host_path)?;
+    let sysv_obj: Vec<u8> = compile_sysv_object(program, &dir)?;
+    Some((host_cc, host_obj, sysv_obj))
+}
+
+fn compile_sysv_object(program: &WholeProgram, dir: &Path) -> Option<Vec<u8>> {
+    let clang_cc: String = clang()?;
     let sysv_path: PathBuf = dir.join(format!("{}_sysv.o", program.name));
     let sysv_flags: [&str; 5] = [
         "--target=x86_64-unknown-linux-gnu",
@@ -477,7 +482,20 @@ fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
         );
         return None;
     };
-    Some((host_cc, host_obj, sysv_obj))
+    Some(sysv_obj)
+}
+
+fn compile_x86_host_object(program: &WholeProgram, dir: &Path) -> Option<Vec<u8>> {
+    let clang_cc: String = clang()?;
+    let host_path: PathBuf = dir.join(format!("{}_x86_host.o", program.name));
+    let host_flags: [&str; 5] = [
+        "--target=x86_64-unknown-linux-gnu",
+        "-fno-stack-protector",
+        "-fno-optimize-sibling-calls",
+        "-fcf-protection=none",
+        "-c",
+    ];
+    compile_object(&clang_cc, &host_flags, program.c_source, &host_path)
 }
 
 #[test]
@@ -487,9 +505,26 @@ fn object_backed_value_switches_keep_the_proven_switch_route() {
             .iter()
             .find(|program: &&WholeProgram| program.name == name)
             .expect("named value-switch fixture");
-        let (_, host_object, sysv_object): (String, Vec<u8>, Vec<u8>) =
-            compile_dual(program).expect("host and sysv compilers");
+        let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp-value-switch");
+        let (host_object, sysv_object): (Vec<u8>, Vec<u8>) = if cfg!(target_arch = "x86_64") {
+            let (_, host_object, sysv_object): (String, Vec<u8>, Vec<u8>) =
+                compile_dual(program).expect("host and sysv compilers");
+            (host_object, sysv_object)
+        } else {
+            let host_object: Vec<u8> = compile_x86_host_object(program, scratch.path())
+                .expect("clang must emit the x86-64 host-ABI object");
+            let sysv_object: Vec<u8> = compile_sysv_object(program, scratch.path())
+                .expect("clang must emit the x86-64 SysV object");
+            (host_object, sysv_object)
+        };
         for (object, abi) in [(&host_object, HOST_ABI), (&sysv_object, PseudoAbi::SysV)] {
+            let file: object::File<'_> =
+                object::File::parse(object.as_slice()).expect("value-switch object parses");
+            assert_eq!(
+                file.architecture(),
+                object::Architecture::X86_64,
+                "{name} under {abi:?} must supply x86-64 bytes to the x86 decoder"
+            );
             let recovered: RecoveredProgram = recover_program(object, program, abi)
                 .expect("the object-backed value switch must recover");
             assert!(

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { copyFileSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +28,18 @@ test("preview renders the existing recording without relabeling its binary versi
     assert.equal(completed.capturedAt, source.capturedAt);
     assert.deepEqual(completed.files.filter((file) => file.name !== "preview.gif"), source.files.filter((file) => file.name !== "preview.gif"));
     assert.equal(readFileSync(join(directory, "preview.gif")).subarray(0, 6).toString("ascii"), "GIF89a");
+    const pixel = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-ss", "5", "-i", join(directory, "preview.gif"), "-frames:v", "1", "-vf", "format=rgb24,crop=1:1:4:4", "-f", "rawvideo", "-"], { timeout: 30_000, maxBuffer: 1024, windowsHide: true });
+    assert.ifError(pixel.error);
+    assert.equal(pixel.status, 0, pixel.stderr.toString());
+    assert.equal(pixel.stdout.length, 3);
+    const [red, green, blue] = pixel.stdout;
+    assert.ok(red <= 32, "preview canvas must remain dark");
+    assert.equal(red, green, "preview canvas must not acquire a color cast");
+    assert.equal(green, blue, "preview canvas must not acquire a color cast");
+    const sourcePixel = spawnSync("ffmpeg", ["-v", "error", "-nostdin", "-ss", "5", "-i", join(directory, "teaser.mp4"), "-frames:v", "1", "-vf", "format=rgb24,crop=1:1:4:4", "-f", "rawvideo", "-"], { timeout: 30_000, maxBuffer: 1024, windowsHide: true });
+    assert.ifError(sourcePixel.error);
+    assert.equal(sourcePixel.status, 0, sourcePixel.stderr.toString());
+    assert.deepEqual(pixel.stdout, sourcePixel.stdout, "preview canvas must retain the source video's gray");
   });
 });
 

@@ -32,7 +32,8 @@ use crate::desync::{
 use crate::error::{Error, Result};
 use crate::flow_facts::{ControlFlow, FlowModel, x86_flow};
 use crate::plt_resolve::{
-    ImportStub, indirect_jmp_slot, resolve_elf_plt_imports, resolve_pe_iat_imports,
+    ImportStub, indirect_jmp_slot, resolve_elf_plt_imports, resolve_macho_stub_imports,
+    resolve_pe_iat_imports,
 };
 use crate::pseudo_c::aarch64::AARCH64_INSTRUCTION_BYTES;
 
@@ -200,11 +201,15 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
     instructions.sort_by_key(|i: &DisasmInstruction| i.offset);
 
     let mut symbol_table: Vec<DisasmSymbol> = build_symbol_table(bytes, &native);
-    let has_function_or_export: bool = symbol_table.iter().any(|s: &DisasmSymbol| {
+    let has_function_or_export: bool = symbol_table.iter().any(|symbol: &DisasmSymbol| {
         matches!(
-            s.kind,
+            symbol.kind,
             DisasmSymbolKind::Function | DisasmSymbolKind::Export
-        )
+        ) && instructions
+            .binary_search_by_key(&symbol.address, |instruction: &DisasmInstruction| {
+                instruction.offset
+            })
+            .is_ok()
     });
     let needs_discovery: bool = needs_function_discovery(arch, has_function_or_export);
     let discovered_starts: BTreeSet<u64> = if needs_discovery {
@@ -456,8 +461,14 @@ fn inject_discovered_functions(
     if incomplete_noreturn {
         boundary_starts.extend(discovered.starts.iter().copied());
     }
+    boundary_starts =
+        normalize_x86_endbr_starts(arch, instructions, boundary_starts.into_iter().collect())
+            .into_iter()
+            .collect();
     let mut injected_starts: BTreeSet<u64> = BTreeSet::new();
-    for start in discovered.starts {
+    let discovered_starts: Vec<u64> =
+        normalize_x86_endbr_starts(arch, instructions, discovered.starts);
+    for start in discovered_starts {
         if !seen.insert(start) {
             continue;
         }
@@ -474,6 +485,37 @@ fn inject_discovered_functions(
         a.address.cmp(&b.address).then_with(|| a.name.cmp(&b.name))
     });
     injected_starts
+}
+
+fn normalize_x86_endbr_starts(
+    arch: DisasmArch,
+    instructions: &[DisasmInstruction],
+    starts: Vec<u64>,
+) -> Vec<u64> {
+    if !matches!(arch, DisasmArch::X86_64) {
+        return starts;
+    }
+    let mut normalized: Vec<u64> = starts
+        .into_iter()
+        .map(|start: u64| {
+            let Some(prefix): Option<u64> = start.checked_sub(4) else {
+                return start;
+            };
+            instructions
+                .binary_search_by_key(&prefix, |instruction: &DisasmInstruction| {
+                    instruction.offset
+                })
+                .ok()
+                .and_then(|index: usize| instructions.get(index))
+                .filter(|instruction: &&DisasmInstruction| {
+                    instruction.bytes.as_slice() == [0xF3, 0x0F, 0x1E, 0xFA]
+                })
+                .map_or(start, |_: &DisasmInstruction| prefix)
+        })
+        .collect();
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
 }
 
 fn noreturn_import_targets(bytes: &[u8]) -> BTreeSet<u64> {
@@ -1840,6 +1882,17 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
             }
         }
     }
+    if matches!(native.format, NativeFormat::MachO64) {
+        for import in resolve_macho_stub_imports(bytes) {
+            if seen.insert((import.stub_address, import.name.clone())) {
+                out.push(DisasmSymbol {
+                    address: import.stub_address,
+                    name: import.name,
+                    kind: DisasmSymbolKind::Import,
+                });
+            }
+        }
+    }
 
     out.sort_by(|a: &DisasmSymbol, b: &DisasmSymbol| {
         a.address.cmp(&b.address).then_with(|| a.name.cmp(&b.name))
@@ -2595,6 +2648,35 @@ mod tests {
         buf[at + 1..at + 5].copy_from_slice(&rel.to_le_bytes());
     }
 
+    #[test]
+    fn x86_endbr_prologue_discovery_normalizes_to_the_landing_pad() {
+        let instructions: Vec<DisasmInstruction> = vec![
+            DisasmInstruction {
+                offset: 0x1129,
+                bytes: vec![0xF3, 0x0F, 0x1E, 0xFA],
+                ..DisasmInstruction::default()
+            },
+            DisasmInstruction {
+                offset: 0x112D,
+                bytes: vec![0x55],
+                ..DisasmInstruction::default()
+            },
+            DisasmInstruction {
+                offset: 0x1141,
+                bytes: vec![0x55],
+                ..DisasmInstruction::default()
+            },
+        ];
+        assert_eq!(
+            normalize_x86_endbr_starts(DisasmArch::X86_64, &instructions, vec![0x112D, 0x1141]),
+            vec![0x1129, 0x1141]
+        );
+        assert_eq!(
+            normalize_x86_endbr_starts(DisasmArch::X86, &instructions, vec![0x112D]),
+            vec![0x112D]
+        );
+    }
+
     fn two_function_elf() -> Vec<u8> {
         let mut code: Vec<u8> = vec![0xCCu8; 0x40];
         code[0x00] = 0x90;
@@ -2865,6 +2947,29 @@ mod tests {
                 .function_universe
                 .requires_reference_corroboration(0x10 + 64 * 6)
         );
+    }
+
+    #[test]
+    fn incomplete_noreturn_endbr_entry_keeps_reference_corroboration() {
+        let mut elf: Vec<u8> = bounded_noreturn_chain_elf(65);
+        let text_offset: usize = {
+            let file: object::File<'_> = object::File::parse(&*elf).expect("parse ELF");
+            let (offset, _): (u64, u64) = file
+                .section_by_name(".text")
+                .expect("text section")
+                .file_range()
+                .expect("text file range");
+            usize::try_from(offset).expect("small ELF")
+        };
+        elf[text_offset + 12..text_offset + 16].copy_from_slice(&[0xf3, 0x0f, 0x1e, 0xfa]);
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes());
+        let build: DisasmBuild =
+            build_disasm_payload_with_discovery(&elf).expect("build linked payload");
+        let starts: Vec<u64> = discovered_symbol_starts(&build.payload);
+        assert_eq!(starts.len(), 65);
+        assert!(starts.contains(&12));
+        assert!(!starts.contains(&16));
+        assert!(build.function_universe.requires_reference_corroboration(12));
     }
 
     #[test]

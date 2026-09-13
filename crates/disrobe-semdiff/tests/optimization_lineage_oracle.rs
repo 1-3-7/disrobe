@@ -9,9 +9,14 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
+use std::time::Duration;
+
+#[path = "support/x86_toolchain.rs"]
+mod x86_toolchain;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::CapturedOutput;
 use disrobe_nir::{BinaryOp, NirFunction, NirInstr, NirModule, NirOp, SourceLang, SourceRef};
 use disrobe_nir_lift::lower_x86_64;
 use disrobe_pass_native::disasm_ir::build_disasm_payload;
@@ -163,10 +168,7 @@ const MIN_AGGREGATE_RECALL: f64 = 0.45;
 const OUTLINE_FRAGMENT_OVERFLOW: usize = 3;
 
 fn tool_responds(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .is_ok_and(|output: Output| output.status.success())
+    x86_toolchain::compiler_available(tool)
 }
 
 fn available_compilers() -> Vec<&'static str> {
@@ -177,6 +179,9 @@ fn available_compilers() -> Vec<&'static str> {
 }
 
 fn strip_tool() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        return Command::new("strip").output().ok().map(|_| "strip");
+    }
     CANDIDATE_STRIP_TOOLS
         .into_iter()
         .find(|tool: &&str| Command::new(tool).output().is_ok())
@@ -191,9 +196,8 @@ struct Toolchain {
 
 impl Toolchain {
     fn command(&self, compiler: &str) -> Command {
-        let mut command: Command = Command::new(compiler);
+        let mut command: Command = x86_toolchain::command(compiler);
         if cfg!(target_os = "windows") && compiler == "clang" {
-            command.args(["-target", "x86_64-w64-mingw32"]);
             if let Some(sysroot) = &self.clang_sysroot {
                 command.arg("--sysroot").arg(sysroot);
             }
@@ -203,12 +207,11 @@ impl Toolchain {
 }
 
 fn runtime_file(mut command: Command, name: &str) -> PathBuf {
-    let output: Output = command
-        .arg(format!("-print-file-name={name}"))
-        .output()
+    command.arg(format!("-print-file-name={name}"));
+    let output: CapturedOutput = x86_toolchain::run(&command, Duration::from_secs(10))
         .expect("query the compiler runtime input");
     assert!(
-        output.status.success(),
+        output.exit_code == Some(0),
         "compiler runtime query for {name} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -304,7 +307,7 @@ fn require_toolchain() -> Option<Toolchain> {
         refuse_or_announce("neither `gcc` nor `clang` is callable on PATH");
         return None;
     };
-    let Some(strip): Option<&'static str> = strip_tool() else {
+    let Some(strip): Option<&'static str> = x86_toolchain::strip_tool(strip_tool()) else {
         refuse_or_announce("neither `llvm-strip` nor `strip` is callable on PATH");
         return None;
     };
@@ -342,23 +345,24 @@ fn run_compiler(
     opt: &str,
     source: &Path,
     out: &Path,
-) -> std::io::Result<Output> {
-    toolchain
-        .command(compiler)
-        .args([opt, "-g", "-o"])
-        .arg(out)
-        .arg(source)
-        .output()
+) -> std::io::Result<CapturedOutput> {
+    let mut command: Command = toolchain.command(compiler);
+    command.args([opt, "-g", "-o"]).arg(out).arg(source);
+    x86_toolchain::run(&command, Duration::from_mins(1))
 }
 
-fn compiler_diagnostic(compiler: &str, opt: &str, outcome: &std::io::Result<Output>) -> String {
+fn compiler_diagnostic(
+    compiler: &str,
+    opt: &str,
+    outcome: &std::io::Result<CapturedOutput>,
+) -> String {
     match outcome {
         Ok(output) => {
             let stderr: String = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             if stderr.is_empty() {
                 format!(
-                    "{compiler} {opt} exited with {} and no diagnostic",
-                    output.status
+                    "{compiler} {opt} exited with {:?} and no diagnostic",
+                    output.exit_code
                 )
             } else {
                 stderr
@@ -372,11 +376,11 @@ fn lto_refusal(toolchain: &Toolchain, compiler: &str, scratch: &Path) -> Option<
     let source: PathBuf = scratch.join(format!("lto-probe-{compiler}.c"));
     std::fs::write(&source, LTO_PROBE_SOURCE).expect("write the link-time-optimization probe");
     let out: PathBuf = scratch.join(format!("lto-probe-{compiler}.exe"));
-    let outcome: std::io::Result<Output> =
+    let outcome: std::io::Result<CapturedOutput> =
         run_compiler(toolchain, compiler, LTO_OPT_LEVEL, &source, &out);
     let linked: bool = outcome
         .as_ref()
-        .is_ok_and(|output: &Output| output.status.success())
+        .is_ok_and(|output: &CapturedOutput| output.exit_code == Some(0))
         && out.is_file();
     if linked {
         return None;
@@ -502,6 +506,7 @@ struct LiftStats {
 }
 
 fn lift_pcode_module(image: &[u8]) -> (NirModule, LiftStats) {
+    x86_toolchain::assert_x86_artifact(image);
     let payload = build_disasm_payload(image).expect("disasm payload");
     let mut ordered: Vec<(u64, Vec<u8>)> = payload
         .instructions
@@ -576,12 +581,12 @@ fn prepare_builds(
         for &opt in &plan.opt_levels {
             let tag: String = format!("{}{opt}", plan.compiler);
             let target_path: PathBuf = scratch.join(format!("target-{tag}.exe"));
-            let outcome: std::io::Result<Output> =
+            let outcome: std::io::Result<CapturedOutput> =
                 run_compiler(toolchain, plan.compiler, opt, source_path, &target_path);
             assert!(
                 outcome
                     .as_ref()
-                    .is_ok_and(|output: &Output| output.status.success())
+                    .is_ok_and(|output: &CapturedOutput| output.exit_code == Some(0))
                     && target_path.is_file(),
                 "{tag} is in this grade's declared build matrix and the host toolchain accepted the same option in its capability probe, so a failure here is a real defect and not a missing reference: {}",
                 compiler_diagnostic(plan.compiler, opt, &outcome)
@@ -1241,7 +1246,7 @@ fn prepare_outline_fixture(toolchain: &Toolchain, scratch: &Path) -> Option<Outl
         let source_path: PathBuf = scratch.join(format!("outline-{tag}.c"));
         std::fs::write(&source_path, source).expect("write outline source");
         let target_path: PathBuf = scratch.join(format!("outline-{tag}.exe"));
-        let outcome: std::io::Result<Output> = run_compiler(
+        let outcome: std::io::Result<CapturedOutput> = run_compiler(
             toolchain,
             OUTLINE_COMPILER,
             OUTLINE_OPT_LEVEL,
@@ -1251,7 +1256,7 @@ fn prepare_outline_fixture(toolchain: &Toolchain, scratch: &Path) -> Option<Outl
         assert!(
             outcome
                 .as_ref()
-                .is_ok_and(|output: &Output| output.status.success())
+                .is_ok_and(|output: &CapturedOutput| output.exit_code == Some(0))
                 && target_path.is_file(),
             "outline fixture build {tag} must succeed with a toolchain that already passed its capability probe: {}",
             compiler_diagnostic(OUTLINE_COMPILER, OUTLINE_OPT_LEVEL, &outcome)
@@ -1260,11 +1265,7 @@ fn prepare_outline_fixture(toolchain: &Toolchain, scratch: &Path) -> Option<Outl
         let named: BTreeMap<String, u64> = named_addresses(&bytes);
         let stripped_path: PathBuf = scratch.join(format!("outline-{tag}.stripped.exe"));
         assert!(
-            strip_copy(
-                strip_tool().expect("strip tool must be present"),
-                &target_path,
-                &stripped_path
-            ),
+            strip_copy(toolchain.strip, &target_path, &stripped_path),
             "real strip must succeed on the outline fixture build {tag}"
         );
         let stripped_bytes: Vec<u8> =

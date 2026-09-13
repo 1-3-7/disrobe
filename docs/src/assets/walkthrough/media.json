@@ -1,93 +1,257 @@
 {
-  "schema": "disrobe.walkthrough-media.v3",
-  "capturedAt": "2026-09-12T11:57:24.585Z",
+  "schema": "disrobe.walkthrough-media.v4",
+  "capturedAt": "2026-09-13T00:01:20.183Z",
   "binary": {
     "version": "disrobe 0.10.6",
-    "sha256": "c3ac06a2784eefea8a771cbd8c92823ffdf1d7753eebb62a406264a49a8e161a"
+    "sha256": "8b7440d06e6b9ae5fa148561ce20a43a3b6dfdfe2691cf067b53bcc490baf891"
   },
   "workspaceVersion": "0.10.6",
   "releaseTag": "v0.10.6",
-  "recordingSha256": "b3c64027c2cccee988506a8ca00daee6e19ff933360d3a2940ad2ceb7050d5f6",
+  "recordingSha256": "c408828e25ee62b40259b5a70e698575462daa19775cd4a05cc732b4c8b6c950",
+  "socialCardSha256": "d8f9327a19ed994192031c0d896d62d4b00f963da233ea7aa3a057f89a4f33d7",
   "presentation": {
     "width": 1920,
     "height": 1080,
     "fps": 60,
+    "openingMs": 4000,
+    "closingMs": 8000,
     "timing": "Edited command entry and reading time; elapsedMs records each process separately."
   },
-  "durationSeconds": 36,
+  "durationSeconds": 132,
   "teaserDurationSeconds": 20,
+  "commandCount": 20,
+  "publicCommandCount": 66,
+  "chapters": [
+    {
+      "title": "Unpack and route",
+      "startMs": 0,
+      "endMs": 28000
+    },
+    {
+      "title": "Recover readable code",
+      "startMs": 28000,
+      "endMs": 58000
+    },
+    {
+      "title": "Inspect the evidence",
+      "startMs": 58000,
+      "endMs": 76000
+    },
+    {
+      "title": "Keep the recovery evidence",
+      "startMs": 76000,
+      "endMs": 100000
+    },
+    {
+      "title": "Work with your tools",
+      "startMs": 100000,
+      "endMs": 132000
+    }
+  ],
   "cues": [
     {
+      "id": "identify",
+      "chapter": "Unpack and route",
+      "title": "Recognize the packed executable",
+      "description": "Inspect the file's packer evidence before choosing a recovery path.",
+      "startMs": 4000,
+      "endMs": 10000,
+      "command": "disrobe identify hello.packed.exe"
+    },
+    {
       "id": "native",
-      "title": "Unpack a native binary",
-      "description": "Decode the UPX payload from a packed executable.",
-      "startMs": 0,
-      "endMs": 6000,
+      "chapter": "Unpack and route",
+      "title": "Unpack the native payload",
+      "description": "Recover the UPX payload as a separate binary.",
+      "startMs": 10000,
+      "endMs": 16000,
       "command": "disrobe native unpack hello.packed.exe --out recovered/hello.bin"
     },
     {
-      "id": "indicators",
-      "title": "Extract indicators",
-      "description": "Find the URL, email address, and IP address in a file.",
-      "startMs": 6000,
-      "endMs": 11000,
-      "command": "disrobe ioc indicators.txt"
+      "id": "extract",
+      "chapter": "Unpack and route",
+      "title": "Open the application container",
+      "description": "Extract the APK's archive members into a directory.",
+      "startMs": 16000,
+      "endMs": 22000,
+      "command": "disrobe extract fixture.apk --out recovered/archive"
     },
     {
       "id": "auto",
-      "title": "Let Disrobe choose the recovery path",
-      "description": "Identify the module and save its recovery reports and stages.",
-      "startMs": 11000,
-      "endMs": 16000,
+      "chapter": "Unpack and route",
+      "title": "Let Disrobe choose the passes",
+      "description": "Keep the recovery report and each executed stage's output.",
+      "startMs": 22000,
+      "endMs": 28000,
       "command": "disrobe auto add.wasm --out recovered/auto --capture-stages"
     },
     {
+      "id": "python",
+      "chapter": "Recover readable code",
+      "title": "Recover Python from bytecode",
+      "description": "Decompile the code object without invoking Python for a round-trip check.",
+      "startMs": 28000,
+      "endMs": 34000,
+      "command": "disrobe py decompile hello.pyc --out recovered/python --no-roundtrip"
+    },
+    {
       "id": "lua",
-      "title": "Decompile Lua bytecode",
-      "description": "Recover source from a compiled Lua chunk.",
-      "startMs": 16000,
-      "endMs": 22000,
+      "chapter": "Recover readable code",
+      "title": "Read the Lua program",
+      "description": "Turn the compiled chunk into Lua source.",
+      "startMs": 34000,
+      "endMs": 40000,
       "command": "disrobe lua decompile greet.luac --out recovered/greet.lua"
     },
     {
+      "id": "unbundle",
+      "chapter": "Recover readable code",
+      "title": "Separate the bundled modules",
+      "description": "Split the Webpack bundle into individual module files.",
+      "startMs": 40000,
+      "endMs": 46000,
+      "command": "disrobe js unbundle bundle.js --out recovered/modules"
+    },
+    {
+      "id": "sourcemap",
+      "chapter": "Recover readable code",
+      "title": "Restore the embedded originals",
+      "description": "Write the original sources retained in the source map.",
+      "startMs": 46000,
+      "endMs": 52000,
+      "command": "disrobe js sourcemap bundle.js.map --out recovered/sources"
+    },
+    {
       "id": "wasm",
-      "title": "Lift WebAssembly to WAT",
-      "description": "Write the module's functions and instructions as text.",
-      "startMs": 22000,
-      "endMs": 28000,
+      "chapter": "Recover readable code",
+      "title": "Read WebAssembly instructions",
+      "description": "The WAT retains the exported add function and its i32.add instruction.",
+      "startMs": 52000,
+      "endMs": 58000,
       "command": "disrobe wasm decompile add.wasm --target wat --out recovered/add.wat"
     },
     {
-      "id": "source",
-      "title": "Read the recovered instructions",
-      "description": "The exported add function retains its two inputs and i32.add instruction.",
-      "startMs": 28000,
-      "endMs": 36000,
-      "command": "Get-Content -LiteralPath recovered/add.wat"
+      "id": "apk",
+      "chapter": "Inspect the evidence",
+      "title": "Decode Android resources",
+      "description": "Read the package, resource names and decoded manifest.",
+      "startMs": 58000,
+      "endMs": 64000,
+      "command": "disrobe apk fixture.apk --out recovered/android"
+    },
+    {
+      "id": "indicators",
+      "chapter": "Inspect the evidence",
+      "title": "Extract indicators",
+      "description": "Find the URL, email address and documentation-range IP in these input bytes.",
+      "startMs": 64000,
+      "endMs": 70000,
+      "command": "disrobe ioc indicators.txt"
+    },
+    {
+      "id": "strings",
+      "chapter": "Inspect the evidence",
+      "title": "Inspect the original strings",
+      "description": "List printable strings with decoding disabled.",
+      "startMs": 70000,
+      "endMs": 76000,
+      "command": "disrobe strings indicators.txt --no-decode"
+    },
+    {
+      "id": "context",
+      "chapter": "Keep the recovery evidence",
+      "title": "Review the chain's verdict",
+      "description": "Read the pass status and producer-reported recovery tiers.",
+      "startMs": 76000,
+      "endMs": 82000,
+      "command": "disrobe context --out recovered/auto"
+    },
+    {
+      "id": "report",
+      "chapter": "Keep the recovery evidence",
+      "title": "Export the completed run",
+      "description": "Save a Markdown report from the existing recovery directory.",
+      "startMs": 82000,
+      "endMs": 88000,
+      "command": "disrobe report recovered/auto --format markdown > recovered/report.md"
+    },
+    {
+      "id": "envelope",
+      "chapter": "Keep the recovery evidence",
+      "title": "Package the original bytes",
+      "description": "Create a Raw-rung envelope carrying the WebAssembly input.",
+      "startMs": 88000,
+      "endMs": 94000,
+      "command": "disrobe envelope create add.wasm --out recovered/add.dr --format wasm --no-cache"
+    },
+    {
+      "id": "verify",
+      "chapter": "Keep the recovery evidence",
+      "title": "Verify the envelope hash",
+      "description": "Check the stored payload against its BLAKE3 root hash.",
+      "startMs": 94000,
+      "endMs": 100000,
+      "command": "disrobe verify recovered/add.dr"
+    },
+    {
+      "id": "init",
+      "chapter": "Work with your tools",
+      "title": "Create an IDE workspace",
+      "description": "Generate the workspace and Claude integration files in this project.",
+      "startMs": 100000,
+      "endMs": 106000,
+      "command": "disrobe init --ide claude"
+    },
+    {
+      "id": "rename",
+      "chapter": "Work with your tools",
+      "title": "Keep a named analyst note",
+      "description": "Record the proposed symbol name separately from recovered evidence.",
+      "startMs": 106000,
+      "endMs": 112000,
+      "command": "disrobe rename func_0 add --note 'two integer inputs'"
+    },
+    {
+      "id": "config",
+      "chapter": "Work with your tools",
+      "title": "Write the project configuration",
+      "description": "Generate the documented configuration template.",
+      "startMs": 112000,
+      "endMs": 118000,
+      "command": "disrobe config init"
+    },
+    {
+      "id": "completions",
+      "chapter": "Work with your tools",
+      "title": "Add shell completions",
+      "description": "Generate the Bash completion script as a file.",
+      "startMs": 118000,
+      "endMs": 124000,
+      "command": "disrobe completions bash > recovered/disrobe.bash"
     }
   ],
   "excerpts": [
     {
       "id": "native",
-      "sourceStartMs": 0,
+      "sourceStartMs": 10000,
       "startMs": 0,
       "endMs": 5000
     },
     {
-      "id": "indicators",
-      "sourceStartMs": 6000,
+      "id": "sourcemap",
+      "sourceStartMs": 46000,
       "startMs": 5000,
       "endMs": 10000
     },
     {
-      "id": "lua",
-      "sourceStartMs": 16000,
+      "id": "wasm",
+      "sourceStartMs": 52000,
       "startMs": 10000,
       "endMs": 15000
     },
     {
-      "id": "source",
-      "sourceStartMs": 28000,
+      "id": "init",
+      "sourceStartMs": 100000,
       "startMs": 15000,
       "endMs": 20000
     }
@@ -98,48 +262,48 @@
   "files": [
     {
       "name": "walkthrough.mp4",
-      "bytes": 1042442,
-      "sha256": "05dbf93be83eaf4a67d7745b745d2f3dd8018a21ae510aaa8280ae0391e75b5d"
+      "bytes": 4069276,
+      "sha256": "06d6f20ae7daf3b413473db893bbf49fe1d8723f83ec4cf01aac90575298bd2a"
     },
     {
       "name": "teaser.mp4",
-      "bytes": 581112,
-      "sha256": "1a41a96766c0b6e6b95f17b739857922f2bda8ecb7392f5fe85fbcc36716a4e1"
+      "bytes": 650995,
+      "sha256": "9adc38cbc4ab28b8d440640263f85819f4821a5c0a99c48dab445ca3807bfbc4"
     },
     {
       "name": "preview.gif",
-      "bytes": 529811,
-      "sha256": "a28dda75798012964828fa93cd5e1ea010e2d3c3cd715535a6b2bd676406d8be"
+      "bytes": 554536,
+      "sha256": "29f8436e729eb723d891a734ba33bfe774c12cf47cc0f24c4b4d6684cac9a4b2"
     },
     {
       "name": "poster.png",
-      "bytes": 73468,
-      "sha256": "07156ebb1f169acefb5003da898e05a879e9af35bd62fce6643a780ad26149c7"
+      "bytes": 68382,
+      "sha256": "84fdef24073a2a9f14863f1fe4ff821f603671c93fb34a972a577da99793c4cb"
     },
     {
       "name": "captions.vtt",
-      "bytes": 688,
-      "sha256": "96c61107f51507855fe98795a2c6c034779730cb5e1ad760b53fb76bac6ac8e3"
+      "bytes": 2542,
+      "sha256": "933ab657fef722063285e9745f6e322bc9c32888662ac344373fa1d846a7e9ec"
     },
     {
       "name": "chapters.vtt",
-      "bytes": 357,
-      "sha256": "a736c29e362232acded60992698fe6658f9522bc1bf3fbd477a21b630de1b381"
+      "bytes": 274,
+      "sha256": "31fe6912c6690a4b4f8f179dc207e4c225a7ca44d4927a681232adde1f9c0528"
     },
     {
       "name": "teaser.vtt",
-      "bytes": 448,
-      "sha256": "0f42cb1692b0dc02cf5b746bc1a7a9bef466a955331ea6e8a9538323d521e63f"
+      "bytes": 483,
+      "sha256": "fed12f8a7a72b706b6db136a3a308437d9f5f0e00d41c07bde29bcb74731961e"
     },
     {
       "name": "transcript.txt",
-      "bytes": 1864,
-      "sha256": "249879767fb3042dd64f52efa58def1f31db85c7efbbd92f2d197f70eaa41840"
+      "bytes": 17434,
+      "sha256": "3abcb994942eed21f83defdbdd3d940e92588debb174173f70498830bd7ce985"
     }
   ],
   "preview": {
     "source": "teaser.mp4",
-    "sourceSha256": "1a41a96766c0b6e6b95f17b739857922f2bda8ecb7392f5fe85fbcc36716a4e1",
+    "sourceSha256": "9adc38cbc4ab28b8d440640263f85819f4821a5c0a99c48dab445ca3807bfbc4",
     "width": 960,
     "height": 540,
     "fps": 10,

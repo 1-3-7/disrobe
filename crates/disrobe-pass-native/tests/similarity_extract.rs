@@ -19,6 +19,7 @@ use disrobe_similarity::{
     CallRelation, DataReference, FunctionFeatures, FunctionId, MatchReport, Verdict,
     match_functions,
 };
+use object::{Object as _, ObjectSymbol as _};
 use tempfile::TempDir;
 
 const PROBE_SOURCE: &str = r#"
@@ -373,6 +374,17 @@ fn stripped_copy(source: &Path, output: &Path) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+fn has_undefined_import(bytes: &[u8], expected: &str) -> Option<bool> {
+    let file: object::File<'_> = object::File::parse(bytes).ok()?;
+    Some(
+        file.symbols()
+            .chain(file.dynamic_symbols())
+            .any(|symbol: object::Symbol<'_, '_>| {
+                symbol.is_undefined() && symbol.name().is_ok_and(|name: &str| name == expected)
+            }),
+    )
 }
 
 struct Side {
@@ -735,12 +747,20 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
     );
     let low_stripped: Vec<u8> = low_stripped.unwrap_or_else(|| low.clone());
     let high_stripped: Vec<u8> = high_stripped.unwrap_or_else(|| high.clone());
+    assert!(
+        has_undefined_import(&low_stripped, "fputs") == Some(true) || !cfg!(target_os = "linux"),
+        "the Linux stripped fixture must retain the fputs function import"
+    );
 
     let left: Vec<FunctionFeatures> = extract_function_features(&low_stripped).expect("O0 extract");
     let right: Vec<FunctionFeatures> =
         extract_function_features(&high_stripped).expect("O2 extract");
     describe("O0 stripped", &left);
     describe("O2 stripped", &right);
+    assert!(
+        !left.is_empty() && !right.is_empty(),
+        "undefined function imports cannot suppress discovery of executable functions"
+    );
     println!(
         "self match: O0 {} of {}, O2 {} of {}",
         self_match_count(&left),

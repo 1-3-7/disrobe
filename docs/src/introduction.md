@@ -2,9 +2,11 @@
 
 ![disrobe](./assets/social-card.png)
 
-Decompile, deobfuscate, and unpack compiled software from one command line.
+Recover source, unpack payloads, and trace the evidence back to the input.
 
-`disrobe` is a Rust command-line suite for static software recovery. It handles source obfuscation, bytecode, frozen applications, managed assemblies, native binaries, packers, archives, firmware, and compiled webview frontends. The default path never executes the sample. One opt-in PyArmor v6/v7 fallback does execute it and requires `--allow-dynamic`; use that path only inside an isolated sandbox.
+`disrobe` is a Rust command-line suite for examining compiled and obfuscated software. It decompiles supported bytecode and native code, reverses source obfuscation, extracts frozen applications and embedded frontends, and unpacks supported packers, archives, and firmware containers. Recovery reports identify the input, the stages that ran, the artifacts they produced, and the conditions that prevented further recovery.
+
+The default path never executes the sample. One opt-in PyArmor v6/v7 fallback does execute it and requires `--allow-dynamic`; use that path only inside an isolated sandbox. Start with the [forensics and malware-safety posture](./forensics-safety.md) when handling untrusted material.
 
 <video controls playsinline preload="metadata" poster="./assets/walkthrough/poster.png" aria-label="Disrobe recovery walkthrough" class="walkthrough-video">
   <source src="./assets/walkthrough/walkthrough.mp4" type="video/mp4">
@@ -13,7 +15,7 @@ Decompile, deobfuscate, and unpack compiled software from one command line.
   <a href="./assets/walkthrough/walkthrough.mp4">Watch the Disrobe walkthrough</a>
 </video>
 
-[Watch or download the full video](./assets/walkthrough/walkthrough.mp4) · [Read the transcript](./assets/walkthrough/transcript.txt). Six CLI commands show native unpacking, indicator extraction, automatic recovery, Lua decompilation, and recovered WebAssembly instructions in 36 seconds.
+[Watch or download the full video](./assets/walkthrough/walkthrough.mp4) · [Read the transcript](./assets/walkthrough/transcript.txt). Twenty CLI commands cover unpacking, source recovery, Android resources, indicators, reports, artifact verification, and project setup in 2 minutes 12 seconds. The transcript includes the recorded build's complete command inventory.
 
 > **Try it in your browser: [the `disrobe` playground](https://1-3-7.github.io/disrobe/playground/).** Decompile a `.pyc`, scan a pickle for malicious reduce callables, and summarize a `.wasm` module, all client-side, with the core passes compiled to WebAssembly. Nothing is uploaded.
 
@@ -27,16 +29,29 @@ The live catalog spans <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Py
 - The shared artifact layer can store recovered state in a content-addressed `.dr` envelope with an rkyv payload, postcard sidecar, and BLAKE3 root. Chain runs record topology and per-stage provenance separately.
 - Python's normalized opcode-structure agreement is <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> on a fixed 574-module CPython 3.14 core population (<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects), excluding `idlelib` and `turtledemo`. Its pinned 200-module subset reaches <!-- m:py_stdlib_pinned_pct -->96.67%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6077 of 6286<!-- /m -->). See the [comparison rules](./languages/python.md#measured-opcode-structure).
 
-## Who this is for
+## Start with an artifact
 
-- Malware analysts and incident responders who receive a packed, frozen, or obfuscated sample and need to read what it does, without executing it.
-- Security researchers auditing a closed binary for interoperability or vulnerability research.
-- Developers recovering their own lost source from a shipped `.pyc`, `.jar`, `.dll`, or bundled `.js`.
-- Tooling authors who need the Rust crates, typed Python bindings, daemon protocols, metadata bundles, or browser playground.
+After [installation](./installation.md), replace `sample.bin` with the file you want to examine:
 
-## Choose the reachable surface
+```sh
+disrobe auto sample.bin --out recovered/ --capture-stages
+disrobe context --out recovered/
+disrobe report recovered/ --format html > recovery.html
+```
 
-`disrobe passes` lists the automatic recovery routes included in the current build, with their ecosystems and support tiers. Direct commands also provide recon, taint analysis and optional external decompilers. Electron and Tauri frontends use `webview.carve`; Wails can use Go's embedded-filesystem route. Use `disrobe --help` for commands and `disrobe catalog [ecosystem]` for recognized families.
+`auto` selects recovery passes from the file's bytes. `context` summarizes their outcomes; the HTML report brings the artifact inventory, evidence, and recovery limits into one document. `--capture-stages` retains intermediate bytes so you can inspect a layer or pass it to another tool. The [quickstart](./quickstart.md) explains the output and direct commands.
+
+| Your task | Useful starting point |
+|---|---|
+| Triage a packed or obfuscated sample | [Automatic recovery](./chain.md), followed by [recon and indicator extraction](./frisk.md) over the recovered files |
+| Document a forensic examination | [Run reports](./cli/report.md) with input digests, artifact locations, stage outcomes, and provenance |
+| Audit a closed binary or investigate a vulnerability | [Native recovery](./languages/native-decompile.md), [queryable IR and capabilities](./query.md), and the relevant language guide |
+| Recover your own lost source | Direct decompilation of a supported `.pyc`, `.jar`, `.dll`, or JavaScript bundle; start with the [quickstart examples](./quickstart.md#per-language-one-liners) |
+| Build recovery into another tool | [Rust library APIs](./library.md), typed Python bindings, daemon protocols, metadata bundles, or the [browser playground](./playground.md) |
+
+## Choose a recovery path
+
+`disrobe passes` lists direct command families and the automatic recovery routes included in the current build, with their ecosystems and support tiers. Direct commands also provide recon, taint analysis, and optional external decompilers. Electron and Tauri frontends use `webview.carve`; Wails can use Go's embedded-filesystem route. Use `disrobe --help` for commands and `disrobe catalog [ecosystem]` for recognized families.
 
 In-house recovery remains available without optional toolchains. JVM, Android, .NET, and native commands can also use installed tools such as CFR, Vineflower, jadx, ILSpy, de4dot, or Ghidra where their command-specific backend policy allows it. `disrobe doctor` reports what is installed; it does not make an unavailable backend part of an in-house result.
 

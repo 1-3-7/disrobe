@@ -644,7 +644,11 @@ pub(crate) fn compiled_vm_probe() -> Option<Vec<u8>> {
     } else {
         "resilience_vm"
     });
-    let built: std::process::Output = std::process::Command::new(&clang)
+    let mut compiler: std::process::Command = std::process::Command::new(&clang);
+    if cfg!(target_os = "macos") {
+        compiler.args(["-target", "x86_64-apple-macosx"]);
+    }
+    let built: std::process::Output = compiler
         .args(["-O1", "-fno-inline"])
         .arg(&source_path)
         .arg("-o")
@@ -654,5 +658,12 @@ pub(crate) fn compiled_vm_probe() -> Option<Vec<u8>> {
     if !built.status.success() {
         return None;
     }
-    std::fs::read(&binary).ok()
+    let bytes: Vec<u8> = std::fs::read(&binary).ok()?;
+    let image: object::File<'_> = object::File::parse(bytes.as_slice()).ok()?;
+    assert_eq!(
+        object::Object::architecture(&image),
+        object::Architecture::X86_64,
+        "the VM recovery probe must contain the x86-64 code its decoder consumes"
+    );
+    Some(bytes)
 }

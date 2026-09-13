@@ -1,7 +1,31 @@
 Disrobe CLI walkthrough
 disrobe 0.10.6
 
-00:00:00.000  Unpack a native binary
+Demonstrated commands
+
+00:00:04.000  Recognize the packed executable
+Inspect the file's packer evidence before choosing a recovery path.
+> disrobe identify hello.packed.exe
+format: pe64 (64-bit) subsystem=windows-cui
+packer     UPX  (96%)  -> disrobe native unpack
+             - [section UPX0] UPX characteristic section
+             - [section UPX1] UPX characteristic section
+             - [section UPX2] UPX characteristic section
+             - [byte scan] UPX packer magic
+compiler   MSVC (Visual C++) 14.0.35721 (VS2015)  (86%)  -> disrobe native decompile
+             - [rich comp.id product 0x0105] rich-header product id maps to MSVC 14.0 (Visual Studio 2015)
+             - [rich comp.id product 0x0105] Rich header decodes MSVC toolset build 14.0.35721
+linker     MSVC link.exe  (85%)  -> disrobe native decompile
+             - [rich header at 0xD8] DanS/Rich build-stamp block present
+             - [byte scan] Rich header linker 0.0
+library    Universal CRT (UCRT)  (70%)  -> disrobe native decompile
+             - [import directory] imports api-ms-win-crt / ucrtbase / vcruntime
+packer     compressed or encrypted code section  (62%)  -> disrobe native unpack
+             - [section UPX1] 1 executable section(s) above 7.2 bits/byte (peak 7.89)
+
+
+00:00:10.000  Unpack the native payload
+Recover the UPX payload as a separate binary.
 > disrobe native unpack hello.packed.exe --out recovered/hello.bin
 native unpack: OK
   input:        hello.packed.exe
@@ -12,16 +36,22 @@ native unpack: OK
   wrote:        recovered/hello.bin
 
 
-00:00:06.000  Extract indicators
-> disrobe ioc indicators.txt
-url	plain	@0	https://example.org/download
-email	plain	@29	analyst@example.org
-ipv4	plain	@49	192.0.2.42
+00:00:16.000  Open the application container
+Extract the APK's archive members into a directory.
+> disrobe extract fixture.apk --out recovered/archive
+format: apk
+output: recovered/archive
+entries: 6
+  AndroidManifest.xml (980 bytes)
+  resources.arsc (568 bytes)
+  classes.dex (1660 bytes)
+  META-INF/FIXTUREK.SF (412 bytes)
+  META-INF/FIXTUREK.RSA (1227 bytes)
+  META-INF/MANIFEST.MF (285 bytes)
 
-3 indicator(s)
 
-
-00:00:11.000  Let Disrobe choose the recovery path
+00:00:22.000  Let Disrobe choose the passes
+Keep the recovery report and each executed stage's output.
 > disrobe auto add.wasm --out recovered/auto --capture-stages
 chain.json written: recovered/auto\chain.json
 recovery.json written: recovered/auto\recovery.json
@@ -32,7 +62,29 @@ report.sarif written: recovered/auto\report.sarif
 anti-analysis: none detected
 
 
-00:00:16.000  Decompile Lua bytecode
+00:00:28.000  Recover Python from bytecode
+Decompile the code object without invoking Python for a round-trip check.
+> disrobe py decompile hello.pyc --out recovered/python --no-roundtrip
+py decompile: OK
+  input:        hello.pyc
+  backend:      native
+  python:       3.12
+  source:       recovered/python\hello.py
+  manifest:     recovered/python\manifest.json
+  roundtrip:    skipped
+
+File: recovered/python/hello.py
+l = [1, 2, 3, 4, 5, 6]
+print(l[1:3])
+print(l[:2])
+print(l[3:])
+print(l[-4:])
+print(l[:-2])
+print(l[:])
+
+
+00:00:34.000  Read the Lua program
+Turn the compiled chunk into Lua source.
 > disrobe lua decompile greet.luac --out recovered/greet.lua
 lua decompile: OK
   input:        greet.luac
@@ -42,16 +94,91 @@ lua decompile: OK
   wrote:        recovered/greet.lua
   manifest:     recovered/greet.manifest.json
 
+File: recovered/greet.lua
+-- decompiled by disrobe (lua 5.1 register lifter)
+function _main(...)
+  local greet = function(name)
+    local prefix = "hello, "
+    return (prefix .. name)
+end
+  local msg = greet("world")
+  print(msg)
+end
 
-00:00:22.000  Lift WebAssembly to WAT
+
+00:00:40.000  Separate the bundled modules
+Split the Webpack bundle into individual module files.
+> disrobe js unbundle bundle.js --out recovered/modules
+js unbundle: OK
+  bundler:      webpack5
+  matched:      true
+  confidence:   0.97
+  markers:      ["__webpack_require__.d", "__webpack_module_cache__", "__webpack_modules__", "__webpack_require__-fn", "webpackBootstrap"]
+  modules:      3
+  out dir:      recovered/modules
+  manifest:     recovered/modules\manifest.json
+    - ./src/geometry.js: recovered/modules\modules\main-._src_geometry.js.js
+    - ./src/inventory.js: recovered/modules\modules\main-._src_inventory.js.js
+    - __webpack_entry__: recovered/modules\modules\main-__webpack_entry__.js
+
+File: recovered/modules/modules/main-._src_geometry.js.js
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   eL: () => (/* binding */ MAX_SIDES),
+/* harmony export */   iq: () => (/* binding */ polygonPerimeter),
+/* harmony export */   wN: () => (/* binding */ circleArea)
+/* harmony export */ });
+/* unused harmony export PI_APPROX */
+const PI_APPROX = 3.14159;
+const MAX_SIDES = 12;
+
+function circleArea(radius) {
+  return PI_APPROX * radius * radius;
+}
+
+function polygonPerimeter(sideLength, sideCount) {
+  if (sideCount > MAX_SIDES) {
+    throw new RangeError("too many sides for polygon");
+  }
+  let total = 0;
+  for (let edge = 0; edge < sideCount; edge += 1) {
+    total += sideLength;
+  }
+  return total;
+}
+
+
+/***/
+
+00:00:46.000  Restore the embedded originals
+Write the original sources retained in the source map.
+> disrobe js sourcemap bundle.js.map --out recovered/sources
+js sourcemap: OK
+  file:         (none)
+  source root:  (none)
+  sources:      4
+  with content: 4
+  stubs:        0
+  out dir:      recovered/sources
+    - src/index.js: recovered/sources\src/index.js
+    - src/lazy.js: recovered/sources\src/lazy.js
+    - src/math.js: recovered/sources\src/math.js
+    - src/util.js: recovered/sources\src/util.js
+
+File: recovered/sources/src/math.js
+export const add = (a, b) => a + b;
+export const mul = (a, b) => a * b;
+export const sum = (xs) => xs.reduce(add, 0);
+export const factorial = (n) => (n <= 1 ? 1 : mul(n, factorial(n - 1)));
+
+
+00:00:52.000  Read WebAssembly instructions
+The WAT retains the exported add function and its i32.add instruction.
 > disrobe wasm decompile add.wasm --target wat --out recovered/add.wat
 wasm decompile: OK (target=wat)
   functions:    1
   wrote:        recovered/add.wat
 
-
-00:00:28.000  Read the recovered instructions
-> Get-Content -LiteralPath recovered/add.wat
+File: recovered/add.wat
 ;; disrobe wasm lift target=wat
 (module
   (memory $m0 1 16)
@@ -64,3 +191,286 @@ wasm decompile: OK (target=wat)
   (export "add" (func $f0))
 )
 
+
+00:00:58.000  Decode Android resources
+Read the package, resource names and decoded manifest.
+> disrobe apk fixture.apk --out recovered/android
+apk: OK
+  input:        fixture.apk
+  package:      com.disrobe.fixture
+  resources:    1 entry across 1 package
+    0x7f010000  com.disrobe.fixture.string.app_name
+  certificates: 3 signer certs
+    subject:    CN=Disrobe Fixture,O=disrobe,C=US
+    issuer:     CN=Disrobe Fixture,O=disrobe,C=US
+    serial:     05560D9A91BC1468
+    sha256:     F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C
+    subject:    CN=Disrobe Fixture,O=disrobe,C=US
+    issuer:     CN=Disrobe Fixture,O=disrobe,C=US
+    serial:     05560D9A91BC1468
+    sha256:     F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C
+    subject:    CN=Disrobe Fixture,O=disrobe,C=US
+    issuer:     CN=Disrobe Fixture,O=disrobe,C=US
+    serial:     05560D9A91BC1468
+    sha256:     F8:B7:66:4F:AD:A9:B0:F3:9D:7A:97:2A:BB:28:C1:37:09:5C:65:32:09:1E:98:DF:4F:11:3B:31:BF:23:D4:9C
+  manifest:     decoded AndroidManifest.xml (399 bytes)
+    <?xml version="1.0" encoding="utf-8"?>
+    <manifest xmlns:android="http://schemas.android.com/apk/res/android" android:versionCode="1" android:versionName="1.0" android:compileSdkVersion="34" android:compileSdkVersionCodename="14" package="com.disrobe.fixture" platformBuildVersionCode="34" platformBuildVersionName="14">
+        <application android:label="DisrobeFixture">
+        </application>
+    </manifest>
+  dex files:    1 (0 native libraries embedded)
+  jni:          0 native methods, 0 resolved statically, 0 dynamic-only
+  wrote manifest:  recovered/android\AndroidManifest.xml (399 bytes)
+  wrote resources: recovered/android\resources.txt (1 entry)
+
+File: recovered/android/AndroidManifest.xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" android:versionCode="1" android:versionName="1.0" android:compileSdkVersion="34" android:compileSdkVersionCodename="14" package="com.disrobe.fixture" platformBuildVersionCode="34" platformBuildVersionName="14">
+    <application android:label="DisrobeFixture">
+    </application>
+</manifest>
+
+
+00:01:04.000  Extract indicators
+Find the URL, email address and documentation-range IP in these input bytes.
+> disrobe ioc indicators.txt
+url	plain	@0	https://example.org/download
+email	plain	@29	analyst@example.org
+ipv4	plain	@49	192.0.2.42
+
+3 indicator(s)
+
+
+00:01:10.000  Inspect the original strings
+List printable strings with decoding disabled.
+> disrobe strings indicators.txt --no-decode
+plain	@0	https://example.org/download analyst@example.org 192.0.2.42
+
+1 string(s)
+
+
+00:01:16.000  Review the chain's verdict
+Read the pass status and producer-reported recovery tiers.
+> disrobe context --out recovered/auto
+disrobe context  (recovered/auto)
+  schema:    disrobe.recovery/v1
+  tool:      0.10.6
+  input:     add.wasm (69 bytes, blake3 5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4)
+  verdict:   Complete
+  total_ms:  121
+  tiers:     exact=0 semantic=1 partial=0 skeleton=0 (total 1)
+  passes:
+    wasm.deob                    recovered  semantic  102ms
+
+
+00:01:22.000  Export the completed run
+Save a Markdown report from the existing recovery directory.
+> disrobe report recovered/auto --format markdown > recovered/report.md
+File: recovered/report.md
+# disrobe report
+
+| field | value |
+|---|---|
+| input | `add.wasm` |
+| size | 69 bytes |
+| blake3 | `5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4` |
+| final format | WebAssembly |
+| topology | Linear |
+| verdict | Complete |
+| recovery | 67% (semantic) |
+| total | 121 ms |
+
+## Stages
+
+| # | pass | confidence | score | duration |
+|---:|---|---|---:|---:|
+| 1 | `wasm.deob` | semantic | 67% | 102 ms |
+
+## Capabilities
+
+Unavailable: DR-CLI-0842: add.wasm is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: DR-NATIVE-0004: object-crate parse failure: DR-BINFMT-0022: native binary parse failed: Unknown file magic
+
+## Indicators
+
+No indicators found.
+
+## Evidence
+
+| role | artifact | byte offset | byte length | blake3 | digest source |
+|---|---|---:|---:|---|---|
+| analysis-target | `add.wasm` | 0 | 69 | `5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4` | chain-document |
+| stage-input | `ni:///blake3;5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4` | 0 | 69 | `5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4` | chain-document |
+| stage-output | `ni:///blake3;dc5b1e81c47a99f9964dabf5feace880306f151d425c15b483708ea89c2bf93a` | 0 | 200 | `dc5b1e81c47a99f9964dabf5feace880306f151d425c15b483708ea89c2bf93a` | chain-document |
+
+## Reproduction
+
+```
+disrobe report recovered/auto
+```
+
+- hash the analysis target with blake3 and compare it with `input.blake3`
+- hash the 0 evidence entries marked `recomputed-from-file` and compare each digest with the recorded one
+- read every `ni:///blake3;` evidence entry as the blake3 digest of an intermediate the chain held in memory; it names the artifact a byte range indexes
+- re-run `disrobe report recovered/auto`; text, json, markdown and html output is byte-identical, and sarif output differs only in `generated_at`
+- set SOURCE_DATE_EPOCH to a fixed value to make the sarif `generated_at` byte-identical too
+
+
+00:01:28.000  Package the original bytes
+Create a Raw-rung envelope carrying the WebAssembly input.
+> disrobe envelope create add.wasm --out recovered/add.dr --format wasm --no-cache
+disrobe envelope create: OK
+  input:      add.wasm
+  out:        recovered/add.dr
+  rung:       Raw
+  source hash: 5fb93c66286653a398857d059128e37b92bd905409ac2a6d50af357c6773dab4
+  root hash:  78306315e2a63f9bdfe0c73568f8ee1d4a4bcd0d12ce74d99f75f9201c9b953a
+
+
+00:01:34.000  Verify the envelope hash
+Check the stored payload against its BLAKE3 root hash.
+> disrobe verify recovered/add.dr
+disrobe envelope verify: OK
+  file:               recovered/add.dr
+  version:            1
+  rung:               Raw
+  hot payload:        132 bytes
+  cold sidecar:       27 bytes
+  root hash (blake3): 78306315e2a63f9bdfe0c73568f8ee1d4a4bcd0d12ce74d99f75f9201c9b953a
+
+
+00:01:40.000  Create an IDE workspace
+Generate the workspace and Claude integration files in this project.
+> disrobe init --ide claude
+disrobe init: OK
+  root:    .
+  ide:     claude
+  created:
+    - .\.disrobe\AGENTS.md
+    - .\.disrobe\manifest.json
+    - .\.claude\settings.json
+    - .\.claude\commands\disrobe-verify.md
+    - .\.claude\commands\disrobe-status.md
+    - .\.claude\commands\disrobe-rename.md
+    - .\.claude\commands\disrobe-diff.md
+    - .\.disrobe\skills\verify-decompilation\SKILL.md
+    - .\.disrobe\skills\recover-symbol-names\SKILL.md
+    - .\.disrobe\skills\reconstruct-imports\SKILL.md
+    - .\.disrobe\skills\confidence-audit\SKILL.md
+    - .\.disrobe\skills\escalate-to-dynamic\SKILL.md
+    - .\.disrobe\skills\diff-against-pypi\SKILL.md
+    - .\.disrobe\skills\patch-and-roundtrip\SKILL.md
+    - .\.cursorrules
+    - .\.windsurfrules
+    - .\CLAUDE.md
+
+
+00:01:46.000  Keep a named analyst note
+Record the proposed symbol name separately from recovered evidence.
+> disrobe rename func_0 add --note 'two integer inputs'
+disrobe rename: recorded
+  func_0 -> add
+  file:    .\.disrobe\notes\renames.json
+  records: 1
+
+File: .disrobe/notes/renames.json
+{
+  "schema": "disrobe.renames/v1",
+  "records": [
+    {
+      "old": "func_0",
+      "new": "add",
+      "note": "two integer inputs",
+      "recorded_at": "2026-09-13T00:01:21.449681200Z"
+    }
+  ]
+}
+
+00:01:52.000  Write the project configuration
+Generate the documented configuration template.
+> disrobe config init
+wrote config template: .disrobe.toml
+
+File: .disrobe.toml
+# .disrobe.toml - disrobe project configuration
+#
+# Every key is optional. Values set here become the defaults for matching CLI
+# flags; an explicit flag on the command line always wins. Unknown keys are a
+# hard error, so a typo fails fast instead of being silently ignored.
+
+[output]
+# Default output directory for chain/auto runs (per-command default if unset).
+# dir = "out"
+# Default emit kinds for passes that accept --emit.
+# emit = ["source", "manifest"]
+# Force a machine-readable default (CLI --json/--ndjson/--sarif still override).
+# json = false
+# ndjson = false
+# sarif = false
+# ANSI color: "auto" | "always" | "never".
+# color = "auto"
+# Progress bar: "auto" | "always" | "never".
+# progress = "auto"
+# Log verbosity: "warn" | "info" | "debug" | "trace".
+# verbosity = "warn"
+# quiet = false
+# Replace detected secret values with stable SHA-256 sentinels.
+# redact = false
+
+[execution]
+# Worker thread-pool size (defaults to the detected CPU count).
+# threads = 8
+# force = false
+# in_place = false
+# no_cache = false
+# Directory for the content-addressed .dr envelope cache (defaults to the OS cache dir).
+# cache_dir = "/var/cache/disrobe"
+# dry_run = false
+# Default maximum chain depth for `auto`.
+# max_depth = 8
+# Validated Flutter engine symbol map for a matching direct-root ELF `auto` input.
+# Relative paths are resolved from this config file's directory.
+# engine_symbol_map = "maps/flutter-engine-symbols.json"
+
+[backends]
+# Preferred external decompiler per language when a pass exposes --backend.
+# py = "native"       # native (in-tree engine; the only supported Python decompiler)
+# jvm = "cfr"         # cfr | vineflower | procyon | jadx
+# dotnet = "ilspy"    # ilspy | dnspy | dnspyex | de4dot
+# wasm = "wat"        # json | rust | ts | wat | c
+# lua = "native"
+
+[passes]
+# Restrict chain runs to these passes (empty/unset means "all registered").
+# enable = ["pyarmor.unpack", "py.decompile"]
+# Never run these passes, even if a detector would pick them.
+# disable = ["native.packer-unpack"]
+
+
+00:01:58.000  Add shell completions
+Generate the Bash completion script as a file.
+> disrobe completions bash > recovered/disrobe.bash
+File: recovered/disrobe.bash
+recovered/disrobe.bash · excerpt from line 16695
+if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERSINFO[0]}" -gt 4 ]]; then
+    complete -F _disrobe -o nosort -o bashdefault -o default disrobe
+else
+    complete -F _disrobe -o bashdefault -o default disrobe
+fi
+
+Command reference: all 66 public top-level commands, including help
+
+Recover
+auto  chain  extract  webview  pyarmor  pyinstaller  pyfreeze  nuitka
+
+Languages and runtimes
+py  js  wasm  native  jvm  apk  dotnet  hermes  macho  lua  php  shell  ruby  beam  pickle  go  swift  flutter  mobile
+
+Inspect and compare
+identify  detect  catalog  scan  ioc  indicators  frisk  prowl  strings  behavior  yara  query  capabilities  taint  semdiff  vulnmatch  diff
+
+Evidence and reports
+envelope  verify  guard  status  context  report  annot  rename
+
+Integrate and configure
+serve  plugin  init  config  completions  man  doctor  install  install-deps  self-update  bug-report  explain  passes  help

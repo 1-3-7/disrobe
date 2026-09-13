@@ -16,8 +16,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use common::{
-    CompileOutcome, CompilerFamily, CompilerId, RunOutcome, available_compilers, codegen_flags,
-    compile_object_reasoned, function_code, link_and_run_reasoned, scratch_dir, strip_includes,
+    CompileOutcome, CompilerFamily, CompilerId, RunOutcome, available_x86_compilers, codegen_flags,
+    compile_object_reasoned, compile_x86_object_reasoned, function_code, link_and_run_reasoned,
+    scratch_dir, strip_includes,
 };
 use disrobe_core::rng::seeded;
 use disrobe_pass_native::{
@@ -733,11 +734,12 @@ fn build_driver(
     let result: &str = shape.channel.host_result_type();
     let last: &str = shape.channel.host_last_parameter();
     let prelude: &str = shape.channel.driver_prelude();
-    let native_abi: &str = if matches!(abi, AbiTarget::MsX64) && !cfg!(windows) {
-        "__attribute__((ms_abi)) "
-    } else {
-        ""
-    };
+    let native_abi: &str =
+        if matches!(abi, AbiTarget::MsX64) && cfg!(target_arch = "x86_64") && !cfg!(windows) {
+            "__attribute__((ms_abi)) "
+        } else {
+            ""
+        };
     format!(
         "#include <stdint.h>\n#include <stdio.h>\n#include <stddef.h>\n#include <string.h>\n\
          {prelude}{tu}\n\
@@ -954,16 +956,22 @@ fn grade_row(
         abi.tag()
     );
     let source: String = fixture_source(shape, abi);
+    let host_source: String = if cfg!(target_arch = "x86_64") {
+        source.clone()
+    } else {
+        fixture_source(shape, AbiTarget::SysV)
+    };
 
-    let mut host_flags: Vec<&str> = compile_flags(compiler.family, shape.permit_sibling_calls);
-    if matches!(compiler.family, CompilerFamily::Gcc) {
+    let host_family: CompilerFamily = common::host_compiler_family(compiler);
+    let mut host_flags: Vec<&str> = compile_flags(host_family, shape.permit_sibling_calls);
+    if matches!(host_family, CompilerFamily::Gcc) {
         host_flags.extend_from_slice(shape.gcc_only_flags);
     }
     host_flags.push("-c");
     let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-early-return-host");
     let host_out: PathBuf = scratch.path().join(format!("{tag}_host.o"));
     let host_object: Vec<u8> =
-        match compile_object_reasoned(compiler.bin, opt, &host_flags, &source, &host_out) {
+        match compile_object_reasoned(compiler.bin, opt, &host_flags, &host_source, &host_out) {
             CompileOutcome::Object(bytes) => bytes,
             CompileOutcome::Rejected(reason) => {
                 row.verdict = Verdict::NotGraded(reason);
@@ -971,28 +979,27 @@ fn grade_row(
             }
         };
 
-    let object_for_recovery: Vec<u8> = match abi {
-        AbiTarget::MsX64 => host_object.clone(),
-        AbiTarget::SysV => {
-            let mut sysv_flags: Vec<&str> = vec![
-                "--target=x86_64-unknown-linux-gnu",
-                "-fno-stack-protector",
-                "-fcf-protection=none",
-                "-c",
-            ];
-            if !shape.permit_sibling_calls {
-                sysv_flags.push("-fno-optimize-sibling-calls");
-            }
-            let sysv_scratch: disrobe_core::scratch::ScratchDir =
-                scratch_dir("disrobe-early-return-sysv");
-            let sysv_out: PathBuf = sysv_scratch.path().join(format!("{tag}_sysv.o"));
-            match compile_object_reasoned("clang", opt, &sysv_flags, &source, &sysv_out) {
-                CompileOutcome::Object(bytes) => bytes,
-                CompileOutcome::Rejected(reason) => {
-                    row.verdict = Verdict::NotGraded(format!("sysv cross-compile: {reason}"));
-                    return row;
-                }
-            }
+    let recovery_out: PathBuf = scratch.path().join(format!("{tag}_recovery.o"));
+    let mut recovery_flags: Vec<&str> = compile_flags(compiler.family, shape.permit_sibling_calls);
+    if matches!(compiler.family, CompilerFamily::Gcc) {
+        recovery_flags.extend_from_slice(shape.gcc_only_flags);
+    }
+    if matches!(abi, AbiTarget::SysV) {
+        recovery_flags.push("-fcf-protection=none");
+    }
+    recovery_flags.push("-c");
+    let object_for_recovery: Vec<u8> = match compile_x86_object_reasoned(
+        compiler.bin,
+        abi.as_pseudo(),
+        opt,
+        &recovery_flags,
+        &source,
+        &recovery_out,
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            row.verdict = Verdict::NotGraded(format!("x86 recovery compile: {reason}"));
+            return row;
         }
     };
 
@@ -1107,7 +1114,7 @@ type ExitTask = (
 );
 
 fn run_matrix() -> Vec<ExitRow> {
-    let compilers: Vec<CompilerId> = available_compilers();
+    let compilers: Vec<CompilerId> = available_x86_compilers();
     assert!(
         !compilers.is_empty(),
         "the early-exit structuring matrix needs a host C compiler: none of gcc/clang/cc answered --version"
@@ -1168,7 +1175,7 @@ fn run_matrix() -> Vec<ExitRow> {
 
 #[test]
 fn nested_early_returns_keep_the_parent_loop_continuation() {
-    let compiler: CompilerId = available_compilers()
+    let compiler: CompilerId = available_x86_compilers()
         .into_iter()
         .find(|compiler: &CompilerId| compiler.bin == "clang")
         .expect("clang is required for the nested early-return regression");
@@ -1318,12 +1325,13 @@ fn recover_sibling_tail(shape: &ExitShape, opt: &str, extra: &[&str]) -> Recover
     flags.extend_from_slice(extra);
     flags.push("-c");
     let source: String = fixture_source(shape, AbiTarget::MsX64);
-    let object: Vec<u8> = match compile_object_reasoned("gcc", opt, &flags, &source, &out) {
-        CompileOutcome::Object(bytes) => bytes,
-        CompileOutcome::Rejected(reason) => {
-            panic!("the sibling-tail fixture must compile: {reason}")
-        }
-    };
+    let object: Vec<u8> =
+        match compile_x86_object_reasoned("gcc", PseudoAbi::MsX64, opt, &flags, &source, &out) {
+            CompileOutcome::Object(bytes) => bytes,
+            CompileOutcome::Rejected(reason) => {
+                panic!("the sibling-tail fixture must compile: {reason}")
+            }
+        };
     recover_shape(&object, shape, PseudoAbi::MsX64)
 }
 
@@ -1389,7 +1397,14 @@ fn a_relocation_naming_a_symbol_in_another_section_is_not_resolved_against_this_
     let mut flags: Vec<&str> = vec!["-fno-stack-protector", "-ffunction-sections"];
     flags.push("-c");
     let source: String = fixture_source(&shape, AbiTarget::MsX64);
-    let object: Vec<u8> = match compile_object_reasoned("clang", "-O1", &flags, &source, &out) {
+    let object: Vec<u8> = match compile_x86_object_reasoned(
+        "clang",
+        PseudoAbi::MsX64,
+        "-O1",
+        &flags,
+        &source,
+        &out,
+    ) {
         CompileOutcome::Object(bytes) => bytes,
         CompileOutcome::Rejected(reason) => {
             panic!("the cross-section fixture must compile: {reason}")
@@ -1501,8 +1516,9 @@ fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition()
         flags.push("-c");
         let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-declared-abstention");
         let out: PathBuf = scratch.path().join(format!("{}.o", case.tag));
-        let object: Vec<u8> = match compile_object_reasoned(
+        let object: Vec<u8> = match compile_x86_object_reasoned(
             "gcc",
+            PseudoAbi::MsX64,
             case.opt,
             &flags,
             &fixture_source(&shape, AbiTarget::MsX64),

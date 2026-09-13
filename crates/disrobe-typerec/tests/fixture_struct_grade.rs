@@ -488,7 +488,6 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
             protection,
             "-fno-asynchronous-unwind-tables",
             "-nostdlib",
-            "-Wl,-e,_start",
         ],
     ) {
         panic!("{graded} cannot be measured because the compiler refused the corpus: {defect}");

@@ -4,7 +4,9 @@
 
 # See the software underneath
 
-Disrobe is a Rust command-line suite for decompiling, deobfuscating, and unpacking software. Recover Python from bytecode and frozen applications, Java from classfiles and DEX, C# from CIL, JavaScript from bundles, Lua from custom virtual machines, and C or Rust from native code. Extract the files inside installers, firmware, mobile packages, and Electron, Tauri, or Wails applications; carry their symbols, strings, types, and provenance into the next stage of analysis.
+Disrobe is a Rust command-line suite for decompiling, deobfuscating, and unpacking software. Use it to triage an unknown file, recover code for reverse engineering, extract indicators for an investigation, or prepare artifacts for a disassembler.
+
+Recover Python from bytecode and frozen applications, Java from classfiles and DEX, C# from CIL, JavaScript from bundles, Lua from custom virtual machines, and C or Rust from native code. Extract files from installers, firmware, mobile packages, and Electron, Tauri, or Wails applications. Keep recovered source, symbols, strings, types, and provenance together for further analysis.
 
 The full build catalogs <!-- m:catalog_family_total -->170<!-- /m --> families across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems and detects <!-- m:containers_formats -->103<!-- /m --> container formats. `disrobe auto` identifies each layer, runs a matching pass, and follows recovered children into their own recovery paths. Dedicated commands expose finer controls, analysis reports, and optional backends. Recovery runs statically by default; source, structure, partial output, and missing-key boundaries remain distinguishable in the result.
 
@@ -16,7 +18,7 @@ If Disrobe is useful to you, consider [starring the repository](https://github.c
 
 [Watch the full video](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/walkthrough.mp4) · [Read the transcript](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/transcript.txt)
 
-Six terminal commands in 36 seconds: unpack a native binary, extract indicators, run automatic recovery, decompile Lua, and inspect recovered WebAssembly instructions. The [capability map](docs/src/capabilities.md) lists the full command surface and its current support limits.
+Twenty CLI commands in 2 minutes 12 seconds: unpack a native executable, recover Python and Lua, split JavaScript modules, restore source maps, inspect WebAssembly and Android resources, extract indicators, and preserve reports and artifact hashes. The final chapter shows project configuration, IDE setup, analyst annotations, and shell completions. The transcript includes the recorded build's complete command inventory; the [capability map](docs/src/capabilities.md) explains its support limits.
 
 ## Get started
 
@@ -45,7 +47,7 @@ The executable is `target/release/disrobe`, or `target/release/disrobe.exe` on W
 
 ### Recover an application
 
-Start with an application, library, or package:
+Start with an application, library, or package. Identify it, recover its recognized layers, then inspect the recovery summary:
 
 ```sh
 disrobe identify path/to/application
@@ -81,7 +83,7 @@ The first command writes `add.summary.json`; the second writes WebAssembly text 
 selects an available chain and writes its artifacts under `recovered/`; `--capture-stages` retains
 intermediate results. These operations inspect the module without running its exported function.
 
-Read the result before treating recovery as complete. An identified format can still contain unsupported constructs, absent key material, or no viable recovery chain. The [result guide](docs/src/reading-a-result.md) explains artifacts, diagnostics, partial outcomes, and provenance.
+Inspect the recovered files alongside the report: identification alone does not establish recovery. Unsupported constructs, absent key material, and unavailable chains appear in the result. The [result guide](docs/src/reading-a-result.md) explains artifacts, diagnostics, partial outcomes, and provenance.
 
 [Open the browser playground](https://1-3-7.github.io/disrobe/playground/) · [Follow the quickstart](docs/src/quickstart.md)
 

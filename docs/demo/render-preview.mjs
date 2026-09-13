@@ -20,8 +20,8 @@ export function renderPreview(directory) {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const recordingBytes = readFileSync(new URL("cli-recording.json", import.meta.url));
   const recording = JSON.parse(recordingBytes);
-  assert.equal(manifest.schema, "disrobe.walkthrough-media.v3");
-  assert.equal(recording.schema, "disrobe.cli-recording.v1");
+  assert.equal(manifest.schema, "disrobe.walkthrough-media.v4");
+  assert.equal(recording.schema, "disrobe.cli-recording.v2");
   assert.equal(manifest.recordingSha256, hash(recordingBytes), "media does not match the command recording");
   assert.deepEqual(manifest.binary, recording.binary);
   assert.equal(manifest.workspaceVersion, recording.workspaceVersion);
@@ -35,7 +35,7 @@ export function renderPreview(directory) {
   assert.equal(sourceBytes.length, source.bytes, "teaser.mp4 has a different size");
   assert.equal(hash(sourceBytes), source.sha256, "teaser.mp4 has different content");
   const destination = join(directory, "preview.gif");
-  const filter = "fps=10,scale=960:540:flags=lanczos,split[frames][colors];[colors]palettegen=max_colors=128:stats_mode=diff[palette];[frames][palette]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle";
+  const filter = "fps=10,format=rgb24,scale=960:540:flags=lanczos,split[frames][colors];[colors]palettegen=max_colors=256:stats_mode=diff[palette];[frames][palette]paletteuse=dither=none:diff_mode=rectangle";
   runMediaTool("ffmpeg", ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", teaser, "-filter_complex", filter, "-threads", "4", "-loop", "0", destination]);
   const media = JSON.parse(runMediaTool("ffprobe", ["-v", "error", "-count_frames", "-show_format", "-show_streams", "-of", "json", destination]));
   assert.equal(media.streams.length, 1);

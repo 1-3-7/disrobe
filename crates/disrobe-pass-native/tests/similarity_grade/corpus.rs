@@ -120,18 +120,18 @@ impl Toolchain {
             return None;
         }
         let scratch: ScratchDir = ScratchDir::create("similarity-grade").ok()?;
-        let gcc: Option<PathBuf> = locate("gcc");
+        let gcc: Option<PathBuf> = locate_gnu_gcc();
         let clang: Option<PathBuf> = locate("clang");
         let strippers: Vec<PathBuf> = ["llvm-strip", "strip"]
             .into_iter()
             .filter_map(locate)
             .collect();
         let mut versions: BTreeMap<&'static str, String> = BTreeMap::new();
-        if gcc.is_some() {
-            versions.insert("gcc", first_line("gcc"));
+        if let Some(gcc) = &gcc {
+            versions.insert("gcc", first_line(gcc));
         }
-        if clang.is_some() {
-            versions.insert("clang", first_line("clang"));
+        if let Some(clang) = &clang {
+            versions.insert("clang", first_line(clang));
         }
         Some(Self {
             root,
@@ -275,14 +275,35 @@ fn locate(name: &str) -> Option<PathBuf> {
         .map(|_| PathBuf::from(name))
 }
 
-fn first_line(name: &str) -> String {
-    Command::new(name)
+fn locate_gnu_gcc() -> Option<PathBuf> {
+    let configured: Option<std::ffi::OsString> = std::env::var_os("DISROBE_SIMILARITY_GCC");
+    let candidates: Vec<PathBuf> = configured
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(if cfg!(target_os = "macos") {
+            vec![PathBuf::from("x86_64-w64-mingw32-gcc")]
+        } else {
+            vec![PathBuf::from("gcc")]
+        })
+        .collect();
+    candidates.into_iter().find_map(|candidate: PathBuf| {
+        let output: Output = Command::new(&candidate).arg("--version").output().ok()?;
+        let version: String = String::from_utf8(output.stdout).ok()?;
+        (output.status.success()
+            && version.to_ascii_lowercase().contains("gcc")
+            && !version.to_ascii_lowercase().contains("clang"))
+        .then_some(candidate)
+    })
+}
+
+fn first_line(path: &Path) -> String {
+    Command::new(path)
         .arg("--version")
         .output()
         .ok()
         .and_then(|out: Output| String::from_utf8(out.stdout).ok())
         .and_then(|text: String| text.lines().next().map(str::trim).map(str::to_owned))
-        .unwrap_or_else(|| format!("{name} version unavailable"))
+        .unwrap_or_else(|| format!("{} version unavailable", path.display()))
 }
 
 fn succeeded(command: &mut Command) -> bool {

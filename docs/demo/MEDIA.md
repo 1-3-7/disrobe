@@ -1,8 +1,8 @@
 # CLI walkthrough
 
-The 36-second video shows six terminal commands: native unpacking, indicator extraction, automatic recovery, Lua decompilation, WebAssembly lifting, and reading the recovered WAT file. The 20-second excerpt contains four of those scenes. Both videos are 1920 × 1080 at 60 fps, encoded as H.264 with CRF 17 and fast-start metadata. A looping GIF renders the same excerpt at 960 × 540 and 10 fps for the GitHub README.
+The 2-minute 12-second video shows 20 CLI commands across five chapters: unpacking and routing, readable code, analysis, recovery evidence and tool integrations. The player and transcript include all 66 public top-level command names, including `help`. The 20-second excerpt contains four demonstrations. Both videos are 1920 × 1080 at 60 fps, encoded as H.264 with CRF 17 and fast-start metadata. A looping GIF renders the excerpt at 960 × 540 and 10 fps for the GitHub README.
 
-Install the graph renderer's pinned dependencies in `xtask/graphgen` with `pnpm install --frozen-lockfile`. Node 24, FFmpeg, and ffprobe must be available. The final command uses Windows PowerShell on Windows and `cat` on Linux or macOS. From the repository root:
+Install the graph renderer's pinned dependencies in `xtask/graphgen` with `pnpm install --frozen-lockfile`. Node 24, FFmpeg, and ffprobe must be available. From the repository root:
 
 ```powershell
 node docs/demo/capture-cli.mjs --binary C:/path/to/disrobe.exe
@@ -10,13 +10,13 @@ node docs/demo/render-media.mjs
 mdbook build
 ```
 
-The capture first checks that the binary's actual `--version` output matches `workspace.package.version` in `Cargo.toml`. It then copies the repository's small fixtures into a temporary working directory, invokes Disrobe, and records command output, exit codes, input hashes, and recovered-file hashes in `cli-recording.json`. The last command reads the recovered WAT. No sample or recovered program is executed. The temporary directory is removed after capture.
+The capture checks that the binary's actual `--version` output matches `workspace.package.version` in `Cargo.toml`, and that its public command list matches `cli-plan.mjs`. It copies the repository's small fixtures into a temporary working directory, invokes Disrobe, and records complete command output, exit codes, input hashes and recovered-file hashes in `cli-recording.json`. Recovered programs are read as text. Each command has a 30-second timeout and a 1 MiB output limit; the temporary tree stays below 16 MiB and is removed after capture.
 
-The renderer uses the captured text, the shared brand mark, Manrope, and JetBrains Mono. Command entry and reading time are edited for pace; process durations remain separate in the capture receipt. Syntax colors are applied during rendering. The transcript preserves complete command output.
+The renderer uses the canonical social card's SVG, shared neutral color tokens, Manrope and JetBrains Mono. Command entry and reading time are edited for pace; process durations remain separate in the capture receipt. Syntax colors apply to the captured text. Longer output and source excerpts are labeled. The transcript preserves command output and recovered source, with an excerpt of the large generated completion script; `cli-recording.json` retains that script in full.
 
 Media, captions, chapters, the poster, and their hashes are written under `docs/src/assets/walkthrough`. The renderer checks frame count, dimensions, codec, duration, chapter count, complete decoding, and file size. Each file stays below 10 MiB; the GIF stays below 5 MiB. Its manifest identifies the source excerpt by hash.
 
-The README embeds `docs/src/assets/walkthrough/preview.gif` and links it to the committed `walkthrough.mp4` beside it. These repository-relative links work before a Pages deployment. The GIF is an animated preview; the link opens the full video. To regenerate only the preview from an existing matching capture, run `node docs/demo/render-preview.mjs`.
+The README embeds the [release-following GIF](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/preview.gif) and links to the [full video](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/walkthrough.mp4). The GIF is an animated preview; the link opens the full video. To regenerate only the preview from an existing matching capture, run `node docs/demo/render-preview.mjs`.
 
 ## Release updates
 
