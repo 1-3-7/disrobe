@@ -1187,95 +1187,6 @@ struct ExpressionRun {
     failed: Vec<usize>,
 }
 
-struct ExpressionProbeTiming {
-    environment: &'static str,
-    started: Instant,
-    expression_count: usize,
-    batch_count: usize,
-    prelude_bytes: usize,
-    phase_durations: [Option<Duration>; 5],
-    environment_calls: Option<[u64; 3]>,
-    failed_phase: Option<&'static str>,
-}
-
-impl ExpressionProbeTiming {
-    fn enabled(
-        environment: ProbeEnvironment,
-        expressions: &[String],
-        prelude: &str,
-    ) -> Option<Self> {
-        if !crate::debug::dbg_enabled() {
-            return None;
-        }
-        let environment: &'static str = if environment == FIRST_ENVIRONMENT {
-            "first"
-        } else {
-            "second"
-        };
-        Some(Self {
-            environment,
-            started: Instant::now(),
-            expression_count: expressions.len(),
-            batch_count: expressions.len().div_ceil(DECODE_BATCH_CHUNK),
-            prelude_bytes: prelude.len(),
-            phase_durations: [None; 5],
-            environment_calls: None,
-            failed_phase: None,
-        })
-    }
-
-    fn record<T>(
-        &mut self,
-        index: usize,
-        phase: &'static str,
-        started: Instant,
-        result: &Result<T, ProbeRefusal>,
-    ) {
-        self.phase_durations[index] = Some(started.elapsed());
-        if result.is_err() {
-            self.failed_phase = Some(phase);
-        }
-    }
-
-    fn emit<T>(&self, result: &Result<T, ProbeRefusal>) {
-        let status: String = match result {
-            Ok(_) => "ok".to_owned(),
-            Err(refusal) => format!("refusal={refusal:?}"),
-        };
-        let failure: &str = self.failed_phase.unwrap_or("none");
-        let calls: String = self.environment_calls.map_or_else(
-            || "not-run".to_owned(),
-            |counts: [u64; 3]| {
-                format!(
-                    "random={} date={} performance={}",
-                    counts[0], counts[1], counts[2]
-                )
-            },
-        );
-        let duration = |index: usize| {
-            self.phase_durations[index].map_or_else(
-                || "not-run".to_owned(),
-                |elapsed: Duration| elapsed.as_millis().to_string(),
-            )
-        };
-        crate::debug::dbg_kv("expression-probe", || {
-            format!(
-                "environment={} expressions={} batches={} prelude-bytes={} context-ms={} runtime-preamble-ms={} prelude-ms={} decode-ms={} environment-calls-ms={} environment-counts={calls} total-ms={} failure-stage={failure} {status}",
-                self.environment,
-                self.expression_count,
-                self.batch_count,
-                self.prelude_bytes,
-                duration(0),
-                duration(1),
-                duration(2),
-                duration(3),
-                duration(4),
-                self.started.elapsed().as_millis(),
-            )
-        });
-    }
-}
-
 fn run_expressions_once(
     prelude: &str,
     expressions: &[String],
@@ -1283,71 +1194,32 @@ fn run_expressions_once(
     environment: ProbeEnvironment,
     deadline: ProbeDeadline,
 ) -> Result<EnvironmentResult<ExpressionRun>, ProbeRefusal> {
-    let mut timing: Option<ExpressionProbeTiming> =
-        ExpressionProbeTiming::enabled(environment, expressions, prelude);
-    let result: Result<EnvironmentResult<ExpressionRun>, ProbeRefusal> = (|| {
-        let context_started: Option<Instant> = timing.as_ref().map(|_| Instant::now());
-        let mut context: Context = Context::default();
-        if let (Some(timing), Some(started)) = (timing.as_mut(), context_started) {
-            timing.record(0, "context", started, &Ok::<(), ProbeRefusal>(()));
-        }
-        let mut output_budget: OutputBudget = OutputBudget::new();
-        let runtime_preamble: String = runtime_preamble(environment);
-        {
-            let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
-            runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
-            runtime.set_recursion_limit(limits.recursion_limit);
-            runtime.set_stack_size_limit(limits.stack_size_limit);
-        }
-        let runtime_started: Option<Instant> = timing.as_ref().map(|_| Instant::now());
-        let runtime_result: Result<boa_engine::JsValue, ProbeRefusal> =
-            evaluate(&mut context, &runtime_preamble, deadline);
-        if let (Some(timing), Some(started)) = (timing.as_mut(), runtime_started) {
-            timing.record(1, "runtime-preamble", started, &runtime_result);
-        }
-        runtime_result?;
-        let prelude_started: Option<Instant> = timing.as_ref().map(|_| Instant::now());
-        let prelude_result: Result<boa_engine::JsValue, ProbeRefusal> =
-            evaluate(&mut context, prelude, deadline);
-        if let (Some(timing), Some(started)) = (timing.as_mut(), prelude_started) {
-            timing.record(2, "prelude", started, &prelude_result);
-        }
-        prelude_result?;
-        let decode_started: Option<Instant> = timing.as_ref().map(|_| Instant::now());
-        let decode_result: Result<BatchRun, ProbeRefusal> =
-            decode_all(&mut context, expressions, &mut output_budget, deadline);
-        if let (Some(timing), Some(started)) = (timing.as_mut(), decode_started) {
-            timing.record(3, "decode", started, &decode_result);
-        }
-        let decoded: BatchRun = decode_result?;
-        let failed: Vec<usize> = decoded
-            .values
-            .iter()
-            .enumerate()
-            .filter_map(|(index, value): (usize, &Option<String>)| value.is_none().then_some(index))
-            .collect();
-        let calls_started: Option<Instant> = timing.as_ref().map(|_| Instant::now());
-        let calls_result: Result<[u64; 3], ProbeRefusal> =
-            environment_calls(&mut context, deadline);
-        if let (Some(timing), Some(started)) = (timing.as_mut(), calls_started) {
-            timing.record(4, "environment-calls", started, &calls_result);
-        }
-        if let (Some(timing), Ok(calls)) = (timing.as_mut(), &calls_result) {
-            timing.environment_calls = Some(*calls);
-        }
-        let calls: [u64; 3] = calls_result?;
-        Ok(EnvironmentResult {
-            value: ExpressionRun {
-                values: decoded.values,
-                failed,
-            },
-            calls,
-        })
-    })();
-    if let Some(timing) = timing.as_ref() {
-        timing.emit(&result);
+    let mut context: Context = Context::default();
+    let mut output_budget: OutputBudget = OutputBudget::new();
+    let runtime_preamble: String = runtime_preamble(environment);
+    {
+        let runtime: &mut boa_engine::vm::RuntimeLimits = context.runtime_limits_mut();
+        runtime.set_loop_iteration_limit(limits.loop_iteration_limit);
+        runtime.set_recursion_limit(limits.recursion_limit);
+        runtime.set_stack_size_limit(limits.stack_size_limit);
     }
-    result
+    evaluate(&mut context, &runtime_preamble, deadline)?;
+    evaluate(&mut context, prelude, deadline)?;
+    let decoded: BatchRun = decode_all(&mut context, expressions, &mut output_budget, deadline)?;
+    let failed: Vec<usize> = decoded
+        .values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value): (usize, &Option<String>)| value.is_none().then_some(index))
+        .collect();
+    let calls: [u64; 3] = environment_calls(&mut context, deadline)?;
+    Ok(EnvironmentResult {
+        value: ExpressionRun {
+            values: decoded.values,
+            failed,
+        },
+        calls,
+    })
 }
 
 fn compare_expression_results(

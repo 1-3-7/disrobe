@@ -112,7 +112,13 @@ fn msvc_security_cookie_plumbing_recovers_as_a_guard() {
         "{}",
         first.source
     );
-    assert!(first.source.contains("*(uint8_t*)"), "{}", first.source);
+    assert!(
+        first
+            .source
+            .contains("((struct __attribute__((packed, may_alias)) { uint8_t value; }*)"),
+        "{}",
+        first.source
+    );
     assert!(
         first.source.contains("r_rax = (r_rax +"),
         "{}",

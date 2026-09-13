@@ -12,6 +12,7 @@
 mod common;
 
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, recover_program,
 };
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 const GRADED_OPT_LEVELS: [&str; 4] = ["-O0", "-O1", "-O2", "-O3"];
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -193,6 +195,48 @@ fn compile_flags(family: CompilerFamily) -> Vec<&'static str> {
 struct RecoveredShape {
     tu: String,
     entry_params: usize,
+}
+
+fn noreturn_object_diagnostic(bytes: &[u8], entry: &str) -> String {
+    let file: object::File<'_> = object::File::parse(bytes).expect("authored noreturn object");
+    let mut out: String = format!(
+        "format={:?} arch={:?} bytes={}\n",
+        file.format(),
+        file.architecture(),
+        bytes.len()
+    );
+    if let Some((code, base)) = function_code(bytes, entry) {
+        let _ = writeln!(
+            out,
+            "{entry} at {base:#x}: {:02x?}",
+            &code[..code.len().min(512)]
+        );
+    }
+    for symbol in file.symbols().take(64) {
+        let _ = writeln!(
+            out,
+            "symbol {:?} {:?} at {:#x} section={:?} undefined={}",
+            symbol.index(),
+            symbol.name().ok(),
+            symbol.address(),
+            symbol.section(),
+            symbol.is_undefined()
+        );
+    }
+    for section in file.sections().take(32) {
+        let _ = writeln!(
+            out,
+            "section {:?} {:?} at {:#x} size={:#x}",
+            section.index(),
+            section.name().ok(),
+            section.address(),
+            section.size()
+        );
+        for (offset, relocation) in section.relocations().take(32) {
+            let _ = writeln!(out, "  {offset:#x}: {relocation:?}");
+        }
+    }
+    out
 }
 
 fn recover_shape(
@@ -503,9 +547,11 @@ fn grade_row(
     for fragment in shape.required_c_fragments {
         assert!(
             recovered.tu.contains(fragment),
-            "the recovered body for {} must name its non-returning callee: `{fragment}` missing from\n{}",
+            "the recovered body for {} must name its non-returning callee: `{fragment}` missing from\n{}\ncompiler: {}\n{}",
             row_key(&row),
-            recovered.tu
+            recovered.tu,
+            compiler.version,
+            noreturn_object_diagnostic(&object_for_recovery, shape.entry)
         );
     }
     assert!(

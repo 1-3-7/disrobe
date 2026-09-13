@@ -1,4 +1,7 @@
 mod aarch64_seeds;
+mod unwind;
+#[cfg(test)]
+mod x86_unwind_tests;
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -370,7 +373,10 @@ fn inject_discovered_functions(
             return BTreeSet::new();
         };
         let rodata: Vec<ReadOnlyWindow<'_>> = read_only_windows(bytes);
-        let seeds: Vec<u64> = discovery_seeds(native, bytes);
+        let mut seeds: Vec<u64> = discovery_seeds(native, bytes);
+        seeds.extend(x86_unwind_starts(bytes, &code));
+        seeds.sort_unstable();
+        seeds.dedup();
         let noreturn: BTreeSet<u64> = noreturn_import_targets(bytes);
         let mut input: DiscoveryInput<'_> = DiscoveryInput {
             bitness,
@@ -554,6 +560,96 @@ fn discovery_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
     seeds.sort_unstable();
     seeds.dedup();
     seeds
+}
+
+fn x86_unwind_starts(bytes: &[u8], code: &[CodeWindow<'_>]) -> Vec<u64> {
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(bytes)
+    else {
+        return Vec::new();
+    };
+    if file.format() != object::BinaryFormat::Elf
+        || file.architecture() != object::Architecture::X86_64
+        || !file.is_little_endian()
+        || !matches!(
+            file.kind(),
+            object::ObjectKind::Executable | object::ObjectKind::Dynamic
+        )
+    {
+        return Vec::new();
+    }
+    if code.len() > MAX_DISCOVERY_FUNCTIONS {
+        return Vec::new();
+    }
+    let Some(mut windows): Option<Vec<(u64, u64, &[u8])>> = code
+        .iter()
+        .map(|window: &CodeWindow<'_>| {
+            let length: u64 = u64::try_from(window.bytes.len()).ok()?;
+            Some((
+                window.address,
+                window.address.checked_add(length)?,
+                window.bytes,
+            ))
+        })
+        .collect()
+    else {
+        return Vec::new();
+    };
+    windows.sort_unstable_by_key(|&(start, _, _): &(u64, u64, &[u8])| start);
+    if windows
+        .windows(2)
+        .any(|pair: &[(u64, u64, &[u8])]| pair[0].1 > pair[1].0)
+    {
+        return Vec::new();
+    }
+    let Some(&(text_base, _, _)): Option<&(u64, u64, &[u8])> = windows.first() else {
+        return Vec::new();
+    };
+    let mut starts: BTreeSet<u64> = BTreeSet::new();
+    unwind::visit_frame_ranges(
+        &file,
+        text_base,
+        MAX_DISCOVERY_FUNCTIONS,
+        |address, length| {
+            let Some(end): Option<u64> = address.checked_add(length) else {
+                return;
+            };
+            if length == 0 {
+                return;
+            }
+            let index: usize =
+                windows.partition_point(|&(start, _, _): &(u64, u64, &[u8])| start <= address);
+            let Some(&(start, window_end, raw)): Option<&(u64, u64, &[u8])> = index
+                .checked_sub(1)
+                .and_then(|index: usize| windows.get(index))
+            else {
+                return;
+            };
+            if end > window_end {
+                return;
+            }
+            let Some(offset): Option<usize> = address
+                .checked_sub(start)
+                .and_then(|offset: u64| usize::try_from(offset).ok())
+            else {
+                return;
+            };
+            let Some(end_offset): Option<usize> = end
+                .checked_sub(start)
+                .and_then(|offset: u64| usize::try_from(offset).ok())
+            else {
+                return;
+            };
+            if raw
+                .get(offset..end_offset)
+                .and_then(|bytes: &[u8]| decode_one_x86(64, address, bytes))
+                .is_some()
+            {
+                starts.insert(address);
+            }
+        },
+    );
+    starts.into_iter().collect()
 }
 
 fn entry_export_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {

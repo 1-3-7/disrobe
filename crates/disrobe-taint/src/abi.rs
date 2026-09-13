@@ -121,17 +121,25 @@ impl CallAbi {
     }
 
     pub(crate) fn register_move(self, instr: &NirInstr) -> Option<DefUse> {
+        let is_move: bool = instr.mnemonic.eq_ignore_ascii_case("mov");
+        let is_aarch64_address: bool = matches!(self, Self::Aarch64)
+            && (instr.mnemonic.eq_ignore_ascii_case("adr")
+                || instr.mnemonic.eq_ignore_ascii_case("adrp"));
         if !is_native(instr.source.lang)
-            || !instr.mnemonic.eq_ignore_ascii_case("mov")
             || instr.operands.len() != 2
+            || !(is_move || is_aarch64_address)
         {
             return None;
         }
         let destination: ValueId = self.register_value(instr.operands.first()?)?;
-        let source: Option<ValueId> = instr
-            .operands
-            .get(1)
-            .and_then(|operand: &String| self.register_value(operand));
+        let source: Option<ValueId> = if is_move {
+            instr
+                .operands
+                .get(1)
+                .and_then(|operand: &String| self.register_value(operand))
+        } else {
+            None
+        };
         Some(DefUse {
             defs: vec![destination],
             uses: source.into_iter().collect(),
@@ -387,6 +395,29 @@ mod tests {
             .expect("aarch64 mov is a register move");
         assert_eq!(defuse.defs, vec![ValueId::register("x0")]);
         assert_eq!(defuse.uses, vec![ValueId::register("x1")]);
+    }
+
+    #[test]
+    fn an_aarch64_page_address_materialization_overwrites_its_destination() {
+        let adrp: NirInstr = instr(SourceLang::NativeArm, "adrp", &["x0", "0x10000"]);
+        let defuse: DefUse = CallAbi::Aarch64
+            .register_move(&adrp)
+            .expect("aarch64 adrp writes its destination register");
+        assert_eq!(defuse.defs, vec![ValueId::register("x0")]);
+        assert!(defuse.uses.is_empty());
+
+        let adr: NirInstr = instr(SourceLang::NativeArm, "adr", &["x1", "0x10010"]);
+        let defuse: DefUse = CallAbi::Aarch64
+            .register_move(&adr)
+            .expect("aarch64 adr writes its destination register");
+        assert_eq!(defuse.defs, vec![ValueId::register("x1")]);
+        assert!(defuse.uses.is_empty());
+    }
+
+    #[test]
+    fn an_x86_abi_does_not_treat_aarch64_address_materialization_as_a_move() {
+        let adrp: NirInstr = instr(SourceLang::NativeArm, "adrp", &["x0", "0x10000"]);
+        assert!(CallAbi::X86.register_move(&adrp).is_none());
     }
 
     #[test]

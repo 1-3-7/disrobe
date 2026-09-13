@@ -1160,7 +1160,9 @@ fn balanced_frames_without_a_prologue_template_recover() {
         .expect("a mid-body callee-saved round trip is frame management");
     assert!(
         saved.source.contains("unsigned char stack_frame[16]")
-            && !saved.source.contains("*(uint64_t*)(uintptr_t)(r_rsp"),
+            && !saved.source.contains(
+                "((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rsp"
+            ),
         "a proven callee-saved round trip must be skipped, not modelled as a slot: {}",
         saved.source
     );

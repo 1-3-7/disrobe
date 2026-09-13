@@ -305,6 +305,26 @@ fn overwriting_x0_between_the_two_aarch64_calls_kills_the_flow() {
 }
 
 #[test]
+fn materializing_an_aarch64_page_address_in_x0_kills_the_flow() {
+    let mut function: NirFunction = aarch64_taint_entry(false);
+    function
+        .instructions
+        .insert(8, instr(0x103be, NirOp::Nop, "adrp", &["x0", "0x20000"]));
+    let report: TaintReport = analyze(
+        &module(
+            function,
+            named_stubs(AARCH64_FGETS_STUB, AARCH64_SYSTEM_STUB),
+        ),
+        &config(),
+    );
+    assert_eq!(
+        report.count(),
+        0,
+        "aarch64 address materialization overwrites the source result before the sink: {report:?}"
+    );
+}
+
+#[test]
 fn an_unnamed_aarch64_stub_is_reported_rather_than_read_as_a_clean_image() {
     let report: TaintReport = analyze(
         &module(aarch64_taint_entry(false), undefined_imports()),

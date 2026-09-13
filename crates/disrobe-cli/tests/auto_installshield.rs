@@ -52,8 +52,12 @@ fn reference_digests(inventory: &str) -> BTreeMap<String, String> {
         let (Some(&member), Some(&digest)) = (fields.get(2), fields.get(5)) else {
             continue;
         };
-        let leaf: &str = member.rsplit('/').next().unwrap_or(member);
-        wanted.insert(leaf.to_ascii_lowercase(), digest.to_ascii_lowercase());
+        assert!(
+            wanted
+                .insert(member.to_ascii_lowercase(), digest.to_ascii_lowercase())
+                .is_none(),
+            "duplicate reference member: {member}"
+        );
     }
     assert!(
         wanted.len() >= MIN_RECOVERED_MEMBERS,
@@ -70,23 +74,30 @@ fn digest_of(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn collect_recovered_artifact_digests(dir: &Path, found: &mut BTreeMap<String, String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path: PathBuf = entry.path();
+fn collect_recovered_artifact_digests(
+    root: &Path,
+    dir: &Path,
+    found: &mut BTreeMap<String, String>,
+) {
+    let entries: std::fs::ReadDir = std::fs::read_dir(dir).expect("read recovered directory");
+    for entry in entries {
+        let path: PathBuf = entry.expect("read recovered directory entry").path();
         if path.is_dir() {
-            collect_recovered_artifact_digests(&path, found);
+            collect_recovered_artifact_digests(root, &path, found);
             continue;
         }
-        let Some(name) = path.file_name().and_then(|part| part.to_str()) else {
-            continue;
-        };
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        found.insert(name.to_ascii_lowercase(), digest_of(&bytes));
+        let name: String = path
+            .strip_prefix(root)
+            .expect("recovered member stays within its output tree")
+            .to_str()
+            .expect("fixture member path is UTF-8")
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read recovered member");
+        assert!(
+            found.insert(name.clone(), digest_of(&bytes)).is_none(),
+            "duplicate recovered member: {name}"
+        );
     }
 }
 
@@ -124,7 +135,7 @@ fn run_auto(cabinet: &str, jobs: usize) -> (BTreeMap<String, String>, serde_json
          members"
     );
     let mut found: BTreeMap<String, String> = BTreeMap::new();
-    collect_recovered_artifact_digests(&extracted, &mut found);
+    collect_recovered_artifact_digests(&extracted, &extracted, &mut found);
     let chain_bytes: Vec<u8> =
         std::fs::read(output.path().join("chain.json")).expect("read chain.json");
     let chain: serde_json::Value = serde_json::from_slice(&chain_bytes).expect("parse chain.json");

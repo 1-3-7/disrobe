@@ -17342,11 +17342,9 @@ fn c_ptr_cast(cx: &mut Cx<'_>, base_ty: &str, operand: CExpr) -> CExpr {
 fn c_deref(cx: &mut Cx<'_>, ty: &str, addr: &str) -> CExpr {
     let opaque: CExpr = c_opaque(cx, addr);
     let ptr_cast: CExpr = c_cast(cx, "uintptr_t", opaque);
-    let typed_ptr: CExpr = c_ptr_cast(cx, ty, ptr_cast);
-    CExpr::Unary {
-        op: UnaryOp::Deref,
-        operand: Box::new(typed_ptr),
-    }
+    let storage_ty: String = format!("struct __attribute__((packed, may_alias)) {{ {ty} value; }}");
+    let typed_ptr: CExpr = c_ptr_cast(cx, &storage_ty, ptr_cast);
+    cx.member(typed_ptr, true, "value")
 }
 
 fn fold_add(terms: Vec<CExpr>) -> CExpr {
@@ -28209,7 +28207,7 @@ mod tests {
         );
         assert!(
             rec.source
-                .contains("(*(uint64_t*)(uintptr_t)(r_rcx)) = r_rax")
+                .contains("(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx))->value) = r_rax")
         );
     }
 
@@ -28320,10 +28318,10 @@ mod tests {
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
         assert!(!rec.source.contains("recovered_struct_"));
         assert!(!rec.source.contains("recovered_union_"));
-        assert!(rec.source.contains("(*(uint64_t*)(uintptr_t)(r_rcx))"));
+        assert!(rec.source.contains("(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rcx))->value)"));
         assert!(
             rec.source
-                .contains("(*(uint32_t*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)4LL))")
+                .contains("(((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rcx + (uint64_t)(int64_t)4LL))->value)")
         );
     }
 
@@ -28780,7 +28778,7 @@ mod tests {
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9400).expect("movzx mem");
         assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(
-            rec.source.contains("(*(uint8_t*)(uintptr_t)(r_rcx))"),
+            rec.source.contains("(((struct __attribute__((packed, may_alias)) { uint8_t value; }*)(uintptr_t)(r_rcx))->value)"),
             "byte load must deref through uint8_t: {}",
             rec.source
         );
@@ -31844,7 +31842,9 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&with_store, 0xb800, Abi::SysV).expect("movsd mem leaf");
         assert!(
-            rec.source.contains("(*(double*)(uintptr_t)"),
+            rec.source.contains(
+                "(((struct __attribute__((packed, may_alias)) { double value; }*)(uintptr_t)"
+            ),
             "movsd load must dereference the address as a double: {}",
             rec.source
         );
@@ -31861,7 +31861,14 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xb810, Abi::SysV).expect("float memory leaf");
         assert!(!rec.source.contains("recovered_struct_"));
-        assert!(rec.source.matches("(*(double*)(uintptr_t)").count() >= 2);
+        assert!(
+            rec.source
+                .matches(
+                    "(((struct __attribute__((packed, may_alias)) { double value; }*)(uintptr_t)"
+                )
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -34149,7 +34156,7 @@ mod tests {
             .expect("the spilled two-compare sequence recovers")
             .source;
         assert!(
-            !source.contains("(fp_d_from_bits(x_xmm0)) == ((*(double*)"),
+            !source.contains("(fp_d_from_bits(x_xmm0)) == ((((struct __attribute__((packed, may_alias)) { double value; }*)"),
             "the predicate and the select consume two separate compare executions, so no cross-operand ordered equality may be synthesized: {source}"
         );
         assert!(

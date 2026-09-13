@@ -1599,6 +1599,49 @@ fn reported_possible_outlined_edges_are_graded_against_real_compiler_symbol_grou
         *matched_primary_address, variant_primary_address,
         "the primary member must match at the variant's real outline_primary address, not a different one"
     );
+    if primary_candidates != &vec![variant_fragment_address] {
+        eprintln!(
+            "outline structural report: {:?}",
+            structural_match(&fixture.anchor_module, &fixture.variant_module)
+        );
+        for (tag, module, primary) in [
+            ("anchor", &fixture.anchor_module, primary_address),
+            ("variant", &fixture.variant_module, variant_primary_address),
+        ] {
+            for function in module.functions.iter().take(16) {
+                let targets: Vec<(u64, &NirOp)> = function
+                    .instructions
+                    .iter()
+                    .filter(|instruction: &&NirInstr| instruction.op.direct_target().is_some())
+                    .take(32)
+                    .map(|instruction: &NirInstr| (instruction.address, &instruction.op))
+                    .collect();
+                eprintln!(
+                    "outline {tag} function={:#x}..{:#x} targets={targets:?}",
+                    function.address, function.end
+                );
+            }
+            let image: Vec<u8> =
+                std::fs::read(scratch.path().join(format!("outline-{tag}.stripped.exe")))
+                    .expect("read failing outline artifact");
+            let payload = build_disasm_payload(&image).expect("decode failing outline artifact");
+            for instruction in payload
+                .instructions
+                .iter()
+                .filter(|instruction| instruction.offset >= primary)
+                .take(32)
+            {
+                eprintln!(
+                    "outline {tag} machine={:#x} bytes={:02x?} {} {:?} target={:?}",
+                    instruction.offset,
+                    instruction.bytes,
+                    instruction.mnemonic,
+                    instruction.operands,
+                    instruction.branch_target
+                );
+            }
+        }
+    }
     assert_eq!(
         primary_candidates,
         &vec![variant_fragment_address],

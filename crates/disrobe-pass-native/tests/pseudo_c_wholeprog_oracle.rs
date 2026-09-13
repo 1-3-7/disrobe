@@ -22,8 +22,8 @@ use disrobe_pass_native::{
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 use common::{
-    HOST_ABI, cc, clang, compile_object, compile_object_opt, function_code, gcc, link_and_run,
-    scratch_dir, strip_includes,
+    HOST_ABI, cc, clang, compile_object, compile_object_opt, compile_x86_object, function_code,
+    gcc, link_and_run, scratch_dir, strip_includes,
 };
 
 const WIDE_INPUTS: &str = "{0,0,0},{1,1,1},{-1,-1,-1},{7,3,5},{-7,3,-5},\
@@ -1226,8 +1226,8 @@ fn local_and_unresolved_stack_failure_lookalikes_stay_returning_calls() {
     let flags: [&str; 2] = ["-fno-stack-protector", "-c"];
     for (tag, source, entry) in cases {
         let object_path: PathBuf = scratch.path().join(format!("{tag}.o"));
-        let object: Vec<u8> = compile_object_opt(&compiler, "-O1", &flags, source, &object_path)
-            .unwrap_or_else(|| panic!("{tag} fixture compiles"));
+        let object: Vec<u8> =
+            compile_x86_object(&compiler, HOST_ABI, "-O1", &flags, source, &object_path);
         let (code, base): (Vec<u8>, u64) =
             function_code(&object, entry).unwrap_or_else(|| panic!("{tag} caller symbol"));
         let recovered: LeafRecovery =
@@ -1300,6 +1300,67 @@ fn maximum_address_zero_arity_resolved_call_remains_a_call() {
 }
 
 #[test]
+fn overlapping_stack_stores_preserve_both_halves_after_recompilation() {
+    let compilers: [String; 2] = [
+        cc().expect("host C compiler"),
+        clang().expect("Clang is required for the strict-aliasing regression"),
+    ];
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-overlapping-stack");
+    for displacement in [0xf8, 0xf7] {
+        let code: [u8; 21] = [
+            0x55,
+            0x48,
+            0x89,
+            0xe5,
+            0x48,
+            0x83,
+            0xec,
+            0x10,
+            0x48,
+            0x89,
+            0x4d,
+            displacement,
+            0x89,
+            0x55,
+            displacement + 4,
+            0x48,
+            0x8b,
+            0x45,
+            displacement,
+            0xc9,
+            0xc3,
+        ];
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, PseudoAbi::MsX64)
+            .expect("overlapping stack stores must recover");
+        let driver: &str = "#include <stdint.h>\n#include <stdio.h>\nextern uint64_t recovered(uint64_t, uint64_t);\nint main(void) {\n\
+                 const uint64_t inputs[][2] = {{0, 1}, {0x1122334455667788ULL, 0x88776655}, {~0ULL, 0}, {7, ~0ULL}};\n\
+                 for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {\n\
+                     uint64_t want = (inputs[i][0] & 0xffffffffULL) | (inputs[i][1] << 32);\n\
+                     uint64_t got = recovered(inputs[i][0], inputs[i][1]);\n\
+                     if (got != want) { printf(\"MISMATCH %zu %llu %llu\\n\", i, (unsigned long long)want, (unsigned long long)got); return 1; }\n\
+                 }\n\
+                 puts(\"OK\");\n\
+                 return 0;\n\
+             }\n";
+        for compiler in &compilers {
+            for opt in ["-O1", "-O3"] {
+                let object_path: PathBuf = scratch.path().join("recovered.o");
+                let object: Vec<u8> =
+                    compile_object_opt(compiler, opt, &["-c"], &recovery.source, &object_path)
+                        .expect("recovered stack access object");
+                let stdout: String =
+                    link_and_run(compiler, driver, &object, "overlapping_stack", 10);
+                assert!(
+                    stdout.contains("OK") && !stdout.contains("MISMATCH"),
+                    "{compiler} {opt} displacement {displacement:#x}: {stdout}\n{}",
+                    recovery.source
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn punpcklqdq_assigned_high_qword_is_observable_after_a_lane_shuffle() {
     const CODE: [u8; 25] = [
         0x66, 0x48, 0x0f, 0x6e, 0xc7, 0x66, 0x48, 0x0f, 0x6e, 0xce, 0x66, 0x0f, 0x6c, 0xc1, 0x66,
@@ -1312,7 +1373,7 @@ fn punpcklqdq_assigned_high_qword_is_observable_after_a_lane_shuffle() {
     let object_path: PathBuf = scratch.path().join("anchor.o");
     let anchor: Vec<u8> = compile_object(
         &compiler,
-        &CC_FLAGS,
+        &["-c"],
         "int punpcklqdq_oracle_anchor;",
         &object_path,
     )

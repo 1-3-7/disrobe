@@ -43,7 +43,7 @@ fn signed_slot_is_typed_and_unknown_sign_slot_falls_back_to_word() {
         "the soundly-typed signed slot must render with its recovered int64_t type: {source}",
     );
     assert!(
-        source.contains("(uint64_t*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL)"),
+        source.contains("(struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL)"),
         "the undetermined-sign slot must keep the uint64_t word type: {source}",
     );
     assert!(

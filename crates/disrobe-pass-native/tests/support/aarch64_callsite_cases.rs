@@ -457,7 +457,11 @@ unsigned long long read_external(void) { return external_value; }
     let recovered_function: &RecoveredFunction = recovered(&program, "read_external");
     assert!(
         recovered_function.source.contains(&format!("{slot}LL"))
-            && recovered_function.source.matches("*(uint64_t*)").count() >= 2,
+            && recovered_function
+                .source
+                .matches("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)")
+                .count()
+                >= 2,
         "{}",
         recovered_function.source
     );
@@ -629,7 +633,11 @@ unsigned long long read_external(void) { return external_value; }
     let recovered_function: &RecoveredFunction = recovered(&program, "_read_external");
     assert!(
         recovered_function.source.contains(&format!("{slot}LL"))
-            && recovered_function.source.matches("*(uint64_t*)").count() >= 2,
+            && recovered_function
+                .source
+                .matches("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)")
+                .count()
+                >= 2,
         "{}",
         recovered_function.source
     );

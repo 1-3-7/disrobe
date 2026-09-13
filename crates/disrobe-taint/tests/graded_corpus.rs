@@ -304,6 +304,20 @@ fn finding_functions(json: &str) -> Vec<String> {
     names
 }
 
+#[cfg(target_os = "macos")]
+fn function_is(finding: &disrobe_taint::TaintFinding, expected: &str) -> bool {
+    finding
+        .function
+        .strip_prefix('_')
+        .unwrap_or(&finding.function)
+        == expected
+}
+
+#[cfg(not(target_os = "macos"))]
+fn function_is(finding: &disrobe_taint::TaintFinding, expected: &str) -> bool {
+    finding.function == expected
+}
+
 #[test]
 fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
     let fixture: CompiledFixture = compile_program("flowing", FLOWING_BODY);
@@ -412,7 +426,7 @@ fn juliet_harness_lift_and_analyze_path_sees_a_known_positive_control() {
             .findings()
             .iter()
             .any(|f: &disrobe_taint::TaintFinding| {
-                f.function == "taint_entry"
+                function_is(f, "taint_entry")
                     && f.source_symbol == "fgets"
                     && f.sink_symbol == "system"
             }),
@@ -442,7 +456,7 @@ fn a_deliberately_broken_source_config_lowers_recall_on_a_known_flow() {
         intact_report
             .findings()
             .iter()
-            .any(|f: &disrobe_taint::TaintFinding| f.function == "taint_entry"),
+            .any(|f: &disrobe_taint::TaintFinding| function_is(f, "taint_entry")),
         "the intact default source list must recover the known flow before it can be broken on purpose: \
          {intact_report:?}"
     );
@@ -459,7 +473,7 @@ fn a_deliberately_broken_source_config_lowers_recall_on_a_known_flow() {
         !broken_report
             .findings()
             .iter()
-            .any(|f: &disrobe_taint::TaintFinding| f.function == "taint_entry"),
+            .any(|f: &disrobe_taint::TaintFinding| function_is(f, "taint_entry")),
         "removing fgets from the source list must lower recall on the known flow to zero, proving a \
          broken propagation rule moves the grade rather than being absorbed silently: {broken_report:?}"
     );
@@ -483,14 +497,14 @@ fn an_overbroad_match_rule_lowers_precision_against_the_strict_rule() {
         report
             .findings()
             .iter()
-            .any(|f: &disrobe_taint::TaintFinding| f.function == "taint_sibling"),
+            .any(|f: &disrobe_taint::TaintFinding| function_is(f, "taint_sibling")),
         "taint_sibling must show a real flow for this control to mean anything: {report:?}"
     );
 
     let strict_flags_safe_sibling: bool = report
         .findings()
         .iter()
-        .any(|f: &disrobe_taint::TaintFinding| f.function == "safe_sibling");
+        .any(|f: &disrobe_taint::TaintFinding| function_is(f, "safe_sibling"));
     let overbroad_flags_safe_sibling: bool = !report.findings().is_empty();
     assert!(
         !strict_flags_safe_sibling,

@@ -2846,8 +2846,12 @@ fn gcc_and_clang_union_accesses_recompile_to_c_and_rust_equivalence() {
         assert!(
             !partial.source.contains("recovered_union_")
                 && !partial.source.contains("recovered_struct_")
-                && partial.source.contains("(*(uint64_t*)")
-                && partial.source.contains("(*(uint32_t*)"),
+                && partial
+                    .source
+                    .contains("(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)")
+                && partial
+                    .source
+                    .contains("(((struct __attribute__((packed, may_alias)) { uint32_t value; }*)"),
             "{compiler} shifted partial overlap must remain raw:\n{}",
             partial.source
         );
@@ -9328,7 +9332,12 @@ fn fc_lift(
         return None;
     }
     if case.wants_mem
-        && !(recovery.source.contains("*(double*)") || recovery.source.contains("*(float*)"))
+        && !(recovery
+            .source
+            .contains("((struct __attribute__((packed, may_alias)) { double value; }*)")
+            || recovery
+                .source
+                .contains("((struct __attribute__((packed, may_alias)) { float value; }*)"))
     {
         eprintln!(
             "skip {}: this build did not lower a float memory operand",
@@ -9432,7 +9441,13 @@ fn run_fc_oracle(object_bytes: &[u8], abi: PseudoAbi) -> FcOracleOutcome {
         if recovery.source.contains("from_bits(0x") {
             const_count += 1;
         }
-        if recovery.source.contains("*(double*)") || recovery.source.contains("*(float*)") {
+        if recovery
+            .source
+            .contains("((struct __attribute__((packed, may_alias)) { double value; }*)")
+            || recovery
+                .source
+                .contains("((struct __attribute__((packed, may_alias)) { float value; }*)")
+        {
             mem_count += 1;
         }
         recovered_decls.push_str(&renamed);
@@ -13674,8 +13689,8 @@ fn stack_spill_oracle_has_teeth_corrupting_a_slot_offset_diverges() {
         .collect::<Vec<&str>>()
         .join("\n");
 
-    let reload: &str = "(uint64_t)(*(uint64_t*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-8LL))";
-    let poison: &str = "(uint64_t)(*(uint64_t*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL))";
+    let reload: &str = "(uint64_t)(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-8LL))->value)";
+    let poison: &str = "(uint64_t)(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rbp + (uint64_t)(int64_t)-16LL))->value)";
     let sabotaged: String = renamed.replacen(reload, poison, 1);
     assert_ne!(
         sabotaged, renamed,
@@ -14939,8 +14954,8 @@ fn struct_return_oracle_has_teeth_corrupting_a_field_store_diverges() {
     );
     let renamed: String = sret_recovered_decl(&recovery, "rec_probe");
 
-    let middle_field: &str = "(*(uint64_t*)(uintptr_t)(r_rdi + (uint64_t)(int64_t)8LL))";
-    let collided_field: &str = "(*(uint64_t*)(uintptr_t)(r_rdi + (uint64_t)(int64_t)0LL))";
+    let middle_field: &str = "(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rdi + (uint64_t)(int64_t)8LL))->value)";
+    let collided_field: &str = "(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rdi + (uint64_t)(int64_t)0LL))->value)";
     let sabotaged: String = renamed.replacen(middle_field, collided_field, 1);
     assert_ne!(
         sabotaged, renamed,

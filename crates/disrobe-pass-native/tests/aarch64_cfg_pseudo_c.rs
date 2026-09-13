@@ -89,7 +89,12 @@ fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp global load");
     assert!(r.source.contains("2162688LL"), "{}", r.source);
-    assert!(r.source.contains("*(uint32_t*)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("((struct __attribute__((packed, may_alias)) { uint32_t value; }*)"),
+        "{}",
+        r.source
+    );
 }
 
 #[test]
@@ -453,7 +458,7 @@ fn aarch64_real_clang_paired_struct_load_recovers_two_fields() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("paired struct load");
     assert!(
-        r.source.contains("*(uint32_t*)(uintptr_t)(r_rax)"),
+        r.source.contains("((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rax))->value"),
         "{}",
         r.source
     );
@@ -784,13 +789,13 @@ fn aarch64_real_clang_gp_pair_ldp_loads_two_doublewords_and_adds_them() {
     ];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("gp ldp x8,x9 + add");
     assert!(
-        r.source.contains("*(uint64_t*)(uintptr_t)(r_rax)"),
+        r.source.contains("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rax))->value"),
         "{}",
         r.source
     );
     assert!(
         r.source
-            .contains("*(uint64_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)8LL)"),
+            .contains("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_rax + (uint64_t)(int64_t)8LL))->value"),
         "{}",
         r.source
     );
@@ -1058,13 +1063,13 @@ fn aarch64_d_register_backward_arm_that_agrees_on_the_value_class_recovers() {
         .expect("arms that agree on the d-register class stay recoverable across the loop edge");
     assert!(
         r.source
-            .contains("(*(uint64_t*)(uintptr_t)(r_a64_x3)) = x_xmm0;"),
+            .contains("(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_a64_x3))->value) = x_xmm0;"),
         "{}",
         r.source
     );
     assert!(
         r.source
-            .contains("x_xmm0 = fp_d_to_bits((double)((*(double*)(uintptr_t)(r_a64_x2))));"),
+            .contains("x_xmm0 = fp_d_to_bits((double)((((struct __attribute__((packed, may_alias)) { double value; }*)(uintptr_t)(r_a64_x2))->value)));"),
         "{}",
         r.source
     );
@@ -1124,7 +1129,7 @@ fn aarch64_real_clang_scaled_register_index_load_recovers_as_array_access() {
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldr w0,[x0,x1,lsl #2]");
     assert!(
         r.source
-            .contains("*(uint32_t*)(uintptr_t)(r_rax + r_a64_x1 * 4ULL)"),
+            .contains("((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rax + r_a64_x1 * 4ULL))->value"),
         "{}",
         r.source
     );
@@ -1449,7 +1454,12 @@ fn aarch64_real_clang_bic_with_asr_shift_recovers_clamp_to_zero() {
 fn aarch64_real_clang_ldrb_zero_extends_a_byte() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x40, 0x39, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb");
-    assert!(r.source.contains("*(uint8_t*)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("((struct __attribute__((packed, may_alias)) { uint8_t value; }*)"),
+        "{}",
+        r.source
+    );
     assert!(r.source.contains("(uint8_t)"), "{}", r.source);
     assert!(!r.source.contains("(int8_t)"), "{}", r.source);
 }
@@ -1458,7 +1468,12 @@ fn aarch64_real_clang_ldrb_zero_extends_a_byte() {
 fn aarch64_real_clang_ldrsb_sign_extends_a_byte() {
     let bytes: [u8; 8] = [0x00, 0x00, 0xc0, 0x39, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrsb");
-    assert!(r.source.contains("*(uint8_t*)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("((struct __attribute__((packed, may_alias)) { uint8_t value; }*)"),
+        "{}",
+        r.source
+    );
     assert!(r.source.contains("(int8_t)"), "{}", r.source);
 }
 
@@ -1466,7 +1481,12 @@ fn aarch64_real_clang_ldrsb_sign_extends_a_byte() {
 fn aarch64_real_clang_ldrh_zero_extends_a_halfword() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x40, 0x79, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrh");
-    assert!(r.source.contains("*(uint16_t*)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("((struct __attribute__((packed, may_alias)) { uint16_t value; }*)"),
+        "{}",
+        r.source
+    );
     assert!(r.source.contains("(uint16_t)"), "{}", r.source);
 }
 
@@ -1474,7 +1494,12 @@ fn aarch64_real_clang_ldrh_zero_extends_a_halfword() {
 fn aarch64_real_clang_ldrsw_sign_extends_a_word_to_64_bits() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x80, 0xb9, 0xc0, 0x03, 0x5f, 0xd6];
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrsw");
-    assert!(r.source.contains("*(uint32_t*)"), "{}", r.source);
+    assert!(
+        r.source
+            .contains("((struct __attribute__((packed, may_alias)) { uint32_t value; }*)"),
+        "{}",
+        r.source
+    );
     assert!(r.source.contains("(int64_t)(int32_t)"), "{}", r.source);
 }
 
@@ -1482,7 +1507,7 @@ fn aarch64_real_clang_ldrsw_sign_extends_a_word_to_64_bits() {
 fn aarch64_real_clang_unscaled_load_recovers_as_a_load() {
     let bytes: [u8; 8] = [0x00, 0xc0, 0x5f, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldur");
-    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0) {\n    uint64_t r_rax = a0;\n    r_rax = ((uint64_t)(*(uint32_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL))) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n";
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0) {\n    uint64_t r_rax = a0;\n    r_rax = ((uint64_t)(((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL))->value)) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n";
     assert_eq!(recovered.source, expected);
 }
 
@@ -1490,7 +1515,7 @@ fn aarch64_real_clang_unscaled_load_recovers_as_a_load() {
 fn aarch64_real_clang_unscaled_store_recovers_as_a_store() {
     let bytes: [u8; 8] = [0x01, 0xc0, 0x1f, 0xb8, 0xc0, 0x03, 0x5f, 0xd6];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("stur");
-    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    (*(uint32_t*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL)) = (r_a64_x1) & 0xffffffffULL;\n    return r_rax;\n}\n";
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    (((struct __attribute__((packed, may_alias)) { uint32_t value; }*)(uintptr_t)(r_rax + (uint64_t)(int64_t)-4LL))->value) = (r_a64_x1) & 0xffffffffULL;\n    return r_rax;\n}\n";
     assert_eq!(recovered.source, expected);
 }
 

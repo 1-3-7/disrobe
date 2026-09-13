@@ -169,10 +169,81 @@ fn recover_structure_inner(bytes: &[u8], bitness: Bitness) -> Option<VmStructure
         return None;
     }
 
+    let segment_count: usize = segments.len();
+    if let Some(entry_vip_va) = symbol_address(&obj, VM_ENTRY_SYMBOL) {
+        append_zero_filled_entry_segment(&obj, entry_vip_va, &mut segments);
+    }
     if let Some(structure) = recover_via_exports(&obj, &segments, bitness, image_base) {
         return Some(structure);
     }
+    segments.truncate(segment_count);
     recover_via_codescan(&segments, bitness, image_base)
+}
+
+fn append_zero_filled_entry_segment(
+    obj: &object::File<'_>,
+    entry_vip_va: u64,
+    segments: &mut Vec<Segment>,
+) {
+    let mut candidate: Option<Segment> = None;
+    for section in obj.sections() {
+        if section.kind() != object::SectionKind::UninitializedData
+            || !section.data().is_ok_and(|data: &[u8]| data.is_empty())
+        {
+            continue;
+        }
+        let Some(segment) =
+            zero_filled_entry_segment(section.address(), section.size(), entry_vip_va)
+        else {
+            continue;
+        };
+        if candidate.replace(segment).is_some() {
+            return;
+        }
+    }
+    if let Some(segment) = candidate {
+        if segments
+            .iter()
+            .any(|existing: &Segment| segments_overlap(existing, &segment))
+        {
+            return;
+        }
+        segments.push(segment);
+    }
+}
+
+fn segments_overlap(left: &Segment, right: &Segment) -> bool {
+    let Ok(left_len) = u64::try_from(left.bytes.len()) else {
+        return true;
+    };
+    let Ok(right_len) = u64::try_from(right.bytes.len()) else {
+        return true;
+    };
+    let Some(left_end) = left.va.checked_add(left_len) else {
+        return true;
+    };
+    let Some(right_end) = right.va.checked_add(right_len) else {
+        return true;
+    };
+    left.va < right_end && right.va < left_end
+}
+
+fn zero_filled_entry_segment(
+    section_va: u64,
+    section_size: u64,
+    entry_vip_va: u64,
+) -> Option<Segment> {
+    const ENTRY_VIP_BYTES: u64 = 4;
+    let section_end: u64 = section_va.checked_add(section_size)?;
+    let entry_end: u64 = entry_vip_va.checked_add(ENTRY_VIP_BYTES)?;
+    if entry_vip_va < section_va || entry_end > section_end {
+        return None;
+    }
+    Some(Segment {
+        va: entry_vip_va,
+        bytes: vec![0; 4],
+        executable: false,
+    })
 }
 
 fn recover_via_exports(
@@ -634,6 +705,11 @@ fn extract_handler_code(segments: &[Segment], bitness: Bitness, va: u64) -> Opti
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use object::{
+        Architecture, BinaryFormat, Endianness, Object as _, ObjectSection as _,
+        write::{Object as WriteObject, SectionId, StandardSection},
+    };
+
     use super::*;
 
     #[test]
@@ -720,5 +796,62 @@ mod tests {
         }];
         let kind: Option<DispatchKind> = classify_dispatch(&segments, Bitness::Bits64, 0x1000);
         assert_eq!(kind, None);
+    }
+
+    #[test]
+    fn zero_filled_entry_segment_materializes_only_the_bounded_entry_word() {
+        let segment: Segment = zero_filled_entry_segment(0x2000, 8, 0x2004)
+            .expect("a four-byte entry value fits at the end of the bss range");
+        assert_eq!(segment.va, 0x2004);
+        assert_eq!(segment.bytes, vec![0; 4]);
+        assert!(!segment.executable);
+        assert!(zero_filled_entry_segment(0x2000, 8, 0x2005).is_none());
+        assert!(zero_filled_entry_segment(u64::MAX - 1, 8, u64::MAX - 1).is_none());
+    }
+
+    #[test]
+    fn macho_bss_entry_loads_as_a_bounded_zero_word() {
+        let mut writer: WriteObject<'_> = WriteObject::new(
+            BinaryFormat::MachO,
+            Architecture::X86_64,
+            Endianness::Little,
+        );
+        let section_id: SectionId = writer.section_id(StandardSection::UninitializedData);
+        let _: u64 = writer.append_section_bss(section_id, 8, 4);
+        let bytes: Vec<u8> = writer.write().expect("write Mach-O bss fixture");
+        let file: object::File<'_> = object::File::parse(bytes.as_slice()).expect("parse fixture");
+        let object_section: object::Section<'_, '_> = file.sections().next().expect("bss section");
+        assert_eq!(
+            object_section.kind(),
+            object::SectionKind::UninitializedData
+        );
+        assert!(object_section.data().expect("bss data").is_empty());
+
+        let mut segments: Vec<Segment> = Vec::new();
+        append_zero_filled_entry_segment(&file, 4, &mut segments);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].va, 4);
+        assert_eq!(segments[0].bytes, vec![0; 4]);
+    }
+
+    #[test]
+    fn zero_filled_entry_refuses_initialized_segment_overlap() {
+        let mut writer: WriteObject<'_> = WriteObject::new(
+            BinaryFormat::MachO,
+            Architecture::X86_64,
+            Endianness::Little,
+        );
+        let section_id: SectionId = writer.section_id(StandardSection::UninitializedData);
+        let _: u64 = writer.append_section_bss(section_id, 8, 4);
+        let bytes: Vec<u8> = writer.write().expect("write Mach-O bss fixture");
+        let file: object::File<'_> = object::File::parse(bytes.as_slice()).expect("parse fixture");
+        let mut segments: Vec<Segment> = vec![Segment {
+            va: 4,
+            bytes: vec![0x90],
+            executable: true,
+        }];
+
+        append_zero_filled_entry_segment(&file, 4, &mut segments);
+        assert_eq!(segments.len(), 1);
     }
 }

@@ -689,12 +689,14 @@ def drain_into_manifest():
         assert_eq!(manifest.primary.as_deref(), Some("cextract"));
         assert_eq!(manifest.captures.cextract.len(), 1);
         assert_eq!(
-            manifest.captures.cextract[0].pyc_path,
+            Path::new(&manifest.captures.cextract[0].pyc_path)
+                .canonicalize()
+                .expect("the manifest must name an existing capture"),
             out_dir
                 .join("cextract")
                 .join("wrapper.hotpatch.pyc")
-                .display()
-                .to_string()
+                .canonicalize()
+                .expect("the capture must exist in the requested output directory")
         );
         let limitation: &CaptureLimitation = manifest
             .limitations

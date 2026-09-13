@@ -587,6 +587,29 @@ jobs:
             sudo apt-get install -y nsis
             demand makensis DISROBE_REQUIRE_MAKENSIS
           fi
+      - name: provision Swift 6.3.2 with automatic differentiation on macOS
+        if: matrix.os == 'macos-latest' && matrix.shard == 'two'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/disrobe-swift-6.3.2.pkg"
+          trap 'rm -f -- "$package"' EXIT
+          curl --fail --location --max-time 600 --output "$package" \
+            https://download.swift.org/swift-6.3.2-release/xcode/swift-6.3.2-RELEASE/swift-6.3.2-RELEASE-osx.pkg
+          signature="$(pkgutil --check-signature "$package")"
+          printf '%s\n' "$signature"
+          grep -Fq 'Developer ID Installer: Swift Open Source (V9AUD2URP3)' <<< "$signature"
+          installer -target CurrentUserHomeDirectory -pkg "$package"
+          toolchain="$HOME/Library/Developer/Toolchains/swift-6.3.2-RELEASE.xctoolchain/usr/bin"
+          export PATH="$toolchain:$PATH"
+          test "$(command -v swiftc)" = "$toolchain/swiftc"
+          version="$(swiftc --version)"
+          printf '%s\n' "$version"
+          grep -Fq 'Swift version 6.3.2 (swift-6.3.2-RELEASE)' <<< "$version"
+          swiftc -typecheck - <<< 'import _Differentiation'
+          echo "$toolchain" >> "$GITHUB_PATH"
+          echo "DISROBE_REQUIRE_SWIFTC=1" >> "$GITHUB_ENV"
+          echo "DISROBE_REQUIRE_SWIFT_DEMANGLE=1" >> "$GITHUB_ENV"
       - name: provision LLVM 18 for the aarch64 dense-switch CLI differential and the bigobj reader differential
         if: matrix.os == 'ubuntu-latest'
         shell: bash
@@ -760,7 +783,6 @@ jobs:
         timeout-minutes: 160
         env:
           RUST_TEST_THREADS: "1"
-          DISROBE_DEBUG: "js-deob"
       - name: workspace shard three
         if: matrix.shard == 'three'
         run: >-

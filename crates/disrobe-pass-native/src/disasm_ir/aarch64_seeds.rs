@@ -2,10 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_binfmt::native::{Arch as BinArch, Endian, NativeFile, NativeFormat};
 use disrobe_bytes::ByteReader;
-use gimli::{
-    BaseAddresses, CieOrFde, CommonInformationEntry, EhFrame, EhFrameOffset, EndianSlice,
-    FrameDescriptionEntry, LittleEndian, UnwindSection as _,
-};
 use object::{
     Object as _, ObjectSection as _, ObjectSegment as _, ObjectSymbol as _,
     SymbolKind as ObjSymbolKind,
@@ -15,8 +11,6 @@ use object::{
 
 use crate::debug::{dbg_kv, dbg_section};
 use crate::elf::{ElfDynamicReport, RelocSource, SegmentMapping, SymbolType, analyze};
-
-type EhSlice<'a> = EndianSlice<'a, LittleEndian>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum SeedOrigin {
@@ -830,61 +824,19 @@ fn collect_initializer_tables(
     }
 }
 
-fn parse_cie<'a>(
-    section: &EhFrame<EhSlice<'a>>,
-    bases: &BaseAddresses,
-    offset: EhFrameOffset<usize>,
-) -> gimli::Result<CommonInformationEntry<EhSlice<'a>>> {
-    section.cie_from_offset(bases, offset)
-}
-
 fn collect_unwind_entries(view: &ImageView<'_>, seeds: &mut SeedSet) {
     let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
         return;
     };
-    let Some(section): Option<object::Section<'_, '_>> =
-        parsed.sections().find(|section: &object::Section<'_, '_>| {
-            section.name().is_ok_and(|name: &str| name == ".eh_frame")
-        })
-    else {
-        return;
-    };
-    let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
-        return;
-    };
-    if data.is_empty() {
-        return;
-    }
     let text_base: u64 = view
         .executable
         .first()
         .map_or(0, |range: &ExecutableRange| range.start);
-    let bases: BaseAddresses = BaseAddresses::default()
-        .set_eh_frame(section.address())
-        .set_text(text_base);
-    let eh_frame: EhFrame<EhSlice<'_>> = EhFrame::new(data, LittleEndian);
-    let mut entries: gimli::CfiEntriesIter<'_, EhFrame<EhSlice<'_>>, EhSlice<'_>> =
-        eh_frame.entries(&bases);
-    let mut seen: usize = 0;
-    while seen < MAX_UNWIND_ENTRIES {
-        let Ok(Some(entry)): gimli::Result<
-            Option<CieOrFde<'_, EhFrame<EhSlice<'_>>, EhSlice<'_>>>,
-        > = entries.next() else {
-            return;
-        };
-        seen = seen.saturating_add(1);
-        let CieOrFde::Fde(partial) = entry else {
-            continue;
-        };
-        let Ok(fde): gimli::Result<FrameDescriptionEntry<EhSlice<'_>>> = partial.parse(parse_cie)
-        else {
-            continue;
-        };
-        let address: u64 = fde.initial_address();
+    super::unwind::visit_frame_ranges(parsed, text_base, MAX_UNWIND_ENTRIES, |address, _| {
         if view.is_candidate(address) {
             seeds.admit(address, SeedOrigin::UnwindEntry);
         }
-    }
+    });
 }
 
 fn decode_elf_eh_frame_hdr(

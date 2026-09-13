@@ -1145,7 +1145,13 @@ fn clang_o2_pair_load_and_store_lift() {
         loaded.signature.observed_integer_registers(),
         vec![PseudoReg::Rax]
     );
-    assert_eq!(loaded.source.matches("*(uint64_t*)").count(), 2);
+    assert_eq!(
+        loaded
+            .source
+            .matches("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)")
+            .count(),
+        2
+    );
     assert_eq!(stored.signature.observed_integer_registers().len(), 3);
     assert!(stored.source.contains("recovered_struct_0_t"));
     assert!(stored.source.contains("recovered_struct_0->field_0"));
@@ -1632,7 +1638,13 @@ fn clang_assembler_pre_and_post_index_writeback_lift() {
         recover_aarch64_function(&bytes, 0).expect("aarch64 indexed memory");
     assert_eq!(recovered.signature.observed_integer_registers().len(), 4);
     assert!(recovered.source.matches("r_rax = r_rax +").count() >= 4);
-    assert!(recovered.source.matches("*(uint64_t*)").count() >= 4);
+    assert!(
+        recovered
+            .source
+            .matches("((struct __attribute__((packed, may_alias)) { uint64_t value; }*)")
+            .count()
+            >= 4
+    );
 }
 
 #[test]
@@ -1740,7 +1752,7 @@ fn scalar_d_register_post_index_load_and_store_keep_fp_state() {
     assert!(
         recovered_take
             .source
-            .contains("x_xmm0 = fp_d_to_bits((double)((*(double*)"),
+            .contains("x_xmm0 = fp_d_to_bits((double)((((struct __attribute__((packed, may_alias)) { double value; }*)"),
         "{}",
         recovered_take.source
     );
@@ -1756,7 +1768,7 @@ fn scalar_d_register_post_index_load_and_store_keep_fp_state() {
     assert!(
         recovered_put
             .source
-            .contains("(*(uint64_t*)(uintptr_t)(r_a64_x8)) = x_xmm0"),
+            .contains("(((struct __attribute__((packed, may_alias)) { uint64_t value; }*)(uintptr_t)(r_a64_x8))->value) = x_xmm0"),
         "{}",
         recovered_put.source
     );
