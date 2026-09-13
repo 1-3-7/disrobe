@@ -11,9 +11,6 @@
 
 mod common;
 
-#[path = "support/x86_compiler.rs"]
-pub mod x86_compiler;
-
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -752,8 +749,7 @@ fn assemble_object(compiler: &str, source: &str, tag: &str) -> Result<Vec<u8>, S
     let asm_path: PathBuf = scratch.path().join(format!("{tag}.s"));
     std::fs::write(&asm_path, source.as_bytes()).map_err(|e| format!("write assembly: {e}"))?;
     let out_path: PathBuf = scratch.path().join(format!("{tag}.o"));
-    let (program, flags): (String, Vec<&str>) =
-        x86_compiler::object_compiler(compiler, PseudoAbi::MsX64);
+    let (program, flags): (String, Vec<&str>) = common::object_compiler(compiler, PseudoAbi::MsX64);
     let mut args: Vec<OsString> = flags.into_iter().map(OsString::from).collect();
     args.extend([
         OsStr::new("-c").to_owned(),
@@ -770,7 +766,7 @@ fn assemble_object(compiler: &str, source: &str, tag: &str) -> Result<Vec<u8>, S
         Ok(Some(captured)) if captured.exit_code == Some(0) => {
             let bytes: Vec<u8> =
                 std::fs::read(&out_path).map_err(|e| format!("read assembled object: {e}"))?;
-            x86_compiler::assert_x86_artifact(&bytes);
+            common::assert_x86_artifact(&bytes);
             Ok(bytes)
         }
         Ok(Some(captured)) => Err(format!(

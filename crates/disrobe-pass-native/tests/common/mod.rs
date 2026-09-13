@@ -25,6 +25,14 @@ mod compiler_toolchain;
 #[path = "../support/x86_compiler.rs"]
 mod x86_compiler;
 
+pub fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'static str>) {
+    x86_compiler::object_compiler(compiler, abi)
+}
+
+pub fn assert_x86_artifact(bytes: &[u8]) {
+    x86_compiler::assert_x86_artifact(bytes);
+}
+
 pub const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
 } else {
