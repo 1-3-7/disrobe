@@ -1,0 +1,704 @@
+{
+  "schema": "disrobe.demo.sidecar/v1",
+  "captured_at": "2026-09-08T13:10:52.669Z",
+  "binary_sha256": "a29596adf78d560f830609e1c0f2bd2150e0a21b331e66b6117eef067f5933e5",
+  "source": {
+    "path": "docs/demo/fixtures/add.py",
+    "sha256": "a5e4fbbcfa1c0f7befe80bda5743633277c08d313c3e3136ff8e92ce42d8d60d"
+  },
+  "skills": [
+    "confidence-audit",
+    "diff-against-pypi",
+    "escalate-to-dynamic",
+    "patch-and-roundtrip",
+    "reconstruct-imports",
+    "recover-symbol-names",
+    "verify-decompilation"
+  ],
+  "steps": [
+    {
+      "command": [
+        "disrobe",
+        "init",
+        "--ide",
+        "claude",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 38.4261,
+      "stdout": "{\n  \"root\": \"demo-project\",\n  \"created\": [\n    \"demo-project\\\\.disrobe\\\\AGENTS.md\",\n    \"demo-project\\\\.disrobe\\\\manifest.json\",\n    \"demo-project\\\\.claude\\\\settings.json\",\n    \"demo-project\\\\.claude\\\\commands\\\\disrobe-verify.md\",\n    \"demo-project\\\\.claude\\\\commands\\\\disrobe-status.md\",\n    \"demo-project\\\\.claude\\\\commands\\\\disrobe-rename.md\",\n    \"demo-project\\\\.claude\\\\commands\\\\disrobe-diff.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\verify-decompilation\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\recover-symbol-names\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\reconstruct-imports\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\confidence-audit\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\escalate-to-dynamic\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\diff-against-pypi\\\\SKILL.md\",\n    \"demo-project\\\\.disrobe\\\\skills\\\\patch-and-roundtrip\\\\SKILL.md\",\n    \"demo-project\\\\.cursorrules\",\n    \"demo-project\\\\.windsurfrules\",\n    \"demo-project\\\\CLAUDE.md\"\n  ],\n  \"ide\": \"claude\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "py_compile",
+        "add.py"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 62.105999999999995,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "disrobe",
+        "py",
+        "decompile",
+        "__pycache__\\add.cpython-314.pyc",
+        "--out",
+        "recovered",
+        "--metadata-pack-4",
+        "--llm-briefs",
+        "--metadata-out",
+        "metadata.json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 350.95230000000004,
+      "stdout": "py decompile: OK\n  input:        __pycache__\\add.cpython-314.pyc\n  backend:      native\n  python:       3.14\n  source:       recovered\\add.cpython-314.py\n  manifest:     recovered\\manifest.json\n  roundtrip:    semantic\n  interpreter:  python3.14\n  llm bundle:   metadata.json\n  agents.md:    AGENTS.md\n  skill.md:     SKILL.md\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "py_compile",
+        "recovered\\add.cpython-314.py"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 63.07189999999997,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "__pycache__/add.cpython-314.pyc",
+      "bytes": 473,
+      "sha256": "4f69fb161e304cdf536f8d1469a2a61cc3a3474f95c7c92ca29e07c83531bca6"
+    },
+    {
+      "path": ".claude/commands/disrobe-diff.md",
+      "bytes": 269,
+      "sha256": "fb50af71b30dd402543aae75ddedab4bc1d9564d12903faa771c6e58a5a9c2c5"
+    },
+    {
+      "path": ".claude/commands/disrobe-rename.md",
+      "bytes": 312,
+      "sha256": "5949fc28c7e39e080d4efec98e3eccfc3b87dcd8f1429614630c2a2a3bab83c6"
+    },
+    {
+      "path": ".claude/commands/disrobe-status.md",
+      "bytes": 158,
+      "sha256": "48a535bc90ec0d350e97a986a3d4e4654d78138aa6b8025bfb2b5b2c8ddce7d6"
+    },
+    {
+      "path": ".claude/commands/disrobe-verify.md",
+      "bytes": 203,
+      "sha256": "35557450294259519e5ecce7baeaf3b73a370221e2184d473c39c958d81c77b0"
+    },
+    {
+      "path": ".claude/settings.json",
+      "bytes": 1137,
+      "sha256": "39256250be4f8a1bb96de73a81b260ab446fd3cb17eb6ac246394bffd4f126ea"
+    },
+    {
+      "path": ".disrobe/AGENTS.md",
+      "bytes": 1050,
+      "sha256": "8b3c2f2ba2bcaa3e8cc465512e13a06c49377db166f543def841c2a696af741b"
+    },
+    {
+      "path": ".disrobe/manifest.json",
+      "bytes": 118,
+      "sha256": "03bd42cc92260fe696335bc6bbbadbedd5e67ef0ebb5ab6b7c6d6e3a1f607659"
+    },
+    {
+      "path": ".disrobe/skills/confidence-audit/SKILL.md",
+      "bytes": 295,
+      "sha256": "637bba4656546dc352fc488928e18de429201b73978a35e7b294007f40bb1902"
+    },
+    {
+      "path": ".disrobe/skills/diff-against-pypi/SKILL.md",
+      "bytes": 302,
+      "sha256": "6bac9bdcda64a4abc50035d39d6d988bdf6ce02308c0bca5246bf30643363533"
+    },
+    {
+      "path": ".disrobe/skills/escalate-to-dynamic/SKILL.md",
+      "bytes": 325,
+      "sha256": "577c3bc2737aa99f4d7a3f4c1d6af5cc3139233810b42405bf2cc359c60a7e29"
+    },
+    {
+      "path": ".disrobe/skills/patch-and-roundtrip/SKILL.md",
+      "bytes": 285,
+      "sha256": "5713851ff4d282496a05d639ee2ff49573a08a71d7ad5e141671bb0e6eb2fd7a"
+    },
+    {
+      "path": ".disrobe/skills/reconstruct-imports/SKILL.md",
+      "bytes": 318,
+      "sha256": "603c31af9a9258c54568a1f035e39b6fb81577b801a8ce60b87be7a247607f1d"
+    },
+    {
+      "path": ".disrobe/skills/recover-symbol-names/SKILL.md",
+      "bytes": 364,
+      "sha256": "65a75b3e7cec4414545f2965206145399712ced87ece6ab94fd527cfe857ef1d"
+    },
+    {
+      "path": ".disrobe/skills/verify-decompilation/SKILL.md",
+      "bytes": 359,
+      "sha256": "1966afbb8761edfceb5e820a4f7bd434a23390f5b586db740f83e1c71493d06a"
+    },
+    {
+      "path": "add.py",
+      "bytes": 100,
+      "sha256": "a5e4fbbcfa1c0f7befe80bda5743633277c08d313c3e3136ff8e92ce42d8d60d"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 1308,
+      "sha256": "78772511bc93e1ac8d29075dc311e66de8a9b85565e923a5654f5517ae7c4c23"
+    },
+    {
+      "path": "metadata.json",
+      "bytes": 14920,
+      "sha256": "4d0a2ed431d2a4164aa3973806794f8e05178515a6b9e684056007fa0c6d1c59"
+    },
+    {
+      "path": "recovered/__pycache__/add.cpython-314.cpython-314.pyc",
+      "bytes": 495,
+      "sha256": "2d21ead69aa29bc1c93efcde2cc22b0d766623c5b1eb00aa800d3b9d3176c1f6"
+    },
+    {
+      "path": "recovered/add.cpython-314.py",
+      "bytes": 98,
+      "sha256": "c74e3cfd13bd3a24a053fcc12737079f13e9e3ae376596d10f0664136dd29ee0"
+    },
+    {
+      "path": "recovered/manifest.json",
+      "bytes": 486,
+      "sha256": "f2fd7fb5a7824093400d53739c56f1024d973f8e6fd557cfd2a2e0b8cb7b6b6c"
+    },
+    {
+      "path": "SKILL.md",
+      "bytes": 1602,
+      "sha256": "525b08cd45f6d2f8b98690891c6cd6b6e8e1cb2503327890c71f17aacbbc8146"
+    }
+  ],
+  "recovered_source": "from __future__ import annotations\ndef add(left: int, right: int) -> int:\n    return left + right\n",
+  "metadata": {
+    "categories": {
+      "ast": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "dialect": "python.3.14",
+              "root": {
+                "attrs": {
+                  "backend": "native",
+                  "source": "from __future__ import annotations\ndef add(left: int, right: int) -> int:\n    return left + right\n"
+                },
+                "kind": "Module"
+              }
+            }
+          }
+        ]
+      },
+      "cfg": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `cfg`",
+            "value": null
+          },
+          {
+            "applicable": true,
+            "pass": "disrobe-irsummary",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "blocks": [
+                {
+                  "id": 0,
+                  "instruction_count": 1,
+                  "kind": "return",
+                  "label": "<module>",
+                  "pc_range": [
+                    1048576,
+                    1048577
+                  ]
+                },
+                {
+                  "id": 1,
+                  "instruction_count": 2,
+                  "kind": "return",
+                  "label": "add",
+                  "pc_range": [
+                    2097152,
+                    2097154
+                  ]
+                },
+                {
+                  "id": 2,
+                  "instruction_count": 1,
+                  "kind": "return",
+                  "label": "add",
+                  "pc_range": [
+                    2097154,
+                    2097155
+                  ]
+                }
+              ],
+              "edges": [],
+              "entry_block": 0,
+              "function": "<module>",
+              "functions": [
+                {
+                  "address": 1048576,
+                  "block_count": 1,
+                  "cyclomatic_complexity": 1,
+                  "edge_count": 0,
+                  "entry_block": 0,
+                  "is_export": true,
+                  "name": "<module>"
+                },
+                {
+                  "address": 2097152,
+                  "block_count": 2,
+                  "cyclomatic_complexity": 1,
+                  "edge_count": 0,
+                  "entry_block": 1,
+                  "is_export": true,
+                  "name": "add"
+                }
+              ],
+              "lang": "python"
+            }
+          }
+        ]
+      },
+      "confidence": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `confidence`",
+            "value": null
+          }
+        ]
+      },
+      "constants": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": [
+              {
+                "index": 0,
+                "kind": "pyc_const",
+                "literal": "Int(0)"
+              },
+              {
+                "index": 1,
+                "kind": "pyc_const",
+                "literal": "Tuple([ShortAscii { value: \"annotations\", interned: true }])"
+              },
+              {
+                "index": 2,
+                "kind": "pyc_const",
+                "literal": "Code(CodeObject { era: Py311Plus, argcount: 1, posonlyargcount: 1, kwonlyargcount: 0, nlocals: 0, stacksize: 6, flags: 16777219, code: [128, 0, 86, 0, 94, 2, 56, 132, 0, 0, 100, 3, 0, 0, 28, 0, 81, 1, 104, 1, 82, 1, 82, 2, 82, 3, 82, 2, 82, 4, 82, 2, 47, 3, 35, 0], consts: [Int(2), ShortAscii { value: \"left\", interned: true }, ShortAscii { value: \"int\", interned: true }, ShortAscii { value: \"right\", interned: true }, ShortAscii { value: \"return\", interned: true }], names: [], varnames: [], freevars: [], cellvars: [], localsplusnames: [ShortAscii { value: \"format\", interned: true }], localspluskinds: [34], filename: ShortAscii { value: \"add.py\", interned: true }, name: ShortAscii { value: \"__annotate__\", interned: true }, qualname: ShortAscii { value: \"__annotate__\", interned: true }, firstlineno: 4, lnotab: [], linetable: [128, 0, 247, 0, 1, 1, 24, 241, 0, 1, 1, 24, 136, 99, 240, 0, 1, 1, 24, 152, 35, 240, 0, 1, 1, 24, 160, 35, 241, 0, 1, 1, 24], exceptiontable: [], pyarmor_trailer: [] })"
+              },
+              {
+                "index": 3,
+                "kind": "pyc_const",
+                "literal": "Code(CodeObject { era: Py311Plus, argcount: 2, posonlyargcount: 0, kwonlyargcount: 0, nlocals: 0, stacksize: 2, flags: 16777219, code: [128, 0, 87, 1, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 35, 0], consts: [None], names: [], varnames: [], freevars: [], cellvars: [], localsplusnames: [ShortAscii { value: \"left\", interned: true }, ShortAscii { value: \"right\", interned: true }], localspluskinds: [38, 38], filename: ShortAscii { value: \"add.py\", interned: true }, name: ShortAscii { value: \"add\", interned: true }, qualname: ShortAscii { value: \"add\", interned: true }, firstlineno: 4, lnotab: [], linetable: [128, 0, 216, 11, 15, 141, 60, 208, 4, 23], exceptiontable: [], pyarmor_trailer: [] })"
+              },
+              {
+                "index": 4,
+                "kind": "pyc_const",
+                "literal": "None"
+              }
+            ]
+          }
+        ]
+      },
+      "dfg": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `dfg`",
+            "value": null
+          },
+          {
+            "applicable": true,
+            "pass": "disrobe-irsummary",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "defs": [],
+              "function": "<module>",
+              "lang": "python",
+              "ssa": false,
+              "unreached_reads": [],
+              "uses": []
+            }
+          }
+        ]
+      },
+      "disasm": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "bytecode_version": "python.3.14",
+              "instructions": [
+                {
+                  "mnemonic": "RESUME",
+                  "operands": [
+                    "0"
+                  ],
+                  "pc": 0
+                },
+                {
+                  "mnemonic": "LOAD_SMALL_INT",
+                  "operands": [
+                    "0"
+                  ],
+                  "pc": 2
+                },
+                {
+                  "comment": "('annotations',)",
+                  "mnemonic": "LOAD_CONST",
+                  "operands": [
+                    "1"
+                  ],
+                  "pc": 4
+                },
+                {
+                  "comment": "__future__",
+                  "mnemonic": "IMPORT_NAME",
+                  "operands": [
+                    "0"
+                  ],
+                  "pc": 6
+                },
+                {
+                  "comment": "annotations",
+                  "mnemonic": "IMPORT_FROM",
+                  "operands": [
+                    "1"
+                  ],
+                  "pc": 8
+                },
+                {
+                  "comment": "annotations",
+                  "mnemonic": "STORE_NAME",
+                  "operands": [
+                    "1"
+                  ],
+                  "pc": 10
+                },
+                {
+                  "mnemonic": "POP_TOP",
+                  "pc": 12
+                },
+                {
+                  "comment": "<code object __annotate__ at 0x0000000000000000, file \"add.py\", line 4>",
+                  "mnemonic": "LOAD_CONST",
+                  "operands": [
+                    "2"
+                  ],
+                  "pc": 14
+                },
+                {
+                  "mnemonic": "MAKE_FUNCTION",
+                  "pc": 16
+                },
+                {
+                  "comment": "<code object add at 0x0000000000000000, file \"add.py\", line 4>",
+                  "mnemonic": "LOAD_CONST",
+                  "operands": [
+                    "3"
+                  ],
+                  "pc": 18
+                },
+                {
+                  "mnemonic": "MAKE_FUNCTION",
+                  "pc": 20
+                },
+                {
+                  "comment": "annotate",
+                  "mnemonic": "SET_FUNCTION_ATTRIBUTE",
+                  "operands": [
+                    "16"
+                  ],
+                  "pc": 22
+                },
+                {
+                  "comment": "add",
+                  "mnemonic": "STORE_NAME",
+                  "operands": [
+                    "2"
+                  ],
+                  "pc": 24
+                },
+                {
+                  "comment": "None",
+                  "mnemonic": "LOAD_CONST",
+                  "operands": [
+                    "4"
+                  ],
+                  "pc": 26
+                },
+                {
+                  "mnemonic": "RETURN_VALUE",
+                  "pc": 28
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "imports": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": [
+              {
+                "alias": null,
+                "kind": "module",
+                "module": "__future__",
+                "symbols": [
+                  "annotations"
+                ],
+                "version": null
+              }
+            ]
+          }
+        ]
+      },
+      "manifest": {
+        "file": {
+          "hash_blake3": "beed54aff8994af23485b5f4b6aa8c45e8914805d9ac41d2988d4eaf0b7f2814",
+          "magic_bytes_hex": null,
+          "mime": "application/x-python-bytecode",
+          "path": "__pycache__\\add.cpython-314.pyc",
+          "size_bytes": 473
+        }
+      },
+      "opcode_coverage": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `opcode_coverage`",
+            "value": null
+          }
+        ]
+      },
+      "pii_map": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `pii_map`",
+            "value": null
+          },
+          {
+            "applicable": false,
+            "pass": "disrobe-llm-metadata-pii",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-llm-metadata-pii` supports `pii_map` but produced no data for this input",
+            "value": null
+          }
+        ]
+      },
+      "provenance": {
+        "chain": [
+          {
+            "duration_ms": 0.0432,
+            "pass": "disrobe-pass-py-decompile",
+            "rung_in": "disasm",
+            "rung_out": "surface",
+            "version": "0.10.5"
+          }
+        ]
+      },
+      "roundtrip_verdict": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "stages": [
+                {
+                  "details": "backend=native, roundtrip=semantic",
+                  "name": "py-decompile",
+                  "ok": true
+                }
+              ],
+              "status": "pass"
+            }
+          }
+        ]
+      },
+      "signatures": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": [
+              {
+                "function": "add",
+                "parameters": [],
+                "return_type": null
+              }
+            ]
+          }
+        ]
+      },
+      "source_map": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": {
+              "format": "disrobe-linemap-v1",
+              "mappings": []
+            }
+          }
+        ]
+      },
+      "strings": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": []
+          }
+        ]
+      },
+      "symbols": {
+        "entries": [
+          {
+            "applicable": true,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": null,
+            "value": [
+              {
+                "address": null,
+                "demangled": null,
+                "kind": "label",
+                "mangled": "__future__",
+                "module": null,
+                "visibility": "unknown"
+              },
+              {
+                "address": null,
+                "demangled": null,
+                "kind": "label",
+                "mangled": "annotations",
+                "module": null,
+                "visibility": "unknown"
+              },
+              {
+                "address": null,
+                "demangled": null,
+                "kind": "label",
+                "mangled": "add",
+                "module": null,
+                "visibility": "unknown"
+              }
+            ]
+          }
+        ]
+      },
+      "types": {
+        "entries": [
+          {
+            "applicable": false,
+            "pass": "disrobe-pass-py-decompile",
+            "pass_version": "0.10.5",
+            "reason": "pass `disrobe-pass-py-decompile` declares no support for `types`",
+            "value": null
+          }
+        ]
+      }
+    },
+    "generated_at": "2026-09-08T13:10:52.589602300Z",
+    "input": {
+      "hash_blake3": "beed54aff8994af23485b5f4b6aa8c45e8914805d9ac41d2988d4eaf0b7f2814",
+      "magic_bytes_hex": "2b0e0d0a00000000",
+      "path": "__pycache__\\add.cpython-314.pyc",
+      "size_bytes": 473
+    },
+    "pipeline": [
+      {
+        "duration_ms": 0.0432,
+        "pass": "disrobe-pass-py-decompile",
+        "rung_in": "disasm",
+        "rung_out": "surface",
+        "version": "0.10.5"
+      },
+      {
+        "duration_ms": 0.0515,
+        "pass": "disrobe-irsummary",
+        "rung_in": "mir",
+        "rung_out": "mir",
+        "version": "0.10.5"
+      },
+      {
+        "duration_ms": 217.7562,
+        "pass": "disrobe-llm-metadata-pii",
+        "rung_in": "raw",
+        "rung_out": "raw",
+        "version": "0.10.5"
+      }
+    ],
+    "schema": "disrobe.metadata.llm.v1",
+    "schema_version": "1.0.0",
+    "selection": {
+      "authorized_decryption_keys": false,
+      "categories": [],
+      "excluded": [],
+      "format": "json",
+      "pack": "pack-4"
+    },
+    "tool": {
+      "build_profile": "release",
+      "name": "disrobe",
+      "version": "0.10.5"
+    }
+  },
+  "reconstruction_briefs": {
+    "AGENTS.md": "# AGENTS.md\n\nThis directory contains recovered python source reconstructed by `disrobe` v0.10.5. Use this brief to orient before you read, run, reconstruct, or refactor the code.\n\n## Artifact\n\n| field | value |\n|-------|-------|\n| source | `__pycache__\\add.cpython-314.pyc` |\n| size | 473 bytes |\n| blake3 | `beed54aff8994af23485b5f4b6aa8c45e8914805d9ac41d2988d4eaf0b7f2814` |\n| dialect | `python.3.14` |\n| bytecode | `python.3.14` |\n| roundtrip | `pass` |\n| generated | `2026-09-08T13:10:52.589602300Z` |\n| schema | `disrobe.metadata.llm.v1.0.0` |\n\n## Decompile provenance\n\n- `disrobe-pass-py-decompile` v0.10.5 (disasm -> surface)\n- `disrobe-irsummary` v0.10.5 (mir -> mir)\n- `disrobe-llm-metadata-pii` v0.10.5 (raw -> raw)\n\n## External symbols & imports\n\n- `__future__` -> annotations\n\n## Type signatures\n\n- `add()`\n\n## Control-flow shape\n\n| function | blocks | edges | loops |\n|----------|-------:|------:|------:|\n| `<module>` | 3 | 0 | 0 |\n\n## When reconstructing\n\n- Preserve the entrypoints & public signatures listed above; they are the observable contract.\n- The control-flow shape table is ground truth recovered from bytecode; match branch & loop structure, not just behavior.\n- Full machine-readable detail lives in the sibling `*.disrobe.llm.json` bundle (schema `disrobe.metadata.llm.v1.0.0`).\n",
+    "SKILL.md": "---\nname: reconstruct-python\ndescription: Reconstruct & refactor the recovered python artifact `add.cpython-314.pyc` decompiled by disrobe v0.10.5. Use when reading, reasoning about, rebuilding, or refactoring this directory's source.\n---\n\n# Working with recovered python source\n\nThis skill briefs any coding assistant on the recovered artifact in this directory & how to safely reconstruct it. All facts below are distilled from the `disrobe.metadata.llm.v1.0.0` bundle.\n\n## Source of truth\n\n- Original input: `__pycache__\\add.cpython-314.pyc` (473 bytes)\n- blake3: `beed54aff8994af23485b5f4b6aa8c45e8914805d9ac41d2988d4eaf0b7f2814`\n- Dialect: `python.3.14`\n- Roundtrip verdict: `pass`\n\n## Reconstruction procedure\n\n1. Read the recovered source alongside this brief & the sibling JSON bundle.\n2. Anchor on the entrypoints & signatures below; they form the public contract that must survive refactoring.\n3. Reproduce the control-flow shape (blocks, edges, loops) per function; the decompiler recovered it from bytecode, so it is authoritative.\n4. Keep every observed import & capability wired; removing one changes the artifact's behavior.\n\n## Invariants to preserve\n\n- Public signatures (see table) are the observable contract.\n- Import surface & capabilities must not change.\n- Per-function control-flow shape must match the recovered CFG.\n\n## Per-symbol metadata\n\n| symbol | kind | visibility | signature |\n|--------|------|------------|-----------|\n| `__future__` | label | unknown |  |\n| `add` | label | unknown | `add()` |\n| `annotations` | label | unknown |  |\n\n## Dependencies\n\n- `__future__`\n\n"
+  }
+}

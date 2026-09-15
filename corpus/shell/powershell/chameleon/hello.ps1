@@ -1,0 +1,1 @@
+iex([SyStem.teXt.EncODIng]::utF8.GEtSTriNG([system.CONVerT]::fRoMBAse64STrING('V3JpdGUtSG9zdCAiaGVsbG8gd29ybGQiCg==')));exit

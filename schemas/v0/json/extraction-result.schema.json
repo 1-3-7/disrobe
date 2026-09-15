@@ -1,0 +1,109 @@
+{
+  "$id": "https://disrobe.dev/schemas/v0/extraction-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Result returned by disrobe-binfmt::extract for any container kind.",
+  "properties": {
+    "encoding": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "entries": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "compressed_size": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "compression": {
+            "enum": [
+              "stored",
+              "deflate",
+              "deflate64",
+              "bzip2",
+              "lzma",
+              "xz",
+              "zstd",
+              "other"
+            ],
+            "type": "string"
+          },
+          "disk_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_executable": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "uncompressed_size": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "uncompressed_size",
+          "compressed_size",
+          "compression",
+          "is_executable"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "integrity_violations": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "quota": {
+      "additionalProperties": false,
+      "properties": {
+        "entries_accepted": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_observed_ratio": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_compressed_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "total_uncompressed_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entries_accepted",
+        "total_uncompressed_bytes",
+        "total_compressed_bytes",
+        "max_observed_ratio"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "kind",
+    "entries",
+    "encoding",
+    "integrity_violations",
+    "quota"
+  ],
+  "title": "ExtractionResult",
+  "type": "object"
+}

@@ -1,0 +1,25 @@
+fixture = "stuffit-method2.sit"
+fixture_sha256 = "e7ebc350a2c7741cd0df19f4c0d5ad0759d81e909847af5548e3a4b03e218f50"
+fixture_size = 757
+input = "stuffit-method2-input.txt"
+input_sha256 = "0da63e2bd4778b7180e2bed8b80c300ebea7d044c248e1025bd6b369acbf18a2"
+input_size = 1184
+source_repository = "https://github.com/thecloudexpanse/sit"
+source_commit = "821ae5ea6d0c76ab83ac0942e12f398aa5944250"
+source_license = "BSD-2-Clause and BSD-3-Clause"
+producer = "sit"
+producer_sha256 = "dceffd329300828d4dbbdccac7c80f4709a656dc71ca4e6b56091700762c6c55"
+producer_patch_sha256 = "12b2d0011b14cfec752a437bad5cb644389b0173e33d0cef153243b9758d18b9"
+producer_patch = "Use the MSYS funopen size_t callback signatures without changing compression behavior"
+producer_build = "MSYS2 gcc 15.3.0: make clean all"
+producer_command = "sit -vv -o method2.sit method2_input.txt"
+producer_repeat = "Two bounded invocations produced byte-identical archives"
+
+reference_tool = "unar 1.8.1"
+reference_url = "https://cdn.theunarchiver.com/downloads/unarWindows.zip"
+reference_archive_sha256 = "61a6b299606282f72f51c278801eac11d3dccfac83e2d68bccce33539912e0dd"
+reference_result = "lsar identified compression method 2 Compress and unar produced the byte-identical 1184-byte data fork"
+reference_manifest = "MANIFEST_METHOD2.tsv"
+
+format_source = "https://sources.debian.org/src/unar/1.10.8%2Bds1-9/XADStuffItParser.m"
+codec_source = "https://sources.debian.org/src/unar/1.8.1-3/XADMaster/XADCompressHandle.m"

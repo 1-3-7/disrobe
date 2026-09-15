@@ -1,0 +1,16 @@
+id = "pyarmor-corpus"
+ecosystem = "pyarmor"
+title = "PyArmor structural marshal decoding"
+claim = "On 72 manifest-named PyArmor v8/v9 default-trial wrappers, disrobe statically decrypts each body and decodes one complete root CodeObject from its header-anchored marshal stream."
+oracle_strength = "coverage-self-reported"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "none: the typed manifest and discovered v8/v9 wrapper set define the population; file identities, static decryption, and complete root-CodeObject parsing are checked in-tree. No external source, emitted pyc, execution, or tool comparison grades the result."
+reproduce = "cargo test -p disrobe-pass-pyarmor --test static_unpack_corpus"
+note = "The result is limited to manifest-named v8/v9 default-trial wrappers. It does not cover v6/v7, unlisted v8/v9 wrappers, registered-license/pro, BCC, or super mode."
+
+[source]
+recovery_group = "PyArmor structural marshal coverage"
+recovery_bar = "v8/v9 default-trial wrappers"

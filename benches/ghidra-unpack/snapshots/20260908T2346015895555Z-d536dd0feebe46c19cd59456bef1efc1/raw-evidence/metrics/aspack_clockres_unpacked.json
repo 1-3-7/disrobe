@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "Clockres.packed.aspack.unpacked.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 243,
+  "thunks": 0,
+  "instructions": 10544,
+  "defined_strings": 116,
+  "resolved_imports": 8,
+  "executable_bytes": 77824,
+  "decompile_workers": 4,
+  "decompile_timeout_seconds": 45,
+  "decompile_attempts": 243,
+  "decompiled_ok": 210
+}

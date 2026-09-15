@@ -1,0 +1,10 @@
+def f(token):
+    match token:
+        case 0:
+            return "zero"
+        case "init":
+            return "literal-string"
+        case None:
+            return "literal-none"
+        case _:
+            return "other"

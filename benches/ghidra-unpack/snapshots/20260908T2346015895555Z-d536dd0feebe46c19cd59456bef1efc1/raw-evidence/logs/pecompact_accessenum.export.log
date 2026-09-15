@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\pecompact\AccessEnum.packed.pecompact.exe
+  packer:       pecompact
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\pecompact_accessenum-34143fef9d0e41b3b3368ddb6bc04e71\AccessEnum.packed.pecompact.unpacked.exe
+  layout:       memory-image-overlay
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    52600 bytes placed (2 section(s) overlaid)
+  oep:          RVA 0x7a3e
+  symbols:      2
+  sidecar:      ${RUN_DIRECTORY}\export\pecompact_accessenum-34143fef9d0e41b3b3368ddb6bc04e71\AccessEnum.packed.pecompact.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\pecompact_accessenum-34143fef9d0e41b3b3368ddb6bc04e71\export.manifest.json

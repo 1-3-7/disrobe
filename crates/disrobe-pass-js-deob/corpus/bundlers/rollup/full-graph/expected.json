@@ -1,0 +1,5 @@
+{
+  "kind": "rollup",
+  "entry": "main",
+  "module_ids": ["VERSION", "greet", "Widget"]
+}

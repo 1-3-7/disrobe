@@ -1,0 +1,33 @@
+package fixtures.desugar;
+
+public class CoreLibraryProbe {
+    public CoreLibraryProbe() {
+        super();
+        return;
+    }
+    public static java.util.stream.Stream collection(java.util.Collection arg0) {
+        return arg0.stream();
+    }
+    public static java.time.Duration duration(long arg0) {
+        return java.time.Duration.ofMinutes(arg0);
+    }
+    public static boolean exists(java.nio.file.Path arg0, java.nio.file.LinkOption[] arg1) {
+        return java.nio.file.Files.exists(arg0, arg1);
+    }
+    public static java.util.function.Function identity() {
+        return java.util.function.Function.identity();
+    }
+    public static void main(String[] arg0) {
+        System.out.print(arg0.length);
+        return;
+    }
+    public static java.util.Optional optional(String arg0) {
+        return java.util.Optional.of(arg0);
+    }
+    public static java.util.stream.IntStream range(int arg0, int arg1) {
+        return java.util.stream.IntStream.range(arg0, arg1);
+    }
+    public static long seconds(long arg0) {
+        return java.util.concurrent.TimeUnit.SECONDS.convert(fixtures.desugar.CoreLibraryProbe.duration(arg0));
+    }
+}

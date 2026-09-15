@@ -1,0 +1,100 @@
+name: Support request or feature
+description: Ask disrobe to support a new obfuscator, packer, format, or capability.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        disrobe reverses what is statically present in a file, with no model in the loop, so a concrete input drives new support far more than a description does.
+
+        **We strongly prefer open-source and publicly redistributable samples.** The single most useful thing you can provide is a link to the obfuscator or packer's open-source repository: it lets us build our own samples at the exact version you hit and grade recovery against the clean original, so the fix is provable and stays fixed. A small benign sample you built yourself, or a format specification, is the next best thing. Proprietary or one-off binaries are much harder to act on, and we will not download anything that might be malware.
+
+        The more detail you give, the faster this ships. Fill in as much as you can; only a few fields are required.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: The language or subsystem this falls under. Pick the closest one.
+      options:
+        - Python
+        - JVM or Android
+        - .NET
+        - WebAssembly
+        - JavaScript or TypeScript
+        - Native PE/ELF/Mach-O
+        - Go
+        - Lua
+        - Ruby
+        - PHP
+        - Shell
+        - Container, archive, or filesystem
+        - Recon, secrets, or IOCs (frisk)
+        - CLI, query, report, or bindings
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target obfuscator, packer, format, or capability
+      description: Name the exact tool, format, or capability, with a version if you know it.
+      placeholder: the FooCrypt PE packer 2.3, or a `disrobe query` predicate for cross-references to a string
+    validations:
+      required: true
+  - type: input
+    id: tool_repo
+    attributes:
+      label: Open-source repository or homepage
+      description: Link the tool's source repository if it is open source. This is the most useful field in this form, since it lets us generate our own samples and prove recovery against the pre-obfuscation original. Leave blank only if the tool is genuinely closed source.
+      placeholder: https://github.com/vendor/foocrypt
+    validations:
+      required: false
+  - type: textarea
+    id: sample
+    attributes:
+      label: Public sample or specification
+      description: |
+        A link to a public, redistributable, benign sample, or a format specification. If you built the sample yourself, say exactly how (tool, version, and full command) so we can reproduce it deterministically.
+
+        Safety: never attach or link live malware. If the only sample you have is malicious or non-redistributable, give its SHA-256 and a source link (for example VirusTotal or MalwareBazaar) instead of the file, and a benign file that triggers the same gap if you can build one.
+      placeholder: |
+        link: https://github.com/vendor/foocrypt/releases/tag/v2.3
+        or: built locally with `foocrypt --pack hello.exe` (foocrypt 2.3, hello.c attached)
+        or: format spec at https://vendor.example/format.pdf
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: Sample or tool license
+      description: If you know it, the license of the tool or sample, so we know whether a fixture built from it can be redistributed in the test corpus.
+      placeholder: MIT, Apache-2.0, GPL-3.0, proprietary, unknown
+    validations:
+      required: false
+  - type: textarea
+    id: today
+    attributes:
+      label: What does disrobe do with it today?
+      description: |
+        Paste the full output of `disrobe detect <file>`, plus any command you already tried (for example `disrobe auto <file>`) with its output. If `disrobe auto` recovered nothing, it now prints the command to try next; include that line. Run with `-vv` if you can, and keep any `DR-...` error code intact.
+    validations:
+      required: false
+  - type: textarea
+    id: want
+    attributes:
+      label: What should it do?
+      description: Describe the expected result concretely. For an unpacker, name the files or structures you expect back. For a decompiler, describe the source you expect to read.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I linked an open-source repository or a public, benign, redistributable sample where possible.
+          required: false
+        - label: I did not attach or link live malware.
+          required: true

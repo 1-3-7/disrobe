@@ -1,0 +1,29 @@
+schema = "disrobe.jvm.d8-captured-lambda-fixture/v1"
+source = "CapturedLambdaProbe.java"
+source_sha256 = "85bb5423ec833faeefbe95fbab09f6e01ca3e0b0f29782d6f83ed3a0012fc0b1"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes CapturedLambdaProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/CapturedLambdaProbe.class"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[artifact]
+path = "CapturedLambdaProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+sha256 = "537346bf56ac0ef033de0a9999f929d30f32fc30cf1fe7056ceff2136d6ff1ac"
+bytes = 1368
+expected_stdout = "11\n"

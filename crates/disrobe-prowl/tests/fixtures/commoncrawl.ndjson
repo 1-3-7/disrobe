@@ -1,0 +1,4 @@
+{"urlkey":"com,example,planted)/","timestamp":"20240105000000","url":"https://planted.example.com/index.html","mime":"text/html","mime-detected":"text/html","status":"200","digest":"AAAA"}
+{"urlkey":"com,example,planted)/api/v1","timestamp":"20240106000000","url":"https://planted.example.com/api/v1/users","mime":"application/json","mime-detected":"application/json","status":"200","digest":"BBBB"}
+{"urlkey":"com,example,planted)/search?q=1","timestamp":"20240107000000","url":"https://planted.example.com/search?q=test","mime":"text/html","status":"301","digest":"CCCC"}
+{"urlkey":"com,example,planted)/search?q=2","timestamp":"20240108000000","url":"https://planted.example.com/search?q=other","mime":"text/html","status":"200","digest":"DDDD"}

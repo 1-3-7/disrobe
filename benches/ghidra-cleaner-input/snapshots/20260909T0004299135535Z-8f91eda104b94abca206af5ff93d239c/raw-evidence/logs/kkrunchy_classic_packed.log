@@ -1,0 +1,125 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (527 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1734 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\kkrunchy_classic_packed-f8fc610fb35d4829904f34d3949a8686\kkrunchy_classic_packed (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\kkrunchy_classic_packed-f8fc610fb35d4829904f34d3949a8686\kkrunchy_classic_packed (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\kkrunchy_classic_packed-f8fc610fb35d4829904f34d3949a8686\kkrunchy_classic_packed (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe (HeadlessAnalyzer)
+WARN  Non-standard # of data directories: 5 (OptionalHeader)
+WARN  Non-standard optional header size: 136 bytes (FileHeader)
+WARN  Skipping DataDirectory 'IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR'. RVA outside of image (RVA: 0xf45a7a30, Size: 0x13ae1707). Could be a file-only data directory. (COMDescriptorDataDirectory)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+WARN  Non-standard # of data directories: 5 (OptionalHeader)
+WARN  Non-standard optional header size: 136 bytes (FileHeader)
+ERROR Error laying down header structures ghidra.program.model.util.CodeUnitInsertionException: Could not create Data at address 003f000c (PeLoader)
+WARN  Skipping DataDirectory 'IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR'. RVA outside of image (RVA: 0xf45a7a30, Size: 0x13ae1707). Could be a file-only data directory. (COMDescriptorDataDirectory)
+INFO  Additional info:
+Loading file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe?MD5=0403366d7fac3e3a8d00db3a3ddfcb66...
+[hello.packed.kkrunchy_classic.exe]: failed to create word at 003f118a: Conflicting data exists at address 003f117e to 003f118a
+[hello.packed.kkrunchy_classic.exe]: failed to create word at 003f1198: Conflicting data exists at address 003f118c to 003f1198
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll?MD5=2d8ecc5a2aade7639ca790ef2e8e6e36...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Linking the External Programs of 'hello.packed.kkrunchy_classic.exe' to imported libraries...
+  [KERNEL32.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.262 secs
+    Apply Data Archives                        0.432 secs
+    Call Convention ID                         0.000 secs
+    Call-Fixup Installer                       0.001 secs
+    Create Address Tables                      0.020 secs
+    Create Function                            0.000 secs
+    Data Reference                             0.003 secs
+    Decompiler Parameter ID                    0.500 secs
+    Decompiler Switch Analysis                 0.000 secs
+    Demangler Microsoft                        0.059 secs
+    Disassemble Entry Points                   0.042 secs
+    Embedded Media                             0.007 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.079 secs
+    Function Start Pre Search                  0.005 secs
+    Function Start Search                      0.048 secs
+    Function Start Search After Code           0.001 secs
+    Function Start Search After Data           0.001 secs
+    Non-Returning Functions - Discovered       0.000 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.001 secs
+    Reference                                  0.005 secs
+    Scalar Operand References                  0.002 secs
+    Shared Return Calls                        0.001 secs
+    Stack                                      0.010 secs
+    Subroutine References                      0.000 secs
+    Subroutine References - One Time           0.000 secs
+    WindowsResourceReference                   0.383 secs
+    X86 Function Callee Purge                  0.000 secs
+    x86 Constant Reference Analyzer            0.047 secs
+-----------------------------------------------------
+     Total Time   1 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\kkrunchy_classic_packed.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\kkrunchy_classic_packed.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe (HeadlessAnalyzer)
+INFO  /hello.packed.kkrunchy_classic.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /hello.packed.kkrunchy_classic.exe (kkrunchy_classic_packed:/hello.packed.kkrunchy_classic.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

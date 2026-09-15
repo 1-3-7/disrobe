@@ -1,0 +1,57 @@
+name: mruby reference toolchain
+description: Build the pinned mruby compiler, interpreter, and opcode headers.
+runs:
+  using: composite
+  steps:
+    - uses: step-security/msvc-dev-cmd@22c98154b708dbd743e6f27a933cf6ceba3305c4
+      if: runner.os == 'Windows'
+    - shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $commit = '32279e4128527bab4c961854b9cce727a060abea'
+        $archive = Join-Path $env:RUNNER_TEMP 'mruby-3.3.0.tar.gz'
+        $source = Join-Path $env:RUNNER_TEMP 'mruby-3.3.0-reference'
+        Invoke-WebRequest -Uri "https://codeload.github.com/mruby/mruby/tar.gz/$commit" -OutFile $archive -TimeoutSec 120
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'c15bf94a6103380034b5617d24649790b09ac68a2477024f6990b2255e3995d3') { throw 'mruby archive checksum mismatch' }
+        New-Item -ItemType Directory -Path $source | Out-Null
+        [string]$tar = if ($IsWindows) { Join-Path $env:SystemRoot 'System32/tar.exe' } else { (Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+        & $tar -xzf $archive -C $source --strip-components=1
+        if ($LASTEXITCODE -ne 0) { throw 'mruby extraction failed' }
+        Remove-Item -LiteralPath $archive
+        Push-Location $source
+        $hadLd = $false
+        $priorLd = $null
+        if ($IsWindows) {
+          $hadLd = Test-Path Env:LD
+          $priorLd = $env:LD
+        }
+        $env:MRUBY_CONFIG = 'default'
+        try {
+          if ($IsWindows) {
+            $msvcBin = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64'
+            $msvcLink = Join-Path $msvcBin 'link.exe'
+            if (-not (Test-Path -LiteralPath $msvcLink -PathType Leaf)) { throw "Missing MSVC linker: $msvcLink" }
+            $env:LD = '"{0}"' -f $msvcLink
+          }
+          ruby -S rake all
+          if ($LASTEXITCODE -ne 0) { throw 'mruby build failed' }
+        } finally {
+          if ($IsWindows) {
+            if ($hadLd) { $env:LD = $priorLd } else { Remove-Item Env:LD -ErrorAction SilentlyContinue }
+          }
+          Remove-Item Env:MRUBY_CONFIG
+          Pop-Location
+        }
+        $bin = Join-Path $source 'build/host/bin'
+        $suffix = if ($env:RUNNER_OS -eq 'Windows') { '.exe' } else { '' }
+        foreach ($tool in @('mrbc', 'mruby')) {
+          $executable = Join-Path $bin "$tool$suffix"
+          $version = & $executable --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne 'mruby 3.3.0 (2024-02-14)') { throw "Unexpected $tool version: $version" }
+        }
+        $include = Join-Path $source 'include/mruby'
+        foreach ($header in @('ops.h', 'version.h')) {
+          if (-not (Test-Path -LiteralPath (Join-Path $include $header) -PathType Leaf)) { throw "Missing mruby header: $header" }
+        }
+        $bin >> $env:GITHUB_PATH
+        "DISROBE_MRUBY_INCLUDE=$include" >> $env:GITHUB_ENV

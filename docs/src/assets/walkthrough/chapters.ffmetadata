@@ -1,0 +1,27 @@
+;FFMETADATA1
+title=Disrobe CLI walkthrough
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=28000
+title=Unpack and route
+[CHAPTER]
+TIMEBASE=1/1000
+START=28000
+END=58000
+title=Recover readable code
+[CHAPTER]
+TIMEBASE=1/1000
+START=58000
+END=76000
+title=Inspect the evidence
+[CHAPTER]
+TIMEBASE=1/1000
+START=76000
+END=100000
+title=Keep the recovery evidence
+[CHAPTER]
+TIMEBASE=1/1000
+START=100000
+END=132000
+title=Work with your tools

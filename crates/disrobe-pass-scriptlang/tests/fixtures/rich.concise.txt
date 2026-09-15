@@ -1,0 +1,135 @@
+rich.pl syntax OK
+main::classify:
+e  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->e
+1        <;> nextstate(main 4 rich.pl:5) v:*,&,x*,x&,x$,$ ->2
+3        <2> aassign[t4] vKS ->4
+-           <1> ex-list lK ->-
+2              <0> padrange[$n:4,9] */LVINTRO,range=1 ->3
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->3
+-              <0> pushmark s ->-
+-              <0> padsv[$n:4,9] sPRM*/LVINTRO ->-
+4        <;> nextstate(main 5 rich.pl:6) v:*,&,x*,x&,x$,$ ->5
+-        <1> null vK/1 ->c
+8           <|> and(other->9) vK/1 ->c
+7              <2> gt sK/2 ->8
+5                 <0> padsv[$n:4,9] s ->6
+6                 <$> const[IV 10] s ->7
+-              <@> scope vK ->-
+-                 <;> ex-nextstate(main 7 rich.pl:7) v:*,&,x*,x&,x$,$ ->9
+b                 <@> return K ->c
+9                    <0> pushmark s ->a
+a                    <$> const[PV "big"] s ->b
+c        <;> nextstate(main 9 rich.pl:9) v:*,&,{,x*,x&,x$,$ ->d
+-        <@> return K ->-
+-           <0> pushmark s ->d
+d           <$> const[PV "small"] s ->e
+main::total:
+t  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->t
+f        <;> nextstate(main 11 rich.pl:13) v:*,&,x*,x&,x$,$ ->g
+h        <2> aassign[t6] vKS ->i
+-           <1> ex-list lK ->-
+g              <0> padrange[$a:11,13; $b:11,13; $c:11,13] */LVINTRO,range=3 ->h
+-              <1> rv2av[t5] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lKPRM* ->h
+-              <0> pushmark sRM*/LVINTRO ->-
+-              <0> padsv[$a:11,13] sRM*/LVINTRO ->-
+-              <0> padsv[$b:11,13] sRM*/LVINTRO ->-
+-              <0> padsv[$c:11,13] sRM*/LVINTRO ->-
+i        <;> nextstate(main 12 rich.pl:14) v:*,&,x*,x&,x$,$ ->j
+m        <1> padsv_store[$sum:12,13] vKS/LVINTRO ->n
+l           <2> add[t8] sK/2 ->m
+j              <0> padsv[$a:11,13] s ->k
+k              <0> padsv[$b:11,13] s ->l
+-           <0> ex-padsv sRM*/LVINTRO ->m
+n        <;> nextstate(main 13 rich.pl:15) v:*,&,{,x*,x&,x$,$ ->o
+q        <2> add[$sum:12,13] vK/TARGMY,2 ->r
+o           <0> padsv[$sum:12,13] s ->p
+p           <0> padsv[$c:11,13] s ->q
+r        <;> nextstate(main 13 rich.pl:16) v:*,&,{,x*,x&,x$,$ ->s
+-        <@> return K ->-
+-           <0> pushmark s ->s
+s           <0> padsv[$sum:12,13] s ->t
+main::loop_sum:
+1e <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->1e
+u        <;> nextstate(main 15 rich.pl:20) v:*,&,x*,x&,x$,$ ->v
+w        <2> aassign[t4] vKS ->x
+-           <1> ex-list lK ->-
+v              <0> padrange[$limit:15,21] */LVINTRO,range=1 ->w
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->w
+-              <0> pushmark s ->-
+-              <0> padsv[$limit:15,21] sPRM*/LVINTRO ->-
+x        <;> nextstate(main 16 rich.pl:21) v:*,&,x*,x&,x$,$ ->y
+z        <1> padsv_store[$acc:16,21] vKS/LVINTRO ->10
+y           <$> const[IV 0] s ->z
+-           <0> ex-padsv sRM*/LVINTRO ->z
+10       <;> nextstate(main 17 rich.pl:22) v:*,&,{,x*,x&,x$,$ ->11
+1b       <2> leaveloop vK/2 ->1c
+11          <{> enterloop(next->16 last->1b redo->12) v ->17
+-           <1> null vK/1 ->1b
+1a             <|> and(other->12) vK/1 ->1b
+19                <2> lt sK/2 ->1a
+17                   <0> padsv[$acc:16,21] s ->18
+18                   <0> padsv[$limit:15,21] s ->19
+-                 <@> lineseq vK ->-
+12                   <;> nextstate(main 19 rich.pl:23) v:*,&,x*,x&,x$,$ ->13
+15                   <2> add[$acc:16,21] vK/TARGMY,2 ->16
+13                      <0> padsv[$acc:16,21] s ->14
+14                      <$> const[IV 1] s ->15
+16                   <0> unstack v ->17
+1c       <;> nextstate(main 21 rich.pl:25) v:*,&,{,x*,x&,x$,$ ->1d
+-        <@> return K ->-
+-           <0> pushmark s ->1d
+1d          <0> padsv[$acc:16,21] s ->1e
+main program:
+2c <@> leave[1 ref] vKP/REFC ->(end)
+1f    <0> enter v ->1g
+1g    <;> nextstate(main 22 rich.pl:28) v:*,&,{,x*,x&,x$,$ ->1h
+1l    <1> padsv_store[$x:22,25] vKS/LVINTRO ->1m
+1k       <1> entersub sKS/STRICT ->1l
+-           <1> ex-list sK ->1k
+1h             <0> pushmark s ->1i
+1i             <$> const[IV 20] sM ->1j
+-              <1> ex-rv2cv sK/STRICT,1 ->-
+1j                <#> gv[*classify] s ->1k
+-        <0> ex-padsv sRM*/LVINTRO ->1l
+1m    <;> nextstate(main 23 rich.pl:29) v:*,&,{,x*,x&,x$,$ ->1n
+1q    <@> print vK ->1r
+1n       <0> pushmark s ->1o
+1p       <+> multiconcat("\n",-1,1)[t4] sK/STRINGIFY ->1q
+-           <0> ex-pushmark s ->1o
+1o          <0> padsv[$x:22,25] s ->1p
+1r    <;> nextstate(main 23 rich.pl:30) v:*,&,{,x*,x&,x$,$ ->1s
+1y    <1> padsv_store[$t:23,25] vKS/LVINTRO ->1z
+1x       <1> entersub sKS/STRICT ->1y
+-           <1> ex-list sK ->1x
+1s             <0> pushmark s ->1t
+1t             <$> const[IV 1] sM ->1u
+1u             <$> const[IV 2] sM ->1v
+1v             <$> const[IV 3] sM ->1w
+-              <1> ex-rv2cv sK/STRICT,1 ->-
+1w                <#> gv[*total] s ->1x
+-        <0> ex-padsv sRM*/LVINTRO ->1y
+1z    <;> nextstate(main 24 rich.pl:31) v:*,&,{,x*,x&,x$,$ ->20
+23    <@> print vK ->24
+20       <0> pushmark s ->21
+22       <+> multiconcat("\n",-1,1)[t8] sK/STRINGIFY ->23
+-           <0> ex-pushmark s ->21
+21          <0> padsv[$t:23,25] s ->22
+24    <;> nextstate(main 24 rich.pl:32) v:*,&,{,x*,x&,x$,$ ->25
+26    <1> padsv_store[$count:24,25] vKS/LVINTRO ->27
+25       <$> const[IV 4] s ->26
+-        <0> ex-padsv sRM*/LVINTRO ->26
+27    <;> nextstate(main 25 rich.pl:33) v:*,&,{,x*,x&,x$,$ ->28
+2b    <@> print vK ->2c
+28       <0> pushmark s ->29
+2a       <+> multiconcat("\n",-1,1)[t11] sK/STRINGIFY ->2b
+-           <0> ex-pushmark s ->29
+29          <0> padsv[$count:24,25] s ->2a

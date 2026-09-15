@@ -1,0 +1,1 @@
+{"shiv_version": "1.0.8", "always_write_cache": false, "build_id": "03b5d99397792c8b83f3d06bf862ae1af6de5a5f5071ff63a0fea3a3a43e19e2", "built_at": "2026-05-25 20:40:07", "hashes": {}, "no_modify": false, "reproducible": false, "preamble": null, "entry_point": "hello:main", "compile_pyc": false, "extend_pythonpath": false, "prepend_pythonpath": null, "root": null, "script": null}

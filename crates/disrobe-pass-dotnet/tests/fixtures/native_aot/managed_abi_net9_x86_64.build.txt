@@ -1,0 +1,27 @@
+Source: managed_abi_net9_x86_64.cs
+Project: managed_abi_net9_x86_64.csproj.txt
+Target: net9.0, win-x64, PE32+, AMD64, NativeAOT metadata 10.1
+SDK: .NET SDK 9.0.316
+Compiler: Microsoft.DotNet.ILCompiler 9.0.18, runtime.win-x64.microsoft.dotnet.ilcompiler 9.0.18
+Linker: MSVC 14.44.35207 Hostx64\x64\link.exe
+Runtime source tag: https://github.com/dotnet/runtime/tree/v9.0.18
+Managed calling convention: https://raw.githubusercontent.com/dotnet/runtime/v9.0.18/docs/design/coreclr/botr/clr-abi.md
+ECMA-335 calling-convention byte: ECMA-335 6th edition, II.23.2.1 MethodDefSig, HASTHIS 0x20
+Microsoft x64 argument registers: RCX, RDX, R8, R9 for integer and pointer arguments
+Convention low nibble on this image: 0x0 for static methods and 0x0 plus HASTHIS for instance methods; the .NET 7 NativeFormat writer records 0x1 for the same static shape, and on AMD64 that convention uses the identical integer argument registers
+Command: dotnet publish managed_abi_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Build directory: the project, Program.cs and global publish output live outside the repository; PathMap rewrites the project directory to C:\src\feat017 so no build path is embedded
+Source SHA-256: F4D5BA913E1664E01C10D5ACF3A9614232822C9AAFBCFCCD230C0E4EBEF2286F
+Project SHA-256: 2CE87776C55D8036B2BFB32080F4BE4F1DB917F11045B7D930E4377CE114EE0B
+Executable SHA-256: 739FA7F4DC63FA7609A4E133F1680A09B68F534DC1F1507D35BACE0D9244DF3D
+Full link map SHA-256: 1AE1B9C46781B122B2E2D6FCFC75AD0B7662958D8850CD10F811CF5C42DFB90F
+Unwind evidence tool: dumpbin 14.44.35228.0, command dumpbin /unwindinfo publish\managed_abi_net9_x86_64.exe
+LLVM evidence tool: llvm-objdump 19.1.7, SHA-256 4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022
+Disassembly command: llvm-objdump -d --start-address=<begin> --stop-address=<end> publish\managed_abi_net9_x86_64.exe
+ManagedAbiProbe.Add managed signature: static System.Int32 Add(System.Int32, System.Int32)
+ManagedAbiProbe.Negate managed signature: static System.Int32 Negate(System.Int32)
+ManagedAbiProbe.Widen managed signature: static System.Int64 Widen(System.Int32)
+ManagedAbiProbe.IsPositive managed signature: static System.Boolean IsPositive(System.Int32)
+ManagedAbiProbe.Mask managed signature: static System.UInt32 Mask(System.UInt32, System.Byte)
+ManagedAbiProbe.Blend managed signature: static System.Int32 Blend(System.Int32, System.Int32, System.Int32, System.Int32)
+ManagedAbiProbe.Scale managed signature: instance System.Int32 Scale(System.Int32)

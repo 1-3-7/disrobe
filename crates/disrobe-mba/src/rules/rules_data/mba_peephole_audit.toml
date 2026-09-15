@@ -1,0 +1,62 @@
+[[classes]]
+name = "identity_elements"
+status = "present"
+
+[[classes]]
+name = "annihilators"
+status = "present"
+
+[[classes]]
+name = "idempotence"
+status = "present"
+
+[[classes]]
+name = "involution"
+status = "present"
+
+[[classes]]
+name = "commutativity_associativity_normalization"
+status = "present"
+
+[[classes]]
+name = "distributivity"
+status = "absent"
+reason = "changes expression size and belongs to e-graph search rather than terminating local peepholes"
+
+[[classes]]
+name = "absorption"
+status = "present"
+
+[[classes]]
+name = "de_morgan"
+status = "absent"
+reason = "changes expression shape without a one-way local cost reduction"
+
+[[classes]]
+name = "complement"
+status = "present"
+
+[[classes]]
+name = "double_negation"
+status = "present"
+
+[[classes]]
+name = "sub_to_add_neg"
+status = "present"
+
+[[classes]]
+name = "constant_folding"
+status = "present"
+
+[[classes]]
+name = "shift_identities"
+status = "present"
+
+[[classes]]
+name = "slice_compose_constant_folding"
+status = "present"
+
+[[classes]]
+name = "affine_collection"
+status = "absent"
+reason = "normalizes an unbounded term set rather than matching a purely local identity"

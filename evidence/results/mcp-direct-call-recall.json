@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "The MCP call_graph tool returns all 5 toolchain-derived direct-call edges for the committed stripped ELF.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": "The MCP call_graph tool returns all 5 direct-call edges derived from the committed unstripped toolchain twin. The test computes the false-negative set and requires it to be empty. This small fixture does not establish the same rate for other binaries, architectures, or toolchains.",
+  "disrobe_leads": null,
+  "ecosystem": "mcp",
+  "floor": 100.0,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs, navigation_tools_round_trip_a_committed_stripped_elf_over_stdio; ground truth comes from the committed unstripped toolchain twin",
+  "id": "mcp-direct-call-recall",
+  "measured": "100.00%",
+  "oracle": {
+    "external": "caller and callee addresses from the committed unstripped toolchain twin, compared with the MCP server's stdio response for the stripped subject",
+    "kind": "recovery-import",
+    "note": "This claim covers one committed ELF pair and does not establish recall for other binaries, architectures, or toolchains."
+  },
+  "oracle_strength": "strong",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-mcp --test mcp_protocol_roundtrip navigation_tools_round_trip_a_committed_stripped_elf_over_stdio",
+  "title": "MCP direct-call edge recall on a committed stripped ELF"
+}

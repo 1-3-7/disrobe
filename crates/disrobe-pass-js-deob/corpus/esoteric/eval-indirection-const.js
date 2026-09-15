@@ -1,0 +1,1 @@
+var z = eval("var __recovered = 42;"); console.log(__recovered);

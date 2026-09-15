@@ -1,0 +1,149 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use disrobe_binfmt::containers::nsis::{
+    NsisArchive, NsisCompression, decode_solid_region, decompress_file, parse_nsis_archive,
+    slice_solid_file,
+};
+
+use common::requirement::{MAKENSIS, locate, unmeasured};
+
+fn build_installer(
+    makensis: &Path,
+    dir: &Path,
+    solid: bool,
+    payloads: &[(&str, &[u8])],
+) -> Vec<u8> {
+    std::fs::create_dir_all(dir).expect("mk dir");
+    let mut script: String = String::new();
+    if solid {
+        script.push_str("SetCompressor /SOLID /FINAL bzip2\n");
+    } else {
+        script.push_str("SetCompressor /FINAL bzip2\n");
+    }
+    script.push_str("Name \"drbz2\"\n");
+    let out_name: &str = if solid { "solid.exe" } else { "plain.exe" };
+    push_line(&mut script, &format!("OutFile \"{out_name}\""));
+    script.push_str("InstallDir \"$TEMP\\drbz2\"\nSection\n  SetOutPath \"$INSTDIR\"\n");
+    for (name, body) in payloads {
+        std::fs::write(dir.join(name), body).expect("write payload");
+        push_line(&mut script, &format!("  File \"{name}\""));
+    }
+    script.push_str("SectionEnd\n");
+    let nsi: PathBuf = dir.join(if solid { "solid.nsi" } else { "plain.nsi" });
+    std::fs::write(&nsi, script).expect("write nsi");
+    let output: std::process::Output = Command::new(makensis)
+        .arg(if cfg!(windows) { "/V2" } else { "-V2" })
+        .arg(&nsi)
+        .current_dir(dir)
+        .output()
+        .expect("run makensis");
+    assert!(
+        output.status.success(),
+        "makensis failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::read(dir.join(out_name)).expect("read installer")
+}
+
+fn push_line(out: &mut String, line: &str) {
+    out.push_str(line);
+    out.push('\n');
+}
+
+fn make_payloads() -> Vec<(&'static str, Vec<u8>)> {
+    let mut p1: Vec<u8> = Vec::new();
+    for _ in 0..40 {
+        p1.extend_from_slice(b"The quick brown fox jumps over the lazy dog. ");
+    }
+    p1.extend((0u16..512).map(|n: u16| (n & 0xff) as u8));
+    let mut p2: Vec<u8> = Vec::new();
+    for i in 0..1500u32 {
+        p2.push((i.wrapping_mul(31).wrapping_add(7) & 0xff) as u8);
+    }
+    vec![("payload1.bin", p1), ("payload2.bin", p2)]
+}
+
+#[test]
+fn makensis_bzip2_non_solid_round_trips() {
+    let makensis: PathBuf = match locate(&MAKENSIS) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKENSIS,
+                "byte-exact recovery of a bzip2 non-solid installer built by the real \
+                 NSIS compiler",
+                &reason,
+            );
+            return;
+        }
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_nonsolid")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().join("work");
+    let payloads: Vec<(&str, Vec<u8>)> = make_payloads();
+    let refs: Vec<(&str, &[u8])> = payloads
+        .iter()
+        .map(|(n, b): &(&str, Vec<u8>)| (*n, b.as_slice()))
+        .collect();
+    let exe: Vec<u8> = build_installer(&makensis, &dir, false, &refs);
+
+    let archive: NsisArchive = parse_nsis_archive(&exe).expect("parse non-solid archive");
+    assert_eq!(archive.compression, NsisCompression::Bzip2);
+    for (name, body) in &payloads {
+        let entry = archive
+            .files
+            .iter()
+            .find(|f| f.name.ends_with(name))
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        let recovered: Vec<u8> =
+            decompress_file(&exe, &archive, entry, u64::MAX).expect("decompress file");
+        assert_eq!(&recovered, body, "byte-exact mismatch for {name}");
+    }
+}
+
+#[test]
+fn makensis_bzip2_solid_round_trips() {
+    let makensis: PathBuf = match locate(&MAKENSIS) {
+        Ok(path) => path,
+        Err(reason) => {
+            unmeasured(
+                &MAKENSIS,
+                "byte-exact recovery of a bzip2 solid installer built by the real \
+                 NSIS compiler",
+                &reason,
+            );
+            return;
+        }
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_nsis_bz2_solid")
+            .expect("create scratch directory");
+    let dir: PathBuf = scratch.path().join("work");
+    let payloads: Vec<(&str, Vec<u8>)> = make_payloads();
+    let refs: Vec<(&str, &[u8])> = payloads
+        .iter()
+        .map(|(n, b): &(&str, Vec<u8>)| (*n, b.as_slice()))
+        .collect();
+    let exe: Vec<u8> = build_installer(&makensis, &dir, true, &refs);
+
+    let archive: NsisArchive = parse_nsis_archive(&exe).expect("parse solid archive");
+    assert_eq!(archive.compression, NsisCompression::Bzip2);
+    assert!(archive.solid, "expected solid archive");
+    let solid: Vec<u8> =
+        decode_solid_region(&exe, &archive, u64::MAX).expect("decode solid region");
+    for (name, body) in &payloads {
+        let entry = archive
+            .files
+            .iter()
+            .find(|f| f.name.ends_with(name))
+            .unwrap_or_else(|| panic!("missing entry {name}"));
+        let recovered: Vec<u8> = slice_solid_file(&solid, entry, u64::MAX).expect("slice solid");
+        assert_eq!(&recovered, body, "byte-exact mismatch for {name}");
+    }
+}

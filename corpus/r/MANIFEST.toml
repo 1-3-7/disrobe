@@ -1,0 +1,1442 @@
+schema = "disrobe-corpus-v1"
+category = "r"
+target_crate = "disrobe-pass-scriptlang"
+r_release = "4.6.0"
+r_banner = "R version 4.6.0 (2026-04-24 ucrt)"
+r_platform = "x86_64-w64-mingw32"
+generator = "corpus/r/generate.R"
+reference = "corpus/r/describe.R"
+notes = """
+Every file here was written by the pinned R release named above, by running
+  Rscript corpus/r/generate.R objects
+from this directory. Nothing in this directory was authored by hand, and no
+expected value is stored beside it: describe.R re-reads each file with R at
+test time and reports what R sees, which is the reference the reader is
+graded against.
+"""
+
+[[sample]]
+name = "objects/nil.v2.none.rds"
+size_bytes = 18
+md5 = "fb7e7fb0e58b6be14c504e8bd165282e"
+
+[[sample]]
+name = "objects/nil.v2.none.ascii.rds"
+size_bytes = 27
+md5 = "ec937007fc3d733a43b54d258a9e3b3f"
+
+[[sample]]
+name = "objects/nil.v2.native.bin"
+size_bytes = 18
+md5 = "841d9c31d6c166d2a41aa5566d3e6102"
+
+[[sample]]
+name = "objects/nil.v3.none.rds"
+size_bytes = 27
+md5 = "b353480a33f93109aa6c6d429d70aa5b"
+
+[[sample]]
+name = "objects/nil.v3.none.ascii.rds"
+size_bytes = 37
+md5 = "423d01434575de11cf5f66e8c2adb475"
+
+[[sample]]
+name = "objects/nil.v3.native.bin"
+size_bytes = 27
+md5 = "47dc1c6cf583213552f85b88e9e9f4d9"
+
+[[sample]]
+name = "objects/symbol.v2.none.rds"
+size_bytes = 38
+md5 = "c917ed608de0f24f56f11536e9149795"
+
+[[sample]]
+name = "objects/symbol.v2.none.ascii.rds"
+size_bytes = 51
+md5 = "908d34e908935674dc021b1b18757ead"
+
+[[sample]]
+name = "objects/symbol.v2.native.bin"
+size_bytes = 38
+md5 = "eaa4c8e02f15f6a8f3a76faef7dd31c7"
+
+[[sample]]
+name = "objects/symbol.v3.none.rds"
+size_bytes = 47
+md5 = "2fe2dedeb243b59eb5bd4f88208c09b9"
+
+[[sample]]
+name = "objects/symbol.v3.none.ascii.rds"
+size_bytes = 61
+md5 = "069cd17d635ab33abb44c43ba1cc2954"
+
+[[sample]]
+name = "objects/symbol.v3.native.bin"
+size_bytes = 47
+md5 = "cebb156a29760ca80657d60773925216"
+
+[[sample]]
+name = "objects/pairlist.v2.none.rds"
+size_bytes = 129
+md5 = "29d9c3a69076c7617fa8760a31168441"
+
+[[sample]]
+name = "objects/pairlist.v2.none.ascii.rds"
+size_bytes = 152
+md5 = "8f1f9c552b50e50aa76e69daeb4456ce"
+
+[[sample]]
+name = "objects/pairlist.v2.native.bin"
+size_bytes = 129
+md5 = "02f903de0ad4e0a455f3be4477443f18"
+
+[[sample]]
+name = "objects/pairlist.v3.none.rds"
+size_bytes = 138
+md5 = "aba8469e8b904bf10d86ca77eaf0d0f8"
+
+[[sample]]
+name = "objects/pairlist.v3.none.ascii.rds"
+size_bytes = 162
+md5 = "9317eef89daf00fdb15676fd37d36c5f"
+
+[[sample]]
+name = "objects/pairlist.v3.native.bin"
+size_bytes = 138
+md5 = "66275257b135a9c621129fe1e5e901f9"
+
+[[sample]]
+name = "objects/closure.v2.none.rds"
+size_bytes = 202
+md5 = "bea450a6efe95b0ad272b6c0e4a1adb4"
+
+[[sample]]
+name = "objects/closure.v2.none.ascii.rds"
+size_bytes = 231
+md5 = "f6b4cebe53187df07066227c600be160"
+
+[[sample]]
+name = "objects/closure.v2.native.bin"
+size_bytes = 202
+md5 = "4cc655b64911bb70b4b1262deb98e160"
+
+[[sample]]
+name = "objects/closure.v3.none.rds"
+size_bytes = 211
+md5 = "e71e2d83c0336be05e294916d6a17a4b"
+
+[[sample]]
+name = "objects/closure.v3.none.ascii.rds"
+size_bytes = 241
+md5 = "5b72a2c91f453061156d5b5944491d0d"
+
+[[sample]]
+name = "objects/closure.v3.native.bin"
+size_bytes = 211
+md5 = "5a0c016a24ce28792c234d9c9a37d77d"
+
+[[sample]]
+name = "objects/closure_compiled.v2.none.rds"
+size_bytes = 491
+md5 = "631b43a62004d5d11c71773e33cb9ae4"
+
+[[sample]]
+name = "objects/closure_compiled.v2.none.ascii.rds"
+size_bytes = 507
+md5 = "2a50a31d37e5cac11231b3c1746d1b26"
+
+[[sample]]
+name = "objects/closure_compiled.v2.native.bin"
+size_bytes = 491
+md5 = "2922c77997b1eb000176995c2499fb1f"
+
+[[sample]]
+name = "objects/closure_compiled.v3.none.rds"
+size_bytes = 500
+md5 = "dcdfc181c28bea476f8eebf2b93a11f9"
+
+[[sample]]
+name = "objects/closure_compiled.v3.none.ascii.rds"
+size_bytes = 517
+md5 = "8c5b40e0dca440270dff4d2d3fb7707f"
+
+[[sample]]
+name = "objects/closure_compiled.v3.native.bin"
+size_bytes = 500
+md5 = "9210fcaeb88719b649abb52cf4b8f298"
+
+[[sample]]
+name = "objects/closure_recursive.v2.none.rds"
+size_bytes = 928
+md5 = "685f9ea68ec526d61fdde3730fd85495"
+
+[[sample]]
+name = "objects/closure_recursive.v2.none.ascii.rds"
+size_bytes = 902
+md5 = "5ce88194c26b1d90d26ee422bffe22bd"
+
+[[sample]]
+name = "objects/closure_recursive.v2.native.bin"
+size_bytes = 928
+md5 = "1a988f18143f921959642eea33c81ce5"
+
+[[sample]]
+name = "objects/closure_recursive.v3.none.rds"
+size_bytes = 937
+md5 = "f56c88ee96727a42c7c9b328a6d7b229"
+
+[[sample]]
+name = "objects/closure_recursive.v3.none.ascii.rds"
+size_bytes = 912
+md5 = "b02c0132113082b1f784262cc33b0321"
+
+[[sample]]
+name = "objects/closure_recursive.v3.native.bin"
+size_bytes = 937
+md5 = "dd0659c7dba7282989e4a1e496d6d952"
+
+[[sample]]
+name = "objects/closure_namespaced.v2.none.rds"
+size_bytes = 492
+md5 = "3ed3e723032985d54a3f97ccae5c02a4"
+
+[[sample]]
+name = "objects/closure_namespaced.v2.none.ascii.rds"
+size_bytes = 523
+md5 = "5280a4e48c832cf6f5009b955d643759"
+
+[[sample]]
+name = "objects/closure_namespaced.v2.native.bin"
+size_bytes = 492
+md5 = "94abc7a8072209a0aa46150d8be1631a"
+
+[[sample]]
+name = "objects/closure_namespaced.v3.none.rds"
+size_bytes = 501
+md5 = "dff41ff38c9122a9d4fd3230356b7aa4"
+
+[[sample]]
+name = "objects/closure_namespaced.v3.none.ascii.rds"
+size_bytes = 533
+md5 = "6751b6c53a9ffa9b8ec04c6535539a8c"
+
+[[sample]]
+name = "objects/closure_namespaced.v3.native.bin"
+size_bytes = 501
+md5 = "c3ec564c0686a361cf39f5e08b722cb7"
+
+[[sample]]
+name = "objects/environment_chain.v2.none.rds"
+size_bytes = 496
+md5 = "e49c0b12f9b341c08887c8b7f7a7633f"
+
+[[sample]]
+name = "objects/environment_chain.v2.none.ascii.rds"
+size_bytes = 593
+md5 = "f4f011a785fae0e3e8255c1930f42dca"
+
+[[sample]]
+name = "objects/environment_chain.v2.native.bin"
+size_bytes = 496
+md5 = "9d4181baaa44fe469f7c0f33c62b7e6a"
+
+[[sample]]
+name = "objects/environment_chain.v3.none.rds"
+size_bytes = 505
+md5 = "f43cfa27971c46013a9b3afb169e81b6"
+
+[[sample]]
+name = "objects/environment_chain.v3.none.ascii.rds"
+size_bytes = 603
+md5 = "958e70e07d9c87404b64902b143c2d53"
+
+[[sample]]
+name = "objects/environment_chain.v3.native.bin"
+size_bytes = 505
+md5 = "feb6e7fb537d5bca8690f87752f7ee09"
+
+[[sample]]
+name = "objects/environment_promise.v2.none.rds"
+size_bytes = 257
+md5 = "38f9b0c4dc61ced1bfa7122db389e34a"
+
+[[sample]]
+name = "objects/environment_promise.v2.none.ascii.rds"
+size_bytes = 296
+md5 = "61ce14e2d95f010b12792ce98fbe5674"
+
+[[sample]]
+name = "objects/environment_promise.v2.native.bin"
+size_bytes = 257
+md5 = "c98fa02973b507a8c69a135de1ff8021"
+
+[[sample]]
+name = "objects/environment_promise.v3.none.rds"
+size_bytes = 266
+md5 = "d42e960d19e0a6c4548612c92e23df12"
+
+[[sample]]
+name = "objects/environment_promise.v3.none.ascii.rds"
+size_bytes = 306
+md5 = "1a23fa9557e48e31d3e41b693764d75f"
+
+[[sample]]
+name = "objects/environment_promise.v3.native.bin"
+size_bytes = 266
+md5 = "fa777629646744f4282d135213d944f8"
+
+[[sample]]
+name = "objects/environment_dots.v2.none.rds"
+size_bytes = 156
+md5 = "bcaa828c1cbb6598630fef14c923d913"
+
+[[sample]]
+name = "objects/environment_dots.v2.none.ascii.rds"
+size_bytes = 179
+md5 = "2058ac3285f6798ba10edc3cf1c6aa3c"
+
+[[sample]]
+name = "objects/environment_dots.v2.native.bin"
+size_bytes = 156
+md5 = "3d3f8e6aced9d6280e411ef9d504f06f"
+
+[[sample]]
+name = "objects/environment_dots.v3.none.rds"
+size_bytes = 165
+md5 = "a3db6abccc72928982a1f8be790c1bef"
+
+[[sample]]
+name = "objects/environment_dots.v3.none.ascii.rds"
+size_bytes = 189
+md5 = "41ae9249b724d9f97aa1a674b94a7a64"
+
+[[sample]]
+name = "objects/environment_dots.v3.native.bin"
+size_bytes = 165
+md5 = "f0b5533c7e92d09964b066202450af6a"
+
+[[sample]]
+name = "objects/language.v2.none.rds"
+size_bytes = 181
+md5 = "b03fd102e614b28a6b7f2ad3096bc5f4"
+
+[[sample]]
+name = "objects/language.v2.none.ascii.rds"
+size_bytes = 208
+md5 = "1addcf5fba7c35e89a2b7f712f1cb11b"
+
+[[sample]]
+name = "objects/language.v2.native.bin"
+size_bytes = 181
+md5 = "bf3227bd9c379351101ad36407cf6f98"
+
+[[sample]]
+name = "objects/language.v3.none.rds"
+size_bytes = 190
+md5 = "93acf0f543ff243117504d5a2937dc89"
+
+[[sample]]
+name = "objects/language.v3.none.ascii.rds"
+size_bytes = 218
+md5 = "0f05c629acd9a2fde83a6c78d6d2ebf9"
+
+[[sample]]
+name = "objects/language.v3.native.bin"
+size_bytes = 190
+md5 = "b1f7843dd1bf1363b9b00c5d1caa343c"
+
+[[sample]]
+name = "objects/language_block.v2.none.rds"
+size_bytes = 221
+md5 = "b1909d00ba6ebc8518a7421384561d28"
+
+[[sample]]
+name = "objects/language_block.v2.none.ascii.rds"
+size_bytes = 236
+md5 = "b01f6237cfe2b4285aead0c96d3cd081"
+
+[[sample]]
+name = "objects/language_block.v2.native.bin"
+size_bytes = 221
+md5 = "b10f52dafeb3ae0262556c5643ce7ba9"
+
+[[sample]]
+name = "objects/language_block.v3.none.rds"
+size_bytes = 230
+md5 = "7e6282e0e8e17121d61c84f707db5661"
+
+[[sample]]
+name = "objects/language_block.v3.none.ascii.rds"
+size_bytes = 246
+md5 = "f613d7f78bf1ee4fba36f48d36f212c2"
+
+[[sample]]
+name = "objects/language_block.v3.native.bin"
+size_bytes = 230
+md5 = "b48fede49b4ca4eff821c6ed525d09f2"
+
+[[sample]]
+name = "objects/special_if.v2.none.rds"
+size_bytes = 24
+md5 = "eb596b125ead95669f34e19db801efe8"
+
+[[sample]]
+name = "objects/special_if.v2.none.ascii.rds"
+size_bytes = 32
+md5 = "5a7e536668f2d63ed52a228ae3b2a2f7"
+
+[[sample]]
+name = "objects/special_if.v2.native.bin"
+size_bytes = 24
+md5 = "61f413396713be25ec84eb9ef348e5f7"
+
+[[sample]]
+name = "objects/special_if.v3.none.rds"
+size_bytes = 33
+md5 = "50b8a0c20d0923735aafa2d38070efd5"
+
+[[sample]]
+name = "objects/special_if.v3.none.ascii.rds"
+size_bytes = 42
+md5 = "33f2047d0477260d06db8aa0cc0e47c3"
+
+[[sample]]
+name = "objects/special_if.v3.native.bin"
+size_bytes = 33
+md5 = "4d2ded4cd99cab4bde585129ef149ff5"
+
+[[sample]]
+name = "objects/builtin_sum.v2.none.rds"
+size_bytes = 25
+md5 = "5342ebe80986b40a556b71dad94469f6"
+
+[[sample]]
+name = "objects/builtin_sum.v2.none.ascii.rds"
+size_bytes = 33
+md5 = "38b1f52da43a114f793c2c5a42177c1d"
+
+[[sample]]
+name = "objects/builtin_sum.v2.native.bin"
+size_bytes = 25
+md5 = "5ac979d6c02b7a37ce9e3a98e05d8cbd"
+
+[[sample]]
+name = "objects/builtin_sum.v3.none.rds"
+size_bytes = 34
+md5 = "0d74c007373ebc2d40c629dcd5153932"
+
+[[sample]]
+name = "objects/builtin_sum.v3.none.ascii.rds"
+size_bytes = 43
+md5 = "9b0405a772a30e833c26655a5e4b14f2"
+
+[[sample]]
+name = "objects/builtin_sum.v3.native.bin"
+size_bytes = 34
+md5 = "0f907c330fa0a2119fd23ae8087229f0"
+
+[[sample]]
+name = "objects/logical.v2.none.rds"
+size_bytes = 34
+md5 = "d7771c749ad8986f0c6e90ceaf3163ca"
+
+[[sample]]
+name = "objects/logical.v2.none.ascii.rds"
+size_bytes = 39
+md5 = "0b88d353015978bee495230e5b4cfd8a"
+
+[[sample]]
+name = "objects/logical.v2.native.bin"
+size_bytes = 34
+md5 = "0c4cccf206ba772ff7c9640911b502bb"
+
+[[sample]]
+name = "objects/logical.v3.none.rds"
+size_bytes = 43
+md5 = "fbcaa5ef8d0e458902fe5f96206202bd"
+
+[[sample]]
+name = "objects/logical.v3.none.ascii.rds"
+size_bytes = 49
+md5 = "313fbd79e6087523a8c095ad3c50fd15"
+
+[[sample]]
+name = "objects/logical.v3.native.bin"
+size_bytes = 43
+md5 = "9e36b5a00673661d5e711cd0ceefc492"
+
+[[sample]]
+name = "objects/integer.v2.none.rds"
+size_bytes = 38
+md5 = "23004729b82e22dbaa2a3ea240eac4f0"
+
+[[sample]]
+name = "objects/integer.v2.none.ascii.rds"
+size_bytes = 52
+md5 = "3e162c321e01725e0d7b170c70acc543"
+
+[[sample]]
+name = "objects/integer.v2.native.bin"
+size_bytes = 38
+md5 = "29383e0bf9116637eb7b39d15de05ef4"
+
+[[sample]]
+name = "objects/integer.v3.none.rds"
+size_bytes = 47
+md5 = "0f71ea102b6c229cd024c1654966df0f"
+
+[[sample]]
+name = "objects/integer.v3.none.ascii.rds"
+size_bytes = 62
+md5 = "6d5a0715433b111e7037c0a75f9fa160"
+
+[[sample]]
+name = "objects/integer.v3.native.bin"
+size_bytes = 47
+md5 = "55ed006379e0e2d6e54f06828a40fa0e"
+
+[[sample]]
+name = "objects/double.v2.none.rds"
+size_bytes = 78
+md5 = "64ce994da996e697798c1d84e10ab846"
+
+[[sample]]
+name = "objects/double.v2.none.ascii.rds"
+size_bytes = 64
+md5 = "7cf55ea7cc9b3798fa977ad262fd6a58"
+
+[[sample]]
+name = "objects/double.v2.native.bin"
+size_bytes = 78
+md5 = "64ed3596a3fc3ebfcc78f28540da87de"
+
+[[sample]]
+name = "objects/double.v3.none.rds"
+size_bytes = 87
+md5 = "6a5d3ee4b8ebb2f7a6f1d79d5d875969"
+
+[[sample]]
+name = "objects/double.v3.none.ascii.rds"
+size_bytes = 74
+md5 = "57a2b4c8e0750bd03ccc62918cd58cba"
+
+[[sample]]
+name = "objects/double.v3.native.bin"
+size_bytes = 87
+md5 = "66ac2c602653e3b9da42b97782d5e648"
+
+[[sample]]
+name = "objects/complex.v2.none.rds"
+size_bytes = 70
+md5 = "e184dca6039c563d20de14b7dbff4a01"
+
+[[sample]]
+name = "objects/complex.v2.none.ascii.rds"
+size_bytes = 54
+md5 = "fb6455896306b66ede07956911faebb0"
+
+[[sample]]
+name = "objects/complex.v2.native.bin"
+size_bytes = 70
+md5 = "7dba77332f0667807089f9d0bddb0d9d"
+
+[[sample]]
+name = "objects/complex.v3.none.rds"
+size_bytes = 79
+md5 = "1356c5ffc6f2e0e0d1e1d55d8f6b9a91"
+
+[[sample]]
+name = "objects/complex.v3.none.ascii.rds"
+size_bytes = 64
+md5 = "104641058ef072069f9bf7872dc7eea2"
+
+[[sample]]
+name = "objects/complex.v3.native.bin"
+size_bytes = 79
+md5 = "c3b1402fb134eb830746c65bbde04b63"
+
+[[sample]]
+name = "objects/character.v2.none.rds"
+size_bytes = 89
+md5 = "332071cc2dce04fe17b2c92e542b1f8a"
+
+[[sample]]
+name = "objects/character.v2.none.ascii.rds"
+size_bytes = 123
+md5 = "09c254a73613b6c32608f2d894b89189"
+
+[[sample]]
+name = "objects/character.v2.native.bin"
+size_bytes = 89
+md5 = "a4a42afdba1f17f1994d0d4279b0988e"
+
+[[sample]]
+name = "objects/character.v3.none.rds"
+size_bytes = 98
+md5 = "3a73c94b48b18925fee781f043e3839a"
+
+[[sample]]
+name = "objects/character.v3.none.ascii.rds"
+size_bytes = 133
+md5 = "a6c02fc0425f6b1eb78c3af03fd751be"
+
+[[sample]]
+name = "objects/character.v3.native.bin"
+size_bytes = 98
+md5 = "034fd5463de567fa852efb631e588b30"
+
+[[sample]]
+name = "objects/character_utf8.v2.none.rds"
+size_bytes = 64
+md5 = "83b13be9a3da81643d67be41ec38b8ce"
+
+[[sample]]
+name = "objects/character_utf8.v2.none.ascii.rds"
+size_bytes = 125
+md5 = "3ac32ff067061612f0bb47a807d035db"
+
+[[sample]]
+name = "objects/character_utf8.v2.native.bin"
+size_bytes = 64
+md5 = "37ed2b64cc44dc6c7026264eb3cebbac"
+
+[[sample]]
+name = "objects/character_utf8.v3.none.rds"
+size_bytes = 73
+md5 = "600378edf3c8910a8f0aee26057e2a8d"
+
+[[sample]]
+name = "objects/character_utf8.v3.none.ascii.rds"
+size_bytes = 135
+md5 = "d05cfdaf1229727b2d44ecf815d2316f"
+
+[[sample]]
+name = "objects/character_utf8.v3.native.bin"
+size_bytes = 73
+md5 = "01e1a3f13f62f69cb9980064cd81cb3e"
+
+[[sample]]
+name = "objects/raw.v2.none.rds"
+size_bytes = 30
+md5 = "2f7f421e20e0e62e18c340447f0986d7"
+
+[[sample]]
+name = "objects/raw.v2.none.ascii.rds"
+size_bytes = 61
+md5 = "80da5b69488f477f521cce1ebf98b4cb"
+
+[[sample]]
+name = "objects/raw.v2.native.bin"
+size_bytes = 30
+md5 = "52547f83677524b057ab721fcf7bcc32"
+
+[[sample]]
+name = "objects/raw.v3.none.rds"
+size_bytes = 39
+md5 = "bb35fe29ba9f96821a054038459e0265"
+
+[[sample]]
+name = "objects/raw.v3.none.ascii.rds"
+size_bytes = 71
+md5 = "21166fa6572552afa9b18d5f0fe689df"
+
+[[sample]]
+name = "objects/raw.v3.native.bin"
+size_bytes = 39
+md5 = "1858461258a5260cb1e92329f6c8bd25"
+
+[[sample]]
+name = "objects/list_named.v2.none.rds"
+size_bytes = 230
+md5 = "f4aeb02ec3472ac30bb2d2b51a7eaa53"
+
+[[sample]]
+name = "objects/list_named.v2.none.ascii.rds"
+size_bytes = 282
+md5 = "d024f82e12afddead152ea718583f287"
+
+[[sample]]
+name = "objects/list_named.v2.native.bin"
+size_bytes = 230
+md5 = "7ec7cc51529720056e63fd9ed061e5c0"
+
+[[sample]]
+name = "objects/list_named.v3.none.rds"
+size_bytes = 239
+md5 = "4f86f61e34dcd0ff887345b9ece61bbe"
+
+[[sample]]
+name = "objects/list_named.v3.none.ascii.rds"
+size_bytes = 292
+md5 = "f140d693da6059298f90e65b2cab65b0"
+
+[[sample]]
+name = "objects/list_named.v3.native.bin"
+size_bytes = 239
+md5 = "2e773ed424dc5a9dd965df2ad041708d"
+
+[[sample]]
+name = "objects/list_nested.v2.none.rds"
+size_bytes = 810
+md5 = "4b34feba1455ed915c237eac896d466d"
+
+[[sample]]
+name = "objects/list_nested.v2.none.ascii.rds"
+size_bytes = 872
+md5 = "7b92530f3b63f1a032528f6b1ee9d3a2"
+
+[[sample]]
+name = "objects/list_nested.v2.native.bin"
+size_bytes = 810
+md5 = "284a32dcd3eb0146a2d8b80306e5ee6a"
+
+[[sample]]
+name = "objects/list_nested.v3.none.rds"
+size_bytes = 819
+md5 = "66c31a355b86ae627f3bc81cb15c5d87"
+
+[[sample]]
+name = "objects/list_nested.v3.none.ascii.rds"
+size_bytes = 882
+md5 = "1c76c9f1b676c8b18fbe8eee991e9292"
+
+[[sample]]
+name = "objects/list_nested.v3.native.bin"
+size_bytes = 819
+md5 = "c191f936e5e86ea79292295aeb5037db"
+
+[[sample]]
+name = "objects/list_attributed.v2.none.rds"
+size_bytes = 197
+md5 = "54c5fa9d03b90c92bbacf342444f8a76"
+
+[[sample]]
+name = "objects/list_attributed.v2.none.ascii.rds"
+size_bytes = 239
+md5 = "1f2fa52157e807954f8a15538ad22a30"
+
+[[sample]]
+name = "objects/list_attributed.v2.native.bin"
+size_bytes = 197
+md5 = "8a42fc45d5e14783ef6a6b844a37725e"
+
+[[sample]]
+name = "objects/list_attributed.v3.none.rds"
+size_bytes = 206
+md5 = "f6d8e532e02d65f5113cb56aabd92c1a"
+
+[[sample]]
+name = "objects/list_attributed.v3.none.ascii.rds"
+size_bytes = 249
+md5 = "61b2e7157d91c59f52ab361f52be2afa"
+
+[[sample]]
+name = "objects/list_attributed.v3.native.bin"
+size_bytes = 206
+md5 = "48c7e91502214af1fadac978519afcf1"
+
+[[sample]]
+name = "objects/matrix_dim.v2.none.rds"
+size_bytes = 183
+md5 = "3a7a17cc8883b668f466608bf7ff5b19"
+
+[[sample]]
+name = "objects/matrix_dim.v2.none.ascii.rds"
+size_bytes = 217
+md5 = "2910145bf9bd5eeb0189cab6126c6c47"
+
+[[sample]]
+name = "objects/matrix_dim.v2.native.bin"
+size_bytes = 183
+md5 = "d117ea8bf884c1091fa6a700ecf8e766"
+
+[[sample]]
+name = "objects/matrix_dim.v3.none.rds"
+size_bytes = 192
+md5 = "e0d13d1ab9d32034e64d2d25562f1a16"
+
+[[sample]]
+name = "objects/matrix_dim.v3.none.ascii.rds"
+size_bytes = 227
+md5 = "c3c58a0d003a662ab04d48b4cdb45215"
+
+[[sample]]
+name = "objects/matrix_dim.v3.native.bin"
+size_bytes = 192
+md5 = "7a0981c7906a7b7cdbbfb1d8d66e1601"
+
+[[sample]]
+name = "objects/factor.v2.none.rds"
+size_bytes = 149
+md5 = "e29e6482be7b14faafb64696a97961be"
+
+[[sample]]
+name = "objects/factor.v2.none.ascii.rds"
+size_bytes = 184
+md5 = "294e6717c6d6f4388c8ee3ff6a1cbd6f"
+
+[[sample]]
+name = "objects/factor.v2.native.bin"
+size_bytes = 149
+md5 = "f1b60ef7c17df9ed7257d347eb33d0f5"
+
+[[sample]]
+name = "objects/factor.v3.none.rds"
+size_bytes = 158
+md5 = "8f0477a3329c2b542655ee0f9b45b886"
+
+[[sample]]
+name = "objects/factor.v3.none.ascii.rds"
+size_bytes = 194
+md5 = "545542b64f5fb0f15ecdf8953c9eecb8"
+
+[[sample]]
+name = "objects/factor.v3.native.bin"
+size_bytes = 158
+md5 = "a9b9275b223419c626213ea79be902d6"
+
+[[sample]]
+name = "objects/data_frame.v2.none.rds"
+size_bytes = 221
+md5 = "5bc593c1d1b8387005070dedf51af8c8"
+
+[[sample]]
+name = "objects/data_frame.v2.none.ascii.rds"
+size_bytes = 271
+md5 = "93628f381ae7f0616ab0edbc895201b8"
+
+[[sample]]
+name = "objects/data_frame.v2.native.bin"
+size_bytes = 221
+md5 = "f0b9b637e267d16c7bfb19bd7e4fdb1d"
+
+[[sample]]
+name = "objects/data_frame.v3.none.rds"
+size_bytes = 320
+md5 = "5a6ddd74679aacf5361e1d21e0bcb418"
+
+[[sample]]
+name = "objects/data_frame.v3.none.ascii.rds"
+size_bytes = 367
+md5 = "a4f27163ab0821e4e79f7678598b1fb5"
+
+[[sample]]
+name = "objects/data_frame.v3.native.bin"
+size_bytes = 320
+md5 = "66fc7003220cb6b4bee9b704d8503e3e"
+
+[[sample]]
+name = "objects/expression_vector.v2.none.rds"
+size_bytes = 173
+md5 = "6eeb4e0c724f098a3858260fe06fd540"
+
+[[sample]]
+name = "objects/expression_vector.v2.none.ascii.rds"
+size_bytes = 207
+md5 = "2cc468e5fd993e8362e6a095e1e870d0"
+
+[[sample]]
+name = "objects/expression_vector.v2.native.bin"
+size_bytes = 173
+md5 = "1c9783ba0ffa6fbe19dba67d271fd41c"
+
+[[sample]]
+name = "objects/expression_vector.v3.none.rds"
+size_bytes = 182
+md5 = "4c53b071d7cadf7f3eee711748458919"
+
+[[sample]]
+name = "objects/expression_vector.v3.none.ascii.rds"
+size_bytes = 217
+md5 = "626e09210b602dc1db94bf806b1306bb"
+
+[[sample]]
+name = "objects/expression_vector.v3.native.bin"
+size_bytes = 182
+md5 = "fcf560f6d35c22f2975323552e67f2ba"
+
+[[sample]]
+name = "objects/bytecode.v2.none.rds"
+size_bytes = 665
+md5 = "e2d878cfd894a4df49cd8a0d115138d8"
+
+[[sample]]
+name = "objects/bytecode.v2.none.ascii.rds"
+size_bytes = 655
+md5 = "d6902a5ebd51fccc335cef734fd20d67"
+
+[[sample]]
+name = "objects/bytecode.v2.native.bin"
+size_bytes = 665
+md5 = "29d925c9814d57659d83ad61265a09ec"
+
+[[sample]]
+name = "objects/bytecode.v3.none.rds"
+size_bytes = 764
+md5 = "27bdfd56fd9cc9a2af2e4efbf9fc104a"
+
+[[sample]]
+name = "objects/bytecode.v3.none.ascii.rds"
+size_bytes = 751
+md5 = "d0eeebff11147df8054be39eef25498b"
+
+[[sample]]
+name = "objects/bytecode.v3.native.bin"
+size_bytes = 764
+md5 = "9a76780a4fa438c4603635cafbfde3d9"
+
+[[sample]]
+name = "objects/s4_point.v2.none.rds"
+size_bytes = 231
+md5 = "048ae8073a121a08502aee18c28968f3"
+
+[[sample]]
+name = "objects/s4_point.v2.none.ascii.rds"
+size_bytes = 277
+md5 = "19da5db4e7123b27e9b079ada653a5da"
+
+[[sample]]
+name = "objects/s4_point.v2.native.bin"
+size_bytes = 231
+md5 = "1ca4ac4e47d7bed8a0c801b68eee6619"
+
+[[sample]]
+name = "objects/s4_point.v3.none.rds"
+size_bytes = 240
+md5 = "97a11a05203e947e1ad6f9f32f4021a9"
+
+[[sample]]
+name = "objects/s4_point.v3.none.ascii.rds"
+size_bytes = 287
+md5 = "0e1a7a9f54ffef0a041a060bededd14e"
+
+[[sample]]
+name = "objects/s4_point.v3.native.bin"
+size_bytes = 240
+md5 = "cfcdf0fd94a3ce41c94d0a7fb476f184"
+
+[[sample]]
+name = "objects/s4_nested.v2.none.rds"
+size_bytes = 392
+md5 = "1e30168473e293508b3d4ed9bda6c94e"
+
+[[sample]]
+name = "objects/s4_nested.v2.none.ascii.rds"
+size_bytes = 486
+md5 = "c45e1db54db49123622563cb40eaedf6"
+
+[[sample]]
+name = "objects/s4_nested.v2.native.bin"
+size_bytes = 392
+md5 = "838c0ff2ae6049bfa021d6388393dc2f"
+
+[[sample]]
+name = "objects/s4_nested.v3.none.rds"
+size_bytes = 401
+md5 = "212b910e4df94fb18a986051ddbd43fe"
+
+[[sample]]
+name = "objects/s4_nested.v3.none.ascii.rds"
+size_bytes = 496
+md5 = "eb677d897b87b194088ddfad42fc0d9e"
+
+[[sample]]
+name = "objects/s4_nested.v3.native.bin"
+size_bytes = 401
+md5 = "5ff24671b8acf9c8d2588ecc754e7c73"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.none.rds"
+size_bytes = 4022
+md5 = "61130ac9593d698865b41cb498f18f83"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.none.ascii.rds"
+size_bytes = 4925
+md5 = "c7c9c7789836110c79ced881e7efc4ac"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.native.bin"
+size_bytes = 4022
+md5 = "506bcf5dfca86367065dbf9f2950d64a"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.none.rds"
+size_bytes = 133
+md5 = "997257e1ccd67116bb950ccf465c5bf8"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.none.ascii.rds"
+size_bytes = 137
+md5 = "6bd40625c176c719106aaf26e295aa86"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.native.bin"
+size_bytes = 133
+md5 = "82ca5fed858aa4015bc8d53938b86fe0"
+
+[[sample]]
+name = "objects/altrep_seq_len.v2.none.rds"
+size_bytes = 278
+md5 = "3644c7a87787ca096a73d4c55706bc13"
+
+[[sample]]
+name = "objects/altrep_seq_len.v2.none.ascii.rds"
+size_bytes = 277
+md5 = "e2e6e40fab8161b07455e081d0ab8360"
+
+[[sample]]
+name = "objects/altrep_seq_len.v2.native.bin"
+size_bytes = 278
+md5 = "93cdeedb5ca745d3f8884140c75c4485"
+
+[[sample]]
+name = "objects/altrep_seq_len.v3.none.rds"
+size_bytes = 133
+md5 = "c8e38d277a82f7953f59b6cd30ca0764"
+
+[[sample]]
+name = "objects/altrep_seq_len.v3.none.ascii.rds"
+size_bytes = 135
+md5 = "db7a900fb6fea6a1257cdd475f4b5813"
+
+[[sample]]
+name = "objects/altrep_seq_len.v3.native.bin"
+size_bytes = 133
+md5 = "e6b0ba2cdb8557ce34f990f5baba8f07"
+
+[[sample]]
+name = "objects/altrep_in_list.v2.none.rds"
+size_bytes = 217
+md5 = "018b014c10bd161004dae0d1c6787a02"
+
+[[sample]]
+name = "objects/altrep_in_list.v2.none.ascii.rds"
+size_bytes = 253
+md5 = "dda33d0b253b5bdbefedaaaf94805cd7"
+
+[[sample]]
+name = "objects/altrep_in_list.v2.native.bin"
+size_bytes = 217
+md5 = "68b63fbc874a1542f2149033aece9536"
+
+[[sample]]
+name = "objects/altrep_in_list.v3.none.rds"
+size_bytes = 244
+md5 = "0a079b84fc7276e17c7e75df43b7b82b"
+
+[[sample]]
+name = "objects/altrep_in_list.v3.none.ascii.rds"
+size_bytes = 279
+md5 = "f02b146f3ee413b6cb21b833a1d4661f"
+
+[[sample]]
+name = "objects/altrep_in_list.v3.native.bin"
+size_bytes = 244
+md5 = "65e4c23ff43fc6765fae64755b2400f7"
+
+[[sample]]
+name = "objects/external_pointer.v2.none.rds"
+size_bytes = 121
+md5 = "aa16ead6d702dfef0a49749e585b07c9"
+
+[[sample]]
+name = "objects/external_pointer.v2.none.ascii.rds"
+size_bytes = 155
+md5 = "afadefa24974d2e165c728e875278583"
+
+[[sample]]
+name = "objects/external_pointer.v2.native.bin"
+size_bytes = 121
+md5 = "9242b4f22b0268b00319766a51b5f966"
+
+[[sample]]
+name = "objects/external_pointer.v3.none.rds"
+size_bytes = 130
+md5 = "0852f3a6ae30609d2e411d9a8cc0f214"
+
+[[sample]]
+name = "objects/external_pointer.v3.none.ascii.rds"
+size_bytes = 165
+md5 = "429f165f9055356a1bf32eca66ba4490"
+
+[[sample]]
+name = "objects/external_pointer.v3.native.bin"
+size_bytes = 130
+md5 = "4816654c98e54abf468077c6ea6277f4"
+
+[[sample]]
+name = "objects/shared_reference.v2.none.rds"
+size_bytes = 319
+md5 = "4fd13da51a49f6ef5522d100fbc9e9f9"
+
+[[sample]]
+name = "objects/shared_reference.v2.none.ascii.rds"
+size_bytes = 387
+md5 = "aac6c1e1475e3cfc6bb24797d2dd8af1"
+
+[[sample]]
+name = "objects/shared_reference.v2.native.bin"
+size_bytes = 319
+md5 = "1933e64348ebf2946d2337a6583fe208"
+
+[[sample]]
+name = "objects/shared_reference.v3.none.rds"
+size_bytes = 328
+md5 = "97f6a3177dee554e21309fd3da86ced5"
+
+[[sample]]
+name = "objects/shared_reference.v3.none.ascii.rds"
+size_bytes = 397
+md5 = "fdaf04e5886b069165c7ed176d04de9d"
+
+[[sample]]
+name = "objects/shared_reference.v3.native.bin"
+size_bytes = 328
+md5 = "226f07a4193f799c57cd8c6b0c5899e5"
+
+[[sample]]
+name = "objects/ellipsis.v2.none.rds"
+size_bytes = 113
+md5 = "1a1b1d741542eb83c47b8d958c605682"
+
+[[sample]]
+name = "objects/ellipsis.v2.none.ascii.rds"
+size_bytes = 128
+md5 = "6a5bf771670abbf38da20639529a55bf"
+
+[[sample]]
+name = "objects/ellipsis.v2.native.bin"
+size_bytes = 113
+md5 = "c30e0f0b76a2be6cb9e530d08f453eac"
+
+[[sample]]
+name = "objects/ellipsis.v3.none.rds"
+size_bytes = 122
+md5 = "4748a88ff2850ef04aa728c9b874bf10"
+
+[[sample]]
+name = "objects/ellipsis.v3.none.ascii.rds"
+size_bytes = 138
+md5 = "669bec292aaa56aab46bb393160b5e06"
+
+[[sample]]
+name = "objects/ellipsis.v3.native.bin"
+size_bytes = 122
+md5 = "748e5d4350670f4967ce0bfc44e77ee4"
+
+[[sample]]
+name = "objects/deep_nesting.v2.none.rds"
+size_bytes = 1073
+md5 = "d95ca27f3bf5f50e848a95ab54e24022"
+
+[[sample]]
+name = "objects/deep_nesting.v2.none.ascii.rds"
+size_bytes = 1288
+md5 = "a0f0399dbcc4fb31f2fc4a29cfe98373"
+
+[[sample]]
+name = "objects/deep_nesting.v2.native.bin"
+size_bytes = 1073
+md5 = "34ce9b0d29a75af0932e067440be9d92"
+
+[[sample]]
+name = "objects/deep_nesting.v3.none.rds"
+size_bytes = 1082
+md5 = "a40065ac77b7025e31dc99be34f4dd92"
+
+[[sample]]
+name = "objects/deep_nesting.v3.none.ascii.rds"
+size_bytes = 1298
+md5 = "9ab652c6f2cdfb61c0030d9c265244d3"
+
+[[sample]]
+name = "objects/deep_nesting.v3.native.bin"
+size_bytes = 1082
+md5 = "c63a538c5fb42e8c7e5c30d863bb00bc"
+
+[[sample]]
+name = "objects/empty_vectors.v2.none.rds"
+size_bytes = 189
+md5 = "5b8ff6ff7a3b5b1c0f395f87904345a8"
+
+[[sample]]
+name = "objects/empty_vectors.v2.none.ascii.rds"
+size_bytes = 231
+md5 = "8d51ea2ca59211b859fa86961c894987"
+
+[[sample]]
+name = "objects/empty_vectors.v2.native.bin"
+size_bytes = 189
+md5 = "b9c76c21965f1e850ad4b8827d92e33e"
+
+[[sample]]
+name = "objects/empty_vectors.v3.none.rds"
+size_bytes = 198
+md5 = "130a34aa20e5fcbb9b424ca4f675ae77"
+
+[[sample]]
+name = "objects/empty_vectors.v3.none.ascii.rds"
+size_bytes = 241
+md5 = "9973b280b6286bdc9424b6686063f1a3"
+
+[[sample]]
+name = "objects/empty_vectors.v3.native.bin"
+size_bytes = 198
+md5 = "e900494c5c8a139498ea741655d7f553"
+
+[[sample]]
+name = "objects/list_named.v2.gzip.rds"
+size_bytes = 167
+md5 = "ea9771085acb67c6a9198f95c12cf3a2"
+
+[[sample]]
+name = "objects/list_named.v2.bzip2.rds"
+size_bytes = 168
+md5 = "f8e3516f452a95c87c4414118d774a9d"
+
+[[sample]]
+name = "objects/list_named.v2.xz.rds"
+size_bytes = 204
+md5 = "41c1bcf47bca5216f0f2bd6a4ed53245"
+
+[[sample]]
+name = "objects/list_named.v2.none.rda"
+size_bytes = 265
+md5 = "bb14ae08e9e5ba28d0480b67f67228be"
+
+[[sample]]
+name = "objects/list_named.v2.gzip.rda"
+size_bytes = 186
+md5 = "c687f34fb8295ad1abcbc5c01be5b91d"
+
+[[sample]]
+name = "objects/list_named.v2.none.ascii.rda"
+size_bytes = 269
+md5 = "bd94a883570210d354c78b5b23f88451"
+
+[[sample]]
+name = "objects/list_named.v3.gzip.rds"
+size_bytes = 176
+md5 = "43b4b10596e405842c05e56ec9e52ea3"
+
+[[sample]]
+name = "objects/list_named.v3.bzip2.rds"
+size_bytes = 178
+md5 = "01ff09917ecdd972ead4e6f356253f19"
+
+[[sample]]
+name = "objects/list_named.v3.xz.rds"
+size_bytes = 212
+md5 = "2aa8e7fb568d892c55e4b60cd4f2b842"
+
+[[sample]]
+name = "objects/list_named.v3.none.rda"
+size_bytes = 274
+md5 = "23f7087ce8529b8f838e114ab9952434"
+
+[[sample]]
+name = "objects/list_named.v3.gzip.rda"
+size_bytes = 197
+md5 = "cf20e9c1b1e1e41735d7cace38109160"
+
+[[sample]]
+name = "objects/list_named.v3.none.ascii.rda"
+size_bytes = 277
+md5 = "c6dfa167679d8de0ee2b8e36b630a325"
+
+[[sample]]
+name = "objects/closure_compiled.v2.gzip.rds"
+size_bytes = 209
+md5 = "23f199922c32eebd32275f3f5e3ded8c"
+
+[[sample]]
+name = "objects/closure_compiled.v2.bzip2.rds"
+size_bytes = 213
+md5 = "c8a22fc2fdabb58ab83e54022810457e"
+
+[[sample]]
+name = "objects/closure_compiled.v2.xz.rds"
+size_bytes = 236
+md5 = "c790adb5eb6e19abbdb2686eeb8e5756"
+
+[[sample]]
+name = "objects/closure_compiled.v2.none.rda"
+size_bytes = 532
+md5 = "7254f0fed7395f73b83879f09c8cbf62"
+
+[[sample]]
+name = "objects/closure_compiled.v2.gzip.rda"
+size_bytes = 234
+md5 = "f59e610be312b243818e4ceb6b3d85fe"
+
+[[sample]]
+name = "objects/closure_compiled.v2.none.ascii.rda"
+size_bytes = 432
+md5 = "284d36ab8a10b29993d35f6f66f6438e"
+
+[[sample]]
+name = "objects/closure_compiled.v3.gzip.rds"
+size_bytes = 219
+md5 = "357b1a4ee36d2248ba25b7c6a587a622"
+
+[[sample]]
+name = "objects/closure_compiled.v3.bzip2.rds"
+size_bytes = 228
+md5 = "68e623a922b7e33a691b9b8c5b10887f"
+
+[[sample]]
+name = "objects/closure_compiled.v3.xz.rds"
+size_bytes = 244
+md5 = "6c8c21293035fe461ac330046f491ecb"
+
+[[sample]]
+name = "objects/closure_compiled.v3.none.rda"
+size_bytes = 541
+md5 = "f62002988dbe9e4b63a5395809472aa1"
+
+[[sample]]
+name = "objects/closure_compiled.v3.gzip.rda"
+size_bytes = 243
+md5 = "33d3821241880dc9bd22a3d0d421d6bf"
+
+[[sample]]
+name = "objects/closure_compiled.v3.none.ascii.rda"
+size_bytes = 440
+md5 = "42809cd1b895cfad9b0013839b223902"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.gzip.rds"
+size_bytes = 1771
+md5 = "ec316f2f3d9ea0c016ebdc160d6503dd"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.bzip2.rds"
+size_bytes = 832
+md5 = "7c58f762c72e4ddf2f21740477d1875b"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.xz.rds"
+size_bytes = 792
+md5 = "47d09c7135de5b750504409e1cd1edad"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.none.rda"
+size_bytes = 4060
+md5 = "902dd7f52273bc4848c01c01b67e0255"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.gzip.rda"
+size_bytes = 1824
+md5 = "7be549ac5975eb4e452c02cac40f4768"
+
+[[sample]]
+name = "objects/altrep_intseq.v2.none.ascii.rda"
+size_bytes = 3959
+md5 = "c1d92bbc682f8cb5127ed9ae74d59d6f"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.gzip.rds"
+size_bytes = 100
+md5 = "a2c97aa07a6eb20123f1e73776210281"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.bzip2.rds"
+size_bytes = 123
+md5 = "d6ffaba17ba65db2518791e0be36e110"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.xz.rds"
+size_bytes = 144
+md5 = "f0247b5c2067a37e88fb7f389da705ac"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.none.rda"
+size_bytes = 171
+md5 = "4a8a83362e76dcb5925380588d7315ac"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.gzip.rda"
+size_bytes = 121
+md5 = "bd7334090dddd851cff18730eb927b71"
+
+[[sample]]
+name = "objects/altrep_intseq.v3.none.ascii.rda"
+size_bytes = 149
+md5 = "677f3546e6602254ba06778af14b7feb"
+
+[[sample]]
+name = "objects/s4_point.v2.gzip.rds"
+size_bytes = 136
+md5 = "2fb00732f8e946d056ae38d402a601d8"
+
+[[sample]]
+name = "objects/s4_point.v2.bzip2.rds"
+size_bytes = 149
+md5 = "bf57eb0fb81a54f31bee4992d789e1eb"
+
+[[sample]]
+name = "objects/s4_point.v2.xz.rds"
+size_bytes = 172
+md5 = "6f2cacefc0af6813b1563f9641eff22a"
+
+[[sample]]
+name = "objects/s4_point.v2.none.rda"
+size_bytes = 264
+md5 = "3fa1874b2acd6d8f9af23aee811d5684"
+
+[[sample]]
+name = "objects/s4_point.v2.gzip.rda"
+size_bytes = 150
+md5 = "6ae18ab1d0f95b0f56fa954458a1f6d0"
+
+[[sample]]
+name = "objects/s4_point.v2.none.ascii.rda"
+size_bytes = 258
+md5 = "70ec78ac74a1f3fd60fd0ba8ba18cb67"
+
+[[sample]]
+name = "objects/s4_point.v3.gzip.rds"
+size_bytes = 145
+md5 = "574eced05cfd8180728bf6601ee3f28d"
+
+[[sample]]
+name = "objects/s4_point.v3.bzip2.rds"
+size_bytes = 159
+md5 = "3fd5dc29be9e1ef8271eda8e16562264"
+
+[[sample]]
+name = "objects/s4_point.v3.xz.rds"
+size_bytes = 184
+md5 = "45e07a95757c0bc93c8655fa67dfefbe"
+
+[[sample]]
+name = "objects/s4_point.v3.none.rda"
+size_bytes = 273
+md5 = "dafb2f1885aecf8c8cb2fb744f37532e"
+
+[[sample]]
+name = "objects/s4_point.v3.gzip.rda"
+size_bytes = 160
+md5 = "bd3dc20cbfb10e7f4c45300cb432df7c"
+
+[[sample]]
+name = "objects/s4_point.v3.none.ascii.rda"
+size_bytes = 266
+md5 = "10a99b3c3df14f838ffe2886cbe8d289"
+
+[[sample]]
+name = "objects/list_nested.v3.none.rda"
+size_bytes = 855
+md5 = "c3c17033df99e8391a08a5ef67425d06"
+
+[[sample]]
+name = "objects/environment_chain.v3.none.rda"
+size_bytes = 547
+md5 = "ca8d0af1286bb896f34871aa74fa882b"
+
+[[sample]]
+name = "objects/bytecode.v3.none.rda"
+size_bytes = 797
+md5 = "71661a57a78a08505f8dff61dd82066c"
+

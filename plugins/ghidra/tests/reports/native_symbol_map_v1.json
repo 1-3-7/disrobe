@@ -1,0 +1,23 @@
+{
+  "schema": "disrobe.native.symbol-map/v1",
+  "source": "corpus/native/packers/upx/git.packed.upx.exe",
+  "format": "pe",
+  "image_base": 5368709120,
+  "symbol_count": 2,
+  "symbols": [
+    {
+      "address": 5368709637,
+      "name": "disrobe_chain_upx",
+      "class": "label",
+      "origin": "packer-chain",
+      "note": "upx stub marker: UPX section/magic marker"
+    },
+    {
+      "address": 5373375392,
+      "name": "disrobe_packed_entry",
+      "class": "label",
+      "origin": "packer-chain",
+      "note": "current image entry point (packer stub; original entry not recovered for this packer)"
+    }
+  ]
+}

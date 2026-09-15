@@ -1,0 +1,307 @@
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+use disrobe_mba::rules::{LoadError, RuleSet, load_str, mba_peephole_rules};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Audit {
+    classes: Vec<AuditClass>,
+}
+
+#[derive(Deserialize)]
+struct AuditClass {
+    name: String,
+    status: String,
+    reason: Option<String>,
+}
+
+#[test]
+fn shipped_rules_load_and_have_forty_three_migrated_rules() {
+    let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
+    assert_eq!(set.len(), 43);
+    assert!(set.commutative_match);
+}
+
+#[test]
+fn identity_class_audit_is_complete_and_explains_every_absence() {
+    let audit: Audit = toml::from_str(include_str!(
+        "../src/rules/rules_data/mba_peephole_audit.toml"
+    ))
+    .expect("audit parses");
+    assert_eq!(audit.classes.len(), 15);
+    for class in audit.classes {
+        assert!(!class.name.is_empty());
+        assert!(matches!(class.status.as_str(), "present" | "absent"));
+        if class.status == "absent" {
+            assert!(
+                class
+                    .reason
+                    .is_some_and(|reason: String| !reason.is_empty())
+            );
+        } else {
+            assert!(class.reason.is_none());
+        }
+    }
+}
+
+#[test]
+fn a_rule_is_rejected_when_a_declared_width_fails_shared_equivalence() {
+    let text: &str = r#"
+[[rules]]
+name = "neg_is_identity"
+widths = [1, 2]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::EquivalenceRejected { rule, width })
+            if rule == "neg_is_identity" && width == 2
+    ));
+}
+
+#[test]
+fn empty_rule_set_is_rejected() {
+    let text: &str = "rules = []\n";
+    assert!(matches!(load_str(text), Err(LoadError::Empty)));
+}
+
+#[test]
+fn unbound_capture_in_rewrite_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "broken"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "use", expr = "y" }
+"#;
+    match load_str(text) {
+        Err(LoadError::UnboundCapture { rule, capture }) => {
+            assert_eq!(rule, "broken");
+            assert_eq!(capture, "y");
+        }
+        other => panic!("expected UnboundCapture, got {other:?}"),
+    }
+}
+
+#[test]
+fn unbound_capture_in_condition_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "broken_cond"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "z" }]
+rewrite = { build = "use", expr = "x" }
+"#;
+    match load_str(text) {
+        Err(LoadError::UnboundCapture { capture, .. }) => assert_eq!(capture, "z"),
+        other => panic!("expected UnboundCapture, got {other:?}"),
+    }
+}
+
+#[test]
+fn duplicate_capture_binding_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "dup_bind"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "x" } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::DuplicateCapture { .. })
+    ));
+}
+
+#[test]
+fn duplicate_rule_name_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "twin"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "var", index = 0 }
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "twin"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "var", index = 1 }
+rewrite = { build = "const", value = 1 }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::DuplicateRuleName { .. })
+    ));
+}
+
+#[test]
+fn unconditional_rule_cycle_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "add_to_sub"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+
+[[rules]]
+name = "sub_to_add"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::RewriteCycle { .. })
+    ));
+}
+
+#[test]
+fn exact_self_rewrite_cycle_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "self_cycle"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 0 } }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::RewriteCycle { .. })
+    ));
+}
+
+#[test]
+fn ungraded_rule_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "ungraded"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(load_str(text).is_err());
+}
+
+#[test]
+fn non_shared_proof_route_is_rejected() {
+    let text: &str = r#"
+[[rules]]
+name = "wrong_proof_route"
+widths = [8]
+proof = "per_rule"
+source = "test"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "const", value = 0 } }
+rewrite = { build = "use", expr = "x" }
+"#;
+    assert!(matches!(
+        load_str(text),
+        Err(LoadError::MissingProofRoute { .. })
+    ));
+}
+
+#[test]
+fn invalid_slice_ranges_are_rejected_in_patterns_and_templates() {
+    for (surface, lo, hi) in [
+        ("pattern", 0u32, 0u32),
+        ("pattern", 2, 1),
+        ("pattern", 0, 65),
+        ("template", 0, 0),
+        ("template", 2, 1),
+        ("template", 0, 65),
+    ] {
+        let (pattern, rewrite): (String, String) = if surface == "pattern" {
+            (
+                format!(
+                    "{{ kind = \"slice\", inner = {{ kind = \"any_const\", bind = \"c\" }}, lo = {lo}, hi = {hi} }}"
+                ),
+                "{ build = \"use\", expr = \"c\" }".to_owned(),
+            )
+        } else {
+            (
+                "{ kind = \"slice\", inner = { kind = \"any_const\", bind = \"c\" }, lo = 0, hi = 1 }".to_owned(),
+                format!("{{ build = \"slice_const\", expr = \"c\", lo = {lo}, hi = {hi} }}"),
+            )
+        };
+        let text: String = format!(
+            "[[rules]]\nname = \"invalid_slice_{surface}_{lo}_{hi}\"\nwidths = [8]\nproof = \"shared_equivalence\"\nsource = \"test\"\npattern = {pattern}\nrewrite = {rewrite}\n"
+        );
+        assert!(matches!(
+            load_str(&text),
+            Err(LoadError::InvalidSliceRange {
+                lo: actual_lo,
+                hi: actual_hi,
+                ..
+            }) if actual_lo == lo && actual_hi == hi
+        ));
+    }
+}
+
+#[test]
+fn invalid_compose_low_bit_counts_are_rejected_in_patterns_and_templates() {
+    for surface in ["pattern", "template"] {
+        let (pattern, rewrite): (String, String) = if surface == "pattern" {
+            (
+                "{ kind = \"compose\", low = { kind = \"any_const\", bind = \"low\" }, high = { kind = \"any_const\", bind = \"high\" }, low_bits = 65 }".to_owned(),
+                "{ build = \"use\", expr = \"low\" }".to_owned(),
+            )
+        } else {
+            (
+                "{ kind = \"compose\", low = { kind = \"any_const\", bind = \"low\" }, high = { kind = \"any_const\", bind = \"high\" }, low_bits = 1 }".to_owned(),
+                "{ build = \"compose_const\", low = \"low\", high = \"high\", low_bits = 65 }".to_owned(),
+            )
+        };
+        let text: String = format!(
+            "[[rules]]\nname = \"invalid_compose_{surface}\"\nwidths = [8]\nproof = \"shared_equivalence\"\nsource = \"test\"\npattern = {pattern}\nrewrite = {rewrite}\n"
+        );
+        assert!(matches!(
+            load_str(&text),
+            Err(LoadError::InvalidComposeLowBits { low_bits: 65, .. })
+        ));
+    }
+}
+
+#[test]
+fn compose_pattern_requires_both_operands() {
+    let text: &str = r#"
+[[rules]]
+name = "missing_compose_high"
+widths = [8]
+proof = "shared_equivalence"
+source = "test"
+pattern = { kind = "compose", low = { kind = "any_const", bind = "low" }, low_bits = 1 }
+rewrite = { build = "use", expr = "low" }
+"#;
+    assert!(matches!(load_str(text), Err(LoadError::Toml(_))));
+}
+
+#[test]
+fn malformed_toml_is_rejected() {
+    let text: &str = "this is not = valid toml [[[";
+    assert!(matches!(load_str(text), Err(LoadError::Toml(_))));
+}
+
+#[test]
+fn rule_set_round_trips_through_json() {
+    let set: RuleSet = mba_peephole_rules().expect("shipped rules load");
+    let json: String = serde_json::to_string(&set).expect("serialize");
+    let back: RuleSet = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(set, back);
+}

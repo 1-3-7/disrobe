@@ -1,0 +1,500 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+#[cfg(feature = "sandbox")]
+use std::collections::BTreeMap;
+
+#[cfg(feature = "sandbox")]
+#[path = "common/exec_diff.rs"]
+mod exec_diff;
+
+#[cfg(feature = "sandbox")]
+use exec_diff::{
+    ALL_LANGS, BATTERY, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade, grade_against_reference,
+    grade_traps,
+};
+#[cfg(feature = "sandbox")]
+use wasmtime::{Config, Trap};
+
+#[cfg(feature = "sandbox")]
+const ATOMICS_DIFF: &str = include_str!("fixtures/atomics_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_MISALIGNED_DIFF: &str = include_str!("fixtures/atomics_misaligned_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_ALIGNED_OOB_DIFF: &str = include_str!("fixtures/atomics_aligned_oob_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_ADDRESS_OVERFLOW_DIFF: &str =
+    include_str!("fixtures/atomics_address_overflow_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_MEMORY64_OVERFLOW_MISALIGNED_DIFF: &str =
+    include_str!("fixtures/atomics_memory64_overflow_misaligned_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_MEMORY64_ALIGNED_OFFSET_2POW53_DIFF: &str =
+    include_str!("fixtures/atomics_memory64_aligned_offset_2pow53_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_MEMORY64_UINT64_MAX_OFFSET_DIFF: &str =
+    include_str!("fixtures/atomics_memory64_uint64_max_offset_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_NARROW_CMPXCHG_DIFF: &str = include_str!("fixtures/atomics_narrow_cmpxchg_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_WAIT_NOTIFY_DIFF: &str = include_str!("fixtures/atomics_wait_notify_diff.wat");
+#[cfg(feature = "sandbox")]
+const ATOMICS_EVERY_OPCODE_DIFF: &str = include_str!("fixtures/atomics_every_opcode_diff.wat");
+#[cfg(feature = "sandbox")]
+const WIDE_DIFF: &str = include_str!("fixtures/wide_diff.wat");
+#[cfg(feature = "sandbox")]
+const REFTABLE_DIFF: &str = include_str!("fixtures/reftable_diff.wat");
+#[cfg(feature = "sandbox")]
+const SHARED_DIFF: &str = include_str!("fixtures/shared_everything_diff.wat");
+#[cfg(feature = "sandbox")]
+const SHARED_REF: &str = include_str!("fixtures/shared_everything_ref.wat");
+#[cfg(feature = "sandbox")]
+const DIVREM_TRUNC_DIFF: &str = include_str!("fixtures/divrem_trunc_diff.wat");
+
+#[cfg(feature = "sandbox")]
+fn atomics_config(config: &mut Config) {
+    config
+        .wasm_threads(true)
+        .wasm_bulk_memory(true)
+        .wasm_memory64(true);
+}
+
+#[cfg(feature = "sandbox")]
+fn wide_config(config: &mut Config) {
+    config.wasm_wide_arithmetic(true).wasm_multi_value(true);
+}
+
+#[cfg(feature = "sandbox")]
+fn reftable_config(config: &mut Config) {
+    config
+        .wasm_bulk_memory(true)
+        .wasm_reference_types(true)
+        .wasm_function_references(true)
+        .wasm_gc(true);
+}
+
+#[cfg(feature = "sandbox")]
+fn baseline_config(config: &mut Config) {
+    config.wasm_multi_value(true);
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_atomics_equivalently_to_wasmtime() {
+    grade(&Spec {
+        label: "atomics",
+        wat: ATOMICS_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 28,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+const EVERY_LINEAR_MEMORY_ATOMIC: [&str; 63] = [
+    "i32.atomic.load",
+    "i32.atomic.load8_u",
+    "i32.atomic.load16_u",
+    "i64.atomic.load",
+    "i64.atomic.load8_u",
+    "i64.atomic.load16_u",
+    "i64.atomic.load32_u",
+    "i32.atomic.store",
+    "i32.atomic.store8",
+    "i32.atomic.store16",
+    "i64.atomic.store",
+    "i64.atomic.store8",
+    "i64.atomic.store16",
+    "i64.atomic.store32",
+    "i32.atomic.rmw.add",
+    "i32.atomic.rmw8.add_u",
+    "i32.atomic.rmw16.add_u",
+    "i64.atomic.rmw.add",
+    "i64.atomic.rmw8.add_u",
+    "i64.atomic.rmw16.add_u",
+    "i64.atomic.rmw32.add_u",
+    "i32.atomic.rmw.sub",
+    "i32.atomic.rmw8.sub_u",
+    "i32.atomic.rmw16.sub_u",
+    "i64.atomic.rmw.sub",
+    "i64.atomic.rmw8.sub_u",
+    "i64.atomic.rmw16.sub_u",
+    "i64.atomic.rmw32.sub_u",
+    "i32.atomic.rmw.and",
+    "i32.atomic.rmw8.and_u",
+    "i32.atomic.rmw16.and_u",
+    "i64.atomic.rmw.and",
+    "i64.atomic.rmw8.and_u",
+    "i64.atomic.rmw16.and_u",
+    "i64.atomic.rmw32.and_u",
+    "i32.atomic.rmw.or",
+    "i32.atomic.rmw8.or_u",
+    "i32.atomic.rmw16.or_u",
+    "i64.atomic.rmw.or",
+    "i64.atomic.rmw8.or_u",
+    "i64.atomic.rmw16.or_u",
+    "i64.atomic.rmw32.or_u",
+    "i32.atomic.rmw.xor",
+    "i32.atomic.rmw8.xor_u",
+    "i32.atomic.rmw16.xor_u",
+    "i64.atomic.rmw.xor",
+    "i64.atomic.rmw8.xor_u",
+    "i64.atomic.rmw16.xor_u",
+    "i64.atomic.rmw32.xor_u",
+    "i32.atomic.rmw.xchg",
+    "i32.atomic.rmw8.xchg_u",
+    "i32.atomic.rmw16.xchg_u",
+    "i64.atomic.rmw.xchg",
+    "i64.atomic.rmw8.xchg_u",
+    "i64.atomic.rmw16.xchg_u",
+    "i64.atomic.rmw32.xchg_u",
+    "i32.atomic.rmw.cmpxchg",
+    "i32.atomic.rmw8.cmpxchg_u",
+    "i32.atomic.rmw16.cmpxchg_u",
+    "i64.atomic.rmw.cmpxchg",
+    "i64.atomic.rmw8.cmpxchg_u",
+    "i64.atomic.rmw16.cmpxchg_u",
+    "i64.atomic.rmw32.cmpxchg_u",
+];
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn every_linear_memory_atomic_opcode_executes_like_wasmtime() {
+    let mut absent: Vec<&str> = Vec::new();
+    for mnemonic in EVERY_LINEAR_MEMORY_ATOMIC {
+        if !ATOMICS_EVERY_OPCODE_DIFF.contains(mnemonic) {
+            absent.push(mnemonic);
+        }
+    }
+    assert!(
+        absent.is_empty(),
+        "{}/{} threads-proposal linear-memory atomics are graded; the fixture is missing \
+         {absent:?}",
+        EVERY_LINEAR_MEMORY_ATOMIC.len() - absent.len(),
+        EVERY_LINEAR_MEMORY_ATOMIC.len()
+    );
+    grade(&Spec {
+        label: "atomics_every_opcode",
+        wat: ATOMICS_EVERY_OPCODE_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 70,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_block_and_report_wait_and_notify_like_wasmtime() {
+    grade(&Spec {
+        label: "atomics_wait_notify",
+        wat: ATOMICS_WAIT_NOTIFY_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 13,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_misaligned_atomics_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_misaligned",
+            wat: ATOMICS_MISALIGNED_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-unaligned",
+        Trap::HeapMisaligned,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_aligned_atomic_oob_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_aligned_oob",
+            wat: ATOMICS_ALIGNED_OOB_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-oob",
+        Trap::MemoryOutOfBounds,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_atomic_effective_address_overflow_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_address_overflow",
+            wat: ATOMICS_ADDRESS_OVERFLOW_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-oob",
+        Trap::MemoryOutOfBounds,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_memory64_overflowing_misalignment_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_memory64_overflow_misaligned",
+            wat: ATOMICS_MEMORY64_OVERFLOW_MISALIGNED_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-unaligned",
+        Trap::HeapMisaligned,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_aligned_memory64_2pow53_offset_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_memory64_aligned_offset_2pow53",
+            wat: ATOMICS_MEMORY64_ALIGNED_OFFSET_2POW53_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-oob",
+        Trap::MemoryOutOfBounds,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_trap_memory64_uint64_max_offset_like_wasmtime() {
+    grade_traps(
+        &Spec {
+            label: "atomics_memory64_uint64_max_offset",
+            wat: ATOMICS_MEMORY64_UINT64_MAX_OFFSET_DIFF,
+            configure: atomics_config,
+            langs: &ALL_LANGS,
+            min_exports: 1,
+            ungraded: &[],
+            refused: &[],
+            battery: &[],
+        },
+        "DR-WASMDEOB-TRAP/1:atomic-oob",
+        Trap::MemoryOutOfBounds,
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn trap_contract_rejects_the_wrong_atomic_trap_kind() {
+    let expected_marker: &str = "DR-WASMDEOB-TRAP/1:atomic-unaligned";
+    exec_diff::validate_trap_contract(
+        false,
+        b"",
+        format!("{expected_marker}\n").as_bytes(),
+        expected_marker,
+    )
+    .expect("the exact trap marker satisfies the contract");
+    let wrong_marker: &str = "DR-WASMDEOB-TRAP/1:atomic-oob";
+    assert!(
+        exec_diff::validate_trap_contract(
+            false,
+            b"",
+            format!("{wrong_marker}\n").as_bytes(),
+            expected_marker,
+        )
+        .is_err(),
+        "the trap validator must reject an OOB marker when Wasmtime reported misalignment"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn output_comparator_rejects_corrupted_and_unexpected_values() {
+    let expected: Vec<(String, Option<i32>)> = vec![("value 1".to_owned(), Some(7))];
+    let mut actual: BTreeMap<String, i32> = BTreeMap::new();
+    actual.insert("value 1".to_owned(), 8);
+    actual.insert("unexpected 1".to_owned(), 7);
+    let divergences: Vec<String> = exec_diff::output_divergences(&expected, &actual, "wasmtime");
+    assert_eq!(
+        divergences.len(),
+        2,
+        "the comparator must reject a corrupt value and an unexpected output key"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_narrow_atomic_cmpxchg_like_wasmtime() {
+    grade(&Spec {
+        label: "atomics_narrow_cmpxchg",
+        wat: ATOMICS_NARROW_CMPXCHG_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 5,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_wide_arithmetic_equivalently_to_wasmtime() {
+    grade(&Spec {
+        label: "wide",
+        wat: WIDE_DIFF,
+        configure: wide_config,
+        langs: &ALL_LANGS,
+        min_exports: 10,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_reference_and_table_equivalently_to_wasmtime() {
+    grade(&Spec {
+        label: "reftable",
+        wat: REFTABLE_DIFF,
+        configure: reftable_config,
+        langs: &ALL_LANGS,
+        min_exports: 12,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_shared_everything_like_its_non_atomic_equivalent() {
+    grade_against_reference(&ReferenceSpec {
+        label: "shared_everything",
+        wat: SHARED_DIFF,
+        reference_wat: SHARED_REF,
+        configure: reftable_config,
+        langs: &ALL_LANGS,
+        min_exports: 16,
+        refused: &[],
+    });
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn lifted_targets_execute_divide_remainder_and_truncation_on_non_trapping_inputs() {
+    grade(&Spec {
+        label: "divrem_trunc",
+        wat: DIVREM_TRUNC_DIFF,
+        configure: baseline_config,
+        langs: &ALL_LANGS,
+        min_exports: 16,
+        ungraded: &[],
+        refused: &[],
+        battery: &NON_TRAPPING_BATTERY,
+    });
+}
+
+#[cfg(feature = "sandbox")]
+const PREFIX_SIBLING_LOCK: &str = r#"
+[[package]]
+name = "wasmtime-environ"
+version = "99.9.9"
+
+[[package]]
+name = "wasmtime-internal-cranelift"
+version = "98.8.8"
+
+[[package]]
+name = "wasmtime"
+version = "36.0.13"
+
+[[package]]
+name = "wat"
+version = "1.250.0"
+"#;
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_version_reader_picks_wasmtime_and_not_a_prefix_sibling() {
+    assert_eq!(
+        exec_diff::wasmtime_version_from_lock(PREFIX_SIBLING_LOCK).as_deref(),
+        Some("36.0.13"),
+        "the reader must match the package named exactly `wasmtime`. Sixteen packages in the real \
+         lock share that prefix, and today they happen to resolve to the same version, so a \
+         prefix match would look correct until the day one of them diverges"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_version_reader_reports_absence_rather_than_guessing() {
+    assert_eq!(
+        exec_diff::wasmtime_version_from_lock("[[package]]\nname = \"wat\"\nversion = \"1.0.0\"\n"),
+        None,
+        "a lock with no wasmtime entry must report absence so the caller can fail naming it, \
+         never fall back to a default version"
+    );
+}
+
+#[cfg(feature = "sandbox")]
+#[test]
+fn the_wasmtime_that_graded_this_battery_is_the_recorded_one() {
+    let resolved: String = exec_diff::resolved_wasmtime_version();
+    println!("execution differentials graded against wasmtime {resolved}");
+    assert_eq!(
+        resolved,
+        exec_diff::GRADED_WASMTIME_VERSION,
+        "the battery graded against wasmtime {resolved}, but the version recorded beside it is {}. \
+         The workspace manifest pins a caret range, so a minor bump resolves silently and \
+         re-grades every execution verdict against an engine nobody reviewed. Confirm the new \
+         version preserves the graded behaviour, then record it here",
+        exec_diff::GRADED_WASMTIME_VERSION
+    );
+}
+
+#[cfg(not(feature = "sandbox"))]
+#[test]
+fn the_execution_differential_refuses_to_report_success_without_the_sandbox_feature() {
+    panic!(concat!(
+        "DR-WASMDEOB-SANDBOX: this target grades lifted output against wasmtime. ",
+        "The missing prerequisite is the crate feature `sandbox`. Re-run it as ",
+        "`cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
+        "wasm_lift_execution_differential`. Without that feature every graded test ",
+        "in this target is compiled out and its `ok` result line grades nothing."
+    ));
+}

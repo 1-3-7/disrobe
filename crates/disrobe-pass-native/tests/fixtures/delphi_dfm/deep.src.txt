@@ -1,0 +1,21 @@
+object Root: TRoot
+  Grid = <
+    item
+      Header = 'A'
+      Sub = <
+        item
+          Leaf = 'A1'
+        end>
+    end
+    item
+      Header = 'B'
+      Sub = <>
+    end>
+  Nested = (
+    1
+    (
+      2
+      3)
+    4)
+  Done = True
+end

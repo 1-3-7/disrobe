@@ -1,0 +1,48 @@
+# compiler: R8
+# compiler_version: 9.1.31
+# min_api: 21
+# common_typos_disable
+# {"id":"com.android.tools.r8.mapping","version":"2.2"}
+# pg_map_id: 7338554273b2ae7449a3d98e221a7a5efdaf4fe368fc1cee01263d69a35eb726
+# pg_map_hash: SHA-256 7338554273b2ae7449a3d98e221a7a5efdaf4fe368fc1cee01263d69a35eb726
+com.example.app.Widget -> com.example.app.Widget:
+# {"id":"sourceFile","fileName":"Widget.java"}
+    com.example.app.Widget$Ledger ledger -> a
+      # {"id":"com.android.tools.r8.residualsignature","signature":"La;"}
+    1:1:void <init>():7:7 -> <init>
+    2:2:void <init>():9:9 -> <init>
+    3:4:void com.example.app.Widget$Ledger.<init>():53:54 -> <init>
+    3:4:void <init>():9 -> <init>
+    5:5:void <init>():9:9 -> <init>
+    1:2:void main(java.lang.String[]):45:46 -> main
+    3:3:int accumulate(int):18:18 -> main
+    3:3:java.lang.String report():40 -> main
+    3:3:void main(java.lang.String[]):46 -> main
+    4:4:void com.example.app.Widget$Ledger.record(int):59:59 -> main
+    4:4:int accumulate(int):25 -> main
+      # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/NullPointerException;)"],"actions":["removeInnerFrames(1)"]}
+    4:4:java.lang.String report():40 -> main
+    4:4:void main(java.lang.String[]):46 -> main
+    5:5:void com.example.app.Widget$Ledger.record(int):59:59 -> main
+    5:5:int accumulate(int):25 -> main
+    5:5:java.lang.String report():40 -> main
+    5:5:void main(java.lang.String[]):46 -> main
+    6:6:java.lang.String classify(int):32:32 -> main
+    6:6:java.lang.String report():41 -> main
+    6:6:void main(java.lang.String[]):46 -> main
+    7:7:java.lang.String classify(int):34:34 -> main
+    7:7:java.lang.String report():41 -> main
+    7:7:void main(java.lang.String[]):46 -> main
+    8:8:java.lang.String classify(int):36:36 -> main
+    8:8:java.lang.String report():41 -> main
+    8:8:void main(java.lang.String[]):46 -> main
+    9:9:int com.example.app.Widget$Ledger.size():64:64 -> main
+    9:9:java.lang.String report():41 -> main
+      # {"id":"com.android.tools.r8.rewriteFrame","conditions":["throws(Ljava/lang/NullPointerException;)"],"actions":["removeInnerFrames(1)"]}
+    9:9:void main(java.lang.String[]):46 -> main
+    10:10:java.lang.String report():41:41 -> main
+    10:10:void main(java.lang.String[]):46 -> main
+    11:11:void main(java.lang.String[]):46:46 -> main
+com.example.app.Widget$Ledger -> a:
+# {"id":"sourceFile","fileName":"Widget.java"}
+    int entries -> a

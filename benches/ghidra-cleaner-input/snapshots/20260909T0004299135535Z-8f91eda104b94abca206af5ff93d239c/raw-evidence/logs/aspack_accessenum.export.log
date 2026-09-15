@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\aspack\AccessEnum.packed.aspack.exe
+  packer:       aspack
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\aspack_accessenum-65ad9439899e4e6592c6572e9d5923ec\AccessEnum.packed.aspack.unpacked.exe
+  layout:       memory-image-overlay
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    52736 bytes placed (5 section(s) overlaid)
+  oep:          RVA 0x7a98
+  symbols:      2
+  sidecar:      ${RUN_DIRECTORY}\export\aspack_accessenum-65ad9439899e4e6592c6572e9d5923ec\AccessEnum.packed.aspack.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\aspack_accessenum-65ad9439899e4e6592c6572e9d5923ec\export.manifest.json

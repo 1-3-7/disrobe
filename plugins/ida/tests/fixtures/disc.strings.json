@@ -1,0 +1,118 @@
+{
+  "schema": "disrobe.strings/v0",
+  "uri": "corpus/native/discovery/disc.unstripped.elf",
+  "byte_len": 1560,
+  "min_len": 4,
+  "total": 18,
+  "strings": [
+    {
+      "value": "fffff.",
+      "offset": 370,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "~\"USP",
+      "offset": 434,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "fff.",
+      "offset": 484,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "ffff.",
+      "offset": 547,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "Linker: LLD 22.1.6 (https://github.com/llvm/llvm-project fc4aad7b5db3fff421df9a9637605b9ca5667881)",
+      "offset": 581,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "clang version 22.1.6 (https://github.com/llvm/llvm-project fc4aad7b5db3fff421df9a9637605b9ca5667881)",
+      "offset": 680,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".rodata",
+      "offset": 1001,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".text",
+      "offset": 1009,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".comment",
+      "offset": 1015,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".symtab",
+      "offset": 1024,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".shstrtab",
+      "offset": 1032,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": ".strtab",
+      "offset": 1042,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "disc.c",
+      "offset": 1051,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "compute",
+      "offset": 1058,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "sum_to",
+      "offset": 1066,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "dispatch",
+      "offset": 1077,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "clamp_val",
+      "offset": 1086,
+      "tag": "plain",
+      "wide": false
+    },
+    {
+      "value": "_start",
+      "offset": 1100,
+      "tag": "plain",
+      "wide": false
+    }
+  ],
+  "emulated_decoded": []
+}

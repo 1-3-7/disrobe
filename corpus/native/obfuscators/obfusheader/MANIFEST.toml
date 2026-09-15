@@ -1,0 +1,41 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-18"
+toolchain = "ac3ss0r/obfusheader.h (C/C++14 compile-time obfuscation header), g++ (Strawberry gcc) -std=c++14 -O2 -s"
+note = "self-authored C++ obfuscated by the real obfusheader.h header (OBF string-encryption), compiled to a STRIPPED native PE; graded against the clean original"
+
+[provenance]
+compiler = "g++ -std=c++14 -O2 -s -DOBF_UNSUPPORTED -I include sample.cpp (stripped = the realistic release-adversary case)"
+obfuscator = "ac3ss0r/obfusheader.h: OBF(\"...\") compile-time-encrypts string literals (per-compile-random key from CTimeSeed = (__COUNTER__ + __TIME__/__LINE__) * 2654435761), runtime-decrypted; also CALL/HIDE_PTR pointer-shuffle call-hiding and an optional WATERMARK macro"
+transform = "the obfuscated build runs identically (classify=66 / secret=the-hidden-flag-value) but the plaintext secret is encrypted out (absent from the binary). per-compile-random key, so blind string recovery has no fixed-key handle (like cryptify)."
+verified = "the obfusheader.h pointer-shuffle reversed-alphabet constant 'zyxwvutsrqponmlkjihgfedcba' is baked into .rdata and SURVIVES -s stripping; the 'obfusheader_watermark' hook symbol is present unstripped. Both are absent from the clean baseline. disrobe previously detected NOTHING (empty obfuscator hits, same as clean); it now reports Obfusheader. The sample here is STRIPPED, so it gates the strip-surviving signature (the harder case). Full string recovery deferred (per-compile-random key, no fixed-key handle), honest detect-and-report."
+
+[[fixture]]
+name = "sample.cpp"
+path = "sample.cpp"
+kind = "cpp-source"
+provenance = "self-authored"
+description = "benign source: classify int + an OBF()-wrapped string-literal secret"
+
+[[fixture]]
+name = "sample.clean.cpp"
+path = "sample.clean.cpp"
+kind = "cpp-source"
+provenance = "self-authored"
+description = "same program without the header / OBF (the clean control source)"
+
+[[fixture]]
+name = "sample.clean.exe"
+path = "sample.clean.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.clean.cpp"
+description = "unobfuscated g++ build; plaintext secret present, no obfusheader constants"
+
+[[fixture]]
+name = "sample.obfuscated.exe"
+path = "sample.obfuscated.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.cpp"
+description = "obfusheader.h-obfuscated STRIPPED build; the strip-surviving zyxwvutsrqponmlkjihgfedcba shuffle constant is the gauntlet target"

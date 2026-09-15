@@ -1,0 +1,11 @@
+add
+blr
+lwz
+add
+stw
+xor
+blr
+mullw
+blr
+divw
+blr

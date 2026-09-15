@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: tag-beta count node
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture exercising the count node with an at-least bound
+  features:
+    - count:
+        feature:
+          mnemonic: mov
+        at-least: 4

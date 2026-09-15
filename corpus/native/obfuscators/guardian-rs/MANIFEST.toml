@@ -1,0 +1,38 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-18"
+toolchain = "meowette/guardian-rs (x86-64 code/PE virtualizer), built with rust nightly; target compiled by rustc 1.95 (x86_64-pc-windows-msvc) with a /MAP linker map"
+note = "self-authored Rust target whose classify() function was virtualized by the real guardian-rs tool; graded structurally against the clean original"
+
+[provenance]
+compiler = "rustc 1.95.0 (x86_64-pc-windows-msvc), -O, /MAP:target.map for the function RVA table guardian-rs consumes"
+obfuscator = "guardian.exe --in sample.clean.exe --out sample.virtualized.exe --map-file target.map classify"
+transform = "guardian-rs lifts the classify() x86-64 body into a custom VM bytecode, embeds the ~26KB VM interpreter as a new .vm PE section plus the bytecode in a .byte section, and overwrites classify's original bytes with a VM-entry redirect stub: push <bytecode_rva imm32> (0x68) ; jmp <vm_rva rel32> (0xE9)"
+verified = "structural oracle (the correct oracle for a virtualizer): clean classify body = 8d044983c00383f05a29c8c3 (lea/add/xor/sub/ret, original arithmetic); virtualized classify body = 6800a00200e9... (push 0x2a000 ; jmp to VM entry) - the original code is GONE from its location, lifted into the .byte VM bytecode interpreted by .vm. clean sections [.text .rdata .data .pdata .reloc]; virtualized adds [.vm .byte]. disrobe previously detected NOTHING (empty obfuscator hits, same as clean); it now reports GuardianRs via the .vm + .byte section-pair structural signature."
+
+[disposition]
+detection = "SHIPPED - GuardianRs family, structural .vm+.byte section-pair signature, zero false-positive on the clean control"
+devirtualization = "SHIPPED - the .byte stream is decoded with the guardian-rs opcode layout; VM-context register loads/stores fold into re-executable micro-ops. Oracle: the recovered classify(n) IR matches sample.rs and the clean-body arithmetic for the committed fixture."
+
+[[fixture]]
+name = "sample.rs"
+path = "sample.rs"
+kind = "rust-source"
+provenance = "self-authored"
+description = "benign source: classify(n) = (n+1)*3 ^ 0x5a - n"
+
+[[fixture]]
+name = "sample.clean.exe"
+path = "sample.clean.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.rs"
+description = "unobfuscated rustc build; classify body is plain x86, no .vm/.byte sections"
+
+[[fixture]]
+name = "sample.virtualized.exe"
+path = "sample.virtualized.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.clean.exe"
+description = "guardian-rs-virtualized: classify lifted into the embedded VM (.vm + .byte sections), original body replaced by a push/jmp VM-entry redirect"

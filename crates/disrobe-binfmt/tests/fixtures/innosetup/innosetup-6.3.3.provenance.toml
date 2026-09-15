@@ -1,0 +1,15 @@
+schema = "disrobe.fixture.provenance/v1"
+name = "Inno Setup 6.3.3 official installer"
+source_url = "https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe"
+source_release = "https://github.com/jrsoftware/issrc/releases/tag/is-6_3_3"
+license_url = "https://github.com/jrsoftware/issrc/blob/is-6_3_3/license.txt"
+size_bytes = 5634744
+sha256 = "0bcb2a409dea17e305a27a6b09555cabe600e984f88570ab72575cd7e93c95e6"
+setup_data_id = "Inno Setup Setup Data (6.3.0)"
+reference_tool = "innoextract 1.10-dev"
+reference_commit = "6e9e34ed0876014fdb46e684103ef8c3605e382e"
+reference_command = "innoextract.exe --silent --list --list-sizes --list-checksums --test --no-gog innosetup-6.3.3.exe"
+reference_member_count = 94
+reference_total_bytes = 13981005
+roster_file = "innosetup-6.3.3-roster.csv"
+roster_sha256 = "5092f32238becc13c2bf881e40ff43369d82f1e352d4fd566e22c45b74c83362"

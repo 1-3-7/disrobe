@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "sources": ["../../src/math.js", "../../src/util/greet.js", "../../src/index.js"],
+  "sourceRoot": "https://example.com/app/",
+  "sourcesContent": ["export function add(a, b) {\n\treturn a + b;\n}\nexport const sub = (a, b) => a - b;\n", "export function greet(who) {\n  return `Hello, ${who}! \\u2014 caf\\u00e9`;\n}\n", "import { add, sub } from './math.js';\nimport { greet } from './util/greet.js';\n\nconst total = add(sub(10, 4), 3);\nconsole.log(greet('w\\u00f6rld'), total);\n"],
+  "mappings": "6LAAO,SAASA,EAAIC,EAAGC,EAAG,CACzB,OAAOD,EAAIC,CACZ,CAFA,IAGaC,EAHbC,EAAAC,EAAA,KAGaF,EAAM,CAACF,EAAGC,IAAMD,EAAIC,ICH1B,SAASI,EAAMC,EAAK,CACzB,MAAO,UAAUA,CAAG,kBACtB,CAFA,IAAAC,EAAAC,EAAA,QCAA,IAAAC,EAAAC,EAAA,KAAAC,IACAC,IAEA,IAAMC,EAAQC,EAAIC,EAAI,GAAI,CAAC,EAAG,CAAC,EAC/B,QAAQ,IAAIC,EAAM,UAAY,EAAGH,CAAK",
+  "names": ["add", "a", "b", "sub", "init_math", "__esmMin", "greet", "who", "init_greet", "__esmMin", "require_index", "__commonJSMin", "init_math", "init_greet", "total", "add", "sub", "greet"]
+}

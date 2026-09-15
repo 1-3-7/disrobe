@@ -1,0 +1,38 @@
+Groovy class decode fixture (benign, authored in-house)
+=======================================================
+
+Purpose
+-------
+Calculator.class exercises decode of a real Apache Groovy class. groovyc compiles
+to standard JVM bytecode but weaves in the Groovy runtime surface: the class
+implements groovy.lang.GroovyObject and carries a groovy.lang.MetaClass field plus
+the synthetic getMetaClass/setMetaClass accessors. The fixture proves the in-house
+classfile parser and decompiler handle groovyc output (class and method recovery)
+without an external CFR/Vineflower backend. The source has a field (base), a
+constructor, an arithmetic method (addTo) and an if/else method (describe).
+
+Provenance (non-circular oracle)
+--------------------------------
+Hello.groovy was authored in-house and compiled with the official Groovy compiler:
+  Apache Groovy 4.0.28 (groovyc),
+  running on Eclipse Temurin JDK 25.0.3+9-LTS.
+  groovyc Hello.groovy -d <out>   ->   disrobe/sample/Calculator.class
+The bytecode is emitted by groovyc, NOT hand-authored and NOT produced by disrobe.
+
+Files
+-----
+Hello.groovy       the in-house source (package disrobe.sample).
+Calculator.class   real groovyc 4.0.28 output, 2507 bytes.
+                   sha256 3f32e5b140ad596ae506e5f0d28b95de0cb3160ccf3621a099f35c1e354a813c
+
+Graded by tests/groovy_decompile.rs: this_class == disrobe/sample/Calculator,
+implements groovy/lang/GroovyObject, carries a groovy/lang/MetaClass reference,
+the in-house decoder emits `class Calculator`, and methods addTo and describe
+survive with method_count >= 2.
+
+Backend note
+------------
+The decode asserted here is the in-house path (parse_classfile + the in-tree
+decompiler). disrobe can additionally hand a class to an external CFR/Vineflower
+backend when one is on PATH; that backend-dependent route is covered separately
+and is not required by this fixture.

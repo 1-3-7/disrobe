@@ -1,0 +1,8 @@
+rule:
+  meta:
+    name: tag-iota base rule
+    namespace: internal/example
+    scope: function
+    description: placeholder base rule referenced by another rule via match
+  features:
+    - mnemonic: inc

@@ -1,0 +1,32 @@
+{
+  "title": "From bytes to source",
+  "subtitle": "Five intermediate representations used by recovery passes",
+  "rungs": [
+    {
+      "label": "Raw",
+      "sub": "File bytes",
+      "detail": "Identify the format; extract or unpack its contents."
+    },
+    {
+      "label": "Disasm",
+      "sub": "Instructions",
+      "detail": "Decode operations while retaining their offsets."
+    },
+    {
+      "label": "MIR",
+      "sub": "Basic blocks",
+      "detail": "Normalize operations and recover control flow."
+    },
+    {
+      "label": "HIR",
+      "sub": "Program structure",
+      "detail": "Reconstruct loops, conditions, and expressions."
+    },
+    {
+      "label": "Surface",
+      "sub": "Readable source",
+      "detail": "Render code in the selected output language."
+    }
+  ],
+  "footnote": "Recovery can stop at any stage. The result retains the recovered artifacts and their limits."
+}

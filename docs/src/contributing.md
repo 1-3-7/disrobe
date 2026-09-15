@@ -1,0 +1,105 @@
+# Contributing
+
+Contributions are welcome; see the [contributing guide](https://github.com/1-3-7/disrobe/blob/main/.github/CONTRIBUTING.md).
+
+## Building and testing
+
+`disrobe` builds with a single stable Rust 1.95+ toolchain:
+
+```sh
+cargo build --release
+cargo test -p <crate> --features <the crate's test features>
+```
+
+> The JVM decompiler can be memory-intensive on adversarial input. Prefer per-crate test runs over a bare workspace-wide `cargo test --workspace` when iterating locally.
+
+The pre-push hook batches changed crates under cargo-nextest 0.9.115 or newer. Install it with
+`cargo install cargo-nextest --locked`. The `pre-push` profile runs independent tests concurrently,
+allows at most two external-toolchain tests at once, disables retries, terminates a test after ten
+minutes for measured heavy crates and two minutes otherwise, and fails when a child retains the
+test's output handles for more than two seconds. Because nextest does not run doctests, the hook
+follows it with one scoped `cargo test --doc` invocation over the same crates.
+
+### Name the features a crate hides its tests behind
+
+Some crates keep whole modules behind a feature that is off by default. Every pass crate keeps its
+chain detector behind a non-default `chain` feature so the slim build can leave the chain runtime
+out. The file starts with `#![cfg(feature = "chain")]`, so a per-crate run that names no feature
+builds none of the chain detector's tests and still prints a passing result for the tests it did
+build. Name the feature to run them:
+
+```sh
+cargo test -p disrobe-pass-lua --features chain
+cargo test -p disrobe-cli --no-default-features --features chain --test auto_dalvik_feature_gate
+cargo test -p disrobe-pass-mobile --features native-image --test flutter_engine_fallback_identity
+cargo test -p disrobe-pass-wasm-deob --features chain,sandbox --test linear_memory_local_offset
+```
+
+The second form covers a refusal that exists only when `chain` is enabled and `jvm` is disabled.
+The Flutter engine identity test requires `native-image` for ELF parsing. The WebAssembly
+differential requires `sandbox` for Wasmtime execution and `chain` for the registered-pass
+assertion.
+
+`cargo run -p xtask -- health` enforces this. It reads every crate's default feature set, finds
+every test-bearing file the default set removes, and fails when a crate hides tests that no entry in
+`HIDDEN_TEST_SURFACE` in `xtask/src/feature_gated_tests.rs` declares. It also reads every per-crate
+test command written in the README, in `docs/src`, and in the workflows, and fails when one of them
+names a test target the command's own feature set compiles away, or names no feature for a crate
+that hides tests. The failure names the crate and prints the command to use instead.
+
+## The quality bar
+
+Every commit on `main` must pass the workspace clippy gate with zero warnings:
+
+```sh
+cargo clippy --all-targets -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+cargo fmt -p <crate> -- --check
+```
+
+The workspace lints are strict by design: `unwrap_used` is denied, `expect_used` is treated as a defect in production paths, and `todo!` and `unimplemented!` are denied. New code is fully type-annotated and self-documenting; the codebase carries durable context in dedicated docs rather than inline comments. Unsafe code is restricted to audited boundary code and does not belong in ordinary parsing or recovery paths.
+
+## README graphs
+
+The dark-theme benchmark and architecture SVGs in the README are generated, not drawn by hand. The data lives in `xtask/data/*.json` (every plotted value cites its source gate or harness inline), and `xtask` renders deterministic SVGs into `docs/assets/`:
+
+```sh
+cargo run -p xtask -- graphs            # regenerate docs/assets/*.svg
+cargo run -p xtask -- graphs --check    # fail if committed SVGs are stale (CI runs this)
+```
+
+After changing a number in `xtask/data/`, rerun `graphs` and commit the regenerated SVGs; the `graphs` CI job rejects any drift. Numbers must identify their committed test gate or local measurement harness, comparison rule, and denominator. Distinguish independent comparisons from self-reported coverage; no competitor recovery percentage is plotted.
+
+## Docs and the wiki
+
+These pages under `docs/src` are the single source of truth. The GitHub wiki is generated from them by `scripts/wiki_sync.py` and the `wiki-sync` workflow, which runs on every push to `main` that touches `docs/`. Do not edit the wiki directly; it is overwritten on the next sync. Edit the page here, then preview the generated wiki locally:
+
+```sh
+python scripts/wiki_sync.py --out ./.wiki-build       # build the wiki tree
+python scripts/wiki_sync.py --check --out ./.wiki-build  # fail on drift
+```
+
+## Adding a pass
+
+A new ecosystem pass is a new `disrobe-pass-<name>` crate that:
+
+1. Implements the shared `Pass` trait with an ID, detector, output kind, and artifact transformation.
+2. Uses the [IR representation](./ir-ladder.md) appropriate to its output; raw-to-raw extraction is a valid transition.
+3. Ships a `pass_run_envelope_roundtrip` test and at least one real-fixture integration test in `crates/disrobe-cli/tests/`.
+4. Wires its standardized emits, returning explicit `applicable: false` stubs for emits it cannot produce.
+
+Every capability claim must be backed by a fixture in `corpus/` and a passing test; nothing aspirational ships as done. Fixtures are baked locally from known-good inputs by `corpus/generate.{sh,ps1}`; copyrighted third-party obfuscated bytecode is never committed to the public corpus.
+
+## Recovery evidence
+
+Test recovery against independently produced corpus artifacts and the upstream format specification. Hand-built fixtures should cover boundaries and failure cases as well. Record the input versions, recovered members, and remaining losses; distinguish detection from recovery in the command output and documentation.
+
+## Reporting bugs
+
+Generate an environment report to attach to an issue:
+
+```sh
+disrobe bug-report --out report.md
+disrobe bug-report --out -          # write to stdout
+```
+
+For security issues, do not open a public issue; use the [private advisory channel](https://github.com/1-3-7/disrobe/security/advisories/new). See [Security](./security.md).

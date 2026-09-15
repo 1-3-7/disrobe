@@ -1,0 +1,33 @@
+schema = "disrobe.jvm.handler-entry-branch-target-fixture/v1"
+source = "HandlerBranchProbe.java"
+source_sha256 = "62f97af5b81166f58bf08a5e017162800ffbe74c9a7d99a6e2bf0c9cff864ce1"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes HandlerBranchProbe.java"
+
+[r8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+keep_rules = "-keep class HandlerBranchProbe { public static *** *(...); } -dontobfuscate -keepattributes *"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shape]
+handler_entries_that_are_also_branch_targets = 1
+notes = "Each catch clause ignores its exception, so R8 drops the store and the handler entry carries no move-exception. The authored early returns and the switch default share the handler's return statement, so the same address is both the exception handler entry and a normal branch target. Dalvik allows one address to serve both because the exception arrives in a register only when move-exception asks for it; the JVM cannot, because the exception arrives on the operand stack, so one address would need a frame with an empty stack and a frame with a thrown exception at the same time. The recovery gives such a handler its own dispatch entry that discards the exception and jumps to the shared tail."
+
+[[artifact]]
+path = "HandlerBranchProbe-r8-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "R8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.R8 --release --min-api 21 --lib android.jar --pg-conf keep.pro --output r8out classes/HandlerBranchProbe.class"
+sha256 = "aa2e0cf233242f6fff412b9a4b85e105e91dcab2b28de7e1558e9f527e4b9faf"
+bytes = 1004

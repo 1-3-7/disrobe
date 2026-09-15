@@ -1,0 +1,1 @@
+{"version":3,"sources":["sourceMap"],"names":["add","_0x3cafe7","_0x4c112f","sub","_0x40c362","_0x24d1c2"],"mappings":"AAAA,OAAO,SAASA,GAAT,CAAaC,SAAb,CAAgBC,SAAhB,C,QACCD,SAAA,CAAIC,S,EAEZ,OAAO,MAAMC,GAAA,CAAM,CAACC,SAAD,CAAIC,SAAJ,GAAUD,SAAA,CAAIC,SAA1B","sourcesContent":["export function add(a, b) {\n\treturn a + b;\n}\nexport const sub = (a, b) => a - b;"]}

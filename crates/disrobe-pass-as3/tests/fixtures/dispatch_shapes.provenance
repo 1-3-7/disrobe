@@ -1,0 +1,4 @@
+compiler=haxe 4.3.7
+command=haxe -cp crates/disrobe-pass-as3/tests/fixtures -main DispatchShapes -swf crates/disrobe-pass-as3/tests/fixtures/dispatch_shapes.swf
+expected=haxe -cp crates/disrobe-pass-as3/tests/fixtures -main DispatchShapesProbe --interp
+generated=2026-08-19

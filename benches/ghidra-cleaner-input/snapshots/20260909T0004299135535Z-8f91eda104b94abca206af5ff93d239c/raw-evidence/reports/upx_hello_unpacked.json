@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "hello.packed.nrv2b.unpacked.exe",
+  "language": "x86:LE:64:default",
+  "image_base": "140000000",
+  "functions": 287,
+  "thunks": 3,
+  "instructions": 19060,
+  "instruction_bytes": 70090,
+  "defined_data_bytes": 19587,
+  "defined_bytes": 89677,
+  "defined_strings": 179,
+  "undefined_in_exec": 86538,
+  "executable_block_bytes": 170058,
+  "total_block_bytes": 181402
+}

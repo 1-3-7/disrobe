@@ -1,0 +1,112 @@
+disrobe self-authored benign React Native Hermes bytecode sample
+================================================================
+
+Source: sample.js (plain JavaScript, no third-party packages, no network, no
+eval). Authored for disrobe regression fixtures. It exercises arithmetic
+(add), a counted loop (sumRange), string concatenation (greet), and a class
+with prototype methods (Counter.increment / Counter.label), plus an entry
+function (main).
+
+Compiler: the real Hermes compiler (hermesc), FOSS, from the official
+facebook/hermes GitHub release binaries (hermes-cli-windows). Each .hbc here is
+the raw output of `hermesc -emit-binary`. The bytecode is never executed; it is
+parsed and lifted statically.
+
+Artifacts committed here (Hermes magic c6 1f bc 03 c1 03 19 1f, little-endian):
+
+  sample.js          ground-truth source.
+                     sha256 56c2b20281ecc760bc0aef5b46c3159a2d8d13713d1f22689146e813acd73c92
+
+  sample.hbc.v96     HBC bytecode version 96 (byte at offset 8 = 0x60).
+                     hermesc release 0.12.0 (hermes-cli-windows, tag v0.13.0 asset).
+                     size 1467 bytes.
+                     sha256 48ca9d83ed9fe683458b92f26dcb2e1fdfe6bddd0f7ad112aabf94aa38acb0e7
+
+  sample.hbc.v84     HBC bytecode version 84 (byte at offset 8 = 0x54).
+                     hermesc release 0.11.0 (hermes-cli-windows, tag v0.11.0).
+                     size 1203 bytes.
+                     sha256 0e1a0a3019afaefdf8fa8a8e50c1a249fcdfa476b894c7a405c427607bd40913
+
+  sample.hbc.v76     HBC bytecode version 76 (byte at offset 8 = 0x4c).
+                     hermesc release 0.7.2 (hermes-cli-windows, tag v0.7.2).
+                     size 1203 bytes.
+                     sha256 3eb217fcceb2c0bcc789227059577a2b07050059a258bd2d2c079ff855a7eeff
+
+  sample.hbc.v89     HBC bytecode version 89 (byte at offset 8 = 0x59).
+                     hermesc from hermes-cli-windows-v0.12.0.tar.gz (tag v0.12.0).
+                     size 1158 bytes.
+                     sha256 6f2b39157bc6e88fed19641e5168e9db4c50ce7be0ea70d42fc966c7286e2705
+
+  sample.hbc.v83     HBC bytecode version 83 (byte at offset 8 = 0x53).
+                     hermesc from hermes-cli-windows-v0.8.0.tar.gz (tag v0.8.0).
+                     size 1158 bytes.
+                     sha256 09a9836e44084dc990f7b1b18b3430cf267d1520ae1a0789557caff47a66b5fa
+
+  sample.hbc.v74     HBC bytecode version 74 (byte at offset 8 = 0x4a).
+                     hermes from hermes-cli-windows-v0.4.0.tar.gz (tag v0.4.0); that
+                     release ships the compiler inside hermes.exe rather than a
+                     separate hermesc.exe.
+                     size 1146 bytes.
+                     sha256 ea77e6e5c0fea4d9a7f1e4499a392627934e96cb25adf5b436431c5fdfb0bf41
+
+  sample.hbc.v71     HBC bytecode version 71 (byte at offset 8 = 0x47).
+                     hermes from hermes-cli-windows-v0.3.0.tar.gz (tag v0.3.0).
+                     size 1375 bytes.
+                     sha256 aeab21e871dcdfc233c58f95bc94ef0904d7d9eaa1db1a3827eda9ab4c0e5418
+
+  sample.hbc.v62     HBC bytecode version 62 (byte at offset 8 = 0x3e).
+                     hermes from hermes-cli-windows-v0.2.1.tar.gz (tag v0.2.1).
+                     size 1379 bytes.
+                     sha256 e143f78b679da0724fba14bcf61d4e1f6efc2605919cbc24c1dd45046bdbc4a6
+
+Exact build command (per version, run against the matching compiler executable):
+
+  <compiler>.exe -emit-binary -out sample.hbc.<version> sample.js
+
+The v62, v71, v74, v83 and v89 artifacts were built from a directory holding only
+sample.js, with the input named relatively, so the module source path they record is
+"sample.js" and no host directory appears in the file. The three older artifacts
+record "C:\workdir\AppData\Local\Temp\hermes-scratch\sample.js" from an earlier build.
+Neither spelling changes the recovered program.
+
+upstream-disasm/hbc<version>.txt
+
+  The disassembly the matching Hermes release prints for the committed bundle at
+  that version, produced by running that release against the committed file:
+
+    hermes.exe -b -dump-bytecode sample.hbc.<version>
+
+  Each file holds the tool output from its first line up to, but not including,
+  the first line beginning "Debug ". Nothing else is edited. The debug tables are
+  dropped because they carry the build-time source path of the three older
+  artifacts and say nothing about opcode numbering.
+
+  crates/disrobe-pass-mobile/tests/hermes_upstream_disassembly.rs compares the
+  instruction names disrobe decodes against the names the release prints, per
+  function, for every committed version.
+
+Scope of recovery:
+
+  Container parse (header, function table, string and identifier tables) works
+  across the committed v62-v96 spread: all eight resolve 8 functions and recover
+  the real function names add / sumRange / greet / Counter / main / increment /
+  label from the module string table.
+
+  Opcode lifting runs through a per-version opcode table, one per committed
+  artifact, each transcribed from include/hermes/BCGen/HBC/BytecodeList.def at
+  the facebook/hermes tag whose BYTECODE_VERSION matches. Every artifact lifts
+  every function at zero declined opcodes, and every recovered body reproduces
+  the behavior of the matching function in sample.js when both are run in the
+  boa JavaScript engine. That differential is the gate at
+  crates/disrobe-pass-mobile/tests/real_hermes_correctness.rs.
+
+  Instruction counts differ across the spread because the compilers differ, not
+  because recovery does: 161 at v62 and v71, 98 at v74 through v89, 99 at v96.
+  The two oldest releases keep locals in an environment and pass call arguments
+  through the frame window, which the later releases optimise away.
+
+  This is a structured lifter, not a full decompiler. Call and Construct recover
+  arguments from the bounded frame-register window when every register has a
+  materialized value. CallDirect and CallBuiltin, and any incomplete frame window,
+  retain one <arg?> marker per argument. Instrumentation opcodes such as
+  ProfilePoint and AsyncBreakCheck count as fallback, not reconstruction.

@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "AccessEnum.packed.mew.unpacked.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 152,
+  "thunks": 0,
+  "instructions": 9592,
+  "instruction_bytes": 27331,
+  "defined_data_bytes": 119156,
+  "defined_bytes": 146487,
+  "defined_strings": 802,
+  "undefined_in_exec": 71017,
+  "executable_block_bytes": 217088,
+  "total_block_bytes": 218112
+}

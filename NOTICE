@@ -1,0 +1,58 @@
+disrobe
+Copyright 2026 1-3-7 (https://github.com/1-3-7)
+
+This software is the "software" and 1-3-7 is the "licensor" referenced by the
+Elastic License 2.0. disrobe is licensed under the Elastic License 2.0; see the
+LICENSE file for the full terms.
+
+The license grants no rights to the "disrobe" name, logo, or other marks, which
+are reserved. Any use of those marks is subject to applicable law.
+
+You must keep this NOTICE file, the LICENSE file, and all copyright, licensing,
+and attribution notices intact in any copy or derivative work.
+
+Third-party attribution
+-----------------------
+
+playground/public/samples/go-embed-linux-386
+
+This example includes the Go runtime. Its copyright notice and license are
+reproduced in playground/public/samples/GO-LICENSE.txt.
+
+playground/public/samples/pyarmor_runtime_000000.pyd
+
+The PyArmor example includes the runtime distributed with its protected
+Python wrapper. The runtime is provided by Jondy Zhao and retains its
+embedded notices. PyArmor's license is available at
+https://github.com/dashingsoft/pyarmor/blob/master/LICENSE.
+
+crates/disrobe-pass-py-decompile/tests/try_else_tail_recompile.rs
+crates/disrobe-pass-py-decompile/tests/loop_try_body_input_space.rs
+
+Several regression inputs are adapted from the CPython 3.14.5 standard
+library. Imports, surrounding definitions, docstrings and comments are
+omitted from these compile/recompile fixtures. The Python license and
+copyright notices are reproduced in
+crates/disrobe-pass-py-decompile/tests/harness/CPYTHON-LICENSE.txt.
+
+crates/disrobe-binfmt/src/containers/pmarc.rs
+
+The PM1 and PM2 decoding logic in this module is derived from the Lhasa
+decoders `lib/pm1_decoder.c`, `lib/pm2_decoder.c`, `lib/pma_common.c` and
+`lib/tree_decode.c`.
+
+Copyright (c) 2011, 2012, Simon Howard
+
+Permission to use, copy, modify, and/or distribute this software
+for any purpose with or without fee is hereby granted, provided
+that the above copyright notice and this permission notice appear
+in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
+CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

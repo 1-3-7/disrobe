@@ -1,0 +1,15 @@
+schema = "disrobe.fixture.provenance/v1"
+source = "https://github.com/libarchive/libarchive"
+source_commit = "44cbcfc560c487020da31d0fb82f0e2395fd90fd"
+license = "BSD-2-Clause"
+reference = "libarchive LHA filename fixtures"
+
+[[fixtures]]
+archive = "libarchive/test/test_read_format_lha_filename_utf16.lzh.uu"
+file = "filename_utf16.lzh"
+sha256 = "74a780be11fd42345e93a5431494f121c4bf89b617646822d78742f9ee19cabd"
+
+[[fixtures]]
+archive = "libarchive/test/test_read_format_lha_filename_cp932.lzh.uu"
+file = "filename_cp932.lzh"
+sha256 = "c94008b2541996c35637192835850652ad8564b06806300c24c4615273bf699f"

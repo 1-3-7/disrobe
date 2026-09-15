@@ -1,0 +1,82 @@
+{
+  "keys": {
+    "accessKey": "REDACTED",
+    "secretKey": "REDACTED"
+  },
+  "applicationId": "6a13b110ba33fa38c090cb54",
+  "jscramblerVersion": "8.5",
+  "mode": "manual",
+  "areSubscribersOrdered": false,
+  "useRecommendedOrder": true,
+  "tolerateMinification": true,
+  "profilingDataMode": "off",
+  "useAppClassification": true,
+  "browsers": {},
+  "sourceMaps": false,
+  "params": [
+    {
+      "name": "selfHealing"
+    },
+    {
+      "name": "objectPropertiesSparsing"
+    },
+    {
+      "name": "variableMasking"
+    },
+    {
+      "name": "whitespaceRemoval"
+    },
+    {
+      "name": "identifiersRenaming",
+      "options": {
+        "mode": "SAFEST"
+      }
+    },
+    {
+      "name": "globalVariableIndirection"
+    },
+    {
+      "name": "dotToBracketNotation"
+    },
+    {
+      "name": "duplicateLiteralsRemoval",
+      "options": {
+        "options": [
+          "localOnly"
+        ],
+        "mode": [
+          "optimization"
+        ]
+      }
+    },
+    {
+      "name": "stringConcealing"
+    },
+    {
+      "name": "functionReordering"
+    },
+    {
+      "options": {
+        "freq": 1,
+        "features": [
+          "opaqueFunctions"
+        ]
+      },
+      "name": "functionOutlining"
+    },
+    {
+      "name": "propertyKeysObfuscation",
+      "options": {
+        "encoding": [
+          "hexadecimal"
+        ]
+      }
+    },
+    {
+      "name": "regexObfuscation"
+    },
+    {
+      "name": "booleanToAnything"
+    }
+  ]
+}

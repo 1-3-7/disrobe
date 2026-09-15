@@ -1,0 +1,17 @@
+# compiler: R8
+# compiler_version: 8.9.27
+# common_typos_disable
+# {"id":"com.android.tools.r8.mapping","version":"2.2"}
+# pg_map_id: 098621b
+# pg_map_hash: SHA-256 098621bb6ccf8efafc35305ffe9571d157b4570d291ac3f20f82b94af65cf2f0
+Hello -> Hello:
+# {"id":"sourceFile","fileName":"Hello.java"}
+    int counter -> a
+    1:3:void <init>(java.lang.String):6:8 -> <init>
+    1:1:void main(java.lang.String[]):24:24 -> main
+    2:2:int bumpCounter():12:12 -> main
+    2:2:void main(java.lang.String[]):25 -> main
+    3:3:void main(java.lang.String[]):26:26 -> main
+    4:4:java.lang.String describe():18:18 -> main
+    4:4:void main(java.lang.String[]):26 -> main
+    5:5:void main(java.lang.String[]):26:26 -> main

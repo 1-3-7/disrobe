@@ -1,0 +1,1 @@
+powershell -w hidden -nop -exec bypass -c Write-Host "hello world"

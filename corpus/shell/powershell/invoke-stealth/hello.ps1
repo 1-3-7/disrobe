@@ -1,0 +1,11 @@
+$best64code = "gCiQGby92dg8GbsVGaiACdz9GStUGdpJ3V" ;
+$base64 = $best64code.ToCharArray() ; [array]::Reverse($base64) ; $Stripped = -join $base64 ;
+$Padded = switch ($Stripped.Length % 4) { 0 { $Stripped }; 1 { $Stripped.Substring(0, $Stripped.Length - 1) }; 2 { $Stripped + ("=" * 2) }; 3 { $Stripped + "=" }} ;
+$LoadCode = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Padded)) ;
+$RandomSTR64 = '40bpN1UlJHcYVWLlt0T25WS'.ToCharArray() ; [array]::Reverse($RandomSTR64) ; $iexbase64 = -join $RandomSTR64 ;
+$iexbase64 = switch ($iexbase64.Length % 4) { 0 { $iexbase64 }; 1 { $iexbase64.Substring(0, $iexbase64.Length - 1) }; 2 { $iexbase64 + '=' * 2 }; 3 { $iexbase64 + '=' } } ;
+$iexcmd = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($iexbase64)) ;
+$aliasSTR64 = 'AOHRGN'.ToCharArray() ; [array]::Reverse($aliasSTR64) ; $aliasbase = -join $aliasSTR64 ;
+$aliasbase = switch ($aliasbase.Length % 4) { 0 { $aliasbase }; 1 { $aliasbase.Substring(0, $aliasbase.Length - 1) }; 2 { $aliasbase + '=' * 2 }; 3 { $aliasbase + '=' } } ;
+$aliasFinal = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($aliasbase)) ;
+$nulL = new-AlIAs -NaMe $aliaSfInAL -VAlUE $IEXcmD -fOrce ; & $ALiAsfINAl $loadcOdE ;

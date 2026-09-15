@@ -1,0 +1,745 @@
+{
+  "schema": "disrobe.bench.ghidra-unpack/v1",
+  "measurement_status": "newly_measured_verified",
+  "measurement_verification": {
+    "status": "verified",
+    "supports_verified_measurement": true,
+    "reasons": []
+  },
+  "raw_evidence": {
+    "directory": "raw-evidence",
+    "size_bytes": 533347,
+    "files": [
+      {
+        "path": "logs/aspack_accessenum.export.log",
+        "sha256": "e22f66346e6a2e20f4f1821f5b62649d418a5c9ab9698d85bb4c43ace8ef85b7"
+      },
+      {
+        "path": "logs/aspack_accessenum_packed.log",
+        "sha256": "31c6d85281619193a5febc41531232d0480f6f7f59db7bacfa4fc08cf3bc27c2"
+      },
+      {
+        "path": "logs/aspack_accessenum_unpacked.log",
+        "sha256": "38e5b9199160df17a76a5f588713e6dc8dea600761cb653644b209c0b9a427dd"
+      },
+      {
+        "path": "logs/aspack_clockres.export.log",
+        "sha256": "3ded79adbe648ae27176858753d6f8651ff5851052972cb12ed6407c1ca85dd1"
+      },
+      {
+        "path": "logs/aspack_clockres_packed.log",
+        "sha256": "4ab4a60f9772d89bb8060e4e2424c35d8b948c5eb756ac32e67981fc5c84fff0"
+      },
+      {
+        "path": "logs/aspack_clockres_unpacked.log",
+        "sha256": "b34e91d333a32fb5de74caafa24fa4f68d266087f1f224c7b5a2bab215d27cee"
+      },
+      {
+        "path": "logs/disrobe-version.log",
+        "sha256": "fd35c4a7166515c57919e737ad17f8a713a9d2d62773162d6240bff5c320e217"
+      },
+      {
+        "path": "logs/git-diff-head.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "logs/git-revision.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "logs/git-revision.txt",
+        "sha256": "510b5f5aff17166f50814af3f569d620ffefd974f9b24645c8608853bd6310bc"
+      },
+      {
+        "path": "logs/git-untracked-manifest.json",
+        "sha256": "d629308b333b0e054d78e40419b18b00e94d20d4dfb4433dbcb2a706ab32bdc6"
+      },
+      {
+        "path": "logs/git-untracked-paths.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "logs/kkrunchy_classic.export.log",
+        "sha256": "70a6ecf330da1f17251e137219f1ef54104f8fe8d5b92c91332e2a16fe1b44a8"
+      },
+      {
+        "path": "logs/kkrunchy_classic_packed.log",
+        "sha256": "c99d73b269bc794ab2fbbb6887a05c9e346636fedb4a65de832d7bd2cbdecf92"
+      },
+      {
+        "path": "logs/kkrunchy_classic_unpacked.log",
+        "sha256": "3ee59161716f1fb0efe4577218cb61f1951c790f801305e4efa36362bf1c390c"
+      },
+      {
+        "path": "logs/pecompact_accessenum.export.log",
+        "sha256": "15efc236893ada68607cda0e280e626133af0c965499c2425379345537b2b5a2"
+      },
+      {
+        "path": "logs/pecompact_accessenum_packed.log",
+        "sha256": "bce040f6c5706f14d671beed7a00dac44dd83d7a91141115dc4cfe51dee8e33a"
+      },
+      {
+        "path": "logs/pecompact_accessenum_unpacked.log",
+        "sha256": "8fc31965c3e2ce13d67405efab5551cbe30b4ab9e0b7d97fa89bed0e4f2b7c1d"
+      },
+      {
+        "path": "logs/pecompact_clockres.export.log",
+        "sha256": "52e647e4dbb80e7208c6f5dc2d4b1cfd0a7bb2ef52c6cc8d0ba7b53398f317cc"
+      },
+      {
+        "path": "logs/pecompact_clockres_packed.log",
+        "sha256": "21647b17bb676c2fb9d23a35874b34e016c424558ee931e2f30eefb65bf8d6ac"
+      },
+      {
+        "path": "logs/pecompact_clockres_unpacked.log",
+        "sha256": "c482c2612b35fb89caeeb985af3dde453eadeda5d0a252ab6466463d79143ec4"
+      },
+      {
+        "path": "logs/upx_hello.export.log",
+        "sha256": "5a1418f4b08d55a69533814f88b3d74e6f471a30af63389417f4d298d5facb45"
+      },
+      {
+        "path": "logs/upx_hello_packed.log",
+        "sha256": "49a27ce4019597c9ef213ea4093ba7f0edb36463deaa79da0dcd97bfb38d991c"
+      },
+      {
+        "path": "logs/upx_hello_unpacked.log",
+        "sha256": "2cb4501bf289c5fd6ba41c8c71d3d1f58842c0c294cae9142e5ba531df451161"
+      },
+      {
+        "path": "metrics/aspack_accessenum_packed.json",
+        "sha256": "9f6acc9c64b26e6944c22f63bbb6c56395eb2284a3ef0285e734610ad8e27519"
+      },
+      {
+        "path": "metrics/aspack_accessenum_unpacked.json",
+        "sha256": "34f85d6f1e96e91af7d511ff3c04988754588c80a72f8c07bd3d8bbaebf40131"
+      },
+      {
+        "path": "metrics/aspack_clockres_packed.json",
+        "sha256": "be7e946e98b0b096f75336bbbfb297581e88293470584ee5419b632674cde25c"
+      },
+      {
+        "path": "metrics/aspack_clockres_unpacked.json",
+        "sha256": "ca041b362a79b36c9df1e8f7acb4bf80915968fbd1f375e8364b418bc9daac7d"
+      },
+      {
+        "path": "metrics/kkrunchy_classic_packed.json",
+        "sha256": "16d775e8c2b0384d8abd2192ae019c565ac1bfda3bd7eaf379155ac989d9debf"
+      },
+      {
+        "path": "metrics/kkrunchy_classic_unpacked.json",
+        "sha256": "aeb68f5c8dde3fae3d456f70ba92ef9c6f8ed9afb7b1d66cc69b8700dce515d0"
+      },
+      {
+        "path": "metrics/pecompact_accessenum_packed.json",
+        "sha256": "013df870c0373814bdad876cd54de4f63e525d91d92710ea0b6949a7085663c9"
+      },
+      {
+        "path": "metrics/pecompact_accessenum_unpacked.json",
+        "sha256": "9cb3018dc5441a62da61f05a5a18da5ce444b02a60bd598c33bf3208b1680ed9"
+      },
+      {
+        "path": "metrics/pecompact_clockres_packed.json",
+        "sha256": "2bc9387a0bde162ab541919dc0a1c778f1375825a3442881e5cb859c5b70b45c"
+      },
+      {
+        "path": "metrics/pecompact_clockres_unpacked.json",
+        "sha256": "240a56230996e74d4c58accfcaae5d2c91976282a1818fdabee199b866d6fdfd"
+      },
+      {
+        "path": "metrics/upx_hello_packed.json",
+        "sha256": "c8341027f2395eb97fa8395974b7d0002240281405de800ad4866aee660c2c99"
+      },
+      {
+        "path": "metrics/upx_hello_unpacked.json",
+        "sha256": "f8681552b6576953b756e7cfb2aeef585875f7829c87bf428662279eb2c6c8c8"
+      }
+    ],
+    "representation": "public copies with named host-path placeholders; original byte checksums are retained in original-manifest.json"
+  },
+  "historical_results_present": true,
+  "replaces_historical_results": false,
+  "ghidra_version": "12.1.2",
+  "analyze_headless": "support/analyzeHeadless",
+  "provenance": {
+    "utc": "2026-09-08T23:46:01.3873168Z",
+    "source": {
+      "revision": "d9d9a48384a4fc6239488b76991cfcacaf471804",
+      "dirty": true,
+      "identity_sha256": "6752130d2d5fa7354c593899513a71054628e94953e2c92499554d32965548c9",
+      "tracked_diff": {
+        "size_bytes": 2783493,
+        "sha256": "61f3dd74136b9a2fc588617bbc220c8b4b7693345dee3f4ae52d751642c50c8a",
+        "original_path": "raw-evidence/logs/git-diff-head.patch",
+        "availability": "omitted from public export; the original working-tree patch contains unrelated source changes and local configuration"
+      },
+      "untracked_manifest": {
+        "path": "raw-evidence/logs/git-untracked-manifest.json",
+        "file_count": 133,
+        "content_bytes": 10418849,
+        "sha256": "d629308b333b0e054d78e40419b18b00e94d20d4dfb4433dbcb2a706ab32bdc6"
+      }
+    },
+    "host": {
+      "name": null,
+      "os": "Microsoft Windows NT 10.0.26200.0",
+      "powershell": "5.1.26100.9168",
+      "cpu": {
+        "model": "AMD Ryzen 9 9950X3D2 16-Core Processor",
+        "packages": 1,
+        "physical_cores": 16,
+        "logical_processors": 32
+      },
+      "physical_memory_bytes": 66158166016
+    },
+    "tools": {
+      "disrobe": {
+        "path": "${DISROBE_BINARY}",
+        "sha256": "a29596adf78d560f830609e1c0f2bd2150e0a21b331e66b6117eef067f5933e5",
+        "version": "disrobe 0.10.5",
+        "version_outcome": {
+          "pid": 47752,
+          "exit_code": 0,
+          "log": "raw-evidence/logs/disrobe-version.log",
+          "log_sha256": "fd35c4a7166515c57919e737ad17f8a713a9d2d62773162d6240bff5c320e217"
+        }
+      },
+      "analyze_headless": {
+        "path": "${GHIDRA_HOME}\\support\\analyzeHeadless.bat",
+        "sha256": "dd7b9d17d32ed70a71df82a43a21cdaed6c4ce67064e30f8642c149f81c2ae07",
+        "version": "12.1.2"
+      },
+      "ghidra_selected_jvm": {
+        "verified": true,
+        "home": "${JAVA_HOME}",
+        "executable": "${JAVA_HOME}\\bin\\java.exe",
+        "executable_sha256": "1dfe0b08636bc74b56db5e246f038cfe67c18f567053373fa601d310f29ed9da",
+        "version": "25.0.4",
+        "vendor": "Eclipse Adoptium",
+        "vm_name": "OpenJDK 64-Bit Server VM",
+        "launch_environment_java_home": "${JAVA_HOME}"
+      }
+    },
+    "harness": {
+      "script": {
+        "path": "${REPOSITORY_ROOT}\\benches\\ghidra-unpack\\ghidra-unpack-benchmark.ps1",
+        "sha256": "3a71a21bf80afebc99571c2fd23b7422a5667dcae4100e5de94f0df73a2da7d9"
+      },
+      "module": {
+        "path": "${REPOSITORY_ROOT}\\benches\\ghidra-harness.psm1",
+        "sha256": "507d13d7291ce0bfbe1d923dd3be7a30c23cf5af2893259eb171e521cee077b5"
+      },
+      "post_script": {
+        "path": "${REPOSITORY_ROOT}\\benches\\ghidra-unpack\\DisrobeMetrics.java",
+        "sha256": "0e3c11f30e9c4d36c4b2ee964153f7b9fb434e283efde0f3b0850c8100dab6d4"
+      },
+      "export_command": "disrobe native export --format ghidra <packed> --out <dir>",
+      "headless_command": "analyzeHeadless <proj> <name> -import <bin> -postScript DisrobeMetrics.java <out.json> -deleteProject -overwrite",
+      "timeout_seconds": 900,
+      "ghidra_distribution": {
+        "version": "12.1.2",
+        "manifest": {
+          "path": "${REPOSITORY_ROOT}\\benches\\ghidra-toolchain.json",
+          "sha256": "c9eb7c2fed3a8bd9f598293d566daf2c3d54722580338a9a36055ac8f3932304",
+          "schema": "disrobe.bench.ghidra-toolchain/v1"
+        },
+        "archive": {
+          "path": "${GHIDRA_ARCHIVE}",
+          "name": "ghidra_12.1.2_PUBLIC_20260605.zip",
+          "size_bytes": 572803866,
+          "sha256": "b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d",
+          "release_url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/ghidra_12.1.2_PUBLIC_20260605.zip"
+        },
+        "installation": {
+          "home": "${GHIDRA_HOME}",
+          "verified_against_archive": true,
+          "file_count": 5225,
+          "content_bytes": 914243794,
+          "content_manifest_sha256": "f388a3d709c92b309693f8225912f8f4594649b9eeb58fd8044e1439738916b6",
+          "application_properties": {
+            "path": "${GHIDRA_HOME}\\Ghidra\\application.properties",
+            "sha256": "80890f309379ef60ecbb376a95448bd79e874145544ffcfabb5ba1835ac8a2cf"
+          }
+        }
+      }
+    },
+    "verification": {
+      "status": "verified",
+      "supports_verified_measurement": true,
+      "reasons": []
+    }
+  },
+  "export_command": "disrobe native export --format ghidra <packed> --out <dir>",
+  "headless_command": "analyzeHeadless <proj> <name> -import <bin> -postScript DisrobeMetrics.java <out.json> -deleteProject -overwrite",
+  "samples": [
+    {
+      "id": "upx_hello",
+      "packer": "UPX",
+      "binary": "hello (Rust)",
+      "fixture": "native/packers/upx/hello.packed.nrv2b.exe",
+      "fixture_sha256": "ddd7e1ca914a971b5d976e1f238c3320383ae4367845ce5e274caa6c82060a91",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/upx_hello-e696e55509c3456d901ac96283e89661",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 43376,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/upx_hello.export.log",
+        "log_sha256": "0434937a4a9c194fd3e5e15e6c54c7bf7c0af3cd0f5ce38d06d4c56a28035b31"
+      },
+      "rebuilt_sha256": "4975bb7f722169df700c1d61773ac3b6d315e1a5dccb12703827c6fa1101f50d",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "hello.packed.nrv2b.exe",
+        "language": "x86:LE:64:default",
+        "image_base": "140000000",
+        "functions": 4,
+        "thunks": 0,
+        "instructions": 225,
+        "defined_strings": 23,
+        "resolved_imports": 12,
+        "executable_bytes": 122880,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 4,
+        "decompiled_ok": 4
+      },
+      "packed_outcome": {
+        "pid": 36264,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/upx_hello_packed.log",
+        "log_sha256": "a945f15266a394c7292afdbee917693c57f75e06a0231bb5387fd2c409071669"
+      },
+      "packed_report_sha256": "c97b2157abbe635554d9730ba70f379cade5abe9e4397f4b986ca0fa82ebf5e3",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "hello.packed.nrv2b.unpacked.exe",
+        "language": "x86:LE:64:default",
+        "image_base": "140000000",
+        "functions": 290,
+        "thunks": 3,
+        "instructions": 19060,
+        "defined_strings": 179,
+        "resolved_imports": 12,
+        "executable_bytes": 170058,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 287,
+        "decompiled_ok": 287
+      },
+      "unpacked_outcome": {
+        "pid": 29760,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/upx_hello_unpacked.log",
+        "log_sha256": "b595d83a1df3e3fb702148a603199f59772a676ca216972222f48cdc1015739c"
+      },
+      "unpacked_report_sha256": "2e455a70aac29eb5170660d47acb38bb89174268489ea0c133c93130fe10d825"
+    },
+    {
+      "id": "aspack_clockres",
+      "packer": "ASPack",
+      "binary": "Clockres",
+      "fixture": "native/packers/aspack/Clockres.packed.aspack.exe",
+      "fixture_sha256": "57dd06a8fb575581f6361cc5a2737c9ea97330193447ea606fc6c8ee217ecd76",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/aspack_clockres-1ba9a5137d0141d7b74bbdb3ef6fb5da",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 43576,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_clockres.export.log",
+        "log_sha256": "0fa64e1a3ca706971c5d69f3d92cb23a0dc3f84a11fcc36ae2eba0798dfffbbb"
+      },
+      "rebuilt_sha256": "9a14a9d7b8f993a70e7b158209690e162b58411d0471fd17ca4fc6c933d8bb34",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "Clockres.packed.aspack.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 5,
+        "thunks": 0,
+        "instructions": 58,
+        "defined_strings": 48,
+        "resolved_imports": 8,
+        "executable_bytes": 77824,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 5,
+        "decompiled_ok": 5
+      },
+      "packed_outcome": {
+        "pid": 21592,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_clockres_packed.log",
+        "log_sha256": "638a40d7eb56caf389107ced8191a6b87af9b03fe020e86360ce6aa3065a39a3"
+      },
+      "packed_report_sha256": "cfe666616d1f59ad383dd1cb8879810abb0e271a8d82529adaa67e6fa906d39c",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "Clockres.packed.aspack.unpacked.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 243,
+        "thunks": 0,
+        "instructions": 10544,
+        "defined_strings": 116,
+        "resolved_imports": 8,
+        "executable_bytes": 77824,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 243,
+        "decompiled_ok": 210
+      },
+      "unpacked_outcome": {
+        "pid": 48548,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_clockres_unpacked.log",
+        "log_sha256": "2d6d8acd017eb8fa98d966e91a5f494f3443919bf544fccd86eef2c77271b7c6"
+      },
+      "unpacked_report_sha256": "4069c04b0b7c0fb041123c0e750d0d9e8a209809c29190f7bdf02e2eb7ae5c88"
+    },
+    {
+      "id": "aspack_accessenum",
+      "packer": "ASPack",
+      "binary": "AccessEnum",
+      "fixture": "native/packers/aspack/AccessEnum.packed.aspack.exe",
+      "fixture_sha256": "32f4d855b5005bf76a57973d3757ec88eb2443b158b0df40ecd540fc11791f34",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/aspack_accessenum-918f96f8f44440d18eec95712b9c0056",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 13632,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_accessenum.export.log",
+        "log_sha256": "be24373d435ae838babbb42a6dfffa319947a975740237573fc917ca0fc2dade"
+      },
+      "rebuilt_sha256": "4bb85441e28742ba0fe1080586be716c33f59310b1716d79bd2be23443515490",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "AccessEnum.packed.aspack.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 5,
+        "thunks": 0,
+        "instructions": 73,
+        "defined_strings": 62,
+        "resolved_imports": 14,
+        "executable_bytes": 45056,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 5,
+        "decompiled_ok": 5
+      },
+      "packed_outcome": {
+        "pid": 40460,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_accessenum_packed.log",
+        "log_sha256": "17c02ec4cf16624479c0a41592edf2d91ca88854b3af7231085e5f4c47591321"
+      },
+      "packed_report_sha256": "6f979a332ffbad0f7f8e1700411a5b0e0b307819bfd3d66a6efe21a9c62fa0d2",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "AccessEnum.packed.aspack.unpacked.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 101,
+        "thunks": 0,
+        "instructions": 5781,
+        "defined_strings": 195,
+        "resolved_imports": 14,
+        "executable_bytes": 45056,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 101,
+        "decompiled_ok": 101
+      },
+      "unpacked_outcome": {
+        "pid": 36200,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/aspack_accessenum_unpacked.log",
+        "log_sha256": "d24474f622d4283263fc070588ea995c64697527b12139f6cec89dd29eaacfdb"
+      },
+      "unpacked_report_sha256": "9e98a3a80b4e4dfa861f99dd37cabb5e015a0059513eab4842aa3f50f9fc174f"
+    },
+    {
+      "id": "pecompact_clockres",
+      "packer": "PECompact",
+      "binary": "Clockres",
+      "fixture": "native/packers/pecompact/Clockres.packed.pecompact.exe",
+      "fixture_sha256": "b0a535d086aa9b309af3c6272ecc6c5272347a07fa0dec60a9f681f3e305efd8",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/pecompact_clockres-b2a67df165d642aa957b262c13a7315c",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 40640,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_clockres.export.log",
+        "log_sha256": "91b30bfd48acb0ac0ee03d7d352b153f2c0be6099fbb0f85eacf0924a98b9152"
+      },
+      "rebuilt_sha256": "3a580a4504fce0951e2e73126942911a31d9e0766890793ee6b711b766acb026",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "Clockres.packed.pecompact.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 2,
+        "thunks": 0,
+        "instructions": 148,
+        "defined_strings": 27,
+        "resolved_imports": 4,
+        "executable_bytes": 147456,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 2,
+        "decompiled_ok": 1
+      },
+      "packed_outcome": {
+        "pid": 47652,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_clockres_packed.log",
+        "log_sha256": "3bb788f384239fafa9d4f5a17a5c516548ddda5fb38fc52478e5e5d193bf72c8"
+      },
+      "packed_report_sha256": "5a69e6de3075ad4a6d4072ef4b253a8852a08d365a215cf2ca6336c0aabc44a7",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "Clockres.packed.pecompact.unpacked.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 306,
+        "thunks": 0,
+        "instructions": 14603,
+        "defined_strings": 27,
+        "resolved_imports": 4,
+        "executable_bytes": 147456,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 306,
+        "decompiled_ok": 267
+      },
+      "unpacked_outcome": {
+        "pid": 47692,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_clockres_unpacked.log",
+        "log_sha256": "1dfc364679cd70457930f38122370297caa1767e9b0c9b48f4001b1c985094c6"
+      },
+      "unpacked_report_sha256": "23139e1eeabfa7ec01681c22cd2ac454eb82a50792dd43466fe9423f3e5808c1"
+    },
+    {
+      "id": "pecompact_accessenum",
+      "packer": "PECompact",
+      "binary": "AccessEnum",
+      "fixture": "native/packers/pecompact/AccessEnum.packed.pecompact.exe",
+      "fixture_sha256": "0f3dcd7de819326ce46f25988fe6e74850bf527a265a3cf26d96652fff9c1de0",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/pecompact_accessenum-34143fef9d0e41b3b3368ddb6bc04e71",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 30240,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_accessenum.export.log",
+        "log_sha256": "cf5772d5f1957772bfd9447c6cb30a021d7609b6dc94003b7db66e5eb84edbfc"
+      },
+      "rebuilt_sha256": "47ec50297e303c84c79d56f8885d416211bee14e3a4e2a2471964c21d7ce4930",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "AccessEnum.packed.pecompact.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 2,
+        "thunks": 0,
+        "instructions": 155,
+        "defined_strings": 52,
+        "resolved_imports": 15,
+        "executable_bytes": 180224,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 2,
+        "decompiled_ok": 2
+      },
+      "packed_outcome": {
+        "pid": 29120,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_accessenum_packed.log",
+        "log_sha256": "93278debd22ec4407c2ad4c5045b337f4f3f158036e5f17f2561791df7cdbc59"
+      },
+      "packed_report_sha256": "3243ce3f8040400e1064682e059b5fc733d167002584aad41021e3705ef146c3",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "AccessEnum.packed.pecompact.unpacked.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 186,
+        "thunks": 0,
+        "instructions": 9278,
+        "defined_strings": 53,
+        "resolved_imports": 15,
+        "executable_bytes": 180224,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 186,
+        "decompiled_ok": 186
+      },
+      "unpacked_outcome": {
+        "pid": 4180,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/pecompact_accessenum_unpacked.log",
+        "log_sha256": "05cf750b318cfc39f393ed484f9f204ff272e21cd15d47c0f0a9f712f60b6a2b"
+      },
+      "unpacked_report_sha256": "c3c924a27a0aede76fed727071bc61a8e6ac0a4f8e1bf86765a6d9c254dea5a5"
+    },
+    {
+      "id": "kkrunchy_classic",
+      "packer": "kkrunchy",
+      "binary": "hello (NASM, classic)",
+      "fixture": "native/packers/kkrunchy/hello.packed.kkrunchy_classic.exe",
+      "fixture_sha256": "a2fb9dcb82f646347a6f1a56580fb6ecbe6b67aa9570057126dd351d1770b3b6",
+      "export_ok": true,
+      "export_error": "",
+      "export_directory": {
+        "run_relative_path": "export/kkrunchy_classic-64f3730ec9ca4bf2969f5d29fd429dd1",
+        "cleaned_after_run": true
+      },
+      "export_outcome": {
+        "pid": 41624,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/kkrunchy_classic.export.log",
+        "log_sha256": "4b62b15dd79600fbe38606d382a969a274ffc0e3493810078aaa8917acd9f033"
+      },
+      "rebuilt_sha256": "b2ea8973a937bd1f67125cbe69d8204ecedbb6f4fc29de38bb626bbd37c7316f",
+      "packed": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "hello.packed.kkrunchy_classic.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "003f0000",
+        "functions": 4,
+        "thunks": 0,
+        "instructions": 149,
+        "defined_strings": 3,
+        "resolved_imports": 2,
+        "executable_bytes": 70944,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 4,
+        "decompiled_ok": 4
+      },
+      "packed_outcome": {
+        "pid": 31196,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/kkrunchy_classic_packed.log",
+        "log_sha256": "029f42d10a056a53a290d49ca9a9c02a38565651b23003648e196b9e7b72a27b"
+      },
+      "packed_report_sha256": "ae990bea9773b8ebfec40101f3e1af4e21fa0268a336e937626776f90a05a364",
+      "unpacked": {
+        "runtime": {
+          "ghidra_version": "12.1.2",
+          "java_home": "${JAVA_HOME}",
+          "java_version": "25.0.4",
+          "java_vendor": "Eclipse Adoptium",
+          "java_vm_name": "OpenJDK 64-Bit Server VM"
+        },
+        "program": "hello.packed.kkrunchy_classic.unpacked.exe",
+        "language": "x86:LE:32:default",
+        "image_base": "00400000",
+        "functions": 1,
+        "thunks": 0,
+        "instructions": 10,
+        "defined_strings": 4,
+        "resolved_imports": 3,
+        "executable_bytes": 4096,
+        "decompile_workers": 4,
+        "decompile_timeout_seconds": 45,
+        "decompile_attempts": 1,
+        "decompiled_ok": 1
+      },
+      "unpacked_outcome": {
+        "pid": 36900,
+        "exit_code": 0,
+        "log": "raw-evidence/logs/kkrunchy_classic_unpacked.log",
+        "log_sha256": "04621491b4f1cb4a244bc1205fd9989ec44732f9892d3b0352b64ecaab5f8004"
+      },
+      "unpacked_report_sha256": "e205bbf95571e140beb6d4a429cf0f4369ac9801c960e5e964390df07a2088db"
+    }
+  ],
+  "public_export": "public-export.json"
+}

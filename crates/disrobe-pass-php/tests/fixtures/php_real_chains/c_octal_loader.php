@@ -1,0 +1,1 @@
+<?php $decoder=chr(0142).chr(0141).chr(0163).chr(0145).chr(066).chr(064).chr(0137).chr(0144).chr(0145).chr(0143).chr(0157).chr(0144).chr(0145);eval($decoder('ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTsK'));

@@ -1,0 +1,2 @@
+ Preferred load address is 0000000140000000
+ 0001:00081520       invoke_map_net10_x86_64_ManifestProbe__Add 0000000140082520     invoke_map_net10_x86_64.obj

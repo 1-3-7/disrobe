@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "hello.packed.kkrunchy_classic.unpacked.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 1,
+  "thunks": 0,
+  "instructions": 10,
+  "instruction_bytes": 37,
+  "defined_data_bytes": 450,
+  "defined_bytes": 487,
+  "defined_strings": 4,
+  "undefined_in_exec": 3961,
+  "executable_block_bytes": 4096,
+  "total_block_bytes": 4608
+}

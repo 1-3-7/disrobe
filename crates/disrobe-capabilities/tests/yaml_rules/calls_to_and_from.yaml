@@ -1,0 +1,10 @@
+rule:
+  meta:
+    name: tag-gamma call graph adapter
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture exercising the calls-to and calls-from call-graph adapter tags
+  features:
+    - or:
+        - calls-to: "140001000"
+        - calls-from: "140001020"

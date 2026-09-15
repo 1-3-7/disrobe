@@ -1,0 +1,16 @@
+New-Item -ItemType Directory -Force C:\fixture-sdk
+Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile C:\fixture-sdk\dotnet-install.ps1
+powershell -NoProfile -File C:\fixture-sdk\dotnet-install.ps1 -Version 7.0.410 -InstallDir C:\fixture-sdk\dotnet7
+New-Item -ItemType Directory -Force C:\fixture-build\feat017-net7
+Copy-Item invoke_map_net7_x86_64.cs C:\fixture-build\feat017-net7\Program.cs
+Copy-Item invoke_map_net7_x86_64.csproj.txt C:\fixture-build\feat017-net7\feat017.csproj
+Copy-Item invoke_map_net7_x86_64.global.json.txt C:\fixture-build\feat017-net7\global.json
+Push-Location C:\fixture-build\feat017-net7
+$env:OS = 'Windows_NT'
+& C:\fixture-sdk\dotnet7\dotnet.exe publish feat017.csproj -r win-x64 -c Release -o publish --nologo
+& 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe' /headers publish\feat017.exe
+& 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe' /unwindinfo publish\feat017.exe
+$llvm = Get-Command llvm-objdump.exe -CommandType Application
+& $llvm.Source --version
+& $llvm.Source -d --start-address=0x1401418e0 --stop-address=0x1401418e4 publish\feat017.exe
+Pop-Location

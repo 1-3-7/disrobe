@@ -1,0 +1,148 @@
+name: Bug report
+description: A reproducible problem in disrobe (wrong output, a crash, or a failure to recover something it should).
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        disrobe is deterministic, so a precise repro almost always pins the bug. The fields below are what is needed to reproduce and fix it; the more you fill in, the faster it gets fixed.
+
+        **We strongly prefer a public, redistributable, benign reproducer.** A file we can re-run ourselves (a small sample you built, or one from an open-source tool you can link) turns a bug report into a committed regression test, so the fix is provable and never silently comes back. If the input is large or proprietary, a minimal file that triggers the same failure is ideal.
+
+        Safety: never attach or link live malware. If only a malicious sample reproduces it, give the SHA-256 and a source link (for example VirusTotal or MalwareBazaar) instead of the file, and a benign file that triggers the same failure if you can build one. We will not download anything that might be malware.
+  - type: input
+    id: version
+    attributes:
+      label: disrobe version
+      description: The full output of `disrobe --version`.
+      placeholder: disrobe 0.10.1 (abcdef0)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install disrobe?
+      options:
+        - Prebuilt binary from a GitHub release
+        - Built from source (cargo build)
+        - Python wheel (pip or uv)
+        - Other (describe in the output field below)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version and CPU architecture
+      placeholder: Windows 11 26200, x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area is affected?
+      options:
+        - Python (decompile, deobfuscate, freezer, PyArmor)
+        - JVM or Android (class, dex, protector)
+        - .NET
+        - WebAssembly
+        - JavaScript or TypeScript
+        - Native PE/ELF/Mach-O (packer, disasm, devirt)
+        - Go
+        - Lua
+        - Ruby
+        - PHP
+        - Shell (PowerShell, Bash, batch, VBA)
+        - Container, archive, or filesystem
+        - CLI, query, report, or bindings
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Exact command you ran
+      description: The full command line, verbatim.
+      placeholder: disrobe auto sample.exe -o out/
+    validations:
+      required: true
+  - type: textarea
+    id: input_artifact
+    attributes:
+      label: Input artifact
+      description: |
+        The format, size in bytes, and SHA-256 of the file you ran disrobe on, plus how to obtain it. Attach it here only if it is benign and shareable. If it is malware or non-redistributable, give the SHA-256 and source (for example a VirusTotal or MalwareBazaar link) instead, plus a benign file that reproduces the same failure if you have one.
+      placeholder: |
+        format: PE32 packed with UPX 4.x
+        size: 53248 bytes
+        sha256: 3b1f...
+        source: built from the attached hello.c with `upx --best`
+    validations:
+      required: true
+  - type: dropdown
+    id: shareable
+    attributes:
+      label: Can you share the input?
+      description: Whether you can provide a file we can re-run. A shareable, benign sample becomes a committed regression test.
+      options:
+        - Yes, it is public or I can attach a benign, redistributable sample
+        - It is benign but private; I can share privately or build a minimal reproducer
+        - No, it is malware or non-redistributable (SHA-256 and source given above)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Re-run with `-vv` (or `--log debug`) and paste the full output, including the exact `DR-...` error code if one is printed. Do not truncate the error. For a recovery bug, also set `DISROBE_DEBUG=<area>` (for example `DISROBE_DEBUG=nuitka`, or `DISROBE_DEBUG=all`) to dump every offset, size, candidate, and classification the pass walked; this trace pins where recovery diverged. Secret-shaped strings in the trace are auto-redacted, so it is safe to paste.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: recovery_diff
+    attributes:
+      label: Recovered vs expected output (recovery-correctness bugs)
+      description: If disrobe produced wrong recovered source or bytes, paste the recovered output and the correct or original for comparison. A diff is ideal.
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Backtrace (run with `RUST_BACKTRACE=1`), screenshots, or related issues.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I reproduced this on the latest release or current main.
+          required: true
+        - label: I included the version, OS, and exact command above.
+          required: true
+        - label: I included the input's SHA-256, or explained why I cannot share it.
+          required: true
+        - label: I provided a public or benign, redistributable reproducer where possible.
+          required: false
+        - label: I did not attach live malware.
+          required: true

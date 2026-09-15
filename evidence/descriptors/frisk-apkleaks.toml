@@ -1,0 +1,16 @@
+id = "frisk-apkleaks"
+ecosystem = "secrets"
+title = "Secret / IOC recall: disrobe frisk vs apkleaks"
+claim = "On the identical planted APK, disrobe frisk recalls more of the hand-verified planted secrets than apkleaks (it catches the AWS secret key, the Basic-auth credential, and the JWT that apkleaks's rule set misses)."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "headtohead-import"
+external = "recall against the hand-verified planted ground-truth secret set committed in corpus/recon/apk/planted-secrets.apk; the planted secrets are the ground truth, so this is a non-circular recall oracle"
+reproduce = "cargo run -p disrobe-bench-head-to-head  (apkleaks 2.6.3 via evidence/competitors/install-linux.sh; rule set pinned at evidence/competitors/apkleaks-regexes.json; needs jadx for apkleaks's decompile step)"
+note = "Recall is strong (the planted secrets are ground truth). Precision against a real non-secret tree is a separate, weaker number not claimed here. apkleaks scans its own jadx-decompiled output tree; disrobe frisk scans the extracted member tree (its real product path); both see the byte-identical APK."
+
+[measured]
+result_file = "frisk-apkleaks.json"
+disrobe_floor = 87.5

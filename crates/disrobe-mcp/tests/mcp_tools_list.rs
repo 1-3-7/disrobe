@@ -1,0 +1,169 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use disrobe_mcp::DisrobeMcp;
+use rmcp::handler::server::tool::ToolRouter;
+
+#[test]
+fn tools_list_exposes_real_tools_with_object_schemas() {
+    let router: ToolRouter<DisrobeMcp> = DisrobeMcp::tool_router();
+    let tools: Vec<rmcp::model::Tool> = router.list_all();
+
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t: &rmcp::model::Tool| t.name.as_ref())
+        .collect();
+    for expected in [
+        "verify",
+        "native_match",
+        "rename",
+        "annot",
+        "provenance_lookup",
+        "ioc",
+        "secret_scan",
+        "behavior",
+        "coverage",
+        "strings",
+        "call_graph",
+        "xrefs",
+        "function_summary",
+        "neighborhood",
+    ] {
+        assert!(names.contains(&expected), "missing tool {expected}");
+    }
+    #[cfg(feature = "chain")]
+    for expected in ["auto", "decompile"] {
+        assert!(names.contains(&expected), "missing chain tool {expected}");
+    }
+    #[cfg(feature = "wasm")]
+    assert!(
+        names.contains(&"wasm_lift"),
+        "missing WebAssembly lift tool"
+    );
+    let expected_count: usize =
+        14 + usize::from(cfg!(feature = "chain")) * 2 + usize::from(cfg!(feature = "wasm"));
+    assert_eq!(
+        tools.len(),
+        expected_count,
+        "expected exactly {expected_count} tools, got {names:?}"
+    );
+
+    for t in &tools {
+        let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
+        assert_eq!(
+            schema
+                .get("type")
+                .and_then(|v: &serde_json::Value| v.as_str()),
+            Some("object"),
+            "tool {} input_schema must be an object",
+            t.name
+        );
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|v: &serde_json::Value| v.as_object())
+                .is_some_and(|p: &serde_json::Map<String, serde_json::Value>| !p.is_empty()),
+            "tool {} must expose non-empty properties",
+            t.name
+        );
+        assert!(
+            t.description
+                .as_ref()
+                .is_some_and(|d: &std::borrow::Cow<'static, str>| !d.is_empty()),
+            "tool {} must carry a description",
+            t.name
+        );
+        let output_schema: &serde_json::Map<String, serde_json::Value> = t
+            .output_schema
+            .as_deref()
+            .unwrap_or_else(|| panic!("tool {} must expose an output schema", t.name));
+        assert_eq!(
+            output_schema
+                .get("type")
+                .and_then(serde_json::Value::as_str),
+            Some("object"),
+            "tool {} output_schema must be an object",
+            t.name
+        );
+    }
+
+    let verify: &rmcp::model::Tool = tools
+        .iter()
+        .find(|t: &&rmcp::model::Tool| t.name == "verify")
+        .unwrap();
+    assert!(verify.input_schema["properties"].get("bytes_b64").is_some());
+
+    let rename: &rmcp::model::Tool = tools
+        .iter()
+        .find(|t: &&rmcp::model::Tool| t.name == "rename")
+        .unwrap();
+    assert!(rename.input_schema["properties"].get("old").is_some());
+    assert!(rename.input_schema["properties"].get("new").is_some());
+
+    let annot: &rmcp::model::Tool = tools
+        .iter()
+        .find(|t: &&rmcp::model::Tool| t.name == "annot")
+        .unwrap();
+    assert!(annot.input_schema["properties"].get("target").is_some());
+
+    let plk: &rmcp::model::Tool = tools
+        .iter()
+        .find(|t: &&rmcp::model::Tool| t.name == "provenance_lookup")
+        .unwrap();
+    assert!(plk.input_schema["properties"].get("line").is_some());
+    assert!(plk.input_schema["properties"].get("map_json").is_some());
+
+    for name in ["ioc", "behavior", "strings"] {
+        let t: &rmcp::model::Tool = tools
+            .iter()
+            .find(|t: &&rmcp::model::Tool| t.name == name)
+            .unwrap();
+        assert!(
+            t.input_schema["properties"].get("bytes_b64").is_some(),
+            "tool {name} must accept bytes_b64"
+        );
+    }
+
+    for name in ["call_graph", "xrefs", "function_summary", "neighborhood"] {
+        let t: &rmcp::model::Tool = tools
+            .iter()
+            .find(|t: &&rmcp::model::Tool| t.name == name)
+            .unwrap();
+        assert!(
+            t.input_schema["properties"].get("bytes_b64").is_some(),
+            "tool {name} must accept bytes_b64"
+        );
+        assert!(
+            t.input_schema["properties"].get("token_budget").is_some(),
+            "tool {name} must declare token_budget"
+        );
+        assert!(
+            t.input_schema["properties"].get("cursor").is_some(),
+            "tool {name} must accept a continuation cursor"
+        );
+        assert!(
+            t.output_schema.is_some(),
+            "tool {name} must retain its structured output schema"
+        );
+    }
+
+    #[cfg(feature = "chain")]
+    for name in ["auto", "decompile"] {
+        let t: &rmcp::model::Tool = tools
+            .iter()
+            .find(|t: &&rmcp::model::Tool| t.name == name)
+            .unwrap();
+        assert!(
+            t.input_schema["properties"].get("bytes_b64").is_some(),
+            "tool {name} must accept bytes_b64"
+        );
+    }
+    #[cfg(feature = "wasm")]
+    {
+        let tool: &rmcp::model::Tool = tools
+            .iter()
+            .find(|tool: &&rmcp::model::Tool| tool.name == "wasm_lift")
+            .unwrap();
+        assert!(tool.input_schema["properties"].get("bytes_b64").is_some());
+        assert!(tool.input_schema["properties"].get("target").is_some());
+        assert!(tool.output_schema.is_some());
+    }
+}

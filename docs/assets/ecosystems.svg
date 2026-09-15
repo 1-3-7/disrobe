@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="652" viewBox="0 0 920 652" font-family="'Manrope', sans-serif"><desc>generated from ecosystems.json sha256:d161497128aa105f8ca8b607ac3dcfb3</desc>
+  <rect x="0" y="0" width="920" height="652" rx="10" fill="#111111"/>
+  <rect x="0.5" y="0.5" width="919" height="651" rx="9.5" fill="none" stroke="#404040"/>
+  <text x="28.00" y="40.00" font-size="19" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Ecosystem coverage</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">static recovery by default; run disrobe passes for auto-chain reachability</text>
+  <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="92.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="42.00" y="113.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Python pyc</text>
+  <text x="42.00" y="130.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">1.0-3.15 supported</text>
+  <rect x="321.33" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="92.00" width="3.50" height="50.00" fill="#D4D4D4"/>
+  <text x="335.33" y="113.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">PyArmor</text>
+  <text x="335.33" y="130.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">v6-v9 static-key</text>
+  <rect x="614.67" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="92.00" width="3.50" height="50.00" fill="#D4D4D4"/>
+  <text x="628.67" y="113.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">PyInstaller</text>
+  <text x="628.67" y="130.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">onefile + onedir</text>
+  <rect x="28.00" y="152.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="152.00" width="3.50" height="50.00" fill="#D4D4D4"/>
+  <text x="42.00" y="173.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Nuitka</text>
+  <text x="42.00" y="190.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">onefile, C-bounded body</text>
+  <rect x="321.33" y="152.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="152.00" width="3.50" height="50.00" fill="#B3B3B3"/>
+  <text x="335.33" y="173.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Python pickle</text>
+  <text x="335.33" y="190.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">symbolic VM, never runs</text>
+  <rect x="614.67" y="152.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="152.00" width="3.50" height="50.00" fill="#F5F5F5"/>
+  <text x="628.67" y="173.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">JavaScript</text>
+  <text x="628.67" y="190.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">obfuscator.io, 11 bundlers</text>
+  <rect x="28.00" y="212.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="212.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="42.00" y="233.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">WebAssembly</text>
+  <text x="42.00" y="250.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">to Rust/TS/WAT/C</text>
+  <rect x="321.33" y="212.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="212.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="335.33" y="233.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">.NET / CIL</text>
+  <text x="335.33" y="250.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">C#/F#/VB, 23 protectors</text>
+  <rect x="614.67" y="212.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="212.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="628.67" y="233.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">JVM classfile</text>
+  <text x="628.67" y="250.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">in-house decompiler</text>
+  <rect x="28.00" y="272.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="272.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="42.00" y="293.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Android DEX</text>
+  <text x="42.00" y="310.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Dalvik, JVM-verified</text>
+  <rect x="321.33" y="272.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="272.00" width="3.50" height="50.00" fill="#C4C4C4"/>
+  <text x="335.33" y="293.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Go</text>
+  <text x="335.33" y="310.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">pclntab type recovery</text>
+  <rect x="614.67" y="272.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="272.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="628.67" y="293.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Lua</text>
+  <text x="628.67" y="310.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">+ IronBrew2 devirt</text>
+  <rect x="28.00" y="332.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="332.00" width="3.50" height="50.00" fill="#F5F5F5"/>
+  <text x="42.00" y="353.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">PHP</text>
+  <text x="42.00" y="370.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">source + bytecode</text>
+  <rect x="321.33" y="332.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="332.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="335.33" y="353.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Ruby YARV</text>
+  <text x="335.33" y="370.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">MRI opcode-name recall</text>
+  <rect x="614.67" y="332.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="332.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="628.67" y="353.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">BEAM</text>
+  <text x="628.67" y="370.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Erlang + Elixir</text>
+  <rect x="28.00" y="392.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="392.00" width="3.50" height="50.00" fill="#C4C4C4"/>
+  <text x="42.00" y="413.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Swift / Obj-C</text>
+  <text x="42.00" y="430.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">class dump</text>
+  <rect x="321.33" y="392.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="392.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="335.33" y="413.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">ActionScript 3</text>
+  <text x="335.33" y="430.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">SWF + ABC</text>
+  <rect x="614.67" y="392.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="392.00" width="3.50" height="50.00" fill="#E5E5E5"/>
+  <text x="628.67" y="413.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Hermes</text>
+  <text x="628.67" y="430.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">RN bytecode</text>
+  <rect x="28.00" y="452.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="452.00" width="3.50" height="50.00" fill="#C4C4C4"/>
+  <text x="42.00" y="473.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Flutter</text>
+  <text x="42.00" y="490.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">.dill body, AOT names</text>
+  <rect x="321.33" y="452.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="452.00" width="3.50" height="50.00" fill="#F5F5F5"/>
+  <text x="335.33" y="473.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Shell / PowerShell</text>
+  <text x="335.33" y="490.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">deobfuscate</text>
+  <rect x="614.67" y="452.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="614.67" y="452.00" width="3.50" height="50.00" fill="#D4D4D4"/>
+  <text x="628.67" y="473.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Native PE/ELF/Mach-O</text>
+  <text x="628.67" y="490.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">stub-emu unpack</text>
+  <rect x="28.00" y="512.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="28.00" y="512.00" width="3.50" height="50.00" fill="#C4C4C4"/>
+  <text x="42.00" y="533.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Nim / Zig / Crystal</text>
+  <text x="42.00" y="550.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">demangle + metadata</text>
+  <rect x="321.33" y="512.00" width="277.33" height="50.00" rx="7.00" fill="#1C1C1C" stroke="#404040" stroke-width="1"/>
+  <rect x="321.33" y="512.00" width="3.50" height="50.00" fill="#B3B3B3"/>
+  <text x="335.33" y="533.00" font-size="12.5" fill="#F5F5F5" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="600">Containers</text>
+  <text x="335.33" y="550.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">103 formats detected</text>
+  <rect x="28.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#F5F5F5"/>
+  <text x="50.00" y="580.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">recovers source</text>
+  <rect x="152.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#E5E5E5"/>
+  <text x="174.00" y="580.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">bytecode to source</text>
+  <rect x="288.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#D4D4D4"/>
+  <text x="310.00" y="580.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">unpack / extract</text>
+  <rect x="411.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#C4C4C4"/>
+  <text x="433.00" y="580.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">symbols + metadata</text>
+  <rect x="554.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#B3B3B3"/>
+  <text x="576.00" y="580.00" font-size="10.5" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">detect + carve</text>
+  <line x1="28.00" y1="594.00" x2="892.00" y2="594.00" stroke="#404040" stroke-width="1"/>
+  <text x="28.00" y="606.00" font-size="10" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">Recovery quality varies by format and input. Original comments, formatting, and names may be absent; native AOT recovery can expose symbols and metadata without reconstructing source</text>
+  <text x="28.00" y="620.00" font-size="10" fill="#B3B3B3" font-family="'Manrope', sans-serif" text-anchor="start" font-weight="400">bodies.</text>
+</svg>

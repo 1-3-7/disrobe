@@ -1,0 +1,25 @@
+[package]
+name = "disrobe-lift-x86"
+description = "Bounded x86-64 decoder and scalar P-code lifter."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["x86", "x86-64", "pcode", "lifter"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-sleigh = { workspace = true }
+iced-x86.workspace = true
+
+[dev-dependencies]
+disrobe-core = { workspace = true }
+iced-x86.workspace = true
+rand.workspace = true
+sha2.workspace = true

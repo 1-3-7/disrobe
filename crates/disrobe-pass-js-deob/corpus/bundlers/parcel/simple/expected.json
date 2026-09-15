@@ -1,0 +1,7 @@
+{
+  "kind": "parcel",
+  "entry": "parcel-root",
+  "module_ids": ["aaaaa", "bbbbb", "ccccc"],
+  "imports": ["aaaaa", "bbbbb"],
+  "sourcemap_url_keys": ["parcel-root"]
+}

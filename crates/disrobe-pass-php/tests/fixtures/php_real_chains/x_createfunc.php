@@ -1,0 +1,1 @@
+<?php $code='ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTs='; $d=base64_decode($code); $e=create_function('',$d); $e();

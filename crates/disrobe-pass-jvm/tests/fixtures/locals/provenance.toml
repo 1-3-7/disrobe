@@ -1,0 +1,39 @@
+schema = "disrobe.jvm.local-naming-fixture/v1"
+source = "ParamProbe.java"
+source_sha256 = "cfaa1d59de3b61410ae5257713de8e23189255ea9fd8ac9866e2ef50a70dec47"
+harness = "Harness.java"
+harness_sha256 = "bd61db20d7d95c416cde76b37d8aa32b230df1b5d8529224b62ca1a0a676db73"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes ParamProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+notes = "ParamProbe writes a constant into a register that holds a declared parameter and then reads it after the join, which is the shape that separates the two names the renderer used for one register. TempProbe covers temporaries that live across a branch join in category-one, category-two and reference form; each needs a hoisted declaration of the right type before its unit compiles, so it is graded on computed values. LocalProbe holds the one residual shape: D8 reused a register that the signature declares boolean for an int temporary, which no declaration can repair because the name is already spoken for."
+behavioural_classes = ["ParamProbe", "TempProbe"]
+structural_class = "LocalProbe"
+
+[[artifact]]
+path = "ParamProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/ParamProbe.class classes/TempProbe.class classes/LocalProbe.class"
+sha256 = "e33671efa1474500ed9bd780625b610d6ae9342895fb4d0d84a03b048d345d80"
+bytes = 1504
+
+[behavior]
+harness_main = "Harness.main"
+expected_stdout = "8\n6\n26\n31\n5\n6\n24\n7\n12\n15\n3\n7\n"

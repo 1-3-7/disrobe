@@ -1,0 +1,597 @@
+#![allow(
+    dead_code,
+    unreachable_pub,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_docs_in_private_items,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::too_many_arguments
+)]
+
+use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CapturedOutput, ExecutionError, run_captured};
+use disrobe_pass_native::{Arch, DisasmInsn, ProgramFunction, PseudoAbi, disassemble};
+
+#[path = "../support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+
+#[path = "../support/x86_compiler.rs"]
+mod x86_compiler;
+
+pub fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'static str>) {
+    x86_compiler::object_compiler(compiler, abi)
+}
+
+pub fn assert_x86_artifact(bytes: &[u8]) {
+    x86_compiler::assert_x86_artifact(bytes);
+}
+
+pub const HOST_ABI: PseudoAbi = if cfg!(windows) {
+    PseudoAbi::MsX64
+} else {
+    PseudoAbi::SysV
+};
+
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const COMPILE_TIMEOUT: Duration = Duration::from_mins(1);
+pub const LINK_TIMEOUT: Duration = Duration::from_mins(1);
+pub const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerFamily {
+    Gcc,
+    Clang,
+    Msvc,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompilerId {
+    pub bin: &'static str,
+    pub family: CompilerFamily,
+    pub version: String,
+}
+
+const GCC_SUPPRESS_IF_CONVERSION: [&str; 5] = [
+    "-fno-stack-protector",
+    "-fno-optimize-sibling-calls",
+    "-fno-if-conversion",
+    "-fno-if-conversion2",
+    "-fno-tree-loop-if-convert",
+];
+
+const CLANG_SUPPRESS_IF_CONVERSION: [&str; 2] =
+    ["-fno-stack-protector", "-fno-optimize-sibling-calls"];
+
+const GENERIC_SUPPRESS_IF_CONVERSION: [&str; 1] = ["-fno-stack-protector"];
+
+static HOST_GCC_FAMILY: std::sync::OnceLock<CompilerFamily> = std::sync::OnceLock::new();
+
+#[must_use]
+pub const fn codegen_flags(family: CompilerFamily) -> &'static [&'static str] {
+    match family {
+        CompilerFamily::Gcc => &GCC_SUPPRESS_IF_CONVERSION,
+        CompilerFamily::Clang => &CLANG_SUPPRESS_IF_CONVERSION,
+        CompilerFamily::Msvc | CompilerFamily::Unknown => &GENERIC_SUPPRESS_IF_CONVERSION,
+    }
+}
+
+#[must_use]
+pub fn probe_version(bin: &str) -> Option<String> {
+    let captured: CapturedOutput = run_captured(
+        Path::new(bin),
+        &["--version"],
+        PROBE_TIMEOUT,
+        MAX_CAPTURE_BYTES,
+    )
+    .ok()
+    .flatten()?;
+    if captured.exit_code != Some(0) {
+        return None;
+    }
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&captured.stdout);
+    let first_line: &str = text.lines().next().unwrap_or("").trim();
+    (!first_line.is_empty()).then(|| first_line.to_owned())
+}
+
+fn classify_family(version_text: &str) -> CompilerFamily {
+    let lower: String = version_text.to_ascii_lowercase();
+    if lower.contains("clang") {
+        CompilerFamily::Clang
+    } else if lower.contains("gcc") || lower.contains("free software foundation") {
+        CompilerFamily::Gcc
+    } else {
+        CompilerFamily::Unknown
+    }
+}
+
+#[must_use]
+pub fn available_compilers() -> Vec<CompilerId> {
+    let mut out: Vec<CompilerId> = Vec::with_capacity(3);
+    let mut seen_versions: Vec<String> = Vec::with_capacity(3);
+    for bin in ["gcc", "clang", "cc"] {
+        let Some(version): Option<String> = probe_version(bin) else {
+            continue;
+        };
+        if seen_versions.iter().any(|v: &String| v == &version) {
+            continue;
+        }
+        seen_versions.push(version.clone());
+        out.push(CompilerId {
+            bin,
+            family: classify_family(&version),
+            version,
+        });
+    }
+    out
+}
+
+#[must_use]
+pub fn available_x86_compilers() -> Vec<CompilerId> {
+    if cfg!(target_arch = "x86_64") {
+        return available_compilers();
+    }
+    let mut compilers: Vec<CompilerId> = Vec::new();
+    for bin in ["gcc", "clang", "cc"] {
+        let (program, _): (String, Vec<&str>) = x86_compiler::object_compiler(bin, HOST_ABI);
+        let version: String = probe_version(&program)
+            .unwrap_or_else(|| panic!("the x86 oracle requires {program} to answer --version"));
+        let family: CompilerFamily = classify_family(&version);
+        assert!(
+            matches!(family, CompilerFamily::Gcc | CompilerFamily::Clang),
+            "{program} must identify its GNU or Clang compiler family: {version}"
+        );
+        if bin == "gcc" {
+            assert_eq!(
+                family,
+                CompilerFamily::Gcc,
+                "{program} must supply genuine GNU coverage"
+            );
+        }
+        if compilers
+            .iter()
+            .any(|compiler: &CompilerId| compiler.version == version)
+        {
+            continue;
+        }
+        for abi in [PseudoAbi::MsX64, PseudoAbi::SysV] {
+            let (other, _): (String, Vec<&str>) = x86_compiler::object_compiler(bin, abi);
+            if other == program {
+                continue;
+            }
+            let other_version: String = probe_version(&other).unwrap_or_else(|| {
+                panic!("the {abi:?} oracle requires {other} to answer --version")
+            });
+            assert_eq!(
+                classify_family(&other_version),
+                family,
+                "{other} must be a genuine {family:?} compiler: {other_version}"
+            );
+        }
+        compilers.push(CompilerId {
+            bin,
+            family,
+            version,
+        });
+    }
+    compilers
+}
+
+#[must_use]
+pub fn host_compiler_family(compiler: &CompilerId) -> CompilerFamily {
+    if cfg!(target_arch = "x86_64") || compiler.bin != "gcc" {
+        return compiler.family;
+    }
+    *HOST_GCC_FAMILY.get_or_init(|| {
+        classify_family(
+            &probe_version(compiler.bin).unwrap_or_else(|| {
+                panic!("{} must compile the host-native reference", compiler.bin)
+            }),
+        )
+    })
+}
+
+#[must_use]
+pub fn msvc_probe_reason() -> Option<String> {
+    probe_version("cl")
+        .is_none()
+        .then(|| "cl.exe not on PATH".to_owned())
+}
+
+#[must_use]
+pub fn cc() -> Option<String> {
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
+}
+
+#[must_use]
+pub fn gcc() -> Option<String> {
+    compiler_toolchain::probe_one("gcc")
+}
+
+#[must_use]
+pub fn clang() -> Option<String> {
+    compiler_toolchain::probe_one("clang")
+}
+
+#[must_use]
+pub fn scratch_dir(purpose: &str) -> ScratchDir {
+    ScratchDir::create(purpose).expect("create scratch directory")
+}
+
+#[must_use]
+pub fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
+    let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
+    let sym: object::Symbol<'_, '_> = file.symbols().find(|s: &object::Symbol<'_, '_>| {
+        s.name()
+            .is_ok_and(|n: &str| candidates.iter().any(|c: &String| c == n))
+    })?;
+    let section_index: object::SectionIndex = match sym.section() {
+        object::SymbolSection::Section(idx) => idx,
+        _ => return None,
+    };
+    let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
+    let data: &[u8] = section.data().ok()?;
+    let sym_addr: u64 = sym.address();
+    let start: usize = usize::try_from(sym_addr.saturating_sub(section.address())).ok()?;
+    let size: usize = usize::try_from(sym.size()).ok()?;
+    let end: usize = if size == 0 {
+        let next_off: usize = file
+            .symbols()
+            .filter(|s: &object::Symbol<'_, '_>| {
+                matches!(s.section(), object::SymbolSection::Section(idx) if idx == section_index)
+                    && s.address() > sym_addr
+                    && s.kind() == object::SymbolKind::Text
+                    && s.name().is_ok_and(|n: &str| !n.is_empty())
+            })
+            .filter_map(|s: object::Symbol<'_, '_>| {
+                usize::try_from(s.address().saturating_sub(section.address())).ok()
+            })
+            .min()
+            .unwrap_or(data.len());
+        next_off.min(data.len())
+    } else {
+        start.saturating_add(size).min(data.len())
+    };
+    let slice: &[u8] = data.get(start..end)?;
+    Some((slice.to_vec(), sym_addr))
+}
+
+pub fn reachable_shape_functions(
+    object: &[u8],
+    roots: &[&str],
+) -> Result<Vec<ProgramFunction>, String> {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    let file: object::File<'_> = object::File::parse(object).map_err(|error| error.to_string())?;
+    let mut pending: Vec<(String, String)> = roots
+        .iter()
+        .map(|name: &&str| ((*name).to_owned(), format!("rec_{name}")))
+        .collect();
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(roots.len());
+    while let Some((symbol_name, recovered_name)) = pending.pop() {
+        let decorated: String = format!("_{symbol_name}");
+        let symbol: object::Symbol<'_, '_> = file
+            .symbols()
+            .find(|symbol: &object::Symbol<'_, '_>| {
+                symbol
+                    .name()
+                    .is_ok_and(|name: &str| name == symbol_name || name == decorated)
+            })
+            .ok_or_else(|| format!("{symbol_name} symbol not located in object"))?;
+        if !visited.insert(symbol.index().0) {
+            continue;
+        }
+        let (code, base): (Vec<u8>, u64) = function_code(object, &symbol_name)
+            .ok_or_else(|| format!("{symbol_name} code not located in object"))?;
+        let section_index: object::SectionIndex = symbol
+            .section_index()
+            .ok_or_else(|| format!("{symbol_name} has no text section"))?;
+        let section: object::Section<'_, '_> = file
+            .section_by_index(section_index)
+            .map_err(|error| error.to_string())?;
+        let instructions: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).map_err(|error| error.to_string())?;
+        for instruction in instructions {
+            if !matches!(instruction.bytes.as_slice(), [0xe8 | 0xe9, _, _, _, _]) {
+                continue;
+            }
+            let Some(offset): Option<u64> = instruction
+                .address
+                .checked_add(1)
+                .and_then(|address: u64| address.checked_sub(section.address()))
+            else {
+                continue;
+            };
+            let Some((_, relocation)): Option<(u64, object::Relocation)> = section
+                .relocations()
+                .find(|(address, _): &(u64, object::Relocation)| *address == offset)
+            else {
+                continue;
+            };
+            let object::RelocationTarget::Symbol(index) = relocation.target() else {
+                continue;
+            };
+            let callee: object::Symbol<'_, '_> = file
+                .symbol_by_index(index)
+                .map_err(|error| error.to_string())?;
+            if callee.is_undefined()
+                || callee.kind() != object::SymbolKind::Text
+                || visited.contains(&index.0)
+            {
+                continue;
+            }
+            let name: String = callee.name().map_err(|error| error.to_string())?.to_owned();
+            let recovered: String = roots
+                .iter()
+                .find(|root: &&&str| name == **root || name == format!("_{root}"))
+                .map_or_else(
+                    || format!("rec_local_{}", index.0),
+                    |root: &&str| format!("rec_{root}"),
+                );
+            pending.push((name, recovered));
+        }
+        functions.push(ProgramFunction {
+            name: recovered_name,
+            address: base,
+            code,
+        });
+    }
+    Ok(functions)
+}
+
+#[must_use]
+pub fn strip_includes(source: &str) -> String {
+    source
+        .lines()
+        .filter(|l: &&str| !l.starts_with("#include"))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+#[derive(Debug)]
+pub enum CompileOutcome {
+    Object(Vec<u8>),
+    Rejected(String),
+}
+
+#[must_use]
+pub fn link_objects_to_exe(
+    compiler: &str,
+    opt: &str,
+    extra: &[&str],
+    objects: &[&Path],
+    out_exe: &Path,
+) -> CompileOutcome {
+    let mut args: Vec<OsString> =
+        Vec::with_capacity(objects.len().saturating_add(extra.len()).saturating_add(3));
+    args.push(OsStr::new(opt).to_owned());
+    for &flag in extra {
+        args.push(OsStr::new(flag).to_owned());
+    }
+    args.push(OsStr::new("-o").to_owned());
+    args.push(out_exe.as_os_str().to_owned());
+    for obj in objects {
+        args.push(obj.as_os_str().to_owned());
+    }
+    match run_captured(Path::new(compiler), &args, LINK_TIMEOUT, MAX_CAPTURE_BYTES) {
+        Ok(Some(captured)) if captured.exit_code == Some(0) => match std::fs::read(out_exe) {
+            Ok(bytes) => CompileOutcome::Object(bytes),
+            Err(e) => CompileOutcome::Rejected(format!("linked but output missing: {e}")),
+        },
+        Ok(Some(captured)) => {
+            CompileOutcome::Rejected(String::from_utf8_lossy(&captured.stderr).into_owned())
+        }
+        Ok(None) => CompileOutcome::Rejected(format!(
+            "{compiler} link did not complete within {LINK_TIMEOUT:?}"
+        )),
+        Err(e) => CompileOutcome::Rejected(format!("{compiler} failed to spawn for link: {e}")),
+    }
+}
+
+fn os_args(opt: &str, extra: &[&str], out: &Path, src: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = Vec::with_capacity(extra.len().saturating_add(4));
+    args.push(OsStr::new(opt).to_owned());
+    for &flag in extra {
+        args.push(OsStr::new(flag).to_owned());
+    }
+    args.push(OsStr::new("-o").to_owned());
+    args.push(out.as_os_str().to_owned());
+    args.push(src.as_os_str().to_owned());
+    args
+}
+
+#[must_use]
+pub fn compile_object_reasoned(
+    compiler: &str,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> CompileOutcome {
+    let scratch: ScratchDir = scratch_dir("disrobe-native-matrix-cc");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let stem: &str = out
+        .file_stem()
+        .and_then(|s: &OsStr| s.to_str())
+        .unwrap_or("unit");
+    let src: PathBuf = dir.join(format!("{stem}.c"));
+    std::fs::write(&src, source.as_bytes()).expect("write source");
+    let args: Vec<OsString> = os_args(opt, extra, out, &src);
+    match run_captured(
+        Path::new(compiler),
+        &args,
+        COMPILE_TIMEOUT,
+        MAX_CAPTURE_BYTES,
+    ) {
+        Ok(Some(captured)) if captured.exit_code == Some(0) => match std::fs::read(out) {
+            Ok(bytes) => CompileOutcome::Object(bytes),
+            Err(e) => CompileOutcome::Rejected(format!("compiled but output missing: {e}")),
+        },
+        Ok(Some(captured)) => {
+            CompileOutcome::Rejected(String::from_utf8_lossy(&captured.stderr).into_owned())
+        }
+        Ok(None) => CompileOutcome::Rejected(format!(
+            "{compiler} did not complete within {COMPILE_TIMEOUT:?}"
+        )),
+        Err(e) => CompileOutcome::Rejected(format!("{compiler} failed to spawn: {e}")),
+    }
+}
+
+#[must_use]
+pub fn compile_x86_object_reasoned(
+    compiler: &str,
+    abi: PseudoAbi,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> CompileOutcome {
+    let (program, mut flags): (String, Vec<&str>) = x86_compiler::object_compiler(compiler, abi);
+    flags.extend_from_slice(extra);
+    let outcome: CompileOutcome = compile_object_reasoned(&program, opt, &flags, source, out);
+    if let CompileOutcome::Object(bytes) = &outcome {
+        x86_compiler::assert_x86_artifact(bytes);
+    }
+    outcome
+}
+
+#[must_use]
+pub fn compile_x86_object(
+    compiler: &str,
+    abi: PseudoAbi,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> Vec<u8> {
+    match compile_x86_object_reasoned(compiler, abi, opt, extra, source, out) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("{compiler} {abi:?} {opt} must compile its declared oracle row: {reason}")
+        }
+    }
+}
+
+#[must_use]
+pub fn compile_object_opt(
+    compiler: &str,
+    opt: &str,
+    extra: &[&str],
+    source: &str,
+    out: &Path,
+) -> Option<Vec<u8>> {
+    match compile_object_reasoned(compiler, opt, extra, source, out) {
+        CompileOutcome::Object(bytes) => Some(bytes),
+        CompileOutcome::Rejected(reason) => {
+            eprintln!("compile with {compiler} failed: {reason}");
+            None
+        }
+    }
+}
+
+#[must_use]
+pub fn compile_object(compiler: &str, extra: &[&str], source: &str, out: &Path) -> Option<Vec<u8>> {
+    compile_object_opt(compiler, "-O1", extra, source, out)
+}
+
+#[derive(Debug)]
+pub enum RunOutcome {
+    Completed(CapturedOutput),
+    TimedOut { seconds: u64 },
+    ExecutionFailed(String),
+    Failed(String),
+}
+
+#[must_use]
+pub fn link_and_run_reasoned(
+    compiler: &str,
+    driver: &str,
+    link_object: &[u8],
+    tag: &str,
+    secs: u64,
+) -> RunOutcome {
+    let scratch: ScratchDir = scratch_dir("disrobe-native-matrix-link");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let obj: PathBuf = dir.join(format!("{tag}_link.o"));
+    if let Err(e) = std::fs::write(&obj, link_object) {
+        return RunOutcome::Failed(format!("write link object failed: {e}"));
+    }
+    let driver_c: PathBuf = dir.join(format!("{tag}_driver.c"));
+    std::fs::write(&driver_c, driver.as_bytes()).expect("write driver");
+    let exe: PathBuf = dir.join(if cfg!(windows) {
+        format!("{tag}.exe")
+    } else {
+        tag.to_owned()
+    });
+    let link_args: [OsString; 5] = [
+        OsStr::new("-O1").to_owned(),
+        OsStr::new("-o").to_owned(),
+        exe.as_os_str().to_owned(),
+        driver_c.as_os_str().to_owned(),
+        obj.as_os_str().to_owned(),
+    ];
+    match run_captured(
+        Path::new(compiler),
+        &link_args,
+        LINK_TIMEOUT,
+        MAX_CAPTURE_BYTES,
+    ) {
+        Ok(Some(captured)) if captured.exit_code == Some(0) => {}
+        Ok(Some(captured)) => {
+            return RunOutcome::Failed(format!(
+                "link failed: {}",
+                String::from_utf8_lossy(&captured.stderr)
+            ));
+        }
+        Ok(None) => {
+            return RunOutcome::Failed(format!("link did not complete within {LINK_TIMEOUT:?}"));
+        }
+        Err(e) => return RunOutcome::Failed(format!("linker failed to spawn: {e}")),
+    }
+    let no_args: [&str; 0] = [];
+    match run_captured(&exe, &no_args, Duration::from_secs(secs), MAX_CAPTURE_BYTES) {
+        Ok(Some(captured)) => RunOutcome::Completed(captured),
+        Ok(None) => RunOutcome::TimedOut { seconds: secs },
+        Err(e)
+            if matches!(
+                e.get_ref()
+                    .and_then(|source| source.downcast_ref::<ExecutionError>()),
+                Some(ExecutionError::Launch(_))
+            ) =>
+        {
+            RunOutcome::Failed(format!("harness failed to spawn: {e}"))
+        }
+        Err(e) => RunOutcome::ExecutionFailed(format!("harness execution failed: {e}")),
+    }
+}
+
+#[must_use]
+pub fn link_and_run(
+    compiler: &str,
+    driver: &str,
+    link_object: &[u8],
+    tag: &str,
+    secs: u64,
+) -> String {
+    match link_and_run_reasoned(compiler, driver, link_object, tag, secs) {
+        RunOutcome::Completed(captured) => String::from_utf8_lossy(&captured.stdout).into_owned(),
+        RunOutcome::TimedOut { seconds } => {
+            panic!("{tag} harness timed out after {seconds}s\n--- {tag} driver ---\n{driver}")
+        }
+        RunOutcome::ExecutionFailed(reason) | RunOutcome::Failed(reason) => {
+            panic!("{tag} link/run failed: {reason}\n--- {tag} driver ---\n{driver}")
+        }
+    }
+}

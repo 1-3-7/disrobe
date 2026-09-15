@@ -1,0 +1,12 @@
+Processing file: corpus/shell/vba/hello.docm
+===============================================================================
+Module streams:
+VBA/ThisDocument - 938 bytes
+VBA/Module1 - 895 bytes
+Line #0:
+	FuncDefn (Sub Main())
+Line #1:
+	LitStr 0x000B "hello world"
+	ArgsCall MsgBox 0x0001 
+Line #2:
+	EndSub 

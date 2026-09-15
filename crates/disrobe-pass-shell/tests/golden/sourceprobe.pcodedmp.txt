@@ -1,0 +1,266 @@
+Processing file: corpus/shell/vba/sourceprobe.docm
+===============================================================================
+Module streams:
+VBA/ThisDocument - 938 bytes
+VBA/SourceProbe - 4740 bytes
+Line #0:
+	Option  (Explicit)
+Line #1:
+	Option  (Base 1)
+Line #2:
+Line #3:
+	Dim (Public Const) 
+	LitStr 0x000B "SourceProbe"
+	VarDefn APP_NAME (As String)
+Line #4:
+	Dim (Public Const) 
+	LitDI2 0x0010 
+	VarDefn MAX_ITEMS (As Long)
+Line #5:
+Line #6:
+	Type Severity
+Line #7:
+	LitDI2 0x0000 
+	St SeverityLow 
+Line #8:
+	LitDI2 0x0001 
+	St SeverityMedium 
+Line #9:
+	LitDI2 0x0002 
+	St SeverityHigh 
+Line #10:
+	EndEnum 
+Line #11:
+Line #12:
+	Type Record
+Line #13:
+	DimImplicit 
+	VarDefn Key (As String)
+Line #14:
+	DimImplicit 
+	VarDefn Count (As Long)
+Line #15:
+	DimImplicit 
+	VarDefn Weight (As Double)
+Line #16:
+	EndType 
+Line #17:
+Line #18:
+	Dim (Public) 
+	VarDefn g_Counter (As Long)
+Line #19:
+Line #20:
+	FuncDefn (Public Sub Main())
+Line #21:
+	OnError Handler 
+Line #22:
+	Dim 
+	VarDefn total (As Long)
+Line #23:
+	LitDI2 0x000A 
+	ArgsLd Accumulate 0x0001 
+	St total 
+Line #24:
+	LitStr 0x0006 "total="
+	Ld total 
+	Concat 
+	Ld vbInformation 
+	Ld APP_NAME 
+	ArgsCall MsgBox 0x0003 
+Line #25:
+	ExitSub 
+Line #26:
+	Label Handler 
+Line #27:
+	Debug 
+	PrintObj 
+	LitStr 0x000B "Main error "
+	Ld Err 
+	MemLd Number 
+	Concat 
+	LitStr 0x0002 ": "
+	Concat 
+	Ld Err 
+	MemLd Description 
+	Concat 
+	PrintItemNL 
+Line #28:
+	EndSub 
+Line #29:
+Line #30:
+	FuncDefn (Public Function Accumulate(ByVal upTo As Long) As Long)
+Line #31:
+	Dim 
+	VarDefn i (As Long)
+Line #32:
+	Dim 
+	VarDefn sum (As Long)
+Line #33:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	LitDI2 0x0001 
+	Ld upTo 
+	For 
+Line #34:
+	Ld sum 
+	Ld i 
+	Add 
+	St sum 
+Line #35:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #36:
+	Ld sum 
+	St Accumulate 
+Line #37:
+	EndFunc 
+Line #38:
+Line #39:
+	FuncDefn (Public Function Classify(ByVal score As Long) As <crash>)
+Line #40:
+	Ld score 
+	SelectCase 
+Line #41:
+	LitDI2 0x000A 
+	CaseLt 
+	CaseDone 
+Line #42:
+	Ld SeverityLow 
+	St Classify 
+Line #43:
+	LitDI2 0x0064 
+	CaseLt 
+	CaseDone 
+Line #44:
+	Ld SeverityMedium 
+	St Classify 
+Line #45:
+	CaseElse 
+Line #46:
+	Ld SeverityHigh 
+	St Classify 
+Line #47:
+	EndSelect 
+Line #48:
+	EndFunc 
+Line #49:
+Line #50:
+	FuncDefn (Public Function BuildRecord(ByVal aKey As String) As <crash>)
+Line #51:
+	Ld aKey 
+	Ld BuildRecord 
+	MemSt Key 
+Line #52:
+	Ld aCount 
+	Ld BuildRecord 
+	MemSt Count 
+Line #53:
+	Ld aCount 
+	LitR8 0x0000 0x0000 0x0000 0x3FF8 
+	Mul 
+	Ld BuildRecord 
+	MemSt Weight 
+Line #54:
+	EndFunc 
+Line #55:
+Line #56:
+	FuncDefn (Public Function JoinParts(ByVal sep As String) As String)
+Line #57:
+	Dim 
+	VarDefn i (As Long)
+Line #58:
+	Dim 
+	VarDefn out (As String)
+Line #59:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld parts 
+	FnLBound 0x0000 
+	Ld parts 
+	FnUBound 0x0000 
+	For 
+Line #60:
+	Ld i 
+	Ld parts 
+	FnLBound 0x0000 
+	Gt 
+	If 
+	BoSImplicit 
+	Ld out 
+	Ld sep 
+	Concat 
+	St out 
+	EndIf 
+Line #61:
+	Ld out 
+	Ld i 
+	ArgsLd parts 0x0001 
+	Concat 
+	St out 
+Line #62:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #63:
+	Ld out 
+	St JoinParts 
+Line #64:
+	EndFunc 
+Line #65:
+Line #66:
+	FuncDefn (Public Function FactorialRec(ByVal n As Long) As Currency)
+Line #67:
+	Ld n 
+	LitDI2 0x0001 
+	Le 
+	IfBlock 
+Line #68:
+	LitDI2 0x0001 
+	St FactorialRec 
+Line #69:
+	ElseBlock 
+Line #70:
+	Ld n 
+	Ld n 
+	LitDI2 0x0001 
+	Sub 
+	ArgsLd FactorialRec 0x0001 
+	Mul 
+	St FactorialRec 
+Line #71:
+	EndIfBlock 
+Line #72:
+	EndFunc 
+Line #73:
+Line #74:
+	FuncDefn (Public Sub CountUp(ByVal n As Long))
+Line #75:
+	Dim 
+	VarDefn i (As Long)
+Line #76:
+	LitDI2 0x0000 
+	St i 
+Line #77:
+	Ld i 
+	Ld n 
+	Lt 
+	DoWhile 
+Line #78:
+	Ld i 
+	LitDI2 0x0001 
+	Add 
+	St i 
+Line #79:
+	Ld g_Counter 
+	LitDI2 0x0001 
+	Add 
+	St g_Counter 
+Line #80:
+	Loop 
+Line #81:
+	EndSub 

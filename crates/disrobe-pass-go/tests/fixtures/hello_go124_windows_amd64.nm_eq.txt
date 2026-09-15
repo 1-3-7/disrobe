@@ -1,0 +1,83 @@
+  47c420 T type:.eq.[16]sync/atomic.Pointer[go.shape.struct { internal/sync.isEntry bool }]
+  47c240 T type:.eq.[16]sync/atomic.Pointer[internal/sync.node[interface {},interface {}]]
+  4739c0 T type:.eq.[2]runtime.Frame
+  402980 T type:.eq.[7]internal/cpu.option
+  49aa00 T type:.eq.fmt.fmt
+  401a00 T type:.eq.internal/abi.ITab
+  4019c0 T type:.eq.internal/abi.RegArgs
+  401980 T type:.eq.internal/abi.UncommonType
+  487c20 T type:.eq.internal/bisect.cond
+  408cc0 T type:.eq.internal/chacha8rand.State
+  402900 T type:.eq.internal/cpu.option
+  488be0 T type:.eq.internal/godebug.Setting
+  488b20 T type:.eq.internal/godebug.setting
+  488b80 T type:.eq.internal/godebug.value
+  408120 T type:.eq.internal/godebugs.Info
+  402d20 T type:.eq.internal/runtime/atomic.Int64
+  402d40 T type:.eq.internal/runtime/atomic.Uint64
+  408060 T type:.eq.internal/runtime/maps.Map
+  4080c0 T type:.eq.internal/runtime/maps.table
+  402cc0 T type:.eq.internal/runtime/sys.NotInHeap
+  47c2e0 T type:.eq.internal/sync.entry[go.shape.interface {},go.shape.interface {}]
+  47c180 T type:.eq.internal/sync.entry[interface {},interface {}]
+  47c3a0 T type:.eq.internal/sync.indirect[go.shape.interface {},go.shape.interface {}]
+  47c100 T type:.eq.internal/sync.indirect[interface {},interface {}]
+  48f8c0 T type:.eq.internal/syscall/windows.WSAMsg
+  48d8a0 T type:.eq.io/fs.PathError
+  49ad40 T type:.eq.main.Widget
+  4932a0 T type:.eq.os.dirInfo
+  482b80 T type:.eq.reflect.Method
+  483000 T type:.eq.reflect.ValueError
+  483060 T type:.eq.reflect.makeFuncCtxt
+  4830a0 T type:.eq.reflect.methodValue
+  472fa0 T type:.eq.runtime.Frame
+  473180 T type:.eq.runtime.PanicNilError
+  473840 T type:.eq.runtime.TypeAssertionError
+  473120 T type:.eq.runtime._func
+  4731e0 T type:.eq.runtime._panic
+  473100 T type:.eq.runtime.bitvector
+  4731a0 T type:.eq.runtime.boundsError
+  4737a0 T type:.eq.runtime.errorAddressString
+  473720 T type:.eq.runtime.gTraceState
+  473360 T type:.eq.runtime.gcBits
+  4735e0 T type:.eq.runtime.gcWork
+  4733e0 T type:.eq.runtime.hchan
+  4735c0 T type:.eq.runtime.limiterEvent
+  4736e0 T type:.eq.runtime.mOS
+  473340 T type:.eq.runtime.mSpanList
+  473660 T type:.eq.runtime.mTraceState
+  473280 T type:.eq.runtime.mcache
+  473060 T type:.eq.runtime.modulehash
+  4732c0 T type:.eq.runtime.mspan
+  4735a0 T type:.eq.runtime.notInHeap
+  473460 T type:.eq.runtime.pTraceState
+  4738c0 T type:.eq.runtime.piController
+  473380 T type:.eq.runtime.special
+  4736a0 T type:.eq.runtime.traceBuf
+  473520 T type:.eq.runtime.traceSchedResourceState
+  473800 T type:.eq.runtime.untracedG·5
+  473960 T type:.eq.runtime.winCallbackKey
+  473620 T type:.eq.runtime.workbuf
+  4733c0 T type:.eq.struct { runtime.gList; runtime.n int32 }
+  47bf60 T type:.eq.sync.Mutex
+  47c2a0 T type:.eq.sync.Once
+  47c0c0 T type:.eq.sync.poolChain
+  47bfa0 T type:.eq.sync.poolLocal
+  47c040 T type:.eq.sync.poolLocalInternal
+  473be0 T type:.eq.sync/atomic.Bool
+  47c460 T type:.eq.sync/atomic.Pointer[go.shape.struct { internal/sync.isEntry bool }]
+  487c60 T type:.eq.sync/atomic.Pointer[internal/bisect.dedup]
+  488b60 T type:.eq.sync/atomic.Pointer[internal/godebug.value]
+  47c380 T type:.eq.sync/atomic.Pointer[internal/sync.entry[go.shape.interface {},go.shape.interface {}]]
+  47c220 T type:.eq.sync/atomic.Pointer[internal/sync.entry[interface {},interface {}]]
+  47c0e0 T type:.eq.sync/atomic.Pointer[internal/sync.indirect[interface {},interface {}]]
+  47c280 T type:.eq.sync/atomic.Pointer[internal/sync.node[interface {},interface {}]]
+  493280 T type:.eq.sync/atomic.Pointer[os.dirInfo]
+  47bf80 T type:.eq.sync/atomic.Pointer[sync.poolChainElt]
+  473c00 T type:.eq.sync/atomic.Uint32
+  473c20 T type:.eq.sync/atomic.Uint64
+  48d2e0 T type:.eq.syscall.DLL
+  48d140 T type:.eq.syscall.DLLError
+  48d3e0 T type:.eq.syscall.LazyDLL
+  48d340 T type:.eq.syscall.Proc
+  48d3c0 T type:.eq.syscall.WSABuf

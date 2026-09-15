@@ -1,0 +1,62 @@
+Per-class-name-keyed JVM string-decrypt fixtures (benign, authored in-house)
+============================================================================
+
+Purpose
+-------
+These two classes exercise the recoverable shape where the string decryptor is
+NOT in the protected class itself: the protected class carries only encrypted
+String constants plus an invokestatic to a shared decryptor in another class.
+The key is a deterministic function of the protected class's own this_class
+name, which is retained in the artifact, so the documented per-class cipher is
+rebuilt statically and applied to each ciphertext handed to the external
+String->String decrypt call site. This is the shape Allatori's string encryptor
+and PreEmptive DashO emit when the decrypt routine is shared across the build:
+because find_decrypt_methods sees no decrypt body on the protected class, the
+prior code fell to detect-only and walled. The key was never runtime-derived,
+so that wall was false; this fixture proves the recovery.
+
+Provenance (non-circular oracle)
+--------------------------------
+Both .java sources were authored in-house and compiled with a real compiler:
+  Eclipse Temurin JDK 25.0.3+9-LTS  (javac).
+The bytecode is emitted by javac, NOT hand-assembled and NOT produced by disrobe.
+The encrypted String constants were produced by applying each documented
+per-class cipher FORWARD to the known plaintext (the class-name-seeded key, then
+the documented XOR mix), then baked into the source as literal ciphertext; only
+the ciphertext is on disk here. The shared decryptor classes are NOT bundled.
+The ground-truth plaintexts are listed below; both protected .class files were
+run under the real JVM against the (separately compiled) shared decryptors and
+print exactly the expected output, confirming the forward cipher is correct.
+
+Files
+-----
+AllatoriNameKeyed.class: DEFEATABLE. Three dbUrl/apiKey/region call sites hand
+    ciphertext to a shared SharedDecryptor.a(String). The per-class key is the
+    polynomial hash of "com/disrobe/bench/AllatoriNameKeyed" masked to 0x7F, and
+    the cipher is out[i] = in[i] ^ ((key + i) & 0x7F). Expected plaintext:
+        dbUrl()  -> "jdbc:mariadb://10.2.0.7:3306/ledger"
+        apiKey() -> "X-Allatori-Key: 7c3f1a"
+        region() -> "eu-west-1"
+DashONameKeyed.class: DEFEATABLE. Three endpoint/token/path call sites hand
+    ciphertext to a shared Strings.d(String). The per-class key is an 8-char LCG
+    key seeded by "com/disrobe/bench/DashONameKeyed", and the cipher is
+    out[i] = in[i] ^ (k[i % 8] & 0x3F) ^ (i & 0x1F). Expected plaintext:
+        endpoint() -> "https://settlement.internal/api/post"
+        token()    -> "Bearer 5f2e9d"
+        path()     -> "/opt/app/conf/keystore.p12"
+AllatoriNameKeyed.java / DashONameKeyed.java: the in-house sources carrying the
+    baked ciphertext; the plaintexts above are the oracle (tests/name_keyed_
+    shared_decryptor.rs grades the recovery, with a negative test that the wrong
+    cipher family does not reproduce the plaintext).
+
+Sourcing note (not a wall)
+--------------------------
+These are in-house benign fixtures that reproduce the per-class-name-keyed
+shared-decryptor SHAPE, not a real commercial Allatori or DashO sample, both of
+which are paid products with no benign real-obfuscated artifact bundled here.
+This is a sourcing gap, not an information-theoretic wall: the key is a static
+function of the retained this_class name, so the recovery is exactly what
+defeats a real shared-decryptor build, graded against the known plaintext.
+A build that instead keys on runtime-only state (system property, clock,
+environment, live thread identity) stays an honest RuntimeKeyUnavailable wall,
+the same as corpus/jvm/callerkeyed/EnvKeyed.

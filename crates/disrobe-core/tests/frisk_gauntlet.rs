@@ -1,0 +1,432 @@
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use disrobe_core::recon::{ReconCategory, ReconConfig, ReconFinding, ReconReport, report_tree};
+use disrobe_core::scratch::ScratchDir;
+
+const PLANTED: &str = "../../corpus/recon/planted";
+
+struct Staged {
+    _scratch: ScratchDir,
+    root: PathBuf,
+}
+
+impl Staged {
+    fn new() -> Self {
+        let scratch: ScratchDir =
+            ScratchDir::create("disrobe-frisk-gauntlet").expect("create staged tree");
+        let root: PathBuf = scratch.path().to_path_buf();
+        copy_tree(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PLANTED),
+            &root,
+        );
+        Self {
+            _scratch: scratch,
+            root,
+        }
+    }
+
+    fn write(&self, rel: &str, contents: &str) {
+        let path: PathBuf = self.root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, contents).expect("write staged file");
+    }
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dst");
+    for entry in std::fs::read_dir(src).expect("read planted corpus") {
+        let entry: std::fs::DirEntry = entry.expect("dir entry");
+        let kind: std::fs::FileType = entry.file_type().expect("file type");
+        let target: PathBuf = dst.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target).expect("copy file");
+        }
+    }
+}
+
+fn planted_secrets() -> String {
+    let aws: String = format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB");
+    let github: String = format!(
+        "{}{}",
+        "ghp",
+        concat!("_", "0123456789abcdefghijklmnopqrstuvwxyz")
+    );
+    let slack: String = format!(
+        "https://hooks.slack.com/services/{}/{}/{}",
+        "T00000000", "B11111111", "abcdefghijklmnopqrstuvwx"
+    );
+    let stripe: String = format!("{}{}", "sk", concat!("_live_", "0123456789abcdefghijABCD"));
+    let gcp: String = format!("{}{}", "AIza", "SyA0123456789abcdefghijklmnopqrstuv");
+    let openai: String = format!(
+        "{}{}{}",
+        "sk-",
+        "a".repeat(20),
+        concat!("T3BlbkFJ", "bbbbbbbbbbbbbbbbbbbb")
+    );
+    let google_tok: String = format!("{}{}", "ya29", ".AbCdEf0123456789ghijkl");
+    let gitlab: String = format!("{}{}", "glpat", concat!("-", "abcdefghij0123456789"));
+    let huggingface: String = format!(
+        "{}{}",
+        "hf",
+        concat!("_", "abcdefghijklmnopqrstuvwxyz01234567")
+    );
+    let supabase: String = format!(
+        "{}{}",
+        "sb",
+        concat!("_secret_", "abcdefghijklmnopqrstuvwx")
+    );
+    let vault: String = format!(
+        "{}{}",
+        "hvs",
+        concat!(
+            ".",
+            "aB3",
+            "cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3wX4yZ5aB6cD7eF8gH9iJ0kL1mN2oP3qR4sT5uV6wX7yZ8aB9cD0eF1gH2"
+        )
+    );
+    let gitlab_runner: String = format!("{}{}", "GR1348941", "aB3cD4eF5gH6iJ7kL8mN");
+    let okta: String = format!(
+        "okta_api_token = \"{}{}\"",
+        "00", "abcdefghij0123456789abcdefghij0123456789"
+    );
+    let twitter: String = format!("twitter_api_key = \"{}\"", "abcdefghij0123456789abcde");
+    let prefect: String = format!(
+        "prefect_token = \"{}{}\"",
+        "pnu_", "abcdefghij0123456789abcdefghij012345"
+    );
+    let scalingo: String = format!(
+        "scalingo_token = \"{}{}\"",
+        "tk-us-", "abcdefghij0123456789abcdefghij0123456789abcdefgh"
+    );
+    format!(
+        "aws = \"{aws}\"\n\
+         github = \"{github}\"\n\
+         slack = \"{slack}\"\n\
+         stripe = \"{stripe}\"\n\
+         gcp = \"{gcp}\"\n\
+         openai = \"{openai}\"\n\
+         google = \"{google_tok}\"\n\
+         gitlab = \"{gitlab}\"\n\
+         huggingface = \"{huggingface}\"\n\
+         supabase = \"{supabase}\"\n\
+         vault = \"{vault}\"\n\
+         runner = \"{gitlab_runner}\"\n\
+         {okta}\n\
+         {twitter}\n\
+         {prefect}\n\
+         {scalingo}\n"
+    )
+}
+
+fn scan() -> ReconReport {
+    let staged: Staged = Staged::new();
+    staged.write("res/raw/credentials.properties", &planted_secrets());
+    report_tree(&staged.root, &ReconConfig::default()).expect("scan planted tree")
+}
+
+fn rule_ids(report: &ReconReport) -> BTreeSet<String> {
+    report
+        .findings
+        .iter()
+        .map(|f: &ReconFinding| f.rule_id.clone())
+        .collect()
+}
+
+fn categories(report: &ReconReport) -> BTreeSet<ReconCategory> {
+    report
+        .findings
+        .iter()
+        .map(|f: &ReconFinding| f.category)
+        .collect()
+}
+
+fn finding<'a>(report: &'a ReconReport, rule_id: &str) -> &'a ReconFinding {
+    report
+        .findings
+        .iter()
+        .find(|f: &&ReconFinding| f.rule_id == rule_id)
+        .unwrap_or_else(|| panic!("no finding for {rule_id}: {:?}", rule_ids(report)))
+}
+
+#[test]
+fn every_category_is_detected() {
+    let report: ReconReport = scan();
+    let cats: BTreeSet<ReconCategory> = categories(&report);
+    for required in [
+        ReconCategory::Secret,
+        ReconCategory::Endpoint,
+        ReconCategory::Manifest,
+        ReconCategory::Url,
+        ReconCategory::Ipv4,
+        ReconCategory::Email,
+        ReconCategory::Onion,
+    ] {
+        assert!(
+            cats.contains(&required),
+            "missing category {required:?}: {cats:?}"
+        );
+    }
+}
+
+#[test]
+fn published_planted_ioc_category_bar_is_pinned_by_membership() {
+    const GROUP: &str = "frisk IOC category recall on the committed planted tree";
+    const BAR: &str = "planted non-secret IOC categories";
+    const EXPECTED: [(&str, ReconCategory); 6] = [
+        ("endpoint", ReconCategory::Endpoint),
+        ("manifest", ReconCategory::Manifest),
+        ("url", ReconCategory::Url),
+        ("ipv4", ReconCategory::Ipv4),
+        ("email", ReconCategory::Email),
+        ("onion", ReconCategory::Onion),
+    ];
+
+    let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PLANTED);
+    let mut fixtures: BTreeSet<String> = BTreeSet::new();
+    walk_files(&root, &mut |path: &Path| {
+        fixtures.insert(
+            path.strip_prefix(&root)
+                .expect("planted fixture stays under its corpus root")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+    });
+    let expected_fixtures: BTreeSet<String> = [
+        "AndroidManifest.xml",
+        "assets/app.bundle.js",
+        "assets/config.json",
+        "smali/com/planted/recon/Api.smali.txt",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        fixtures, expected_fixtures,
+        "planted fixture population changed"
+    );
+
+    let report: ReconReport =
+        report_tree(&root, &ReconConfig::default()).expect("scan committed planted tree");
+    let detected_categories: BTreeSet<ReconCategory> = categories(&report);
+    let expected: BTreeSet<&str> = EXPECTED.iter().map(|(name, _)| *name).collect();
+    let detected: BTreeSet<&str> = EXPECTED
+        .iter()
+        .filter(|(_, category)| detected_categories.contains(category))
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        detected, expected,
+        "the committed planted tree does not represent every published non-secret IOC category"
+    );
+
+    let published: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("xtask/data/recovery.json");
+    let document: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&published)
+            .unwrap_or_else(|error| panic!("read {}: {error}", published.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", published.display()));
+    let bars: Vec<&serde_json::Value> = document["groups"]
+        .as_array()
+        .expect("recovery.json groups")
+        .iter()
+        .filter(|group| group["heading"].as_str() == Some(GROUP))
+        .flat_map(|group| group["bars"].as_array().expect("published group bars"))
+        .filter(|bar| bar["label"].as_str() == Some(BAR))
+        .collect();
+    assert_eq!(
+        bars.len(),
+        1,
+        "recovery.json must contain exactly one {BAR:?} bar under {GROUP:?}"
+    );
+    let bar: &serde_json::Value = bars.first().expect("one published IOC category bar");
+    let declared: &[serde_json::Value] = bar["membership"]
+        .as_array()
+        .expect("published IOC category membership");
+    assert_eq!(declared.len(), EXPECTED.len());
+    let membership: BTreeSet<&str> = declared
+        .iter()
+        .map(|member| member.as_str().expect("IOC category member is text"))
+        .collect();
+    assert_eq!(
+        membership, expected,
+        "published IOC category membership differs from the six categories this gate grades"
+    );
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("published IOC category numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("published IOC category denominator");
+    let expected_count: u64 = u64::try_from(expected.len()).expect("category count fits u64");
+    assert_eq!(bar["value"].as_f64(), Some(100.0));
+    assert_eq!(
+        (num, den),
+        (expected_count, expected_count),
+        "published IOC category raw counts differ from the detected and required membership"
+    );
+}
+
+#[test]
+fn every_secret_provider_is_detected() {
+    let report: ReconReport = scan();
+    let ids: BTreeSet<String> = rule_ids(&report);
+    for required in [
+        "DR-SEC-AWS-AKID",
+        "DR-SEC-GH-PAT",
+        "DR-RECON-SLACK-WEBHOOK",
+        "DR-SEC-STRIPE-SK",
+        "DR-SEC-GCP-APIKEY",
+        "DR-RECON-OPENAI-KEY",
+        "DR-RECON-GOOGLE-OAUTH-TOKEN",
+        "DR-RECON-GITLAB-PAT",
+        "DR-RECON-HUGGINGFACE",
+        "DR-RECON-SUPABASE",
+        "DR-SEC-VAULT-SVC",
+        "DR-SEC-GITLAB-RUNNER",
+        "DR-SEC-OKTA",
+        "DR-SEC-TWITTER-APIKEY",
+        "DR-SEC-PREFECT",
+        "DR-SEC-SCALINGO",
+    ] {
+        assert!(
+            ids.contains(required),
+            "missing secret rule {required}: {ids:?}"
+        );
+    }
+}
+
+#[test]
+fn manifest_recon_is_detected_with_paths() {
+    let report: ReconReport = scan();
+    let ids: BTreeSet<String> = rule_ids(&report);
+    for required in [
+        "DR-RECON-MANIFEST-DEEPLINK",
+        "DR-RECON-MANIFEST-DEEPLINK-HOST",
+        "DR-RECON-MANIFEST-EXPORTED",
+        "DR-RECON-MANIFEST-PROVIDER-AUTHORITY",
+        "DR-RECON-MANIFEST-PERMISSION",
+    ] {
+        assert!(
+            ids.contains(required),
+            "missing manifest rule {required}: {ids:?}"
+        );
+    }
+    let exported: &ReconFinding = finding(&report, "DR-RECON-MANIFEST-EXPORTED");
+    assert_eq!(
+        exported.path.as_deref(),
+        Some("AndroidManifest.xml"),
+        "manifest finding must carry its file path: {exported:?}"
+    );
+    assert!(
+        exported.line >= 1,
+        "manifest finding carries a line: {exported:?}"
+    );
+}
+
+#[test]
+fn endpoints_and_iocs_carry_file_and_line() {
+    let report: ReconReport = scan();
+    let ids: BTreeSet<String> = rule_ids(&report);
+    assert!(ids.contains("DR-RECON-URI-PATH"), "endpoint paths: {ids:?}");
+    assert!(ids.contains("DR-RECON-ONION"), "onion ioc: {ids:?}");
+
+    let route: &ReconFinding = report
+        .findings
+        .iter()
+        .find(|f: &&ReconFinding| {
+            f.rule_id == "DR-RECON-URI-PATH" && f.value.contains("/admin/keys")
+        })
+        .expect("the planted /api/v2/admin/keys endpoint must be found");
+    assert_eq!(
+        route.path.as_deref(),
+        Some("smali/com/planted/recon/Api.smali.txt"),
+        "endpoint must carry its smali file path: {route:?}"
+    );
+    assert!(route.line >= 1);
+
+    let onion: &ReconFinding = finding(&report, "DR-RECON-ONION");
+    assert_eq!(onion.path.as_deref(), Some("assets/config.json"));
+    assert!(onion.value.contains(".onion"), "{onion:?}");
+}
+
+#[test]
+fn js_bundle_yields_fetch_websocket_and_graphql_endpoints() {
+    let report: ReconReport = scan();
+    let ids: BTreeSet<String> = rule_ids(&report);
+    for required in [
+        "DR-RECON-FETCH-URL",
+        "DR-RECON-WEBSOCKET",
+        "DR-RECON-GRAPHQL-OP",
+    ] {
+        assert!(ids.contains(required), "missing {required}: {ids:?}");
+    }
+    let ws: &ReconFinding = finding(&report, "DR-RECON-WEBSOCKET");
+    assert_eq!(ws.path.as_deref(), Some("assets/app.bundle.js"));
+    assert!(ws.value.starts_with("wss://"), "{ws:?}");
+    let op: &ReconFinding = finding(&report, "DR-RECON-GRAPHQL-OP");
+    assert_eq!(op.value, "GetPlantedProfile", "{op:?}");
+}
+
+#[test]
+fn secret_value_is_the_whole_key_a_researcher_pivots_on() {
+    let report: ReconReport = scan();
+    let aws: &ReconFinding = finding(&report, "DR-SEC-AWS-AKID");
+    assert_eq!(
+        aws.value,
+        format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB"),
+        "a DR-SEC-* finding must carry the full match by default: {aws:?}"
+    );
+    assert_eq!(aws.path.as_deref(), Some("res/raw/credentials.properties"));
+}
+
+#[test]
+fn committed_corpus_has_no_contiguous_secret_literal() {
+    let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(PLANTED);
+    let mut checked: usize = 0;
+    walk_files(&dir, &mut |path: &Path| {
+        let bytes: Vec<u8> = std::fs::read(path).expect("read corpus file");
+        let text: String = String::from_utf8_lossy(&bytes).into_owned();
+        for marker in [
+            "AKIA",
+            "ghp_",
+            "sk_live_",
+            "AIzaSy",
+            "hooks.slack.com/services/T",
+            "glpat-",
+            "hf_",
+            "dop_v1_",
+            "sb_secret_",
+        ] {
+            assert!(
+                !text.contains(marker),
+                "committed corpus file {} contains secret marker {marker:?}; build it at runtime instead",
+                path.display()
+            );
+        }
+        checked += 1;
+    });
+    assert!(
+        checked >= 3,
+        "expected to scan the planted corpus files, scanned {checked}"
+    );
+}
+
+fn walk_files(dir: &Path, f: &mut dyn FnMut(&Path)) {
+    for entry in std::fs::read_dir(dir).expect("read corpus dir") {
+        let entry: std::fs::DirEntry = entry.expect("dir entry");
+        let kind: std::fs::FileType = entry.file_type().expect("file type");
+        if kind.is_dir() {
+            walk_files(&entry.path(), f);
+        } else if kind.is_file() {
+            f(&entry.path());
+        }
+    }
+}

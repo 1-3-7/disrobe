@@ -1,0 +1,88 @@
+sample1.pl syntax OK
+main::greet:
+7  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->7
+1        <;> nextstate(main 4 sample1.pl:5) v:*,&,x*,x&,x$,$ ->2
+3        <2> aassign[t4] vKS ->4
+-           <1> ex-list lK ->-
+2              <0> padrange[$name:4,5] */LVINTRO,range=1 ->3
+-              <1> rv2av[t3] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lK ->3
+-              <0> pushmark s ->-
+-              <0> padsv[$name:4,5] sPRM*/LVINTRO ->-
+4        <;> nextstate(main 5 sample1.pl:6) v:*,&,x*,x&,x$,$ ->5
+-        <@> return K ->-
+-           <0> pushmark s ->-
+6           <+> multiconcat("Hello, !",7,1)[t7] sK/STRINGIFY ->7
+-              <0> ex-pushmark s ->-
+-              <0> ex-const s ->5
+5              <0> padsv[$name:4,5] s ->6
+main::add:
+f  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->f
+8        <;> nextstate(main 7 sample1.pl:10) v:*,&,x*,x&,x$,$ ->9
+a        <2> aassign[t5] vKS ->b
+-           <1> ex-list lK ->-
+9              <0> padrange[$a:7,8; $b:7,8] */LVINTRO,range=2 ->a
+-              <1> rv2av[t4] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lKPRM* ->a
+-              <0> pushmark sRM*/LVINTRO ->-
+-              <0> padsv[$a:7,8] sRM*/LVINTRO ->-
+-              <0> padsv[$b:7,8] sRM*/LVINTRO ->-
+b        <;> nextstate(main 8 sample1.pl:11) v:*,&,x*,x&,x$,$ ->c
+-        <@> return K ->-
+-           <0> pushmark s ->c
+e           <2> add[t6] sK/2 ->f
+c              <0> padsv[$a:7,8] s ->d
+d              <0> padsv[$b:7,8] s ->e
+main::area:
+n  <1> leavesub[1 ref] K/REFC,1 ->(end)
+-     <@> lineseq KP ->n
+g        <;> nextstate(main 10 sample1.pl:15) v:*,&,x*,x&,x$,$ ->h
+i        <2> aassign[t5] vKS ->j
+-           <1> ex-list lK ->-
+h              <0> padrange[$w:10,11; $h:10,11] */LVINTRO,range=2 ->i
+-              <1> rv2av[t4] lK/STRICT,1 ->-
+-                 <#> gv[*_] s ->-
+-           <1> ex-list lKPRM* ->i
+-              <0> pushmark sRM*/LVINTRO ->-
+-              <0> padsv[$w:10,11] sRM*/LVINTRO ->-
+-              <0> padsv[$h:10,11] sRM*/LVINTRO ->-
+j        <;> nextstate(main 11 sample1.pl:16) v:*,&,x*,x&,x$,$ ->k
+-        <@> return K ->-
+-           <0> pushmark s ->k
+m           <2> multiply[t6] sK/2 ->n
+k              <0> padsv[$w:10,11] s ->l
+l              <0> padsv[$h:10,11] s ->m
+main program:
+1a <@> leave[1 ref] vKP/REFC ->(end)
+o     <0> enter v ->p
+p     <;> nextstate(main 12 sample1.pl:19) v:*,&,{,x*,x&,x$,$ ->q
+u     <1> padsv_store[$msg:12,14] vKS/LVINTRO ->v
+t        <1> entersub sKS/STRICT ->u
+-           <1> ex-list sK ->t
+q              <0> pushmark s ->r
+r              <$> const[PV "disrobe"] sM ->s
+-              <1> ex-rv2cv sK/STRICT,1 ->-
+s                 <#> gv[*greet] s ->t
+-        <0> ex-padsv sRM*/LVINTRO ->u
+v     <;> nextstate(main 13 sample1.pl:20) v:*,&,{,x*,x&,x$,$ ->w
+y     <@> print vK ->z
+w        <0> pushmark s ->x
+x        <0> padsv[$msg:12,14] s ->y
+z     <;> nextstate(main 13 sample1.pl:21) v:*,&,{,x*,x&,x$,$ ->10
+15    <1> padsv_store[$sum:13,14] vKS/LVINTRO ->16
+14       <1> entersub sKS/STRICT ->15
+-           <1> ex-list sK ->14
+10             <0> pushmark s ->11
+11             <$> const[IV 2] sM ->12
+12             <$> const[IV 3] sM ->13
+-              <1> ex-rv2cv sK/STRICT,1 ->-
+13                <#> gv[*add] s ->14
+-        <0> ex-padsv sRM*/LVINTRO ->15
+16    <;> nextstate(main 14 sample1.pl:22) v:*,&,{,x*,x&,x$,$ ->17
+19    <@> print vK ->1a
+17       <0> pushmark s ->18
+18       <0> padsv[$sum:13,14] s ->19

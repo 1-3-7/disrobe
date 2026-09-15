@@ -1,0 +1,56 @@
+{
+  "$id": "https://disrobe.dev/schemas/v0/pyarmor-detection.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Detection summary emitted by disrobe-pass-pyarmor::detect.",
+  "properties": {
+    "confidence": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
+    "diagnostics": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "protection": {
+      "enum": [
+        "standard",
+        "super-mode",
+        "bcc",
+        "no-wrap"
+      ],
+      "type": "string"
+    },
+    "serial": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "enum": [
+        "v3",
+        "v4",
+        "v5",
+        "v6",
+        "v7",
+        "v8",
+        "v9"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "protection",
+    "confidence"
+  ],
+  "title": "PyarmorDetection",
+  "type": "object"
+}

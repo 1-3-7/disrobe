@@ -1,0 +1,24 @@
+[package]
+name = "disrobe-nir"
+description = "Instruction-based normalized IR for control-flow, def-use, structuring, and source-level recovery across supported front-ends."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-cfg = { workspace = true }
+disrobe-core = { workspace = true }
+serde = { workspace = true }
+rkyv = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

@@ -1,0 +1,1 @@
+& (Get-Command ('Wri' + 'te-Host')) -Object ('hello ' + 'world')

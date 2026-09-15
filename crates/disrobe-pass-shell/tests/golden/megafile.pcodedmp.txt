@@ -1,0 +1,2598 @@
+Processing file: corpus/shell/vba/megafile.docm
+===============================================================================
+Module streams:
+VBA/ThisDocument - 938 bytes
+VBA/EdgeCases - 38101 bytes
+Line #0:
+	Option  (Explicit)
+Line #1:
+	Option  (Base 1)
+Line #2:
+	Option  (Compare Text)
+Line #3:
+Line #4:
+	Dim (Public Const) 
+	LitStr 0x0009 "EdgeCases"
+	VarDefn APP_NAME (As String)
+Line #5:
+	Dim (Public Const) 
+	LitStr 0x0005 "1.0.0"
+	VarDefn APP_VERSION (As String)
+Line #6:
+	Dim (Public Const) 
+	LitR8 0x2D11 0x5444 0x21FB 0x4009 
+	VarDefn PI_LITERAL (As Double)
+Line #7:
+Line #8:
+	Dim (Public) 
+	VarDefn g_LogLevel (As Long)
+Line #9:
+	Dim (Public) 
+	VarDefn g_RunCounter (As Long)
+Line #10:
+Line #11:
+	QuoteRem 0x0000 0x000D " region Enums"
+Line #12:
+	Type LogLevel
+Line #13:
+	LitDI2 0x0000 
+	St LogLevelDebug 
+Line #14:
+	LitDI2 0x0001 
+	St LogLevelInfo 
+Line #15:
+	LitDI2 0x0002 
+	St LogLevelWarn 
+Line #16:
+	LitDI2 0x0003 
+	St LogLevelError 
+Line #17:
+	LitDI2 0x0004 
+	St LogLevelFatal 
+Line #18:
+	EndEnum 
+Line #19:
+Line #20:
+	Type FileKind
+Line #21:
+	LitDI2 0x0000 
+	St FileKindUnknown 
+Line #22:
+	LitDI2 0x0001 
+	St FileKindText 
+Line #23:
+	LitDI2 0x0002 
+	St FileKindBinary 
+Line #24:
+	LitDI2 0x0003 
+	St FileKindArchive 
+Line #25:
+	LitDI2 0x0004 
+	St FileKindImage 
+Line #26:
+	EndEnum 
+Line #27:
+Line #28:
+	Type HelloMood
+Line #29:
+	LitDI2 0x0000 
+	St MoodCalm 
+Line #30:
+	LitDI2 0x0001 
+	St MoodExcited 
+Line #31:
+	LitDI2 0x0002 
+	St MoodSuspicious 
+Line #32:
+	EndEnum 
+Line #33:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #34:
+Line #35:
+	QuoteRem 0x0000 0x001A " region User-defined types"
+Line #36:
+	Type Point2D
+Line #37:
+	DimImplicit 
+	VarDefn x (As Double)
+Line #38:
+	DimImplicit 
+	VarDefn y (As Double)
+Line #39:
+	EndType 
+Line #40:
+Line #41:
+	Type Rect
+Line #42:
+	DimImplicit 
+	VarDefn TopLeft
+Line #43:
+	DimImplicit 
+	VarDefn BottomRight
+Line #44:
+	EndType 
+Line #45:
+Line #46:
+	Type FileEntry
+Line #47:
+	DimImplicit 
+	VarDefn path (As String)
+Line #48:
+	DimImplicit 
+	VarDefn SizeBytes (As Currency)
+Line #49:
+	DimImplicit 
+	VarDefn Kind
+Line #50:
+	DimImplicit 
+	VarDefn Modified (As Date)
+Line #51:
+	EndType 
+Line #52:
+Line #53:
+	Type Outcome
+Line #54:
+	DimImplicit 
+	VarDefn Ok (As Boolean)
+Line #55:
+	DimImplicit 
+	VarDefn ErrorCode (As Long)
+Line #56:
+	DimImplicit 
+	VarDefn Message (As String)
+Line #57:
+	EndType 
+Line #58:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #59:
+Line #60:
+	QuoteRem 0x0000 0x0029 " region Module-level arrays / collections"
+Line #61:
+	Dim (Public) 
+	VarDefn g_FileEntries
+Line #62:
+	Dim (Public) 
+	VarDefn g_KnownVerbs (As Variant)
+Line #63:
+	Dim (Public) 
+	VarDefn g_TagBag (As Object)
+	QuoteRem 0x001B 0x0020 " Scripting.Dictionary, lazy-init"
+Line #64:
+Line #65:
+	FuncDefn (Public Sub InitGlobals())
+Line #66:
+	LitDI2 0x0001 
+	LitDI2 0x0004 
+	Redim g_FileEntries 0x0001 (As Variant)
+Line #67:
+	LitStr 0x000A "C:\one.txt"
+	LitDI2 0x0001 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt path 
+Line #68:
+	LitCy 0x4000 0x009C 0x0000 0x0000 
+	LitDI2 0x0001 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt SizeBytes 
+Line #69:
+	Ld FileKindText 
+	LitDI2 0x0001 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt Kind 
+Line #70:
+	LitStr 0x000A "C:\two.bin"
+	LitDI2 0x0002 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt path 
+Line #71:
+	LitCy 0x0000 0x0271 0x0000 0x0000 
+	LitDI2 0x0002 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt SizeBytes 
+Line #72:
+	Ld FileKindBinary 
+	LitDI2 0x0002 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt Kind 
+Line #73:
+	LitStr 0x000B "C:\arch.zip"
+	LitDI2 0x0003 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt path 
+Line #74:
+	LitCy 0x0000 0x09C4 0x0000 0x0000 
+	LitDI2 0x0003 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt SizeBytes 
+Line #75:
+	Ld FileKindArchive 
+	LitDI2 0x0003 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt Kind 
+Line #76:
+	LitStr 0x000A "C:\img.png"
+	LitDI2 0x0004 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt path 
+Line #77:
+	LitCy 0x0000 0x04E2 0x0000 0x0000 
+	LitDI2 0x0004 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt SizeBytes 
+Line #78:
+	Ld FileKindImage 
+	LitDI2 0x0004 
+	ArgsLd g_FileEntries 0x0001 
+	MemSt Kind 
+Line #79:
+Line #80:
+	LitStr 0x0003 "get"
+	LitStr 0x0003 "set"
+	LitStr 0x0006 "remove"
+	LitStr 0x0004 "list"
+	LitStr 0x0004 "find"
+	ArgsArray Array 0x0005 
+	St g_KnownVerbs 
+Line #81:
+Line #82:
+	SetStmt 
+	LitStr 0x0014 "Scripting.Dictionary"
+	ArgsLd CreateObject 0x0001 
+	Set g_TagBag 
+Line #83:
+	Ld vbTextCompare 
+	Ld g_TagBag 
+	MemSt CompareMode 
+Line #84:
+	LitStr 0x0005 "alpha"
+	LitDI2 0x0001 
+	Ld g_TagBag 
+	ArgsMemCall Add 0x0002 
+Line #85:
+	LitStr 0x0004 "beta"
+	LitDI2 0x0002 
+	Ld g_TagBag 
+	ArgsMemCall Add 0x0002 
+Line #86:
+	LitStr 0x0005 "gamma"
+	LitDI2 0x0003 
+	Ld g_TagBag 
+	ArgsMemCall Add 0x0002 
+Line #87:
+	EndSub 
+Line #88:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #89:
+Line #90:
+	QuoteRem 0x0000 0x0013 " region Entry point"
+Line #91:
+	FuncDefn (Public Sub Main())
+Line #92:
+	OnError ErrHandler 
+Line #93:
+Line #94:
+	ArgsCall InitGlobals 0x0000 
+Line #95:
+	Ld g_RunCounter 
+	LitDI2 0x0001 
+	Add 
+	St g_RunCounter 
+Line #96:
+Line #97:
+	Dim 
+	VarDefn greeter
+Line #98:
+	SetStmt 
+	New id_3C00
+	Set greeter 
+Line #99:
+	LitStr 0x0005 "hello"
+	Ld greeter 
+	MemSt Prefix 
+Line #100:
+	LitStr 0x0005 "world"
+	Ld greeter 
+	MemSt Suffix 
+Line #101:
+	Ld MoodExcited 
+	Ld greeter 
+	MemSt Mood 
+Line #102:
+Line #103:
+	Dim 
+	VarDefn rendered (As String)
+Line #104:
+	Ld greeter 
+	MemLd Render 
+	St rendered 
+Line #105:
+Line #106:
+	Ld rendered 
+	Ld vbInformation 
+	Ld APP_NAME 
+	ArgsCall MsgBox 0x0003 
+Line #107:
+Line #108:
+	Ld LogLevelInfo 
+	LitStr 0x000A "rendered: "
+	Ld rendered 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #109:
+Line #110:
+	Dim 
+	VarDefn summary
+Line #111:
+	Ld g_FileEntries 
+	ArgsLd ProcessAllFiles 0x0001 
+	St summary 
+Line #112:
+	Ld summary 
+	MemLd Ok 
+	IfBlock 
+Line #113:
+	Ld LogLevelInfo 
+	LitStr 0x000A "processed "
+	Ld summary 
+	MemLd Message 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #114:
+	ElseBlock 
+Line #115:
+	Ld LogLevelError 
+	LitStr 0x000C "failed code="
+	Ld summary 
+	MemLd ErrorCode 
+	Concat 
+	LitStr 0x0001 " "
+	Concat 
+	Ld summary 
+	MemLd Message 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #116:
+	EndIfBlock 
+Line #117:
+Line #118:
+	ExitSub 
+Line #119:
+Line #120:
+	Label ErrHandler 
+Line #121:
+	Ld LogLevelError 
+	LitStr 0x000B "Main error "
+	Ld Err 
+	MemLd Number 
+	Concat 
+	LitStr 0x0002 ": "
+	Concat 
+	Ld Err 
+	MemLd Description 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #122:
+	EndSub 
+Line #123:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #124:
+Line #125:
+	QuoteRem 0x0000 0x0016 " region Error handling"
+Line #126:
+	FuncDefn (Public Function SafeDivide(ByVal a As Double) As Boolean)
+Line #127:
+	OnError ErrHandler 
+Line #128:
+	Ld B 
+	LitDI2 0x0000 
+	Eq 
+	IfBlock 
+Line #129:
+	Ld vbObjectError 
+	LitDI2 0x0064 
+	Add 
+	LitStr 0x0014 "EdgeCases.SafeDivide"
+	LitStr 0x000E "divide by zero"
+	Ld Err 
+	ArgsMemCall Raise 0x0003 
+Line #130:
+	EndIfBlock 
+Line #131:
+	Ld a 
+	Ld B 
+	Div 
+	St outResult 
+Line #132:
+	LitVarSpecial (True)
+	St SafeDivide 
+Line #133:
+	ExitFunc 
+Line #134:
+Line #135:
+	Label ErrHandler 
+Line #136:
+	Ld LogLevelWarn 
+	LitStr 0x0012 "SafeDivide error: "
+	Ld Err 
+	MemLd Description 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #137:
+	LitR8 0x0000 0x0000 0x0000 0x0000 
+	St outResult 
+Line #138:
+	LitVarSpecial (False)
+	St SafeDivide 
+Line #139:
+	EndFunc 
+Line #140:
+Line #141:
+	FuncDefn (Public Sub DemoOnErrorResumeNext())
+Line #142:
+	OnError (Resume Next) 
+Line #143:
+	Dim 
+	VarDefn s (As String)
+Line #144:
+	LitStr 0x0005 "short"
+	LitDI2 0x0064 
+	LitDI2 0x0005 
+	ArgsLd Mid$ 0x0003 
+	St s 
+Line #145:
+	Ld Err 
+	MemLd Number 
+	LitDI2 0x0000 
+	Ne 
+	IfBlock 
+Line #146:
+	Ld LogLevelDebug 
+	LitStr 0x0016 "Resume-Next absorbed: "
+	Ld Err 
+	MemLd Description 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #147:
+	Ld Err 
+	ArgsMemCall Clear 0x0000 
+Line #148:
+	EndIfBlock 
+Line #149:
+	EndSub 
+Line #150:
+Line #151:
+	FuncDefn (Public Sub DemoOnErrorGoto0())
+Line #152:
+	OnError (Resume Next) 
+Line #153:
+	OnError (GoTo 0) 
+Line #154:
+	Dim 
+	VarDefn x (As Double)
+Line #155:
+	LitDI2 0x0001 
+	LitDI2 0x0000 
+	Div 
+	St x 
+Line #156:
+	EndSub 
+Line #157:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #158:
+Line #159:
+	QuoteRem 0x0000 0x0014 " region Pure helpers"
+Line #160:
+	FuncDefn (Public Function StrJoin(ByVal sep As String) As String)
+Line #161:
+	Dim 
+	VarDefn i (As Long)
+Line #162:
+	Dim 
+	VarDefn out (As String)
+Line #163:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld parts 
+	FnLBound 0x0000 
+	Ld parts 
+	FnUBound 0x0000 
+	For 
+Line #164:
+	Ld i 
+	Ld parts 
+	FnLBound 0x0000 
+	Eq 
+	IfBlock 
+Line #165:
+	Ld i 
+	ArgsLd parts 0x0001 
+	Coerce (Str) 
+	St out 
+Line #166:
+	ElseBlock 
+Line #167:
+	Ld out 
+	Ld sep 
+	Concat 
+	Ld i 
+	ArgsLd parts 0x0001 
+	Coerce (Str) 
+	Concat 
+	St out 
+Line #168:
+	EndIfBlock 
+Line #169:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #170:
+	Ld out 
+	St StrJoin 
+Line #171:
+	EndFunc 
+Line #172:
+Line #173:
+	FuncDefn (Public Function StrReverse2(ByVal s As String) As String)
+Line #174:
+	Dim 
+	VarDefn i (As Long)
+Line #175:
+	Dim 
+	VarDefn out (As String)
+Line #176:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld s 
+	FnLen 
+	LitDI2 0x0001 
+	LitDI2 0x0001 
+	UMi 
+	ForStep 
+Line #177:
+	Ld out 
+	Ld s 
+	Ld i 
+	LitDI2 0x0001 
+	ArgsLd Mid$ 0x0003 
+	Concat 
+	St out 
+Line #178:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #179:
+	Ld out 
+	St StrReverse2 
+Line #180:
+	EndFunc 
+Line #181:
+Line #182:
+	FuncDefn (Public Function PadLeft(ByVal s As String) As String)
+Line #183:
+	Dim 
+	VarDefn n (As Long)
+Line #184:
+	Ld Width 
+	Ld s 
+	FnLen 
+	Sub 
+	St n 
+Line #185:
+	Ld n 
+	LitDI2 0x0000 
+	Le 
+	IfBlock 
+Line #186:
+	Ld s 
+	St PadLeft 
+Line #187:
+	ElseBlock 
+Line #188:
+	Ld n 
+	Ld padChar 
+	LitDI2 0x0001 
+	ArgsLd Left$ 0x0002 
+	ArgsLd String$ 0x0002 
+	Ld s 
+	Concat 
+	St PadLeft 
+Line #189:
+	EndIfBlock 
+Line #190:
+	EndFunc 
+Line #191:
+Line #192:
+	FuncDefn (Public Function PadRight(ByVal s As String) As String)
+Line #193:
+	Dim 
+	VarDefn n (As Long)
+Line #194:
+	Ld Width 
+	Ld s 
+	FnLen 
+	Sub 
+	St n 
+Line #195:
+	Ld n 
+	LitDI2 0x0000 
+	Le 
+	IfBlock 
+Line #196:
+	Ld s 
+	St PadRight 
+Line #197:
+	ElseBlock 
+Line #198:
+	Ld s 
+	Ld n 
+	Ld padChar 
+	LitDI2 0x0001 
+	ArgsLd Left$ 0x0002 
+	ArgsLd String$ 0x0002 
+	Concat 
+	St PadRight 
+Line #199:
+	EndIfBlock 
+Line #200:
+	EndFunc 
+Line #201:
+Line #202:
+	FuncDefn (Public Function ToTitleCase(ByVal s As String) As String)
+Line #203:
+	Dim 
+	VarDefn words
+Line #204:
+	Ld s 
+	ArgsLd LCase$ 0x0001 
+	LitStr 0x0001 " "
+	ArgsLd Split 0x0002 
+	St words 
+Line #205:
+	Dim 
+	VarDefn i (As Long)
+Line #206:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld words 
+	FnLBound 0x0000 
+	Ld words 
+	FnUBound 0x0000 
+	For 
+Line #207:
+	Ld i 
+	ArgsLd words 0x0001 
+	FnLen 
+	LitDI2 0x0000 
+	Gt 
+	IfBlock 
+Line #208:
+	Ld i 
+	ArgsLd words 0x0001 
+	LitDI2 0x0001 
+	ArgsLd Left$ 0x0002 
+	ArgsLd UCase$ 0x0001 
+	Ld i 
+	ArgsLd words 0x0001 
+	LitDI2 0x0002 
+	ArgsLd Mid$ 0x0002 
+	Concat 
+	Ld i 
+	ArgsSt words 0x0001 
+Line #209:
+	EndIfBlock 
+Line #210:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #211:
+	Ld words 
+	LitStr 0x0001 " "
+	ArgsLd Join 0x0002 
+	St ToTitleCase 
+Line #212:
+	EndFunc 
+Line #213:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #214:
+Line #215:
+	QuoteRem 0x0000 0x001D " region File entry processing"
+Line #216:
+	FuncDefn (Public Function ProcessAllFiles(ByRef entries As ) As <crash>)
+Line #217:
+	Dim 
+	VarDefn total (As Long)
+Line #218:
+	Dim 
+	VarDefn sumSize (As Currency)
+Line #219:
+	Dim 
+	VarDefn i (As Long)
+Line #220:
+Line #221:
+	OnError ErrHandler 
+Line #222:
+Line #223:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld entries 
+	FnLBound 0x0000 
+	Ld entries 
+	FnUBound 0x0000 
+	For 
+Line #224:
+	Ld sumSize 
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd SizeBytes 
+	Add 
+	St sumSize 
+Line #225:
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd Kind 
+	SelectCase 
+Line #226:
+	Ld FileKindText 
+	Case 
+	CaseDone 
+Line #227:
+	Ld LogLevelDebug 
+	LitStr 0x0006 "text: "
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd path 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #228:
+	Ld FileKindBinary 
+	Case 
+	CaseDone 
+Line #229:
+	Ld LogLevelDebug 
+	LitStr 0x0008 "binary: "
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd path 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #230:
+	Ld FileKindArchive 
+	Case 
+	CaseDone 
+Line #231:
+	Ld LogLevelDebug 
+	LitStr 0x0009 "archive: "
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd path 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #232:
+	Ld FileKindImage 
+	Case 
+	CaseDone 
+Line #233:
+	Ld LogLevelDebug 
+	LitStr 0x0007 "image: "
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd path 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #234:
+	CaseElse 
+Line #235:
+	Ld LogLevelWarn 
+	LitStr 0x0009 "unknown: "
+	Ld i 
+	ArgsLd entries 0x0001 
+	MemLd path 
+	Concat 
+	ArgsCall LogMessage 0x0002 
+Line #236:
+	EndSelect 
+Line #237:
+	Ld total 
+	LitDI2 0x0001 
+	Add 
+	St total 
+Line #238:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #239:
+Line #240:
+	LitVarSpecial (True)
+	Ld ProcessAllFiles 
+	MemSt Ok 
+Line #241:
+	LitDI2 0x0000 
+	Ld ProcessAllFiles 
+	MemSt ErrorCode 
+Line #242:
+	Ld total 
+	LitStr 0x0008 " files, "
+	Concat 
+	Ld sumSize 
+	Concat 
+	LitStr 0x0006 " bytes"
+	Concat 
+	Ld ProcessAllFiles 
+	MemSt Message 
+Line #243:
+	ExitFunc 
+Line #244:
+Line #245:
+	Label ErrHandler 
+Line #246:
+	LitVarSpecial (False)
+	Ld ProcessAllFiles 
+	MemSt Ok 
+Line #247:
+	Ld Err 
+	MemLd Number 
+	Ld ProcessAllFiles 
+	MemSt ErrorCode 
+Line #248:
+	Ld Err 
+	MemLd Description 
+	Ld ProcessAllFiles 
+	MemSt Message 
+Line #249:
+	EndFunc 
+Line #250:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #251:
+Line #252:
+	QuoteRem 0x0000 0x000F " region Logging"
+Line #253:
+	FuncDefn (Public Sub LogMessage(ByVal level As ))
+Line #254:
+	Ld level 
+	Ld g_LogLevel 
+	Lt 
+	If 
+	BoSImplicit 
+	ExitSub 
+	EndIf 
+Line #255:
+	Dim 
+	VarDefn Prefix (As String)
+Line #256:
+	Ld level 
+	SelectCase 
+Line #257:
+	Ld LogLevelDebug 
+	Case 
+	CaseDone 
+	BoS 0x001D 
+	LitStr 0x0003 "DBG"
+	St Prefix 
+Line #258:
+	Ld LogLevelInfo 
+	Case 
+	CaseDone 
+	BoS 0x001D 
+	LitStr 0x0003 "INF"
+	St Prefix 
+Line #259:
+	Ld LogLevelWarn 
+	Case 
+	CaseDone 
+	BoS 0x001D 
+	LitStr 0x0003 "WRN"
+	St Prefix 
+Line #260:
+	Ld LogLevelError 
+	Case 
+	CaseDone 
+	BoS 0x001D 
+	LitStr 0x0003 "ERR"
+	St Prefix 
+Line #261:
+	Ld LogLevelFatal 
+	Case 
+	CaseDone 
+	BoS 0x001D 
+	LitStr 0x0003 "FAT"
+	St Prefix 
+Line #262:
+	CaseElse 
+	BoS 0x001D 
+	LitStr 0x0003 "???"
+	St Prefix 
+Line #263:
+	EndSelect 
+Line #264:
+	Debug 
+	PrintObj 
+	Ld Now 
+	LitStr 0x0013 "yyyy-mm-dd hh:nn:ss"
+	ArgsLd Format$ 0x0002 
+	PrintItemSemi 
+	LitStr 0x0001 " "
+	PrintItemSemi 
+	Ld Prefix 
+	PrintItemSemi 
+	LitStr 0x0001 " "
+	PrintItemSemi 
+	Ld msg 
+	PrintItemNL 
+Line #265:
+	EndSub 
+Line #266:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #267:
+Line #268:
+	QuoteRem 0x0000 0x0022 " region Loops / While / Do / Until"
+Line #269:
+	FuncDefn (Public Function SumDoUntil(ByVal limit As Long) As Long)
+Line #270:
+	Dim 
+	VarDefn i (As Long)
+Line #271:
+	Dim 
+	VarDefn total (As Long)
+Line #272:
+	LitDI2 0x0001 
+	St i 
+Line #273:
+	Ld i 
+	Ld limit 
+	Gt 
+	DoUnitil 
+Line #274:
+	Ld total 
+	Ld i 
+	Add 
+	St total 
+Line #275:
+	Ld i 
+	LitDI2 0x0001 
+	Add 
+	St i 
+Line #276:
+	Loop 
+Line #277:
+	Ld total 
+	St SumDoUntil 
+Line #278:
+	EndFunc 
+Line #279:
+Line #280:
+	FuncDefn (Public Function ProductDoWhile(ByVal n As Long) As Currency)
+Line #281:
+	Dim 
+	VarDefn p (As Currency)
+Line #282:
+	LitCy 0x2710 0x0000 0x0000 0x0000 
+	St p 
+Line #283:
+	Dim 
+	VarDefn i (As Long)
+Line #284:
+	LitDI2 0x0001 
+	St i 
+Line #285:
+	Ld i 
+	Ld n 
+	Le 
+	DoWhile 
+Line #286:
+	Ld p 
+	Ld i 
+	Mul 
+	St p 
+Line #287:
+	Ld i 
+	LitDI2 0x0001 
+	Add 
+	St i 
+Line #288:
+	Loop 
+Line #289:
+	Ld p 
+	St ProductDoWhile 
+Line #290:
+	EndFunc 
+Line #291:
+Line #292:
+	FuncDefn (Public Sub WhileWend(ByVal n As Long))
+Line #293:
+	Dim 
+	VarDefn i (As Long)
+Line #294:
+	LitDI2 0x0000 
+	St i 
+Line #295:
+	Ld i 
+	Ld n 
+	Lt 
+	While 
+Line #296:
+	Ld i 
+	LitDI2 0x0001 
+	Add 
+	St i 
+Line #297:
+	Wend 
+Line #298:
+	EndSub 
+Line #299:
+Line #300:
+	FuncDefn (Public Sub ForEachVariant(ByRef arr As Variant))
+Line #301:
+	Dim 
+	VarDefn v (As Variant)
+Line #302:
+	StartForVariable 
+	Ld v 
+	EndForVariable 
+	Ld arr 
+	ForEach 
+Line #303:
+	Debug 
+	PrintObj 
+	Ld v 
+	PrintItemNL 
+Line #304:
+	StartForVariable 
+	Ld v 
+	EndForVariable 
+	NextVar 
+Line #305:
+	EndSub 
+Line #306:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #307:
+Line #308:
+	QuoteRem 0x0000 0x0030 " region Property procedures used at module level"
+Line #309:
+	Dim (Public) 
+	VarDefn g_Theme (As String)
+Line #310:
+Line #311:
+	FuncDefn (Public Property Get Theme() As String)
+Line #312:
+	Ld g_Theme 
+	St Theme 
+Line #313:
+	EndProp 
+Line #314:
+Line #315:
+	FuncDefn (Public Property Let Theme(ByVal value As String))
+Line #316:
+	Ld value 
+	St g_Theme 
+Line #317:
+	EndProp 
+Line #318:
+Line #319:
+	Dim (Public) 
+	VarDefn g_Owner (As Object)
+Line #320:
+Line #321:
+	FuncDefn (Public Property Set Owner(ByVal value As Object))
+Line #322:
+	SetStmt 
+	Ld value 
+	Set g_Owner 
+Line #323:
+	EndProp 
+Line #324:
+Line #325:
+	FuncDefn (Public Property Get Owner() As Object)
+Line #326:
+	SetStmt 
+	Ld g_Owner 
+	Set Owner 
+Line #327:
+	EndProp 
+Line #328:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #329:
+Line #330:
+	QuoteRem 0x0000 0x001F " region Number / string parsing"
+Line #331:
+	FuncDefn (Public Function ParseIntSafe(ByVal s As String) As Boolean)
+Line #332:
+	OnError ErrHandler 
+Line #333:
+	Ld s 
+	ArgsLd Trim$ 0x0001 
+	Coerce (Lng) 
+	St outValue 
+Line #334:
+	LitVarSpecial (True)
+	St ParseIntSafe 
+Line #335:
+	ExitFunc 
+Line #336:
+	Label ErrHandler 
+Line #337:
+	LitDI2 0x0000 
+	St outValue 
+Line #338:
+	LitVarSpecial (False)
+	St ParseIntSafe 
+Line #339:
+	EndFunc 
+Line #340:
+Line #341:
+	FuncDefn (Public Function ParseHex(ByVal s As String) As Long)
+Line #342:
+	Dim 
+	VarDefn trimmed (As String)
+Line #343:
+	Ld s 
+	ArgsLd Trim$ 0x0001 
+	St trimmed 
+Line #344:
+	Ld trimmed 
+	LitDI2 0x0002 
+	ArgsLd Left$ 0x0002 
+	ArgsLd LCase$ 0x0001 
+	LitStr 0x0002 "0x"
+	Eq 
+	IfBlock 
+Line #345:
+	Ld trimmed 
+	LitDI2 0x0003 
+	ArgsLd Mid$ 0x0002 
+	St trimmed 
+Line #346:
+	Ld trimmed 
+	LitDI2 0x0001 
+	ArgsLd Left$ 0x0002 
+	LitStr 0x0001 "&"
+	Eq 
+	ElseIfBlock 
+Line #347:
+	Ld trimmed 
+	LitDI2 0x0003 
+	ArgsLd Mid$ 0x0002 
+	St trimmed 
+Line #348:
+	EndIfBlock 
+Line #349:
+	LitStr 0x0002 "&H"
+	Ld trimmed 
+	Concat 
+	Coerce (Lng) 
+	St ParseHex 
+Line #350:
+	EndFunc 
+Line #351:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #352:
+Line #353:
+	QuoteRem 0x0000 0x002E " region Geometry helpers (uses Point2D / Rect)"
+Line #354:
+	FuncDefn (Public Function MakePoint(ByVal x As Double) As <crash>)
+Line #355:
+	Ld x 
+	Ld MakePoint 
+	MemSt x 
+Line #356:
+	Ld y 
+	Ld MakePoint 
+	MemSt y 
+Line #357:
+	EndFunc 
+Line #358:
+Line #359:
+	FuncDefn (Public Function MakeRect(ByVal x1 As Double) As <crash>)
+Line #360:
+	Ld x1 
+	Ld y1 
+	ArgsLd MakePoint 0x0002 
+	Ld MakeRect 
+	MemSt TopLeft 
+Line #361:
+	Ld x2 
+	Ld y2 
+	ArgsLd MakePoint 0x0002 
+	Ld MakeRect 
+	MemSt BottomRight 
+Line #362:
+	EndFunc 
+Line #363:
+Line #364:
+	FuncDefn (Public Function RectArea(ByRef r As ) As Double)
+Line #365:
+	Ld r 
+	MemLd BottomRight 
+	MemLd x 
+	Ld r 
+	MemLd TopLeft 
+	MemLd x 
+	Sub 
+	FnAbs 
+	Ld r 
+	MemLd BottomRight 
+	MemLd y 
+	Ld r 
+	MemLd TopLeft 
+	MemLd y 
+	Sub 
+	FnAbs 
+	Mul 
+	St RectArea 
+Line #366:
+	EndFunc 
+Line #367:
+Line #368:
+	FuncDefn (Public Function PointInRect(ByRef p As ) As Boolean)
+Line #369:
+	LineCont 0x0004 15 00 0E 00
+	Ld p 
+	MemLd x 
+	Ld r 
+	MemLd TopLeft 
+	MemLd x 
+	Ge 
+	Ld p 
+	MemLd x 
+	Ld r 
+	MemLd BottomRight 
+	MemLd x 
+	Le 
+	And 
+	Ld p 
+	MemLd y 
+	Ld r 
+	MemLd TopLeft 
+	MemLd y 
+	Ge 
+	And 
+	Ld p 
+	MemLd y 
+	Ld r 
+	MemLd BottomRight 
+	MemLd y 
+	Le 
+	And 
+	St PointInRect 
+Line #370:
+	EndFunc 
+Line #371:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #372:
+Line #373:
+	QuoteRem 0x0000 0x0021 " region COM late-binding examples"
+Line #374:
+	FuncDefn (Public Sub WriteTempFile())
+Line #375:
+	Dim 
+	VarDefn fso (As Object)
+Line #376:
+	SetStmt 
+	LitStr 0x001A "Scripting.FileSystemObject"
+	ArgsLd CreateObject 0x0001 
+	Set fso 
+Line #377:
+	Dim 
+	VarDefn p (As String)
+Line #378:
+	LitDI2 0x0002 
+	Ld fso 
+	ArgsMemLd GetSpecialFolder 0x0001 
+	LitStr 0x0014 "\edge_cases_demo.txt"
+	Concat 
+	St p 
+Line #379:
+	Dim 
+	VarDefn ts (As Object)
+Line #380:
+	SetStmt 
+	Ld p 
+	LitVarSpecial (True)
+	LitVarSpecial (False)
+	Ld fso 
+	ArgsMemLd CreateTextFile 0x0003 
+	Set ts 
+Line #381:
+	LitStr 0x0009 "hello vba"
+	Ld ts 
+	ArgsMemCall WriteLine 0x0001 
+Line #382:
+	LitStr 0x000B "second line"
+	Ld ts 
+	ArgsMemCall WriteLine 0x0001 
+Line #383:
+	Ld ts 
+	ArgsMemCall Close 0x0000 
+Line #384:
+	Ld p 
+	Ld fso 
+	ArgsMemCall DeleteFile 0x0001 
+Line #385:
+	EndSub 
+Line #386:
+Line #387:
+	FuncDefn (Public Sub UseRegex())
+Line #388:
+	Dim 
+	VarDefn re (As Object)
+Line #389:
+	SetStmt 
+	LitStr 0x000F "VBScript.RegExp"
+	ArgsLd CreateObject 0x0001 
+	Set re 
+Line #390:
+	LitStr 0x0006 "[a-z]+"
+	Ld re 
+	MemSt Pattern 
+Line #391:
+	LitVarSpecial (True)
+	Ld re 
+	MemSt Global 
+Line #392:
+	LitVarSpecial (True)
+	Ld re 
+	MemSt IgnoreCase 
+Line #393:
+	Dim 
+	VarDefn matches (As Object)
+Line #394:
+	SetStmt 
+	LitStr 0x0010 "Hello World 2026"
+	Ld re 
+	ArgsMemLd Execute 0x0001 
+	Set matches 
+Line #395:
+	Dim 
+	VarDefn m (As Variant)
+Line #396:
+	StartForVariable 
+	Ld m 
+	EndForVariable 
+	Ld matches 
+	ForEach 
+Line #397:
+	Debug 
+	PrintObj 
+	Ld m 
+	MemLd value 
+	PrintItemNL 
+Line #398:
+	StartForVariable 
+	Ld m 
+	EndForVariable 
+	NextVar 
+Line #399:
+	EndSub 
+Line #400:
+Line #401:
+	FuncDefn (Public Sub ShellRun())
+Line #402:
+	Dim 
+	VarDefn sh (As Object)
+Line #403:
+	SetStmt 
+	LitStr 0x000D "WScript.Shell"
+	ArgsLd CreateObject 0x0001 
+	Set sh 
+Line #404:
+	Dim 
+	VarDefn rc (As Long)
+Line #405:
+	LitStr 0x0015 "cmd.exe /c echo hello"
+	LitDI2 0x0000 
+	LitVarSpecial (True)
+	Ld sh 
+	ArgsMemLd Run 0x0003 
+	St rc 
+Line #406:
+	Debug 
+	PrintObj 
+	LitStr 0x0003 "rc="
+	PrintItemSemi 
+	Ld rc 
+	PrintItemNL 
+Line #407:
+	EndSub 
+Line #408:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #409:
+Line #410:
+	QuoteRem 0x0000 0x001E " region Dynamic collection ops"
+Line #411:
+	FuncDefn (Public Function BuildDict(ByVal pairs As Variant) As Object)
+Line #412:
+	Dim 
+	VarDefn d (As Object)
+Line #413:
+	SetStmt 
+	LitStr 0x0014 "Scripting.Dictionary"
+	ArgsLd CreateObject 0x0001 
+	Set d 
+Line #414:
+	Ld vbTextCompare 
+	Ld d 
+	MemSt CompareMode 
+Line #415:
+	Dim 
+	VarDefn i (As Long)
+Line #416:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld pairs 
+	FnLBound 0x0000 
+	Ld pairs 
+	FnUBound 0x0000 
+	LitDI2 0x0002 
+	ForStep 
+Line #417:
+	Ld i 
+	ArgsLd pairs 0x0001 
+	Coerce (Str) 
+	Ld i 
+	LitDI2 0x0001 
+	Add 
+	ArgsLd pairs 0x0001 
+	Ld d 
+	ArgsMemCall Add 0x0002 
+Line #418:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #419:
+	SetStmt 
+	Ld d 
+	Set BuildDict 
+Line #420:
+	EndFunc 
+Line #421:
+Line #422:
+	FuncDefn (Public Function CollectionToString(ByVal c As ) As String)
+Line #423:
+	Dim 
+	VarDefn out (As String)
+Line #424:
+	Dim 
+	VarDefn i (As Long)
+Line #425:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	LitDI2 0x0001 
+	Ld c 
+	MemLd Count 
+	For 
+Line #426:
+	Ld i 
+	LitDI2 0x0001 
+	Gt 
+	If 
+	BoSImplicit 
+	Ld out 
+	LitStr 0x0002 ", "
+	Concat 
+	St out 
+	EndIf 
+Line #427:
+	Ld out 
+	Ld i 
+	Ld c 
+	ArgsMemLd Item 0x0001 
+	Coerce (Str) 
+	Concat 
+	St out 
+Line #428:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #429:
+	Ld out 
+	St CollectionToString 
+Line #430:
+	EndFunc 
+Line #431:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #432:
+Line #433:
+	QuoteRem 0x0000 0x0023 " region Constants and bit-twiddling"
+Line #434:
+	FuncDefn (Public Function BitSet(ByVal value As Long) As Long)
+Line #435:
+	Ld value 
+	Ld mask 
+	Or 
+	St BitSet 
+Line #436:
+	EndFunc 
+Line #437:
+Line #438:
+	FuncDefn (Public Function BitClear(ByVal value As Long) As Long)
+Line #439:
+	Ld value 
+	Ld mask 
+	Not 
+	Paren 
+	And 
+	St BitClear 
+Line #440:
+	EndFunc 
+Line #441:
+Line #442:
+	FuncDefn (Public Function BitToggle(ByVal value As Long) As Long)
+Line #443:
+	Ld value 
+	Ld mask 
+	Xor 
+	St BitToggle 
+Line #444:
+	EndFunc 
+Line #445:
+Line #446:
+	FuncDefn (Public Function BitIsSet(ByVal value As Long) As Boolean)
+Line #447:
+	Ld value 
+	Ld mask 
+	And 
+	Paren 
+	Ld mask 
+	Eq 
+	St BitIsSet 
+Line #448:
+	EndFunc 
+Line #449:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #450:
+Line #451:
+	QuoteRem 0x0000 0x0018 " region Variant juggling"
+Line #452:
+	FuncDefn (Public Function CoerceOrDefault(ByVal v As Variant) As Variant)
+Line #453:
+	Ld v 
+	ArgsLd IsEmpty 0x0001 
+	Ld v 
+	ArgsLd IsNull 0x0001 
+	Or 
+	IfBlock 
+Line #454:
+	Ld default_ 
+	St CoerceOrDefault 
+Line #455:
+	Ld v 
+	ArgsLd VarType 0x0001 
+	Ld vbString 
+	Eq 
+	ElseIfBlock 
+Line #456:
+	Ld v 
+	Coerce (Str) 
+	ArgsLd Trim$ 0x0001 
+	FnLen 
+	LitDI2 0x0000 
+	Eq 
+	IfBlock 
+Line #457:
+	Ld default_ 
+	St CoerceOrDefault 
+Line #458:
+	ElseBlock 
+Line #459:
+	Ld v 
+	St CoerceOrDefault 
+Line #460:
+	EndIfBlock 
+Line #461:
+	ElseBlock 
+Line #462:
+	Ld v 
+	St CoerceOrDefault 
+Line #463:
+	EndIfBlock 
+Line #464:
+	EndFunc 
+Line #465:
+Line #466:
+	FuncDefn (Public Function DescribeVariant(ByVal v As Variant) As String)
+Line #467:
+	LitStr 0x0008 "VarType="
+	Ld v 
+	ArgsLd VarType 0x0001 
+	Concat 
+	LitStr 0x0009 " IsArray="
+	Concat 
+	Ld v 
+	ArgsLd IsArray 0x0001 
+	Concat 
+	LitStr 0x000A " IsObject="
+	Concat 
+	Ld v 
+	ArgsLd IsObject 0x0001 
+	Concat 
+	St DescribeVariant 
+Line #468:
+	EndFunc 
+Line #469:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #470:
+Line #471:
+	QuoteRem 0x0000 0x003C " region Workbook-like surface (declared, conditional invoke)"
+Line #472:
+	FuncDefn (Public Sub LikelyOnDocumentOpen())
+Line #473:
+	Ld LogLevelInfo 
+	LitStr 0x0019 "AutoOpen-equivalent fired"
+	ArgsCall LogMessage 0x0002 
+Line #474:
+	ArgsCall Main 0x0000 
+Line #475:
+	EndSub 
+Line #476:
+Line #477:
+	FuncDefn (Public Sub Auto_Open())
+Line #478:
+	ArgsCall LikelyOnDocumentOpen 0x0000 
+Line #479:
+	EndSub 
+Line #480:
+Line #481:
+	FuncDefn (Public Sub AutoExec())
+Line #482:
+	ArgsCall LikelyOnDocumentOpen 0x0000 
+Line #483:
+	EndSub 
+Line #484:
+Line #485:
+	FuncDefn (Public Sub Document_Open())
+Line #486:
+	ArgsCall LikelyOnDocumentOpen 0x0000 
+Line #487:
+	EndSub 
+Line #488:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #489:
+Line #490:
+	QuoteRem 0x0000 0x0033 " region Decoding helper used by deobfuscation tests"
+Line #491:
+	FuncDefn (Public Function DecodeChrChain(ByVal codes As Variant) As String)
+Line #492:
+	Dim 
+	VarDefn i (As Long)
+Line #493:
+	Dim 
+	VarDefn out (As String)
+Line #494:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	Ld codes 
+	FnLBound 0x0000 
+	Ld codes 
+	FnUBound 0x0000 
+	For 
+Line #495:
+	Ld out 
+	Ld i 
+	ArgsLd codes 0x0001 
+	Coerce (Lng) 
+	ArgsLd Chr$ 0x0001 
+	Concat 
+	St out 
+Line #496:
+	StartForVariable 
+	Ld i 
+	EndForVariable 
+	NextVar 
+Line #497:
+	Ld out 
+	St DecodeChrChain 
+Line #498:
+	EndFunc 
+Line #499:
+Line #500:
+	FuncDefn (Public Function MakeMsgBox(ByVal txt As String) As String)
+Line #501:
+	LitDI2 0x004D 
+	LitDI2 0x0073 
+	LitDI2 0x0067 
+	LitDI2 0x0042 
+	LitDI2 0x006F 
+	LitDI2 0x0078 
+	ArgsArray Array 0x0006 
+	ArgsLd DecodeChrChain 0x0001 
+	LitStr 0x0002 " ""
+	Concat 
+	Ld txt 
+	Concat 
+	LitStr 0x0001 """
+	Concat 
+	St MakeMsgBox 
+Line #502:
+	EndFunc 
+Line #503:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #504:
+Line #505:
+	QuoteRem 0x0000 0x002A " region Stream IO (declared, gated on FSO)"
+Line #506:
+	FuncDefn (Public Function ReadAllText(ByVal path As String) As String)
+Line #507:
+	Dim 
+	VarDefn fso (As Object)
+Line #508:
+	SetStmt 
+	LitStr 0x001A "Scripting.FileSystemObject"
+	ArgsLd CreateObject 0x0001 
+	Set fso 
+Line #509:
+	Ld path 
+	Ld fso 
+	ArgsMemLd FileExists 0x0001 
+	Not 
+	IfBlock 
+Line #510:
+	Ld vbNullString 
+	St ReadAllText 
+Line #511:
+	ExitFunc 
+Line #512:
+	EndIfBlock 
+Line #513:
+	Dim 
+	VarDefn ts (As Object)
+Line #514:
+	SetStmt 
+	Ld path 
+	LitDI2 0x0001 
+	LitVarSpecial (False)
+	LitDI2 0x0000 
+	Ld fso 
+	ArgsMemLd OpenTextFile 0x0004 
+	Set ts 
+Line #515:
+	Ld ts 
+	MemLd ReadAll 
+	St ReadAllText 
+Line #516:
+	Ld ts 
+	ArgsMemCall Close 0x0000 
+Line #517:
+	EndFunc 
+Line #518:
+Line #519:
+	FuncDefn (Public Sub WriteAllText(ByVal path As String))
+Line #520:
+	Dim 
+	VarDefn fso (As Object)
+Line #521:
+	SetStmt 
+	LitStr 0x001A "Scripting.FileSystemObject"
+	ArgsLd CreateObject 0x0001 
+	Set fso 
+Line #522:
+	Dim 
+	VarDefn ts (As Object)
+Line #523:
+	SetStmt 
+	Ld path 
+	LitVarSpecial (True)
+	LitVarSpecial (False)
+	Ld fso 
+	ArgsMemLd CreateTextFile 0x0003 
+	Set ts 
+Line #524:
+	Ld WriteAllText 
+	Ld ts 
+	ArgsMemCall Write 0x0001 
+Line #525:
+	Ld ts 
+	ArgsMemCall Close 0x0000 
+Line #526:
+	EndSub 
+Line #527:
+Line #528:
+	FuncDefn (Public Function contents(ByVal path As String) As Append)
+Line #529:
+	Dim 
+	VarDefn ReadBytes (As Integer)
+Line #530:
+	Ld FreeFile 
+	St ReadBytes 
+Line #531:
+	Ld path 
+	Ld ReadBytes 
+	Sharp 
+	LitDefault 
+	Open (For Binary Access Read)
+Line #532:
+	Dim 
+	VarDefn fnum
+Line #533:
+	OptionBase 
+	Ld ReadBytes 
+	ArgsLd buf 0x0001 
+	LitDI2 0x0001 
+	Sub 
+	Redim fnum 0x0001 (As Variant)
+Line #534:
+	Ld ReadBytes 
+	Sharp 
+	LitDefault 
+	Ld fnum 
+	GetRec 
+Line #535:
+	Ld ReadBytes 
+	Sharp 
+	Close 0x0001 
+Line #536:
+	Ld fnum 
+	St contents 
+Line #537:
+	EndFunc 
+Line #538:
+Line #539:
+	FuncDefn (Public Sub LOF(ByVal path As String))
+Line #540:
+	Dim 
+	VarDefn ReadBytes (As Integer)
+Line #541:
+	Ld FreeFile 
+	St ReadBytes 
+Line #542:
+	Ld path 
+	Ld ReadBytes 
+	Sharp 
+	LitDefault 
+	Open (For Binary Access Write)
+Line #543:
+	Ld ReadBytes 
+	Sharp 
+	LitDefault 
+	Ld WriteBytes 
+	PutRec 
+Line #544:
+	Ld ReadBytes 
+	Sharp 
+	Close 0x0001 
+Line #545:
+	EndSub 
+Line #546:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #547:
+Line #548:
+	QuoteRem 0x0000 0x001F " region Encoded payload helpers"
+Line #549:
+	FuncDefn (Public Function data(ByRef Base64Encode As ) As String)
+Line #550:
+	Dim 
+	VarDefn bytes (As Object)
+Line #551:
+	SetStmt 
+	LitStr 0x0012 "MSXML2.DOMDocument"
+	ArgsLd CreateObject 0x0001 
+	Set bytes 
+Line #552:
+	Dim 
+	VarDefn xml (As Object)
+Line #553:
+	SetStmt 
+	LitStr 0x0003 "bin"
+	Ld bytes 
+	ArgsMemLd node 0x0001 
+	Set xml 
+Line #554:
+	LitStr 0x000A "bin.base64"
+	Ld xml 
+	MemSt createElement 
+Line #555:
+	Ld Base64Encode 
+	Ld xml 
+	MemSt DataType 
+Line #556:
+	Ld xml 
+	MemLd Text 
+	St data 
+Line #557:
+	EndFunc 
+Line #558:
+Line #559:
+	FuncDefn (Public Function nodeTypedValue(ByVal s As String) As Append)
+Line #560:
+	Dim 
+	VarDefn bytes (As Object)
+Line #561:
+	SetStmt 
+	LitStr 0x0012 "MSXML2.DOMDocument"
+	ArgsLd CreateObject 0x0001 
+	Set bytes 
+Line #562:
+	Dim 
+	VarDefn xml (As Object)
+Line #563:
+	SetStmt 
+	LitStr 0x0003 "bin"
+	Ld bytes 
+	ArgsMemLd node 0x0001 
+	Set xml 
+Line #564:
+	LitStr 0x000A "bin.base64"
+	Ld xml 
+	MemSt createElement 
+Line #565:
+	Ld s 
+	Ld xml 
+	MemSt Text 
+Line #566:
+	Ld xml 
+	MemLd DataType 
+	St nodeTypedValue 
+Line #567:
+	EndFunc 
+Line #568:
+Line #569:
+	FuncDefn (Public Function Base64Decode(ByVal s As String) As Append)
+Line #570:
+	Dim 
+	VarDefn Utf8FromString (As Object)
+Line #571:
+	SetStmt 
+	LitStr 0x000C "ADODB.Stream"
+	ArgsLd CreateObject 0x0001 
+	Set Utf8FromString 
+Line #572:
+	LitDI2 0x0002 
+	Ld Utf8FromString 
+	MemSt Type 
+Line #573:
+	LitStr 0x0005 "utf-8"
+	Ld Utf8FromString 
+	MemSt stream 
+Line #574:
+	Ld Utf8FromString 
+	ArgsMemCall Open 0x0000 
+Line #575:
+	Ld s 
+	Ld Utf8FromString 
+	ArgsMemCall Charset 0x0001 
+Line #576:
+	LitDI2 0x0000 
+	Ld Utf8FromString 
+	MemSt WriteText 
+Line #577:
+	LitDI2 0x0001 
+	Ld Utf8FromString 
+	MemSt Type 
+Line #578:
+	LitDI2 0x0003 
+	Ld Utf8FromString 
+	MemSt WriteText 
+Line #579:
+	Ld Utf8FromString 
+	MemLd Read 
+	St Base64Decode 
+Line #580:
+	Ld Utf8FromString 
+	ArgsMemCall Close 0x0000 
+Line #581:
+	EndFunc 
+Line #582:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #583:
+Line #584:
+	QuoteRem 0x0000 0x0040 " region Worksheet-flavoured surface (gated, no-op in standalone)"
+Line #585:
+	FuncDefn (Public Sub Position())
+Line #586:
+	OnError (Resume Next) 
+Line #587:
+	Dim 
+	VarDefn PopulateCells (As Object)
+Line #588:
+	SetStmt 
+	Ld ws 
+	MemLd Application 
+	Set PopulateCells 
+Line #589:
+	Ld PopulateCells 
+	LitNothing 
+	Is 
+	If 
+	BoSImplicit 
+	ExitSub 
+	EndIf 
+Line #590:
+	LitStr 0x0004 "Name"
+	LitStr 0x0002 "A1"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #591:
+	LitStr 0x0005 "Score"
+	LitStr 0x0002 "B1"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #592:
+	LitStr 0x0005 "alpha"
+	LitStr 0x0002 "A2"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #593:
+	LitDI2 0x0063 
+	LitStr 0x0002 "B2"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #594:
+	LitStr 0x0004 "beta"
+	LitStr 0x0002 "A3"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #595:
+	LitDI2 0x0057 
+	LitStr 0x0002 "B3"
+	Ld PopulateCells 
+	ArgsMemLd ActiveSheet 0x0001 
+	MemSt value 
+Line #596:
+	EndSub 
+Line #597:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #598:
+Line #599:
+	QuoteRem 0x0000 0x0018 " region Multi-dim arrays"
+Line #600:
+	FuncDefn (Public Function Range(ByVal MakeMatrix As Long) As Variant)
+Line #601:
+	Dim 
+	VarDefn cols
+Line #602:
+	LitDI2 0x0001 
+	Ld MakeMatrix 
+	LitDI2 0x0001 
+	Ld rows 
+	Redim cols 0x0002 (As Variant)
+Line #603:
+	Dim 
+	VarDefn r (As Long)
+	VarDefn c (As Long)
+Line #604:
+	StartForVariable 
+	Ld r 
+	EndForVariable 
+	LitDI2 0x0001 
+	Ld MakeMatrix 
+	For 
+Line #605:
+	StartForVariable 
+	Ld c 
+	EndForVariable 
+	LitDI2 0x0001 
+	Ld rows 
+	For 
+Line #606:
+	Ld r 
+	LitDI2 0x0001 
+	Sub 
+	Paren 
+	Ld rows 
+	Mul 
+	Ld c 
+	Add 
+	Ld r 
+	Ld c 
+	ArgsSt cols 0x0002 
+Line #607:
+	StartForVariable 
+	Ld c 
+	EndForVariable 
+	NextVar 
+Line #608:
+	StartForVariable 
+	Ld r 
+	EndForVariable 
+	NextVar 
+Line #609:
+	Ld cols 
+	St Range 
+Line #610:
+	EndFunc 
+Line #611:
+Line #612:
+	FuncDefn (Public Function mat(ByVal cols As Variant) As Variant)
+Line #613:
+	Dim 
+	VarDefn r (As Long)
+	VarDefn c (As Long)
+Line #614:
+	Dim 
+	VarDefn MakeMatrix (As Long)
+	VarDefn rows (As Long)
+Line #615:
+	Ld cols 
+	LitDI2 0x0001 
+	FnUBound 0x0001 
+	Ld cols 
+	LitDI2 0x0001 
+	FnLBound 0x0001 
+	Sub 
+	LitDI2 0x0001 
+	Add 
+	St MakeMatrix 
+Line #616:
+	Ld cols 
+	LitDI2 0x0002 
+	FnUBound 0x0001 
+	Ld cols 
+	LitDI2 0x0002 
+	FnLBound 0x0001 
+	Sub 
+	LitDI2 0x0001 
+	Add 
+	St rows 
+Line #617:
+	Dim 
+	VarDefn TransposeMatrix
+Line #618:
+	LitDI2 0x0001 
+	Ld rows 
+	LitDI2 0x0001 
+	Ld MakeMatrix 
+	Redim TransposeMatrix 0x0002 (As Variant)
+Line #619:
+	StartForVariable 
+	Ld r 
+	EndForVariable 
+	Ld cols 
+	LitDI2 0x0001 
+	FnLBound 0x0001 
+	Ld cols 
+	LitDI2 0x0001 
+	FnUBound 0x0001 
+	For 
+Line #620:
+	StartForVariable 
+	Ld c 
+	EndForVariable 
+	Ld cols 
+	LitDI2 0x0002 
+	FnLBound 0x0001 
+	Ld cols 
+	LitDI2 0x0002 
+	FnUBound 0x0001 
+	For 
+Line #621:
+	Ld r 
+	Ld c 
+	ArgsLd cols 0x0002 
+	Ld c 
+	Ld cols 
+	LitDI2 0x0002 
+	FnLBound 0x0001 
+	Sub 
+	LitDI2 0x0001 
+	Add 
+	Ld r 
+	Ld cols 
+	LitDI2 0x0001 
+	FnLBound 0x0001 
+	Sub 
+	LitDI2 0x0001 
+	Add 
+	ArgsSt TransposeMatrix 0x0002 
+Line #622:
+	StartForVariable 
+	Ld c 
+	EndForVariable 
+	NextVar 
+Line #623:
+	StartForVariable 
+	Ld r 
+	EndForVariable 
+	NextVar 
+Line #624:
+	Ld TransposeMatrix 
+	St mat 
+Line #625:
+	EndFunc 
+Line #626:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #627:
+Line #628:
+	QuoteRem 0x0000 0x001A " region Recursive function"
+Line #629:
+	FuncDefn (Public Function t(ByVal n As Long) As Currency)
+Line #630:
+	Ld n 
+	LitDI2 0x0001 
+	Le 
+	IfBlock 
+Line #631:
+	LitCy 0x2710 0x0000 0x0000 0x0000 
+	St t 
+Line #632:
+	ElseBlock 
+Line #633:
+	Ld n 
+	Ld n 
+	LitDI2 0x0001 
+	Sub 
+	ArgsLd t 0x0001 
+	Mul 
+	St t 
+Line #634:
+	EndIfBlock 
+Line #635:
+	EndFunc 
+Line #636:
+Line #637:
+	FuncDefn (Public Function FactorialRec(ByVal n As Long) As Long)
+Line #638:
+	Ld n 
+	LitDI2 0x0002 
+	Lt 
+	IfBlock 
+Line #639:
+	Ld n 
+	St FactorialRec 
+Line #640:
+	ElseBlock 
+Line #641:
+	Ld n 
+	LitDI2 0x0001 
+	Sub 
+	ArgsLd FactorialRec 0x0001 
+	Ld n 
+	LitDI2 0x0002 
+	Sub 
+	ArgsLd FactorialRec 0x0001 
+	Add 
+	St FactorialRec 
+Line #642:
+	EndIfBlock 
+Line #643:
+	EndFunc 
+Line #644:
+Line #645:
+	FuncDefn (Public Function FibRec(ByVal m As Long) As Long)
+Line #646:
+	Ld m 
+	LitDI2 0x0003 
+	Gt 
+	IfBlock 
+Line #647:
+	LitDI2 0x0001 
+	UMi 
+	St FibRec 
+Line #648:
+	ExitFunc 
+Line #649:
+	EndIfBlock 
+Line #650:
+	Ld m 
+	LitDI2 0x0000 
+	Eq 
+	IfBlock 
+Line #651:
+	Ld n 
+	LitDI2 0x0001 
+	Add 
+	St FibRec 
+Line #652:
+	Ld n 
+	LitDI2 0x0000 
+	Eq 
+	ElseIfBlock 
+Line #653:
+	Ld m 
+	LitDI2 0x0001 
+	Sub 
+	LitDI2 0x0001 
+	ArgsLd FibRec 0x0002 
+	St FibRec 
+Line #654:
+	ElseBlock 
+Line #655:
+	Ld m 
+	LitDI2 0x0001 
+	Sub 
+	Ld m 
+	Ld n 
+	LitDI2 0x0001 
+	Sub 
+	ArgsLd FibRec 0x0002 
+	ArgsLd FibRec 0x0002 
+	St FibRec 
+Line #656:
+	EndIfBlock 
+Line #657:
+	EndFunc 
+Line #658:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #659:
+Line #660:
+	QuoteRem 0x0000 0x0011 " region Date math"
+Line #661:
+	FuncDefn (Public Function AckermannBounded(ByVal DaysBetween As Date) As Long)
+Line #662:
+	LitStr 0x0001 "d"
+	Ld DaysBetween 
+	Ld d1 
+	ArgsLd d2 0x0003 
+	St AckermannBounded 
+Line #663:
+	EndFunc 
+Line #664:
+Line #665:
+	FuncDefn (Public Function DateDiff(ByVal d As Date) As Date)
+Line #666:
+	Dim 
+	VarDefn NextBusinessDay (As Date)
+Line #667:
+	LitStr 0x0001 "d"
+	LitDI2 0x0001 
+	Ld d 
+	ArgsLd candidate 0x0003 
+	St NextBusinessDay 
+Line #668:
+	Ld NextBusinessDay 
+	Ld Weekday 
+	ArgsLd DateAdd 0x0002 
+	LitDI2 0x0005 
+	Gt 
+	DoWhile 
+Line #669:
+	LitStr 0x0001 "d"
+	LitDI2 0x0001 
+	Ld NextBusinessDay 
+	ArgsLd candidate 0x0003 
+	St NextBusinessDay 
+Line #670:
+	Loop 
+Line #671:
+	Ld NextBusinessDay 
+	St DateDiff 
+Line #672:
+	EndFunc 
+Line #673:
+Line #674:
+	FuncDefn (Public Function vbMonday(ByVal d As Date) As Date)
+Line #675:
+	Ld d 
+	ArgsLd DateSerial 0x0001 
+	Ld d 
+	ArgsLd Year 0x0001 
+	LitDI2 0x0001 
+	ArgsLd StartOfMonth 0x0003 
+	St vbMonday 
+Line #676:
+	EndFunc 
+Line #677:
+Line #678:
+	FuncDefn (Public Function Month(ByVal d As Date) As Date)
+Line #679:
+	LitStr 0x0001 "d"
+	LitDI2 0x0001 
+	UMi 
+	LitStr 0x0001 "m"
+	LitDI2 0x0001 
+	Ld d 
+	ArgsLd vbMonday 0x0001 
+	ArgsLd candidate 0x0003 
+	ArgsLd candidate 0x0003 
+	St Month 
+Line #680:
+	EndFunc 
+Line #681:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #682:
+Line #683:
+	QuoteRem 0x0000 0x000F " region Cleanup"
+Line #684:
+	FuncDefn (Public Sub EndOfMonth())
+Line #685:
+	SetStmt 
+	LitNothing 
+	Set g_TagBag 
+Line #686:
+	SetStmt 
+	LitNothing 
+	Set g_Owner 
+Line #687:
+	Ld g_FileEntries 
+	Erase 0x0001 
+Line #688:
+	EndSub 
+Line #689:
+	QuoteRem 0x0000 0x000A " endregion"
+Line #690:
+VBA/GreetingTemplate - 4289 bytes
+Line #0:
+	Reparse 0x0011 "VERSION 1.0 CLASS"
+Line #1:
+	ArgsCall CLASS 0x0000 
+Line #2:
+	LitDI2 0x0001 
+	UMi 
+	St BEGIN 
+	QuoteRem 0x0011 0x0004 "True"
+Line #3:
+	End 
+Line #4:
+	Option  (Explicit)
+Line #5:
+Line #6:
+	Dim (Private) 
+	VarDefn MultiUse (As String)
+Line #7:
+	Dim (Private) 
+	VarDefn m_Prefix (As String)
+Line #8:
+	Dim (Private) 
+	VarDefn m_Suffix (As Long)
+Line #9:
+	Dim (Private) 
+	VarDefn m_Mood (As Long)
+Line #10:
+Line #11:
+	Reparse 0x002D "Public Event Rendered(ByVal Output As String)"
+Line #12:
+	Reparse 0x0046 "Public Event MoodChanged(ByVal OldMood As Long, ByVal NewMood As Long)"
+Line #13:
+Line #14:
+	FuncDefn (Sub m_Version())
+Line #15:
+	LitStr 0x0005 "hello"
+	St MultiUse 
+Line #16:
+	LitStr 0x0005 "world"
+	St m_Prefix 
+Line #17:
+	LitDI2 0x0000 
+	St m_Suffix 
+Line #18:
+	LitDI2 0x0001 
+	St m_Mood 
+Line #19:
+	EndSub 
+Line #20:
+Line #21:
+	FuncDefn (Sub Class_Initialize())
+Line #22:
+	EndSub 
+Line #23:
+Line #24:
+	FuncDefn (Public Property Get Prefix() As String)
+Line #25:
+	Ld MultiUse 
+	St Prefix 
+Line #26:
+	EndProp 
+Line #27:
+Line #28:
+	FuncDefn (Public Property Let Prefix(ByVal value As String))
+Line #29:
+	Ld value 
+	St MultiUse 
+Line #30:
+	EndProp 
+Line #31:
+Line #32:
+	FuncDefn (Public Property Get Suffix() As String)
+Line #33:
+	Ld m_Prefix 
+	St Suffix 
+Line #34:
+	EndProp 
+Line #35:
+Line #36:
+	FuncDefn (Public Property Let Suffix(ByVal value As String))
+Line #37:
+	Ld value 
+	St m_Prefix 
+Line #38:
+	EndProp 
+Line #39:
+Line #40:
+	FuncDefn (Public Property Get Mood() As Long)
+Line #41:
+	Ld m_Suffix 
+	St Mood 
+Line #42:
+	EndProp 
+Line #43:
+Line #44:
+	FuncDefn (Public Property Let Mood(ByVal value As Long))
+Line #45:
+	Ld value 
+	Ld m_Suffix 
+	Ne 
+	IfBlock 
+Line #46:
+	Dim 
+	VarDefn Class_Terminate (As Long)
+Line #47:
+	Ld m_Suffix 
+	St Class_Terminate 
+Line #48:
+	Ld value 
+	St m_Suffix 
+Line #49:
+	Reparse 0x002E "        RaiseEvent MoodChanged(oldVal, m_Mood)"
+Line #50:
+	EndIfBlock 
+Line #51:
+	EndProp 
+Line #52:
+Line #53:
+	FuncDefn (Public Property Get Teardown() As Long)
+Line #54:
+	Ld m_Mood 
+	St Teardown 
+Line #55:
+	EndProp 
+Line #56:
+Line #57:
+	FuncDefn (Public Function Render() As String)
+Line #58:
+	Dim 
+	VarDefn sep (As String)
+Line #59:
+	Ld m_Suffix 
+	SelectCase 
+Line #60:
+	LitDI2 0x0000 
+	Case 
+	CaseDone 
+Line #61:
+	LitStr 0x0001 " "
+	St sep 
+Line #62:
+	LitDI2 0x0001 
+	Case 
+	CaseDone 
+Line #63:
+	LitStr 0x0002 "! "
+	St sep 
+Line #64:
+	LitDI2 0x0002 
+	Case 
+	CaseDone 
+Line #65:
+	LitStr 0x0004 "... "
+	St sep 
+Line #66:
+	CaseElse 
+Line #67:
+	LitStr 0x0001 " "
+	St sep 
+Line #68:
+	EndSelect 
+Line #69:
+	Ld MultiUse 
+	Ld sep 
+	Concat 
+	Ld m_Prefix 
+	Concat 
+	St Render 
+Line #70:
+	Reparse 0x001F "    RaiseEvent Rendered(Render)"
+Line #71:
+	EndFunc 
+Line #72:
+Line #73:
+	FuncDefn (Public Function MoodChanged() As String)
+Line #74:
+	Ld Render 
+	St MoodChanged 
+Line #75:
+	EndFunc 

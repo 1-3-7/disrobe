@@ -1,0 +1,5 @@
+jdbc:mysql://10.0.0.5:3306/billing
+X-Internal-Auth: 9f8e7d6c
+SELECT secret FROM vault WHERE tenant = ?
+AES/GCM/NoPadding
+feature.kill-switch=enabled

@@ -1,0 +1,22 @@
+{
+  "runtime": {
+    "ghidra_version": "12.1.2",
+    "java_home": "${JAVA_HOME}",
+    "java_version": "25.0.4",
+    "java_vendor": "Eclipse Adoptium",
+    "java_vm_name": "OpenJDK 64-Bit Server VM"
+  },
+  "program": "AccessEnum.packed.pecompact.exe",
+  "language": "x86:LE:32:default",
+  "image_base": "00400000",
+  "functions": 2,
+  "thunks": 0,
+  "instructions": 155,
+  "instruction_bytes": 393,
+  "defined_data_bytes": 20237,
+  "defined_bytes": 20630,
+  "defined_strings": 52,
+  "undefined_in_exec": 162964,
+  "executable_block_bytes": 180224,
+  "total_block_bytes": 185344
+}

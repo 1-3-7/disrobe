@@ -1,0 +1,11 @@
+<project outputDir="./obf_exp" baseDir="." xmlns="http://confuser.codeplex.com">
+  <rule pattern="true" preset="none" inherit="false">
+    <protection id="ctrl flow">
+      <argument name="predicate" value="Expression" />
+      <argument name="type" value="switch" />
+      <argument name="intensity" value="60" />
+      <argument name="depth" value="4" />
+    </protection>
+  </rule>
+  <module path="src\CffPred.exe" />
+</project>

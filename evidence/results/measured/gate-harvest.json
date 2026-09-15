@@ -1,0 +1,33 @@
+{
+  "ecosystem": "cross-ecosystem",
+  "gates": [
+    {
+      "display": "6/6 (100.0%)",
+      "id": "frisk-planted-recall",
+      "metric": "% of planted IOC categories detected",
+      "ok": 6,
+      "oracle": "deliberately planted findings (endpoint, manifest, URL, IPv4, email, .onion) committed under corpus/recon/planted",
+      "reproduce": "cargo test -p disrobe-core --test frisk_gauntlet",
+      "status": "ok",
+      "title": "frisk recon category recall on the committed planted ground-truth tree",
+      "total": 6,
+      "value": 100.0
+    },
+    {
+      "display": "102/102 (100.0%)",
+      "id": "pickle-corpus-coverage",
+      "metric": "% of manifest-declared pickle fixtures fully graded",
+      "ok": 102,
+      "oracle": "every manifest-declared fixture is verified by SHA-256, compared opcode-for-opcode and argument-for-argument with the committed CPython pickletools reference, symbolically executed, rendered, and classified from its manifest path",
+      "reproduce": "cargo test -p disrobe-pass-pickle --test corpus",
+      "status": "ok",
+      "title": "pickle corpus recovery against the committed pickletools reference",
+      "total": 102,
+      "value": 100.0
+    }
+  ],
+  "id": "gate-harvest",
+  "note": "Both measurements run their grading logic over the complete named fixture population. A missing fixture, unreadable member, hash mismatch, absent reference, traversal failure, recovery failure, or classification mismatch fails regeneration.",
+  "status": "ok",
+  "title": "Gate-test harvest: independently graded recovery checks"
+}
