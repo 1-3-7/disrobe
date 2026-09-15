@@ -65,12 +65,8 @@ fn value(text: &str) -> &OsStr {
 }
 
 fn panic_message(body: impl FnOnce()) -> String {
-    let previous: Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send> =
-        std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let outcome: Result<(), Box<dyn std::any::Any + Send>> =
         std::panic::catch_unwind(AssertUnwindSafe(body));
-    std::panic::set_hook(previous);
     let payload: Box<dyn std::any::Any + Send> = outcome.expect_err("the call must panic");
     payload
         .downcast_ref::<String>()

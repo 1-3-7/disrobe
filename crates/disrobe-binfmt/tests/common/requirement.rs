@@ -153,8 +153,27 @@ fn candidates(
     found
 }
 
+const BUSY_EXECUTABLE_ATTEMPTS: u32 = 20;
+const BUSY_EXECUTABLE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(25);
+
+fn run_candidate(candidate: &Path) -> std::io::Result<Output> {
+    let mut attempt: u32 = 1;
+    loop {
+        match Command::new(candidate).stdin(Stdio::null()).output() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < BUSY_EXECUTABLE_ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(BUSY_EXECUTABLE_BACKOFF);
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
 fn starts(candidate: &Path, toolchain: &Toolchain) -> Result<(), String> {
-    let outcome: std::io::Result<Output> = Command::new(candidate).stdin(Stdio::null()).output();
+    let outcome: std::io::Result<Output> = run_candidate(candidate);
     let output: Output = match outcome {
         Ok(output) => output,
         Err(error) => {
