@@ -1,6 +1,7 @@
+use disrobe_core::chain::VerdictDoc;
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::convert::{from_py, value_to_py};
@@ -88,6 +89,22 @@ fn recovered_bodies_from(data: &Json, signature_source: &str) -> usize {
             })
         })
         .count()
+}
+
+#[inline]
+fn chain_passes(data: &Json) -> impl Iterator<Item = &str> {
+    field(data, "nodes")
+        .and_then(Json::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(|node: &Json| field(node, "pass").and_then(Json::as_str))
+}
+
+#[inline]
+fn chain_verdict_grade(data: &Json) -> Option<String> {
+    field(data, "verdict")
+        .and_then(|verdict: &Json| VerdictDoc::deserialize(verdict).ok())
+        .map(|verdict: VerdictDoc| verdict.grade().as_str().to_owned())
 }
 
 #[inline]
@@ -284,11 +301,10 @@ typed_report!(
 typed_report!(
     DisasmPayload,
     "DisasmPayload",
-    "Recovered disassembly: instruction stream plus symbol table for a Disasm-rung envelope.",
+    "Recovered disassembly: per-function address ranges, instruction counts, and cyclomatic complexity.",
     accessors {
-        instruction_count -> usize : |d| array_len(d, "instructions"),
-        symbol_count -> usize : |d| array_len(d, "symbol_table"),
-        source_hash -> Option<String> : |d| field_str(d, "source_hash_hex").or_else(|| field_str(d, "source_hash")),
+        function_count -> usize : |d| field_u64(d, "function_count").map_or(0, u64_to_usize),
+        instruction_count -> usize : |d| field_u64(d, "instruction_count").map_or(0, u64_to_usize),
     }
 );
 
@@ -297,8 +313,8 @@ typed_report!(
     "FunctionList",
     "Query result over a module's recovered functions.",
     accessors {
-        kind -> Option<String> : |d| field_str(d, "kind"),
-        count -> usize : |d| array_len(d, "functions").max(array_len(d, "matches")),
+        kind -> Option<String> : |d| field_str(d, "query"),
+        count -> usize : |d| array_len(d, "matches"),
     }
 );
 
@@ -307,8 +323,8 @@ typed_report!(
     "QueryReport",
     "Result of a single IR query (calls-to, xrefs-to, string-decoders, complexity-over, capability-sites).",
     accessors {
-        kind -> Option<String> : |d| field_str(d, "kind"),
-        match_count -> usize : |d| array_len(d, "matches").max(array_len(d, "functions")).max(array_len(d, "decoders")).max(array_len(d, "sites")),
+        kind -> Option<String> : |d| field_str(d, "query"),
+        match_count -> usize : |d| array_len(d, "matches"),
     }
 );
 
@@ -327,8 +343,8 @@ typed_report!(
     "Capabilities",
     "Capability rule-set match report for a native binary: each matched capability with evidence and ATT&CK/MBC tags.",
     accessors {
-        match_count -> usize : |d| array_len(d, "matches"),
-        format -> Option<String> : |d| field_str(d, "format"),
+        match_count -> usize : |d| array_len(d, "capabilities"),
+        matched_rules -> usize : |d| field_u64(d, "matched_rules").map_or(0, u64_to_usize),
     }
 );
 
@@ -360,10 +376,10 @@ typed_report!(
     "EntropyReport",
     "Sliding-window Shannon entropy map of a binary, with per-window bits/byte and a byte histogram.",
     accessors {
-        window_count -> usize : |d| array_len(d, "windows").max(array_len(d, "samples")),
-        mean -> Option<f64> : |d| field_f64(d, "mean").or_else(|| field_f64(d, "mean_entropy")),
-        min -> Option<f64> : |d| field_f64(d, "min").or_else(|| field_f64(d, "min_entropy")),
-        max -> Option<f64> : |d| field_f64(d, "max").or_else(|| field_f64(d, "max_entropy")),
+        window_count -> usize : |d| array_len(d, "windows"),
+        mean -> Option<f64> : |d| field_f64(d, "mean"),
+        min -> Option<f64> : |d| field_f64(d, "min"),
+        max -> Option<f64> : |d| field_f64(d, "max"),
     }
 );
 
@@ -409,7 +425,7 @@ typed_report!(
     "SecretScanReport",
     "Leaked-credential scan result (cloud keys, VCS tokens, JWTs, PEM/SSH keys) over raw bytes.",
     accessors {
-        finding_count -> usize : |d| array_len(d, "findings").max(array_len(d, "secrets")),
+        finding_count -> usize : |d| array_len(d, "findings"),
     }
 );
 
@@ -450,7 +466,7 @@ typed_report!(
     "FingerprintReport",
     "Aggregated crypto-constant + FLIRT + string-xref fingerprint sidecar for a native binary.",
     accessors {
-        crypto_hit_count -> usize : |d| array_len(d, "crypto").max(array_len(d, "crypto_constants")),
+        crypto_hit_count -> usize : |d| array_len(d, "crypto"),
     }
 );
 
@@ -459,7 +475,7 @@ typed_report!(
     "SignatureReport",
     "Crypto-primitive signatures (AES T-tables, SHA/MD5 IV+K, ChaCha20 sigma) and optional FLIRT matches.",
     accessors {
-        signature_count -> usize : |d| array_len(d, "signatures").max(array_len(d, "matches")),
+        signature_count -> usize : |d| array_len(d, "signatures"),
     }
 );
 
@@ -468,7 +484,7 @@ typed_report!(
     "SigmakerReport",
     "Wildcarded byte signature generated from a function at a virtual address.",
     accessors {
-        ida_pattern -> Option<String> : |d| field_str(d, "ida").or_else(|| field_str(d, "pattern")),
+        ida_pattern -> Option<String> : |d| field_str(d, "ida_pattern"),
         byte_count -> usize : |d| array_len(d, "bytes"),
     }
 );
@@ -487,11 +503,13 @@ typed_report!(
 typed_report!(
     PatchReport,
     "PatchReport",
-    "Result of rewriting native bytes at a virtual address and revalidating the patched image.",
+    "Applied native byte edits with original and replacement bytes; the patched image reparsed as the original format.",
     accessors {
-        at -> Option<u64> : |d| field_u64(d, "at"),
-        bytes_written -> Option<u64> : |d| field_u64(d, "bytes_written").or_else(|| field_u64(d, "written")),
-        revalidated -> bool : |d| field_bool(d, "revalidated"),
+        at -> Option<u64> : |d| field(d, "edits").and_then(Json::as_array).and_then(|edits: &Vec<Json>| edits.first()).and_then(|edit: &Json| field_u64(edit, "virtual_address")),
+        bytes_written -> Option<u64> : |d| field_u64(d, "bytes_changed"),
+        edit_count -> usize : |d| array_len(d, "edits"),
+        format -> Option<String> : |d| field_str(d, "format"),
+        image_base -> Option<u64> : |d| field_u64(d, "image_base"),
     }
 );
 
@@ -500,18 +518,22 @@ typed_report!(
     "YaraReport",
     "Parsed YARA ruleset AST, or a generated candidate rule from an artifact.",
     accessors {
-        rule_count -> usize : |d| array_len(d, "rules"),
+        rule_count -> usize : |d| field(d, "rules").and_then(Json::as_array).map_or_else(|| usize::from(field(d, "rule").is_some_and(Json::is_object)), Vec::len),
     }
 );
 
 typed_report!(
     ChainReport,
     "ChainReport",
-    "End-to-end chain/auto recovery document: per-pass status, stage hashes, verdict, provenance.",
+    "End-to-end chain/auto recovery document: per-node pass, hashes, and verdicts, plus the chain verdict and statistics.",
     accessors {
-        spec -> Option<String> : |d| field_str(d, "spec"),
-        pass_count -> usize : |d| array_len(d, "passes").max(array_len(d, "stages")),
-        terminated -> bool : |d| field_bool(d, "terminated"),
+        spec -> Option<String> : |d| nested_str(d, "spec", "raw"),
+        node_count -> usize : |d| array_len(d, "nodes"),
+        pass_count -> usize : |d| chain_passes(d).count(),
+        passes -> Vec<String> : |d| chain_passes(d).map(str::to_owned).collect(),
+        verdict -> Option<String> : |d| field_str(d, "verdict"),
+        verdict_grade -> Option<String> : chain_verdict_grade,
+        final_format -> Option<String> : |d| field_str(d, "final_format"),
     }
 );
 
@@ -578,7 +600,7 @@ typed_report!(
     accessors {
         peeled_source -> Option<String> : |d| nested_str(d, "cleanup", "source").or_else(|| nested_str(d, "peel", "final_source")),
         cleanup_source -> Option<String> : |d| nested_str(d, "cleanup", "source"),
-        layer_count -> usize : |d| nested_array_len(d, "peel", "layers").max(nested_array_len(d, "peel", "stages")),
+        layer_count -> usize : |d| nested_array_len(d, "peel", "steps"),
     }
 );
 
@@ -588,7 +610,8 @@ typed_report!(
     "Family-detection verdict for an obfuscated Python source string.",
     llm,
     accessors {
-        match_count -> usize : |d| array_len(d, "matches").max(array_len(d, "families")),
+        match_count -> usize : |d| array_len(d, "markers"),
+        confidence -> Option<f64> : |d| field_f64(d, "confidence"),
     }
 );
 

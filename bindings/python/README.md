@@ -103,9 +103,10 @@ the recovered program.
 
 `pyarmor_unpack` accepts the binary payload extracted from a protected wrapper.
 Its report describes the static unpack result; it does not return the recovered
-plaintext itself. This binding has no runtime-module argument, so v8/v9 payloads
-return detection metadata without decrypted plaintext. Use `pyarmor_detect` to
-inspect wrapper source text directly.
+plaintext itself. Without `runtime`, v8/v9 payloads return detection metadata
+without decrypted plaintext. Pass the bytes of the matching `pyarmor_runtime`
+extension module as `runtime` to decrypt statically; the runtime is parsed, not
+loaded. Use `pyarmor_detect` to inspect wrapper source text directly.
 
 ```python
 from __future__ import annotations
@@ -115,7 +116,8 @@ from pathlib import Path
 import disrobe
 
 payload: bytes = Path("payload.bin").read_bytes()
-report: disrobe.PyarmorUnpack = disrobe.pyarmor_unpack(payload)
+runtime: bytes = Path("pyarmor_runtime_000000/pyarmor_runtime.pyd").read_bytes()
+report: disrobe.PyarmorUnpack = disrobe.pyarmor_unpack(payload, runtime=runtime)
 
 print(report.status)
 print(report.plaintext_len, report.plaintext_blake3_hex)

@@ -9,7 +9,9 @@ full underlying record, a ``to_json()`` serializer, and ``from_json_str`` /
 
 from collections.abc import Sequence
 from os import PathLike
-from typing import Any, Literal, Protocol, Self, TypedDict, Union, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, Union, overload, runtime_checkable
+
+from typing_extensions import Self
 
 __version__: str
 __doc__: str
@@ -140,14 +142,12 @@ class CanonicalSource(_Report):
     def confidence(self) -> float | None: ...
 
 class DisasmPayload(_Report):
-    """Recovered disassembly: functions, instruction stream, and symbols."""
+    """Recovered disassembly: per-function address ranges, instruction counts, and complexity."""
 
     @property
+    def function_count(self) -> int: ...
+    @property
     def instruction_count(self) -> int: ...
-    @property
-    def symbol_count(self) -> int: ...
-    @property
-    def source_hash(self) -> str | None: ...
 
 class FunctionList(_Report):
     """Query result over a module's recovered functions."""
@@ -179,7 +179,7 @@ class Capabilities(_Report):
     @property
     def match_count(self) -> int: ...
     @property
-    def format(self) -> str | None: ...
+    def matched_rules(self) -> int: ...
 
 class ExtractionResult(_Report):
     """Container/firmware extraction result with carved member entries."""
@@ -336,14 +336,18 @@ class NativeMatch(_Report):
     def withheld(self) -> int: ...
 
 class PatchReport(_Report):
-    """Result of rewriting native bytes and revalidating the image."""
+    """Applied native byte edits; the patched image reparsed as the original format."""
 
     @property
     def at(self) -> int | None: ...
     @property
     def bytes_written(self) -> int | None: ...
     @property
-    def revalidated(self) -> bool: ...
+    def edit_count(self) -> int: ...
+    @property
+    def format(self) -> str | None: ...
+    @property
+    def image_base(self) -> int | None: ...
 
 class YaraReport(_Report):
     """Parsed YARA ruleset AST, or a generated candidate rule."""
@@ -352,14 +356,22 @@ class YaraReport(_Report):
     def rule_count(self) -> int: ...
 
 class ChainReport(_Report):
-    """End-to-end chain/auto recovery document."""
+    """End-to-end chain/auto recovery document: nodes, chain verdict, statistics."""
 
     @property
     def spec(self) -> str | None: ...
     @property
+    def node_count(self) -> int: ...
+    @property
     def pass_count(self) -> int: ...
     @property
-    def terminated(self) -> bool: ...
+    def passes(self) -> list[str]: ...
+    @property
+    def verdict(self) -> ChainVerdict | None: ...
+    @property
+    def verdict_grade(self) -> ChainVerdictGrade | None: ...
+    @property
+    def final_format(self) -> str | None: ...
 
 class EnvelopeReport(_Report):
     """Verification report for a .dr envelope."""
@@ -396,6 +408,19 @@ RoundtripStatus = Literal[
     "skipped",
 ]
 PyarmorUnpackStatus = Literal["functional", "bcc-partial", "detect-only", "skeleton"]
+ChainVerdict = Literal[
+    "ok",
+    "complete",
+    "fan-out",
+    "fan-out-partial",
+    "stalled",
+    "cycle",
+    "cap-reached",
+    "extracted",
+    "error",
+    "dry-run",
+]
+ChainVerdictGrade = Literal["ok", "incomplete", "failed"]
 ContainerListing = Literal["enumerated", "requires-extraction", "unreadable"]
 
 class _LlmReport(_Report):
@@ -457,6 +482,8 @@ class PyDeobDetection(_LlmReport):
 
     @property
     def match_count(self) -> int: ...
+    @property
+    def confidence(self) -> float | None: ...
 
 class ObfuscatorPass(_Report):
     """One registered Python obfuscator pass, identified by its stable id."""
@@ -1335,7 +1362,14 @@ def py_deob_detect(source: str) -> PyDeobDetection: ...
 def py_deob_list_passes() -> list[ObfuscatorPass]: ...
 def py_deob_detect_pass(source: str, pass_id: str) -> PyDeobDetection: ...
 def pyarmor_detect(source: str, *, pack: Pack | None = None) -> PyarmorDetection: ...
-def pyarmor_unpack(wrapper_bytes: bytes, *, pack: Pack | None = None) -> PyarmorUnpack: ...
+@overload
+def pyarmor_unpack(
+    payload: bytes, *, runtime: bytes | None = None, pack: Pack | None = None
+) -> PyarmorUnpack: ...
+@overload
+def pyarmor_unpack(
+    *, wrapper_bytes: bytes, runtime: bytes | None = None, pack: Pack | None = None
+) -> PyarmorUnpack: ...
 def pyarmor_classify(source: str, payload: bytes) -> PyarmorClassification: ...
 def pyinstaller_extract(image_bytes: bytes) -> PyInstallerArchive: ...
 def pyinstaller_entry_bytes(image_bytes: bytes, entry_name: str) -> bytes: ...

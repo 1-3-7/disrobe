@@ -123,6 +123,8 @@ Pass the documented string values to functions; do not import the aliases at run
 | `Pack` | `"pack-1"`, `"pack-2"`, `"pack-3"`, `"pack-4"` |
 | `RoundtripStatus` | `"perfect"`, `"semantic"`, `"code-diff"`, `"no-interpreter"`, `"recompile-failed"`, `"skipped"` |
 | `PyarmorUnpackStatus` | `"functional"`, `"bcc-partial"`, `"detect-only"`, `"skeleton"` |
+| `ChainVerdict` | `"ok"`, `"complete"`, `"fan-out"`, `"fan-out-partial"`, `"stalled"`, `"cycle"`, `"cap-reached"`, `"extracted"`, `"error"`, `"dry-run"` |
+| `ChainVerdictGrade` | `"ok"`, `"incomplete"`, `"failed"` |
 | `ContainerListing` | `"enumerated"`, `"requires-extraction"`, `"unreadable"` |
 | `SymbolKind` | `"function"`, `"data"`, `"label"`, `"export"`, `"import"` |
 | `InstructionFlow` | `"sequential"`, `"call"`, `"indirect-call"`, `"conditional-branch"`, `"unconditional-branch"`, `"indirect-branch"`, `"return"`, `"interrupt"` |
@@ -204,7 +206,7 @@ Invalid Python argument types can also raise standard Python exceptions.
 | | `py_deob_list_passes()` | `list[ObfuscatorPass]` |
 | | `py_deob_detect_pass(source, pass_id)` | `PyDeobDetection` |
 | PyArmor | `pyarmor_detect(source, *, pack=None)` | `PyarmorDetection` |
-| | `pyarmor_unpack(wrapper_bytes, *, pack=None)` | `PyarmorUnpack` |
+| | `pyarmor_unpack(payload, *, runtime=None, pack=None)` | `PyarmorUnpack` |
 | | `pyarmor_classify(source, payload)` | `PyarmorClassification` |
 | PyInstaller | `pyinstaller_extract(image_bytes)` | `PyInstallerArchive` |
 | | `pyinstaller_entry_bytes(image_bytes, entry_name)` | `bytes` |
@@ -274,6 +276,11 @@ import disrobe
 
 chain: disrobe.ChainReport = disrobe.auto(Path("sample.bin").read_bytes(), max_depth=8)
 
+passes: list[str] = chain.passes
+verdict: disrobe.ChainVerdict | None = chain.verdict
+grade: disrobe.ChainVerdictGrade | None = chain.verdict_grade
+print(chain.node_count, chain.pass_count, passes, verdict, grade)
+
 full_plan_json: str = chain.to_json()
 print(full_plan_json)
 ```
@@ -286,9 +293,21 @@ The registered pass tree covers pyarmor, pyinstaller, nuitka,
 py-decompile, py-deob, container, js, jvm, dotnet, wasm, mobile, swift-objc,
 and the native packer detector.
 
-Use `to_json()` for the current plan, including its nodes, statistics, and
-verdict. The legacy `spec`, `pass_count`, and `terminated` accessors do not map
-the current automatic-chain report schema.
+The accessors read the `disrobe.chain/v1` document. `to_json()` returns the
+complete plan, including per-node hashes, detector picks, and statistics.
+
+| Accessor | Value |
+|---|---|
+| `spec: str \| None` | The raw chain specification, such as `"auto:8"` |
+| `node_count: int` | Length of `nodes`, including the root input node and extracted children |
+| `pass_count: int` | Number of nodes whose `pass` is set |
+| `passes: list[str]` | Those pass ids in node order, such as `["native.packer-unpack"]` |
+| `verdict: ChainVerdict \| None` | The chain-level `verdict` |
+| `verdict_grade: ChainVerdictGrade \| None` | The grade the core assigns to that verdict; `None` for an unrecognised verdict |
+| `final_format: str \| None` | The final format tag, when the chain reached one |
+
+The earlier `terminated` accessor was removed because the document has no
+termination field; read `verdict` and `verdict_grade` instead.
 
 ## Generic dispatch
 
@@ -568,7 +587,7 @@ rule_count: int = rule.rule_count
 | `BehaviorReport` | `category_count: int` |
 | `IdentifyReport` | `format: str \| None`, `finding_count: int` |
 | `SecretScanReport` | `finding_count: int` |
-| `Capabilities` | `match_count: int`, `format: str \| None` |
+| `Capabilities` | `match_count: int` (entries in `capabilities`), `matched_rules: int` |
 | `ExtractionResult` | `kind: str \| None`, `entry_count: int`, `integrity_violation_count: int` |
 | `OverlayReport` | `max_depth: int \| None`, `nodes_visited: int \| None`, `chunks_total: int \| None`, `bytes_carved: int \| None` |
 | `YaraReport` | `rule_count: int` |
@@ -610,8 +629,8 @@ section_count: int = syms.section_count
 import_count: int = syms.import_count
 
 disasm_payload: disrobe.DisasmPayload = disrobe.native_disasm(data)
+function_count: int = disasm_payload.function_count
 instruction_count: int = disasm_payload.instruction_count
-source_hash: str | None = disasm_payload.source_hash
 
 entropy: disrobe.EntropyReport = disrobe.native_entropy(data)
 mean: float | None = entropy.mean
@@ -624,7 +643,8 @@ patch_report: disrobe.PatchReport
 patched_bytes, patch_report = disrobe.native_patch(
     data, at=0x1234, nop_start=0x1234, nop_end=0x1240
 )
-revalidated: bool = patch_report.revalidated
+bytes_written: int | None = patch_report.bytes_written
+edit_count: int = patch_report.edit_count
 
 code: bytes = Path("function.x86.bin").read_bytes()
 deob: disrobe.NativeDeobfuscation = disrobe.native_deobfuscate(
@@ -641,7 +661,7 @@ fully_recovered: bool = deob.fully_recovered
 | Class | Notable typed accessors |
 |---|---|
 | `SymbolsReport` | `symbol_count: int`, `section_count: int`, `import_count: int` |
-| `DisasmPayload` | `instruction_count: int`, `symbol_count: int`, `source_hash: str \| None` |
+| `DisasmPayload` | `function_count: int`, `instruction_count: int` |
 | `CallGraph` | `node_count: int`, `edge_count: int` |
 | `EntropyReport` | `window_count: int`, `mean: float \| None`, `min: float \| None`, `max: float \| None` |
 | `SbomReport` | `component_count: int`, `bom_format: str \| None`, `spec_version: str \| None` |
@@ -649,7 +669,7 @@ fully_recovered: bool = deob.fully_recovered
 | `SignatureReport` | `signature_count: int` |
 | `SigmakerReport` | `ida_pattern: str \| None`, `byte_count: int` |
 | `DiffReport` | `added: int`, `removed: int`, `changed: int` |
-| `PatchReport` | `at: int \| None`, `bytes_written: int \| None`, `revalidated: bool` |
+| `PatchReport` | `at: int \| None` (first applied edit), `bytes_written: int \| None`, `edit_count: int`, `format: str \| None`, `image_base: int \| None` |
 | `NativeFormat` | `kind: str \| None`, `bits: int \| None`, `subsystem: str \| None` |
 | `DetectionList` | `count: int` |
 | `BackendList` | `count: int`, `available_count: int` |
@@ -872,7 +892,7 @@ if first_id is not None:
 | `PyDecompileReport` | `source`, `marshal_version`, `decompile_version`, `recovered_directly`, `fallback_reason`, `roundtrip_status`, `roundtrip_detail`, `interpreter_path`, `interpreter_version`, `llm` |
 | `PyDisasmReport` | `marshal_version: str \| None`, `instruction_count: int`, `text: str \| None`, `llm` |
 | `PyDeobReport` | `peeled_source: str \| None`, `cleanup_source: str \| None`, `layer_count: int`, `llm` |
-| `PyDeobDetection` | `match_count: int`, `llm` |
+| `PyDeobDetection` | `match_count: int` (matched markers), `confidence: float \| None`, `llm` |
 | `ObfuscatorPass` | `id: str \| None` |
 
 ## PyArmor
@@ -903,10 +923,17 @@ payload_size: int | None = detection.payload_size
 
 ### `pyarmor_unpack`
 
-Accepts the binary payload extracted from a PyArmor wrapper. This binding does
-not accept a runtime module, so v8/v9 payloads return detection metadata without
-decrypted plaintext. The report describes the result and does not expose
-plaintext bytes. There is no `--allow-dynamic` equivalent.
+Accepts the binary payload extracted from a PyArmor wrapper: the bytes literal
+passed as the third argument of `__pyarmor__`, not the wrapper source. The
+earlier keyword `wrapper_bytes=` is accepted as an alias for `payload`; passing
+both raises `TypeError`.
+
+Without `runtime`, v8/v9 payloads return detection metadata and status
+`"detect-only"`. Pass the bytes of the matching `pyarmor_runtime` extension
+module as `runtime` to decrypt the payload statically; the runtime is parsed,
+not loaded or executed. A runtime the core cannot parse raises `DisrobeError`.
+The report describes the result and does not expose plaintext bytes. There is
+no `--allow-dynamic` equivalent.
 
 The core static path, supplied with the matching runtime, decrypts each body and
 decodes one complete root `CodeObject` from its header-anchored marshal stream on
@@ -922,7 +949,8 @@ from pathlib import Path
 import disrobe
 
 unpacked: disrobe.PyarmorUnpack = disrobe.pyarmor_unpack(
-    Path("payload.bin").read_bytes()
+    Path("payload.bin").read_bytes(),
+    runtime=Path("pyarmor_runtime_000000/pyarmor_runtime.pyd").read_bytes(),
 )
 
 status: disrobe.PyarmorUnpackStatus | None = unpacked.status

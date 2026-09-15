@@ -2,8 +2,10 @@ use std::time::Instant;
 
 use disrobe_pass_pyarmor::{
     Detection as PyarmorDetection, ModeClassification, PyarmorLlmInput, StaticDecryptStatus,
-    StaticUnpackOutput, classify_modes, detect_from_wrapper, unpack_static,
+    StaticUnpackConfig, StaticUnpackOutput, classify_modes, detect_from_wrapper,
+    unpack_static_with_config,
 };
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use serde::Serialize;
@@ -97,12 +99,35 @@ fn pyarmor_detect(source: &str, pack: Option<&str>) -> PyResult<PyPyarmorDetecti
 }
 
 #[pyfunction]
-#[pyo3(signature = (wrapper_bytes, *, pack = None))]
-#[pyo3(text_signature = "(wrapper_bytes, *, pack='pack-1')")]
-fn pyarmor_unpack(wrapper_bytes: &[u8], pack: Option<&str>) -> PyResult<PyarmorUnpack> {
+#[pyo3(signature = (payload = None, *, runtime = None, pack = None, wrapper_bytes = None))]
+#[pyo3(text_signature = "(payload=None, *, runtime=None, pack='pack-1', wrapper_bytes=None)")]
+fn pyarmor_unpack(
+    payload: Option<&[u8]>,
+    runtime: Option<&[u8]>,
+    pack: Option<&str>,
+    wrapper_bytes: Option<&[u8]>,
+) -> PyResult<PyarmorUnpack> {
+    let payload: &[u8] = match (payload, wrapper_bytes) {
+        (Some(bytes), None) | (None, Some(bytes)) => bytes,
+        (Some(_), Some(_)) => {
+            return Err(PyTypeError::new_err(
+                "pyarmor_unpack() got both 'payload' and 'wrapper_bytes'; pass the payload once",
+            ));
+        }
+        (None, None) => {
+            return Err(PyTypeError::new_err(
+                "pyarmor_unpack() missing required argument 'payload'",
+            ));
+        }
+    };
     let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
+    let config: StaticUnpackConfig = StaticUnpackConfig {
+        runtime_bytes: runtime.map(<[u8]>::to_vec),
+        ..StaticUnpackConfig::default()
+    };
     let started: Instant = Instant::now();
-    let out: StaticUnpackOutput = unpack_static(wrapper_bytes).map_err(map("pyarmor unpack"))?;
+    let out: StaticUnpackOutput =
+        unpack_static_with_config(payload, &config).map_err(map("pyarmor unpack"))?;
     let detection: PyarmorDetection = PyarmorDetection {
         version: out.pyarmor_version,
         protection: out.protection_kind,
@@ -138,9 +163,9 @@ fn pyarmor_unpack(wrapper_bytes: &[u8], pack: Option<&str>) -> PyResult<PyarmorU
         detection: Some(detection),
         recovered_keys: Vec::new(),
         authorized_keys: false,
-        input_path: "<wrapper>".to_owned(),
-        input_size_bytes: crate::llm::usize_to_u64_saturating(wrapper_bytes.len()),
-        input_hash_blake3: crate::llm::blake3_hex(wrapper_bytes),
+        input_path: "<payload>".to_owned(),
+        input_size_bytes: crate::llm::usize_to_u64_saturating(payload.len()),
+        input_hash_blake3: crate::llm::blake3_hex(payload),
         duration_ms,
     };
     let step: disrobe_llm_metadata::PipelineStep = make_step(
@@ -150,8 +175,7 @@ fn pyarmor_unpack(wrapper_bytes: &[u8], pack: Option<&str>) -> PyResult<PyarmorU
         "surface",
         duration_ms,
     );
-    let input: disrobe_llm_metadata::InputDescriptor =
-        make_input_descriptor("<wrapper>", wrapper_bytes);
+    let input: disrobe_llm_metadata::InputDescriptor = make_input_descriptor("<payload>", payload);
     let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
     Ok(PyarmorUnpack::from_value(value))
 }

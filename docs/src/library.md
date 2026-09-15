@@ -76,7 +76,7 @@ source: str | None = recovered.source
 
 caps: Capabilities = disrobe.capabilities(Path("packed.exe").read_bytes())
 
-print(caps.format, caps.match_count)
+print(caps.matched_rules, caps.match_count)
 
 obj: CodeObject = CodeObject.from_dr(Path("module.dr").read_bytes())
 
