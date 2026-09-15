@@ -396,8 +396,9 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .expect("ci.yml py-band-gate steps");
     assert_eq!(
         test_step_command(py_band_steps, "build the disrobe cli the harness drives"),
-        "cargo build --release -p disrobe-cli --bin disrobe",
-        "the Python band gate must still exercise an optimized release CLI"
+        "cargo build --release -p disrobe-cli -p disrobe-pass-py-decompile --bin disrobe --test arbitrary_recompile_gate_310 --test arbitrary_recompile_gate_312 --test arbitrary_recompile_gate_313",
+        "the Python band gate must build the optimized release CLI and all three grader binaries \
+         in one feature resolution, so the grader steps compile nothing"
     );
     for (name, requirement, target) in [
         (
@@ -425,7 +426,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "{name} must fail instead of skipping its required interpreter band"
         );
         let expected_command: String = format!(
-            "cargo test --release -p disrobe-pass-py-decompile --test {target} -- --nocapture"
+            "cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test {target} -- --nocapture"
         );
         assert_eq!(
             step.get("run").and_then(Value::as_str),

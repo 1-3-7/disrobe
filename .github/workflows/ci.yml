@@ -1053,19 +1053,19 @@ jobs:
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: build the disrobe cli the harness drives
-        run: cargo build --release -p disrobe-cli --bin disrobe
+        run: cargo build --release -p disrobe-cli -p disrobe-pass-py-decompile --bin disrobe --test arbitrary_recompile_gate_310 --test arbitrary_recompile_gate_312 --test arbitrary_recompile_gate_313
       - name: per-code-object recompile-equivalence floor (>= 95.76% on the 3.10 band)
         env:
           DISROBE_REQUIRE_PY_310: "1"
-        run: cargo test --release -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
+        run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_310 -- --nocapture
       - name: per-code-object recompile-equivalence floor (>= 95.77% on the 3.12 band)
         env:
           DISROBE_REQUIRE_PY_312: "1"
-        run: cargo test --release -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
+        run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_312 -- --nocapture
       - name: per-code-object recompile-equivalence floor (>= 96.06% on the 3.13 band)
         env:
           DISROBE_REQUIRE_PY_313: "1"
-        run: cargo test --release -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
+        run: cargo test --release -p disrobe-cli -p disrobe-pass-py-decompile --test arbitrary_recompile_gate_313 -- --nocapture
 
   execution-differentials:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests'))
