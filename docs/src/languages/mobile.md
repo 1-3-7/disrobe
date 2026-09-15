@@ -7,7 +7,7 @@
 | Layer | Coverage |
 |---|---|
 | Runtimes detected | `react-native-apk`, `react-native-ipa`, `hermes-raw-bytecode`, `flutter-libapp-so`, `flutter-dart-kernel`, `xamarin-apk`, `cordova-apk`, `capacitor-apk`, `nativescript-apk`, `ipa`, `android-apk-dex`, `unknown` |
-| Hermes | Bytecode versions v60 through v96 parse against the documented header layout; v76, v84, and v96 lift to pseudo-JavaScript against a real hermesc-built sample |
+| Hermes | Bytecode versions v60 through v96 parse against the documented header layout; v62, v71, v74, v76, v83, v84, v89, and v96 lift to pseudo-JavaScript against builds of one sample by the real Hermes compiler |
 | Dart kernel | `.dill` / `kernel_blob.bin` parsed to byte-exact original Dart bodies from the kernel source table |
 | Dart AOT | `libapp.so` AArch64 bodies disassembled with resolved direct-call and branch targets, plus class table, library URIs, and string pool |
 | Dart AOT declaration graph | full library/class/method/field inventory, with method parameter counts, from a `libapp.so` or four standalone snapshot blobs on a pinned Dart SDK snapshot version |
@@ -89,7 +89,7 @@ flutter kernel: OK
 
 ## Coverage and fidelity
 
-`decompile` reads the header of Hermes bytecode versions v60 through v96 against the documented layout. Lifting each function back to pseudo-JavaScript is graded against a real hermesc-built sample at v76, v84, and v96 only; other versions in the v60-v96 band parse but are not graded against a real compiler. On a hermesc-built HBC v96 sample (8 functions, CI-gated) every function lifts at 0 fallback opcodes. A non-redistributable 66 MiB production bundle parsed the <!-- m:hermes_functions -->122,633<!-- /m -->-function table with no parse failure (measured locally, not CI-gated).
+`decompile` reads the header of Hermes bytecode versions v60 through v96 against the documented layout. Lifting each function back to pseudo-JavaScript is graded against builds of one sample by the real Hermes compiler at v62, v71, v74, v76, v83, v84, v89, and v96, each through the same JavaScript-engine behavior comparison; other versions in the v60-v96 band parse but are not graded against a real compiler. On a hermesc-built HBC v96 sample (8 functions, CI-gated) every function lifts at 0 fallback opcodes. A non-redistributable 66 MiB production bundle parsed the <!-- m:hermes_functions -->122,633<!-- /m -->-function table with no parse failure (measured locally, not CI-gated).
 
 Two distinct recovery paths cover two distinct Flutter artifacts.
 
