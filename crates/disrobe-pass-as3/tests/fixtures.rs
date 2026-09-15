@@ -1,13 +1,38 @@
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::panic,
     clippy::cast_possible_truncation
 )]
 
+use std::path::{Path, PathBuf};
+
 use disrobe_pass_as3::abc::{ABC_MAJOR, ABC_MINOR};
 use disrobe_pass_as3::swf::{
-    Swf, SwfCompression, TagCode, parse, parse_define_sprite, parse_do_abc,
+    Swf, SwfCompression, SymbolClassEntry, TagCode, parse, parse_define_sprite, parse_do_abc,
+    parse_symbol_class,
 };
+use disrobe_pass_as3::{DetectedLanguage, DetectionReport, detect_source_or_binary};
+
+fn workspace_file(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(relative)
+}
+
+fn committed_fixture(relative: &str) -> Vec<u8> {
+    let path: PathBuf = workspace_file(relative);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is a committed toolchain-produced fixture, so a run that cannot read it must \
+             fail rather than grade nothing: {error}",
+            path.display()
+        )
+    });
+    assert!(!bytes.is_empty(), "{} is empty", path.display());
+    bytes
+}
 
 fn rect_zero_bytes() -> Vec<u8> {
     vec![0x00]
@@ -45,15 +70,6 @@ fn build_swf(body_inner: &[u8]) -> Vec<u8> {
     swf
 }
 
-fn build_minimal_abc_blob() -> Vec<u8> {
-    let mut b: Vec<u8> = Vec::new();
-    b.extend_from_slice(&ABC_MINOR.to_le_bytes());
-    b.extend_from_slice(&ABC_MAJOR.to_le_bytes());
-    b.extend(std::iter::repeat_n(0x01u8, 7));
-    b.extend(std::iter::repeat_n(0x00u8, 5));
-    b
-}
-
 #[test]
 fn fixture_a_swf_with_define_sprite() {
     let sprite_payload: Vec<u8> = {
@@ -82,67 +98,154 @@ fn fixture_a_swf_with_define_sprite() {
     assert!(sprite.tags.iter().any(|t| t.code == TagCode::SHOW_FRAME));
 }
 
-#[test]
-fn fixture_b_swf_with_do_abc() {
-    let abc_blob: Vec<u8> = build_minimal_abc_blob();
-    let mut payload: Vec<u8> = Vec::new();
-    payload.extend_from_slice(&0_u32.to_le_bytes());
-    payload.extend_from_slice(b"Script");
-    payload.push(0);
-    payload.extend_from_slice(&abc_blob);
+fn exported_declarations(pcode: &str) -> Vec<String> {
+    let mut declarations: Vec<String> = Vec::new();
+    let mut awaiting: bool = false;
+    for line in pcode.lines() {
+        if line.starts_with("; script ") {
+            awaiting = true;
+            continue;
+        }
+        if !awaiting {
+            continue;
+        }
+        let mut rest: &str = line.trim();
+        for modifier in ["public ", "internal ", "final ", "dynamic "] {
+            rest = rest.strip_prefix(modifier).unwrap_or(rest);
+        }
+        let Some(declared): Option<&str> = rest
+            .strip_prefix("class ")
+            .or_else(|| rest.strip_prefix("interface "))
+        else {
+            continue;
+        };
+        let name: &str = declared
+            .split_whitespace()
+            .next()
+            .expect("an exported declaration names its type");
+        declarations.push(name.to_owned());
+        awaiting = false;
+    }
+    declarations
+}
 
-    let body_inner: Vec<u8> = pack_short_tag(TagCode::DO_ABC.0, &payload);
-    let bytes: Vec<u8> = build_swf(&body_inner);
-    let swf: Swf = parse(&bytes).expect("parse swf");
+#[test]
+fn fixture_b_real_haxe_swf_matches_the_independent_decompiler_export() {
+    let bytes: Vec<u8> = committed_fixture("corpus/flash/avm2_disasm_oracle/control_shapes.swf");
+    let source: String = String::from_utf8(committed_fixture(
+        "corpus/flash/avm2_disasm_oracle/ControlShapes.hx",
+    ))
+    .expect("the committed Haxe source is UTF-8");
+    let pcode: String = String::from_utf8(committed_fixture(
+        "corpus/flash/avm2_disasm_oracle/control_shapes.pcode.txt",
+    ))
+    .expect("the committed JPEXS export is UTF-8");
+    let declared_main: &str = source
+        .lines()
+        .find_map(|line: &str| line.strip_prefix("class "))
+        .and_then(|rest: &str| rest.split_whitespace().next())
+        .expect("the committed Haxe source declares its main class");
+    let exported: Vec<String> = exported_declarations(&pcode);
+    assert_eq!(
+        exported.len(),
+        pcode
+            .lines()
+            .filter(|line: &&str| line.starts_with("; script "))
+            .count(),
+        "every exported script must declare exactly one type: {exported:?}"
+    );
+    assert!(exported.iter().any(|name: &String| name == declared_main));
+
+    let swf: Swf = parse(&bytes).expect("parse the real Haxe 4.3.7 SWF");
+    assert_eq!(swf.header.compression, SwfCompression::Zlib);
     let do_abc_tag: &disrobe_pass_as3::SwfTag = swf
         .tags
         .iter()
         .find(|t| t.code == TagCode::DO_ABC)
-        .expect("expected DoABC tag");
+        .expect("the Haxe SWF carries a DoABC tag");
     let blob: disrobe_pass_as3::DoAbc = parse_do_abc(do_abc_tag).expect("parse do_abc");
-    assert_eq!(blob.name, "Script");
     let abc: disrobe_pass_as3::AbcFile =
         disrobe_pass_as3::abc::parse(&blob.abc_bytes).expect("parse abc");
     assert_eq!(abc.minor, ABC_MINOR);
     assert_eq!(abc.major, ABC_MAJOR);
-}
+    let recovered: Vec<String> = abc.class_names();
+    assert_eq!(
+        recovered.len(),
+        exported.len(),
+        "the ABC instance table must hold the types the independent export lists: recovered \
+         {recovered:?}, exported {exported:?}"
+    );
+    for name in &exported {
+        assert!(
+            recovered
+                .iter()
+                .any(|qualified: &String| qualified.contains(name.as_str())),
+            "the recovered instance table lacks {name}: {recovered:?}"
+        );
+    }
 
-#[test]
-fn fixture_c_haxe_source_detected() {
-    let src: &str = "package com.example;\nclass Main extends haxe.macro.Compiler {\n    static function main() { }\n}\n";
-    let report: disrobe_pass_as3::DetectionReport =
-        disrobe_pass_as3::detect_source_or_binary(src.as_bytes(), Some("Main.hx"));
+    let symbol_tag: &disrobe_pass_as3::SwfTag = swf
+        .tags
+        .iter()
+        .find(|t| t.code == TagCode::SYMBOL_CLASS)
+        .expect("the Haxe SWF binds its document class through SymbolClass");
+    let symbols: Vec<SymbolClassEntry> = parse_symbol_class(symbol_tag).expect("parse SymbolClass");
+    assert_eq!(symbols.len(), 1, "{symbols:?}");
+    assert_eq!(symbols[0].character_id, 0, "{symbols:?}");
     assert!(
-        report
-            .detected
-            .contains(&disrobe_pass_as3::DetectedLanguage::Haxe)
+        exported.contains(&symbols[0].class_name),
+        "the document class bound to character 0 must be a type the independent export lists: \
+         {symbols:?}"
     );
 }
 
 #[test]
-fn fixture_d_perl_bytecode_blob_detected() {
-    let mut blob: Vec<u8> = Vec::new();
-    blob.extend_from_slice(b"perlbc\0");
-    blob.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]);
-    let report: disrobe_pass_as3::DetectionReport =
-        disrobe_pass_as3::detect_source_or_binary(&blob, Some("blob.plc"));
+fn fixture_c_real_haxe_source_is_identified_by_its_suffix_only() {
+    let source: Vec<u8> =
+        committed_fixture("crates/disrobe-pass-scriptlang/tests/fixtures/Main.hx");
+    let hinted: DetectionReport = detect_source_or_binary(&source, Some("Main.hx"));
+    assert!(hinted.detected.contains(&DetectedLanguage::Haxe));
     assert!(
-        report
-            .detected
-            .contains(&disrobe_pass_as3::DetectedLanguage::PerlBytecode)
+        hinted
+            .evidence
+            .iter()
+            .any(|line: &String| line == "filename suffix .hx")
+    );
+    let unhinted: DetectionReport = detect_source_or_binary(&source, None);
+    assert!(
+        !unhinted.detected.contains(&DetectedLanguage::Haxe),
+        "real Haxe source without a haxe namespace reference carries no content signal: {unhinted:?}"
     );
 }
 
 #[test]
-fn fixture_e_nim_binary_signature() {
-    let mut bin: Vec<u8> = vec![0u8; 256];
-    let needle: &[u8] = b"NimMain";
-    bin[100..100 + needle.len()].copy_from_slice(needle);
-    let report: disrobe_pass_as3::DetectionReport =
-        disrobe_pass_as3::detect_source_or_binary(&bin, None);
+fn fixture_d_real_byteloader_bytecode_detected() {
+    let bytes: Vec<u8> = committed_fixture("corpus/scriptlang/perl/hello.plc");
+    let report: DetectionReport = detect_source_or_binary(&bytes, None);
     assert!(
-        report
+        report.detected.contains(&DetectedLanguage::PerlBytecode),
+        "{report:?}"
+    );
+    assert!(
+        report.detected.contains(&DetectedLanguage::Perl),
+        "{report:?}"
+    );
+    let source: Vec<u8> = committed_fixture("corpus/scriptlang/perl/hello.pl");
+    let source_report: DetectionReport = detect_source_or_binary(&source, None);
+    assert!(
+        !source_report
             .detected
-            .contains(&disrobe_pass_as3::DetectedLanguage::Nim)
+            .contains(&DetectedLanguage::PerlBytecode),
+        "the source script the bytecode was compiled from is not bytecode: {source_report:?}"
+    );
+}
+
+#[test]
+fn fixture_e_real_nim_binary_detected() {
+    let bytes: Vec<u8> = committed_fixture("corpus/native/nim/hello.nim.elf");
+    let report: DetectionReport = detect_source_or_binary(&bytes, None);
+    assert!(
+        report.detected.contains(&DetectedLanguage::Nim),
+        "{report:?}"
     );
 }

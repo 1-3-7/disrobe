@@ -34,12 +34,8 @@ const TYPE_EQ_RECOVERY_FLOOR: f64 = 1.0;
 const ITAB_RECOVERY_FLOOR: f64 = 1.0;
 
 fn assert_nm_recovery(bin: &str, nm: &str, expect_kind: &str, expect_ptr: u8) {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(bin) else {
-        return;
-    };
-    let Some(nm_bytes): Option<Vec<u8>> = common::fixture_or_skip(nm) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(bin);
+    let nm_bytes: Vec<u8> = common::required_fixture(nm);
     let analysis: GoAnalysis = analyze(&bytes).unwrap_or_else(|e| panic!("analyze {bin}: {e}"));
     assert_eq!(
         analysis.image_kind, expect_kind,
@@ -85,12 +81,8 @@ fn assert_nm_recovery(bin: &str, nm: &str, expect_kind: &str, expect_ptr: u8) {
 }
 
 fn assert_type_eq_recovery(bin: &str, nm_eq: &str, expect_kind: &str) {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(bin) else {
-        return;
-    };
-    let Some(eq_bytes): Option<Vec<u8>> = common::fixture_or_skip(nm_eq) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(bin);
+    let eq_bytes: Vec<u8> = common::required_fixture(nm_eq);
     let analysis: GoAnalysis = analyze(&bytes).unwrap_or_else(|e| panic!("analyze {bin}: {e}"));
     assert_eq!(
         analysis.image_kind, expect_kind,
@@ -129,12 +121,8 @@ fn assert_type_eq_recovery(bin: &str, nm_eq: &str, expect_kind: &str) {
 }
 
 fn assert_itab_recovery(bin: &str, nm_itab: &str, expect_kind: &str) {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(bin) else {
-        return;
-    };
-    let Some(itab_bytes): Option<Vec<u8>> = common::fixture_or_skip(nm_itab) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(bin);
+    let itab_bytes: Vec<u8> = common::required_fixture(nm_itab);
     let analysis: GoAnalysis = analyze(&bytes).unwrap_or_else(|e| panic!("analyze {bin}: {e}"));
     assert_eq!(
         analysis.image_kind, expect_kind,
@@ -286,9 +274,7 @@ fn darwin_arm64_macho_itab_pairs_match_go_tool_nm() {
 
 #[test]
 fn macho_asm_symbols_carry_their_underscore_linker_symbol() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_DARWIN_ARM64) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_DARWIN_ARM64);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze darwin arm64");
     let aeshash: &GoFunc = analysis
         .symbols
@@ -336,9 +322,7 @@ fn real_pe_elf_and_macho_truncations_are_rejected() {
         (common::BENCH_DARWIN_AMD64, "macho"),
     ];
     for (bin, kind) in targets {
-        let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(bin) else {
-            return;
-        };
+        let bytes: Vec<u8> = common::required_fixture(bin);
         let Some(pclntab_offset): Option<usize> = common::find_pclntab_offset(&bytes) else {
             panic!("{bin} ({kind}) must contain a pclntab header");
         };

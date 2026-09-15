@@ -123,9 +123,9 @@ fn recovered_as_oracle(bi: &GoBuildInfo) -> OracleBuildInfo {
     }
 }
 
-fn analyze_fixture(name: &str) -> Option<GoAnalysis> {
-    let bytes: Vec<u8> = common::fixture_or_skip(name)?;
-    Some(analyze(&bytes).expect("analyze fixture"))
+fn analyze_fixture(name: &str) -> GoAnalysis {
+    let bytes: Vec<u8> = common::required_fixture(name);
+    analyze(&bytes).expect("analyze fixture")
 }
 
 const BUILDINFO_SOURCE: &str = r#"package main
@@ -542,9 +542,7 @@ fn buildinfo_matches_oracle_across_arch_and_strip_matrix() {
 
 #[test]
 fn buildinfo_matches_go_toolchain_oracle_on_embed_fixture() {
-    let Some(analysis): Option<GoAnalysis> = analyze_fixture(common::HELLO_EMBED) else {
-        return;
-    };
+    let analysis: GoAnalysis = analyze_fixture(common::HELLO_EMBED);
     let bi: &GoBuildInfo = analysis
         .moduledata
         .build_info
@@ -580,9 +578,7 @@ fn buildinfo_matches_go_toolchain_oracle_on_embed_fixture() {
 
 #[test]
 fn buildinfo_recovers_deps_and_replace_matching_oracle() {
-    let Some(analysis): Option<GoAnalysis> = analyze_fixture(common::HELLO_DEPS) else {
-        return;
-    };
+    let analysis: GoAnalysis = analyze_fixture(common::HELLO_DEPS);
     let bi: &GoBuildInfo = analysis
         .moduledata
         .build_info
@@ -615,9 +611,7 @@ fn buildinfo_recovers_deps_and_replace_matching_oracle() {
 
 #[test]
 fn buildinfo_surfaces_target_arch_on_386_fixture() {
-    let Some(analysis): Option<GoAnalysis> = analyze_fixture(common::HELLO_386) else {
-        return;
-    };
+    let analysis: GoAnalysis = analyze_fixture(common::HELLO_386);
     let bi: &GoBuildInfo = analysis
         .moduledata
         .build_info
@@ -635,9 +629,7 @@ fn buildinfo_surfaces_target_arch_on_386_fixture() {
 
 #[test]
 fn buildversion_prefers_authoritative_build_info_go_version() {
-    let Some(analysis): Option<GoAnalysis> = analyze_fixture(common::HELLO_NORMAL) else {
-        return;
-    };
+    let analysis: GoAnalysis = analyze_fixture(common::HELLO_NORMAL);
     let bi_version: Option<String> = analysis
         .moduledata
         .build_info

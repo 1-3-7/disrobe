@@ -32,23 +32,6 @@ pub fn fixture(name: &str) -> Vec<u8> {
     }
 }
 
-pub fn fixture_or_skip(name: &str) -> Option<Vec<u8>> {
-    let p: PathBuf = fixture_path(name);
-    let bytes: Option<Vec<u8>> = std::fs::read(&p).ok();
-    if bytes.is_none() {
-        eprintln!(
-            "\n========================================================================\n\
-             SKIPPED: fixture `{name}` absent at {}.\n\
-             This assertion did NOT run and is NOT CI-enforced. A green result here is\n\
-             a SKIP, not a measured pass. Regenerate the fixtures (Go toolchain required):\n\
-             pwsh crates/disrobe-pass-go/tests/fixtures/regen.ps1\n\
-             ========================================================================\n",
-            p.display()
-        );
-    }
-    bytes
-}
-
 pub fn required_fixture(name: &str) -> Vec<u8> {
     let path: PathBuf = fixture_path(name);
     let read: std::io::Result<Vec<u8>> = std::fs::read(&path);

@@ -95,9 +95,7 @@ fn generics_survive_stripping() {
 
 #[test]
 fn shape_bodies_recover_concrete_args_from_sibling_symbols_on_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let generics: &[GoGenericInstantiation] = &analysis.typemeta.generics;
 
@@ -145,9 +143,7 @@ fn shape_bodies_recover_concrete_args_from_sibling_symbols_on_real_binary() {
 
 #[test]
 fn shape_only_generics_with_no_sibling_stay_an_honest_wall_on_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let generics: &[GoGenericInstantiation] = &analysis.typemeta.generics;
 
@@ -169,9 +165,7 @@ fn shape_only_generics_with_no_sibling_stay_an_honest_wall_on_real_binary() {
 
 #[test]
 fn merged_shape_body_surfaces_full_concrete_candidate_set_on_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let generics: &[GoGenericInstantiation] = &analysis.typemeta.generics;
 

@@ -40,12 +40,8 @@ fn function_name_grade_excludes_only_runtime_range_anchors() {
 
 #[test]
 fn normal_function_names_match_go_tool_nm() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
-    let Some(nm_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS_NM) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
+    let nm_bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS_NM);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let truth: BTreeSet<String> =
         common::parse_nm_text_symbols(&String::from_utf8_lossy(&nm_bytes));
@@ -77,9 +73,7 @@ fn normal_function_names_match_go_tool_nm() {
 
 #[test]
 fn abi0_assembly_functions_carry_their_linker_symbol() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let abi0: Vec<&GoFunc> = analysis
         .symbols
@@ -124,13 +118,8 @@ fn abi0_assembly_functions_carry_their_linker_symbol() {
 
 #[test]
 fn stripped_build_recovers_canonical_pclntab_names() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS_STRIPPED)
-    else {
-        return;
-    };
-    let Some(nm_bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS_NM) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS_STRIPPED);
+    let nm_bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS_NM);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze stripped bench");
     assert!(
         analysis.stripped.stripped,
@@ -171,9 +160,7 @@ fn stripped_build_recovers_canonical_pclntab_names() {
 
 #[test]
 fn generic_instantiations_have_clean_bases_on_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::BENCH_GENERICS) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::BENCH_GENERICS);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze bench_generics");
     let generics: &[GoGenericInstantiation] = &analysis.typemeta.generics;
     assert!(

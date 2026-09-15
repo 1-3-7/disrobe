@@ -31,9 +31,7 @@ fn recovered_itab_pairs(analysis: &GoAnalysis) -> BTreeSet<(String, String)> {
 
 #[test]
 fn go124_moduledata_recovers_typelinks_without_epclntab_word() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::GO124_WINDOWS_AMD64) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze go1.24 fixture");
 
     assert_eq!(
@@ -97,9 +95,7 @@ fn go124_moduledata_recovers_typelinks_without_epclntab_word() {
 
 #[test]
 fn go124_moduledata_recovers_itablinks_and_methods() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::GO124_WINDOWS_AMD64) else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze go1.24 fixture");
 
     assert_ne!(
@@ -150,14 +146,8 @@ fn go124_moduledata_recovers_itablinks_and_methods() {
 
 #[test]
 fn go124_type_names_match_go_tool_nm_eq_oracle() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::GO124_WINDOWS_AMD64) else {
-        return;
-    };
-    let Some(eq_bytes): Option<Vec<u8>> =
-        common::fixture_or_skip(common::GO124_WINDOWS_AMD64_NM_EQ)
-    else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64);
+    let eq_bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64_NM_EQ);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze go1.24 fixture");
 
     let truth: BTreeSet<String> = common::parse_eq_type_names(&String::from_utf8_lossy(&eq_bytes))
@@ -193,14 +183,8 @@ fn go124_type_names_match_go_tool_nm_eq_oracle() {
 
 #[test]
 fn go124_itab_pairs_match_go_tool_nm_itab_oracle() {
-    let Some(bytes): Option<Vec<u8>> = common::fixture_or_skip(common::GO124_WINDOWS_AMD64) else {
-        return;
-    };
-    let Some(itab_bytes): Option<Vec<u8>> =
-        common::fixture_or_skip(common::GO124_WINDOWS_AMD64_NM_ITAB)
-    else {
-        return;
-    };
+    let bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64);
+    let itab_bytes: Vec<u8> = common::required_fixture(common::GO124_WINDOWS_AMD64_NM_ITAB);
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze go1.24 fixture");
 
     let truth: BTreeSet<(String, String)> =
