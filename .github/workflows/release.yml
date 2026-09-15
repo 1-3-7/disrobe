@@ -140,7 +140,7 @@ jobs:
           Push-Location dist
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
           $hash = (Get-FileHash -Algorithm SHA256 "$stage.zip").Hash.ToLower()
-          "$hash  $stage.zip" | Set-Content -Encoding ascii "$stage.zip.sha256"
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) "$stage.zip.sha256"), "$hash  $stage.zip`n", [System.Text.Encoding]::ASCII)
           Pop-Location
 
       - name: Install Node for release walkthrough
@@ -303,6 +303,11 @@ jobs:
             [ -f "$f" ] || continue
             cat "$f" >> SHA256SUMS
           done
+          if grep -q $'\r' SHA256SUMS; then
+            echo "::error::SHA256SUMS contains carriage returns, so sha256sum --check cannot read its entries" >&2
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS
           ls -la
 
       - name: compute release metadata
