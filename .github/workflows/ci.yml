@@ -748,7 +748,7 @@ jobs:
           -p disrobe-sleigh -p disrobe-pass-pyinstaller
           -p disrobe-pass-sourcedefender -p disrobe-pyarmor-cextract -p disrobe-query
           -p disrobe-py-marshal -p disrobe-transcode -p disrobe-bytes -p disrobe-plugin-host
-          -p disrobe-validator -p disrobe-ir
+          -p disrobe-validator -p disrobe-ir -p disrobe-mba
         timeout-minutes: 160
         env:
           DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
@@ -811,7 +811,8 @@ jobs:
           --exclude disrobe-pass-sourcedefender --exclude disrobe-pyarmor-cextract
           --exclude disrobe-query --exclude disrobe-py-marshal --exclude disrobe-transcode
           --exclude disrobe-bytes --exclude disrobe-plugin-host --exclude disrobe-validator
-          --exclude disrobe-ir --exclude disrobe-pass-native --exclude disrobe-pass-py-decompile
+          --exclude disrobe-ir --exclude disrobe-mba --exclude disrobe-pass-native
+          --exclude disrobe-pass-py-decompile
           --exclude disrobe-pass-wasm-deob --exclude disrobe-pass-php
           --exclude disrobe-pass-swift-objc --exclude disrobe-pass-pyfreeze
           --exclude disrobe-pass-as3
