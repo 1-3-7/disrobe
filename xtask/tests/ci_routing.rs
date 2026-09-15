@@ -425,11 +425,11 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             "{name} must fail instead of skipping its required interpreter band"
         );
         let expected_command: String =
-            format!("cargo test -p disrobe-pass-py-decompile --test {target} -- --nocapture");
+            format!("cargo test --release -p disrobe-pass-py-decompile --test {target} -- --nocapture");
         assert_eq!(
             step.get("run").and_then(Value::as_str),
             Some(expected_command.as_str()),
-            "{name} must retain its exact independent recovery grader"
+            "{name} must retain its exact independent recovery grader and reuse the release artifacts the CLI build produced"
         );
     }
     let concurrency: &Value = ci.get("concurrency").expect("ci.yml concurrency");
