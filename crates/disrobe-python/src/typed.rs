@@ -218,6 +218,12 @@ macro_rules! typed_report {
                     .map_err(|e: serde_json::Error| DisrobeError::new_err(format!("serialize: {e}")))
             }
 
+            #[pyo3(name = "__disrobe_report_json__")]
+            fn disrobe_report_json(&self) -> PyResult<String> {
+                serde_json::to_string(&self.data)
+                    .map_err(|e: serde_json::Error| DisrobeError::new_err(format!("serialize: {e}")))
+            }
+
             #[staticmethod]
             fn from_json_str(text: &str) -> PyResult<Self> {
                 let data: Json = serde_json::from_str(text).map_err(|e: serde_json::Error| {

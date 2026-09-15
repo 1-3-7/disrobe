@@ -764,7 +764,9 @@ the raw on-disk header shape: `magic`, `version`, `rung`, `flags`, `hot_len`,
 `agents_md` and `skill_md` render the AGENTS.md and SKILL.md reconstruction
 briefs for a report with metadata attached (or a bare bundle dict), returning
 a `str`. `provenance` extracts tool/selection/input metadata as a typed
-`Provenance`. Passing a report whose `llm` slot is `None` raises `DisrobeError`.
+`Provenance`. Each accepts a typed report or its `raw` dict and returns the same
+result for both. Passing a report whose `llm` slot is `None` raises `DisrobeError`;
+passing any other kind of object raises `TypeError`.
 
 ```python
 from __future__ import annotations

@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde::Serialize;
@@ -126,12 +127,35 @@ fn from_py_at_depth(obj: &Bound<'_, PyAny>, depth: usize) -> PyResult<Value> {
         }
         return Ok(Value::Object(map));
     }
-    Err(DisrobeError::new_err(format!(
-        "unsupported Python type for conversion: {}",
+    if let Some(record) = disrobe_report_record(obj)? {
+        return Ok(record);
+    }
+    Err(PyTypeError::new_err(format!(
+        "unsupported Python type for conversion: {}; expected a disrobe report, dict, list, \
+         str, int, float, bool or None",
         obj.get_type()
             .name()
             .map_or_else(|_| "?".to_owned(), |n: Bound<'_, PyString>| n.to_string())
     )))
+}
+
+fn disrobe_report_record(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
+    let module: String = obj.get_type().module().map_or_else(
+        |_| String::new(),
+        |name: Bound<'_, PyString>| name.to_string(),
+    );
+    if module != "disrobe" {
+        return Ok(None);
+    }
+    let Ok(serializer): PyResult<Bound<'_, PyAny>> = obj.getattr("__disrobe_report_json__") else {
+        return Ok(None);
+    };
+    let text: String = serializer.call0()?.extract::<String>()?;
+    serde_json::from_str::<Value>(&text)
+        .map(Some)
+        .map_err(|error: serde_json::Error| {
+            DisrobeError::new_err(format!("report record: {error}"))
+        })
 }
 
 fn next_depth(depth: usize) -> PyResult<usize> {
