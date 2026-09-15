@@ -25614,6 +25614,22 @@ struct RsLoopResume<'a> {
 struct RsBlockScope<'a> {
     resume: Option<RsLoopResume<'a>>,
     active: bool,
+    forward: BTreeSet<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RsForwardExit {
+    label: u32,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RsRange<'a> {
+    body: &'a [Node],
+    start: usize,
+    end: usize,
+    regions: &'a [RsForwardExit],
 }
 
 fn rs_jump_count(body: &Block) -> Option<usize> {
@@ -25731,6 +25747,7 @@ fn rs_block_scope(body: &Block) -> Option<RsBlockScope<'_>> {
         return Some(RsBlockScope {
             resume: None,
             active: false,
+            forward: BTreeSet::new(),
         });
     }
     if !gotos_have_unique_targets(body) {
@@ -25750,9 +25767,190 @@ fn rs_block_scope(body: &Block) -> Option<RsBlockScope<'_>> {
         return Some(RsBlockScope {
             resume: Some(RsLoopResume { body, paths }),
             active: false,
+            forward: BTreeSet::new(),
         });
     }
     None
+}
+
+fn rs_push_child_blocks<'a>(node: &'a Node, depth: usize, pending: &mut Vec<(&'a [Node], usize)>) {
+    match node {
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            pending.push((then_body, depth));
+            if let Some(arm) = else_body {
+                pending.push((arm, depth));
+            }
+        }
+        Node::While { body, .. } | Node::DoWhile { body, .. } => pending.push((body, depth)),
+        Node::Switch { cases, default, .. } => {
+            pending.push((default, depth));
+            pending.extend(
+                cases
+                    .iter()
+                    .map(|case: &SwitchCase| (case.body.as_slice(), depth)),
+            );
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => {}
+    }
+}
+
+fn rs_forward_goto_count(nodes: &[Node], label: u32) -> Option<usize> {
+    let mut pending: Vec<(&[Node], usize)> = vec![(nodes, 0)];
+    let mut count: usize = 0;
+    while let Some((block, depth)) = pending.pop() {
+        if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+            return None;
+        }
+        for node in block {
+            if *node == Node::Goto(label) {
+                count = count.checked_add(1)?;
+            }
+            rs_push_child_blocks(node, depth + 1, &mut pending);
+        }
+    }
+    Some(count)
+}
+
+fn rs_unlabeled_loop_exit(nodes: &[Node]) -> Option<bool> {
+    let mut pending: Vec<(&[Node], usize)> = vec![(nodes, 0)];
+    while let Some((block, depth)) = pending.pop() {
+        if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+            return None;
+        }
+        for node in block {
+            match node {
+                Node::Break | Node::Continue => return Some(true),
+                Node::If { .. } | Node::Switch { .. } => {
+                    rs_push_child_blocks(node, depth + 1, &mut pending);
+                }
+                Node::While { .. }
+                | Node::DoWhile { .. }
+                | Node::Stmt(_)
+                | Node::CondSnapshot { .. }
+                | Node::BreakLoop(_)
+                | Node::ContinueLoop(_)
+                | Node::ResumeAt(_)
+                | Node::OuterResume(_)
+                | Node::Return
+                | Node::Label(_)
+                | Node::Goto(_) => {}
+            }
+        }
+    }
+    Some(false)
+}
+
+fn rs_forward_regions(body: &[Node], labels: &BTreeSet<u32>) -> Option<Vec<RsForwardExit>> {
+    let mut regions: Vec<RsForwardExit> = Vec::new();
+    if labels.is_empty() {
+        return Some(regions);
+    }
+    for (end, node) in body.iter().enumerate() {
+        let Node::Label(label) = node else {
+            continue;
+        };
+        if !labels.contains(label) {
+            continue;
+        }
+        for (start, earlier) in body.get(..end)?.iter().enumerate() {
+            if rs_forward_goto_count(std::slice::from_ref(earlier), *label)? > 0 {
+                regions.push(RsForwardExit {
+                    label: *label,
+                    start,
+                    end,
+                });
+                break;
+            }
+        }
+    }
+    Some(regions)
+}
+
+fn rs_forward_exit_labels(body: &Block) -> Option<BTreeSet<u32>> {
+    let mut labels: BTreeSet<u32> = BTreeSet::new();
+    let mut gotos: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut blocks: Vec<&[Node]> = Vec::new();
+    let mut pending: Vec<(&[Node], usize)> = vec![(body.as_slice(), 0)];
+    let mut visited: usize = 0;
+    while let Some((block, depth)) = pending.pop() {
+        if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+            return None;
+        }
+        visited = visited.checked_add(block.len())?;
+        if visited > RUST_RESUME_NODE_CAP {
+            return None;
+        }
+        blocks.push(block);
+        for node in block {
+            match node {
+                Node::Label(label) => {
+                    if labels.len() >= RUST_RESUME_LABEL_CAP || !labels.insert(*label) {
+                        return None;
+                    }
+                }
+                Node::Goto(label) => {
+                    let uses: &mut usize = gotos.entry(*label).or_insert(0);
+                    *uses = uses.checked_add(1)?;
+                }
+                Node::BreakLoop(_)
+                | Node::ContinueLoop(_)
+                | Node::ResumeAt(_)
+                | Node::OuterResume(_) => return None,
+                Node::Stmt(_)
+                | Node::If { .. }
+                | Node::DoWhile { .. }
+                | Node::While { .. }
+                | Node::CondSnapshot { .. }
+                | Node::Switch { .. }
+                | Node::Break
+                | Node::Continue
+                | Node::Return => {}
+            }
+            rs_push_child_blocks(node, depth + 1, &mut pending);
+        }
+    }
+    if gotos.is_empty() || !gotos.keys().all(|label: &u32| labels.contains(label)) {
+        return None;
+    }
+    let mut resolved: BTreeSet<u32> = BTreeSet::new();
+    for block in blocks {
+        let regions: Vec<RsForwardExit> = rs_forward_regions(block, &labels)?;
+        for (position, region) in regions.iter().enumerate() {
+            let enclosed: &[Node] = block.get(region.start..region.end)?;
+            if Some(&rs_forward_goto_count(enclosed, region.label)?) != gotos.get(&region.label)
+                || rs_unlabeled_loop_exit(enclosed)?
+            {
+                return None;
+            }
+            for other in regions.iter().skip(position + 1) {
+                let disjoint: bool = region.end <= other.start || other.end <= region.start;
+                let nested: bool = (region.start <= other.start && other.end <= region.end)
+                    || (other.start <= region.start && region.end <= other.end);
+                if !disjoint && !nested {
+                    return None;
+                }
+            }
+            resolved.insert(region.label);
+        }
+    }
+    gotos
+        .keys()
+        .all(|label: &u32| resolved.contains(label))
+        .then_some(labels)
 }
 
 fn rs_resume_membership(plan: &RsLoopResume<'_>, body: &Block) -> String {
@@ -25771,7 +25969,14 @@ fn rs_emit_block(
     ret_expr: &str,
     aggregates: &AggregatePlan,
 ) -> Option<()> {
-    let mut scope: RsBlockScope<'_> = rs_block_scope(body)?;
+    let mut scope: RsBlockScope<'_> = match rs_block_scope(body) {
+        Some(scope) => scope,
+        None => RsBlockScope {
+            resume: None,
+            active: false,
+            forward: rs_forward_exit_labels(body)?,
+        },
+    };
     rs_emit_block_at(out, body, depth, ret_expr, aggregates, &mut scope)
 }
 
@@ -25783,7 +25988,65 @@ fn rs_emit_block_at(
     aggregates: &AggregatePlan,
     scope: &mut RsBlockScope<'_>,
 ) -> Option<()> {
-    for (index, node) in body.iter().enumerate() {
+    let regions: Vec<RsForwardExit> = rs_forward_regions(body, &scope.forward)?;
+    rs_emit_range(
+        out,
+        RsRange {
+            body,
+            start: 0,
+            end: body.len(),
+            regions: &regions,
+        },
+        depth,
+        ret_expr,
+        aggregates,
+        scope,
+    )
+}
+
+fn rs_emit_range(
+    out: &mut String,
+    range: RsRange<'_>,
+    depth: usize,
+    ret_expr: &str,
+    aggregates: &AggregatePlan,
+    scope: &mut RsBlockScope<'_>,
+) -> Option<()> {
+    let body: &[Node] = range.body;
+    let mut cursor: usize = range.start;
+    while cursor < range.end {
+        let opened: Option<RsForwardExit> = range
+            .regions
+            .iter()
+            .filter(|region: &&RsForwardExit| {
+                region.start == cursor
+                    && region.end <= range.end
+                    && (region.start, region.end) != (range.start, range.end)
+            })
+            .max_by_key(|region: &&RsForwardExit| region.end)
+            .copied();
+        if let Some(region) = opened {
+            let indent: String = "    ".repeat(depth);
+            let _ = writeln!(out, "{indent}'recover_l{}: {{", region.label);
+            rs_emit_range(
+                out,
+                RsRange {
+                    start: region.start,
+                    end: region.end,
+                    ..range
+                },
+                depth + 1,
+                ret_expr,
+                aggregates,
+                scope,
+            )?;
+            let _ = writeln!(out, "{indent}}}");
+            cursor = region.end;
+            continue;
+        }
+        let index: usize = cursor;
+        let node: &Node = body.get(index)?;
+        cursor += 1;
         if matches!(node, Node::Return)
             && index
                 .checked_sub(1)
@@ -25956,6 +26219,10 @@ fn rs_emit_block_at(
                 let _ = writeln!(out, "{indent}recover_pending = Some({label}u32);");
                 let _ = writeln!(out, "{indent}continue 'recover_outer;");
             }
+            Node::Label(label) if scope.forward.contains(label) => {}
+            Node::Goto(label) if scope.forward.contains(label) => {
+                let _ = writeln!(out, "{indent}break 'recover_l{label};");
+            }
             Node::Label(_) | Node::Goto(_) => return None,
         }
         if guarded {
@@ -26114,6 +26381,248 @@ mod rust_loop_resume_tests {
             }];
         }
         assert!(rs_block_scope(&outer(deep)).is_none());
+    }
+
+    fn snapshot(var: u32) -> Node {
+        Node::CondSnapshot {
+            var,
+            cond: CondKind::E,
+            flags: Flags::Cmp {
+                lhs: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                rhs: Source::Imm(0),
+            },
+        }
+    }
+
+    fn goto_arm(label: u32) -> Node {
+        Node::If {
+            cond: condition(),
+            then_body: vec![Node::Goto(label)],
+            else_body: None,
+        }
+    }
+
+    fn nest(mut body: Block, levels: usize) -> Block {
+        for _ in 0..levels {
+            body = vec![Node::If {
+                cond: condition(),
+                then_body: body,
+                else_body: None,
+            }];
+        }
+        body
+    }
+
+    #[test]
+    fn a_forward_exit_from_a_loop_renders_as_a_labeled_block_break() {
+        let body: Block = vec![
+            Node::While {
+                body: vec![
+                    snapshot(0),
+                    Node::If {
+                        cond: condition(),
+                        then_body: vec![Node::Continue],
+                        else_body: Some(vec![Node::Goto(14)]),
+                    },
+                ],
+                cond: None,
+            },
+            snapshot(1),
+            Node::Label(14),
+            snapshot(2),
+            Node::Return,
+        ];
+        assert!(rs_block_scope(&body).is_none());
+        let mut source: String = String::new();
+        rs_emit_block(&mut source, &body, 1, "r_rax", &AggregatePlan::default())
+            .expect("a forward exit must render");
+        let open: usize = source.find("    'recover_l14: {\n").expect("labeled block");
+        let exit: usize = source.find("break 'recover_l14;").expect("labeled break");
+        let skipped: usize = source.find("loop_cond_1 =").expect("skipped statement");
+        let close: usize = source.find("\n    }\n").expect("labeled block close");
+        let resumed: usize = source.find("loop_cond_2 =").expect("resumed statement");
+        assert!(
+            open < exit && exit < skipped && skipped < close && close < resumed,
+            "{source}"
+        );
+        assert!(!source.contains("recover_pending"), "{source}");
+        assert_eq!(source.matches("continue;").count(), 1, "{source}");
+        assert_eq!(source.matches("'recover_l14").count(), 2, "{source}");
+    }
+
+    #[test]
+    fn nested_forward_exits_open_the_outer_label_first() {
+        let body: Block = vec![
+            goto_arm(1),
+            goto_arm(2),
+            snapshot(0),
+            Node::Label(2),
+            snapshot(1),
+            Node::Label(1),
+            Node::Return,
+        ];
+        let mut source: String = String::new();
+        rs_emit_block(&mut source, &body, 1, "r_rax", &AggregatePlan::default())
+            .expect("nested forward exits must render");
+        let outer_open: usize = source.find("'recover_l1: {").expect("outer block");
+        let inner_open: usize = source.find("'recover_l2: {").expect("inner block");
+        let inner_skipped: usize = source.find("loop_cond_0 =").expect("inner statement");
+        let outer_skipped: usize = source.find("loop_cond_1 =").expect("outer statement");
+        let returned: usize = source.find("return r_rax;").expect("return");
+        assert!(
+            outer_open < inner_open
+                && inner_open < inner_skipped
+                && inner_skipped < outer_skipped
+                && outer_skipped < returned,
+            "{source}"
+        );
+        assert_eq!(source.matches("break 'recover_l1;").count(), 1, "{source}");
+        assert_eq!(source.matches("break 'recover_l2;").count(), 1, "{source}");
+
+        let shared: Block = vec![
+            Node::If {
+                cond: condition(),
+                then_body: vec![Node::Goto(1)],
+                else_body: Some(vec![Node::Goto(2)]),
+            },
+            snapshot(0),
+            Node::Label(2),
+            snapshot(1),
+            Node::Label(1),
+            Node::Return,
+        ];
+        let mut shared_source: String = String::new();
+        rs_emit_block(
+            &mut shared_source,
+            &shared,
+            1,
+            "r_rax",
+            &AggregatePlan::default(),
+        )
+        .expect("regions sharing a start must render");
+        let outer: usize = shared_source
+            .find("    'recover_l1: {\n")
+            .expect("outer block opens at depth one");
+        let inner: usize = shared_source
+            .find("        'recover_l2: {\n")
+            .expect("inner block opens inside the outer block");
+        let inner_skipped: usize = shared_source
+            .find("loop_cond_0 =")
+            .expect("inner statement");
+        let outer_skipped: usize = shared_source
+            .find("loop_cond_1 =")
+            .expect("outer statement");
+        assert!(
+            outer < inner && inner < inner_skipped && inner_skipped < outer_skipped,
+            "{shared_source}"
+        );
+        assert_eq!(
+            shared_source.matches("'recover_l1: {").count(),
+            1,
+            "{shared_source}"
+        );
+        assert_eq!(
+            shared_source.matches("'recover_l2: {").count(),
+            1,
+            "{shared_source}"
+        );
+    }
+
+    #[test]
+    fn forward_exits_reject_backward_crossing_escaping_and_unlabeled_exits() {
+        for body in [
+            vec![
+                Node::Label(1),
+                Node::While {
+                    body: vec![goto_arm(1)],
+                    cond: None,
+                },
+            ],
+            vec![goto_arm(1), Node::Label(1), goto_arm(1)],
+            vec![goto_arm(1), goto_arm(2), Node::Label(1), Node::Label(2)],
+            vec![
+                goto_arm(1),
+                Node::If {
+                    cond: condition(),
+                    then_body: vec![Node::Label(1)],
+                    else_body: None,
+                },
+            ],
+            vec![Node::While {
+                body: vec![goto_arm(1), Node::Break, Node::Label(1), Node::Break],
+                cond: Some(LoopCond::Snapshot { var: 0 }),
+            }],
+            vec![Node::While {
+                body: vec![
+                    goto_arm(1),
+                    Node::Switch {
+                        disc: RegRef {
+                            reg: Reg::Rax,
+                            width: Width::W64,
+                        },
+                        cases: Vec::new(),
+                        default: vec![Node::Continue],
+                    },
+                    Node::Label(1),
+                ],
+                cond: Some(LoopCond::Snapshot { var: 0 }),
+            }],
+            vec![Node::While {
+                body: vec![
+                    goto_arm(1),
+                    Node::If {
+                        cond: condition(),
+                        then_body: vec![Node::Break],
+                        else_body: None,
+                    },
+                    Node::Label(1),
+                ],
+                cond: Some(LoopCond::Snapshot { var: 0 }),
+            }],
+            vec![goto_arm(1), Node::Label(1), Node::Label(1)],
+            vec![
+                goto_arm(1),
+                Node::BreakLoop(LoopId { header: 0 }),
+                Node::Label(1),
+            ],
+            vec![goto_arm(3), Node::Label(1)],
+            vec![Node::Label(1), snapshot(0)],
+        ] {
+            assert!(rs_forward_exit_labels(&body).is_none(), "{body:?}");
+            let mut source: String = String::new();
+            assert!(
+                rs_emit_block(&mut source, &body, 1, "r_rax", &AggregatePlan::default()).is_none(),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_exits_keep_the_node_depth_and_label_bounds() {
+        let mut labels: Block = (0..32u32).map(goto_arm).collect();
+        labels.extend((0..32u32).rev().map(Node::Label));
+        assert!(rs_forward_exit_labels(&labels).is_some());
+        labels.insert(0, goto_arm(32));
+        labels.push(Node::Label(32));
+        assert!(rs_forward_exit_labels(&labels).is_none());
+
+        let mut nodes: Block = vec![Node::Return; RUST_RESUME_NODE_CAP - 3];
+        nodes.insert(0, goto_arm(0));
+        nodes.push(Node::Label(0));
+        assert!(rs_forward_exit_labels(&nodes).is_some());
+        nodes.push(Node::Return);
+        assert!(rs_forward_exit_labels(&nodes).is_none());
+
+        let within: Block = nest(
+            vec![goto_arm(0), Node::Label(0)],
+            VARIABLE_COLLECTION_MAX_DEPTH - 1,
+        );
+        assert!(rs_forward_exit_labels(&within).is_some());
+        let beyond: Block = nest(within, 1);
+        assert!(rs_forward_exit_labels(&beyond).is_none());
     }
 }
 

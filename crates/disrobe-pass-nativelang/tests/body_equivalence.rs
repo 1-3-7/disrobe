@@ -931,14 +931,9 @@ fn crystal_pairing_heap_body_matches_the_reference() {
         .expect("the committed Crystal pairing-heap combine function must be carved");
     assert_eq!(body.end, 0x0001_4001_4fe0);
     assert_eq!(body.byte_len, 400);
-    let BodyStatus::Recovered {
-        pseudo_c,
-        pseudo_rust,
-    } = &body.status
-    else {
+    let BodyStatus::Recovered { pseudo_c, .. } = &body.status else {
         panic!("the pairing-heap body must recover, got {:?}", body.status);
     };
-    assert!(matches!(pseudo_rust, RustBody::NotEmitted));
     let bytes: Vec<u8> = fixture_or_fail(CRYSTAL_PE);
     assert_eq!(
         image_window(&bytes, body.start, 16),
@@ -972,6 +967,64 @@ fn crystal_pairing_heap_body_matches_the_reference() {
     );
     let observed: String = run_bounded(Command::new(&exe), "crystal-pairing-heap");
     std::fs::remove_dir_all(&dir).expect("remove the pairing-heap grade scratch directory");
+    assert_eq!(
+        observed.trim(),
+        "929",
+        "all bounded empty, odd, even, signed, tied, and child-linked graphs must be graded"
+    );
+}
+
+#[test]
+fn crystal_pairing_heap_rust_body_matches_the_reference() {
+    let compiler: String = tool_or_unmeasured(
+        &["rustc"],
+        "the Crystal pairing-heap pseudo-Rust body equivalence grade",
+    )
+    .expect("rustc is required for the tracked Crystal pairing-heap pseudo-Rust grade");
+    let analysis: &NativeLangAnalysis = analyze_origin(Origin::Corpus(CRYSTAL_PE));
+    let body: &FunctionBody = analysis
+        .bodies
+        .bodies
+        .iter()
+        .find(|body| body.start == 0x0001_4001_4e50)
+        .expect("the committed Crystal pairing-heap combine function must be carved");
+    assert_eq!(body.end, 0x0001_4001_4fe0);
+    let pseudo_rust: &str = recovered_rust(body);
+    assert!(pseudo_rust.contains("fn sub_140014e50("), "{pseudo_rust}");
+    assert_eq!(
+        pseudo_rust.matches("break 'recover_l").count(),
+        1,
+        "the first loop's exit past the pending-list tail must leave through one labeled block:\n{pseudo_rust}"
+    );
+    let dir: PathBuf = scratch_dir("crystal-pairing-heap-rust");
+    let source: PathBuf = dir.join("graded.rs");
+    let exe: PathBuf = dir.join(if cfg!(windows) {
+        "graded.exe"
+    } else {
+        "graded"
+    });
+    std::fs::write(
+        &source,
+        format!(
+            "#![allow(dead_code, non_snake_case, unused_imports, unused_parens)]\nmod body {{\n{pseudo_rust}\n}}\n{}",
+            include_str!("support/crystal_pairing_heap_reference.rs")
+        ),
+    )
+    .expect("write the recovered pairing-heap pseudo-Rust grade");
+    let compile: Output = Command::new(&compiler)
+        .args(["--edition", "2021", "-A", "warnings", "-o"])
+        .arg(&exe)
+        .arg(&source)
+        .output()
+        .expect("compile the recovered pairing heap against the Rust reference");
+    assert!(
+        compile.status.success(),
+        "{compiler} rejected the pairing-heap pseudo-Rust grade:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let observed: String = run_bounded(Command::new(&exe), "crystal-pairing-heap-rust");
+    std::fs::remove_dir_all(&dir)
+        .expect("remove the pairing-heap pseudo-Rust grade scratch directory");
     assert_eq!(
         observed.trim(),
         "929",
@@ -1335,7 +1388,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::Corpus(CRYSTAL_PE),
         functions: 314,
         recovered: 25,
-        rust: 24,
+        rust: 25,
         analysis: OnceLock::new(),
     },
 ];

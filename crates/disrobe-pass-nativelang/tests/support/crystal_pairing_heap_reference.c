@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct Node Node;
 struct Node {
@@ -117,7 +118,10 @@ static void grade(size_t count, const unsigned order[5], unsigned mode, unsigned
         exit(1);
     }
     for (size_t i = 0; i < 10; ++i) {
-        if (expected[i].tag != observed[i].tag || expected[i].key != observed[i].key ||
+        if (memcmp(expected[i].header, observed[i].header, sizeof expected[i].header) != 0 ||
+            expected[i].padding_20 != observed[i].padding_20 ||
+            memcmp(expected[i].padding_36, observed[i].padding_36, sizeof expected[i].padding_36) != 0 ||
+            expected[i].tag != observed[i].tag || expected[i].key != observed[i].key ||
             expected[i].tie != observed[i].tie ||
             node_index(expected, expected[i].previous) != node_index(observed, observed[i].previous) ||
             node_index(expected, expected[i].next) != node_index(observed, observed[i].next) ||
