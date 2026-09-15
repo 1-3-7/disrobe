@@ -424,8 +424,9 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             Some("1"),
             "{name} must fail instead of skipping its required interpreter band"
         );
-        let expected_command: String =
-            format!("cargo test --release -p disrobe-pass-py-decompile --test {target} -- --nocapture");
+        let expected_command: String = format!(
+            "cargo test --release -p disrobe-pass-py-decompile --test {target} -- --nocapture"
+        );
         assert_eq!(
             step.get("run").and_then(Value::as_str),
             Some(expected_command.as_str()),
