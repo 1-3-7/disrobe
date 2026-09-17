@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: tag-epsilon string tags
+    namespace: internal/example
+    scope: file
+    description: placeholder fixture exercising substring, exact, and regex string tags
+  features:
+    - or:
+        - string: "placeholder-marker"
+        - string-exact: "placeholder-marker-1"
+        - string-regex: "^placeholder-[a-z]+-1$"

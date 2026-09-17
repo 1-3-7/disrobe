@@ -1,0 +1,90 @@
+Decryptor-shape fixtures that exercise wider class bytecode evaluator coverage
+==============================================================================
+
+Purpose
+-------
+Three benign, authored-in-house classes whose static/instance string-decrypt
+bodies use bytecode the evaluator (crates/disrobe-pass-jvm/src/bytecode_eval.rs)
+previously bailed on, walling otherwise-recoverable constants to detect-only.
+Each is a defeatable decryptor shape that real Allatori / Zelix / DashO output
+produces; the evaluator now runs each one end to end and recovers the plaintext.
+
+  LongAccumCrypt.class    a per-position XOR whose keystream is a long rolling
+                          accumulator mixed through a long-returning helper:
+                          forces lstore/lload in wide and _n slots, lmul/ladd/
+                          lxor/lushr, ldc2_w long constants, l2i, and lreturn
+                          from the helper.
+  InstanceFieldKeyed.class an instance decrypt method reading its key from
+                          this.base, a field set in the constructor: forces the
+                          evaluator to allocate the receiver, run <init> (which
+                          calls Object.<init> and writes the field via putfield),
+                          then read it back via getfield inside decrypt.
+  SwitchDispatch.class     a per-position key chosen by switch (i % 4): forces
+                          tableswitch dispatch with absolute target resolution.
+  NameReflectKeyed.class   a per-class key seeded from the class's own name read
+                          reflectively (NameReflectKeyed.class.getName()): forces
+                          the evaluator to resolve an ldc Class constant to a
+                          Class object, model getName() to the static binary
+                          class name, and derive the XOR key from it. This is the
+                          Stringer/DashO "class-name keyed" shape; the name is
+                          present in the artifact, so it is static, not a runtime
+                          key, and previously walled because the evaluator did not
+                          model reflective class-name resolution.
+
+Provenance (non-circular oracle)
+--------------------------------
+All three .java sources were authored in-house and compiled with a real
+compiler: Eclipse Temurin JDK 25.0.3+9-LTS (javac). The bytecode is javac
+output, NOT hand-assembled and NOT produced by disrobe. The encrypted String
+constants are the literal ciphertext baked into the source. Each class was run
+under the real JVM and prints exactly the ground-truth plaintext below, so the
+recovery is graded against external truth, not against disrobe's own output. The
+evaluator runs the class's own decrypt bytecode without being told the key, so
+this is not a self-encrypt/decrypt check.
+
+Build
+-----
+  javac -encoding UTF-8 com/disrobe/bench/LongAccumCrypt.java \
+        com/disrobe/bench/InstanceFieldKeyed.java \
+        com/disrobe/bench/SwitchDispatch.java \
+        com/disrobe/bench/NameReflectKeyed.java
+  java com.disrobe.bench.LongAccumCrypt      (prints the 3 LongAccum plaintexts)
+  java com.disrobe.bench.InstanceFieldKeyed  (prints the 3 Instance plaintexts)
+  java com.disrobe.bench.SwitchDispatch      (prints the 3 Switch plaintexts)
+  java com.disrobe.bench.NameReflectKeyed    (prints the 3 NameReflect plaintexts)
+
+sha256 (class files)
+--------------------
+  LongAccumCrypt.class      747464e4b27cd9b663c7cfcc27095e208753c1f7c9e60f1d22ecf88e36938d29
+  InstanceFieldKeyed.class  109ef0b04a98f7f4978895799e46a4fdbb42430fbe2b67d639608d5bfcfdb0e0
+  SwitchDispatch.class      7490912bad3dc5d88dc4b986b89d2bca21be3db55371c8eb40aa4d6870ac1a07
+  NameReflectKeyed.class    ae749e5a96caf16c746cc19e8a74972698cd9503173fd9a550a7f178ec49de4f
+
+Ground-truth plaintext (the recovery oracle, tests/eval_shapes_real.rs)
+----------------------------------------------------------------------
+  LongAccumCrypt:
+    connectString()   -> "jdbc:sqlserver://db.corp:1433;db=ledger"
+    tenantSignature() -> "X-Tenant-Signature: a91c0ffe"
+    vaultPath()       -> "https://vault.internal/v1/secret/data"
+  InstanceFieldKeyed:
+    brokerUrl()       -> "amqp://broker.internal:5672/events"
+    adminRole()       -> "ROLE_PLATFORM_ADMIN"
+    tokenPath()       -> "/var/run/secrets/token"
+  SwitchDispatch:
+    streamUrl()       -> "kafka://stream.internal:9092/audit"
+    bearer()          -> "Bearer eyJhbGciOiJIUzI1NiJ9"
+    masterKeyUri()    -> "s3://artifacts-prod/keys/master"
+  NameReflectKeyed:
+    registryUrl()     -> "registry.internal:8443/v2"
+    serviceAccount()  -> "svc-payments-prod"
+    webhookSecret()   -> "whsec_3f9a2b7c1d8e4056"
+
+Sourcing note (not a wall)
+--------------------------
+These reproduce the decryptor SHAPES that commercial Allatori/Zelix/DashO emit,
+not real commercial-obfuscated artifacts (those are paid products and unsafe to
+produce on a non-sandboxed box). The recovery method (run the class's own
+decrypt under the evaluator) is exactly what defeats a real protected class. A
+build whose key is runtime-only (System.getProperty/env/clock/SecureRandom)
+stays an honest RuntimeKeyUnavailable wall, the same as
+corpus/jvm/callerkeyed/EnvKeyed.

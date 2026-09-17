@@ -1,0 +1,42 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-06-18"
+toolchain = "dronavallipranav/rust-obfuscator 1.1.1 (cryptify string encryption + control-flow), rustc 1.95.0"
+note = "self-authored Rust source obfuscated by the real rust-obfuscator tool, compiled to native PE; graded against the clean original"
+
+[provenance]
+compiler = "rustc 1.95.0 / cargo --release"
+obfuscator = "rust-obfuscator: `cargo run -- sample.rs` rewrites it to obfuscated_code/sample.rs (cryptify::encrypt_string! on string literals + cryptify::flow_stmt! control-flow per fn), then `cargo build --release` with the cryptify path dependency"
+transform = "string literals become cryptify::encrypt_string! (compile-time XOR vs the default key 'xnasff3wcedj', runtime-decrypted via std::env::var(\"CRYPTIFY_KEY\")); control-flow gets dummy-loop/flow_stmt injection. the obfuscated binary runs identically (behavioral oracle: classify=8,40 / secret=the-hidden-flag-value) but the plaintext secret is XOR-encrypted out of the binary"
+verified = "the cryptify decrypt's env-var-name literal 'CRYPTIFY_KEY' is present in the obfuscated binary and ABSENT from the clean baseline - a reliable, false-positive-free signature. disrobe previously detected NOTHING (empty obfuscator hits, same as clean); it now reports Cryptify. NOTE on recovery: the secret IS the ciphertext XOR 'xnasff3wcedj' (proven recoverable, ciphertext at file offset 0x16750), but blind whole-binary XOR-scan is noise-dominated (no obf-vs-clean discriminator) - full string recovery requires decrypt-call-site code analysis, deferred as honest future work; this lands clean detect-and-report"
+
+[[fixture]]
+name = "sample.rs"
+path = "sample.rs"
+kind = "rust-source"
+provenance = "self-authored"
+description = "benign source: classify(n) + a string-literal secret"
+
+[[fixture]]
+name = "sample.obfuscated.rs"
+path = "sample.obfuscated.rs"
+kind = "rust-source"
+provenance = "real"
+source = "sample.rs"
+description = "rust-obfuscator output source (cryptify::encrypt_string! + flow_stmt!)"
+
+[[fixture]]
+name = "sample.clean.exe"
+path = "sample.clean.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.rs"
+description = "unobfuscated release build; plaintext secret present, no CRYPTIFY_KEY"
+
+[[fixture]]
+name = "sample.obfuscated.exe"
+path = "sample.obfuscated.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "sample.obfuscated.rs"
+description = "rust-obfuscator/cryptify release build; the CRYPTIFY_KEY decrypt signature is the gauntlet target"

@@ -1,0 +1,77 @@
+[package]
+name = "disrobe-binfmt"
+description = "Container and archive format detector / extractor for the disrobe suite."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["binary-format", "extract", "archive", "container", "disrobe"]
+categories = ["parser-implementations", "filesystem", "compression"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+
+[dependencies]
+compcol = { version = "=0.6.10", default-features = false, features = ["arsenic", "lzah", "sit13"] }
+disrobe-bytes = { workspace = true }
+disrobe-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+aes = { workspace = true }
+ar = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+brotli = { workspace = true }
+bzip2-rs = { workspace = true }
+cab = { workspace = true }
+cbc = { workspace = true }
+cipher = { version = "0.4", features = ["block-padding"] }
+crc32fast = { workspace = true }
+delharc = { workspace = true }
+encoding_rs = "0.8"
+flate2 = { workspace = true }
+liblzma = { workspace = true }
+lz4_flex = { workspace = true }
+lzfse_rust = "0.2.1"
+lzma-rs = { version = "0.3.0", features = ["raw_decoder"] }
+lzokay = { version = "2.0.1", default-features = false, features = ["decompress"] }
+memchr = { workspace = true }
+md5 = { workspace = true }
+miette = { workspace = true }
+msi = { workspace = true }
+ntfs = "0.4.0"
+object = { workspace = true, features = ["write"] }
+plist = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sevenz-rust2 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+pbkdf2 = { workspace = true }
+sha3 = { workspace = true }
+subtle = { workspace = true }
+tar = { workspace = true }
+tempfile = "3"
+thiserror = { workspace = true }
+unicode-normalization = { workspace = true }
+zip = { workspace = true }
+zstd = { workspace = true }
+
+[[bin]]
+name = "disrobe-binfmt-mock-tool"
+path = "src/bin/mock_tool.rs"
+
+[[example]]
+name = "gen_container_fixture"
+path = "tests/fixtures/gen_container.rs"
+
+[dev-dependencies]
+disrobe-testkit = { workspace = true }
+rpm = { workspace = true }

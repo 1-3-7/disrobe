@@ -1,0 +1,5 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="section mark dark"><title>section mark dark</title><desc>Editable source: xtask/graphgen/brand.mjs. Design tokens sha256:f5f5202630e53cf6a33d7e97d1bd4158e258496ddd4163c2432ee3cd167e9926</desc>
+    <defs/>
+    <path fill="#f5f5f5" stroke="none" d="M 8 8 L 48 8 L 48 24 L 24 24 L 24 104 L 48 104 L 48 120 L 8 120 Z M 64 8 L 80 8 C 106 8 120 24 120 48 L 120 80 C 120 104 106 120 80 120 L 64 120 L 64 104 L 80 104 C 96 104 104 96 104 80 L 104 48 C 104 32 96 24 80 24 L 64 24 Z"/>
+    <path fill="#f5f5f5" stroke="none" d="M 40 40 L 80 40 L 80 56 L 40 56 Z M 40 72 L 80 72 L 80 88 L 40 88 Z"/>
+</svg>

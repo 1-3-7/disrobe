@@ -1,0 +1,21 @@
+schema = "disrobe.fixture.provenance/v1"
+source_index = "https://files.jrsoftware.org/is/4/"
+reference_reader = "innoextract"
+reference_commit = "6e9e34ed0876014fdb46e684103ef8c3605e382e"
+reference_command = "innoextract.exe --silent --list --list-sizes --list-checksums --test --no-gog <fixture>"
+
+[fixtures.isetup-4_0_9]
+url = "https://files.jrsoftware.org/is/4/isetup-4.0.9.exe"
+sha256 = "bdc9cdb8e8c80ba494faad054f2ce24938bf3b7f5e53009c94ab3eda9f4758f5"
+size = 1170501
+member_count = 37
+member_bytes = 2278304
+compiler_sha256 = "d7c8471c8a0b1f705a6b06cadf67a74468498b85f52b0bde330f04f5ac934d5a"
+
+[fixtures.isetup-4_1_6]
+url = "https://files.jrsoftware.org/is/4/isetup-4.1.6.exe"
+sha256 = "3c737364dd9bcb452f9c615b804183cfdde652bc7f1214e9807c93fda4aa017f"
+size = 970724
+member_count = 40
+member_bytes = 2820048
+compiler_sha256 = "e19235e8d79feacd16034573500d7e5280346e20ffa2bb90a847827d7cdeb82c"

@@ -1,0 +1,68 @@
+schema = "disrobe.jvm.d8-lambda-elision-fixture/v1"
+source = "ElisionProbe.java"
+source_sha256 = "9d68167deebd381f5addafd601ebe89de2fd03e04cfcddb5176062921891a9e7"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes ElisionProbe.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+lambdas = 6
+functional_interfaces = [
+    "java.util.function.IntUnaryOperator",
+    "java.util.function.IntBinaryOperator",
+    "java.util.function.IntSupplier",
+    "java.util.function.LongSupplier",
+]
+capture_counts = [0, 1, 2]
+parameter_counts = [0, 1, 2]
+helper_kinds = ["static", "instance"]
+notes = "Every shape targets a JDK functional interface and every lambda body is a single expression, so each of the six toolchain helper methods is inlinable at its one construction site. The program declares no nested type and no erased single abstract method return, so the recovered compilation unit recompiles under javac and its bytecode can be compared with the authored program's."
+
+[[artifact]]
+path = "ElisionProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "D8"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/ElisionProbe.class"
+sha256 = "9fd582193f24243bde767b0cea443cb8f05751839dd9745c1312a40db938f792"
+bytes = 3256
+helper_names = [
+    "lambda$oneCapture$0",
+    "lambda$receiverCapture$0$ElisionProbe",
+    "lambda$stateless$0",
+    "lambda$textCapture$0",
+    "lambda$twoCaptures$0$ElisionProbe",
+    "lambda$wideCapture$0",
+]
+
+[[artifact]]
+path = "ElisionProbe-r8-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+tool = "R8"
+keep_rules = "-keep class ElisionProbe { *; } -dontobfuscate -dontoptimize -dontshrink -keepattributes *"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.R8 --release --min-api 21 --lib android.jar --pg-conf keep-elision.pro --output r8out classes/ElisionProbe.class"
+sha256 = "a20ba6d88349c4808904e8cb7662aad26e50254e55d371a53c4a677c5bc5a8d7"
+bytes = 3372
+helper_names = [
+    "$r8$lambda$2U3Nbe12py6Pa5JHXAdCoxxga94",
+    "$r8$lambda$KBZ-iAFVJR7MX-wLvg2wgQgmZ_o",
+    "$r8$lambda$NiEkV_D8wTHqxB139ipk75K0_88",
+    "$r8$lambda$RoPqro7_RECtjuW2Fq6gExLmXjk",
+    "$r8$lambda$v3sdq-KGhF1ZT_BtLd4fHFFmuYA",
+    "$r8$lambda$w4JeZF2My4aeYanQGu08YafEF2Y",
+]

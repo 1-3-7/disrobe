@@ -1,0 +1,68 @@
+schema = "disrobe.jvm.desugar-core-fixture/v1"
+source = "CoreLibraryProbe.java"
+source_sha256 = "454a13ce8c10a2f04c7665c94644b8f78298fd95ecaea8b71c07306bb71fcb03"
+
+[compiler]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[configuration]
+identifier = "com.tools.android:desugar_jdk_libs_configuration:2.1.5"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs_configuration/2.1.5/desugar_jdk_libs_configuration-2.1.5.jar"
+sha256 = "7bc9051b3a1ec19806311dcb6aa9b9ba7ef9c22caa6f4810da55bde285fb7770"
+
+[library]
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs/2.1.5/desugar_jdk_libs-2.1.5.jar"
+sha256 = "d8044befae095781b9a80bf1faa92edc30382d75d437476784c1bf991598a976"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[artifacts.low_minimum]
+path = "CoreLibraryProbe-min21.dex"
+min_api = 21
+sha256 = "3a65eb58db14122102ae5788665651ed09722cadc913f3cdcdcd63b54e8e310b"
+
+[artifacts.high_minimum]
+path = "CoreLibraryProbe-min34.dex"
+min_api = 34
+sha256 = "3abd93735ac3cf5c07f15f733927568da0ddc6ca2618779682884cf9073ee308"
+
+[artifacts.debug]
+path = "CoreLibraryProbe-min21-debug.dex"
+min_api = 21
+sha256 = "5c2f531221c006ca74cd2577d4615c13d969b8b025a5ad71ffa8f91d77a3041f"
+
+[artifacts.apk]
+path = "CoreLibraryProbe-min21.apk"
+sha256 = "6f5f34767af0f1a9e83d4c64f57495b77a26c0421668443f0ea4ea9b685ecfc3"
+
+[artifacts.multidex_apk]
+path = "CoreLibraryProbe-min21-multidex.apk"
+sha256 = "4ecf606ef1513034c61bcef94573d6c38f52beeb7e9ed507fbf913ec9f659e24"
+
+[artifacts.secondary_source]
+path = "SecondaryProbe.java"
+sha256 = "72bbc95c4031e1d687b3654041008fff64be843e5f4e4195eb90ef10a67f0f3c"
+
+[artifacts.recovered_source]
+path = "CoreLibraryProbe.recovered.java.txt"
+sha256 = "bd662c0153ad4c340bb8bc66bd573b752e11dea5fa81353fe481ea2c305479ca"
+
+[commands]
+prepare = "New-Item -ItemType Directory -Path classes,low,high,debug,secondary,apk-stage -Force"
+javac = "javac --release 11 -d classes CoreLibraryProbe.java SecondaryProbe.java"
+configuration_extract = "jar --extract --file desugar_jdk_libs_configuration-2.1.5.jar META-INF/desugar/d8/desugar.json"
+configuration_stage = "Copy-Item -LiteralPath META-INF/desugar/d8/desugar.json -Destination desugar.json"
+low_minimum = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --desugared-lib desugar.json --output low classes/fixtures/desugar/CoreLibraryProbe.class"
+high_minimum = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 34 --lib android.jar --desugared-lib desugar.json --output high classes/fixtures/desugar/CoreLibraryProbe.class"
+debug = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --lib android.jar --desugared-lib desugar.json --output debug classes/fixtures/desugar/CoreLibraryProbe.class"
+secondary = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output secondary classes/fixtures/desugar/SecondaryProbe.class"
+stage_dex_artifacts = "Copy-Item -LiteralPath low/classes.dex -Destination CoreLibraryProbe-min21.dex; Copy-Item -LiteralPath high/classes.dex -Destination CoreLibraryProbe-min34.dex; Copy-Item -LiteralPath debug/classes.dex -Destination CoreLibraryProbe-min21-debug.dex"
+apk_stage = "Copy-Item -LiteralPath AndroidManifest.xml -Destination apk-stage/AndroidManifest.xml; Copy-Item -LiteralPath low/classes.dex -Destination apk-stage/classes.dex"
+apk = "jar --create --file CoreLibraryProbe-min21.apk --date=1980-01-01T00:00:02Z --no-manifest -C apk-stage AndroidManifest.xml -C apk-stage classes.dex"
+multidex_stage = "Copy-Item -LiteralPath secondary/classes.dex -Destination apk-stage/classes2.dex"
+multidex_apk = "jar --create --file CoreLibraryProbe-min21-multidex.apk --date=1980-01-01T00:00:02Z --no-manifest -C apk-stage AndroidManifest.xml -C apk-stage classes.dex -C apk-stage classes2.dex"

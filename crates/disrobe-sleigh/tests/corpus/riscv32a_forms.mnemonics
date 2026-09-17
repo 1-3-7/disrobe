@@ -1,0 +1,10 @@
+lr.w
+lr.w.aq
+sc.w.rl
+amoswap.w
+amoadd.w.aqrl
+amoand.w
+amoor.w
+amoxor.w
+amomin.w
+amomax.w

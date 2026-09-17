@@ -1,0 +1,72 @@
+name: JavaScript recovery tests
+description: Run high-preset corpus recovery oracles in release and retain debug coverage for every other target
+runs:
+  using: composite
+  steps:
+    - name: Run the complete JavaScript test inventory
+      shell: pwsh
+      env:
+        RELEASE_TEST_TARGETS: |
+          obfuscator_io_e2e
+          obfuscator_io_differential_oracle
+          reeval_corpus_oracle
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $false
+        [string[]]$metadataLines = @(& cargo metadata --format-version 1 --no-deps --all-features)
+        if ($LASTEXITCODE -ne 0) { throw "Cargo metadata failed with exit code $LASTEXITCODE" }
+        [object]$metadata = ($metadataLines -join "`n") | ConvertFrom-Json
+        [object[]]$packages = @($metadata.packages | Where-Object { $_.name -ceq 'disrobe-pass-js-deob' })
+        if ($packages.Count -ne 1) { throw 'Cargo metadata must identify exactly one JavaScript package' }
+        foreach ($target in $packages[0].targets) {
+          foreach ($kind in $target.kind) {
+            if ($kind -cnotin @('lib', 'test', 'bench', 'custom-build')) {
+              throw "JavaScript target kind $kind needs an explicit coverage route"
+            }
+          }
+        }
+        [string[]]$allTargets = @($packages[0].targets | Where-Object { $_.kind -ccontains 'test' } | ForEach-Object { $_.name } | Sort-Object -CaseSensitive)
+        if ($allTargets.Count -ne @($allTargets | Sort-Object -CaseSensitive -Unique).Count) {
+          throw 'Cargo metadata must identify every integration target exactly once'
+        }
+        [string[]]$releaseTargets = @($env:RELEASE_TEST_TARGETS -split '\s+' | Where-Object { $_.Length -gt 0 })
+        if ($releaseTargets.Count -eq 0 -or $releaseTargets.Count -ne @($releaseTargets | Sort-Object -CaseSensitive -Unique).Count) {
+          throw 'The release recovery-oracle group must contain distinct integration targets'
+        }
+        foreach ($target in $releaseTargets) {
+          if (@($allTargets | Where-Object { $_ -ceq $target }).Count -ne 1) {
+            throw "Release recovery oracle $target must appear exactly once in Cargo metadata"
+          }
+        }
+        [string[]]$debugTargets = @($allTargets | Where-Object { $releaseTargets -cnotcontains $_ })
+        if ($debugTargets.Count -eq 0 -or $debugTargets.Count + $releaseTargets.Count -ne $allTargets.Count) {
+          throw 'The JavaScript profile partition must retain every integration target exactly once'
+        }
+        Write-Host "JavaScript inventory: $($debugTargets.Count) debug integration targets, $($releaseTargets.Count) release recovery oracles, unit tests and doctests"
+        [string[]]$commonArguments = @('test', '-p', 'disrobe-pass-js-deob', '--all-features', '--no-fail-fast')
+        [string[]]$debugArguments = $commonArguments + @('--lib')
+        foreach ($target in $debugTargets) {
+          $debugArguments += @('--test', $target)
+        }
+        [string[]]$releaseArguments = $commonArguments + @('--release')
+        foreach ($target in $releaseTargets) {
+          $releaseArguments += @('--test', $target)
+        }
+        [object[]]$phases = @(
+          @{ Name = 'debug unit and integration tests'; Arguments = $debugArguments + @('--', '--nocapture') },
+          @{ Name = 'release corpus recovery oracles'; Arguments = $releaseArguments + @('--', '--nocapture') },
+          @{ Name = 'debug doctests'; Arguments = $commonArguments + @('--doc', '--', '--nocapture') }
+        )
+        [int]$firstFailure = 0
+        foreach ($phase in $phases) {
+          Write-Host "Running JavaScript $($phase.Name)"
+          [string[]]$testArguments = $phase.Arguments
+          & cargo @testArguments
+          [int]$phaseExitCode = $LASTEXITCODE
+          if ($phaseExitCode -ne 0) {
+            Write-Host "JavaScript $($phase.Name) failed with exit code $phaseExitCode"
+            if ($firstFailure -eq 0) { $firstFailure = $phaseExitCode }
+          }
+        }
+        exit $firstFailure

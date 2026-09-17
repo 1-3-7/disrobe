@@ -1,0 +1,14 @@
+schema = "disrobe.fixture.provenance/v1"
+producer = "EDK2 TianoCompress"
+release_tag = "edk2-stable202605"
+release_commit = "b03a21a63e3bd001f52c527e5a57feddb53a690b"
+source_url = "https://github.com/tianocore/edk2"
+reference_command = "TianoCompress -e -o compressed.bin section-stream.bin"
+fixture_sha256 = "c45f4cb8c0abc2ec4bdc86e26ab9b2bbdb6121134c3cc17835933ae85cb7a2d7"
+fixture_size = 424
+compressed_stream_sha256 = "c0bcb2f74fce71ef04d78c34d56c91c25a5f8917e8ff42ab5d0a96926b4394d3"
+compressed_stream_size = 291
+section_stream_sha256 = "f02e5beed6d3166618be95b6735f5f273ef64fa0ba4fe504539cc88b161a1080"
+section_stream_size = 836
+recovered_image_sha256 = "8b4677363632a2183209f163199131c4499342faace21affcdf59f9a0cb4911f"
+recovered_image_size = 832

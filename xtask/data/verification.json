@@ -1,0 +1,63 @@
+{
+  "title": "How recovery is checked",
+  "subtitle": "each check states its reference and inspected population; compilation alone does not establish equivalence",
+  "rows": [
+    {
+      "ecosystem": "Python",
+      "oracle": "normalized opcode-structure agreement",
+      "result": "96.67% of 6286 objects",
+      "ci": true,
+      "source": "arbitrary_recompile_gate.rs, code-object floor 96.67%; normalized comparison omits jump targets and most operands"
+    },
+    {
+      "ecosystem": "JVM classfile",
+      "oracle": "recompile under real javac",
+      "result": "131 / 131 methods clean",
+      "ci": true,
+      "source": "decompile_recompile_rate.rs, JDK 25"
+    },
+    {
+      "ecosystem": "Android DEX",
+      "oracle": "real JVM verifier, -Xverify:all",
+      "result": "118 / 118 verifier-presented classes clean",
+      "ci": true,
+      "source": "dalvik_verifier_gate.rs"
+    },
+    {
+      "ecosystem": "WebAssembly",
+      "oracle": "execution differential under wasmtime",
+      "result": "57 / 57 execution-eligible fns equal",
+      "ci": true,
+      "source": "semantic_differential.rs, --features sandbox"
+    },
+    {
+      "ecosystem": "Lua",
+      "oracle": "re-run recovered output under real Lua",
+      "result": "IronBrew2 2.7.0 equal",
+      "ci": true,
+      "source": "ironbrew2_real_oracle.rs"
+    },
+    {
+      "ecosystem": "Ruby YARV",
+      "oracle": "recompile under MRI, opcode multiset",
+      "result": "100% / 98.67% opcode-name recall",
+      "ci": true,
+      "source": "yarv_recompile_oracle.rs"
+    },
+    {
+      "ecosystem": ".NET Eazfuscator VM",
+      "oracle": "re-inject CIL, byte-identical stdout",
+      "result": "57 / 57 instructions",
+      "ci": true,
+      "source": "real_eazvm.rs"
+    },
+    {
+      "ecosystem": "Native UPX",
+      "oracle": "byte-identity vs committed original",
+      "result": ".text byte-identical",
+      "ci": true,
+      "source": "benches/native-unpack"
+    }
+  ],
+  "footnote": "Compilation alone does not establish equivalence. Execution and byte comparisons apply to their tested inputs. See the evidence report for each oracle's limits."
+}

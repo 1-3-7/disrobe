@@ -1,0 +1,12 @@
+avoid-breaking-exported-api = false
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use IndexMap or BTreeMap in IR emit paths for determinism" },
+    { path = "std::collections::HashSet", reason = "use IndexSet or BTreeSet in IR emit paths for determinism" },
+]
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "non-deterministic; route through disrobe_core::time::now / disrobe_core::time::now_secs which honor SOURCE_DATE_EPOCH" },
+    { path = "rand::thread_rng", reason = "seed every RNG explicitly via disrobe_core::rng::seeded for determinism; use disrobe_core::rng::os only in tests and non-deterministic paths", allow-invalid = true },
+]
+cognitive-complexity-threshold = 30
+type-complexity-threshold = 250
+too-many-arguments-threshold = 8

@@ -1,0 +1,17 @@
+id = "wasm-wasmtime-diff"
+ecosystem = "wasm"
+title = "WebAssembly recovery, wasmtime execution differential"
+claim = "the execution-eligible functions of the committed WebAssembly corpus execute equivalently to the original under wasmtime after disrobe lifts and re-emits them."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "wasmtime runs the original module and the recovered one on the same inputs and compares return values, trap parity, and the first 4096 bytes of linear memory, for the 57 execution-eligible functions"
+reproduce = "cargo test -p disrobe-pass-wasm-deob --test semantic_differential --features sandbox"
+note = "Execution-eligibility is narrower than op-coverage: a function needs a callable signature and no host imports before it can be run at all, so 57 is a smaller population than the 133-function corpus. The op-coverage figure beside this one is a different and weaker measurement and is graded by its own descriptor, wasm-external-op-inventory."
+
+[source]
+recovery_group = "WebAssembly (committed 133-fn corpus: op-coverage, 57 execution-verified under wasmtime)"
+recovery_bar = "execution-equivalence"
+floor = 100.0

@@ -1,0 +1,5043 @@
+{
+  "schema": "disrobe.demo.browser/v1",
+  "engine": "Playwright 1.63.0 Chromium",
+  "wasm": {
+    "path": "playground/src/wasm/disrobe_wasm.wasm",
+    "sha256": "00cc16be77da6eeb0afb16cb4237c8b06952bfe36df88ea8194d795ecf47a064"
+  },
+  "runs": [
+    {
+      "id": "playground",
+      "reproduction": {
+        "cwd": "playground",
+        "environment": {},
+        "command": "bun run test:browser -- --project=playground-desktop --project=playground-mobile --grep-invert \"performance budget\" --reporter=json",
+        "prerequisites": [
+          "bun install --frozen-lockfile",
+          "bun run build",
+          "mdbook build .."
+        ]
+      },
+      "report_sha256": "36e4b73bac0375b678c5e564d5ef2eddbd733777968539938786d36e67e67f33",
+      "stats": {
+        "startTime": "2026-09-09T20:05:16.964Z",
+        "duration": 508769.33499999996,
+        "expected": 310,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "cases": [
+        {
+          "name": "about commands are readable and copyable in both themes",
+          "file": "playground/about.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "about commands are readable and copyable in both themes",
+          "file": "playground/about.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a resource-only APK routes to decoded Android XML",
+          "file": "playground/apk.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "APK signing metadata is distinct from signature verification",
+          "file": "playground/apk.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a resource-only APK routes to decoded Android XML",
+          "file": "playground/apk.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "APK signing metadata is distinct from signature verification",
+          "file": "playground/apk.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "every shipped analysis entry has a runnable interface",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "detect opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pyarmor-detect opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pyarmor-classify opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "swift-objc opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "automatic routing opens the PyArmor classifier with the uploaded file",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Swift inspection exposes named types and downloads the complete metadata",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "automatic routing recommends Swift inspection for the compiled Mach-O sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Swift inspection explains an unsupported input and can load its sample again",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "every shipped analysis entry has a runnable interface",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "detect opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pyarmor-detect opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pyarmor-classify opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "swift-objc opens directly with a working sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "automatic routing opens the PyArmor classifier with the uploaded file",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Swift inspection exposes named types and downloads the complete metadata",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "automatic routing recommends Swift inspection for the compiled Mach-O sample",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Swift inspection explains an unsupported input and can load its sample again",
+          "file": "playground/capability-access.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "auto-route renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "strings renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "ioc renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "behavior renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "anti-analysis renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "secrets renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "entropy renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "yara renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "go renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "py-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "py-disasm renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pyarmor-unpack renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pyarmor-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pyarmor-classify renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pickle-safety renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pickle-disasm renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pickle-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pickle-trace renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "pickle-polyglot renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-decompile-wat renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-faithful-wat renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-lift-rust renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-lift-ts renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-lift-c renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-cfg renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-signatures renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-gc-types renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-eh renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-memories renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-component renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-source-map renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "wasm-preludes renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "lua-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "lua-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "phar renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "php-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "ruby-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "beam-recover renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "as3-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "scriptlang-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "shell-deob renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "swift-objc renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "mobile-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "hermes renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "apk renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "dart-kernel renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "jvm-class renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "dotnet renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "js-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "jsx-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "ts-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "tsx-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "js-unbundle renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "source-map renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "auto-route renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "strings renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "ioc renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "behavior renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "anti-analysis renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "secrets renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "entropy renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "yara renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "go renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "py-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "py-disasm renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pyarmor-unpack renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pyarmor-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pyarmor-classify renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pickle-safety renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pickle-disasm renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pickle-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pickle-trace renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "pickle-polyglot renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-decompile-wat renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-faithful-wat renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-lift-rust renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-lift-ts renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-lift-c renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-cfg renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-signatures renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-gc-types renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-eh renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-memories renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-component renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-source-map renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "wasm-preludes renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "lua-decompile renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "lua-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "phar renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "php-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "ruby-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "beam-recover renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "as3-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "scriptlang-analyze renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "shell-deob renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "swift-objc renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "mobile-detect renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "hermes renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "apk renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "dart-kernel renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "jvm-class renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "dotnet renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "js-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "jsx-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "ts-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "tsx-format renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "js-unbundle renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "source-map renders its bundled sample",
+          "file": "playground/catalog.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Dart Kernel routes to individual embedded source downloads",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Dart Kernel rejects invalid inputs without retaining old source",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Dart source records remain separate despite matching basenames",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Dart empty and absent source records have distinct output states",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Dart Kernel routes to individual embedded source downloads",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Dart Kernel rejects invalid inputs without retaining old source",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Dart source records remain separate despite matching basenames",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Dart empty and absent source records have distinct output states",
+          "file": "playground/dart-kernel.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "managed assembly recovery exposes its types and CIL",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "all three .NET source languages have colored complete downloads",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "bodyless methods and exception regions remain distinct",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "managed input bounds reject invalid files and preserve followup",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "automatic routing preserves an uploaded managed assembly",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "managed assembly recovery exposes its types and CIL",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "all three .NET source languages have colored complete downloads",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "bodyless methods and exception regions remain distinct",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "managed input bounds reject invalid files and preserve followup",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "automatic routing preserves an uploaded managed assembly",
+          "file": "playground/dotnet.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a trapped analysis engine is discarded before the next recovery",
+          "file": "playground/engine-limits.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a trapped analysis engine is discarded before the next recovery",
+          "file": "playground/engine-limits.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "theme controls work when preference storage is unavailable",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "theme changes synchronize across open tabs",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a loaded sample can be rerun offline",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "unavailable syntax highlighting leaves source editing and analysis usable",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "invalid binary input reports an error and the sample restores recovery",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "large invalid binary input keeps the hex view bounded",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "reduced motion and system contrast retain usable controls",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "theme controls work when preference storage is unavailable",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "theme changes synchronize across open tabs",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a loaded sample can be rerun offline",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "unavailable syntax highlighting leaves source editing and analysis usable",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "invalid binary input reports an error and the sample restores recovery",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "large invalid binary input keeps the hex view bounded",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "reduced motion and system contrast retain usable controls",
+          "file": "playground/environment.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "formatting preserves JavaScript expressions and return newlines",
+          "file": "playground/format.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "all four source grammars retain declarations and colored output",
+          "file": "playground/format.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "formatter rejects invalid syntax and recovers on the next input",
+          "file": "playground/format.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "formatter bounds uploads and retains comments and complete downloads",
+          "file": "playground/format.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "deep source failure restarts the formatter worker",
+          "file": "playground/format.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "formatting preserves JavaScript expressions and return newlines",
+          "file": "playground/format.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "all four source grammars retain declarations and colored output",
+          "file": "playground/format.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "formatter rejects invalid syntax and recovers on the next input",
+          "file": "playground/format.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "formatter bounds uploads and retains comments and complete downloads",
+          "file": "playground/format.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "deep source failure restarts the formatter worker",
+          "file": "playground/format.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Go metadata retains a build-only result when its function table is absent",
+          "file": "playground/go.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Stripped Go function addresses match the paired nm reference",
+          "file": "playground/go.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Go executables route to build information and function metadata",
+          "file": "playground/go.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Go function and type searches paginate and stay independent",
+          "file": "playground/go.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Go inspection clears stale metadata after invalid input and reloads the sample",
+          "file": "playground/go.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Go metadata retains a build-only result when its function table is absent",
+          "file": "playground/go.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Stripped Go function addresses match the paired nm reference",
+          "file": "playground/go.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Go executables route to build information and function metadata",
+          "file": "playground/go.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Go function and type searches paginate and stay independent",
+          "file": "playground/go.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Go inspection clears stale metadata after invalid input and reloads the sample",
+          "file": "playground/go.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a Hermes upload routes to recovery and downloads a selected function",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Hermes metadata retains global string IDs and true identifier kinds",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Hermes bytecode remains accessible beside recovered source",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "invalid Hermes input reports a parse error and the sample still recovers",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "an unsupported Hermes version keeps its metadata available",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a Hermes upload routes to recovery and downloads a selected function",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Hermes metadata retains global string IDs and true identifier kinds",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Hermes bytecode remains accessible beside recovered source",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "invalid Hermes input reports a parse error and the sample still recovers",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "an unsupported Hermes version keeps its metadata available",
+          "file": "playground/hermes.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "hex bytes support keyboard navigation, range selection, and search",
+          "file": "playground/hex-viewer.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "hex bytes support keyboard navigation, range selection, and search",
+          "file": "playground/hex-viewer.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "uploaded bytes remain unchanged in text analysis modes",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "changing modes keeps an uploaded artifact until a sample is requested",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a delayed sample cannot replace the newly selected mode's input",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "editing the input clears the previous result",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "uploaded bytes remain unchanged in text analysis modes",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "changing modes keeps an uploaded artifact until a sample is requested",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a delayed sample cannot replace the newly selected mode's input",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "editing the input clears the previous result",
+          "file": "playground/input-ownership.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "JVM class recovery exposes source and constructor bytecode",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "JVM input errors retain a working class recovery path",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "automatic routing preserves the uploaded Java class",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "Kotlin class recovery exposes the original method and exception regions",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "JVM abstract and native methods have no bytecode and constants remain exact",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "JVM class recovery exposes source and constructor bytecode",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "JVM input errors retain a working class recovery path",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "automatic routing preserves the uploaded Java class",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "Kotlin class recovery exposes the original method and exception regions",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "JVM abstract and native methods have no bytecode and constants remain exact",
+          "file": "playground/jvm.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "keyboard users can bypass navigation and run edited source",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "editing and running in the same event submits the current document",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "same-page navigation preserves an edited input without starting analysis",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 375px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 768px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 1024px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 1280px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 1440px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis panels remain usable at 1920px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "keyboard users can bypass navigation and run edited source",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "editing and running in the same event submits the current document",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "same-page navigation preserves an edited input without starting analysis",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 375px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 768px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 1024px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 1280px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 1440px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "analysis panels remain usable at 1920px",
+          "file": "playground/layout.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "browser back and forward restore modes without discarding the user's input",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "mode search accepts multiple words and selects with the keyboard",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "an empty search result can be cleared without changing the mode",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "browser back and forward restore modes without discarding the user's input",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "mode search accepts multiple words and selects with the keyboard",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "an empty search result can be cleared without changing the mode",
+          "file": "playground/navigation.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "clipboard denial explains recovery and permits a retry",
+          "file": "playground/output-actions.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "clipboard denial explains recovery and permits a retry",
+          "file": "playground/output-actions.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "output selectors keep a visible selection after focus moves",
+          "file": "playground/output-selection.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "output selectors keep a visible selection after focus moves",
+          "file": "playground/output-selection.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "PHAR members download unchanged and can become the next input",
+          "file": "playground/phar.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "PHAR members download unchanged and can become the next input",
+          "file": "playground/phar.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "PyArmor rejects oversized file selections before reading their contents",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a user wrapper requires an explicit runtime and clears stale sample output",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "an immediate edited-wrapper run retains only an explicitly chosen runtime",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "PyArmor unpacks paired files into a parsed marshal code object",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a completed runtime selection survives replacement of its still-reading wrapper",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a completed wrapper selection survives replacement of its still-reading runtime",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "PyArmor rejects overflowing runtime offsets and reuses the worker for valid recovery",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "PyArmor rejects oversized file selections before reading their contents",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a user wrapper requires an explicit runtime and clears stale sample output",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "an immediate edited-wrapper run retains only an explicitly chosen runtime",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "PyArmor unpacks paired files into a parsed marshal code object",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a completed runtime selection survives replacement of its still-reading wrapper",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a completed wrapper selection survives replacement of its still-reading runtime",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "PyArmor rejects overflowing runtime offsets and reuses the worker for valid recovery",
+          "file": "playground/pyarmor-unpack.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "YARV recovery exposes source and decoded instructions",
+          "file": "playground/ruby.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "mruby recovery keeps operation and byte counts distinct",
+          "file": "playground/ruby.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "YARV recovery exposes source and decoded instructions",
+          "file": "playground/ruby.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "mruby recovery keeps operation and byte counts distinct",
+          "file": "playground/ruby.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "stopping a sample aborts its download",
+          "file": "playground/sample-loading.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a stalled sample times out and another mode still runs",
+          "file": "playground/sample-loading.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "stopping a sample aborts its download",
+          "file": "playground/sample-loading.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a stalled sample times out and another mode still runs",
+          "file": "playground/sample-loading.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "source maps recover all four original esbuild files byte for byte",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "indexed maps retain independent roots, empty originals, and missing-source identities",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "inline maps recover source and external references stay inert",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "source-map size, UTF-8, and offset failures allow the next valid input",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "source filtering and shortened previews keep complete downloads",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "source maps recover all four original esbuild files byte for byte",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "indexed maps retain independent roots, empty originals, and missing-source identities",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "inline maps recover source and external references stay inert",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "source-map size, UTF-8, and offset failures allow the next valid input",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "source filtering and shortened previews keep complete downloads",
+          "file": "playground/source-map.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "real Wasm recovery, download, and both neutral themes work",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "editable source distinguishes keywords, strings and numbers in both themes",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "PHP tag literals stay inside fragments while tagged documents retain highlighting",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "real Wasm recovery, download, and both neutral themes work",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "editable source distinguishes keywords, strings and numbers in both themes",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "PHP tag literals stay inside fragments while tagged documents retain highlighting",
+          "file": "playground/theme.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "real webpack modules have highlighted source and exact JSON downloads",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "bundle detection without modules and unrecognized input remain distinct",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "bundle filters preserve distinct chunks and full source downloads",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "bundle input failures preserve the next analysis",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "automatic routing opens the uploaded JavaScript bundle",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "JSX and TSX module tags are highlighted as markup in both themes",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "real webpack modules have highlighted source and exact JSON downloads",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "bundle detection without modules and unrecognized input remain distinct",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "bundle filters preserve distinct chunks and full source downloads",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "bundle input failures preserve the next analysis",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "automatic routing opens the uploaded JavaScript bundle",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "JSX and TSX module tags are highlighted as markup in both themes",
+          "file": "playground/unbundle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "stopping pending work allows a fresh analysis",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "an unresponsive worker times out and the next sample recovers",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "a worker crash reports an error and permits a fresh analysis",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "oversized files are rejected before reading their contents",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "stopping pending work allows a fresh analysis",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "an unresponsive worker times out and the next sample recovers",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "a worker crash reports an error and permits a fresh analysis",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-mobile"
+        },
+        {
+          "name": "oversized files are rejected before reading their contents",
+          "file": "playground/worker-lifecycle.spec.ts",
+          "project": "playground-mobile"
+        }
+      ],
+      "accessibility": [
+        {
+          "case": "detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "f552359b0bb6a684d3750e136e597ddcfa620aacefd98b0fb99b4eb7833879bf"
+        },
+        {
+          "case": "detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "75c4e8eac91e33ab161a6fa420b25068443332658d9a578e609e964bc6e062d0"
+        },
+        {
+          "case": "auto-route renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "1d0bdcdd407a2ae4a3042ec0daaf15eecb91a2c0eb1c58e1855abf904fdb75c0"
+        },
+        {
+          "case": "auto-route renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "435233f327ad33d63ef3443761c37230f9874b31da20758e4dc781142aa2391d"
+        },
+        {
+          "case": "strings renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "3642d2a382e95e56d2699b52f99df9e9d521808bb9be397a80658a69d494a57e"
+        },
+        {
+          "case": "strings renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "ae15b25939bdc6a4a9b135c3cef401de0b66d8009aebb90e34d7ef53f8dbc087"
+        },
+        {
+          "case": "ioc renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "84fde24cb9c5ea27b18acf4e50deb4a4b859c2d7a8b6f952a50183d2febd2818"
+        },
+        {
+          "case": "ioc renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "9bb4136727ca2c828ae4ae31d0a2e1b9dbf908285f633f7f17a49bcf2f567afa"
+        },
+        {
+          "case": "behavior renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "52be32ad71d50eb49ab45fe73f7475b78b0c44af2fac5ec19ef91936751b0f41"
+        },
+        {
+          "case": "behavior renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "6c29fac2f1a8f56a9631b3139db45fee87ed929b08c81229077444acab646f1e"
+        },
+        {
+          "case": "anti-analysis renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "120ccecbc46012d8cf1eb5fb0696fc424593b0f6fbf600d48e35c37a6e008024"
+        },
+        {
+          "case": "anti-analysis renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "ab6b2ac81eac376148acc031e2b9b957e68178f9791d8666185aa7fb806e1434"
+        },
+        {
+          "case": "secrets renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "19438ccf93b1f753e899d7d0865208e49e9f11ed64540404b77a57acb7c06752"
+        },
+        {
+          "case": "secrets renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "1cfe24591d32a4dd0cd2569ae020f855bf95b07aea138938909a4d9be96e6d4e"
+        },
+        {
+          "case": "entropy renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "e6cab5dd6913720fb6062a83c5201840a39fa6b68a1db2da64be7fa64b193f58"
+        },
+        {
+          "case": "entropy renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "9a2a9a372d130c46fd9e80d00eb94cb4e9008273a67272622780ea39e900a4cd"
+        },
+        {
+          "case": "yara renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "0c3149b4ac993394247080cf843192f64507c252e6ecfa768b33ad91b2c851f5"
+        },
+        {
+          "case": "yara renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "50cc6b927e91697c9d9f294f6b9f7c54318cb5d981baf8837ed211a56be14652"
+        },
+        {
+          "case": "go renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "c3ef4a4e26259952b37ffcb9d09b6024334d9c48e8ef888c740cf509d1b90d61"
+        },
+        {
+          "case": "go renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "772933acb1ede94d05b6e6cad04ab53c7a302c1b03fcd64770aab1e96cca5660"
+        },
+        {
+          "case": "py-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "a4ac6276c56e0071db1980fb98a60ab4288283d09adcb17da8de89c2c9ac17e5"
+        },
+        {
+          "case": "py-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "d52c80b670807e041488fb2342a80f29d9d38c0c2ac8e4fc47c62b805c38b88a"
+        },
+        {
+          "case": "py-disasm renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "ef8dd145003751b925144be069569f3ae51a1be479d3ebe7e5c3608c36de84d6"
+        },
+        {
+          "case": "py-disasm renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "9f7e9123b7ed15f1de516d7c2e971ae0f59ac42aef7dd1dcb25678b1bf52c759"
+        },
+        {
+          "case": "pyarmor-unpack renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "388a6050a1188fe682c4481dbe438b621d82d9a10b9041f9b2c7d2a44d55d7b1"
+        },
+        {
+          "case": "pyarmor-unpack renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "fbe32a202365bc5c95c6805ce64eca71a14e2711d93388f394111902f17a0a30"
+        },
+        {
+          "case": "pyarmor-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "46f73701e3b302ebce16c034ab7c0209a6130193e98b0f99d37fad5911fae8e4"
+        },
+        {
+          "case": "pyarmor-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "3d48404e2c8fe7bcd0af475309ac7a681a9c6ede304adbfd23af4b814add6dd5"
+        },
+        {
+          "case": "pyarmor-classify renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "264ccb7e25de1a3d8467262db53ec1c66d49caa8983387512cb04b7abd826920"
+        },
+        {
+          "case": "pyarmor-classify renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "e08d2090125563a5173ea941d587474c6eae359fabb860cd3ee672ac4886c1ad"
+        },
+        {
+          "case": "pickle-safety renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "636d03c67a56da4c89c2b96d3fa88a26117db137f69eabb2f305a259546d4ac8"
+        },
+        {
+          "case": "pickle-safety renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "44e96a10ba113bf58381d3655d7847cb6a89f7d9e8e22a4d502c6e722539fa5f"
+        },
+        {
+          "case": "pickle-disasm renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "fc35cc1063c01362dae77ed032d834c4172644545fd56d028b9ea84c98068d0b"
+        },
+        {
+          "case": "pickle-disasm renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "dc16a3026d0f4b2ca57e4d4b3e1fdcf314cbc7d7cef694342e0fd4354a5c227c"
+        },
+        {
+          "case": "pickle-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "53b4f7f0baeb26ecf4ab804cc6b1c79f16e304d7726ed7ebb1f782dd9113a0f2"
+        },
+        {
+          "case": "pickle-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "e0bfe284fafe958df198df0b6d0193a72f7e1cab39fc4d0fd2f4a08e63d4269c"
+        },
+        {
+          "case": "pickle-trace renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "385db92078e49ae9294eac4b5cedafaa3b08081837edd87965d8d7fb98381273"
+        },
+        {
+          "case": "pickle-trace renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "0bc5770da3bc5077e9a05cbe33f4f728977be37609b8f4a5cbad6a6f242ff21b"
+        },
+        {
+          "case": "pickle-polyglot renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "80f6dbcdbb3dc1131b9327c37bf15a6edf61b74fccff1f5e83f79659901705f0"
+        },
+        {
+          "case": "pickle-polyglot renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "18287347411c1ac7db57c3d3b05c30d9de986ecdb2f7873765846dcaabad0013"
+        },
+        {
+          "case": "wasm-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "37241ea32bb4d4a234bbd9f9d5eccd23112375688fbc4278d90cf7287e74005a"
+        },
+        {
+          "case": "wasm-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "ac5b9871093b7142ec3082171aac8f5dd6ba512b91679b12400494c4467b84b0"
+        },
+        {
+          "case": "wasm-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "9becb17e6576bafd4dd696651066a8798e9184bb1482268822dc6bf31720a29f"
+        },
+        {
+          "case": "wasm-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "055bcb50cf449dac7b0082922b043f435c560e3377c36f93fdf889cf2635d4b0"
+        },
+        {
+          "case": "wasm-decompile-wat renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "f2f843f96ee136fbe46f26b3bad6f35324e70feab4b90a26ed7bd1ef9d6e99be"
+        },
+        {
+          "case": "wasm-decompile-wat renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "acc3cbdc0feeadb926f033694fcf20d37ffc78035ca8df34fa2314faa4dfdfbd"
+        },
+        {
+          "case": "wasm-faithful-wat renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "a969b928461a578e71e34b4659b65c7f6ded937bc9882e5d5cbf4631838edd99"
+        },
+        {
+          "case": "wasm-faithful-wat renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "2a2f09b5c5a389a77e272c714b07da5571e7c4dc78fd904cad8815022dab7d88"
+        },
+        {
+          "case": "wasm-lift-rust renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "4e71875363a09835a53441d057652d1f52d4ad18b2c26a6f91f1ef1073ace7ae"
+        },
+        {
+          "case": "wasm-lift-rust renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "c52439c14ebdd55e343666d8bd48ff979562d231ff1dfa0131f208edaffa9e50"
+        },
+        {
+          "case": "wasm-lift-ts renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "038e3f46793de6e53c50ea9153777735ef1a5155ebba93323feb06121c44d69f"
+        },
+        {
+          "case": "wasm-lift-ts renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "a098d95c8dd37a829266b63f5cef3c161a6fe13bd4a4e5d0150a2dac63aa5b93"
+        },
+        {
+          "case": "wasm-lift-c renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "1eb4014432a7c8ef46b15b6e26f6f67fc2eddacbe8f29eb14a52fdd40fb42ca4"
+        },
+        {
+          "case": "wasm-lift-c renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "eb891ffa8403a8803f7a3381bb453b826209dd56644d290ef7a4e0953951672d"
+        },
+        {
+          "case": "wasm-cfg renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "53b8d29e6fdf21aeb3da9f1d1d87c84d3ada1b0f797f981b45727a7eb6b6777b"
+        },
+        {
+          "case": "wasm-cfg renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "760cefc44e460d73d1344de670fcf307cd0e71eff4f211f08e22f31af127c818"
+        },
+        {
+          "case": "wasm-signatures renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "0dac5fd9a7428413d739e3153f16ad42c8fe0752c748b95b4ed22059e2496fcc"
+        },
+        {
+          "case": "wasm-signatures renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "6663ae7c3eacc3da1af535be1e7f3871a551d731c042a9bf614ce6dd696967a7"
+        },
+        {
+          "case": "wasm-gc-types renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "28c08e568802ccac4876fb41390e70d35e972295fdcc2daa30ea1627460edb14"
+        },
+        {
+          "case": "wasm-gc-types renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "34b0b70f1b3bcee1d308afbf45af54621813a23cce1e6db7b4efd46fdca5f0f8"
+        },
+        {
+          "case": "wasm-eh renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "1ea09e66ac2c14758f641037007df99a5fb741fbe1800692c4c71c1832ecaca3"
+        },
+        {
+          "case": "wasm-eh renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "904d85994b527b59e3e784e7c4128771f944280421cdafe8e581ba3140cc7c20"
+        },
+        {
+          "case": "wasm-memories renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "4e4ffd0a853dd14d57233c94601330580fc539fd77966b521738f0ca40aba0e7"
+        },
+        {
+          "case": "wasm-memories renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "12957e8883bbeececa0c79142c8622149b9b2355bc04ec0fb18f53ea9a009908"
+        },
+        {
+          "case": "wasm-component renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "b2814b248f930b48f8ec7e7058271e8f021a7cf76632e49a136167ad7dca7370"
+        },
+        {
+          "case": "wasm-component renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "ef5f14c5fbfd099a91ea9a4a0993d4b281bdab6bb8ce4cdd26fb1e2063c2e2ae"
+        },
+        {
+          "case": "wasm-source-map renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "d5c5d15cdace18dfaba09b0767701a931c3cc81f6ee44aa01ca546c5a687adf5"
+        },
+        {
+          "case": "wasm-source-map renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "3feed626ed1b281729ac8f2f37cdce97121b1e414d3b411057d11d6c28cdd17d"
+        },
+        {
+          "case": "wasm-preludes renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "e1b58044d3dbc8b9cda1c01886aa82857f17da720e529165cc38ddf358a074e4"
+        },
+        {
+          "case": "wasm-preludes renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "5e139657b7538141cbd62e3cc4044b34ed0a404933bb418ae2bf86d025e58463"
+        },
+        {
+          "case": "lua-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "644cfd63219d7dbd0f7d0e80fa66fbae7f205a7a9d493091b483275bdf8658a3"
+        },
+        {
+          "case": "lua-decompile renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "55d4df9d4bc2158509008b6a736fb1b0d0694496532e294a81b1acf556454d87"
+        },
+        {
+          "case": "lua-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "f973e4a572927e17813b4c510e5084c162dd1f19a171581a9adc2d33df0c4774"
+        },
+        {
+          "case": "lua-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "219228f6a2a096f0ca48e84a2b5c050656b89e7d68972bd591bedfd8a60a9750"
+        },
+        {
+          "case": "phar renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "4bb4bbcce350a40637b75cef84f89abe8592e9712aca9366ca412519b808b215"
+        },
+        {
+          "case": "phar renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "6720f87e147e640aa523a87b350988db478a7536cc75fc6a66325c21cb5305b6"
+        },
+        {
+          "case": "php-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "69ef381543405ecb06f67cf1d9d5382846da2ef0fab503018f2d81b45b1732cf"
+        },
+        {
+          "case": "php-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 42,
+          "sha256": "9a205c037d91a68ac787a31dafa37e96acc5321a8f78f576888566171a77776b"
+        },
+        {
+          "case": "ruby-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "9c20ef4a0ae729fec9e026285b34f94fe7946f4fb252ee47aff6d3e6af6543d4"
+        },
+        {
+          "case": "ruby-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "6a1eb256fe8c28e15fed4deafe2be1ad63ee809b77d7fb514afc833d1a4b6ba5"
+        },
+        {
+          "case": "beam-recover renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "60bb6704d44da0c64ea45c5ea60695e8fb20c6e95a0ceea52a9140d61c8335bb"
+        },
+        {
+          "case": "beam-recover renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "bc3ed15bfc82ad51ea0ee20a9b7e3922e6b901217e1080cb7b6642a01899f30e"
+        },
+        {
+          "case": "as3-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "3d71461a8fd82fc1c2e886570a848693e25753967f93783e893f9d34e02ada14"
+        },
+        {
+          "case": "as3-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "02190c316ac5408b54590638dfed9dd56b00fb248d949c36938343da29bd3346"
+        },
+        {
+          "case": "scriptlang-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "129d4a1e26aab4854a86f369f34cfc3cefdba122ea4efad899fb93f5a12dff25"
+        },
+        {
+          "case": "scriptlang-analyze renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "734fd14002beca0811347204ad2a2dd30bbc123f1f95c85dc0d9625356644245"
+        },
+        {
+          "case": "shell-deob renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "2e7c4ee696b0ffd2f206c0ff6fc1b2baff995fc5357a891f31ea42aacc332a55"
+        },
+        {
+          "case": "shell-deob renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "614beff5467dd190b422638eb3ecfe6d9ccce67fffa2b9c1ecb3b53b8a056540"
+        },
+        {
+          "case": "swift-objc renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 46,
+          "sha256": "69106e09c5433d343b84824bae013917ac0ff92afa9f55e17eb28275ed29a50f"
+        },
+        {
+          "case": "swift-objc renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 46,
+          "sha256": "8b88d662a5913dcab03381e9086376f7c914d701bde60138084278aae0141184"
+        },
+        {
+          "case": "mobile-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "4443b36207fe43e6f32e588b117a33e8accf44085554dd586d24ab537730aee9"
+        },
+        {
+          "case": "mobile-detect renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "d47eff6bdf83aaebb8d0b27800a78fd9baceccbe8643a38bbf3a11b01cd4be77"
+        },
+        {
+          "case": "hermes renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "e59f1e2ea462fcb43e7be5928b9b542ff00a34e1332dd6ffd2ba8f8387551d8b"
+        },
+        {
+          "case": "hermes renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "68d23fefb0714cfe2a05ea74cafdf55f3b837f6e7a07427ef6515b33d383e61b"
+        },
+        {
+          "case": "apk renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "d8960f6576dfce56e713541ead1bf8205df77cfc7f9a0d9234df9219fa0ba07a"
+        },
+        {
+          "case": "apk renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "ff2478bd76b605cb436a00737f161948d92c497cab9bdc3d37a3183cf64918d6"
+        },
+        {
+          "case": "dart-kernel renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "a36b8cac901080601372b447e92281f6aa015dbcc224c0d5e104466c8dbaa1a9"
+        },
+        {
+          "case": "dart-kernel renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "6870fb6a6f5d10fd4bc48b6e597b10786bcc9e5371889ef0625c0d8c5bb3c8a4"
+        },
+        {
+          "case": "jvm-class renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "9a16884857a06d0110f6076dbd6baf5c0cd878b659ed25726bbcf64bf0190633"
+        },
+        {
+          "case": "jvm-class renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 44,
+          "sha256": "e6162df11328c02273aabdb69fc0cdefc57bcb02043777fb4401a464350731cd"
+        },
+        {
+          "case": "dotnet renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 45,
+          "sha256": "2362604583be6418149dce953f172b8373b6e78a6505552218baee504da7da09"
+        },
+        {
+          "case": "dotnet renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 45,
+          "sha256": "0067b4e7340f32c42ce7be47270881a0828186bc18286e8e2eb42608f07006c2"
+        },
+        {
+          "case": "js-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "22bafc7e7838c671573f559a2e8e6541457323d3882c2a10119725f4ac45799a"
+        },
+        {
+          "case": "js-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "1aa698685c7a91c898b9277ac546630b73f1ba045510aab55c2fcd5d5e918978"
+        },
+        {
+          "case": "jsx-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "195e82a5c77ae0eeeccbe2039e36dc42b2533b3c1b590d50c189733df1955c3c"
+        },
+        {
+          "case": "jsx-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "333a5c99dbef03450d51b342bc2de66e3dfa40f730261072e9a6e33239ee567f"
+        },
+        {
+          "case": "ts-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "851979004092409bc9aa98b25ebd1ff7cceec16caec5e1faf92db07af5eafd17"
+        },
+        {
+          "case": "ts-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "bb8241b8edf94faf482e32e6c40c01a825b985cb1af878474b630acd50f4f58d"
+        },
+        {
+          "case": "tsx-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "c8e83d8873393a9bc265c5bd8b81b48279d25a1f0b6d3bd6024e2487d703be33"
+        },
+        {
+          "case": "tsx-format renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "52eafb40d1327b11db250ddcb84aa89eac7d6b1dacdb30f6eb7068552a05744f"
+        },
+        {
+          "case": "js-unbundle renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "d833eeb67ac0e96c8500e5e30b68c5b2d55e760686cad1d740113c6fe2654e07"
+        },
+        {
+          "case": "js-unbundle renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "b5bbf38f7a9b4d1e7cbc255fbbff7c14336e7a87f6f22765e6e9685d69f75c74"
+        },
+        {
+          "case": "source-map renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "ebf6104e11e941021906bbefabb7baf699d1a329b329d7403eb6a42d8fa7b273"
+        },
+        {
+          "case": "source-map renders its bundled sample",
+          "project": "playground-desktop",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 43,
+          "sha256": "bdf0c1c8ddba92a4d067966e6586286935ad26bbea5274da95b1b8f935e2d18f"
+        },
+        {
+          "case": "detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "134460706fa151e86d8e39cd1ae577389ab7c49e7adbab85a3a3cbdbdea10aba"
+        },
+        {
+          "case": "detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "1a7e7e1f16c432ad41ca3bd6500f8141a87f89d757b5870e0facf8249b40f606"
+        },
+        {
+          "case": "auto-route renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "c6dc0254bc5b14ded1a3ac0a0cbfe67cd6926fc1dab9dc1301fdd84c48baeb67"
+        },
+        {
+          "case": "auto-route renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "10abe8e9350b0c5619c6228f31e2e4e182ebe865e36a52524bb6767f7ab78be4"
+        },
+        {
+          "case": "strings renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "e623a1f558a269219337c7b2f3ebc044532e6631cbb93aad61797e7b6faee2db"
+        },
+        {
+          "case": "strings renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "1096aee9206a895dc0f21534649c92da31808447a7cb48a85e2fcc07da67b53f"
+        },
+        {
+          "case": "ioc renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "ff21e41950f3f4e6bf867c934e20859e39676b43413cff75cbb7eab5fb285449"
+        },
+        {
+          "case": "ioc renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "6ecc5fabdc5d98c7b13c93239887c888115ea5f093ae2691ae982e0669c937a1"
+        },
+        {
+          "case": "behavior renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "ffd6a1d90890920ccad40d4f273bd94433bc5a812bc83c1882bc1e474045a6fb"
+        },
+        {
+          "case": "behavior renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "ed0c0673f0a36cad104171c497092e27d1ceaa553925d00de5d0f2de50d525fc"
+        },
+        {
+          "case": "anti-analysis renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "6d0174463d8f35417cf8bd2b35ce661024102e3436b3928f2e46278dc62b70d6"
+        },
+        {
+          "case": "anti-analysis renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "4d11c32809ef0c15333aaff140e3ee7c84128ceaba95b145a8f1dbebe6febe30"
+        },
+        {
+          "case": "secrets renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "d2e80ab5ef850e3d7cbfc0753b6dfcab871df6858a13b233242edee4e608b678"
+        },
+        {
+          "case": "secrets renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "1e4eab7b45336d448fa47a4cba4f9785f28b2bfa99080b1d2d2cebf79ba0b556"
+        },
+        {
+          "case": "entropy renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 40,
+          "sha256": "d6c68c48b278653991ff0d63ff51de47605512dde8690414199509b8186f72f1"
+        },
+        {
+          "case": "entropy renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 40,
+          "sha256": "ab5d83072d69b2ddce33927fac8c41e8eaa8e57a1d37fea9159f77011e04cf02"
+        },
+        {
+          "case": "yara renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "23425efd8baf317ad0e5a55c61209bff6453a7f3e3c7e3b3e159845320fc165e"
+        },
+        {
+          "case": "yara renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "af67b6c7c859d1d005cefc7f783afc36253f42dbc1e14b858c6a5724793aa89c"
+        },
+        {
+          "case": "go renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "d9c2069d8d376d9322f6dda3d11e14726ba8210b186f426367ef4c886a96ae76"
+        },
+        {
+          "case": "go renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "c7c59cf2c541409864d988d5c4bf9134e2554b46e06a04b262604a13853b0a57"
+        },
+        {
+          "case": "py-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "cf591eb92bbb080772c3fc91696c904913ad696561cbc907c6d5ea6ba8227144"
+        },
+        {
+          "case": "py-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "b91d215bc8acbfd0361501ef4122288a170a7d109de812530717f1c0d4c736b1"
+        },
+        {
+          "case": "py-disasm renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "9afb4016ee046b36b99d8fa0f5f2b1c85167bb21d0621f0548f38d4e297f8477"
+        },
+        {
+          "case": "py-disasm renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "72c1c4071018466962326c4008e6e07db451859039e8738494a9e198781f16f5"
+        },
+        {
+          "case": "pyarmor-unpack renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 40,
+          "sha256": "270508574cd6695d62110b3914223ccd814405ea6f315c941c315ef68d5bec93"
+        },
+        {
+          "case": "pyarmor-unpack renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 40,
+          "sha256": "7bee13a8223e10ceb7453992e3582112dd3ae39c735402f37a1aff7617f460e5"
+        },
+        {
+          "case": "pyarmor-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "be4656e5500fe1f89dd2e5863fc0cfd59223661f242bd764a0feb045c320d2e0"
+        },
+        {
+          "case": "pyarmor-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "048748b47a0a06dbbefd8fb2351614ae78d065650f58383c891285ac21bc5ecb"
+        },
+        {
+          "case": "pyarmor-classify renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "64db7a71b661a33b2a7b4c5a739e5542dd4c0467c337be25c547a5427054594d"
+        },
+        {
+          "case": "pyarmor-classify renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "e4ea5b9c7806c5c94ee4d56628dbf4242c0f045dc5f3072f78394dc491e3d4c2"
+        },
+        {
+          "case": "pickle-safety renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "cfd203e7e58fe0c369dbfbd2c00de1d91889fea6274054ae12ed6d5e636b4e28"
+        },
+        {
+          "case": "pickle-safety renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "819d3bcb6127f4c6316d205c88e4cde2a73889caad09b02596e5d3d6e647ca56"
+        },
+        {
+          "case": "pickle-disasm renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "7fb8e4a91765dc36113ebd9d2a4a8fdf3e9f33cb168e270400649e692ba9aebc"
+        },
+        {
+          "case": "pickle-disasm renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "0a868e3f0a091dbf3223b513af6997d72896a0cb95b8fd70895b86b06b610f40"
+        },
+        {
+          "case": "pickle-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "305d3ec93865165bcc58e0ca89b2622c8ac86859947f5f05557f036f232e668f"
+        },
+        {
+          "case": "pickle-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "aa7b5b53426e14dbaedae48b289811ecf810bc07dc8e5907b6d4668da50b8a8c"
+        },
+        {
+          "case": "pickle-trace renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "28a288733ad807673cb3c56fd77ea21b371920380b10f6e78cffb0e50823028c"
+        },
+        {
+          "case": "pickle-trace renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "2d1d68c9e8d2bd627379a79d28991a0e69ead079f5cbf2ff0305fa6cb048c152"
+        },
+        {
+          "case": "pickle-polyglot renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 40,
+          "sha256": "fdcc08544a327ea8ec4ca4a9a0435d57553787c3dd324a1be0b6cf7891d73a1b"
+        },
+        {
+          "case": "pickle-polyglot renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 40,
+          "sha256": "46b68a9413361dd78f24e8c95cb8849877d70008134b9c9b965fb23778b66229"
+        },
+        {
+          "case": "wasm-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "dbf13ed571fb641ed719ae87cde4d73f3b5288f2dc6078c40dec132a936f8ce4"
+        },
+        {
+          "case": "wasm-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "09e14f8296094395329ec1fe3866953add8f8fc60c76b81f42f8fd40d2235e5d"
+        },
+        {
+          "case": "wasm-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "5532c389e7d9eaf830db584a6b9694a90b29f93c18868b96798938bcc8a15601"
+        },
+        {
+          "case": "wasm-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "5732b80a3eb20c007860775643d8d57f3b372acfab72e50e050bd01aa0668bde"
+        },
+        {
+          "case": "wasm-decompile-wat renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "0f350c573898c5cdcfc5da5698af58749fe891e6876fa253caa56d2d58065cd7"
+        },
+        {
+          "case": "wasm-decompile-wat renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "eb859fb9ae8d0e3e9e4d75436afe09e515756d8a651f518d13ffb4fe06c06d25"
+        },
+        {
+          "case": "wasm-faithful-wat renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "4f3f77aed1d19b6f1e60ca3b2119cf2ba5b7bb01cd8d387f56a7b6315b03b5c8"
+        },
+        {
+          "case": "wasm-faithful-wat renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "49b03b7590a6f72c2bdfa2a5da72e2e8f9c99d1338dbc8f440cd7ac9d2e3a69a"
+        },
+        {
+          "case": "wasm-lift-rust renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "ce091a4b27e7a6346b3ec925ce3fbfdd80770b7b4de05c782333aa419b60e071"
+        },
+        {
+          "case": "wasm-lift-rust renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "9357851131eaa167be8adec565629ddc78e44aab6e7b6ee7990a2a3421ab453d"
+        },
+        {
+          "case": "wasm-lift-ts renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "bf158ea02e24ec0bcd825ca1644533ec5fc8da39777a2081922c3cb646164a89"
+        },
+        {
+          "case": "wasm-lift-ts renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "0140180b5871c24e79eeba5202a26d916c399540a537c7a4c7696e9a7acdfa5f"
+        },
+        {
+          "case": "wasm-lift-c renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "450bf83d3f60d70b587905e5c5c319532c6d46595d9faf3fdd0daa5b3741472a"
+        },
+        {
+          "case": "wasm-lift-c renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "71850b9fce78d8f68fed404ca12351a934bf7fcbe6e77d03fab4f018ea83d501"
+        },
+        {
+          "case": "wasm-cfg renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 44,
+          "sha256": "789633ed2d204d142d590fe2c07baa4bf2ab9abc0eeb6f39f5ecf84d44d6b739"
+        },
+        {
+          "case": "wasm-cfg renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 44,
+          "sha256": "949c7448a462f516f8584b64d322b2423a157c70e506095abf00525eba8ec50c"
+        },
+        {
+          "case": "wasm-signatures renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "afa1ba460dbbf50dce9f049a3600838767012b4aa63b08d0d69b7aa1b2154423"
+        },
+        {
+          "case": "wasm-signatures renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "77ea8ec6d586316038eb6be7a905406a5303457857ddbc213dd6716b471e8ef9"
+        },
+        {
+          "case": "wasm-gc-types renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "8fee405df49ef2429158a51ed9da64af9365988f7b406774258cd3cc9da94717"
+        },
+        {
+          "case": "wasm-gc-types renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "bca052f0f58246659d8e9ecd16f8fccc045971f6787af95ed390ee724030a86b"
+        },
+        {
+          "case": "wasm-eh renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "9bc14f00fec43016a48709b883033b75e50e8b95866fa6b55eae0d1f05bd04ba"
+        },
+        {
+          "case": "wasm-eh renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "156bcbff10970b27d709906b8fd298f0b4d109f7ff371db6861484fbef09de73"
+        },
+        {
+          "case": "wasm-memories renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "72677a9ad6ed232c64847e3cd9abd4b477e37577a89bf142c4a820e756800b04"
+        },
+        {
+          "case": "wasm-memories renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "8f7b9e3e0566f63386df8c27674d3be06f25fb0c02c9a02c8605cca84f25d09d"
+        },
+        {
+          "case": "wasm-component renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "9e32400d589bd19ac65f9f777b9952b3f8881c3288481c753d83dc6c2ca52138"
+        },
+        {
+          "case": "wasm-component renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "5ca0b83e65de890c6ecc511471cff2e9fa32345bae4ec7e0329752947787685c"
+        },
+        {
+          "case": "wasm-source-map renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "cf2c441716105ecc831838f28f09fc9df2fd498d51d10cb5c4986e85e6cf25c5"
+        },
+        {
+          "case": "wasm-source-map renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "4147640e75c24208e4dba83aedd9ec6519407fa5c265dd380496c35942eba8f3"
+        },
+        {
+          "case": "wasm-preludes renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "0653af1da0150c0f3fb13ae25cf70e21ccc4141746f0c78ecf6adae4f3d2ed81"
+        },
+        {
+          "case": "wasm-preludes renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "595e52b7b532220362a1e13a2165c90cd4e7224948835db7a42981449b38393e"
+        },
+        {
+          "case": "lua-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "e599834ab58945ce9d783758863af7cbbb8e1c2036ef2875946c774652cfcc71"
+        },
+        {
+          "case": "lua-decompile renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "0a2e664ea4e0db757e3a5dab5939ebea56990bfe82ac11b718feb6c60cbbf459"
+        },
+        {
+          "case": "lua-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "778648948e4c3b028fd61fc37a4387bdb18528bbe93d260f22566d15fa99862b"
+        },
+        {
+          "case": "lua-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 41,
+          "sha256": "1d97e58d9720fb01a80df4e66a0bde83ac05ef86cf735c8f49be23c0462b5af6"
+        },
+        {
+          "case": "phar renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "4af1d1becd4f9123adee7fad194e77f1d04daf0f10ed7f11816d121605d0dacb"
+        },
+        {
+          "case": "phar renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "31b805ba80783653db4bd5abfa48c28adbbd775ea7ebfd9c94e5c7b7a4adf515"
+        },
+        {
+          "case": "php-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "979d71480727bf79928302f4499cfc47b19d3cf81832b23b2531c8f32c13d026"
+        },
+        {
+          "case": "php-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "71bf54121220ab433eed01625f929f8bda3acb6d4fdac16a3a721d4aef9e1ca6"
+        },
+        {
+          "case": "ruby-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "48c4417d42fba9f4e5abbfa6b4cb7b615d1a8e63cde0648cef49fab00b082b40"
+        },
+        {
+          "case": "ruby-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "69ca181696a27397a00e966b07b30438c376bcde5869372a9160970023d0fea7"
+        },
+        {
+          "case": "beam-recover renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "3fd80d82a901951e7fe3635f28f412774fe80ccae669fb5c48ac735fc1034101"
+        },
+        {
+          "case": "beam-recover renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "7ec483b4feddf6d98207cd7557fe44215ad6bb78d91d8bef3af204ff6ba2924b"
+        },
+        {
+          "case": "as3-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "cde8b8d3feb55d7472389a7c257585fc5b7d80d23cb300b270a09844720c0495"
+        },
+        {
+          "case": "as3-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "5da557466d09defd0d87f5035b0062e152bbeb8efb88cc208c9fb9851a0e75e2"
+        },
+        {
+          "case": "scriptlang-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "254899e1d79ee94466816548fe62fb8820745949ea7c5b475a781a24de1a32a6"
+        },
+        {
+          "case": "scriptlang-analyze renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 42,
+          "sha256": "8e5798668f6858ca902725d80559e0ac20eb05d31c3e962ad07984f0c074453e"
+        },
+        {
+          "case": "shell-deob renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "f530a3144d2ad239fcb145810923ec3e7ea9785ab43939b712382a8035bb2827"
+        },
+        {
+          "case": "shell-deob renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "54d4aaa7fb223bd0b877d580e6374c6dda68b5556382ce9723d3ddbbb8aaa244"
+        },
+        {
+          "case": "swift-objc renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 46,
+          "sha256": "fc268861e4580d1e3f4e9d69df05357382ac72821c47cf0d3aa5ba3a2a031ba4"
+        },
+        {
+          "case": "swift-objc renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 46,
+          "sha256": "8130d252b8de97814778e38eab925da466b60ecf5966ab01575b3a8981c0a688"
+        },
+        {
+          "case": "mobile-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "bb99cda5337fcdd36a1be569709bd99506e47fca2971ea997a89e3721aa7a9ab"
+        },
+        {
+          "case": "mobile-detect renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "0a85cf487c3d34a633107567050d059741ff99a97b10801ed36855a9cfcd0c40"
+        },
+        {
+          "case": "hermes renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "69c8b47b8ef835fda7343f33ad9df11f5cb01ed787987001453f10cce60a6546"
+        },
+        {
+          "case": "hermes renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "33208e15387d2b4a92321d0ddfb3aafd381e38ff08bbf7935a4aee9c7e296667"
+        },
+        {
+          "case": "apk renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "8ba3e5e39c0dec7d87b9c238d806e4b2472b40e13fbebb46a9b2c2282926fdc8"
+        },
+        {
+          "case": "apk renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "d03bfdf65a3514906aabed07ac6a46ff7f69d38fa72a5ee111bc1eb335a3c8d5"
+        },
+        {
+          "case": "dart-kernel renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "59ebf691f18a5626bc8668a35714588b38d8acce19c60c637fbc2cf25773d36e"
+        },
+        {
+          "case": "dart-kernel renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "f8eb9c11a2722c21e411cc16606c19ddc6c0ab22fbabc98a99c0b723d144478b"
+        },
+        {
+          "case": "jvm-class renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "ae1b256fbce203d45f591ab2fe15fde21802059934b26713ce4db55c5d976c99"
+        },
+        {
+          "case": "jvm-class renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 43,
+          "sha256": "efae7aefa3f340bc533a71fcc3c4b3810e02197daaeac3e031b9a6e2955569bc"
+        },
+        {
+          "case": "dotnet renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 44,
+          "sha256": "3835152fa518af2cd9171e1fef047d0847124d0153511028b4468757f51783f1"
+        },
+        {
+          "case": "dotnet renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [],
+          "passed_rules": 44,
+          "sha256": "97bcea70d6c3502da023dabcc1711e28986914fd2171b62a6aaa2a6eb50fca05"
+        },
+        {
+          "case": "js-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "aa7d8e01b5c77d3f74b68c67a199e78fc8af96af420d582c04641140c53d0d06"
+        },
+        {
+          "case": "js-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "54234de3ca09a8ffa3240798330dc61b54cae4b4dd0a73696d078429474a9ebc"
+        },
+        {
+          "case": "jsx-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "4938c21569c96f677fa79e612eef696a9bf2b579864b2210dedc7fedc7d4e62e"
+        },
+        {
+          "case": "jsx-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "988576c70daf348bdf2b34adf7562ee26a188741589b20161e3745a4d601ad61"
+        },
+        {
+          "case": "ts-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "eae1aab11d8c7ff21375ca47b618c76295487861c9412dafcb03ccf124fa720c"
+        },
+        {
+          "case": "ts-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "5ec65c43e3efbd8d20801c9b66abcdcd39a663d066afa2221863fddbd00aa3f5"
+        },
+        {
+          "case": "tsx-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "1f89d80406dc3b26786257d4e6948301b72a756d57f6a92de42a23d6ed896193"
+        },
+        {
+          "case": "tsx-format renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 39,
+          "sha256": "45a045aa115e86241f485d19327990161d92515106f938b4a19f2aba0c19d289"
+        },
+        {
+          "case": "js-unbundle renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "e610fbbd3db1f24d318c02af23de4991b00644904e90bcc2406f0d15660537d4"
+        },
+        {
+          "case": "js-unbundle renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "7dc6726d67476e754d7f5bc8c4bb2f6dfe5b33c9eac762c22b603db0fa2d2a5f"
+        },
+        {
+          "case": "source-map renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Dark",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "308ddab3c7e676b9ccd86541bd27d0ce1fdace6d78862b6dea1bbd15d1ed2499"
+        },
+        {
+          "case": "source-map renders its bundled sample",
+          "project": "playground-mobile",
+          "theme": "Light",
+          "engine": {
+            "name": "axe-core",
+            "version": "4.13.0"
+          },
+          "violations": [],
+          "incomplete_rules": [
+            "color-contrast"
+          ],
+          "passed_rules": 41,
+          "sha256": "29a6129dcb7950b01a1610ea9d4b85fb7bad9e42f8b7e2bd9765ecd8427a7cc8"
+        }
+      ]
+    },
+    {
+      "id": "performance",
+      "reproduction": {
+        "cwd": "playground",
+        "environment": {},
+        "command": "bun run test:browser -- --project=playground-desktop --project=playground-mobile tests/playground/performance.spec.ts --reporter=json",
+        "prerequisites": [
+          "bun install --frozen-lockfile",
+          "bun run build",
+          "mdbook build .."
+        ]
+      },
+      "report_sha256": "49dae579ae27fdd2cf360305f470d202036ff96a2a538ce40494a05335bf8745",
+      "stats": {
+        "startTime": "2026-09-09T20:15:37.660Z",
+        "duration": 3822.352,
+        "expected": 2,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "cases": [
+        {
+          "name": "analysis interactions meet the browser performance budget",
+          "file": "playground/performance.spec.ts",
+          "project": "playground-desktop"
+        },
+        {
+          "name": "analysis interactions meet the browser performance budget",
+          "file": "playground/performance.spec.ts",
+          "project": "playground-mobile"
+        }
+      ],
+      "performance": [
+        {
+          "captured_at": "2026-09-09T20:15:39.999Z",
+          "project": "playground-desktop",
+          "viewport": {
+            "width": 1440,
+            "height": 1000
+          },
+          "cpu_slowdown": 4,
+          "cache": "disabled",
+          "transport": "loopback Vite preview, unthrottled",
+          "ready_ms": 585,
+          "metrics": [
+            {
+              "name": "LCP",
+              "value": 608,
+              "id": "v6-1788984938623-7074982193320"
+            },
+            {
+              "name": "CLS",
+              "value": 0.0006469006498360339,
+              "id": "v6-1788984939118-3961571341964"
+            },
+            {
+              "name": "INP",
+              "value": 144,
+              "id": "v6-1788984938625-7969812929879"
+            }
+          ],
+          "sha256": "81c0b9ef33aec514179d6c7fd49f60c69fc7fc54c6c77f3422f7eb5d984c8ca1"
+        },
+        {
+          "captured_at": "2026-09-09T20:15:41.270Z",
+          "project": "playground-mobile",
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "cpu_slowdown": 4,
+          "cache": "disabled",
+          "transport": "loopback Vite preview, unthrottled",
+          "ready_ms": 555,
+          "metrics": [
+            {
+              "name": "LCP",
+              "value": 308,
+              "id": "v6-1788984940364-9034268605299"
+            },
+            {
+              "name": "CLS",
+              "value": 0,
+              "id": "v6-1788984940811-9516613019442"
+            },
+            {
+              "name": "INP",
+              "value": 48,
+              "id": "v6-1788984940365-3768946186298"
+            }
+          ],
+          "sha256": "591ab93cf88cf6aa04a49a15cd4605f39ab3b0cf71f7e9d52e7cd9fe9955ed37"
+        }
+      ],
+      "budgets": {
+        "LCP_ms": 4000,
+        "CLS": 0.25,
+        "INP_ms": 500
+      }
+    },
+    {
+      "id": "docs",
+      "reproduction": {
+        "cwd": "playground",
+        "environment": {
+          "PLAYGROUND_BASE": "/disrobe/playground/"
+        },
+        "command": "bun run test:browser -- --project=docs-desktop --project=docs-mobile --reporter=json",
+        "prerequisites": [
+          "bun install --frozen-lockfile",
+          "bun run build",
+          "mdbook build .."
+        ]
+      },
+      "report_sha256": "25d4dbb0f6c9822d79bfdb30ceef5944312740f75fb271d90aff771ae1edccdc",
+      "stats": {
+        "startTime": "2026-09-09T03:25:35.003Z",
+        "duration": 20643.914,
+        "expected": 14,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "cases": [
+        {
+          "name": "walkthrough and teaser decode, play and expose their captions",
+          "file": "docs/media.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "media page has neutral themes, accessible controls and reachable source files",
+          "file": "docs/media.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "introduction plays the complete walkthrough without looping",
+          "file": "docs/media.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "walkthrough and teaser decode, play and expose their captions",
+          "file": "docs/media.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "media page has neutral themes, accessible controls and reachable source files",
+          "file": "docs/media.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "introduction plays the complete walkthrough without looping",
+          "file": "docs/media.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "two neutral themes switch, survive navigation, and load their assets",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "theme changes work when saving browser preferences is unavailable",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "a saved legacy theme migrates to one of the two choices",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "syntax tokens have distinct colors on both neutral themes",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-desktop"
+        },
+        {
+          "name": "two neutral themes switch, survive navigation, and load their assets",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "theme changes work when saving browser preferences is unavailable",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "a saved legacy theme migrates to one of the two choices",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-mobile"
+        },
+        {
+          "name": "syntax tokens have distinct colors on both neutral themes",
+          "file": "docs/theme.spec.ts",
+          "project": "docs-mobile"
+        }
+      ]
+    }
+  ]
+}

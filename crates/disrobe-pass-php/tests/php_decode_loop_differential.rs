@@ -1,0 +1,937 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::missing_panics_doc,
+    unreachable_pub,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo
+)]
+
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64_STD;
+use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
+use php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
+
+const MARKER: &str = "DISROBE-PHP-LOOP-4C71";
+
+fn payload() -> String {
+    format!("echo '{MARKER}';")
+}
+
+fn b64(bytes: &[u8]) -> String {
+    B64_STD.encode(bytes)
+}
+
+fn xor_repeating(plain: &[u8], key: &[u8]) -> Vec<u8> {
+    plain
+        .iter()
+        .enumerate()
+        .map(|(i, b): (usize, &u8)| b ^ key[i % key.len()])
+        .collect()
+}
+
+fn recover_and_grade(label: &str, obfuscated: &[u8]) -> String {
+    let graded: String = format!("the {label} decode loop against the real php interpreter");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return String::new();
+    };
+    recover_and_grade_with_runtime(label, obfuscated, &php)
+}
+
+fn recover_and_grade_required(label: &str, obfuscated: &[u8]) -> String {
+    let graded: String = format!("the {label} decode loop against the real php interpreter");
+    let php: PhpRuntime = require_php(&graded).unwrap_or_else(|| {
+        panic!("{graded} requires PHP 8.x; install php and put it on PATH, or set DISROBE_PHP_BIN")
+    });
+    recover_and_grade_with_runtime(label, obfuscated, &php)
+}
+
+fn recover_and_grade_with_runtime(label: &str, obfuscated: &[u8], php: &PhpRuntime) -> String {
+    let obf_stdout: Vec<u8> = php.stdout_of(label, obfuscated);
+    let obf_text: String = String::from_utf8_lossy(&obf_stdout).into_owned();
+    assert!(
+        obf_text.contains(MARKER),
+        "{label}: the obfuscated loader itself does not print {MARKER:?} under {}; got \
+         {obf_text:?}. Grading a recovery against an input that never produced the marker would \
+         grade nothing.",
+        php.banner
+    );
+
+    let report: RecoveryReport = recover_php(obfuscated, None)
+        .unwrap_or_else(|e: disrobe_pass_php::Error| panic!("{label}: recover failed: {e}"));
+    assert_ne!(
+        report.stage,
+        RecoveryStage::PlainSource,
+        "{label}: an obfuscated decode loop must not be reported as plain source"
+    );
+    assert!(
+        !report.output.is_empty(),
+        "{label}: recovery produced no source to grade"
+    );
+
+    let recovered_source: String = with_open_tag(&report.output);
+    let recovered_stdout: Vec<u8> = php.stdout_of(label, recovered_source.as_bytes());
+    assert_eq!(
+        String::from_utf8_lossy(&recovered_stdout),
+        String::from_utf8_lossy(&obf_stdout),
+        "{label}: the recovered source is not behaviorally equivalent to the loader under \
+         {}\n--- recovered ---\n{recovered_source}",
+        php.banner
+    );
+
+    let residual: Vec<&'static str> = residual_decode_primitives(&report.output);
+    assert!(
+        residual.is_empty(),
+        "{label}: the recovered source runs to the same output but still calls {residual:?}, so \
+         the decode layer was never actually evaluated.\n--- recovered \
+         ---\n{recovered_source}"
+    );
+    report.output
+}
+
+fn loader_with_body(cipher: &[u8], setup: &str, body: &str) -> Vec<u8> {
+    format!(
+        "<?php $d = base64_decode('{}'); {setup} $o = ''; {body} ev\x61l($o);",
+        b64(cipher)
+    )
+    .into_bytes()
+}
+
+#[test]
+fn canonical_xor_modulo_shape_still_recovers() {
+    let key: &[u8] = b"Reg3xSh4pe";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        &format!("$k = '{}';", String::from_utf8_lossy(key)),
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); }",
+    );
+    recover_and_grade("canonical-xor-modulo", &blob);
+}
+
+#[test]
+fn while_loop_manual_index_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_add(61)).collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$i = 0;",
+        "while ($i < strlen($d)) { $o .= chr((ord($d[$i]) - 61 + 256) % 256); $i++; }",
+    );
+    recover_and_grade("while-manual-index", &blob);
+}
+
+#[test]
+fn foreach_over_str_split_runtime_equivalent() {
+    let cipher: Vec<u8> = payload()
+        .bytes()
+        .map(|b: u8| b.wrapping_add(7))
+        .collect::<Vec<u8>>();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "foreach (str_split($d) as $c) { $o .= chr((ord($c) - 7 + 256) % 256); }",
+    );
+    recover_and_grade("foreach-str-split", &blob);
+}
+
+#[test]
+fn do_while_loop_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| !b).collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$i = 0;",
+        "do { $o .= chr(~ord($d[$i]) & 255); $i++; } while ($i < strlen($d));",
+    );
+    recover_and_grade("do-while", &blob);
+}
+
+#[test]
+fn reversed_index_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().rev().collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= $d[strlen($d) - 1 - $i]; }",
+    );
+    recover_and_grade("reversed-index", &blob);
+}
+
+#[test]
+fn stride_index_runtime_equivalent() {
+    let mut cipher: Vec<u8> = Vec::new();
+    for b in payload().bytes() {
+        cipher.push(b);
+        cipher.push(b'#');
+    }
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i += 2) { $o .= $d[$i]; }",
+    );
+    recover_and_grade("stride-index", &blob);
+}
+
+#[test]
+fn rotating_index_runtime_equivalent() {
+    let key: &[u8] = b"r0tat3";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = 'r0tat3'; $j = 0;",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr(ord($d[$i]) ^ ord($k[$j])); $j = ($j + 1) % strlen($k); }",
+    );
+    recover_and_grade("rotating-index", &blob);
+}
+
+#[test]
+fn nested_inner_loop_runtime_equivalent() {
+    let plain: String = payload();
+    let mut cipher: Vec<u8> = plain.clone().into_bytes();
+    while !cipher.len().is_multiple_of(4) {
+        cipher.push(b' ');
+    }
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d) / 4; $i++) { for ($j = 0; $j < 4; $j++) { $o .= $d[$i * 4 + $j]; } }",
+    );
+    let recovered: String = recover_and_grade("nested-inner-loop", &blob);
+    if !recovered.is_empty() {
+        assert!(
+            recovered.contains(MARKER),
+            "nested-inner-loop: recovered source lost the payload: {recovered}"
+        );
+    }
+}
+
+#[test]
+fn addition_with_wraparound_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_add(200)).collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr((ord($d[$i]) - 200 + 256) % 256); }",
+    );
+    recover_and_grade("add-wraparound", &blob);
+}
+
+#[test]
+fn subtraction_with_wraparound_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_sub(200)).collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr((ord($d[$i]) + 200) % 256); }",
+    );
+    recover_and_grade("sub-wraparound", &blob);
+}
+
+#[test]
+fn byte_rotation_runtime_equivalent() {
+    let cipher: Vec<u8> = payload()
+        .bytes()
+        .map(|b: u8| b.rotate_right(3))
+        .collect::<Vec<u8>>();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr(((ord($d[$i]) << 3) | (ord($d[$i]) >> 5)) & 255); }",
+    );
+    recover_and_grade("byte-rotation", &blob);
+}
+
+#[test]
+fn oversized_negative_right_shift_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|byte: u8| byte ^ 0xff).collect();
+    for (label, count) in [
+        ("word-width", "64"),
+        ("integer-maximum", "9223372036854775807"),
+    ] {
+        let body: String = format!(
+            "for ($i = 0; $i < strlen($d); $i++) {{ $o .= chr(ord($d[$i]) ^ ((-1 >> {count}) & 255)); }}"
+        );
+        let blob: Vec<u8> = loader_with_body(&cipher, "", &body);
+        recover_and_grade(&format!("oversized-negative-right-shift-{label}"), &blob);
+    }
+}
+
+#[test]
+fn negation_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| !b).collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr(~ord($d[$i]) & 255); }",
+    );
+    recover_and_grade("negation", &blob);
+}
+
+#[test]
+fn table_substitution_runtime_equivalent() {
+    let shift: u8 = 0x5b;
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b ^ shift).collect();
+    let table: String = (0u16..256)
+        .map(|c: u16| ((c as u8) ^ shift).to_string())
+        .collect::<Vec<String>>()
+        .join(",");
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        &format!("$t = array({table});"),
+        "for ($i = 0; $i < strlen($d); $i++) { $o .= chr($t[ord($d[$i])]); }",
+    );
+    recover_and_grade("table-substitution", &blob);
+}
+
+#[test]
+fn parity_selected_operation_runtime_equivalent() {
+    let cipher: Vec<u8> = payload()
+        .bytes()
+        .enumerate()
+        .map(|(i, b): (usize, u8)| {
+            if i.is_multiple_of(2) {
+                b.wrapping_add(1)
+            } else {
+                b.wrapping_sub(1)
+            }
+        })
+        .collect();
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "",
+        "for ($i = 0; $i < strlen($d); $i++) { if ($i % 2 == 0) { $o .= chr((ord($d[$i]) - 1 + 256) % 256); } else { $o .= chr((ord($d[$i]) + 1) % 256); } }",
+    );
+    recover_and_grade("parity-selected-op", &blob);
+}
+
+#[test]
+fn hex_wrapped_ciphertext_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.rotate_right(3)).collect();
+    let hex: String = cipher
+        .iter()
+        .map(|b: &u8| format!("{b:02x}"))
+        .collect::<String>();
+    let blob: Vec<u8> = format!(
+        "<?php $d = pack('H*', '{hex}'); $i = 0; $o = ''; while ($i < strlen($d)) {{ $o .= chr(((ord($d[$i]) << 3) | (ord($d[$i]) >> 5)) & 255); $i++; }} ev\x61l($o);"
+    )
+    .into_bytes();
+    recover_and_grade("pack-H*-wrapped", &blob);
+}
+
+#[test]
+fn nested_base64_rot13_gzinflate_wrapper_runtime_equivalent() {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    use std::io::Write as _;
+
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_sub(19)).collect();
+    let mut encoder: DeflateEncoder<Vec<u8>> =
+        DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&cipher).expect("deflate");
+    let deflated: Vec<u8> = encoder.finish().expect("deflate finish");
+    let rot: String = b64(&deflated)
+        .bytes()
+        .map(|b: u8| match b {
+            b'a'..=b'z' => (b - b'a' + 13) % 26 + b'a',
+            b'A'..=b'Z' => (b - b'A' + 13) % 26 + b'A',
+            other => other,
+        })
+        .map(char::from)
+        .collect();
+    let blob: Vec<u8> = format!(
+        "<?php $d = gzinflate(base64_decode(str_rot13('{rot}'))); $i = 0; $o = ''; while ($i < strlen($d)) {{ $o .= chr((ord($d[$i]) + 19) % 256); $i++; }} ev\x61l($o);"
+    )
+    .into_bytes();
+    recover_and_grade("gzinflate(base64(rot13))-wrapped", &blob);
+}
+
+#[test]
+fn canonical_rc4_ord_and_raw_prga_paths_runtime_equivalent() {
+    let graded: String = String::from("the canonical and while-form RC4 interpreter paths");
+    let Some(_php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let key: &[u8] = b"cross_check_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+
+    let canonical: Vec<u8> = format!(
+        "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = array(); for($i=0;$i<256;$i++){{ $s[$i]=$i; }} $j=0; for($i=0;$i<256;$i++){{ $j=($j+$s[$i]+ord($k[$i%strlen($k)]))%256; $t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t; }} $i=0;$j=0;$o=''; for($y=0;$y<strlen($d);$y++){{ $i=($i+1)%256; $j=($j+$s[$i])%256; $t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t; $o .= $d[$y] ^ chr($s[($s[$i]+$s[$j])%256]); }} ev\x61l($o);"
+    )
+    .into_bytes();
+
+    let while_form: Vec<u8> = format!(
+        "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = array(); $i = 0; while($i<256){{ $s[$i]=$i; $i++; }} $i=0; $j=0; while($i<256){{ $kb = ord($k[$i % strlen($k)]); $j = ($j + $s[$i] + $kb) % 256; $t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t; $i++; }} $i=0;$j=0;$y=0;$o=''; while($y<strlen($d)){{ $i=($i+1)%256; $j=($j+$s[$i])%256; $t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t; $ks = $s[($s[$i]+$s[$j]) % 256]; $b = ord($d[$y]); $o .= chr($b ^ $ks); $y++; }} ev\x61l($o);"
+    )
+    .into_bytes();
+
+    let from_canonical: String = recover_and_grade("rc4-canonical", &canonical);
+    let from_while_form: String = recover_and_grade("rc4-while-form", &while_form);
+    assert_eq!(
+        from_canonical, from_while_form,
+        "the canonical and while-form interpreter paths disagree on the same key and ciphertext"
+    );
+    assert!(
+        from_canonical.contains(MARKER),
+        "the interpreter paths agreed but neither recovered the payload: {from_canonical}"
+    );
+}
+
+#[test]
+fn rc4_short_array_destructuring_swaps_runtime_equivalent() {
+    let key: &[u8] = b"destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let blob: Vec<u8> = format!(
+        "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; [$s[$i], $s[$j]] = [$s[$j], $s[$i]]; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; [$s[$i], $s[$j]] = [$s[$j], $s[$i]]; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+    )
+    .into_bytes();
+
+    recover_and_grade("rc4-short-array-destructuring-swaps", &blob);
+}
+
+#[test]
+fn rc4_list_destructuring_swaps_runtime_equivalent() {
+    let key: &[u8] = b"list_destructure";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let blob: Vec<u8> = format!(
+        "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; list($s[$i], $s[$j]) = [$s[$j], $s[$i]]; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; list($s[$i], $s[$j]) = [$s[$j], $s[$i]]; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+    )
+    .into_bytes();
+
+    recover_and_grade("rc4-list-destructuring-swaps", &blob);
+}
+
+#[test]
+fn rc4_skipped_destructuring_targets_runtime_equivalent() {
+    let key: &[u8] = b"skipped_slot_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str); 2] = [
+        (
+            "rc4-list-skipped-destructuring-target",
+            "list($s[$i], , $s[$j])",
+        ),
+        (
+            "rc4-short-skipped-destructuring-target",
+            "[$s[$i], , $s[$j]]",
+        ),
+    ];
+    for (label, swap) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = [$s[$j], 0, $s[$i]]; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = [$s[$j], 0, $s[$i]]; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade_required(label, &blob);
+    }
+}
+
+#[test]
+fn rc4_trailing_comma_destructuring_targets_runtime_equivalent() {
+    let key: &[u8] = b"trailing_comma_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 4] = [
+        (
+            "rc4-short-trailing-comma-target",
+            "[$s[$i], $s[$j],]",
+            "[$s[$j], $s[$i]]",
+        ),
+        (
+            "rc4-list-trailing-comma-target",
+            "list($s[$i], $s[$j],)",
+            "[$s[$j], $s[$i]]",
+        ),
+        (
+            "rc4-short-skipped-trailing-comma-target",
+            "[$s[$i], , $s[$j],]",
+            "[$s[$j], 0, $s[$i]]",
+        ),
+        (
+            "rc4-list-skipped-trailing-comma-target",
+            "list($s[$i], , $s[$j],)",
+            "[$s[$j], 0, $s[$i]]",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade_required(label, &blob);
+    }
+}
+
+#[test]
+fn rc4_one_level_nested_destructuring_swaps_runtime_equivalent() {
+    let key: &[u8] = b"nested_destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 2] = [
+        (
+            "rc4-short-one-level-nested-destructuring",
+            "[[$s[$i]], [$s[$j]]]",
+            "[[$s[$j]], [$s[$i]]]",
+        ),
+        (
+            "rc4-list-one-level-nested-destructuring",
+            "list(list($s[$i]), list($s[$j]))",
+            "array(array($s[$j]), array($s[$i]))",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = ''; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; $o .= chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256]); }} ev\x61l($o);"
+        )
+        .into_bytes();
+
+        recover_and_grade(label, &blob);
+    }
+}
+
+#[test]
+fn rc4_recursive_keyed_and_append_destructuring_runtime_equivalent() {
+    let key: &[u8] = b"recursive_destructure_rc4";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let cases: [(&str, &str, &str); 2] = [
+        (
+            "rc4-short-recursive-keyed-append-destructuring",
+            "[1 => [[[$s[$i]]]], 0 => [[[$s[$j]]]],]",
+            "[[[[$s[$i]]]], [[[$s[$j]]]]]",
+        ),
+        (
+            "rc4-list-recursive-keyed-append-destructuring",
+            "list(1 => list(list(list($s[$i]))), 0 => list(list(list($s[$j]))),)",
+            "array(array(array(array($s[$i]))), array(array(array($s[$j]))))",
+        ),
+    ];
+    for (label, swap, values) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $d = base64_decode('{encoded}'); $k = '{key_text}'; $s = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; {swap} = {values}; }} $i = 0; $j = 0; $o = []; for ($n = 0; $n < strlen($d); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $s[$i]) % 256; {swap} = {values}; [$o[]] = [chr(ord($d[$n]) ^ $s[($s[$i] + $s[$j]) % 256])]; }} ev\x61l(implode('', $o));"
+        )
+        .into_bytes();
+
+        recover_and_grade_required(label, &blob);
+    }
+}
+
+#[test]
+fn unequal_destructuring_widths_runtime_equivalent() {
+    let encoded: String = b64(payload().as_bytes());
+    let decoded: String = format!("base64_decode('{encoded}')");
+    let cases: [(&str, String); 10] = [
+        (
+            "short-extra-destructuring-value",
+            format!("[$body] = [{decoded}, 'ignored']"),
+        ),
+        (
+            "list-extra-destructuring-value",
+            format!("list($body) = [{decoded}, 'ignored']"),
+        ),
+        (
+            "short-missing-destructuring-value",
+            format!("[$body, $missing] = [{decoded}]"),
+        ),
+        (
+            "list-missing-destructuring-value",
+            format!("list($body, $missing) = [{decoded}]"),
+        ),
+        (
+            "short-nested-extra-destructuring-value",
+            format!("[[$body]] = [[{decoded}, 'ignored']]"),
+        ),
+        (
+            "list-nested-extra-destructuring-value",
+            format!("list(list($body)) = [[{decoded}, 'ignored']]"),
+        ),
+        (
+            "short-nested-missing-destructuring-value",
+            format!("[[$body, $missing]] = [[{decoded}]]"),
+        ),
+        (
+            "list-nested-missing-destructuring-value",
+            format!("list(list($body, $missing)) = [[{decoded}]]"),
+        ),
+        (
+            "short-skipped-missing-destructuring-value",
+            format!("[$body, , $missing] = [{decoded}, 'discarded']"),
+        ),
+        (
+            "list-skipped-missing-destructuring-value",
+            format!("list($body, , $missing) = [{decoded}, 'discarded']"),
+        ),
+    ];
+    for (label, assignment) in cases {
+        let blob: Vec<u8> = format!(
+            "<?php $body = ''; for ($i = 0; $i < 1; $i++) {{ {assignment}; }} ev\x61l($body);"
+        )
+        .into_bytes();
+
+        recover_and_grade_required(label, &blob);
+    }
+}
+
+#[test]
+fn mixed_list_destructuring_delimiters_are_refused() {
+    let encoded: String = b64(payload().as_bytes());
+    let blob: Vec<u8> = format!(
+        "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ list($body] = $parts; }} ev\x61l($body);"
+    )
+    .into_bytes();
+    if let Ok(report) = recover_php(&blob, None) {
+        assert!(
+            !report.output.contains(MARKER),
+            "a target list closed with the wrong delimiter must be rejected before assignment; \
+             got:\n{}",
+            report.output
+        );
+    }
+}
+
+#[test]
+fn all_empty_destructuring_targets_are_refused() {
+    let graded: String = String::from("the all-empty destructuring target refusals");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let encoded: String = b64(payload().as_bytes());
+    for (label, target) in [("short", "[,]"), ("list", "list(,)")] {
+        let blob: Vec<u8> = format!(
+            "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ {target} = $parts; $body = $parts[0]; }} ev\x61l($body);"
+        )
+        .into_bytes();
+        let reference: php_toolchain::PhpRun =
+            php.run_reporting_errors(&format!("all-empty-{label}-target"), &blob);
+        assert!(
+            !reference.exited_clean && reference.stderr.contains("Cannot use empty list"),
+            "php must reject the all-empty {label} target before its refusal can be graded; got \
+             stdout {:?}, stderr {:?}",
+            String::from_utf8_lossy(&reference.stdout),
+            reference.stderr
+        );
+
+        let report: RecoveryReport =
+            recover_php(&blob, None).expect("recover malformed empty destructuring target");
+        assert!(
+            !report.output.contains(MARKER),
+            "an all-empty {label} target is invalid PHP and must be rejected before assignment; \
+             got:\n{}",
+            report.output
+        );
+    }
+}
+
+#[test]
+fn accepted_destructuring_alias_and_key_semantics_are_refused() {
+    let graded: String = String::from("the accepted destructuring semantic refusals");
+    let php: PhpRuntime = require_php(&graded)
+        .unwrap_or_else(|| panic!("{graded} requires PHP 8.x; install php or set DISROBE_PHP_BIN"));
+    let encoded: String = b64(payload().as_bytes());
+    let valid_cases: [(&str, String); 5] = [
+        (
+            "dynamic-integer-key",
+            format!(
+                "<?php $key=0;$body='';for($i=0;$i<1;$i++){{[$key=>$body]=[base64_decode('{encoded}')];}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "string-key",
+            format!(
+                "<?php $body='';for($i=0;$i<1;$i++){{['payload'=>$body]=['payload'=>base64_decode('{encoded}')];}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "reference-variable",
+            format!(
+                "<?php $payload=base64_decode('{encoded}');$parts=[&$payload];$body='';for($i=0;$i<1;$i++){{[&$body]=$parts;}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "nested-keyed-reference",
+            format!(
+                "<?php $payload=base64_decode('{encoded}');$inner=[&$payload];$outer=[1=>$inner];$body='';for($i=0;$i<1;$i++){{[1=>[&$body]]=$outer;}}ev\x61l($body);"
+            ),
+        ),
+        (
+            "reference-append",
+            format!(
+                "<?php $payload=base64_decode('{encoded}');$parts=[&$payload];$body=[];for($i=0;$i<1;$i++){{[&$body[]]=$parts;}}ev\x61l($body[0]);"
+            ),
+        ),
+    ];
+    for (label, source) in valid_cases {
+        let reference: Vec<u8> = php.stdout_of(label, source.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&reference),
+            MARKER,
+            "the real PHP caller must execute accepted {label} semantics before refusal is graded"
+        );
+        let report: RecoveryReport = recover_php(source.as_bytes(), None)
+            .unwrap_or_else(|error| panic!("recover accepted {label} form: {error}"));
+        assert!(
+            !report.output.contains(MARKER),
+            "the unsupported {label} semantics must abstain instead of recovering a body; got:\n{}",
+            report.output
+        );
+    }
+}
+
+#[test]
+fn invalid_destructuring_grammar_is_proven_by_php_and_refused() {
+    let graded: String = String::from("the invalid destructuring grammar refusals");
+    let php: PhpRuntime = require_php(&graded)
+        .unwrap_or_else(|| panic!("{graded} requires PHP 8.x; install php or set DISROBE_PHP_BIN"));
+    let encoded: String = b64(payload().as_bytes());
+    let cases: [(&str, &str, String); 5] = [
+        (
+            "mixed-delimiters",
+            "Cannot mix [] and list()",
+            format!("<?php $body='';list([$body])=[[base64_decode('{encoded}')]];ev\x61l($body);"),
+        ),
+        (
+            "mixed-keyed-and-positional",
+            "Cannot mix keyed and unkeyed array entries in assignments",
+            format!(
+                "<?php $body='';[0=>$body,$other]=[base64_decode('{encoded}'),'x'];ev\x61l($body);"
+            ),
+        ),
+        (
+            "keyed-skip",
+            "unexpected token",
+            format!("<?php $body='';[0=>,$body]=['x',base64_decode('{encoded}')];ev\x61l($body);"),
+        ),
+        (
+            "nested-empty",
+            "Cannot use empty list",
+            format!("<?php [$body,[]]=[base64_decode('{encoded}'),[]];ev\x61l($body);"),
+        ),
+        (
+            "reference-to-temporary",
+            "Cannot assign reference to non referenceable value",
+            format!("<?php [&$body]=[base64_decode('{encoded}')];ev\x61l($body);"),
+        ),
+    ];
+    for (label, expected_error, source) in cases {
+        let reference: php_toolchain::PhpRun = php.run_reporting_errors(label, source.as_bytes());
+        assert!(
+            !reference.exited_clean && reference.stderr.contains(expected_error),
+            "PHP must reject {label} before refusal is graded; got stdout {:?}, stderr {:?}",
+            String::from_utf8_lossy(&reference.stdout),
+            reference.stderr
+        );
+        if let Ok(report) = recover_php(source.as_bytes(), None) {
+            assert!(
+                !report.output.contains(MARKER),
+                "invalid {label} must be refused before a later body can recover; got:\n{}",
+                report.output
+            );
+        }
+    }
+}
+
+#[test]
+fn rc4_helper_with_chained_state_initialization_runtime_equivalent() {
+    let key: &[u8] = b"chained_rc4_state";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let blob: Vec<u8> = format!(
+        "<?php function rc4($key, $data) {{ $state = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $state[$i] + ord($key[$i % strlen($key)])) % 256; $swap = $state[$i]; $state[$i] = $state[$j]; $state[$j] = $swap; }} $i = 37; $j = 73; $i = $j = 0; $out = ''; for ($n = 0; $n < strlen($data); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $state[$i]) % 256; $swap = $state[$i]; $state[$i] = $state[$j]; $state[$j] = $swap; $out .= $data[$n] ^ chr($state[($state[$i] + $state[$j]) % 256]); }} return $out; }} ev\x61l(rc4('{key_text}', base64_decode('{encoded}')));"
+    )
+    .into_bytes();
+
+    recover_and_grade("rc4-helper-chained-state", &blob);
+}
+
+#[test]
+fn mutated_rc4_ksa_runtime_equivalent() {
+    let blob: Vec<u8> = b"<?php $d=base64_decode('lJQvjXvR4Yi8u1NHpeqwxbkQaDxGrpviC7WWaU8=');$k='foreach_rc4_key';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%strlen($k)])+1)%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec();
+    recover_and_grade("mutated-rc4-ksa", &blob);
+}
+
+#[test]
+fn rc4_adversarial_shapes_runtime_equivalent() {
+    let key: &[u8] = b"foreach_rc4_key";
+    let xor_cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let xor_loader = |decoy: &str| {
+        loader_with_body(
+            &xor_cipher,
+            "$k = 'foreach_rc4_key';",
+            &format!(
+                "for ($i = 0; $i < strlen($d); $i++) {{ if (0) {{ $j = ($j + $s[$i] + ord($k[$i % strlen($k)])) % 256; }} {decoy} $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); }}"
+            ),
+        )
+    };
+    let comment_decoy: &str = "/* $o .= $d[$n]^chr($s[($s[$i]+$s[$j])%256]); */";
+    let string_decoy: &str = "$noise='$o .= $d[$n]^chr($s[($s[$i]+$s[$j])%256]);';";
+    let mismatched_state_decoy: &str =
+        "if (0) { $o .= chr(ord($d[$n]) ^ $q[($s[$i] + $s[$j]) % 256]); }";
+    let multiple_candidate_decoy: &str = "if (0) { $a .= $d[$n] ^ chr($s[($s[$i] + $s[$j]) % 256]); $b .= $d[$n] ^ chr($s[($s[$i] + $s[$j]) % 256]); }";
+    let earlier_block: Vec<u8> = format!(
+        "<?php $d=base64_decode('{}');$k='foreach_rc4_key';$s=range(0,255);$j=0;$o='';for($i=0;$i<0;$i++){{$j=($j+$s[$i]+ord($k[$i%strlen($k)]))%256;$o.=$d[$i]^chr($s[($s[$i]+$s[$j])%256]);}}for($i=0;$i<strlen($d);$i++){{$o.=chr(ord($d[$i])^ord($k[$i%strlen($k)]));}}ev\x61l($o);",
+        b64(&xor_cipher)
+    )
+    .into_bytes();
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "rc4-mismatched-divisor-variable",
+            b"<?php $d=base64_decode('Z2q+YGI1VjYVNduoljLDrn2THHG1bZeQBwoAtPo=');$k='foreach_rc4_key';$other='divisor';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%strlen($other)]))%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec(),
+        ),
+        (
+            "rc4-mismatched-divisor-expression",
+            b"<?php $d=base64_decode('qzQ4omqbd4A85asBEnCpJKIjAygLkauYYwoCfVg=');$k='foreach_rc4_key';$s=range(0,255);$j=0;for($i=0;$i<256;$i++){$j=($j+$s[$i]+ord($k[$i%(strlen($k)-1)]))%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;}$i=0;$j=0;$o='';for($n=0;$n<strlen($d);$n++){$i=($i+1)%256;$j=($j+$s[$i])%256;$t=$s[$i];$s[$i]=$s[$j];$s[$j]=$t;$o.=chr(ord($d[$n])^$s[($s[$i]+$s[$j])%256]);}ev\x61l($o);".to_vec(),
+        ),
+        ("rc4-comment-decoy", xor_loader(comment_decoy)),
+        ("rc4-string-decoy", xor_loader(string_decoy)),
+        ("rc4-mismatched-state-decoy", xor_loader(mismatched_state_decoy)),
+        (
+            "rc4-multiple-candidate-decoy",
+            xor_loader(multiple_candidate_decoy),
+        ),
+        ("rc4-earlier-block-decoy", earlier_block),
+    ];
+    for (label, blob) in cases {
+        recover_and_grade(label, &blob);
+    }
+}
+
+#[test]
+fn a_loop_that_clobbers_an_outer_variable_matches_php_scoping() {
+    let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_add(5)).collect();
+    let blob: Vec<u8> = format!(
+        "<?php $s = \"ech\x6f 'STALE-OUTER-VALUE';\"; $d = base64_decode('{}'); $o = ''; for ($i = 0; $i < strlen($d); $i++) {{ $s = chr((ord($d[$i]) - 5 + 256) % 256); $o .= $s; }} ev\x61l($o);",
+        b64(&cipher)
+    )
+    .into_bytes();
+    let recovered: String = recover_and_grade("outer-variable-clobbered-by-loop", &blob);
+    if !recovered.is_empty() {
+        assert!(
+            !recovered.contains("STALE-OUTER-VALUE"),
+            "php has no block scope, so the loop body's write to $s replaces the outer value; a \
+             recovery that resurrects the pre-loop value is modelling a scope php does not \
+             have.\n{recovered}"
+        );
+    }
+}
+
+#[test]
+fn a_loop_counter_never_displaces_the_key_the_sink_still_reads() {
+    let key: &[u8] = b"sh4dow";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = format!(
+        "<?php $d = base64_decode('{}'); $k = '{}'; $o = ''; $n = strlen($d); for ($i = 0; $i < $n; $i++) {{ $c = $d[$i]; $o .= chr(ord($c) ^ ord($k[$i % strlen($k)])); }} ev\x61l($o);",
+        b64(&cipher),
+        String::from_utf8_lossy(key)
+    )
+    .into_bytes();
+    recover_and_grade("loop-locals-beside-a-live-key", &blob);
+}
+
+#[test]
+fn raw_md5_derived_key_runtime_equivalent() {
+    let key: &[u8] = &[
+        0xfe, 0x4c, 0x0f, 0x30, 0xaa, 0x35, 0x9c, 0x41, 0xd9, 0xf9, 0xa5, 0xf6, 0x9c, 0x8c, 0x41,
+        0x92,
+    ];
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = md5('seed', true); $i = 0;",
+        "while ($i < strlen($d)) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); $i++; }",
+    );
+    recover_and_grade("raw-md5-derived-key", &blob);
+}
+
+#[test]
+fn hexadecimal_sha1_derived_key_runtime_equivalent() {
+    let key: &[u8] = b"92713d4709377111cf31f2a71986c411bd6cb5b0";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = sha1('seed'); $i = 0;",
+        "while ($i < strlen($d)) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); $i++; }",
+    );
+    recover_and_grade("hexadecimal-sha1-derived-key", &blob);
+}
+
+#[test]
+fn a_runtime_sourced_key_still_walls_instead_of_inventing_a_body() {
+    let graded: String = String::from("the runtime-keyed decode loop wall");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let key: &[u8] = b"n0tInTheFile";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = $_GET['k']; $i = 0;",
+        "while ($i < strlen($d)) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); $i++; }",
+    );
+    let report: RecoveryReport = recover_php(&blob, None).expect("recover runtime-keyed loader");
+    assert!(
+        !report.output.contains(MARKER),
+        "the key is absent from the file, so the plaintext is not statically derivable and must \
+         never be produced; got:\n{}",
+        report.output
+    );
+    let sanity: Vec<u8> = php.stdout_of("wall sanity", b"<?php echo 'loop-wall-ok';");
+    assert_eq!(
+        String::from_utf8_lossy(&sanity),
+        "loop-wall-ok",
+        "the php reference this wall is graded beside does not run, so the absence of a \
+         fabricated body proves nothing"
+    );
+}
+
+#[test]
+fn an_impure_call_inside_a_loop_is_never_evaluated() {
+    let blob: Vec<u8> =
+        b"<?php $d = 'x'; $o = ''; for ($i = 0; $i < 1; $i++) { $o .= file_get_contents('/etc/passwd'); } ev\x61l($o);"
+            .to_vec();
+    let report: Result<RecoveryReport, disrobe_pass_php::Error> = recover_php(&blob, None);
+    if let Ok(recovered) = report {
+        assert!(
+            !recovered.output.contains("root:"),
+            "a loop body calling file_get_contents must be refused by the allowlist, never \
+             evaluated; got:\n{}",
+            recovered.output
+        );
+    }
+}
+
+#[test]
+fn a_huge_trip_count_cannot_hang_the_pass() {
+    let blob: Vec<u8> =
+        b"<?php $d = 'x'; $o = ''; for ($i = 0; $i < 9000000000; $i++) { $o .= 'a'; } ev\x61l($o);"
+            .to_vec();
+    let started: std::time::Instant = std::time::Instant::now();
+    let _: Result<RecoveryReport, disrobe_pass_php::Error> = recover_php(&blob, None);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "a hostile trip count must hit a budget and abstain, not run to completion"
+    );
+}

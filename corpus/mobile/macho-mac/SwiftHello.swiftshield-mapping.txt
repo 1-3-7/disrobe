@@ -1,0 +1,18 @@
+## SwiftShield 4.2.1
+## Conversion Map for SwiftHello
+A8X9k2QwLp ==> LoginViewController
+Z7q3W1MnPr ==> AuthenticationService
+C5dHj7Tu ==> AnalyticsTracker
+D9eKmRpQ ==> PaymentFlowState
+E2fLpQrS ==> HelloRunnerEntry
+BNm4Lz8a ==> HelloGreetable
+aPq2X9rT ==> greetWithBanner
+bRx4P6mTuv ==> recordTrackingEvent
+cVz7K3xRpq ==> describePaymentState
+kZ3mNqVxBb ==> displayedUserName
+xY9nLkRtCc ==> configuredEndpointPath
+qW8rNm2Yx ==> trackerInstanceTag
+kx7Mn3Az ==> awaitingCardEntry
+ly2Bn9Cp ==> validatingPaymentDetails
+mz5Op8Dr ==> chargingMerchantGateway
+nb1Qr4Es ==> paymentFlowCompleted

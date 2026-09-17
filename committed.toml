@@ -1,0 +1,11 @@
+[committed]
+style = "none"
+
+subject_length = 72
+line_length = 72
+
+subject_capitalized = false
+subject_not_punctuated = true
+imperative_subject = false
+
+no_fixup = false

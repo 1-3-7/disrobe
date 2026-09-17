@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "active": "section",
+  "directions": {
+    "index": {
+      "name": "Index",
+      "display": "Barlow Condensed",
+      "weight": 700
+    },
+    "section": {
+      "name": "Section",
+      "display": "Manrope",
+      "weight": 200,
+      "mark": "index"
+    },
+    "specimen": {
+      "name": "Specimen",
+      "display": "Archivo Black",
+      "weight": 400
+    }
+  },
+  "themes": {
+    "light": {
+      "canvas": "#FFFFFF",
+      "surface": "#F5F5F5",
+      "text": "#171717",
+      "muted": "#595959",
+      "line": "#D4D4D4",
+      "accent": "#171717",
+      "onAccent": "#FFFFFF"
+    },
+    "dark": {
+      "canvas": "#111111",
+      "surface": "#1C1C1C",
+      "text": "#F5F5F5",
+      "muted": "#B3B3B3",
+      "line": "#404040",
+      "accent": "#F5F5F5",
+      "onAccent": "#111111"
+    }
+  },
+  "semantic": {
+    "light": {
+      "success": "#303030",
+      "partial": "#505050",
+      "experimental": "#595959",
+      "detection": "#404040",
+      "danger": "#171717"
+    },
+    "dark": {
+      "success": "#E5E5E5",
+      "partial": "#C4C4C4",
+      "experimental": "#B3B3B3",
+      "detection": "#D4D4D4",
+      "danger": "#FFFFFF"
+    }
+  },
+  "syntax": {
+    "light": {
+      "keyword": "#CF222E",
+      "string": "#0A3069",
+      "number": "#0550AE",
+      "function": "#6639BA",
+      "type": "#953800",
+      "comment": "#57606A",
+      "operator": "#CF222E",
+      "variable": "#1F2328",
+      "meta": "#953800"
+    },
+    "dark": {
+      "keyword": "#FF7B72",
+      "string": "#A5D6FF",
+      "number": "#79C0FF",
+      "function": "#D2A8FF",
+      "type": "#FFA657",
+      "comment": "#A6ADB5",
+      "operator": "#FF7B72",
+      "variable": "#F0F3F6",
+      "meta": "#FFA657"
+    }
+  },
+  "body": "Manrope",
+  "code": "JetBrains Mono"
+}

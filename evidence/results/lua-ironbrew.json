@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe devirtualizes real IronBrew2 2.7.0 obfuscator output back to runnable Lua whose execution under the real Lua interpreter matches the original, in both standard and MAX mode.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": null,
+  "disrobe_leads": null,
+  "ecosystem": "lua",
+  "floor": null,
+  "floor_holds": null,
+  "gate_source": "IronBrew2 2.7.0 is the one Lua VM-devirtualization family graded on committed output from the real obfuscator. The real-Lua execution differential runs the recovered output against the original across hello, arith, control, tables, and edge samples in standard and MAX mode.",
+  "id": "lua-ironbrew",
+  "measured": "1 family",
+  "oracle": {
+    "external": "real Lua interpreter execution differential (recovered output executed under real Lua, asserted equal to the original)",
+    "kind": "recovery-import",
+    "note": null
+  },
+  "oracle_strength": "strong",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle",
+  "title": "Lua IronBrew2 2.7.0 devirtualization, real-Lua execution differential"
+}

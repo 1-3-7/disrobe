@@ -1,0 +1,156 @@
+Bytecode File Information:
+  Bytecode version number: 89
+  Source hash: b257add7a2612f9ba11f86d18c3294285a0e8449
+  Function count: 8
+  String count: 15
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..0]: !
+s1[ASCII, 1..8]: counter-
+s2[ASCII, 11..25]: disrobe-hermes-
+s3[ASCII, 26..31]: global
+i4[ASCII, 9..11] #58FA9DBB: add
+i5[ASCII, 26..35] #F3091991: globalThis
+i6[ASCII, 35..42] #4EC7C7DE: sumRange
+i7[ASCII, 43..49] #E53A863C: Counter
+i8[ASCII, 50..54] #1D013422: greet
+i9[ASCII, 55..58] #418D1DE6: main
+i10[ASCII, 57..65] #24B6CCBE: increment
+i11[ASCII, 66..70] #1BA84CF3: label
+i12[ASCII, 71..75] #A689F65B: print
+i13[ASCII, 76..84] #807C5F3D: prototype
+i14[ASCII, 85..89] #DF50693D: value
+
+Function<global>(1 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x0000, lexical 0x0000
+    DeclareGlobalVar  "add"
+    DeclareGlobalVar  "sumRange"
+    DeclareGlobalVar  "greet"
+    DeclareGlobalVar  "Counter"
+    DeclareGlobalVar  "main"
+    CreateEnvironment r1
+    CreateClosure     r2, r1, Function<add>
+    GetGlobalObject   r0
+    PutById           r0, r2, 1, "add"
+    CreateClosure     r2, r1, Function<sumRange>
+    PutById           r0, r2, 2, "sumRange"
+    CreateClosure     r2, r1, Function<greet>
+    PutById           r0, r2, 3, "greet"
+    CreateClosure     r2, r1, Function<Counter>
+    PutById           r0, r2, 4, "Counter"
+    CreateClosure     r2, r1, Function<main>
+    PutById           r0, r2, 5, "main"
+    GetByIdShort      r2, r0, 1, "Counter"
+    GetByIdShort      r3, r2, 2, "prototype"
+    CreateClosure     r2, r1, Function<increment>
+    PutById           r3, r2, 6, "increment"
+    GetByIdShort      r2, r0, 1, "Counter"
+    GetByIdShort      r2, r2, 2, "prototype"
+    CreateClosure     r1, r1, Function<label>
+    PutById           r2, r1, 7, "label"
+    GetByIdShort      r1, r0, 3, "main"
+    LoadConstUndefined r0
+    Call1             r0, r1, r0
+    Ret               r0
+
+Function<add>(3 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x002b, lexical 0x0000
+    LoadParam         r1, 1
+    LoadParam         r0, 2
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<sumRange>(2 params, 6 registers, 0 symbols):
+Offset in debug table: source 0x0032, lexical 0x0000
+    LoadParam         r4, 1
+    LoadConstZero     r2
+    LoadConstUInt8    r3, 1
+    LoadConstZero     r0
+    Mov               r1, r3
+    JNotLessEqual     L1, r1, r4
+L2:
+    Add               r2, r2, r1
+    Add               r1, r1, r3
+    Mov               r0, r2
+    JLessEqual        L2, r1, r4
+L1:
+    Ret               r0
+
+Function<greet>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x003c, lexical 0x0000
+    LoadConstString   r1, "disrobe-hermes-"
+    LoadParam         r0, 1
+    Add               r1, r1, r0
+    LoadConstString   r0, "!"
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<Counter>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x0043, lexical 0x0000
+    LoadParam         r1, 1
+    LoadThisNS        r0
+    PutById           r0, r1, 1, "value"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<main>(1 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x004a, lexical 0x0000
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "Counter"
+    GetByIdShort      r4, r1, 2, "add"
+    LoadConstUndefined r5
+    LoadConstUInt8    r2, 2
+    LoadConstUInt8    r0, 3
+    Call3             r7, r4, r5, r2, r0
+    GetByIdShort      r2, r3, 3, "prototype"
+    CreateThis        r2, r2, r3
+    Mov               r8, r2
+    Construct         r0, r3, 2
+    SelectObject      r0, r2, r0
+    GetByIdShort      r2, r0, 4, "increment"
+    Call1             r2, r2, r0
+    TryGetById        r4, r1, 5, "globalThis"
+    GetByIdShort      r3, r4, 6, "print"
+    GetByIdShort      r2, r0, 7, "label"
+    Call1             r2, r2, r0
+    Call2             r2, r3, r4, r2
+    TryGetById        r3, r1, 5, "globalThis"
+    GetByIdShort      r2, r3, 6, "print"
+    GetByIdShort      r4, r1, 8, "sumRange"
+    LoadConstUInt8    r1, 10
+    Call2             r1, r4, r5, r1
+    Call2             r1, r2, r3, r1
+    GetByIdShort      r0, r0, 9, "value"
+    Ret               r0
+
+Function<increment>(1 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0087, lexical 0x0000
+    LoadThisNS        r0
+    GetByIdShort      r2, r0, 1, "value"
+    LoadConstUInt8    r1, 1
+    Add               r1, r2, r1
+    PutById           r0, r1, 1, "value"
+    GetByIdShort      r0, r0, 1, "value"
+    Ret               r0
+
+Function<label>(1 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x0097, lexical 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "greet"
+    LoadThisNS        r0
+    GetByIdShort      r1, r0, 2, "value"
+    LoadConstString   r0, "counter-"
+    Add               r1, r0, r1
+    LoadConstUndefined r0
+    Call2             r0, r2, r0, r1
+    Ret               r0

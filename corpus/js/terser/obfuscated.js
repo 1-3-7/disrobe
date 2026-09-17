@@ -1,0 +1,1 @@
+function greet(e){return"hello "+e}console.log(greet("world"));

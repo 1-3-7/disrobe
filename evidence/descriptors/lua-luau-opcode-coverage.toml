@@ -1,0 +1,16 @@
+id = "lua-luau-opcode-coverage"
+ecosystem = "lua"
+title = "Luau declared-table opcode lifting coverage"
+claim = "disrobe lifts 86 of the 88 opcode entries in its declared Luau table; BREAK and NEWCLASSMEMBER are decoded and reported as unresolved."
+oracle_strength = "coverage-self-reported"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "none: the committed test enumerates disrobe's own declared opcode table and counts entries that avoid its unresolved-reporting path. No external semantic or upstream-format reference grades the result."
+reproduce = "cargo test -p disrobe-pass-lua --test published_luau_opcode_roster"
+note = "This is coverage of disrobe's declared table, not semantic correctness or a claim about every opcode in an upstream Luau release."
+
+[source]
+recovery_group = "Luau opcode lifting (disrobe declared table)"
+recovery_bar = "Luau declared-table opcodes lifted"

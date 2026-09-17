@@ -1,0 +1,11 @@
+{
+  "purpose": "ground truth for name-inference precision, measured from source-map names[] and mappings",
+  "authored_by": "this repository",
+  "sources": ["src/widget.js", "src/loader.js", "src/collection.js"],
+  "generators": [
+    { "directory": "terser", "tool": "terser", "version": "5.50.0", "flags": ["--module", "--mangle", "--compress", "--source-map", "includeSources=true"] },
+    { "directory": "esbuild", "tool": "esbuild", "version": "0.25.12", "flags": ["--minify", "--format=esm", "--sourcemap", "--sources-content=true"] }
+  ],
+  "regenerate": "sh generate.sh",
+  "notes": "Sources are ASCII only so byte offsets equal source-map UTF-16 columns. Map sources[] are relative; no build path is recorded."
+}

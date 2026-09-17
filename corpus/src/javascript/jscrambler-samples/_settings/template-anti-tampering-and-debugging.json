@@ -1,0 +1,76 @@
+{
+  "keys": {
+    "accessKey": "REDACTED",
+    "secretKey": "REDACTED"
+  },
+  "applicationId": "6a13b110ba33fa38c090cb54",
+  "jscramblerVersion": "8.5",
+  "mode": "manual",
+  "areSubscribersOrdered": false,
+  "useRecommendedOrder": true,
+  "tolerateMinification": true,
+  "profilingDataMode": "off",
+  "useAppClassification": true,
+  "browsers": {},
+  "sourceMaps": false,
+  "params": [
+    {
+      "name": "identifiersRenaming"
+    },
+    {
+      "name": "objectPropertiesSparsing"
+    },
+    {
+      "name": "dotToBracketNotation",
+      "options": {
+        "mode": "LOOP_INVARIANT"
+      }
+    },
+    {
+      "name": "duplicateLiteralsRemoval",
+      "options": {
+        "options": [
+          "localOnly"
+        ],
+        "mode": [
+          "optimization"
+        ]
+      }
+    },
+    {
+      "name": "variableGrouping"
+    },
+    {
+      "name": "stringConcealing",
+      "options": {
+        "freq": 1,
+        "max": -1
+      }
+    },
+    {
+      "name": "regexObfuscation"
+    },
+    {
+      "name": "antiDebugging",
+      "options": {
+        "countermeasures": {
+          "breakApplication": true
+        },
+        "maxTargetsPerFunction": 2
+      }
+    },
+    {
+      "name": "antiTampering",
+      "options": {
+        "maxTargetsPerFunction": 2,
+        "validatedRange": -1,
+        "countermeasures": {
+          "breakApplication": true
+        }
+      }
+    },
+    {
+      "name": "whitespaceRemoval"
+    }
+  ]
+}

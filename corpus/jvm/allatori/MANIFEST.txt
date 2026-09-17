@@ -1,0 +1,58 @@
+Real Allatori string-encryption fixtures (benign, authored in-house)
+====================================================================
+
+Purpose
+-------
+These class files exercise the recovery of Allatori's free-edition string
+encryption from a genuinely obfuscated artifact, not a hand-assembled or
+disrobe-emitted reproduction of the shape.
+
+Provenance (non-circular oracle)
+--------------------------------
+The two .java sources (Secret, Caller) were authored in-house with known,
+distinctive string literals (the oracle, listed below). They were compiled with
+Eclipse Temurin JDK 25.0.3+9-LTS (javac) into a jar, then obfuscated by the
+real Allatori Obfuscator v9.8 (Smardec) demo edition with
+string-encryption=maximum and name/control-flow obfuscation disabled so the
+classes keep their authored identity. Only the obfuscated .class files are on
+disk here. The obfuscator, not disrobe, produced the encrypted constants and
+the injected decrypt method; the cleartext is recovered by executing that
+injected method end to end. The recovery is graded against the original
+pre-obfuscation literals, never against disrobe's own decoder output.
+
+Observed scheme
+---------------
+Allatori injects, into each class that owns encrypted strings, a private
+String -> String decryptor. The body folds two byte-sized masks from a
+per-class-random constant arithmetic prologue (pure iconst/bipush/ineg/ixor/
+ishl/ishr/dup with no external input), allocates a char[] sized to the input
+length, then walks the input from its last code unit toward the first,
+XOR-masking each unit with the two folded masks in alternation and storing it
+into the array, and finally wraps the array with new String(char[]). The masks
+are internal to the method body, so the plaintext is reproduced only by running
+the method; there is no static class-name-derived key.
+
+Files
+-----
+AllatoriStrings.class: Secret, obfuscated by Allatori v9.8 demo. The injected
+    decrypt method is local to the class. Oracle plaintexts:
+        dbUrl()    -> "jdbc:postgresql://10.4.2.9:5432/ledger_main"
+        apiToken() -> "sk-live-7f3a9c1d-2b8e-4f60-a1d2-payments-prod"
+        paths()    -> "/opt/disrobe/conf/keystore.p12"
+                      "s3://disrobe-artifacts/build/release"
+                      "config-key=disrobe-static-test-marker"
+AllatoriCaller.class: Caller, obfuscated in the same multi-class build. Its
+    secretA() string is decrypted by the class's own injected decryptor and is
+    recovered here. Its secretB() string is routed to a SIBLING class's
+    decryptor (Secret.<decrypt>); the per-class peel sees no decryptor body in
+    Caller for that constant, so it stays residual under the single-class API.
+    Oracle plaintext recovered by the per-class peel:
+        secretA()  -> "kafka://broker.internal:9092/disrobe-events-topic"
+
+Sourcing note (not a wall)
+--------------------------
+These are in-house benign fixtures obfuscated by the real free Allatori tool.
+The demo edition injects a System.out banner and renames the decryptor to
+ALLATORIxDEMO; the licensed edition renames it to an opaque identifier but emits
+the same char-array decrypt shape, which the recovery fingerprints structurally
+rather than by name.

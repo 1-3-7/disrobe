@@ -1,0 +1,31 @@
+Source: invoke_map_net10_x86_64.cs
+Project: invoke_map_net10_x86_64.csproj.txt
+Target: net10.0, win-x64, PE32+, AMD64, ReadyToRun 16.0
+SDK: .NET SDK 10.0.100, commit b0f34d51fc
+Runtime: Microsoft.NETCore.App 10.0.0
+Compiler: Microsoft.DotNet.ILCompiler 10.0.0
+Runtime source tag: https://github.com/dotnet/runtime/tree/v10.0.0
+ReadyToRun version source: https://raw.githubusercontent.com/dotnet/runtime/v10.0.0/src/coreclr/inc/readytorun.h
+ReadyToRun version source SHA-256: CD79472C8FCCE6013B53EF3A00287F57EFC58235810B8C5361943F1F04892FF2
+NativeFormat reader: https://raw.githubusercontent.com/dotnet/runtime/v10.0.0/src/coreclr/tools/Common/Internal/Metadata/NativeFormat/MdBinaryReader.cs
+NativeFormat reader SHA-256: D68171DCE887FB4C2590FC0726E6F5BE8F009D1B0EDBCA955569A856A1653A70
+NativeFormat writer: https://raw.githubusercontent.com/dotnet/runtime/v10.0.0/src/coreclr/tools/aot/ILCompiler.MetadataTransform/Internal/Metadata/NativeFormat/Writer/MdBinaryWriter.cs
+NativeFormat writer SHA-256: DF36F586F7F6098662E3BAFC9413C1B55F2BC5CF9E50BD3B25CDCAF5D587900C
+Invoke-map writer: https://raw.githubusercontent.com/dotnet/runtime/v10.0.0/src/coreclr/tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/ReflectionInvokeMapNode.cs
+Invoke-map writer SHA-256: 47AFFDA8F5AEE559B81072D103EFEBD899CF285D8C53E987A9C35A7A8A3783A1
+Invoke-map flags: https://raw.githubusercontent.com/dotnet/runtime/v10.0.0/src/coreclr/tools/Common/Internal/Runtime/MappingTableFlags.cs
+Invoke-map flags SHA-256: 81EE41141CBF024D7551C951CDEA649C6B0CA79046940AD7D7965678504225CD
+Installer: https://dot.net/v1/dotnet-install.ps1
+Installer SHA-256: E8B873E18A81E5C4CD8AB69D84DAC8FEAD291D50B3C44633CD7FDDAD709A13D6
+SDK archive: https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.100/dotnet-sdk-10.0.100-win-x64.zip
+Command: dotnet publish invoke_map_net10_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Source SHA-256: C7770FBDD4ED862FEB00F3B62DFB92371E2686BBBE8DF5F16CE9686944D88A3A
+Project SHA-256: E734C0B344BCD5646ACF28B334297E431165912590C360C441889560CC626AE5
+Executable SHA-256: 88D89791F9811730F4423B2EDB5C3AAB70A12CC66369F4F59C8E6E9029E4A1D8
+Full link map SHA-256: 660A8E39F4F9CD00E9B41A28FCA23FABA51F552F2C3BF6C03F98A4F4007B4A1A
+LLVM evidence tool: llvm-readobj 19.1.7, SHA-256 610DDAB33F2F1F3E0F531922BFBBF41CB0AA7857BE2B8A8304240FAB7880C748
+ManifestProbe.Add virtual address: 0x140082520
+ManifestProbe.Add RVA: 0x82520
+ManifestProbe.Add unwind range: [0x140082520, 0x140082524)
+ManifestProbe.Add bytes: 8d 04 11 c3
+ManifestProbe.Add disassembly: leal (%rcx,%rdx), %eax; retq

@@ -1,0 +1,10 @@
+# Synthetic ProGuard mapping fixture for disrobe-pass-jvm tests
+# Original  ->  Obfuscated
+com.example.Foo -> a.a:
+    int counter -> a
+    java.lang.String name -> b
+    void run(int) -> c
+    java.lang.String greet(java.lang.String) -> d
+com.example.Bar -> a.b:
+    com.example.Foo foo -> a
+    void init() -> b

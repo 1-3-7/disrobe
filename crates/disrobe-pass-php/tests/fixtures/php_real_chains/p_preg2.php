@@ -1,0 +1,1 @@
+<?php preg_replace('#.#e', base64_decode('ZnVuY3Rpb24gZ3JlZXQoJG4peyByZXR1cm4gJ2hlbGxvICcuJG47IH0KZWNobyBncmVldCgnd29ybGQnKTsK'), 'x');

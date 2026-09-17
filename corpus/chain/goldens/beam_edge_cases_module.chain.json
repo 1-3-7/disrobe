@@ -1,0 +1,89 @@
+{
+  "final_format": "Erlang",
+  "input": {
+    "blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
+    "detected": [
+      "beam-file"
+    ],
+    "path": "corpus://beam/megafile/edge_cases.beam",
+    "size": 23744
+  },
+  "nodes": [
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 0,
+      "detector_picks": [],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": null,
+      "id": 0,
+      "input_blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
+      "input_size": 23744,
+      "metadata": {},
+      "output_blake3": null,
+      "output_kind": null,
+      "output_size": null,
+      "parent_id": null,
+      "pass": null,
+      "rule_pack_id": null,
+      "verdict": "ok"
+    },
+    {
+      "artifacts": [],
+      "branch_id": "a",
+      "depth": 1,
+      "detector_picks": [
+        {
+          "band": "high",
+          "chosen": true,
+          "confidence": 0.9700000286102295,
+          "explain": "beam classify: beam-file",
+          "family": "interpreter-bytecode",
+          "format_tag": "beam-file",
+          "markers": [
+            "FOR1+BEAM iff header"
+          ],
+          "pass_id": "beam.classify",
+          "specificity": 30
+        }
+      ],
+      "duration_ms": 0,
+      "error": null,
+      "format_tag_in": "beam-file",
+      "id": 1,
+      "input_blake3": "d704e3be0a5687e82776fc5ac9a0491252231ee60caf227760f51f4ccd01952a",
+      "input_size": 23744,
+      "metadata": {},
+      "output_blake3": "923bb3aeb87bc334d420669aa683679bc1ca01369ce5fd2e638d1e01905337bc",
+      "output_kind": {
+        "formatted": false,
+        "kind": "source",
+        "language": "Erlang"
+      },
+      "output_size": 13873,
+      "parent_id": 0,
+      "pass": "beam.classify",
+      "rule_pack_id": null,
+      "verdict": "complete"
+    }
+  ],
+  "root_node_id": 0,
+  "schema": "disrobe.chain/v1",
+  "spec": {
+    "cap": 8,
+    "kind": "auto",
+    "raw": "auto:8"
+  },
+  "stats": {
+    "branches": 1,
+    "detector_calls": 1,
+    "layers": 1,
+    "max_branch_depth": 1,
+    "rejected_passes": 0,
+    "total_ms": 0
+  },
+  "tool_version": "0.1.0-golden",
+  "topology": "linear",
+  "verdict": "complete"
+}

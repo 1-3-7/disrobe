@@ -1,0 +1,32 @@
+Kotlin @Metadata recovery fixture (benign, authored in-house)
+=============================================================
+
+Purpose
+-------
+Greeter.class exercises real Kotlin metadata recovery: every class kotlinc emits
+carries an @kotlin.Metadata annotation in RuntimeVisibleAnnotations, holding the
+kind (k), the metadata version (mv), and the ProtoBuf-packed declaration tables
+(d1/d2). recover_kotlin_metadata reads k and mv from the live annotation; the
+class name and the function/property names are read back from the parsed class
+(this_class, methods). The source defines a constructor parameter (name), a
+computed property (greeting) and two functions (greet, shout) so the metadata is
+non-trivial.
+
+Provenance (non-circular oracle)
+--------------------------------
+Hello.kt was authored in-house and compiled with the official Kotlin compiler:
+  kotlinc 2.4.0 (JetBrains/kotlin v2.4.0 kotlin-compiler distribution),
+  running on Eclipse Temurin JDK 25.0.3+9-LTS.
+  kotlinc Hello.kt -d <out>   ->   disrobe/sample/Greeter.class
+The bytecode and the @Metadata annotation are emitted by kotlinc, NOT
+hand-authored and NOT produced by disrobe. javap -v confirms the annotation:
+  mv=[2,4,0]  k=1  xi=48  d2=[ "Ldisrobe/sample/Greeter;", ..., "greet", "shout", ... ]
+
+Files
+-----
+Hello.kt        the in-house source (package disrobe.sample).
+Greeter.class   real kotlinc 2.4.0 output, 1625 bytes.
+                sha256 38f95910ea7f6423f8ae1c0c47c1abea7f0e42cc4ba189ebfbe57291947cf2b5
+
+Graded by tests/kotlin_metadata_recover.rs: kind == Class, metadata_version == [2,4,0],
+this_class == disrobe/sample/Greeter, methods include greet, shout, getGreeting.

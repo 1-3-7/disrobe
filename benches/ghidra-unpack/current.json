@@ -1,0 +1,8 @@
+{
+  "schema": "disrobe.bench.current/v1",
+  "snapshot": "snapshots/20260908T2346015895555Z-d536dd0feebe46c19cd59456bef1efc1",
+  "manifest": "snapshots/20260908T2346015895555Z-d536dd0feebe46c19cd59456bef1efc1/manifest.json",
+  "manifest_sha256": "cafde565e051464cb64cb2e2241d7e7665acc0b121d20faef5f8e2ab4df7777d",
+  "results_json": "snapshots/20260908T2346015895555Z-d536dd0feebe46c19cd59456bef1efc1/results.json",
+  "results_markdown": "snapshots/20260908T2346015895555Z-d536dd0feebe46c19cd59456bef1efc1/results.md"
+}

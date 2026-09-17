@@ -1,0 +1,69 @@
+Disrobe
+
+SPDX-License-Identifier: LicenseRef-Disrobe-Source-Available-1.1
+
+Copyright (c) 2025-2026 1-3-7. All rights reserved.
+
+Licensor: 1-3-7, the author of Disrobe (https://github.com/1-3-7)
+Official Repository: https://github.com/1-3-7/disrobe
+
+License
+
+Disrobe, in every version, is licensed under the Disrobe Source-Available License, Version 1.1, effective September 17, 2026, in LICENSE. Version 1.1 supersedes the Elastic License 2.0, Version 1.0 of the Disrobe Source-Available License, and all other earlier terms for every version of Disrobe. Under LICENSE Section 2 and the Relicensing Notice in RELICENSING-NOTICE.md, every license previously granted by the Licensor is revoked effective at 12:00 a.m. Eastern Time on October 17, 2026, or at any later time required by LICENSE Section 2.5 as to a particular person, after which every use, copy, fork, derivative, distribution, and hosted instance of any version is governed exclusively by Version 1.1.
+
+Free use is limited to the Non-Commercial Use categories in LICENSE Section 3.2: an individual's personal hobby projects and learning, an individual's own independent security research not undertaken to earn a reward, education and research at public or nonprofit educational institutions, nonprofit-mission research, and Bona Fide Journalism as defined in LICENSE Section 5. Any use by or for a company or other for-profit organization requires a paid written license signed by the Licensor. Redistribution, reposting, forks other than contribution forks, rebranding, resale, hosting, and competing development are prohibited. The Software is provided "AS IS" and "AS AVAILABLE," and each user is solely responsible for its use. This NOTICE summarizes LICENSE and does not modify it.
+
+Required Attribution
+
+This work used Disrobe, created by 1-3-7: https://github.com/1-3-7/disrobe
+
+Every Publication arising from use of Disrobe or its Output, including under a paid commercial license, must include that exact credit no later than its first circulation, submission, delivery, or presentation. See LICENSE Section 6 and ATTRIBUTION.md.
+
+Trademark Notice
+
+"Disrobe," any Disrobe logo, and "1-3-7" identify the Licensor as the source of the Software. No trademark or logo license is granted. Truthful attribution and accurate descriptive reference are permitted; rebranding, confusingly similar names, false origin, and implied endorsement are not. Third-party names and marks belong to their respective owners.
+
+Third-Party Notices
+
+playground/public/samples/go-embed-linux-386
+
+This example includes the Go runtime. Its copyright notice and license are
+reproduced in playground/public/samples/GO-LICENSE.txt.
+
+playground/public/samples/pyarmor_runtime_000000.pyd
+
+The PyArmor example includes the runtime distributed with its protected
+Python wrapper. The runtime is provided by Jondy Zhao and retains its
+embedded notices. PyArmor's license is available at
+https://github.com/dashingsoft/pyarmor/blob/master/LICENSE.
+
+crates/disrobe-pass-py-decompile/tests/try_else_tail_recompile.rs
+crates/disrobe-pass-py-decompile/tests/loop_try_body_input_space.rs
+
+Several regression inputs are adapted from the CPython 3.14.5 standard
+library. Imports, surrounding definitions, docstrings and comments are
+omitted from these compile/recompile fixtures. The Python license and
+copyright notices are reproduced in
+crates/disrobe-pass-py-decompile/tests/harness/CPYTHON-LICENSE.txt.
+
+crates/disrobe-binfmt/src/containers/pmarc.rs
+
+The PM1 and PM2 decoding logic in this module is derived from the Lhasa
+decoders `lib/pm1_decoder.c`, `lib/pm2_decoder.c`, `lib/pma_common.c` and
+`lib/tree_decode.c`.
+
+Copyright (c) 2011, 2012, Simon Howard
+
+Permission to use, copy, modify, and/or distribute this software
+for any purpose with or without fee is hereby granted, provided
+that the above copyright notice and this permission notice appear
+in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
+CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

@@ -1,0 +1,34 @@
+[package]
+name = "disrobe-prowl"
+description = "URL and indicator-of-compromise OSINT harvester for disrobe: queries public web archives and threat-intel feeds, extracts structured IoCs, and emits a machine-readable report."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["osint", "recon", "url-harvester", "threat-intel", "ioc"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["keyring"]
+keyring = ["dep:keyring"]
+
+[dependencies]
+disrobe-core = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+keyring = { workspace = true, optional = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

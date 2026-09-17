@@ -1,0 +1,92 @@
+schema = "disrobe.fixture.provenance/v1"
+source = "https://github.com/fragglet/lhasa"
+source_commit = "75ed83559f23e9538e0045c62f53f77ab03d03d6"
+license = "ISC"
+reference = "Lhasa test-decompress and test-extract-windows"
+
+[[fixtures]]
+archive = "test/archives/lharc113/lh1.lzh"
+sha256 = "594af58cb27d6a80e9bebd108cc82a8ab881a4b5549e4fc10379fbf7a0d83069"
+method = "-lh1-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/unlha32/lh2.lzh"
+file = "../lh2.lzh"
+sha256 = "16e1cba85552ddc930442874dbfd42c0042547da482793e31ac2aaf819dc765e"
+method = "-lh2-"
+output_crc16 = "d157"
+output_size = 2853
+
+[[fixtures]]
+archive = "test/archives/unlha32/lh3.lzh"
+file = "../lh3.lzh"
+sha256 = "095f5675a1224db59db9f3c3075b234c2b62ee8710e34968882fccae4659e63e"
+method = "-lh3-"
+output_crc16 = "d157"
+output_size = 2853
+
+[[fixtures]]
+archive = "test/archives/lha_amiga_122/lh4.lzh"
+sha256 = "287586d14f052cb1e128cc87f6277a3da6e88431369e65c815666a67718e065c"
+method = "-lh4-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/lh2_222/lh5.lzh"
+file = "../lh5_222.lzh"
+sha256 = "9cfceca376464a56440e142179bd8131984cb125c0d3e36c1b5c4b4fd2669059"
+method = "-lh5-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/explzh_723/h2_lh6.lzh"
+sha256 = "c79a55cc6e7d9994bceca06534b148df0e66b04e8a1c46b18b411880645f5f4d"
+method = "-lh6-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/explzh_723/h2_lh7.lzh"
+sha256 = "3f9eecae589300770e00bdbaa4ccbbe888311458cc3f50d6565e3923312bb093"
+method = "-lh7-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/unlha32/h2_lhx.lzh"
+sha256 = "c9ab661c5502714f9556be89617bddff237e0e21e72657dc019707aed9751d9b"
+method = "-lhx-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/larc333/lz4.lzs"
+sha256 = "98f1a694411d13524b61be587bafc432f8206b24d2858aa58c686b2c6e3bbcd2"
+method = "-lz4-"
+output_crc32 = "e4690583"
+output_size = 6829
+
+[[fixtures]]
+archive = "test/archives/larc333/lz5.lzs"
+sha256 = "ebacc5d6fa4f35ef4e2ff7176e9867e410e4dfc5922b5bcfb804185954e1ab89"
+method = "-lz5-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/generated/lzs/lzs.lzs"
+sha256 = "a7a0ff6acfef86a49300e4f0dcfbe7a61ba21d05b1585809e5a393ce5635c3b3"
+method = "-lzs-"
+output_crc32 = "4e46f4a1"
+output_size = 18092
+
+[[fixtures]]
+archive = "test/archives/pmarc2/pm0.pma"
+sha256 = "b9dc05a9dd49b19c02d5e08bf8eb7fca584d280ed0083eefcd45c6314e4003ad"
+method = "-pm0-"
+output_crc32 = "549d935a"
+output_size = 6912

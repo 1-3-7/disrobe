@@ -1,0 +1,6 @@
+{
+  "kind": "systemjs",
+  "entry": "systemjs-root",
+  "module_ids": ["my/lib/core", "my/lib/util"],
+  "sourcemap_url_keys": ["systemjs-root"]
+}

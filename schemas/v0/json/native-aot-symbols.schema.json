@@ -1,0 +1,412 @@
+{
+  "$defs": {
+    "CodeRange": {
+      "additionalProperties": false,
+      "properties": {
+        "end_rva": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start_rva": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start_rva",
+        "end_rva"
+      ],
+      "type": "object"
+    },
+    "ManagedSignatureBody": {
+      "additionalProperties": false,
+      "description": "The declared managed signature was proven to agree with the lifted register bindings and was reattached.",
+      "properties": {
+        "pseudo_c": {
+          "type": "string"
+        },
+        "signature_source": {
+          "const": "managed",
+          "type": "string"
+        },
+        "status": {
+          "const": "recovered",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "pseudo_c",
+        "signature_source"
+      ],
+      "type": "object"
+    },
+    "MetadataStatus": {
+      "description": "Recovered and NotPresent are bare strings; the other states carry their detail in a single-key object.",
+      "oneOf": [
+        {
+          "enum": [
+            "NotPresent",
+            "Recovered"
+          ],
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/UnsupportedVersionStatus"
+        },
+        {
+          "$ref": "#/$defs/RejectedStatus"
+        }
+      ]
+    },
+    "MethodBody": {
+      "description": "A recovered body records how its signature was determined; a refused body records why no body was produced.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ManagedSignatureBody"
+        },
+        {
+          "$ref": "#/$defs/RegisterSignatureBody"
+        },
+        {
+          "$ref": "#/$defs/RefusedBody"
+        }
+      ]
+    },
+    "MethodEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/MethodBody"
+        },
+        "code_range": {
+          "$ref": "#/$defs/CodeRange"
+        },
+        "declaring_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declaring_types": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "entrypoint_rva": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "record_offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signature": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MethodSignature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "record_offset",
+        "declaring_type",
+        "declaring_types",
+        "name",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "MethodSignature": {
+      "additionalProperties": false,
+      "properties": {
+        "calling_convention": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generic_parameter_count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "parameter_types": {
+          "items": {
+            "$ref": "#/$defs/TypeSignature"
+          },
+          "type": "array"
+        },
+        "record_offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "return_type": {
+          "$ref": "#/$defs/TypeSignature"
+        },
+        "vararg_parameter_types": {
+          "items": {
+            "$ref": "#/$defs/TypeSignature"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "record_offset",
+        "calling_convention",
+        "generic_parameter_count",
+        "return_type",
+        "parameter_types",
+        "vararg_parameter_types"
+      ],
+      "type": "object"
+    },
+    "RefusedBody": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "status": {
+          "const": "refused",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "RegisterSignatureBody": {
+      "additionalProperties": false,
+      "description": "Reattachment was declined, so the body keeps the register-typed signature the lifter inferred, and signature_abstention names the rule that declined it.",
+      "properties": {
+        "pseudo_c": {
+          "type": "string"
+        },
+        "signature_abstention": {
+          "enum": [
+            "absent-managed-signature",
+            "unsupported-calling-convention",
+            "explicit-this",
+            "generic-signature",
+            "vararg-signature",
+            "argument-positions-exceeded",
+            "type-signature-kind-unsupported",
+            "type-record-absent",
+            "type-namespace-not-system",
+            "type-outside-primitive-table",
+            "non-microsoft-x64-recovery",
+            "hidden-struct-return",
+            "return-class-disagreement",
+            "argument-count-disagreement",
+            "argument-register-disagreement",
+            "floating-point-register-disagreement",
+            "unobserved-argument-position",
+            "vector-argument-binding",
+            "prototype-not-isolated",
+            "argument-binding-not-isolated",
+            "return-statement-not-isolated",
+            "shared-code-range",
+            "allocation-failed"
+          ],
+          "type": "string"
+        },
+        "signature_source": {
+          "const": "registers",
+          "type": "string"
+        },
+        "status": {
+          "const": "recovered",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "pseudo_c",
+        "signature_source",
+        "signature_abstention"
+      ],
+      "type": "object"
+    },
+    "RejectedStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "Rejected": {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "section_offset": {
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "section_offset",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "Rejected"
+      ],
+      "type": "object"
+    },
+    "SignatureSourceCounts": {
+      "additionalProperties": false,
+      "description": "How many recovered bodies carry a reattached managed signature and how many kept the lifted register-typed one. A numerator and a denominator, never a rate.",
+      "properties": {
+        "managed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "registers": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "managed",
+        "registers"
+      ],
+      "type": "object"
+    },
+    "TypeEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "method_record_offsets": {
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "qualified_name": {
+          "type": "string"
+        },
+        "record_offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "record_offset",
+        "qualified_name",
+        "method_record_offsets"
+      ],
+      "type": "object"
+    },
+    "TypeSignature": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "definition",
+            "reference",
+            "specification",
+            "modified"
+          ],
+          "type": "string"
+        },
+        "record_offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "record_offset"
+      ],
+      "type": "object"
+    },
+    "UnsupportedVersionStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "UnsupportedVersion": {
+          "additionalProperties": false,
+          "properties": {
+            "major_version": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minor_version": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "major_version",
+            "minor_version"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "UnsupportedVersion"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://disrobe.dev/schemas/v0/native-aot-symbols.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Names, signatures, code ranges and recovered bodies emitted for a .NET NativeAOT image by disrobe-pass-dotnet.",
+  "properties": {
+    "metadata_status": {
+      "$ref": "#/$defs/MetadataStatus"
+    },
+    "methods": {
+      "items": {
+        "$ref": "#/$defs/MethodEntry"
+      },
+      "type": "array"
+    },
+    "runtime": {
+      "enum": [
+        "net7",
+        "net8",
+        "net9",
+        "net10",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "schema": {
+      "const": "disrobe.dotnet.native-aot-symbols/v1",
+      "type": "string"
+    },
+    "signature_source_counts": {
+      "$ref": "#/$defs/SignatureSourceCounts"
+    },
+    "types": {
+      "items": {
+        "$ref": "#/$defs/TypeEntry"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "runtime",
+    "metadata_status",
+    "signature_source_counts",
+    "types",
+    "methods"
+  ],
+  "title": "NativeAotSymbols",
+  "type": "object"
+}

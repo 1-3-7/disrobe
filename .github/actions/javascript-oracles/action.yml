@@ -1,0 +1,51 @@
+name: JavaScript reference toolchains
+description: Install the pinned Node, TypeScript, and Babel reference tools
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      with:
+        node-version: "24.16.0"
+    - name: provision TypeScript 6.0.3 for the emitted-artifact oracle
+      shell: bash
+      env:
+        NODE_VERSION: "24.16.0"
+        TYPESCRIPT_VERSION: "6.0.3"
+      run: |
+        set -euo pipefail
+        actual_node_version="$(node --version | tr -d '\r')"
+        if [ "$actual_node_version" != "v${NODE_VERSION}" ]; then
+          echo "setup-node provisioned ${actual_node_version}, expected v${NODE_VERSION}"
+          exit 1
+        fi
+        npm install --global --ignore-scripts --no-audit --no-fund "typescript@${TYPESCRIPT_VERSION}"
+        actual_version="$(tsc --version | tr -d '\r')"
+        if [ "$actual_version" != "Version ${TYPESCRIPT_VERSION}" ]; then
+          echo "npm provisioned ${actual_version}, expected Version ${TYPESCRIPT_VERSION}"
+          exit 1
+        fi
+    - name: provision Babel runtime 7.24.5 for the async identity oracle
+      shell: bash
+      env:
+        BABEL_RUNTIME_VERSION: "7.24.5"
+        BABEL_ASYNC_HELPER_SHA256: "e8c18da3624e6b7a7cf4720bcaa8d108709c22b1ab76e6e5f974587acb05d2c8"
+      run: |
+        set -euo pipefail
+        runtime_root="$RUNNER_TEMP/disrobe-babel-runtime-${BABEL_RUNTIME_VERSION}"
+        npm install --prefix "$runtime_root" --ignore-scripts --no-audit --no-fund "@babel/runtime@${BABEL_RUNTIME_VERSION}"
+        actual_version="$(node -e 'const path=require("node:path"); process.stdout.write(require(path.join(process.argv[1], "node_modules", "@babel", "runtime", "package.json")).version)' "$runtime_root")"
+        if [ "$actual_version" != "$BABEL_RUNTIME_VERSION" ]; then
+          echo "npm provisioned @babel/runtime ${actual_version}, expected ${BABEL_RUNTIME_VERSION}"
+          exit 1
+        fi
+        helper="$runtime_root/node_modules/@babel/runtime/helpers/asyncToGenerator.js"
+        if [ ! -f "$helper" ]; then
+          echo "the pinned Babel runtime did not contain asyncToGenerator.js"
+          exit 1
+        fi
+        actual_sha256="$(node -e 'const crypto=require("node:crypto"); const fs=require("node:fs"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$helper")"
+        if [ "$actual_sha256" != "$BABEL_ASYNC_HELPER_SHA256" ]; then
+          echo "Babel async helper hash ${actual_sha256}, expected ${BABEL_ASYNC_HELPER_SHA256}"
+          exit 1
+        fi
+        echo "DISROBE_BABEL_RUNTIME_ROOT=$runtime_root/node_modules" >> "$GITHUB_ENV"

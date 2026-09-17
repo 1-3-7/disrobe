@@ -1,0 +1,6 @@
+Producer: Kotlin/JVM compiler 2.4.10 on Eclipse Temurin 25.0.4+7-LTS
+Compiler archive: https://github.com/JetBrains/kotlin/releases/download/v2.4.10/kotlin-compiler-2.4.10.zip
+Compiler archive SHA-256: 473dd66c7a3ef4b182065b3da670466c1bf2773a9dbb0ed8b33a39fe9d4f876d
+Command: kotlinc FinallyNested.kt -jvm-target 17 -d out
+Class: out/probe/FinallyNested.class
+Class SHA-256: dc36235c74f7cb530204b1d1e5d97184169ba4858f1e6a1a07dd06970d971942

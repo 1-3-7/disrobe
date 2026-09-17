@@ -1,0 +1,9 @@
+schema_version = 2
+
+[[sample]]
+file = "hello.go.exe"
+toolchain = "go"
+version = "go1.26.3"
+oracle = "go version (go1.26.3 windows/amd64)"
+build_command = "go build -o hello.go.exe hello.go"
+note = "real on-box go build; graded against the toolchain's own `go version` string, never against disrobe output"

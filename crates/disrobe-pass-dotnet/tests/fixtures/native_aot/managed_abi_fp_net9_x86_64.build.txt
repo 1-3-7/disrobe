@@ -1,0 +1,37 @@
+Source: managed_abi_fp_net9_x86_64.cs
+Project: managed_abi_fp_net9_x86_64.csproj.txt
+Target: net9.0, win-x64, PE32+, AMD64, NativeAOT metadata 10.1
+SDK: .NET SDK 9.0.316
+Compiler: Microsoft.DotNet.ILCompiler 9.0.18, runtime.win-x64.microsoft.dotnet.ilcompiler 9.0.18
+Linker: MSVC 14.44.35207 Hostx64\x64\link.exe
+Runtime source tag: https://github.com/dotnet/runtime/tree/v9.0.18
+Managed calling convention: https://raw.githubusercontent.com/dotnet/runtime/v9.0.18/docs/design/coreclr/botr/clr-abi.md
+ECMA-335 calling-convention byte: ECMA-335 6th edition, II.23.2.1 MethodDefSig, HASTHIS 0x20
+ECMA-335 void return: ECMA-335 6th edition, II.23.2.11 RetType, VOID is the element type System.Void
+Microsoft x64 argument registers: RCX, RDX, R8, R9 for integer and pointer arguments
+Microsoft x64 floating-point argument registers: XMM0, XMM1, XMM2, XMM3 for Single and Double arguments
+Microsoft x64 shared argument positions: position N is either the integer register or the vector register, never both, so an integer argument still consumes the vector register of its position and a floating-point argument still consumes the integer register of its position
+Microsoft x64 hidden struct return: a return value larger than eight bytes is written through a caller-supplied pointer passed in RCX, which shifts every declared argument to the next position
+Convention low nibble on this image: 0x0 for static methods and 0x0 plus HASTHIS for instance methods and constructors
+Command: dotnet publish managed_abi_fp_net9_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish
+Build directory: the project, Program.cs and publish output live outside the repository; PathMap rewrites the project directory to C:\src\feat017 so no build path is embedded
+Source SHA-256: 7734759EF5792752B5487AB857830FB2A386E0D2D79853DCB1E250AE5948600E
+Project SHA-256: 2B49CC7DABAEFF416ACDB43BB2E72B39136B287BA5994858CC6A33AEB5AE9D19
+Executable SHA-256: DD7E52B09E9CBEE7381A3E19260FE9F6EF78AACB77D5133D6BC14AE605982E1E
+Full link map SHA-256: FF5E90093A74C8C1537E87ABCA2E41AF082117BC62C45223770E6881103ABF2D
+Unwind evidence tool: dumpbin 14.44.35228.0, command dumpbin /unwindinfo publish\managed_abi_fp_net9_x86_64.exe
+LLVM evidence tool: llvm-objdump 19.1.7, SHA-256 4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022
+Disassembly command: llvm-objdump -d --start-address=<begin> --stop-address=<end> publish\managed_abi_fp_net9_x86_64.exe
+Link symbol for the constructor: the linker spells the .ctor metadata name _ctor, so its evidence key is ManagedFpAbiProbe._ctor
+ManagedFpAbiProbe._ctor managed signature: instance System.Void .ctor(System.Int32)
+ManagedFpAbiProbe.AddDouble managed signature: static System.Double AddDouble(System.Double, System.Double)
+ManagedFpAbiProbe.ScaleFloat managed signature: static System.Single ScaleFloat(System.Single, System.Single)
+ManagedFpAbiProbe.Promote managed signature: static System.Double Promote(System.Single)
+ManagedFpAbiProbe.Weight managed signature: static System.Single Weight(System.Int32, System.Single, System.Single)
+ManagedFpAbiProbe.Offset managed signature: static System.Double Offset(System.Double, System.Int32)
+ManagedFpAbiProbe.Mix managed signature: static System.Double Mix(System.Double, System.Single, System.Int32, System.Double)
+ManagedFpAbiProbe.SetSlot managed signature: instance System.Void SetSlot(System.Int32)
+ManagedFpAbiProbe.SetRatio managed signature: instance System.Void SetRatio(System.Double)
+ManagedFpAbiProbe.Clear managed signature: instance System.Void Clear()
+ManagedFpAbiProbe.Store managed signature: static System.Void Store(System.IntPtr, System.Int32)
+ManagedFpAbiProbe.Split managed signature: static ManagedPair Split(System.Int64)

@@ -1,0 +1,47 @@
+schema_version = 1
+crate = "disrobe-pass-jvm"
+sample = "DexGuardReflectStrings"
+technique = "reflection-invoked static string decryption (DexGuard behavior)"
+license = "in-house benign sample, authored for disrobe"
+
+[build]
+source = "DexGuardReflectStrings.java"
+script = "DexGuardReflectStrings.build.sh"
+dex = "DexGuardReflectStrings.dex"
+dex_bytes = 1952
+dex_sha256 = "ff10daa91aefba5f57aba67a1584cbe4a21679ebc8dcbe39215602c2d2c7d8be"
+jar = "crates/disrobe-pass-jvm/tests/fixtures/dexguard/DexGuardReflectStrings.jar"
+jar_bytes = 1856
+reproducibility = """
+Re-running the script reproduces DexGuardReflectStrings.dex byte for byte, which is why the
+dex carries a pinned digest and the test asserts it. The jar is not pinned by digest: a zip
+archive records entry timestamps, so its bytes differ between runs even though its class
+content does not.
+"""
+key = "0x66"
+compiler = "javac 25.0.3 (Eclipse Temurin 25.0.3+9), --release 11"
+dexer = "d8 9.1.31 (com.android.tools:r8:9.1.31), --release --min-api 21"
+runtime = "OpenJDK 25.0.3 2026-04-21 LTS (Temurin-25.0.3+9)"
+note = """
+Commercial DexGuard is paid Guardsquare software whose protected output is unsafe to
+produce on a non-sandboxed box, so this is a benign sample written for disrobe that
+exhibits the same technique: an encrypted String[] held in a static field, a decrypt(int)
+routine that XORs each char against an embedded key, and call sites that fetch strings
+through java.lang.reflect.Method.invoke rather than a direct call.
+
+The .java is the only hand-written artifact. Both binaries are produced by third-party
+tools: javac compiles the class and d8 dexes it. Nothing in disrobe assembles either one.
+The plaintext the recovery is graded against is not read from this file; it is whatever
+the jar prints when a real JVM runs it, which is what dexguard_reflection_strings.rs
+derives at test time.
+
+Prior state, recorded because it was wrong in a way worth remembering: the dex used to be
+assembled by this crate's own dex_builder, and the .java beside it could never have
+compiled, because Java resolves \\uXXXX escapes before string literals are parsed and the
+ciphertext contained \\u005c. The listed source had therefore never built the listed dex.
+The literals are octal now, which is a string-level escape, and the file compiles.
+"""
+
+[ground_truth]
+source = "stdout of `java -cp DexGuardReflectStrings.jar com.disrobe.sample.DexGuardReflectStrings`"
+lines = 6

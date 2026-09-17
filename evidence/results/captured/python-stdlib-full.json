@@ -1,0 +1,96 @@
+{
+  "schema": "disrobe.measurement.python-stdlib/v1",
+  "measured_at": "2026-09-08",
+  "source": {
+    "revision": "cf255abc753862b665e1016c7a3edd0dbd8e3530",
+    "dirty": true,
+    "identity_sha256": "4a6c10810262417c18795d14edd93fb2f11f4093df5e0fa2aec3cf224e9fe8a8"
+  },
+  "binary_sha256": "145893d0cc8d91a6485fb8770d2db7f41869dccd1b2394c712abc8d846576bd1",
+  "build_profile": "dev",
+  "hardware": {
+    "cpu": "AMD Ryzen 9 9950X3D2",
+    "physical_cores": 16,
+    "logical_processors": 32,
+    "os": "Microsoft Windows 11 Pro",
+    "os_version": "10.0.26200"
+  },
+  "interpreter": {
+    "version": "3.14.5",
+    "sys_version": "3.14.5 (main, Jun  2 2026, 22:34:49) [MSC v.1944 64 bit (AMD64)]",
+    "magic": "2b0e0d0a",
+    "sha256": "5556f2048a17b14693ffadeb25dc0add537933873cee2ca623cf981ca65a6168",
+    "runtime_sha256": "dfbf119c3e43075d4c1b9651201607d97c2a6d1b82c4d408d677db94876db44e",
+    "optimize": 0
+  },
+  "population": {
+    "name": "fixed 574-module core population",
+    "module_list": "crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt",
+    "module_list_sha256": "cab2ea10ce57441d29f1117aa40e324fca805abf8ae80c2342cbd1ddcede028d",
+    "source_manifest_sha256": "7c9e1aa5373617a37bc6ca7f0d61f367906e63e3193e7bf4b65ab5f09cb6fe0a",
+    "modules": 574,
+    "code_objects": 18276
+  },
+  "measurement": {
+    "metric": "normalized opcode-structure agreement",
+    "matching_code_objects": 17396,
+    "percent_truncated": 95.18,
+    "whole_modules_matching": 337,
+    "status_counts": {
+      "OK": 17396,
+      "code": 849,
+      "COLLISION": 3,
+      "MISSING": 28
+    },
+    "sibling_collisions": 5,
+    "comparison": "Normalized opcode streams and three argument-count fields. Jump targets, most operands, and __annotate__ objects are omitted; extra recovered objects are not penalized."
+  },
+  "artifacts": {
+    "pinned_subset": {
+      "module_list": "crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+      "modules": 200,
+      "code_objects": 6286,
+      "matching_code_objects": 6077,
+      "percent_truncated": 96.67,
+      "whole_modules_matching": 124,
+      "status_counts": {
+        "OK": 6077,
+        "code": 206,
+        "MISSING": 3
+      },
+      "derivation": "Filter the accepted full ledger to the 200 pinned module names. Each module appears exactly once in the captured source manifest; the source and comparator settings are unchanged."
+    },
+    "nonmatching_objects": {
+      "path": "python-stdlib-full.nonmatching.tsv",
+      "columns": [
+        "module",
+        "qualified_name",
+        "occurrence",
+        "verdict"
+      ],
+      "sha256": "922881818a28829377aa682b8aa64213ef9fb25446c0156d30b79ef353fb4b5e"
+    },
+    "full_ledger_sha256": "778ed69c0b92b4c6987ecae19a7acb2c164a0ecbba9cbfccb0ee0a5c2aab5e1d",
+    "harness_stdout_sha256": "ec1cbee601a72d7a1e15083b2636e62e613f4369115cda53b471c8bbba8818d9",
+    "harness_stderr_sha256": "1dad5d404ee082f8feb00ea5ca838d882a0b2729dec6c4e0e0ea5872c132209a",
+    "harness_sha256": "d9b0837635c2378ded96b0d27526db6b15dd9588d9435ae1741b84683794d5fd"
+  },
+  "verification": {
+    "mode": "captured measurement revalidation",
+    "exit_code": 0,
+    "log_sha256": "4f3b48d84cc47f4ed4e612a4d56aa45d2be5bd273ad23c743390cc466efcf7ec"
+  },
+  "reproduction": {
+    "command": "cargo test --locked -p disrobe-pass-py-decompile --test full_stdlib_recompile_gate full_stdlib_recompile_equivalence_gate -- --ignored --exact --nocapture",
+    "environment": {
+      "DISROBE_MEASUREMENT_EXECUTABLE": "absolute path to the candidate binary",
+      "DISROBE_CANDIDATE_SOURCE_IDENTITY": "recorded source identity for that binary",
+      "DISROBE_FULL_EVIDENCE_DIR": "new absolute output directory outside the Cargo target"
+    },
+    "reuse_environment": {
+      "DISROBE_MEASUREMENT_EXECUTABLE": "the same candidate executable",
+      "DISROBE_CANDIDATE_SOURCE_IDENTITY": "the same recorded source identity",
+      "DISROBE_FULL_MEASUREMENT_DIR": "the durable directory containing measurement.json; replaces DISROBE_FULL_EVIDENCE_DIR"
+    }
+  }
+}

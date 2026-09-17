@@ -1,0 +1,23 @@
+{
+  "ci_attested": true,
+  "claim": "disrobe decompiles legacy CPython bytecode (1.0 through 3.7) to source that is proven correct by recompile-equivalence or, where the period interpreter is absent, a structural token-match against the original .py.",
+  "comparison_basis": null,
+  "competitors": [],
+  "detail": "The gate requires at least 150 of 191 committed fixtures to match through bytecode recompilation or structural token comparison. Recompilation uses a matching legacy interpreter when one is installed; structural comparison remains available for every fixture.",
+  "disrobe_leads": null,
+  "ecosystem": "python",
+  "floor": 78.5,
+  "floor_holds": true,
+  "gate_source": "crates/disrobe-pass-py-decompile/tests/legacy_recompile.rs enforces PROVEN_CORRECT_FLOOR 150 against the 191-fixture corpus.",
+  "id": "py-legacy-recompile",
+  "measured": "78.50%",
+  "oracle": {
+    "external": "period CPython interpreters 1.0-3.7 (recompile-equivalence) or original .py source (structural token-match)",
+    "kind": "recovery-import",
+    "note": null
+  },
+  "oracle_strength": "strong",
+  "pairs": [],
+  "reproduce": "cargo test -p disrobe-pass-py-decompile --test legacy_recompile",
+  "title": "CPython legacy 1.0-3.7 proven-correct decompilation"
+}

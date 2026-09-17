@@ -1,0 +1,38 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-07-11"
+toolchain = "Confuser.Core 1.6.0+447341964f"
+note = "resource-only ConfuserEx2 fixture graded against the pre-protection embedded payload"
+
+[build]
+compiler = "dotnet SDK 9.0.314, TargetFramework=net48, Release, deterministic"
+compile = "dotnet build ConfuserResources.csproj -c Release --nologo"
+protect = "Confuser.CLI.exe -n confuser-resources.crproj"
+protection = "resources, normal mode"
+seed = "disrobe-confuser-resource-20260711"
+variation = "the protected DLL hash records this run; ConfuserEx creates a nested resource assembly whose encrypted bytes can vary between runs, so verification compares the recovered resource payload"
+
+[[fixture]]
+name = "ConfuserResourcePayload.bin"
+kind = "resource-ground-truth"
+size = 132
+sha256 = "58bd4988b58a8acf13285925c637ba326e85dc167999508baaf17f8d8d00de45"
+
+[[fixture]]
+name = "ConfuserResources.clean.dll"
+kind = "managed-pe-dll"
+size = 3584
+sha256 = "51d019bd0a20059119bbdcdc90935cd3055753bc91d214d8a22c9002d98cc562"
+
+[[fixture]]
+name = "ConfuserResources.confuserex2.dll"
+kind = "confuserex2-resource-protected-managed-pe-dll"
+size = 23552
+sha256 = "47d1ce2e80c930a78d3bc055dcbc278466917f9de453040810e1ab7ac57678b4"
+
+[grade]
+resource_name = "ConfuserResources.Payload.bin"
+resources_total = 1
+resources_recovered_before = 0
+resources_recovered_after = 1
+test = "real_confuserex2_resources::resource_only_confuserex2_recovers_embedded_payload_byte_for_byte"

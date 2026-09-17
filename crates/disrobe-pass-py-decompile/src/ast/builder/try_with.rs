@@ -1,0 +1,11945 @@
+use super::branches::{
+    CompoundIf, first_jump_value_lo, jump_taken_if_true, try_recover_compound_if,
+};
+use super::exprs::{
+    build_linear_stmts_sim, inner_short_circuit_polarity, is_chain_compare_jump,
+    is_chain_cond_jump, local_name_at, local_target, name_at, recover_chain_target,
+};
+use super::function_meta::load_const;
+use super::loops::{
+    PeeledWhileTestRelation, active_loop_exit_tail_range, exprs_equal_ignoring_lines,
+    find_for_with_cold_handler, find_loop, first_cold_for_handler, for_cold_handler_exit_epilogue,
+    is_walrus_store_shape, loop_header_owns_test, non_empty, peeled_while_test_relation,
+    stmts_equal_ignoring_lines, structure_for_loop_with_external_cold_handler,
+    try_enclosed_by_loop,
+};
+use super::postprocess::is_implicit_none_return;
+use super::stmts::{
+    append_handler_loop_jump, detect_inline_comprehension, first_significant,
+    last_significant_back, loads_none, resolve_jump_target, single_store_target, structure_stmts,
+    test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
+    trailing_loop_jump_stmt,
+};
+use super::{
+    DecodedStream, LoopFrameGuard, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard,
+    ThenArmEndCapGuard, active_version, fallthrough_cond_test, loop_break_target,
+    loop_continue_target, loop_frame_depth, none_jump_test, structure_hi_cap, then_arm_end_cap,
+};
+use crate::ast::node::{BoolOpKind, ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
+use crate::bytecode::opcode::CanonicalOp;
+use crate::bytecode::version::PyVersion;
+use crate::error::{DecompileError, Result};
+use disrobe_py_marshal::{CodeObject, Object};
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+pub(super) fn is_value_form_shortcircuit(ops: &[CanonicalOp], idx: usize) -> bool {
+    if is_chain_compare_jump(ops, idx) {
+        return false;
+    }
+    match ops[idx] {
+        CanonicalOp::JumpIfTrueOrPop(_) | CanonicalOp::JumpIfFalseOrPop(_) => true,
+        CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfFalse(_) => {
+            let mut j: usize = idx;
+            while j > 0 {
+                j -= 1;
+                match ops[j] {
+                    CanonicalOp::ToBool | CanonicalOp::Cache | CanonicalOp::Nop => {}
+                    CanonicalOp::Copy(1) => return true,
+                    _ => {
+                        return inner_short_circuit_polarity(ops, idx).is_some();
+                    }
+                }
+            }
+            inner_short_circuit_polarity(ops, idx).is_some()
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn is_forward_cond_jump(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum LoopKind {
+    For,
+    AsyncFor,
+    While,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LoopRegion {
+    pub(super) kind: LoopKind,
+    pub(super) header: usize,
+    pub(super) body_start: usize,
+    pub(super) body_end: usize,
+    pub(super) back_edge: usize,
+    pub(super) exit: usize,
+
+    pub(super) infinite: bool,
+}
+
+pub(super) fn is_back_edge(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::JumpAbsolute(_)
+    )
+}
+
+pub(super) fn is_async_send_back_edge(stream: &DecodedStream, jump_idx: usize) -> bool {
+    if !matches!(
+        stream.ops[jump_idx],
+        CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return false;
+    }
+    let Some(target): Option<usize> = resolve_jump_target(stream, jump_idx, &stream.ops[jump_idx])
+    else {
+        return false;
+    };
+    if target >= jump_idx {
+        return false;
+    }
+    let scan_lo: usize = target.saturating_sub(2);
+    (scan_lo..jump_idx).any(|k: usize| matches!(stream.ops[k], CanonicalOp::Send(_)))
+}
+
+pub(super) fn is_async_cleanup_throw_back_edge(stream: &DecodedStream, jump_idx: usize) -> bool {
+    if !matches!(
+        stream.ops[jump_idx],
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return false;
+    }
+    (0..jump_idx)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+        .is_some_and(|k: usize| matches!(stream.ops[k], CanonicalOp::CleanupThrow))
+}
+
+pub(super) fn is_cond_back_edge(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::PopJumpIfFalseBackward(_) | CanonicalOp::PopJumpIfTrueBackward(_)
+    )
+}
+
+pub(super) fn is_cond_jump_with_backward_target(stream: &DecodedStream, idx: usize) -> bool {
+    if !matches!(
+        stream.ops[idx],
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_)
+    ) {
+        return false;
+    }
+    let Some(target): Option<usize> = resolve_jump_target(stream, idx, &stream.ops[idx]) else {
+        return false;
+    };
+    target < idx
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TryRegion {
+    pub(super) try_start: usize,
+
+    protected_end: usize,
+    try_end: usize,
+    pub(super) handler_start: usize,
+    region_end: usize,
+    is_with: bool,
+
+    is_finally: bool,
+}
+
+impl TryRegion {
+    pub(super) fn protected_end(&self) -> usize {
+        self.protected_end
+    }
+
+    pub(super) fn region_end(&self) -> usize {
+        self.region_end
+    }
+
+    pub(super) fn is_with(&self) -> bool {
+        self.is_with
+    }
+
+    pub(super) fn is_finally(&self) -> bool {
+        self.is_finally
+    }
+}
+
+fn is_async_for_poll_guard(stream: &DecodedStream, try_start: usize) -> bool {
+    let mut probe: usize = try_start;
+    while probe < stream.ops.len()
+        && matches!(
+            stream.ops.get(probe),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_))
+        )
+    {
+        probe += 1;
+    }
+    matches!(stream.ops.get(probe), Some(CanonicalOp::GetAnext))
+}
+
+pub(super) fn extend_window_over_split_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> usize {
+    if stream.exception_table.is_empty() {
+        return hi;
+    }
+    let cap: usize = structure_hi_cap();
+    if cap != 0 && hi >= cap {
+        return hi;
+    }
+    let mut end: usize = hi;
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+                continue;
+            };
+            if handler_start < lo
+                || handler_start >= end
+                || !matches!(
+                    stream.ops.get(handler_start),
+                    Some(CanonicalOp::PushExcInfo)
+                )
+            {
+                continue;
+            }
+            let cold_end: Option<usize> = stream
+                .exception_table
+                .iter()
+                .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.start == entry.target)
+                .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                    stream.index_for_offset(e.target)
+                })
+                .max();
+            if let Some(cold) = cold_end {
+                let needed: usize =
+                    handler_cold_cleanup_end(stream, cold, stream.ops.len()).max(cold + 1);
+                if needed > end {
+                    end = needed;
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let bounded: usize = if cap != 0 { end.min(cap) } else { end };
+    bounded.min(stream.ops.len())
+}
+
+fn merged_protected_end(stream: &DecodedStream, start: u32, end: u32, target: u32) -> u32 {
+    let _ = start;
+    let mut body_end: u32 = end;
+    while let Some(next) = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            e.target == target && e.start >= body_end && e.start < target
+        })
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start)
+        .min()
+    {
+        if !gap_is_protected_body_join(stream, body_end, next) {
+            break;
+        }
+        let extended: u32 = stream
+            .exception_table
+            .iter()
+            .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+                e.target == target && e.start == next
+            })
+            .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.end())
+            .max()
+            .unwrap_or(body_end);
+        if extended <= body_end {
+            break;
+        }
+        body_end = extended;
+    }
+    body_end
+}
+
+fn is_try_body_scaffolding(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::CleanupThrow
+            | CanonicalOp::EndSend
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::ForIter(_)
+            | CanonicalOp::ForLoopLegacy(_)
+            | CanonicalOp::GetIter
+            | CanonicalOp::GetAiter
+            | CanonicalOp::GetAnext
+            | CanonicalOp::EndAsyncFor
+            | CanonicalOp::Send(_)
+    )
+}
+
+fn is_try_body_normal_exit_op(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Pop
+    )
+}
+
+fn try_body_extends_to_handler(stream: &DecodedStream, region: &TryRegion) -> Option<usize> {
+    if region.is_with || region.is_finally || stream.is_pre_311() {
+        return None;
+    }
+    if (region.handler_start..region.region_end)
+        .any(|k: usize| matches!(stream.ops.get(k), Some(CanonicalOp::CheckEgMatch)))
+    {
+        return None;
+    }
+    let lo_idx: usize = region.protected_end;
+    let hi_idx: usize = region.handler_start.min(stream.ops.len());
+    if lo_idx >= hi_idx || first_significant(stream, lo_idx, hi_idx).is_none() {
+        return None;
+    }
+    let target: u32 = stream.offsets.get(region.handler_start).copied()?;
+    let lo_off: u32 = stream.offsets.get(lo_idx).copied()?;
+    let has_nested_handler: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                e.target != target && (lo_off..target).contains(&e.target) && e.start >= lo_off
+            });
+    let has_loop: bool = (lo_idx..hi_idx).any(|idx: usize| {
+        matches!(
+            stream.ops[idx],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        )
+    });
+    if !has_nested_handler && !has_loop {
+        return None;
+    }
+    let all_body: bool = (lo_idx..hi_idx).all(|idx: usize| {
+        let op: &CanonicalOp = &stream.ops[idx];
+        if is_try_body_scaffolding(op) || is_try_body_normal_exit_op(op) {
+            return true;
+        }
+        let Some(&off): Option<&u32> = stream.offsets.get(idx) else {
+            return false;
+        };
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                off >= e.start
+                    && off < e.end()
+                    && (e.target == target || (lo_off..target).contains(&e.target))
+            })
+    });
+    if !all_body {
+        return None;
+    }
+    Some(hi_idx)
+}
+
+fn gap_is_protected_body_join(stream: &DecodedStream, lo_off: u32, hi_off: u32) -> bool {
+    let Some(lo): Option<usize> = stream.index_for_offset_ceil(lo_off) else {
+        return false;
+    };
+    let Some(hi): Option<usize> = stream.index_for_offset_ceil(hi_off) else {
+        return false;
+    };
+    if lo >= hi {
+        return true;
+    }
+    let all_benign: bool = (lo..hi).all(|k: usize| gap_op_is_exit_arm(&stream.ops[k]));
+    if !all_benign {
+        return false;
+    }
+    let Some(last): Option<usize> = last_significant_back(stream, lo, hi) else {
+        return true;
+    };
+    matches!(
+        stream.ops[last],
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+    )
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn gap_op_is_exit_arm(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::Pop
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::RotN(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+    )
+}
+
+fn with_protected_body_end(stream: &DecodedStream, start: u32, end: u32, target: u32) -> u32 {
+    let _ = start;
+    let mut body_end: u32 = end;
+    while let Some(next) = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            e.target == target && e.start >= body_end && e.start < target
+        })
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start)
+        .min()
+    {
+        if !gap_is_with_early_exit(stream, body_end, next) {
+            break;
+        }
+        let extended: u32 = stream
+            .exception_table
+            .iter()
+            .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+                e.target == target && e.start == next
+            })
+            .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.end())
+            .max()
+            .unwrap_or(body_end);
+        if extended <= body_end {
+            break;
+        }
+        body_end = extended;
+    }
+    body_end
+}
+
+fn gap_is_with_early_exit(stream: &DecodedStream, lo_off: u32, hi_off: u32) -> bool {
+    let Some(lo): Option<usize> = stream.index_for_offset_ceil(lo_off) else {
+        return false;
+    };
+    let Some(hi): Option<usize> = stream.index_for_offset_ceil(hi_off) else {
+        return false;
+    };
+    if lo >= hi {
+        return false;
+    }
+    let Some(after_cleanup): Option<usize> = skip_with_cleanup_block(stream, lo, hi) else {
+        return false;
+    };
+    (after_cleanup..hi).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+                | CanonicalOp::Reraise(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
+fn with_terminal_cleanup_within(stream: &DecodedStream, try_start: usize, hi: usize) -> bool {
+    (try_start..hi).any(|i: usize| {
+        is_none_const_push(&stream.ops[i])
+            && is_exit_none_triple(stream, i, hi)
+            && (with_cleanup_tail_is_pure(stream, i, hi)
+                || skip_with_cleanup_block(stream, i, hi).is_some())
+    })
+}
+
+pub(super) fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> Option<TryRegion> {
+    if stream.exception_table.is_empty() {
+        return None;
+    }
+    let mut best: Option<TryRegion> = None;
+    for entry in &stream.exception_table {
+        if entry.length == 0 {
+            continue;
+        }
+        let Some(try_start): Option<usize> = stream.index_for_offset(entry.start) else {
+            continue;
+        };
+        let Some(handler_start): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
+        let is_modern: bool = matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        );
+        let handler_is_with: bool = is_modern
+            && matches!(
+                stream.ops.get(handler_start + 1),
+                Some(CanonicalOp::WithExceptStart)
+            );
+        let with_setup: usize = if handler_is_with {
+            with_setup_start(stream, try_start, lo)
+        } else {
+            try_start
+        };
+        if handler_is_with && with_setup >= try_start {
+            continue;
+        }
+        let is_with: bool = handler_is_with;
+        let with_handler_escapes: bool =
+            is_with && handler_start >= hi && with_terminal_cleanup_within(stream, try_start, hi);
+        if !(lo..hi).contains(&try_start) || (handler_start >= hi && !with_handler_escapes) {
+            continue;
+        }
+        if matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::EndAsyncFor)
+        ) {
+            continue;
+        }
+        if is_async_for_poll_guard(stream, try_start) {
+            continue;
+        }
+        let is_pre311_handler: bool = !is_modern
+            && stream.is_pre_311()
+            && is_pre311_except_or_finally_handler(stream, handler_start, hi);
+        if !is_modern && !is_pre311_handler {
+            continue;
+        }
+        let setup_start: usize = if is_with {
+            clamp_with_setup_to_enclosing_except_star(stream, with_setup, try_start, hi)
+        } else {
+            try_start
+        };
+        let body_end_off: u32 = if is_modern && !is_with {
+            merged_protected_end(stream, entry.start, entry.end(), entry.target)
+        } else if is_with {
+            with_protected_body_end(stream, entry.start, entry.end(), entry.target)
+        } else {
+            entry.end()
+        };
+        let body_bound: usize = handler_start.min(hi);
+        let protected_end: usize = stream
+            .index_for_offset_ceil(body_end_off)
+            .unwrap_or(body_bound)
+            .min(body_bound);
+        let try_end: usize = stream
+            .index_for_offset(body_end_off)
+            .unwrap_or(body_bound)
+            .min(body_bound);
+        let finally_probe_end: usize = if is_pre311_handler {
+            pre311_handler_region_end(stream, handler_start, hi)
+        } else {
+            handler_join(stream, handler_start, hi)
+        };
+        let is_finally: bool = !is_with
+            && is_pure_finally_handler_shape(
+                stream,
+                handler_start,
+                finally_probe_end.min(hi),
+                is_pre311_handler,
+            );
+        let region_end: usize = if with_handler_escapes {
+            hi
+        } else if is_pre311_handler {
+            finally_probe_end
+        } else if !is_with && !is_finally {
+            let join_end: usize = finally_probe_end;
+            handler_region_end_named(stream, handler_start, hi)
+                .filter(|&chain_end: &usize| {
+                    !sibling_handler_between(stream, handler_start, chain_end, join_end)
+                })
+                .unwrap_or(join_end)
+        } else {
+            finally_probe_end
+        };
+        let candidate: TryRegion = TryRegion {
+            try_start: setup_start,
+            protected_end,
+            try_end,
+            handler_start: handler_start.min(hi),
+            region_end: region_end.min(hi),
+            is_with,
+            is_finally,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|b: &TryRegion| candidate.try_start < b.try_start)
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+fn find_protected_try_with_outer_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    body_hi: usize,
+    outer_hi: usize,
+) -> Option<TryRegion> {
+    if stream.exception_table.is_empty() {
+        return None;
+    }
+    let mut best: Option<TryRegion> = None;
+    for entry in &stream.exception_table {
+        let try_start: usize = stream.index_for_offset(entry.start)?;
+        let handler_start: usize = stream.index_for_offset(entry.target)?;
+        if !(lo..body_hi).contains(&try_start)
+            || handler_start < body_hi
+            || handler_start >= outer_hi
+        {
+            continue;
+        }
+        if !matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        ) {
+            continue;
+        }
+        if matches!(
+            stream.ops.get(handler_start + 1),
+            Some(CanonicalOp::WithExceptStart)
+        ) {
+            continue;
+        }
+        let body_end_off: u32 =
+            merged_protected_end(stream, entry.start, entry.end(), entry.target);
+        let protected_end: usize = stream
+            .index_for_offset_ceil(body_end_off)
+            .unwrap_or(handler_start)
+            .min(handler_start);
+        let try_end: usize = stream
+            .index_for_offset(body_end_off)
+            .unwrap_or(handler_start)
+            .min(handler_start);
+        let handler_end: usize = handler_join(stream, handler_start, outer_hi).min(outer_hi);
+        let try_start_off: u32 = stream.offsets[try_start];
+        let guard_return_end: usize =
+            extend_protected_end_over_guard_return(stream, try_start, protected_end, handler_start);
+        let region_end: usize = handler_chain_end(stream, handler_start, outer_hi)
+            .filter(|&chain_end: &usize| {
+                guard_return_end > protected_end
+                    && matches!(stream.ops.get(chain_end), Some(CanonicalOp::PushExcInfo))
+                    && stream
+                        .offsets
+                        .get(chain_end)
+                        .is_some_and(|&handler_off: &u32| {
+                            stream.exception_table.iter().any(
+                                |entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                                    entry.target == handler_off
+                                        && entry.start < try_start_off
+                                        && entry.end() <= try_start_off
+                                },
+                            )
+                        })
+            })
+            .unwrap_or(handler_end);
+        let is_finally: bool =
+            is_pure_finally_handler_shape(stream, handler_start, region_end, false);
+        let candidate: TryRegion = TryRegion {
+            try_start,
+            protected_end,
+            try_end,
+            handler_start,
+            region_end,
+            is_with: false,
+            is_finally,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|b: &TryRegion| candidate.try_start < b.try_start)
+        {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
+fn is_handler_target(stream: &DecodedStream, byte_off: u32) -> bool {
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| e.target == byte_off)
+}
+
+fn leading_ops_are_stmt_setup(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).all(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Push(_)
+                | CanonicalOp::LoadGlobal(_)
+                | CanonicalOp::LoadFast(_)
+                | CanonicalOp::LoadFastLoadFast(_, _)
+                | CanonicalOp::LoadName(_)
+                | CanonicalOp::LoadConst(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
+fn stmt_boundary_at_or_before(stream: &DecodedStream, lo: usize, try_start: usize) -> usize {
+    let mut head_end: usize = try_start;
+    let mut k: usize = try_start;
+    while k > lo && leading_ops_are_stmt_setup(stream, k - 1, try_start) {
+        k -= 1;
+        let mut prev: usize = k;
+        while prev > lo
+            && matches!(
+                stream.ops[prev - 1],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        {
+            prev -= 1;
+        }
+        if prev == lo || is_value_boundary_at(stream, prev - 1) {
+            head_end = k;
+        }
+    }
+    head_end
+}
+
+pub(super) fn try_structure_cold_sibling_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let cap: usize = structure_hi_cap();
+    let outer_hi: usize = if cap == 0 {
+        stream.ops.len()
+    } else {
+        cap.min(stream.ops.len())
+    };
+    let Some(region): Option<TryRegion> =
+        find_protected_try_with_outer_handler(stream, lo, hi, outer_hi)
+    else {
+        return Ok(None);
+    };
+    let protected_body_enclosed_by_for: bool =
+        find_loop(stream, lo, hi).is_some_and(|loop_region: LoopRegion| {
+            let raw_exit: Option<usize> =
+                resolve_jump_target(stream, loop_region.header, &stream.ops[loop_region.header])
+                    .filter(|exit: &usize| loop_region.header < *exit && *exit <= hi);
+            matches!(loop_region.kind, LoopKind::For)
+                && loop_region.body_start <= region.try_start
+                && region.try_start < region.protected_end()
+                && raw_exit.is_some_and(|exit: usize| region.protected_end() <= exit)
+                && hi <= region.handler_start
+        });
+    if protected_body_enclosed_by_for {
+        return Ok(None);
+    }
+    let Some(body_start): Option<usize> = first_significant(stream, lo, hi) else {
+        return Ok(None);
+    };
+    let head_end: usize = stmt_boundary_at_or_before(stream, body_start, region.try_start);
+    let intervening_sibling_handler: bool = (hi..region.handler_start).any(|k: usize| {
+        matches!(stream.ops.get(k), Some(CanonicalOp::PushExcInfo))
+            && stream
+                .offsets
+                .get(k)
+                .copied()
+                .is_some_and(|off: u32| is_handler_target(stream, off))
+    });
+    let protected_body_owned_by_active_loop: bool =
+        loop_continue_target().is_some_and(|header: usize| {
+            header < region.try_start
+                && region.try_start < region.protected_end()
+                && region.protected_end() <= hi
+                && hi <= region.handler_start
+        });
+    let later_nested_for_has_cold_handler: bool =
+        find_for_with_cold_handler(stream, hi, region.handler_start, outer_hi)
+            .and_then(|later: LoopRegion| {
+                let later_exit: usize =
+                    resolve_jump_target(stream, later.header, &stream.ops[later.header]).filter(
+                        |exit: &usize| later.header < *exit && *exit <= region.handler_start,
+                    )?;
+                find_for_with_cold_handler(stream, later.body_start, later_exit, outer_hi)
+            })
+            .is_some();
+    let enclosing_handler_follows: bool = region.region_end < outer_hi
+        && matches!(
+            stream.ops.get(region.region_end),
+            Some(CanonicalOp::PushExcInfo)
+        )
+        && stream
+            .offsets
+            .get(region.region_end)
+            .copied()
+            .is_some_and(|off: u32| is_handler_target(stream, off));
+    let handler_context_valid: bool = intervening_sibling_handler
+        || enclosing_handler_follows
+        || (protected_body_owned_by_active_loop && (cap != 0 || later_nested_for_has_cold_handler));
+    if region.is_with
+        || region.is_finally
+        || head_end > region.try_start
+        || head_end < body_start
+        || !leading_ops_are_stmt_setup(stream, head_end, region.try_start)
+        || region.handler_start < hi
+        || region.protected_end <= region.try_start
+        || region.protected_end > hi
+        || !handler_context_valid
+    {
+        return Ok(None);
+    }
+    let region_end: usize = region.region_end;
+    let body_end: usize = protected_body_end_with_return(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start.min(hi),
+    );
+    let body_end: usize = extend_protected_end_over_guard_return(
+        stream,
+        region.try_start,
+        body_end,
+        region.handler_start.min(hi),
+    );
+    let guard_wrap: Option<ColdSiblingGuard> =
+        cold_sibling_guard_wrap(code, stream, body_start, &region, body_end, hi)?;
+    let body: Vec<Stmt> = {
+        let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(body_end);
+        structure_stmts(code, stream, region.try_start, body_end)?
+    };
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, region_end)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let cold_else: Option<(usize, usize, usize)> =
+        guard_wrap.as_ref().and_then(|wrap: &ColdSiblingGuard| {
+            then_terminating_jump(stream, wrap.guard + 1, wrap.false_target)
+                .and_then(|jump: usize| {
+                    resolve_jump_target(stream, jump, &stream.ops[jump])
+                        .filter(|&join: &usize| join > wrap.false_target && join <= hi)
+                        .map(|join: usize| (jump, wrap.false_target, join))
+                })
+                .filter(|&(_, false_target, join): &(usize, usize, usize)| {
+                    first_significant(stream, false_target, join).is_some()
+                })
+        });
+    let tail_lo: usize = cold_else.map_or(body_end, |(_, _, join): (usize, usize, usize)| join);
+    let tail: Vec<Stmt> = structure_stmts(code, stream, tail_lo, hi)?;
+    let handlers: Vec<ExceptHandler> = match tail.last() {
+        Some(last) => strip_shared_exit_return(handlers, std::slice::from_ref(last)),
+        None => handlers,
+    };
+    let try_stmt: Stmt = Stmt::Try {
+        body: non_empty(body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    };
+    if let Some(wrap) = guard_wrap {
+        let mut if_body: Vec<Stmt> =
+            structure_stmts(code, stream, wrap.guard + 1, region.try_start)?;
+        if_body.push(try_stmt);
+        let orelse: Vec<Stmt> = match cold_else {
+            Some((jump, false_target, join)) => {
+                if_body.extend(structure_stmts(code, stream, body_end, jump)?);
+                structure_stmts(code, stream, false_target, join)?
+            }
+            None => Vec::new(),
+        };
+        let mut out: Vec<Stmt> = wrap.head;
+        out.push(Stmt::If {
+            test: wrap.test,
+            body: non_empty(if_body),
+            orelse,
+            line: None,
+        });
+        out.extend(tail);
+        return Ok(Some(out));
+    }
+    let mut out: Vec<Stmt> = if head_end > body_start {
+        structure_stmts(code, stream, body_start, head_end)?
+    } else {
+        Vec::new()
+    };
+    out.push(try_stmt);
+    out.extend(tail);
+    Ok(Some(out))
+}
+
+#[derive(Debug)]
+struct ColdSiblingGuard {
+    head: Vec<Stmt>,
+    test: Expr,
+    guard: usize,
+    false_target: usize,
+}
+
+fn cold_sibling_guard_wrap(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    region: &TryRegion,
+    body_end: usize,
+    hi: usize,
+) -> Result<Option<ColdSiblingGuard>> {
+    let Some(guard): Option<usize> = (body_start..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > region.try_start && t >= body_end && t <= hi)
+    else {
+        return Ok(None);
+    };
+    if (body_start..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) && !is_value_form_shortcircuit(&stream.ops, k))
+            || is_back_edge(&stream.ops[k])
+    }) {
+        return Ok(None);
+    }
+    let (head, mut residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[body_start..guard])?;
+    let Some(raw_test): Option<Expr> = residual.pop() else {
+        return Ok(None);
+    };
+    if !residual.is_empty() {
+        return Ok(None);
+    }
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    Ok(Some(ColdSiblingGuard {
+        head,
+        test,
+        guard,
+        false_target,
+    }))
+}
+
+fn empty_try_handler_start(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+    for k in lo..hi {
+        if !matches!(stream.ops.get(k), Some(CanonicalOp::PushExcInfo)) {
+            continue;
+        }
+        let handler_off: u32 = stream.offsets.get(k).copied()?;
+        let is_self_protecting: bool = stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start == handler_off);
+        if is_self_protecting && !is_handler_target(stream, handler_off) {
+            return Some(k);
+        }
+    }
+    None
+}
+
+pub(super) fn try_structure_empty_body_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(handler_start): Option<usize> = empty_try_handler_start(stream, lo, hi) else {
+        return Ok(None);
+    };
+    let body_term: usize = stmt_boundary_at_or_before(stream, lo, handler_start);
+    if body_term > handler_start {
+        return Ok(None);
+    }
+    let is_star: bool = (handler_start..hi)
+        .take_while(|&k: &usize| k < handler_start + 64)
+        .any(|k: usize| matches!(stream.ops.get(k), Some(CanonicalOp::CheckEgMatch)));
+    let region_end: usize = handler_chain_end(stream, handler_start, hi).unwrap_or(hi);
+    let continuation: Vec<Stmt> = structure_stmts(code, stream, lo, body_term)?;
+    let handlers: Vec<ExceptHandler> = if is_star {
+        parse_except_star_handlers(code, stream, handler_start, region_end)?
+    } else {
+        parse_except_handlers(code, stream, handler_start, region_end)?
+    };
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let tail: Vec<Stmt> = structure_stmts(code, stream, region_end, hi)?;
+    let shared_exit: Vec<Stmt> = if continuation.is_empty() {
+        tail.clone()
+    } else {
+        continuation.clone()
+    };
+    let handlers: Vec<ExceptHandler> = strip_shared_exit_suffix(handlers, &shared_exit);
+    let mut out: Vec<Stmt> = Vec::new();
+    let try_stmt: Stmt = if is_star {
+        Stmt::TryStar {
+            body: vec![Stmt::Pass],
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        }
+    } else {
+        Stmt::Try {
+            body: vec![Stmt::Pass],
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        }
+    };
+    out.push(try_stmt);
+    out.extend(continuation);
+    out.extend(tail);
+    Ok(Some(out))
+}
+
+fn is_pre311_except_or_finally_handler(
+    stream: &DecodedStream,
+    handler_start: usize,
+    hi: usize,
+) -> bool {
+    if handler_start >= hi {
+        return false;
+    }
+    let mut probe: usize = handler_start;
+    while probe < hi
+        && matches!(
+            stream.ops.get(probe),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_))
+        )
+    {
+        probe += 1;
+    }
+    if matches!(
+        stream.ops.get(probe),
+        Some(CanonicalOp::Dup | CanonicalOp::Pop)
+    ) {
+        return true;
+    }
+    is_pre311_finally_handler_shape(stream, handler_start, hi)
+}
+
+fn clamp_with_setup_to_enclosing_except_star(
+    stream: &DecodedStream,
+    raw_setup_start: usize,
+    with_try_start: usize,
+    hi: usize,
+) -> usize {
+    let mut clamped: usize = raw_setup_start;
+    for entry in &stream.exception_table {
+        let Some(enclosing_start): Option<usize> = stream.index_for_offset(entry.start) else {
+            continue;
+        };
+        if enclosing_start <= raw_setup_start || enclosing_start > with_try_start {
+            continue;
+        }
+        let Some(handler): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
+        if handler >= hi {
+            continue;
+        }
+        if !matches!(stream.ops.get(handler), Some(CanonicalOp::PushExcInfo)) {
+            continue;
+        }
+        if !handler_is_except_star(stream, handler) {
+            continue;
+        }
+        if enclosing_start > clamped {
+            clamped = enclosing_start;
+        }
+    }
+    clamped
+}
+
+fn handler_is_except_star(stream: &DecodedStream, handler: usize) -> bool {
+    if first_significant(stream, handler + 1, stream.ops.len())
+        .is_some_and(|k: usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart))
+    {
+        return false;
+    }
+    let block_end: usize = (handler + 1..stream.ops.len())
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+        .unwrap_or(stream.ops.len());
+    (handler..block_end).any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckEgMatch))
+}
+
+fn pre311_reraise_inside_nested(
+    stream: &DecodedStream,
+    handler_start: usize,
+    reraise: usize,
+    hi: usize,
+) -> bool {
+    stream.exception_table.iter().any(|entry| {
+        let Some(nested_try): Option<usize> = stream.index_for_offset(entry.start) else {
+            return false;
+        };
+        let Some(nested_handler): Option<usize> = stream.index_for_offset(entry.target) else {
+            return false;
+        };
+        if nested_handler <= handler_start
+            || nested_handler > reraise
+            || nested_try <= handler_start
+        {
+            return false;
+        }
+        let nested_end: usize = pre311_handler_region_end(stream, nested_handler, hi);
+        nested_try <= reraise && reraise < nested_end
+    })
+}
+
+fn pre311_handler_region_end(stream: &DecodedStream, handler_start: usize, hi: usize) -> usize {
+    let mut i: usize = handler_start;
+    let mut last_end: usize = handler_start;
+    let mut last_raise: usize = handler_start;
+    while i < hi {
+        let is_terminator: bool = matches!(stream.ops[i], CanonicalOp::Reraise(_))
+            || stream.pre311_end_finally_idx.contains(&i);
+        if is_terminator && !pre311_reraise_inside_nested(stream, handler_start, i, hi) {
+            last_end = i + 1;
+            break;
+        }
+        if matches!(stream.ops[i], CanonicalOp::Raise(_)) {
+            last_raise = i + 1;
+        }
+        i += 1;
+    }
+    let prefer_raise: bool = last_end == handler_start
+        || (last_raise > last_end && pre311_trailing_bare_except(stream, last_end, last_raise));
+    let end: usize = if prefer_raise {
+        last_raise.min(hi)
+    } else {
+        last_end.min(hi)
+    };
+    if end <= handler_start && pre311_terminator_truncated_at(stream, handler_start, hi) {
+        hi
+    } else {
+        end
+    }
+}
+
+fn pre311_terminator_truncated_at(stream: &DecodedStream, handler_start: usize, hi: usize) -> bool {
+    hi < stream.ops.len()
+        && hi > handler_start
+        && (matches!(stream.ops[hi], CanonicalOp::Reraise(_))
+            || stream.pre311_end_finally_idx.contains(&hi))
+        && !pre311_reraise_inside_nested(stream, handler_start, hi, stream.ops.len())
+}
+
+fn pre311_trailing_bare_except(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let Some(first): Option<usize> = first_significant(stream, lo, hi) else {
+        return false;
+    };
+    if !matches!(stream.ops[first], CanonicalOp::Pop) {
+        return false;
+    }
+    let mut pops: u32 = 0;
+    let mut k: usize = first;
+    while k < hi && matches!(stream.ops[k], CanonicalOp::Pop) {
+        pops += 1;
+        k += 1;
+    }
+    pops >= 3
+}
+
+fn with_prologue_crosses_then_jump(stream: &DecodedStream, idx: usize, start: usize) -> bool {
+    matches!(
+        stream.ops[idx],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) && resolve_jump_target(stream, idx, &stream.ops[idx]).is_some_and(|t: usize| t > start)
+}
+
+fn with_prologue_walk_back(stream: &DecodedStream, start: usize, lo: usize) -> usize {
+    let mut j: usize = start;
+    while j > lo
+        && !is_with_ctx_boundary_at(stream, j - 1)
+        && !with_prologue_crosses_then_jump(stream, j - 1, start)
+    {
+        j -= 1;
+    }
+    j
+}
+
+fn with_setup_start(stream: &DecodedStream, try_start: usize, lo: usize) -> usize {
+    let mut i: usize = try_start;
+    while i > lo
+        && matches!(
+            stream.ops.get(i - 1),
+            Some(CanonicalOp::StoreFast(_) | CanonicalOp::StoreName(_) | CanonicalOp::Pop)
+        )
+    {
+        i -= 1;
+    }
+    if i > lo && matches!(stream.ops.get(i - 1), Some(CanonicalOp::BeforeWith)) {
+        return with_prologue_walk_back(stream, i - 1, lo);
+    }
+    if let Some(prologue_start) = async_with_prologue_start(stream, try_start, lo) {
+        return prologue_start;
+    }
+    if let Some(prologue_start) = modern_with_prologue_start(stream, i, lo) {
+        return prologue_start;
+    }
+    try_start
+}
+
+fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize) -> Option<usize> {
+    let awaitable: usize = (lo..try_start)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))?;
+    let before: usize = (lo..awaitable).rev().find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::BeforeAsyncWith | CanonicalOp::Copy(1)
+        )
+    })?;
+    match stream.ops.get(before) {
+        Some(CanonicalOp::BeforeAsyncWith) => Some(with_prologue_walk_back(stream, before, lo)),
+        Some(CanonicalOp::Copy(1))
+            if first_significant(stream, before + 1, awaitable).is_some_and(|s: usize| {
+                stream.ops[s] == CanonicalOp::LoadSpecial(SPECIAL_AEXIT)
+            }) =>
+        {
+            Some(with_prologue_walk_back(stream, before, lo))
+        }
+        _ => None,
+    }
+}
+
+fn modern_with_prologue_start(stream: &DecodedStream, store_at: usize, lo: usize) -> Option<usize> {
+    let call: usize = (lo..store_at)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if !matches!(stream.ops[call], CanonicalOp::CallFunction(0)) {
+        return None;
+    }
+    let enter: usize = (lo..call)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if stream.ops[enter] != CanonicalOp::LoadSpecial(SPECIAL_ENTER) {
+        return None;
+    }
+    let copy: usize = (lo..enter)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Copy(1)))?;
+    Some(with_prologue_walk_back(stream, copy, lo))
+}
+
+pub(super) fn is_comprehension_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::ListComp { .. }
+            | Expr::SetComp { .. }
+            | Expr::DictComp { .. }
+            | Expr::GeneratorExp { .. }
+    )
+}
+
+pub(super) fn is_value_boundary(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Pop
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::BeforeWith
+    )
+}
+
+fn is_value_boundary_at(stream: &DecodedStream, idx: usize) -> bool {
+    match stream.ops[idx] {
+        CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_)
+            if is_value_form_shortcircuit(&stream.ops, idx) =>
+        {
+            false
+        }
+        CanonicalOp::Pop if is_shortcircuit_cleanup_pop(stream, idx) => false,
+        CanonicalOp::Raise(_) | CanonicalOp::Reraise(_) => true,
+        _ => is_value_boundary(&stream.ops[idx]),
+    }
+}
+
+fn is_with_ctx_boundary_at(stream: &DecodedStream, idx: usize) -> bool {
+    is_value_boundary_at(stream, idx)
+        || matches!(
+            stream.ops[idx],
+            CanonicalOp::StoreFastStoreFast(_, _)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::DeleteFast(_)
+                | CanonicalOp::DeleteName(_)
+        )
+}
+
+pub(super) fn is_shortcircuit_cleanup_pop(stream: &DecodedStream, idx: usize) -> bool {
+    let mut j: usize = idx;
+    while j > 0 {
+        j -= 1;
+        match stream.ops[j] {
+            CanonicalOp::Nop | CanonicalOp::Cache => {}
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_) => {
+                return is_value_form_shortcircuit(&stream.ops, j);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+pub(super) fn handler_join(stream: &DecodedStream, handler_start: usize, hi: usize) -> usize {
+    let mut last_reraise: usize = handler_start;
+    let mut i: usize = handler_start;
+    while i < hi {
+        if matches!(stream.ops[i], CanonicalOp::Reraise(_)) {
+            last_reraise = i;
+        }
+        i += 1;
+    }
+    (last_reraise + 1).min(hi)
+}
+
+pub(super) fn handler_chain_end(
+    stream: &DecodedStream,
+    handler_start: usize,
+    hi: usize,
+) -> Option<usize> {
+    let handler_off: u32 = stream.offsets.get(handler_start).copied()?;
+    let handler_depth: u8 = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .map(|e: &crate::bytecode::flow::ExceptionTableEntry| e.depth)
+        .max()
+        .map(|d: u8| d.saturating_add(1))?;
+    let mut region_end_off: u32 = handler_off;
+    loop {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            if entry.start < handler_off
+                || entry.start > region_end_off
+                || entry.depth < handler_depth
+            {
+                continue;
+            }
+            let reach: u32 = entry.end().max(entry.target);
+            if reach > region_end_off {
+                region_end_off = reach;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let from: usize = stream.index_for_offset_ceil(region_end_off)?;
+    Some(handler_cold_cleanup_end(stream, from, hi).clamp(handler_start + 1, hi))
+}
+
+fn handler_region_end_named(
+    stream: &DecodedStream,
+    handler_start: usize,
+    hi: usize,
+) -> Option<usize> {
+    let chain_end: usize = handler_chain_end(stream, handler_start, hi)?;
+    let after_cleanup: usize = skip_handler_name_cleanup(stream, chain_end, hi);
+    if after_cleanup == chain_end {
+        return Some(chain_end);
+    }
+    Some(handler_cold_cleanup_end(stream, after_cleanup, hi).max(chain_end))
+}
+
+fn sibling_handler_between(
+    stream: &DecodedStream,
+    handler_start: usize,
+    chain_end: usize,
+    join_end: usize,
+) -> bool {
+    let own_off: u32 = match stream.offsets.get(handler_start) {
+        Some(&o) => o,
+        None => return false,
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            if e.target == own_off || e.start >= own_off {
+                return false;
+            }
+            stream
+                .index_for_offset(e.target)
+                .is_some_and(|t: usize| (chain_end..join_end).contains(&t))
+        })
+}
+
+fn handler_cold_cleanup_end(stream: &DecodedStream, from: usize, hi: usize) -> usize {
+    let mut k: usize = from;
+    let mut last: usize = from;
+    while k < hi {
+        match stream.ops[k] {
+            CanonicalOp::Reraise(_) => {
+                last = k;
+                break;
+            }
+            CanonicalOp::Copy(_)
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {
+                k += 1;
+            }
+            _ => break,
+        }
+    }
+    (last + 1).max(from).min(hi)
+}
+
+fn except_star_body_end(stream: &DecodedStream, region: &TryRegion, truncated_end: usize) -> usize {
+    let has_nested_with: bool = (region.try_start..region.handler_start)
+        .any(|k: usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart));
+    if !has_nested_with || truncated_end >= region.handler_start {
+        return truncated_end;
+    }
+    trim_try_body_jump(stream, region.try_start, region.handler_start)
+}
+
+fn except_star_normal_exit_span(
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Option<(usize, usize)> {
+    let intrinsic: usize = (region.handler_start..region.region_end)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallIntrinsic2(_)))?;
+    let guard_jump: usize = (intrinsic + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopJumpIfTrue(_)))?;
+    let pop_except: usize = (guard_jump + 1..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))?;
+    let tail_start: usize = first_significant(stream, pop_except + 1, region.region_end)?;
+    let cold_start: usize = (tail_start..region.region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Swap(_) | CanonicalOp::Reraise(_)
+        )
+    })?;
+    if tail_start >= cold_start || !slice_has_real_stmt(stream, tail_start, cold_start) {
+        return None;
+    }
+    Some((tail_start, cold_start))
+}
+
+fn except_star_nested_with_epilogue_span(
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Option<(usize, usize)> {
+    let with_except: usize = (region.try_start..region.handler_start)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart))?;
+    let with_handler_start: usize = (region.try_start..with_except)
+        .rev()
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))?;
+    let cleanup_triple: usize =
+        (region.try_start..with_handler_start)
+            .rev()
+            .find(|&k: &usize| {
+                is_none_const_push(&stream.ops[k])
+                    && is_exit_none_triple(stream, k, with_handler_start)
+            })?;
+    let epilogue_start: usize = async_with_cleanup_end(stream, cleanup_triple, with_handler_start)?;
+    if !async_with_exit_guarded_by_branch(stream, epilogue_start, with_handler_start) {
+        return None;
+    }
+    let epilogue_end: usize = except_star_epilogue_end(stream, epilogue_start, with_handler_start)?;
+    if epilogue_start >= epilogue_end || !slice_has_real_stmt(stream, epilogue_start, epilogue_end)
+    {
+        return None;
+    }
+    Some((epilogue_start, epilogue_end))
+}
+
+fn except_star_epilogue_end(
+    stream: &DecodedStream,
+    epilogue_start: usize,
+    with_handler_start: usize,
+) -> Option<usize> {
+    (epilogue_start..with_handler_start)
+        .rev()
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+        })
+        .map(|last_return: usize| last_return + 1)
+}
+
+fn extend_protected_end_over_comp(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    let mut end: usize = protected_end.max(try_start);
+    while let Some(comp) = detect_inline_comprehension(stream, try_start, handler_start) {
+        if comp.clear_idx >= end || comp.end_for <= end {
+            break;
+        }
+        let mut new_end: usize = comp.end_for;
+        while new_end < handler_start
+            && matches!(
+                stream.ops[new_end],
+                CanonicalOp::Pop
+                    | CanonicalOp::Swap(_)
+                    | CanonicalOp::Cache
+                    | CanonicalOp::Nop
+                    | CanonicalOp::ExtendedArg(_)
+                    | CanonicalOp::StoreFast(_)
+            )
+        {
+            new_end += 1;
+        }
+        if new_end <= end {
+            break;
+        }
+        end = new_end;
+    }
+    end.min(handler_start)
+}
+
+fn guard_is_inside_protected_try_with_continuation(
+    stream: &DecodedStream,
+    guard: usize,
+    false_target: usize,
+    region: &TryRegion,
+) -> bool {
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(region.handler_start) else {
+        return false;
+    };
+    let Some(&guard_off): Option<&u32> = stream.offsets.get(guard) else {
+        return false;
+    };
+    let guard_protected_by_handler: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                e.start <= guard_off && guard_off < e.end() && e.target == handler_off
+            });
+    if !guard_protected_by_handler {
+        return false;
+    }
+    handler_normal_exit_is_backjump_at_or_after(
+        stream,
+        region.handler_start,
+        region.region_end,
+        false_target,
+    )
+}
+
+fn handler_normal_exit_is_backjump_at_or_after(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+    floor: usize,
+) -> bool {
+    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, handler_start, region_end)
+    else {
+        return false;
+    };
+    let scan_hi: usize = region_end.min(stream.ops.len());
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, scan_hi);
+    let Some(next): Option<usize> = first_significant(stream, after_teardown, scan_hi) else {
+        return false;
+    };
+    if !matches!(
+        stream.ops[next],
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return false;
+    }
+    resolve_jump_target(stream, next, &stream.ops[next]).is_some_and(|t: usize| t >= floor)
+}
+
+fn guarded_span_is_try_else(
+    stream: &DecodedStream,
+    try_start: usize,
+    body_end: usize,
+    false_target: usize,
+    handler_start: usize,
+    region_end: usize,
+) -> bool {
+    if body_end >= false_target {
+        return false;
+    }
+    if first_significant(stream, body_end, false_target).is_none() {
+        return false;
+    }
+    let body_completes_into_span: bool = last_significant_back(stream, try_start, body_end)
+        .is_none_or(|k: usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+            )
+        });
+    if !body_completes_into_span {
+        return false;
+    }
+    if (body_end..false_target).any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo)) {
+        return false;
+    }
+    handler_normal_exit_backjumps_to(stream, handler_start, region_end, false_target)
+        && !handler_normal_exit_backjumps_to(stream, handler_start, region_end, body_end)
+}
+
+fn guarded_body_falls_through_to(
+    stream: &DecodedStream,
+    try_start: usize,
+    false_target: usize,
+    continuation_end: usize,
+) -> bool {
+    if try_start >= false_target {
+        return false;
+    }
+    let skips_else: bool = (try_start..false_target).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t >= continuation_end)
+    });
+    if skips_else {
+        return false;
+    }
+    let Some(last): Option<usize> = last_significant_back(stream, try_start, false_target) else {
+        return true;
+    };
+    if !matches!(
+        stream.ops[last],
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+    ) {
+        return true;
+    }
+    trailing_terminator_is_conditional(stream, try_start, last, false_target)
+}
+
+fn trailing_terminator_is_conditional(
+    stream: &DecodedStream,
+    lo: usize,
+    terminator: usize,
+    false_target: usize,
+) -> bool {
+    let mut k: usize = terminator;
+    while k > lo {
+        let Some(prev): Option<usize> = last_significant_back(stream, lo, k) else {
+            return false;
+        };
+        match stream.ops[prev] {
+            CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadGlobal(_) => k = prev,
+            _ if is_forward_cond_jump(&stream.ops[prev])
+                && !is_chain_cond_jump(&stream.ops, prev) =>
+            {
+                return resolve_jump_target(stream, prev, &stream.ops[prev])
+                    .is_some_and(|t: usize| t > terminator && t <= false_target);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn handler_return_idiom_duplicates_continuation(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+    false_target: usize,
+    continuation_end: usize,
+) -> Option<usize> {
+    if false_target >= continuation_end {
+        return None;
+    }
+    let pop_except: usize = handler_pop_except_idx(stream, handler_start, region_end)?;
+    let handler_tail_lo: usize = skip_handler_name_cleanup(stream, pop_except + 1, region_end);
+    let cont_ops: Vec<&CanonicalOp> = significant_ops(stream, false_target, continuation_end);
+    let tail_ops: Vec<&CanonicalOp> = significant_ops(stream, handler_tail_lo, region_end);
+    if cont_ops.is_empty() || !tail_ops.starts_with(cont_ops.as_slice()) {
+        return None;
+    }
+    Some(pop_except)
+}
+
+pub(super) fn try_structure_guarded_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(first_cond): Option<usize> = (lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let peeled_relation: Option<PeeledWhileTestRelation> =
+        peeled_while_test_relation(code, stream, lo, hi, first_cond);
+    if let Some(relation) = peeled_relation {
+        let reason: &str = match relation {
+            PeeledWhileTestRelation::Equivalent | PeeledWhileTestRelation::EnclosingGuard => {
+                return Ok(None);
+            }
+            PeeledWhileTestRelation::Mismatched => "peeled and loop-back tests differ",
+            PeeledWhileTestRelation::NonExiting => "peeled entry test does not exit the loop",
+        };
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(first_cond)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: reason.to_owned(),
+        });
+    }
+    if loop_header_owns_test(code, stream, lo, hi, first_cond) {
+        return Ok(None);
+    }
+    let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
+    let conjunct_guard: Option<usize> = compound
+        .as_ref()
+        .map(|c: &CompoundIf| c.last_jump)
+        .filter(|&last: &usize| last >= first_cond);
+    let guard: usize = conjunct_guard.unwrap_or(first_cond);
+    if conjunct_guard.is_none()
+        && (lo..guard).any(|k: usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+                && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+        })
+    {
+        return Ok(None);
+    }
+    let Some(false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    if compound.as_ref().is_some_and(|candidate: &CompoundIf| {
+        peeled_while_test_relation(code, stream, lo, hi, candidate.last_jump)
+            == Some(PeeledWhileTestRelation::Mismatched)
+    }) {
+        return Ok(None);
+    }
+    let leading_region: Option<TryRegion> = find_try_region(stream, guard + 1, false_target);
+    let leading_with_full_region: Option<TryRegion> = leading_region
+        .as_ref()
+        .filter(|region: &&TryRegion| region.is_with)
+        .and_then(|leading: &TryRegion| {
+            find_try_region(stream, guard + 1, hi).filter(|full: &TryRegion| {
+                full.is_with
+                    && full.try_start == leading.try_start
+                    && full.handler_start > false_target
+                    && full.region_end <= hi
+                    && stream.exception_table.iter().any(
+                        |entry: &crate::bytecode::flow::ExceptionTableEntry| {
+                            stream
+                                .index_for_offset(entry.start)
+                                .is_some_and(|start: usize| {
+                                    (leading.try_start..false_target).contains(&start)
+                                })
+                                && stream.index_for_offset(entry.target).is_some_and(
+                                    |target: usize| {
+                                        (false_target..full.handler_start).contains(&target)
+                                            && matches!(
+                                                stream.ops.get(target),
+                                                Some(CanonicalOp::PushExcInfo)
+                                            )
+                                            && !matches!(
+                                                stream.ops.get(target + 1),
+                                                Some(CanonicalOp::WithExceptStart)
+                                            )
+                                    },
+                                )
+                        },
+                    )
+            })
+        });
+    let leading_with: bool = leading_with_full_region.is_some();
+    let region: Option<TryRegion> = if leading_with {
+        leading_region
+    } else {
+        find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi).or_else(|| {
+            (!stream.is_pre_311())
+                .then_some(leading_region)
+                .flatten()
+                .filter(|region: &TryRegion| {
+                    region.handler_start < false_target && region.region_end <= false_target
+                })
+        })
+    };
+    let Some(region): Option<TryRegion> = region else {
+        return Ok(None);
+    };
+    let inline_handler_before_false_arm: bool = region.handler_start < false_target
+        && region.region_end <= false_target
+        && loop_continue_target().is_some_and(|header: usize| {
+            (region.region_end..false_target).any(|edge: usize| {
+                is_back_edge(&stream.ops[edge])
+                    && resolve_jump_target(stream, edge, &stream.ops[edge]) == Some(header)
+            })
+        });
+    if region.is_finally
+        || region.try_start <= guard
+        || region.try_start >= false_target
+        || (!leading_with
+            && ((region.handler_start < false_target && !inline_handler_before_false_arm)
+                || guard_is_inside_protected_try_with_continuation(
+                    stream,
+                    guard,
+                    false_target,
+                    &region,
+                )
+                || (!inline_handler_before_false_arm
+                    && first_significant(stream, false_target, region.handler_start).is_none())))
+    {
+        return Ok(None);
+    }
+    let inner_guard_before_try: bool = (guard + 1..region.try_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    });
+    let (head, test): (Vec<Stmt>, Expr) = if let Some(c) = compound {
+        (c.head, c.test)
+    } else {
+        let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+        if !head.is_empty() {
+            return Ok(None);
+        }
+        let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+            return Ok(None);
+        };
+        let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+        let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+        let test: Expr = if is_none_jump
+            || matches!(
+                stream.ops[guard],
+                CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+            ) {
+            test
+        } else {
+            Expr::UnaryOp {
+                op: crate::bytecode::opcode::UnaryOp::Not,
+                operand: Box::new(test),
+            }
+        };
+        (head, test)
+    };
+    if leading_with {
+        if region.handler_start != false_target || region.region_end != false_target {
+            return Ok(None);
+        }
+        let Some(full_region): Option<TryRegion> = leading_with_full_region else {
+            return Ok(None);
+        };
+        let consumed_end: usize = full_region.region_end;
+        let body: Vec<Stmt> = structure_try(code, stream, guard + 1, consumed_end, &full_region)?;
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::If {
+            test,
+            body: non_empty(body),
+            orelse: Vec::new(),
+            line: None,
+        });
+        out.extend(structure_stmts(code, stream, consumed_end, hi)?);
+        return Ok(Some(out));
+    }
+    let comp_end: usize = extend_protected_end_over_comp(
+        stream,
+        region.try_start,
+        region.protected_end,
+        false_target,
+    );
+    let body_end: usize =
+        protected_body_end_with_return(stream, region.try_start, comp_end, region.handler_start);
+    let body_end: usize =
+        extend_body_over_trailing_guard(stream, region.try_start, body_end, false_target);
+    let continuation_end: usize = {
+        let raw: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+        let then_cap: usize = then_arm_end_cap();
+        let structure_cap: usize = structure_hi_cap();
+        let cap: usize = match (then_cap, structure_cap) {
+            (0, 0) => 0,
+            (0, cap) | (cap, 0) => cap,
+            (left, right) => left.min(right),
+        };
+        if inline_handler_before_false_arm {
+            if structure_cap >= false_target {
+                structure_cap.min(hi)
+            } else {
+                hi
+            }
+        } else if cap != 0 && cap >= false_target && cap < raw {
+            cap
+        } else {
+            raw
+        }
+    };
+    let dup_pop_except: Option<usize> = handler_return_idiom_duplicates_continuation(
+        stream,
+        region.handler_start,
+        region.region_end,
+        false_target,
+        continuation_end,
+    );
+    let handler_region_end: usize = dup_pop_except.map_or(region.region_end, |pop: usize| pop + 1);
+    let else_join: Option<usize> = then_terminating_jump(stream, region.try_start, false_target)
+        .and_then(|j: usize| resolve_jump_target(stream, j, &stream.ops[j]))
+        .filter(|t: &usize| *t > false_target && *t < region.handler_start);
+    let cap_then_arm: bool = else_join.is_some()
+        && region.region_end > false_target
+        && first_significant(stream, false_target, region.region_end).is_some();
+    let mut if_body: Vec<Stmt> = if inner_guard_before_try {
+        let body_start: usize =
+            first_significant(stream, guard + 1, false_target).unwrap_or(guard + 1);
+        let _then_cap: Option<ThenArmEndCapGuard> =
+            cap_then_arm.then(|| ThenArmEndCapGuard::enter(false_target));
+        structure_stmts(code, stream, body_start, region.region_end)?
+    } else {
+        let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
+        let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+        let handler_matches_exception_group: bool =
+            handler_is_except_star(stream, region.handler_start);
+        let handlers: Vec<ExceptHandler> = if handler_matches_exception_group {
+            parse_except_star_handlers(code, stream, region.handler_start, handler_region_end)?
+        } else {
+            parse_except_handlers(code, stream, region.handler_start, handler_region_end)?
+        };
+        let span_is_else: bool = guarded_span_is_try_else(
+            stream,
+            region.try_start,
+            body_end,
+            false_target,
+            region.handler_start,
+            region.region_end,
+        );
+        let try_orelse: Vec<Stmt> = if span_is_else {
+            structure_stmts(code, stream, body_end, false_target)?
+        } else {
+            Vec::new()
+        };
+        let try_stmt: Stmt = if handler_matches_exception_group {
+            Stmt::TryStar {
+                body: non_empty(try_body),
+                handlers,
+                orelse: try_orelse,
+                finalbody: Vec::new(),
+                line: None,
+            }
+        } else {
+            Stmt::Try {
+                body: non_empty(try_body),
+                handlers,
+                orelse: try_orelse,
+                finalbody: Vec::new(),
+                line: None,
+            }
+        };
+        let mut body: Vec<Stmt> = prelude;
+        body.push(try_stmt);
+        if !span_is_else && !inline_handler_before_false_arm {
+            body.extend(structure_stmts(code, stream, body_end, false_target)?);
+        }
+        body
+    };
+    let shared_continue_latch: Option<usize> = loop_continue_target().and_then(|header: usize| {
+        (region.try_start..false_target).find(|&latch: &usize| {
+            is_back_edge(&stream.ops[latch])
+                && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(header)
+        })
+    });
+    let handler_rejoins_continue: bool = shared_continue_latch.is_some_and(|latch: usize| {
+        (region.handler_start..region.region_end).any(|edge: usize| {
+            (is_back_edge(&stream.ops[edge])
+                || matches!(
+                    stream.ops[edge],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ))
+                && resolve_jump_target(stream, edge, &stream.ops[edge]) == Some(latch)
+        })
+    });
+    if handler_rejoins_continue && !matches!(if_body.last(), Some(Stmt::Continue)) {
+        if_body.push(Stmt::Continue);
+    }
+
+    let trailing_is_continuation: bool = else_join.is_none()
+        && ((inline_handler_before_false_arm && handler_rejoins_continue)
+            || dup_pop_except.is_some()
+            || handler_normal_exit_backjumps_to(
+                stream,
+                region.handler_start,
+                region.region_end,
+                false_target,
+            )
+            || guarded_body_falls_through_to(
+                stream,
+                region.try_start,
+                false_target,
+                continuation_end,
+            ));
+    let loop_elif_end: Option<usize> = if trailing_is_continuation {
+        loop_elif_arm_end(stream, false_target, continuation_end)
+    } else {
+        None
+    };
+    let orelse: Vec<Stmt> = if let Some(elif_end) = loop_elif_end {
+        structure_stmts(code, stream, false_target, elif_end)?
+    } else if trailing_is_continuation {
+        Vec::new()
+    } else if let Some(join) = else_join {
+        structure_stmts(code, stream, false_target, join)?
+    } else {
+        structure_stmts(code, stream, false_target, continuation_end)?
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(if_body),
+        orelse,
+        line: None,
+    });
+    if let Some(elif_end) = loop_elif_end {
+        out.extend(structure_stmts(code, stream, elif_end, continuation_end)?);
+    } else if trailing_is_continuation {
+        out.extend(structure_stmts(
+            code,
+            stream,
+            false_target,
+            continuation_end,
+        )?);
+    }
+    if let Some(join) = else_join
+        && join < region.handler_start
+    {
+        out.extend(structure_stmts(code, stream, join, region.handler_start)?);
+    }
+    let structure_cap: usize = structure_hi_cap();
+    let tail_hi: usize = if structure_cap == 0 {
+        hi
+    } else {
+        hi.min(structure_cap)
+    };
+    let tail_start: usize = if inline_handler_before_false_arm {
+        continuation_end
+    } else {
+        region.region_end
+    };
+    if tail_start < tail_hi {
+        out.extend(structure_stmts(code, stream, tail_start, tail_hi)?);
+    }
+    Ok(Some(out))
+}
+
+fn loop_elif_arm_end(
+    stream: &DecodedStream,
+    false_target: usize,
+    continuation_end: usize,
+) -> Option<usize> {
+    if false_target >= continuation_end {
+        return None;
+    }
+    let elif_guard: usize = (false_target..continuation_end).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    })?;
+    if (false_target..elif_guard).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return None;
+    }
+    let region: TryRegion = find_try_region(stream, elif_guard + 1, stream.ops.len())?;
+    if region.is_with
+        || region.is_finally
+        || region.try_start <= elif_guard
+        || region.try_start >= continuation_end
+        || region.handler_start < continuation_end
+    {
+        return None;
+    }
+    let scan_end: usize = continuation_end.min(stream.ops.len());
+    let elif_loopback: usize = (region.try_start..scan_end).rev().find(|&k: &usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t < false_target)
+    })?;
+    Some(elif_loopback + 1)
+}
+
+pub(super) fn is_simple_guard_prelude_stmt(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Assign { .. }
+        | Stmt::AugAssign { .. }
+        | Stmt::AnnAssign { .. }
+        | Stmt::Expr(_)
+        | Stmt::Delete(_)
+        | Stmt::Import(_)
+        | Stmt::ImportFrom { .. }
+        | Stmt::Raise { .. }
+        | Stmt::Assert { .. }
+        | Stmt::Pass => true,
+        Stmt::If { body, orelse, .. } => {
+            orelse.is_empty() && body.iter().all(is_simple_guard_prelude_stmt)
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn leading_guard_prelude_split(
+    stream: &DecodedStream,
+    lo: usize,
+    guard: usize,
+) -> Option<usize> {
+    let mut split: usize = lo;
+    for k in lo..guard {
+        if !is_forward_cond_jump(&stream.ops[k])
+            || is_chain_cond_jump(&stream.ops, k)
+            || is_value_form_shortcircuit(&stream.ops, k)
+        {
+            continue;
+        }
+        let target: usize =
+            resolve_jump_target(stream, k, &stream.ops[k]).filter(|t: &usize| *t > k)?;
+        if target > guard {
+            return None;
+        }
+        split = split.max(target);
+    }
+    if (split..guard)
+        .any(|k: usize| is_forward_cond_jump(&stream.ops[k]) || is_chain_cond_jump(&stream.ops, k))
+    {
+        return None;
+    }
+    if (lo..split).any(|k: usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > split)
+    }) {
+        return None;
+    }
+    Some(split)
+}
+
+pub(super) fn try_structure_multibranch_guarded_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if (code.flags & PY_CO_FLAG_FUNCTION_SCOPE) != PY_CO_FLAG_FUNCTION_SCOPE {
+        return Ok(None);
+    }
+    let mut guard_lo: usize = lo;
+    let mut chosen: Option<(usize, usize, usize, TryRegion)> = None;
+    while let Some(guard) = (guard_lo..hi).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) {
+        let guard: usize = guard;
+        guard_lo = guard + 1;
+        let Some(prior_split): Option<usize> = leading_guard_prelude_split(stream, lo, guard)
+        else {
+            return Ok(None);
+        };
+        if prior_split <= lo {
+            continue;
+        }
+        let Some(false_target): Option<usize> =
+            resolve_jump_target(stream, guard, &stream.ops[guard])
+                .filter(|t: &usize| *t > guard && *t < hi)
+        else {
+            continue;
+        };
+        let Some(region): Option<TryRegion> =
+            find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi)
+        else {
+            continue;
+        };
+        let guard_is_loop_test: bool = (guard + 1..region.region_end).any(|k: usize| {
+            resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t <= guard)
+        });
+        let guard_unprotected: bool = stream
+            .offsets
+            .get(guard)
+            .copied()
+            .is_some_and(|off: u32| offset_is_unprotected(stream, off));
+        if region.is_finally
+            || region.try_start <= guard
+            || region.try_start >= false_target
+            || region.handler_start < false_target
+            || region.region_end != hi
+            || guard_is_loop_test
+            || !guard_unprotected
+            || first_significant(stream, guard + 1, region.try_start).is_some()
+            || first_significant(stream, false_target, region.handler_start).is_none()
+        {
+            continue;
+        }
+        chosen = Some((guard, prior_split, false_target, region));
+        break;
+    }
+    let Some((guard, prior_split, false_target, region)): Option<(usize, usize, usize, TryRegion)> =
+        chosen
+    else {
+        return Ok(None);
+    };
+    let mut prior: Vec<Stmt> = structure_stmts(code, stream, lo, prior_split)?;
+    if !prior.iter().all(is_simple_guard_prelude_stmt) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[prior_split..guard])?;
+    if residual.len() != 1 {
+        return Ok(None);
+    }
+    prior.extend(head);
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let comp_end: usize = extend_protected_end_over_comp(
+        stream,
+        region.try_start,
+        region.protected_end,
+        false_target,
+    );
+    let body_end: usize =
+        protected_body_end_with_return(stream, region.try_start, comp_end, region.handler_start);
+    let body_end: usize =
+        extend_body_over_trailing_guard(stream, region.try_start, body_end, false_target);
+    let continuation_end: usize = {
+        let raw: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
+        let cap: usize = then_arm_end_cap();
+        if cap != 0 && cap >= false_target && cap < raw {
+            cap
+        } else {
+            raw
+        }
+    };
+    let dup_pop_except: Option<usize> = handler_return_idiom_duplicates_continuation(
+        stream,
+        region.handler_start,
+        region.region_end,
+        false_target,
+        continuation_end,
+    );
+    let handler_region_end: usize = dup_pop_except.map_or(region.region_end, |pop: usize| pop + 1);
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
+    let span_is_else: bool = guarded_span_is_try_else(
+        stream,
+        region.try_start,
+        body_end,
+        false_target,
+        region.handler_start,
+        region.region_end,
+    );
+    let try_orelse: Vec<Stmt> = if span_is_else {
+        structure_stmts(code, stream, body_end, false_target)?
+    } else {
+        Vec::new()
+    };
+    let try_stmt: Stmt = Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: try_orelse,
+        finalbody: Vec::new(),
+        line: None,
+    };
+    let mut if_body: Vec<Stmt> = vec![try_stmt];
+    if !span_is_else {
+        if_body.extend(structure_stmts(code, stream, body_end, false_target)?);
+    }
+
+    let else_join: Option<usize> = then_terminating_jump(stream, region.try_start, false_target)
+        .and_then(|j: usize| resolve_jump_target(stream, j, &stream.ops[j]))
+        .filter(|t: &usize| *t > false_target && *t < region.handler_start);
+    let trailing_is_continuation: bool = else_join.is_none()
+        && (dup_pop_except.is_some()
+            || handler_normal_exit_backjumps_to(
+                stream,
+                region.handler_start,
+                region.region_end,
+                false_target,
+            )
+            || guarded_body_falls_through_to(
+                stream,
+                region.try_start,
+                false_target,
+                continuation_end,
+            ));
+    let orelse: Vec<Stmt> = if trailing_is_continuation {
+        Vec::new()
+    } else if let Some(join) = else_join {
+        structure_stmts(code, stream, false_target, join)?
+    } else {
+        structure_stmts(code, stream, false_target, continuation_end)?
+    };
+    let mut out: Vec<Stmt> = prior;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(if_body),
+        orelse,
+        line: None,
+    });
+    if trailing_is_continuation {
+        out.extend(structure_stmts(
+            code,
+            stream,
+            false_target,
+            continuation_end,
+        )?);
+    }
+    if let Some(join) = else_join
+        && join < region.handler_start
+    {
+        out.extend(structure_stmts(code, stream, join, region.handler_start)?);
+    }
+    out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+    Ok(Some(out))
+}
+
+fn else_try_first_guard(stream: &DecodedStream, lo: usize, hi: usize) -> Option<usize> {
+    (lo..hi).find(|&k: &usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+    })
+}
+
+fn span_is_self_contained_validation(
+    stream: &DecodedStream,
+    lo: usize,
+    guard: usize,
+    rejoin: usize,
+) -> bool {
+    if rejoin <= guard || rejoin > stream.ops.len() {
+        return false;
+    }
+    if (lo..rejoin).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::MakeFunction(_) | CanonicalOp::MakeFunctionLegacy(_)
+        )
+    }) {
+        return false;
+    }
+    if find_try_region(stream, lo, rejoin).is_some() {
+        return false;
+    }
+    (lo..rejoin).all(|k: usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_none_or(|t: usize| t <= rejoin)
+    })
+}
+
+fn else_try_skip_leading_self_contained(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<usize> {
+    let mut start: usize = lo;
+    loop {
+        let guard: usize = else_try_first_guard(stream, start, hi)?;
+        let false_target: usize = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|t: &usize| *t > guard && *t < hi)?;
+        if find_try_region(stream, false_target, hi)
+            .is_some_and(|region: TryRegion| region.try_start >= false_target)
+            && then_terminating_jump(stream, guard + 1, false_target).is_some()
+        {
+            return if start > lo { Some(start) } else { None };
+        }
+        if !span_is_self_contained_validation(stream, start, guard, false_target) {
+            return None;
+        }
+        start = false_target;
+    }
+}
+
+pub(super) fn try_structure_else_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    if let Some(real_lo) = else_try_skip_leading_self_contained(stream, lo, hi)
+        && real_lo > lo
+    {
+        let Some(inner): Option<Vec<Stmt>> = try_structure_else_try(code, stream, real_lo, hi)?
+        else {
+            return Ok(None);
+        };
+        let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, real_lo)?;
+        out.extend(inner);
+        return Ok(Some(out));
+    }
+    let Some(guard): Option<usize> = else_try_first_guard(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if (lo..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return Ok(None);
+    }
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, else_start)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .filter(|t: &usize| *t > else_start && *t <= hi)
+    else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, else_start, hi) else {
+        return Ok(None);
+    };
+    if region.is_with
+        || region.is_finally
+        || region.try_start < else_start
+        || region.try_start >= join
+        || region.handler_start < join
+        || region.protected_end > join + 1
+        || try_enclosed_by_loop(stream, lo, hi, &region)
+    {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
+    let mut else_pack: Vec<Stmt> = structure_try(code, stream, else_start, hi, &region)?;
+    if else_pack.is_empty() {
+        return Ok(None);
+    }
+    let cont_tail: Vec<Stmt> = else_pack.split_off(1);
+    let orelse: Vec<Stmt> = else_pack;
+    if !matches!(orelse.first(), Some(Stmt::Try { .. })) {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse,
+        line: None,
+    });
+    out.extend(cont_tail);
+    Ok(Some(out))
+}
+
+pub(super) fn try_structure_loop_else_nested_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let Some(guard): Option<usize> = else_try_first_guard(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if (lo..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
+    }) {
+        return Ok(None);
+    }
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| *t > guard && *t < hi)
+    else {
+        return Ok(None);
+    };
+    let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, else_start)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .filter(|t: &usize| *t > else_start && *t <= hi)
+    else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, else_start, hi) else {
+        return Ok(None);
+    };
+    if region.is_with
+        || region.is_finally
+        || region.try_start < else_start
+        || region.try_start >= join
+        || region.handler_start < join
+        || region.region_end > hi
+    {
+        return Ok(None);
+    }
+    let handler_reenters: bool = (region.handler_start..region.region_end).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= header && t < region.handler_start)
+    });
+    if !handler_reenters {
+        return Ok(None);
+    }
+    if !(else_start..region.try_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t > region.try_start)
+    }) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
+    let Some(inner_guard): Option<usize> = (else_start..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(inner_test_start): Option<usize> =
+        guard_test_split_after_stmts(code, stream, else_start, inner_guard)
+    else {
+        return Ok(None);
+    };
+    let leading: Vec<Stmt> = structure_stmts(code, stream, else_start, inner_test_start)?;
+    let Some(guarded): Option<Vec<Stmt>> =
+        try_structure_guarded_try(code, stream, inner_test_start, region.region_end)?
+    else {
+        return Ok(None);
+    };
+    let mut else_full: Vec<Stmt> = leading;
+    else_full.extend(guarded);
+    let cont: Vec<Stmt> = structure_stmts(code, stream, join, region.handler_start)?;
+    if cont.is_empty()
+        || else_full.len() <= cont.len()
+        || else_full[else_full.len() - cont.len()..] != cont[..]
+    {
+        return Ok(None);
+    }
+    strip_trailing_continuation(&mut else_full, &cont);
+    let orelse: Vec<Stmt> = else_full;
+    if orelse.is_empty() || !stmts_contain_try(&orelse) {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse,
+        line: None,
+    });
+    out.extend(cont);
+    Ok(Some(out))
+}
+
+pub(super) fn try_structure_loop_then_nested_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.exception_table.is_empty() {
+        return Ok(None);
+    }
+    if loop_continue_target().is_none()
+        && let Some(stmts) = try_structure_table_era_plain_try_loop(code, stream, lo, hi)?
+    {
+        return Ok(Some(stmts));
+    }
+    let Some(loop_header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let Some(region): Option<TryRegion> = find_try_region(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if region.is_with() || region.is_finally() {
+        return Ok(None);
+    }
+    if !matches!(
+        stream.ops.get(region.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let protected_end: usize = region.protected_end();
+    let handler_start: usize = region.handler_start;
+    let region_end: usize = region.region_end();
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| {
+                t > region.try_start && t >= protected_end && t < handler_start
+            })
+    }) else {
+        return Ok(None);
+    };
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+    else {
+        return Ok(None);
+    };
+    if first_significant(stream, else_start, handler_start).is_none() {
+        return Ok(None);
+    }
+    let Some(then_tail): Option<usize> = last_significant_back(stream, protected_end, else_start)
+    else {
+        return Ok(None);
+    };
+    if !is_back_edge(&stream.ops[then_tail])
+        || resolve_jump_target(stream, then_tail, &stream.ops[then_tail]) != Some(loop_header)
+    {
+        return Ok(None);
+    }
+    if !(handler_start..region_end).any(|k: usize| {
+        is_back_edge(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t >= protected_end && t < else_start)
+    }) {
+        return Ok(None);
+    }
+    let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
+    else {
+        return Ok(None);
+    };
+    if (lo..test_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > test_start)
+    }) {
+        return Ok(None);
+    }
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, handler_start, region_end)?;
+    if handlers.is_empty() {
+        return Ok(None);
+    }
+    let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, protected_end)?;
+    let continuation: Vec<Stmt> = structure_stmts(code, stream, protected_end, else_start)?;
+    let else_body: Vec<Stmt> = structure_stmts(code, stream, else_start, handler_start)?;
+    if else_body.is_empty() {
+        return Ok(None);
+    }
+    let mut then_body: Vec<Stmt> = prelude;
+    then_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    then_body.extend(continuation);
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: else_body,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, region_end, hi)?);
+    Ok(Some(out))
+}
+
+fn try_structure_table_era_plain_try_loop(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311() || lo >= hi || hi > stream.ops.len() {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> = find_try_region(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if region.is_with()
+        || region.is_finally()
+        || region.try_start <= lo
+        || region.region_end() != hi
+        || !matches!(
+            stream.ops.get(region.handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        )
+    {
+        return Ok(None);
+    }
+    let typed_checks: usize = (region.handler_start..region.region_end())
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::CheckExcMatch))
+        .count();
+    if typed_checks != 1 {
+        return Ok(None);
+    }
+    let protected_end: usize = region.protected_end();
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && !is_value_form_shortcircuit(&stream.ops, index)
+            && resolve_jump_target(stream, index, &stream.ops[index]).is_some_and(
+                |target: usize| {
+                    target >= protected_end
+                        && target < region.handler_start
+                        && target > region.try_start
+                },
+            )
+    }) else {
+        return Ok(None);
+    };
+    let Some(exit): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
+        return Ok(None);
+    };
+    let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
+    else {
+        return Ok(None);
+    };
+    if (lo..test_start).any(|index: usize| {
+        resolve_jump_target(stream, index, &stream.ops[index])
+            .is_some_and(|target: usize| target > test_start)
+    }) {
+        return Ok(None);
+    }
+    let (test_head, test_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    let [raw_test]: &[Expr] = test_values.as_slice() else {
+        return Ok(None);
+    };
+    if !test_head.is_empty() || !is_direct_zero_argument_name_call(raw_test) {
+        return Ok(None);
+    }
+    let test: Expr = fallthrough_cond_test(stream, guard, raw_test.clone());
+    let loop_reentry: usize =
+        first_significant(stream, test_start.saturating_add(1), guard).unwrap_or(test_start);
+    let guarded_prelude: Option<(Vec<Stmt>, Expr, usize)> =
+        table_era_or_guard_before_try(code, stream, guard + 1, region.try_start, loop_reentry)?;
+    let header_to_try_is_plain: bool = (guard + 1..region.try_start).all(|index: usize| {
+        matches!(
+            stream.ops[index],
+            CanonicalOp::Resume(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    });
+    if !header_to_try_is_plain && guarded_prelude.is_none() {
+        return Ok(None);
+    }
+    let Some(handler_reentry): Option<usize> =
+        plain_handler_backjump_target(stream, region.handler_start, region.region_end())
+    else {
+        return Ok(None);
+    };
+    let Some(normal_latch): Option<usize> = (region.try_start..exit)
+        .rev()
+        .find(|&index: &usize| is_back_edge(&stream.ops[index]))
+    else {
+        return Ok(None);
+    };
+    let Some(normal_target): Option<usize> =
+        resolve_jump_target(stream, normal_latch, &stream.ops[normal_latch])
+    else {
+        return Ok(None);
+    };
+    let direct_header_reentry: bool = normal_target == handler_reentry
+        && normal_target >= test_start
+        && normal_target < region.try_start
+        && (test_start..normal_target).all(|index: usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::Resume(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        });
+    let body_end: usize = if direct_header_reentry {
+        normal_latch
+    } else if handler_reentry == protected_end
+        && ((normal_target > guard
+            && normal_target <= region.try_start
+            && (normal_target..region.try_start).all(|index: usize| {
+                matches!(
+                    stream.ops[index],
+                    CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+                )
+            }))
+            || guarded_prelude.as_ref().is_some_and(
+                |(_, _, body_start): &(Vec<Stmt>, Expr, usize)| {
+                    normal_target > guard && normal_target <= *body_start
+                },
+            ))
+    {
+        let Some(bottom_guard): Option<usize> =
+            (protected_end..normal_latch).find(|&index: &usize| {
+                is_forward_cond_jump(&stream.ops[index])
+                    && !is_chain_cond_jump(&stream.ops, index)
+                    && resolve_jump_target(stream, index, &stream.ops[index])
+                        .is_some_and(|target: usize| target > normal_latch && target <= exit)
+            })
+        else {
+            return Ok(None);
+        };
+        let Some(bottom_exit): Option<usize> =
+            resolve_jump_target(stream, bottom_guard, &stream.ops[bottom_guard])
+        else {
+            return Ok(None);
+        };
+        let duplicate_implicit_exit: bool = bottom_exit < exit
+            && tail_is_implicit_none_return(code, stream, bottom_exit, exit)
+            && tail_is_implicit_none_return(code, stream, exit, region.handler_start);
+        if bottom_exit != exit && !duplicate_implicit_exit {
+            return Ok(None);
+        }
+        let (bottom_head, bottom_values): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[protected_end..bottom_guard])?;
+        let [bottom_raw]: &[Expr] = bottom_values.as_slice() else {
+            return Ok(None);
+        };
+        let bottom_test: Expr = fallthrough_cond_test(stream, bottom_guard, bottom_raw.clone());
+        if !bottom_head.is_empty()
+            || !exprs_equal_ignoring_lines(&test, &bottom_test)
+            || first_significant(stream, bottom_guard + 1, bottom_exit) != Some(normal_latch)
+        {
+            return Ok(None);
+        }
+        protected_end
+    } else {
+        return Ok(None);
+    };
+    if body_end <= region.try_start
+        || (body_end..normal_latch)
+            .any(|index: usize| completes_handler_loop_stmt(&stream.ops[index]))
+    {
+        return Ok(None);
+    }
+    let frame_guard: LoopFrameGuard = LoopFrameGuard::enter(test_start, exit);
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, region.region_end())?;
+    let [handler]: &[ExceptHandler] = handlers.as_slice() else {
+        return Ok(None);
+    };
+    let handler_is_lookup: bool = matches!(
+        handler,
+        ExceptHandler {
+            typ: Some(Expr::Name { id, ctx: ExprCtx::Load, .. }),
+            name: None,
+            body,
+            ..
+        } if id == "LookupError" && !body.is_empty()
+    );
+    if !handler_is_lookup {
+        return Ok(None);
+    }
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    drop(frame_guard);
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let mut body: Vec<Stmt> = Vec::new();
+    if let Some((leading_prelude, prelude_test, prelude_start)) = guarded_prelude {
+        body.extend(leading_prelude);
+        let mut prelude_body: Vec<Stmt> =
+            structure_stmts(code, stream, prelude_start, region.try_start)?;
+        if prelude_body.is_empty() {
+            return Ok(None);
+        }
+        if !matches!(
+            prelude_body.last(),
+            Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+        ) {
+            prelude_body.push(Stmt::Continue);
+        }
+        body.push(Stmt::If {
+            test: prelude_test,
+            body: non_empty(prelude_body),
+            orelse: Vec::new(),
+            line: None,
+        });
+    }
+    body.push(Stmt::Try {
+        body: try_body,
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    out.push(Stmt::While {
+        test,
+        body,
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, exit, region.handler_start)?);
+    Ok(Some(out))
+}
+
+#[must_use]
+fn is_direct_zero_argument_name_call(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } if args.is_empty()
+            && keywords.is_empty()
+            && matches!(func.as_ref(), Expr::Name { ctx: ExprCtx::Load, .. })
+    )
+}
+
+fn table_era_or_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    try_start: usize,
+    loop_reentry: usize,
+) -> Result<Option<(Vec<Stmt>, Expr, usize)>> {
+    let Some(first): Option<usize> = (lo..try_start).find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && jump_taken_if_true(stream, index)
+    }) else {
+        return Ok(None);
+    };
+    let Some(body_start): Option<usize> = resolve_jump_target(stream, first, &stream.ops[first])
+        .filter(|target: &usize| *target > first && *target < try_start)
+    else {
+        return Ok(None);
+    };
+    let Some(prelude_end): Option<usize> = leading_guard_prelude_split(stream, lo, first) else {
+        return Ok(None);
+    };
+    let leading_prelude: Vec<Stmt> = structure_stmts(code, stream, lo, prelude_end)?;
+    if !leading_prelude.iter().all(is_simple_guard_prelude_stmt) {
+        return Ok(None);
+    }
+    let Some(second): Option<usize> = (first + 1..body_start).find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && !jump_taken_if_true(stream, index)
+            && resolve_jump_target(stream, index, &stream.ops[index]).is_some_and(
+                |target: usize| {
+                    target <= try_start
+                        && (target..try_start).all(|padding: usize| {
+                            matches!(
+                                stream.ops[padding],
+                                CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+                            )
+                        })
+                },
+            )
+    }) else {
+        return Ok(None);
+    };
+    let Some(latch): Option<usize> = last_significant_back(stream, body_start, try_start) else {
+        return Ok(None);
+    };
+    if !is_back_edge(&stream.ops[latch])
+        || resolve_jump_target(stream, latch, &stream.ops[latch])
+            .is_none_or(|target: usize| target > loop_reentry)
+    {
+        return Ok(None);
+    }
+    let first_value_lo: usize = first_jump_value_lo(stream, prelude_end, first);
+    let second_value_lo: usize = first_significant(stream, first + 1, second).unwrap_or(first + 1);
+    let (first_head, first_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[first_value_lo..first])?;
+    let (second_head, second_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[second_value_lo..second])?;
+    let [first_value]: &[Expr] = first_values.as_slice() else {
+        return Ok(None);
+    };
+    let [second_value]: &[Expr] = second_values.as_slice() else {
+        return Ok(None);
+    };
+    if !first_head.is_empty() || !second_head.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        leading_prelude,
+        Expr::BoolOp {
+            op: BoolOpKind::Or,
+            values: vec![first_value.clone(), second_value.clone()],
+        },
+        body_start,
+    )))
+}
+
+fn plain_handler_backjump_target(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let pop_except: usize = handler_pop_except_idx(stream, handler_start, region_end)?;
+    let scan_hi: usize = region_end.min(stream.ops.len());
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, scan_hi);
+    let next: usize = first_significant(stream, after_teardown, scan_hi)?;
+    if !matches!(
+        stream.ops[next],
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return None;
+    }
+    resolve_jump_target(stream, next, &stream.ops[next])
+}
+
+#[must_use]
+const fn completes_handler_loop_stmt(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::Yield
+    )
+}
+
+fn strip_trailing_continuation(stmts: &mut Vec<Stmt>, cont: &[Stmt]) {
+    if cont.is_empty() {
+        return;
+    }
+    if stmts.len() >= cont.len() && stmts[stmts.len() - cont.len()..] == *cont {
+        stmts.truncate(stmts.len() - cont.len());
+    }
+    if let Some(Stmt::If { body, .. }) = stmts.last_mut() {
+        strip_trailing_continuation(body, cont);
+    }
+}
+
+fn stmts_contain_try(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s: &Stmt| match s {
+        Stmt::Try { .. } => true,
+        Stmt::If { body, orelse, .. } => stmts_contain_try(body) || stmts_contain_try(orelse),
+        _ => false,
+    })
+}
+
+pub(super) fn try_enclosed_by_leading_guard(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> bool {
+    let _ = hi;
+    let encloses = |target: usize| -> bool {
+        if target >= region.region_end && target > region.handler_start {
+            return true;
+        }
+        region.is_with && target > region.try_end && target <= region.handler_start
+    };
+    for k in lo..region.try_start {
+        if !is_forward_cond_jump(&stream.ops[k]) || is_chain_cond_jump(&stream.ops, k) {
+            continue;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, k, &stream.ops[k]) else {
+            return false;
+        };
+        if encloses(target) {
+            return true;
+        }
+        if is_value_form_shortcircuit(&stream.ops, k) || target <= k {
+            continue;
+        }
+        if target > region.try_start {
+            return false;
+        }
+    }
+    false
+}
+
+pub(super) fn loop_inside_unpeeled_pre311_try(
+    stream: &DecodedStream,
+    hi: usize,
+    loop_region: &LoopRegion,
+) -> bool {
+    if !stream.is_pre_311() || stream.exception_table.is_empty() {
+        return false;
+    }
+    let Some(region): Option<TryRegion> = find_try_region(stream, loop_region.header, hi) else {
+        return false;
+    };
+    !region.is_with
+        && region.try_start <= loop_region.header
+        && region.handler_start > loop_region.back_edge
+        && region.handler_start <= hi
+}
+
+fn guard_test_split_after_stmts(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    guard: usize,
+) -> Option<usize> {
+    let mut test_start: usize = guard;
+    while test_start > lo && !is_value_boundary_at(stream, test_start - 1) {
+        test_start -= 1;
+    }
+    if (lo..test_start).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > test_start)
+    }) {
+        return None;
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard]).ok()?;
+    (head.is_empty() && residual.len() == 1).then_some(test_start)
+}
+
+pub(super) fn guard_test_expr_start(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    guard: usize,
+) -> Option<usize> {
+    let mut leaders: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    leaders.insert(lo);
+    for k in lo..guard {
+        if let Some(t) = resolve_jump_target(stream, k, &stream.ops[k])
+            && (lo..=guard).contains(&t)
+        {
+            leaders.insert(t);
+        }
+    }
+    leaders.into_iter().rev().find(|&b: &usize| {
+        if (lo..b).any(|k: usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > b)
+        }) {
+            return false;
+        }
+        let Ok((head, residual)): Result<(Vec<Stmt>, Vec<Expr>)> =
+            build_linear_stmts_sim(code, &stream.ops[b..guard])
+        else {
+            return false;
+        };
+        head.is_empty() && residual.len() == 1
+    })
+}
+
+fn try_structure_leading_else_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&k: &usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    let Some(else_start): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|t: &usize| {
+            *t > guard
+                && (*t <= region.try_start
+                    || (*t <= region.try_start + 2
+                        && (region.try_start..*t).all(|k: usize| {
+                            matches!(
+                                stream.ops[k],
+                                CanonicalOp::Push(_) | CanonicalOp::Nop | CanonicalOp::Cache
+                            )
+                        })))
+        })
+    else {
+        return Ok(None);
+    };
+    if (else_start..region.try_start).any(|k: usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+        )
+    }) {
+        return Ok(None);
+    }
+    let Some(then_jump): Option<usize> = then_terminating_jump(stream, guard + 1, else_start)
+    else {
+        return Ok(None);
+    };
+    let then_skips_else: bool = resolve_jump_target(stream, then_jump, &stream.ops[then_jump])
+        .is_some_and(|t: usize| t > region.try_start && t <= hi);
+    if !then_skips_else {
+        return Ok(None);
+    }
+    if (guard..region.region_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::MakeFunction(_) | CanonicalOp::MakeFunctionLegacy(_)
+        )
+    }) {
+        return Ok(None);
+    }
+    let Some(test_start): Option<usize> = guard_test_expr_start(code, stream, lo, guard) else {
+        return Ok(None);
+    };
+    let head: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, then_jump)?;
+    let else_lo: usize = else_start.min(region.try_start);
+    let mut else_pack: Vec<Stmt> = structure_try(code, stream, else_lo, hi, region)?;
+    if else_pack.is_empty()
+        || !matches!(
+            else_pack.first(),
+            Some(Stmt::Try { .. } | Stmt::With { .. })
+        )
+    {
+        return Ok(None);
+    }
+    let cont_tail: Vec<Stmt> = else_pack.split_off(1);
+    let orelse: Vec<Stmt> = else_pack;
+    let mut out: Vec<Stmt> = head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse,
+        line: None,
+    });
+    out.extend(cont_tail);
+    Ok(Some(out))
+}
+
+fn inverted_continue_guard_arm(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    test_start: usize,
+    guarded: &[Stmt],
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(header): Option<usize> = loop_continue_target() else {
+        return Ok(None);
+    };
+    let noise = |op: &CanonicalOp| -> bool {
+        matches!(
+            op,
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_)
+                | CanonicalOp::Push(_)
+        )
+    };
+    let lands_on_header = |idx: usize| -> bool {
+        is_back_edge(&stream.ops[idx])
+            && resolve_jump_target(stream, idx, &stream.ops[idx])
+                .is_some_and(|t: usize| t <= header)
+    };
+    let Some(back_edge): Option<usize> = (lo..test_start)
+        .rev()
+        .find(|&k: &usize| !noise(&stream.ops[k]))
+    else {
+        return Ok(None);
+    };
+    if !lands_on_header(back_edge) {
+        return Ok(None);
+    }
+    let Some(arm_guard): Option<usize> = (lo..back_edge).rev().find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if arm_guard <= lo
+        || stream.none_jump_kind.contains_key(&arm_guard)
+        || !jump_taken_if_true(stream, arm_guard)
+        || is_value_form_shortcircuit(&stream.ops, arm_guard)
+    {
+        return Ok(None);
+    }
+    let entry: Option<usize> = resolve_jump_target(stream, arm_guard, &stream.ops[arm_guard])
+        .and_then(|t: usize| first_significant(stream, t, stream.ops.len()));
+    if entry != Some(test_start) {
+        return Ok(None);
+    }
+    if (arm_guard + 1..back_edge).any(|k: usize| !noise(&stream.ops[k])) {
+        return Ok(None);
+    }
+    let Some(arm_test_start): Option<usize> = guard_test_expr_start(code, stream, lo, arm_guard)
+    else {
+        return Ok(None);
+    };
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[arm_test_start..arm_guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    if !test_is_polarity_sensitive(&test) {
+        return Ok(None);
+    }
+    let epilogue: Vec<Stmt> = match resolve_jump_target(stream, header, &stream.ops[header])
+        .filter(|t: &usize| *t > header)
+        .and_then(|raw_exit: usize| for_cold_handler_exit_epilogue(stream, lo, raw_exit, hi))
+    {
+        Some((stmt_start, first_cold)) => structure_stmts(code, stream, stmt_start, first_cold)?,
+        None => Vec::new(),
+    };
+    let split: usize = if !epilogue.is_empty()
+        && guarded.len() > epilogue.len()
+        && guarded[guarded.len() - epilogue.len()..] == epilogue[..]
+    {
+        guarded.len() - epilogue.len()
+    } else {
+        guarded.len()
+    };
+    let arm_body: Vec<Stmt> = guarded[..split].to_vec();
+    if arm_body.is_empty() {
+        return Ok(None);
+    }
+    let lifted: Vec<Stmt> = guarded[split..].to_vec();
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, arm_test_start)?;
+    let arm: Stmt = Stmt::If {
+        test,
+        body: non_empty(arm_body),
+        orelse: Vec::new(),
+        line: None,
+    };
+    if !append_as_elif(&mut out, arm) {
+        return Ok(None);
+    }
+    out.extend(lifted);
+    Ok(Some(out))
+}
+
+fn append_as_elif(chain: &mut [Stmt], arm: Stmt) -> bool {
+    let Some(Stmt::If { orelse, .. }): Option<&mut Stmt> = chain.last_mut() else {
+        return false;
+    };
+    let mut cursor: &mut Vec<Stmt> = orelse;
+    loop {
+        if cursor.is_empty() {
+            cursor.push(arm);
+            return true;
+        }
+        if cursor.len() != 1 {
+            return false;
+        }
+        let Some(Stmt::If { orelse: next, .. }): Option<&mut Stmt> = cursor.first_mut() else {
+            return false;
+        };
+        cursor = next;
+    }
+}
+
+fn single_residual(mut residual: Vec<Expr>) -> Option<Expr> {
+    if residual.len() != 1 {
+        return None;
+    }
+    residual.pop()
+}
+
+#[must_use]
+fn guard_prefix_kind(
+    stream: &DecodedStream,
+    lo: usize,
+    guard: usize,
+    body_entry: usize,
+    else_entry: usize,
+) -> Option<bool> {
+    if (lo..guard).any(|k: usize| is_walrus_store_shape(&stream.ops, k)) {
+        return None;
+    }
+    let jumps: Vec<usize> = (lo..guard)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+        })
+        .collect();
+    let edge_matches = |k: usize, expected: usize| -> bool {
+        !stream.none_jump_kind.contains_key(&k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .and_then(|target: usize| first_significant(stream, target, stream.ops.len()))
+                == Some(expected)
+    };
+    if jumps
+        .iter()
+        .all(|&k: &usize| jump_taken_if_true(stream, k) && edge_matches(k, body_entry))
+    {
+        return Some(false);
+    }
+    matches!(jumps.as_slice(), [k] if !jump_taken_if_true(stream, *k) && edge_matches(*k, else_entry))
+        .then_some(true)
+}
+
+#[must_use]
+fn active_loop_is_top_tested_while(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> bool {
+    let (Some(header), Some(exit)): (Option<usize>, Option<usize>) =
+        (loop_continue_target(), loop_break_target())
+    else {
+        return false;
+    };
+    if header >= lo {
+        return false;
+    }
+    (header..lo).any(|test: usize| {
+        is_forward_cond_jump(&stream.ops[test])
+            && resolve_jump_target(stream, test, &stream.ops[test]) == Some(exit)
+            && loop_header_owns_test(code, stream, header, hi, test)
+    })
+}
+
+#[must_use]
+fn tail_is_plain_typed_handler_break(tail: &[Stmt]) -> bool {
+    matches!(
+        tail.first(),
+        Some(Stmt::Try {
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }) if orelse.is_empty()
+            && finalbody.is_empty()
+            && matches!(handlers.as_slice(), [ExceptHandler { typ: Some(_), body, .. }] if matches!(body.as_slice(), [Stmt::Break]))
+    )
+}
+
+#[must_use]
+fn handler_breaks_to_active_loop_exit(stream: &DecodedStream, region: &TryRegion) -> bool {
+    let Some(exit): Option<usize> = loop_break_target() else {
+        return false;
+    };
+    let matching_edges: usize = (region.handler_start..region.region_end)
+        .filter(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+            ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(exit)
+        })
+        .count();
+    matching_edges == 1
+}
+
+fn normalize_cold_breaking_try(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    mut tail: Vec<Stmt>,
+) -> Vec<Stmt> {
+    if tail.len() <= 1 || !handler_breaks_to_active_loop_exit(stream, region) {
+        return tail;
+    }
+    let Some(Stmt::Try {
+        handlers,
+        orelse,
+        finalbody,
+        ..
+    }): Option<&mut Stmt> = tail.first_mut()
+    else {
+        return tail;
+    };
+    let [handler]: &mut [ExceptHandler] = handlers.as_mut_slice() else {
+        return tail;
+    };
+    if !finalbody.is_empty() || !matches!(handler.body.as_slice(), [Stmt::Pass | Stmt::Break]) {
+        return tail;
+    }
+    handler.body = vec![Stmt::Break];
+    if recovered_orelse_is_loop_latch(stream, region, orelse) {
+        orelse.clear();
+    }
+    tail
+}
+
+#[must_use]
+fn recovered_orelse_is_loop_latch(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    orelse: &[Stmt],
+) -> bool {
+    if !matches!(
+        orelse,
+        [Stmt::If {
+            body,
+            orelse,
+            ..
+        }] if matches!(body.as_slice(), [Stmt::Continue]) && orelse.is_empty()
+    ) {
+        return false;
+    }
+    let (Some(continue_target), Some(break_target)): (Option<usize>, Option<usize>) =
+        (loop_continue_target(), loop_break_target())
+    else {
+        return false;
+    };
+    if break_target <= region.protected_end || break_target > region.handler_start {
+        return false;
+    }
+    let active_body_entry: Option<usize> = (continue_target..region.try_start)
+        .find(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(break_target)
+        })
+        .and_then(|guard: usize| first_significant(stream, guard + 1, region.try_start));
+    let Some(active_body_entry): Option<usize> = active_body_entry else {
+        return false;
+    };
+    let span: std::ops::Range<usize> = region.protected_end..break_target;
+    let significant = || {
+        span.clone().filter(|&index: &usize| {
+            !matches!(
+                stream.ops[index],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    };
+    let Some(first): Option<usize> = significant().next() else {
+        return false;
+    };
+    let Some(source_line): Option<u32> = stream.line_at(first) else {
+        return false;
+    };
+    if significant().any(|index: usize| stream.line_at(index) != Some(source_line)) {
+        return false;
+    }
+    let backward_edges: usize = span
+        .clone()
+        .filter(|&index: &usize| {
+            is_back_edge(&stream.ops[index])
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(active_body_entry)
+        })
+        .count();
+    let exit_guards: usize = span
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(break_target)
+        })
+        .count();
+    backward_edges == 1 && exit_guards == 1
+}
+
+fn strip_recovered_loop_exit_suffix(mut tail: Vec<Stmt>, exit: &[Stmt]) -> Vec<Stmt> {
+    let limit: usize = tail.len().min(exit.len());
+    let matching: Option<usize> = (1..=limit)
+        .rev()
+        .find(|&count: &usize| tail[tail.len() - count..] == exit[..count]);
+    if let Some(count) = matching.filter(|&count: &usize| tail.len() > count) {
+        tail.truncate(tail.len() - count);
+    }
+    tail
+}
+
+#[must_use]
+fn effectful_walrus_continue_guard_before_try(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Option<usize> {
+    if region.is_with
+        || region.is_finally
+        || stream.is_pre_311()
+        || loop_continue_target().is_none()
+        || !handler_breaks_to_active_loop_exit(stream, region)
+    {
+        return None;
+    }
+    (lo..region.try_start).rev().find(|&guard: &usize| {
+        if !is_forward_cond_jump(&stream.ops[guard])
+            || is_chain_cond_jump(&stream.ops, guard)
+            || is_value_form_shortcircuit(&stream.ops, guard)
+        {
+            return false;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&target: &usize| target > guard && target <= hi)
+        else {
+            return false;
+        };
+        if first_significant(stream, target, hi).map_or(target, |entry: usize| entry)
+            != region.try_start
+            || then_continues_to_loop(stream, guard + 1, target).is_none()
+        {
+            return false;
+        }
+        let Some(body_entry): Option<usize> = first_significant(stream, guard + 1, target) else {
+            return false;
+        };
+        let previous_or_jump: Option<usize> = (lo..guard).rev().find(|&candidate: &usize| {
+            is_forward_cond_jump(&stream.ops[candidate])
+                && !is_chain_cond_jump(&stream.ops, candidate)
+                && !is_value_form_shortcircuit(&stream.ops, candidate)
+                && jump_taken_if_true(stream, candidate)
+                && resolve_jump_target(stream, candidate, &stream.ops[candidate])
+                    .and_then(|branch: usize| first_significant(stream, branch, stream.ops.len()))
+                    == Some(body_entry)
+        });
+        previous_or_jump.is_some_and(|link: usize| {
+            (link + 1..guard).any(|k: usize| is_walrus_store_shape(&stream.ops, k))
+        })
+    })
+}
+
+#[must_use]
+fn expr_contains_and(expr: &Expr) -> bool {
+    match expr {
+        Expr::BoolOp {
+            op: BoolOpKind::And,
+            ..
+        } => true,
+        Expr::BoolOp { values, .. } => values.iter().any(expr_contains_and),
+        _ => false,
+    }
+}
+
+fn unsupported_and_continue_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<usize>> {
+    if stream.is_pre_311() || loop_continue_target().is_none() {
+        return Ok(None);
+    }
+    if let Some(compound) = try_recover_compound_if(code, stream, lo, region.try_start)?
+        && expr_contains_and(&compound.test)
+    {
+        return Ok(Some(compound.last_jump));
+    }
+    Ok((lo..region.try_start).rev().find(|&guard: &usize| {
+        if !is_forward_cond_jump(&stream.ops[guard])
+            || is_chain_cond_jump(&stream.ops, guard)
+            || is_value_form_shortcircuit(&stream.ops, guard)
+        {
+            return false;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&target: &usize| target > guard && target <= hi)
+        else {
+            return false;
+        };
+        if first_significant(stream, target, hi).map_or(target, |entry: usize| entry)
+            != region.try_start
+            || then_continues_to_loop(stream, guard + 1, target).is_none()
+        {
+            return false;
+        }
+        (lo..guard).any(|prefix: usize| {
+            is_forward_cond_jump(&stream.ops[prefix])
+                && !is_chain_cond_jump(&stream.ops, prefix)
+                && !is_value_form_shortcircuit(&stream.ops, prefix)
+                && !jump_taken_if_true(stream, prefix)
+                && resolve_jump_target(stream, prefix, &stream.ops[prefix])
+                    .and_then(|edge: usize| first_significant(stream, edge, stream.ops.len()))
+                    == Some(region.try_start)
+        })
+    }))
+}
+
+pub(super) fn try_structure_loop_continue_guard_over_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if region.is_with || region.is_finally || stream.is_pre_311() {
+        return Ok(None);
+    }
+    if loop_continue_target().is_none() {
+        return Ok(None);
+    }
+    let Some(guard): Option<usize> = (lo..region.try_start).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if stream.none_jump_kind.contains_key(&guard) {
+        return Ok(None);
+    }
+    let Some(raw_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > guard && t <= hi)
+    else {
+        return Ok(None);
+    };
+    let body_entry: usize = first_significant(stream, raw_target, hi).unwrap_or(raw_target);
+    if body_entry < region.try_start {
+        return Ok(None);
+    }
+    let Some(back): Option<usize> = then_continues_to_loop(stream, guard + 1, raw_target) else {
+        return Ok(None);
+    };
+    if region.region_end > back || back >= raw_target {
+        return Ok(None);
+    }
+    if (lo..guard).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > guard)
+    }) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    if !head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = single_residual(residual) else {
+        return Ok(None);
+    };
+    let test: Expr = fallthrough_cond_test(stream, guard, raw_test);
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, back)?;
+    if body.is_empty() {
+        return Ok(None);
+    }
+    if !matches!(
+        body.last(),
+        Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+    ) {
+        body.push(Stmt::Continue);
+    }
+    let tail: Vec<Stmt> = structure_stmts(code, stream, raw_target, hi)?;
+    let mut out: Vec<Stmt> = head;
+    out.reserve(1 + tail.len());
+    out.push(Stmt::If {
+        test,
+        body,
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(tail);
+    Ok(Some(out))
+}
+
+fn try_structure_stmt_continue_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if region.is_with || region.is_finally || stream.is_pre_311() {
+        return Ok(None);
+    }
+    if loop_continue_target().is_none() {
+        return Ok(None);
+    }
+    let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, region.try_start)?;
+    let guard: Option<usize> = compound
+        .as_ref()
+        .map(|candidate: &CompoundIf| candidate.last_jump);
+    let guard: Option<usize> = guard.or_else(|| {
+        (lo..region.try_start).rev().find(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+        })
+    });
+    let Some(guard): Option<usize> = guard else {
+        return Ok(None);
+    };
+    let Some(raw_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > guard && t <= hi)
+    else {
+        return Ok(None);
+    };
+    let body_entry: usize = first_significant(stream, raw_target, hi).unwrap_or(raw_target);
+    if body_entry != region.try_start {
+        return Ok(None);
+    }
+    let Some(back): Option<usize> = then_continues_to_loop(stream, guard + 1, raw_target) else {
+        return Ok(None);
+    };
+    let Some(first_stmt): Option<usize> = first_significant(stream, guard + 1, back) else {
+        return Ok(None);
+    };
+    if first_stmt >= back {
+        return Ok(None);
+    }
+    if (guard + 1..back).any(|k: usize| is_back_edge(&stream.ops[k])) {
+        return Ok(None);
+    }
+    let Some(is_and_guard): Option<bool> =
+        guard_prefix_kind(stream, lo, guard, first_stmt, region.try_start)
+    else {
+        return Ok(None);
+    };
+    if is_and_guard
+        && (!active_loop_is_top_tested_while(code, stream, lo, hi)
+            || !handler_breaks_to_active_loop_exit(stream, region))
+    {
+        return Ok(None);
+    }
+    let (head, test): (Vec<Stmt>, Expr) = if let Some(candidate) = compound {
+        (candidate.head, candidate.test)
+    } else {
+        let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+        let Some(raw_test): Option<Expr> = single_residual(residual) else {
+            return Ok(None);
+        };
+        let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+        let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+        let test: Expr = if is_none_jump
+            || matches!(
+                stream.ops[guard],
+                CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+            ) {
+            test
+        } else {
+            Expr::UnaryOp {
+                op: crate::bytecode::opcode::UnaryOp::Not,
+                operand: Box::new(test),
+            }
+        };
+        (head, test)
+    };
+    let mut then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, back)?;
+    if then_body.is_empty() {
+        return Ok(None);
+    }
+    then_body.push(Stmt::Continue);
+    let tail: Vec<Stmt> = structure_stmts(code, stream, region.try_start, hi)?;
+    let tail: Vec<Stmt> = normalize_cold_breaking_try(stream, region, tail);
+    if is_and_guard && !tail_is_plain_typed_handler_break(&tail) {
+        return Ok(None);
+    }
+    let exit_tail: Vec<Stmt> = match loop_break_target() {
+        Some(exit) => structure_stmts(code, stream, exit, hi)?,
+        None => Vec::new(),
+    };
+    let tail: Vec<Stmt> = strip_recovered_loop_exit_suffix(tail, &exit_tail);
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = head;
+    out.reserve(1 + tail.len());
+    out.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(tail);
+    Ok(Some(out))
+}
+
+pub(super) fn structure_for_bare_except_continue_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    if stream.is_pre_311()
+        || stream.exception_table.is_empty()
+        || !matches!(region.kind, LoopKind::For)
+    {
+        return Ok(None);
+    }
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|t: &usize| *t > region.header)
+    else {
+        return Ok(None);
+    };
+    if region.body_end <= raw_exit {
+        return Ok(None);
+    }
+    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
+    if (handler_start..cold_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckExcMatch | CanonicalOp::CheckEgMatch | CanonicalOp::WithExceptStart
+        )
+    }) {
+        return Ok(None);
+    }
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(handler_start) else {
+        return Ok(None);
+    };
+    let Some((try_start, protected_end)): Option<(usize, usize)> = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let te: usize = stream.index_for_offset_ceil(e.end())?;
+            (ts >= body_start && ts < raw_exit && te <= raw_exit).then_some((ts, te))
+        })
+        .min_by_key(|&(ts, _): &(usize, usize)| ts)
+    else {
+        return Ok(None);
+    };
+    let head: Vec<Stmt> = if try_start > body_start {
+        structure_stmts(code, stream, body_start, try_start)?
+    } else {
+        Vec::new()
+    };
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let Some(back_jump): Option<usize> = (handler_start..cold_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(region.header)
+    }) else {
+        return Ok(None);
+    };
+    let handler_body_start: usize = {
+        let after_push: usize =
+            first_significant(stream, handler_start + 1, cold_end).unwrap_or(handler_start + 1);
+        if matches!(stream.ops.get(after_push), Some(CanonicalOp::Pop)) {
+            first_significant(stream, after_push + 1, cold_end).unwrap_or(after_push + 1)
+        } else {
+            after_push
+        }
+    };
+    let handler_body_end: usize = bare_except_body_end(stream, handler_body_start, cold_end);
+    let handler_body: Vec<Stmt> = if handler_body_start < handler_body_end {
+        structure_stmts(code, stream, handler_body_start, handler_body_end)?
+    } else {
+        Vec::new()
+    };
+    let handler_body: Vec<Stmt> =
+        append_handler_loop_jump(stream, handler_body, handler_body_start, back_jump + 1);
+    let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+        typ: None,
+        name: None,
+        body: non_empty(handler_body),
+        line: None,
+    }];
+    let continuation: Vec<Stmt> = if protected_end < raw_exit {
+        structure_stmts(code, stream, protected_end, raw_exit)?
+    } else {
+        Vec::new()
+    };
+    let mut loop_body: Vec<Stmt> = head;
+    loop_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    loop_body.extend(continuation);
+    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
+    if epilogue.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((loop_body, epilogue)))
+}
+
+struct TypedForContinueBody {
+    body: Vec<Stmt>,
+    raw_exit: usize,
+    handler_start: usize,
+}
+
+fn structure_for_typed_except_continue_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+    raw_exit: usize,
+    handler_start: usize,
+    cold_end: usize,
+) -> Result<Option<TypedForContinueBody>> {
+    if stream.is_pre_311()
+        || stream.exception_table.is_empty()
+        || !matches!(region.kind, LoopKind::For)
+        || body_start <= region.header
+        || body_start >= raw_exit
+        || handler_start < raw_exit
+        || handler_start >= cold_end
+        || cold_end > stream.ops.len()
+    {
+        return Ok(None);
+    }
+    if resolve_jump_target(stream, region.header, &stream.ops[region.header]) != Some(raw_exit) {
+        return Ok(None);
+    }
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return Ok(None);
+    }
+    let has_typed_match: bool = (handler_start..cold_end)
+        .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckExcMatch));
+    let has_group_or_with: bool = (handler_start..cold_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckEgMatch | CanonicalOp::WithExceptStart
+        )
+    });
+    if !has_typed_match || has_group_or_with {
+        return Ok(None);
+    }
+    if count_handlers_continuing_to(stream, handler_start, cold_end, region.header) != 1 {
+        return Ok(None);
+    }
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(handler_start) else {
+        return Ok(None);
+    };
+    let loop_body_protected_by_outer: bool =
+        stream
+            .exception_table
+            .iter()
+            .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+                let (Some(ts), Some(t)): (Option<usize>, Option<usize>) = (
+                    stream.index_for_offset(e.start),
+                    stream.index_for_offset(e.target),
+                ) else {
+                    return false;
+                };
+                ts >= body_start
+                    && ts < raw_exit
+                    && t != handler_start
+                    && t >= raw_exit
+                    && matches!(stream.ops.get(t), Some(CanonicalOp::PushExcInfo))
+            });
+    if loop_body_protected_by_outer {
+        return Ok(None);
+    }
+    let Some((try_start, protected_end)): Option<(usize, usize)> = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| e.target == handler_off)
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let ts: usize = stream.index_for_offset(e.start)?;
+            let te: usize = stream.index_for_offset_ceil(e.end())?;
+            (ts >= body_start && ts < te && te <= raw_exit).then_some((ts, te))
+        })
+        .min_by_key(|&(ts, _): &(usize, usize)| ts)
+    else {
+        return Ok(None);
+    };
+    let head: Vec<Stmt> = if try_start > body_start {
+        structure_stmts(code, stream, body_start, try_start)?
+    } else {
+        Vec::new()
+    };
+    let protected_body: Vec<Stmt> = structure_stmts(code, stream, try_start, protected_end)?;
+    let (try_body, continuation_start): (Vec<Stmt>, usize) = if protected_body.is_empty() {
+        let body: Vec<Stmt> = structure_stmts(code, stream, try_start, raw_exit)?;
+        (
+            append_handler_loop_jump(stream, body, try_start, raw_exit),
+            raw_exit,
+        )
+    } else {
+        (protected_body, protected_end)
+    };
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, handler_start, cold_end)?;
+    if handlers.iter().any(|h: &ExceptHandler| h.typ.is_none()) {
+        return Ok(None);
+    }
+    let continuation: Vec<Stmt> = if continuation_start < raw_exit {
+        structure_stmts(code, stream, continuation_start, raw_exit)?
+    } else {
+        Vec::new()
+    };
+    let mut loop_body: Vec<Stmt> = head;
+    loop_body.push(Stmt::Try {
+        body: non_empty(try_body),
+        handlers,
+        orelse: Vec::new(),
+        finalbody: Vec::new(),
+        line: None,
+    });
+    loop_body.extend(continuation);
+    Ok(Some(TypedForContinueBody {
+        body: loop_body,
+        raw_exit,
+        handler_start,
+    }))
+}
+
+pub(super) fn structure_for_typed_except_continue_epilogue(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|exit: &usize| *exit > region.header)
+    else {
+        return Ok(None);
+    };
+    if region.body_end <= raw_exit {
+        return Ok(None);
+    }
+    let Some((epilogue_start, handler_start)): Option<(usize, usize)> =
+        for_cold_handler_exit_epilogue(stream, body_start, raw_exit, region.body_end)
+    else {
+        return Ok(None);
+    };
+    let cold_end: usize = handler_join(stream, handler_start, region.body_end);
+    let Some(recovered): Option<TypedForContinueBody> = structure_for_typed_except_continue_body(
+        code,
+        stream,
+        region,
+        body_start,
+        raw_exit,
+        handler_start,
+        cold_end,
+    )?
+    else {
+        return Ok(None);
+    };
+    if recovered.raw_exit != raw_exit || recovered.handler_start != handler_start {
+        return Ok(None);
+    }
+    let epilogue: Vec<Stmt> = structure_stmts(code, stream, epilogue_start, handler_start)?;
+    if epilogue.is_empty() || epilogue_is_trivial_return(&epilogue) {
+        return Ok(None);
+    }
+    Ok(Some((recovered.body, epilogue)))
+}
+
+pub(super) fn structure_for_typed_except_continue_external_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    body_start: usize,
+    expected_handler_start: usize,
+    discovery_hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    let discovery_hi: usize = discovery_hi.min(stream.ops.len());
+    let Some(raw_exit): Option<usize> =
+        resolve_jump_target(stream, region.header, &stream.ops[region.header])
+            .filter(|exit: &usize| *exit > region.header && *exit <= region.body_end)
+    else {
+        return Ok(None);
+    };
+    if first_cold_for_handler(stream, body_start, raw_exit, discovery_hi)
+        != Some(expected_handler_start)
+    {
+        return Ok(None);
+    }
+    let Some(cold_end): Option<usize> =
+        handler_chain_end(stream, expected_handler_start, discovery_hi)
+    else {
+        return Ok(None);
+    };
+    let Some(recovered): Option<TypedForContinueBody> = structure_for_typed_except_continue_body(
+        code,
+        stream,
+        region,
+        body_start,
+        raw_exit,
+        expected_handler_start,
+        cold_end,
+    )?
+    else {
+        return Ok(None);
+    };
+    if recovered.raw_exit != raw_exit || recovered.handler_start != expected_handler_start {
+        return Ok(None);
+    }
+    Ok(Some(recovered.body))
+}
+
+fn count_handlers_continuing_to(
+    stream: &DecodedStream,
+    handler_start: usize,
+    cold_end: usize,
+    header: usize,
+) -> usize {
+    (handler_start..cold_end)
+        .filter(|&p: &usize| matches!(stream.ops[p], CanonicalOp::PushExcInfo))
+        .filter(|&p: &usize| {
+            let block_end: usize = (p + 1..cold_end)
+                .find(|&j: &usize| matches!(stream.ops[j], CanonicalOp::PushExcInfo))
+                .unwrap_or(cold_end);
+            (p..block_end).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]) == Some(header)
+            })
+        })
+        .count()
+}
+
+fn epilogue_is_trivial_return(epilogue: &[Stmt]) -> bool {
+    epilogue.len() == 1
+        && matches!(
+            epilogue.first(),
+            Some(Stmt::Return(None | Some(Expr::Constant { .. })))
+        )
+}
+
+fn try_structure_guarded_for_with_external_cold_handler(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311()
+        || region.is_with
+        || region.is_finally
+        || region.region_end > hi
+        || region.handler_start >= hi
+    {
+        return Ok(None);
+    }
+    let Some((guard, false_target)): Option<(usize, usize)> =
+        (lo..region.try_start).rev().find_map(|guard: usize| {
+            if !is_forward_cond_jump(&stream.ops[guard])
+                || is_chain_cond_jump(&stream.ops, guard)
+                || is_value_form_shortcircuit(&stream.ops, guard)
+            {
+                return None;
+            }
+            let false_target: usize = resolve_jump_target(stream, guard, &stream.ops[guard])?;
+            (false_target > region.try_start && false_target < region.handler_start)
+                .then_some((guard, false_target))
+        })
+    else {
+        return Ok(None);
+    };
+    let Some(true_body): Option<Vec<Stmt>> = structure_for_loop_with_external_cold_handler(
+        code,
+        stream,
+        guard + 1,
+        false_target,
+        hi,
+        region.handler_start,
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(exit_jump): Option<usize> = then_terminating_jump(stream, guard + 1, false_target)
+    else {
+        return Ok(None);
+    };
+    let Some(join): Option<usize> = resolve_jump_target(stream, exit_jump, &stream.ops[exit_jump])
+        .filter(|join: &usize| *join > false_target && *join < region.handler_start)
+    else {
+        return Ok(None);
+    };
+    let test_start: Option<usize> = guard_test_expr_start(code, stream, lo, guard).or_else(|| {
+        let candidate: usize = first_jump_value_lo(stream, lo, guard);
+        (candidate < guard).then_some(candidate)
+    });
+    let Some(test_start): Option<usize> = test_start else {
+        return Ok(None);
+    };
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() || residual.len() != 1 {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    let orelse: Vec<Stmt> = structure_stmts(code, stream, false_target, join)?;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(true_body),
+        orelse,
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, join, hi)?);
+    Ok(Some(out))
+}
+
+pub(super) fn structure_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Vec<Stmt>> {
+    if let Some(stmts) =
+        try_structure_guarded_for_with_external_cold_handler(code, stream, lo, hi, region)?
+    {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_loop_continue_guard_over_try(code, stream, lo, hi, region)? {
+        return Ok(stmts);
+    }
+    if let Some(stmts) = try_structure_stmt_continue_guard_before_try(code, stream, lo, hi, region)?
+    {
+        return Ok(stmts);
+    }
+    if let Some(guard) = unsupported_and_continue_guard_before_try(code, stream, lo, hi, region)? {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(guard)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "unsupported AND continue guard before try requires exact structuring"
+                .to_owned(),
+        });
+    }
+    if let Some(guard) = effectful_walrus_continue_guard_before_try(stream, lo, hi, region) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(guard)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "effectful walrus continue guard before try requires dedicated structuring"
+                .to_owned(),
+        });
+    }
+    if region.is_finally
+        && !region.is_with
+        && !stream.is_pre_311()
+        && let Some(stmts) = try_structure_guard_over_finally(code, stream, lo, hi, region)?
+    {
+        return Ok(stmts);
+    }
+    if !region.is_with
+        && !region.is_finally
+        && !stream.is_pre_311()
+        && let Some(guard) = (lo..region.try_start).rev().find(|&k: &usize| {
+            (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+                && !is_chain_cond_jump(&stream.ops, k)
+        })
+        && guard > lo
+        && let Some(false_target) = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&t: &usize| t >= region.region_end && t < hi)
+        && let Some(body_jmp) =
+            first_significant(stream, region.protected_end, region.handler_start)
+        && matches!(
+            stream.ops.get(body_jmp),
+            Some(CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_))
+        )
+        && let Some(continuation_start) =
+            resolve_jump_target(stream, body_jmp, &stream.ops[body_jmp])
+                .filter(|&c: &usize| c > false_target && c <= hi)
+        && let Some(test_start) = guard_test_expr_start(code, stream, lo, guard)
+    {
+        let (test_stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+        if test_stmts.is_empty()
+            && let Some(raw_test) = residual.into_iter().next_back()
+        {
+            let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+            let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+            let test: Expr = if is_none_jump
+                || matches!(
+                    stream.ops[guard],
+                    CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+                ) {
+                test
+            } else {
+                Expr::UnaryOp {
+                    op: crate::bytecode::opcode::UnaryOp::Not,
+                    operand: Box::new(test),
+                }
+            };
+            let pre_head: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+            let true_body: Vec<Stmt> =
+                structure_try(code, stream, guard + 1, false_target, region)?;
+            let else_body: Vec<Stmt> =
+                structure_stmts(code, stream, false_target, continuation_start)?;
+            let cont: Vec<Stmt> = structure_stmts(code, stream, continuation_start, hi)?;
+            let mut out: Vec<Stmt> = pre_head;
+            out.push(Stmt::If {
+                test,
+                body: non_empty(true_body),
+                orelse: else_body,
+                line: None,
+            });
+            out.extend(cont);
+            return Ok(out);
+        }
+    }
+    if !region.is_with
+        && !region.is_finally
+        && let Some(guard) = (lo..region.try_start).rev().find(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        && guard > lo
+        && resolve_jump_target(stream, guard, &stream.ops[guard])
+            .is_some_and(|t: usize| t > region.try_start && t <= region.handler_start)
+        && let Some(test_start) = guard_test_expr_start(code, stream, lo, guard)
+    {
+        let guarded_opt: Option<Vec<Stmt>> =
+            try_structure_guarded_try(code, stream, test_start, hi)?;
+        if let Some(guarded) = guarded_opt {
+            if let Some(arm) =
+                inverted_continue_guard_arm(code, stream, lo, hi, test_start, &guarded)?
+            {
+                return Ok(arm);
+            }
+            let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+            out.extend(guarded);
+            return Ok(out);
+        }
+    }
+    if !region.is_with
+        && !region.is_finally
+        && let Some(guard) = (lo..region.try_start).rev().find(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        && guard > lo
+        && let Some(false_target) = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&t: &usize| t > region.try_start && t <= region.handler_start)
+        && !(guard + 1..false_target).any(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+            ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t <= guard)
+        })
+        && let Some(last_stmt) = (lo..guard).rev().find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::StoreAttr(_)
+                    | CanonicalOp::StoreSubscr
+                    | CanonicalOp::StoreFastLoadFast(_, _)
+                    | CanonicalOp::StoreFastStoreFast(_, _)
+                    | CanonicalOp::Pop
+                    | CanonicalOp::DeleteFast(_)
+                    | CanonicalOp::DeleteName(_)
+            )
+        })
+    {
+        let candidate: usize = last_stmt + 1;
+        let no_prior_jump: bool = !(lo..candidate).any(|k: usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && resolve_jump_target(stream, k, &stream.ops[k])
+                    .is_some_and(|t: usize| t > candidate)
+        });
+        if candidate < guard
+            && no_prior_jump
+            && let Ok((head, residual)) =
+                build_linear_stmts_sim(code, &stream.ops[candidate..guard])
+            && head.is_empty()
+            && residual.len() == 1
+            && let Some(guarded) = try_structure_guarded_try(code, stream, candidate, hi)?
+        {
+            let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, candidate)?;
+            out.extend(guarded);
+            return Ok(out);
+        }
+    }
+    if !region.is_finally
+        && let Some(stmts) = try_structure_leading_else_try(code, stream, lo, hi, region)?
+    {
+        return Ok(stmts);
+    }
+    if !region.is_with
+        && !region.is_finally
+        && !stream.is_pre_311()
+        && find_combo_finally(stream, region, hi).is_none()
+        && let Some(body_end) = try_body_extends_to_handler(stream, region)
+    {
+        let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
+        let body: Vec<Stmt> = {
+            let _cap: StructureHiCapGuard = StructureHiCapGuard::enter(body_end);
+            structure_stmts(code, stream, region.try_start, body_end)?
+        };
+        let handlers: Vec<ExceptHandler> =
+            parse_except_handlers(code, stream, region.handler_start, region.region_end)?;
+        let construct_tail: Vec<Stmt> =
+            match handler_pass_through_tail_return(stream, region, region.region_end) {
+                Some((tail_start, tail_end)) => {
+                    structure_stmts(code, stream, tail_start, tail_end)?
+                }
+                None => Vec::new(),
+            };
+        let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
+            handlers
+        } else {
+            strip_shared_exit_return(handlers, &construct_tail)
+        };
+        let mut out: Vec<Stmt> = head;
+        out.push(Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        });
+        out.extend(construct_tail);
+        if region.region_end < hi {
+            out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+        }
+        return Ok(out);
+    }
+    let head: Vec<Stmt> = structure_stmts(code, stream, lo, region.try_start)?;
+    let (stmt, consumed_end, gap_succ): (Stmt, usize, Vec<Stmt>) = if region.is_with {
+        if let Some(enclosing) = with_enclosing_try_region(stream, region, hi) {
+            let enclosing: TryRegion = enclosing;
+            let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+            let mut try_body: Vec<Stmt> = vec![with_stmt];
+            try_body.extend(with_tail);
+            let handlers: Vec<ExceptHandler> =
+                parse_except_handlers(code, stream, enclosing.handler_start, enclosing.region_end)?;
+            (
+                Stmt::Try {
+                    body: non_empty(try_body),
+                    handlers,
+                    orelse: Vec::new(),
+                    finalbody: Vec::new(),
+                    line: None,
+                },
+                enclosing.region_end,
+                Vec::new(),
+            )
+        } else {
+            let (with_stmt, with_tail): (Stmt, Vec<Stmt>) = structure_with(code, stream, region)?;
+            (with_stmt, region.region_end, with_tail)
+        }
+    } else if let Some((outer_handler_start, outer_region_end, inner_body_end)) =
+        try_enclosing_except_region(stream, region, hi)
+    {
+        let inner_body: Vec<Stmt> = {
+            let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(inner_body_end);
+            structure_stmts(code, stream, region.try_start, inner_body_end)?
+        };
+        let handlers: Vec<ExceptHandler> =
+            parse_except_handlers(code, stream, outer_handler_start, outer_region_end)?;
+        (
+            Stmt::Try {
+                body: non_empty(inner_body),
+                handlers,
+                orelse: Vec::new(),
+                finalbody: Vec::new(),
+                line: None,
+            },
+            outer_region_end,
+            Vec::new(),
+        )
+    } else {
+        let sc_end: usize =
+            extend_end_past_shortcircuit_stmt(stream, region.try_end, region.handler_start);
+        let extended_end: usize = extend_try_body(code, stream, sc_end, region.handler_start);
+        let body_real_end: usize = trim_try_body_jump(stream, region.try_start, extended_end);
+        let is_star: bool = (region.handler_start..region.region_end)
+            .any(|k: usize| matches!(stream.ops[k], CanonicalOp::CheckEgMatch));
+        if region.is_finally && !is_star {
+            let (stmt, mut tail): (Stmt, Vec<Stmt>) =
+                structure_pure_finally(code, stream, region, body_real_end)?;
+            if tail.is_empty()
+                && let Stmt::Try { body, .. } = &stmt
+            {
+                tail = recover_modern_finally_tail(code, stream, region, body, hi)?;
+            }
+            (stmt, region.region_end, tail)
+        } else if is_star {
+            let star_body_end: usize = except_star_body_end(stream, region, body_real_end);
+            let body: Vec<Stmt> = {
+                let _hi_cap: StructureHiCapGuard = StructureHiCapGuard::enter(star_body_end);
+                structure_stmts(code, stream, region.try_start, star_body_end)?
+            };
+            let handlers: Vec<ExceptHandler> =
+                parse_except_star_handlers(code, stream, region.handler_start, region.region_end)?;
+            let inline_epilogue: Option<(usize, usize)> =
+                except_star_nested_with_epilogue_span(stream, region)
+                    .or_else(|| except_star_normal_exit_span(stream, region));
+            let (succ_scan_start, succ_end): (usize, usize) =
+                if let Some((start, end)) = inline_epilogue {
+                    (start, end)
+                } else {
+                    let scan_start: usize = extended_end.max(star_body_end);
+                    (
+                        scan_start,
+                        trim_try_body_jump(stream, scan_start, region.handler_start),
+                    )
+                };
+            let succ: Vec<Stmt> = if succ_scan_start < succ_end
+                && slice_has_real_stmt(stream, succ_scan_start, succ_end)
+            {
+                structure_stmts(code, stream, succ_scan_start, succ_end)?
+            } else {
+                Vec::new()
+            };
+            (
+                Stmt::TryStar {
+                    body: non_empty(body),
+                    handlers,
+                    orelse: Vec::new(),
+                    finalbody: Vec::new(),
+                    line: None,
+                },
+                region.region_end,
+                succ,
+            )
+        } else {
+            let (stmt, consumed_end, construct_tail): (Stmt, usize, Vec<Stmt>) =
+                structure_try_except_family(code, stream, region, body_real_end, hi)?;
+            (stmt, consumed_end, construct_tail)
+        }
+    };
+    let mut out: Vec<Stmt> = head;
+    out.push(stmt);
+    out.extend(gap_succ);
+    if consumed_end < hi {
+        out.extend(structure_stmts(code, stream, consumed_end, hi)?);
+    }
+    Ok(out)
+}
+
+fn slice_has_real_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ComboFinally {
+    finally_body_start: usize,
+    finally_body_end: usize,
+    inline_copy_len: usize,
+    except_region_end: usize,
+    region_end: usize,
+}
+
+fn find_combo_finally(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> Option<ComboFinally> {
+    if stream.is_pre_311() || region.is_with {
+        return None;
+    }
+    let mut best_handler: Option<usize> = None;
+    for entry in &stream.exception_table {
+        let handler_start: usize = match stream.index_for_offset(entry.target) {
+            Some(h) => h,
+            None => continue,
+        };
+        if handler_start <= region.handler_start || handler_start >= hi {
+            continue;
+        }
+        if !matches!(
+            stream.ops.get(handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        ) {
+            continue;
+        }
+        let cold_region_end: usize = handler_join(stream, handler_start, hi);
+        if !is_pure_finally_handler_shape(stream, handler_start, cold_region_end, false) {
+            continue;
+        }
+        best_handler =
+            Some(best_handler.map_or(handler_start, |prev: usize| prev.min(handler_start)));
+    }
+    let handler_start: usize = best_handler?;
+    let cold_region_end: usize = handler_join(stream, handler_start, hi);
+    let fin_start: usize = handler_body_first(stream, handler_start);
+    let fin_end: usize = finally_body_end(stream, fin_start, cold_region_end);
+    let inline_copy_len: usize = fin_end.saturating_sub(fin_start);
+    if inline_copy_len == 0 {
+        return None;
+    }
+    let except_region_end: usize =
+        combo_except_region_end(stream, region.handler_start, handler_start);
+    Some(ComboFinally {
+        finally_body_start: fin_start,
+        finally_body_end: fin_end,
+        inline_copy_len,
+        except_region_end,
+        region_end: cold_region_end.min(hi),
+    })
+}
+
+fn combo_except_region_end(
+    stream: &DecodedStream,
+    except_handler: usize,
+    finally_handler: usize,
+) -> usize {
+    let _ = except_handler;
+    let mut end: usize = finally_handler;
+    while end > 0
+        && matches!(
+            stream.ops.get(end - 1),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        end -= 1;
+    }
+    end
+}
+
+fn bare_except_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut end: usize = lo;
+    while end < hi {
+        match stream.ops[end] {
+            CanonicalOp::Copy(_) | CanonicalOp::PopExcept => break,
+            _ => end += 1,
+        }
+    }
+    let mut trimmed: usize = end;
+    while trimmed > lo
+        && matches!(
+            stream.ops.get(trimmed - 1),
+            Some(
+                CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+            )
+        )
+    {
+        trimmed -= 1;
+    }
+    trimmed
+}
+
+fn modern_try_construct_tail_present(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+) -> bool {
+    if protected_end >= region.handler_start {
+        return false;
+    }
+    first_significant(stream, protected_end, region.handler_start).is_some_and(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    })
+}
+
+fn else_span_is_sequential_sibling(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+) -> bool {
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(region.handler_start) else {
+        return false;
+    };
+    let Some(&span_lo): Option<&u32> = stream.offsets.get(protected_end) else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            e.start >= span_lo && e.start < handler_off && e.target >= handler_off
+        })
+}
+
+fn else_span_encloses_loop_backedge(stream: &DecodedStream, try_start: usize, k: usize) -> bool {
+    is_back_edge(&stream.ops[k])
+        && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t < try_start)
+}
+
+fn else_span_target_is_bare_loop_continue(
+    stream: &DecodedStream,
+    try_start: usize,
+    target: usize,
+) -> bool {
+    let mut k: usize = target;
+    while k < stream.ops.len()
+        && matches!(
+            stream.ops[k],
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    {
+        k += 1;
+    }
+    k < stream.ops.len() && else_span_encloses_loop_backedge(stream, try_start, k)
+}
+
+fn else_span_loop_epilogue_cap(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    else_start: usize,
+    else_end: usize,
+) -> usize {
+    let Some(back_edge): Option<usize> = (else_start..else_end)
+        .find(|&k: &usize| else_span_encloses_loop_backedge(stream, region.try_start, k))
+    else {
+        return else_end;
+    };
+    let tail_is_loop_epilogue: bool = (back_edge + 1..else_end).any(|k: usize| {
+        else_span_encloses_loop_backedge(stream, region.try_start, k)
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+    });
+    if !tail_is_loop_epilogue {
+        return else_end;
+    }
+    let tail_reachable_from_body: bool = (else_start..back_edge).any(|k: usize| {
+        resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| {
+            t > back_edge
+                && t < else_end
+                && !else_span_target_is_bare_loop_continue(stream, region.try_start, t)
+        })
+    });
+    if tail_reachable_from_body {
+        else_end
+    } else {
+        back_edge
+    }
+}
+
+fn try_else_split(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+    has_combo: bool,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() {
+        return None;
+    }
+    let else_start: usize = protected_end;
+    if protected_end_splits_shortcircuit(stream, protected_end) {
+        return None;
+    }
+    let else_end: usize = trim_trailing_comp_cleanup(stream, else_start, region.handler_start);
+    if else_start >= else_end {
+        return None;
+    }
+    let first_idx: usize = (else_start..else_end)
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
+        return None;
+    }
+    if else_entry_is_loop_continuation(stream, region, first_idx) {
+        return None;
+    }
+    if !has_combo && else_span_is_sequential_sibling(stream, region, else_start) {
+        return None;
+    }
+    if !has_combo
+        && handler_normal_exit_reaches(stream, region, except_region_end, else_start, else_end)
+    {
+        return None;
+    }
+    let capped_end: usize = else_span_loop_epilogue_cap(stream, region, else_start, else_end);
+    let else_end: usize = if capped_end > else_start {
+        capped_end
+    } else {
+        else_end
+    };
+    Some((else_start, else_end))
+}
+
+fn try_continuation_split(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() || protected_end_splits_shortcircuit(stream, protected_end) {
+        return None;
+    }
+    let start: usize = protected_end;
+    let end: usize = trim_trailing_comp_cleanup(stream, start, region.handler_start);
+    if start >= end {
+        return None;
+    }
+    let first_idx: usize = (start..end)
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
+        return None;
+    }
+    let handler_reaches: bool =
+        handler_normal_exit_reaches(stream, region, except_region_end, start, end);
+    let sibling: bool = else_span_is_sequential_sibling(stream, region, start);
+    if !handler_reaches && !sibling {
+        return None;
+    }
+    Some((start, end))
+}
+
+fn skip_except_name_teardown(stream: &DecodedStream, from: usize, hi: usize) -> usize {
+    let Some(load): Option<usize> = first_significant(stream, from, hi)
+        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadConst(_)))
+    else {
+        return from;
+    };
+    let Some(store): Option<usize> =
+        first_significant(stream, load + 1, hi).filter(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::StoreName(_) | CanonicalOp::StoreFast(_)
+            )
+        })
+    else {
+        return from;
+    };
+    let Some(delete): Option<usize> =
+        first_significant(stream, store + 1, hi).filter(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::DeleteName(_) | CanonicalOp::DeleteFast(_)
+            )
+        })
+    else {
+        return from;
+    };
+    delete + 1
+}
+
+fn handler_normal_exit_reaches(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+    else_start: usize,
+    else_end: usize,
+) -> bool {
+    let scan_end: usize = except_region_end.min(stream.ops.len());
+    (region.handler_start..scan_end)
+        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))
+        .filter_map(|pop: usize| {
+            let after_teardown: usize = skip_except_name_teardown(stream, pop + 1, scan_end);
+            first_significant(stream, after_teardown, scan_end)
+        })
+        .any(|exit: usize| match &stream.ops[exit] {
+            CanonicalOp::Reraise(_) => false,
+            CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_) => resolve_jump_target(stream, exit, &stream.ops[exit])
+                .is_some_and(|target: usize| (else_start..else_end).contains(&target)),
+            _ => exit < else_end,
+        })
+}
+
+fn handler_normal_exit_jump_target(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+    else_start: usize,
+    else_end: usize,
+) -> Option<usize> {
+    let scan_end: usize = except_region_end.min(stream.ops.len());
+    (region.handler_start..scan_end)
+        .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))
+        .filter_map(|pop: usize| {
+            let after_teardown: usize = skip_except_name_teardown(stream, pop + 1, scan_end);
+            first_significant(stream, after_teardown, scan_end)
+        })
+        .filter(|&exit: &usize| {
+            matches!(
+                stream.ops[exit],
+                CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+            )
+        })
+        .find_map(|exit: usize| {
+            resolve_jump_target(stream, exit, &stream.ops[exit])
+                .filter(|target: &usize| (else_start..else_end).contains(target))
+        })
+}
+
+fn try_else_handler_continuation_split(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+    has_combo: bool,
+) -> Option<(usize, usize, usize)> {
+    if has_combo || stream.is_pre_311() {
+        return None;
+    }
+    if protected_end_splits_shortcircuit(stream, protected_end) {
+        return None;
+    }
+    let else_start: usize = protected_end;
+    let else_end_full: usize = trim_trailing_comp_cleanup(stream, else_start, region.handler_start);
+    if else_start >= else_end_full {
+        return None;
+    }
+    let first_idx: usize = (else_start..else_end_full)
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
+    if !else_entry_is_fallthrough(&stream.ops[first_idx]) {
+        return None;
+    }
+    if else_entry_is_loop_continuation(stream, region, first_idx) {
+        return None;
+    }
+    let cont_start: usize = handler_normal_exit_jump_target(
+        stream,
+        region,
+        except_region_end,
+        else_start,
+        else_end_full,
+    )?;
+    if cont_start <= else_start || cont_start >= else_end_full {
+        return None;
+    }
+    if !starts_at_statement_boundary(stream, else_start, cont_start) {
+        return None;
+    }
+    if !first_significant(stream, cont_start, else_end_full)
+        .is_some_and(|k: usize| else_entry_is_fallthrough(&stream.ops[k]))
+    {
+        return None;
+    }
+    if !slice_has_real_stmt(stream, else_start, cont_start)
+        || !slice_has_real_stmt(stream, cont_start, else_end_full)
+    {
+        return None;
+    }
+    let cont_end: usize = continuation_span_end(stream, cont_start, else_end_full);
+    if cont_start >= cont_end || !slice_has_real_stmt(stream, cont_start, cont_end) {
+        return None;
+    }
+    Some((else_start, cont_start, cont_end))
+}
+
+fn continuation_span_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    let mut reach: usize = lo;
+    while k < hi {
+        if let Some(target) = resolve_jump_target(stream, k, &stream.ops[k])
+            && target > k
+        {
+            reach = reach.max(target.min(hi));
+        }
+        match stream.ops[k] {
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+                if reach <= k =>
+            {
+                return k;
+            }
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) if reach <= k => return k + 1,
+            _ => k += 1,
+        }
+    }
+    trim_trailing_comp_cleanup(stream, lo, hi)
+}
+
+fn protected_end_splits_shortcircuit(stream: &DecodedStream, protected_end: usize) -> bool {
+    let Some(prev): Option<usize> = protected_end.checked_sub(1) else {
+        return false;
+    };
+    matches!(
+        stream.ops.get(prev),
+        Some(CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_))
+    ) && is_value_form_shortcircuit(&stream.ops, prev)
+}
+
+pub(super) fn trim_trailing_comp_cleanup(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let last: usize = match (lo..hi)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    {
+        Some(k) => k,
+        None => return hi,
+    };
+    if !matches!(stream.ops[last], CanonicalOp::Reraise(_)) {
+        return hi;
+    }
+    let mut k: usize = last;
+    while k > lo {
+        match stream.ops[k - 1] {
+            CanonicalOp::Swap(_)
+            | CanonicalOp::Pop
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Reraise(_) => k -= 1,
+            _ => break,
+        }
+    }
+    k
+}
+
+fn else_entry_is_loop_continuation(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    first_idx: usize,
+) -> bool {
+    matches!(
+        stream.ops[first_idx],
+        CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::JumpAbsolute(_)
+    ) && resolve_jump_target(stream, first_idx, &stream.ops[first_idx])
+        .is_some_and(|t: usize| t <= region.try_start)
+}
+
+fn else_entry_is_fallthrough(op: &CanonicalOp) -> bool {
+    !matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::Nop
+            | CanonicalOp::Cache
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Raise(_)
+    )
+}
+
+fn trim_inline_finally_from_handlers(
+    handlers: Vec<ExceptHandler>,
+    finalbody: &[Stmt],
+) -> Vec<ExceptHandler> {
+    if finalbody.is_empty() {
+        return handlers;
+    }
+    handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            strip_trailing_stmts(&mut h.body, finalbody);
+            strip_leading_stmts(&mut h.body, finalbody);
+            if h.body.is_empty() {
+                h.body = vec![Stmt::Pass];
+            }
+            h
+        })
+        .collect()
+}
+
+fn stmt_sequences_equal_ignoring_lines(a: &[Stmt], b: &[Stmt]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(left, right): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(left, right))
+}
+
+fn strip_trailing_stmts(body: &mut Vec<Stmt>, suffix: &[Stmt]) {
+    if suffix.is_empty() || body.len() < suffix.len() {
+        return;
+    }
+    let split: usize = body.len() - suffix.len();
+    let tail_matches: bool = body[split..]
+        .iter()
+        .zip(suffix.iter())
+        .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
+    if tail_matches {
+        body.truncate(split);
+    }
+}
+
+fn strip_leading_stmts(body: &mut Vec<Stmt>, prefix: &[Stmt]) {
+    if prefix.is_empty() || body.len() < prefix.len() {
+        return;
+    }
+    let head_matches: bool = body[..prefix.len()]
+        .iter()
+        .zip(prefix.iter())
+        .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
+    if head_matches {
+        body.drain(..prefix.len());
+    }
+}
+
+fn shared_construct_exit_return(raw: &[Stmt], handlers: &[ExceptHandler]) -> Option<Vec<Stmt>> {
+    let [exit @ Stmt::Return(_)]: &[Stmt] = raw else {
+        return None;
+    };
+    if handlers.is_empty() {
+        return None;
+    }
+    let all_share: bool = handlers.iter().all(|h: &ExceptHandler| {
+        h.body
+            .last()
+            .is_some_and(|s: &Stmt| stmts_equal_ignoring_lines(s, exit))
+    });
+    all_share.then(|| vec![exit.clone()])
+}
+
+fn shared_construct_exit_return_at_range(
+    raw: &[Stmt],
+    handlers: &[ExceptHandler],
+    active_range: Option<(usize, usize)>,
+    candidate_range: (usize, usize),
+) -> Option<Vec<Stmt>> {
+    (active_range == Some(candidate_range))
+        .then(|| shared_construct_exit_return(raw, handlers))
+        .flatten()
+}
+
+fn strip_shared_exit_suffix(
+    handlers: Vec<ExceptHandler>,
+    continuation: &[Stmt],
+) -> Vec<ExceptHandler> {
+    if continuation.is_empty() {
+        return handlers;
+    }
+    handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            let mut match_len: usize = 0;
+            while match_len < continuation.len() && match_len < h.body.len() {
+                let body_idx: usize = h.body.len() - 1 - match_len;
+                let cont_idx: usize = continuation.len() - 1 - match_len;
+                if stmts_equal_ignoring_lines(&h.body[body_idx], &continuation[cont_idx]) {
+                    match_len += 1;
+                } else {
+                    break;
+                }
+            }
+            if match_len > 0 {
+                h.body.truncate(h.body.len() - match_len);
+                h.body = non_empty(h.body);
+            }
+            h
+        })
+        .collect()
+}
+
+fn pop_except_tail_return(stream: &DecodedStream, pop: usize, hi: usize) -> Option<(usize, usize)> {
+    let after: usize = skip_except_name_teardown(stream, pop + 1, hi);
+    let start: usize = first_significant(stream, after, hi)?;
+    let mut k: usize = start;
+    let mut saw_value: bool = false;
+    while k < hi {
+        match &stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => {
+                return saw_value.then_some((start, k + 1));
+            }
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Reraise(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::DeleteFast(_)
+            | CanonicalOp::DeleteName(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::ForIter(_) => return None,
+            _ => saw_value = true,
+        }
+        k += 1;
+    }
+    None
+}
+
+fn handler_pass_through_tail_return(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+) -> Option<(usize, usize)> {
+    if stream.is_pre_311() {
+        return None;
+    }
+    let hi: usize = except_region_end.min(stream.ops.len());
+    let scan_from: usize = usize::from(matches!(
+        stream.ops.get(region.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    )) + region.handler_start;
+    let mut depth: u32 = 0;
+    for k in scan_from..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => {
+                if let Some(span) = pop_except_tail_return(stream, k, hi) {
+                    return Some(span);
+                }
+            }
+            CanonicalOp::PopExcept => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_shared_exit_return(
+    handlers: Vec<ExceptHandler>,
+    construct_tail: &[Stmt],
+) -> Vec<ExceptHandler> {
+    let [tail @ Stmt::Return(_)]: &[Stmt] = construct_tail else {
+        return handlers;
+    };
+    handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            if h.body
+                .last()
+                .is_some_and(|s: &Stmt| stmts_equal_ignoring_lines(s, tail))
+            {
+                h.body.pop();
+                h.body = non_empty(h.body);
+            }
+            h
+        })
+        .collect()
+}
+
+fn strip_shared_exit_return_with_loop_ownership(
+    handlers: Vec<ExceptHandler>,
+    construct_tail: &[Stmt],
+    candidate_range: Option<(usize, usize)>,
+) -> Vec<ExceptHandler> {
+    if loop_owns_shared_exit_tail(candidate_range) {
+        strip_shared_exit_return(handlers, construct_tail)
+    } else {
+        handlers
+    }
+}
+
+fn loop_owns_shared_exit_tail(candidate_range: Option<(usize, usize)>) -> bool {
+    loop_frame_owns_shared_exit_tail(
+        loop_frame_depth(),
+        active_loop_exit_tail_range(),
+        candidate_range,
+    )
+}
+
+fn loop_frame_owns_shared_exit_tail(
+    frame_depth: usize,
+    loop_tail: Option<(usize, usize)>,
+    candidate_range: Option<(usize, usize)>,
+) -> bool {
+    frame_depth == 0 || loop_tail.is_some_and(|tail: (usize, usize)| candidate_range == Some(tail))
+}
+
+fn handler_pop_except_idx(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let hi: usize = region_end.min(stream.ops.len());
+    let scan_start: usize = handler_body_first(stream, handler_start);
+    let mut depth: u32 = 0;
+    for k in scan_start..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => return Some(k),
+            CanonicalOp::PopExcept => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn handler_normal_exit_backjumps_to(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+    target: usize,
+) -> bool {
+    let Some(pop_except): Option<usize> = handler_pop_except_idx(stream, handler_start, region_end)
+    else {
+        return false;
+    };
+    let scan_hi: usize = region_end.min(stream.ops.len());
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, scan_hi);
+    let Some(next): Option<usize> = first_significant(stream, after_teardown, scan_hi) else {
+        return false;
+    };
+    if !matches!(stream.ops[next], CanonicalOp::JumpBackwardNoInterrupt(_)) {
+        return false;
+    }
+    resolve_jump_target(stream, next, &stream.ops[next]).is_some_and(|t: usize| t == target)
+}
+
+fn significant_ops(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<&CanonicalOp> {
+    (lo..hi)
+        .map(|k: usize| &stream.ops[k])
+        .filter(|op: &&CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .collect()
+}
+
+fn op_spans_match(
+    stream: &DecodedStream,
+    a_lo: usize,
+    a_hi: usize,
+    b_lo: usize,
+    b_hi: usize,
+) -> bool {
+    let lhs: Vec<&CanonicalOp> = significant_ops(stream, a_lo, a_hi);
+    let rhs: Vec<&CanonicalOp> = significant_ops(stream, b_lo, b_hi);
+    !lhs.is_empty() && lhs == rhs
+}
+
+fn modern_continuation_start(
+    stream: &DecodedStream,
+    gap_start: usize,
+    handler_start: usize,
+    tail_lo: usize,
+    tail_hi: usize,
+) -> usize {
+    if gap_start >= handler_start || tail_lo >= tail_hi {
+        return handler_start;
+    }
+    let mut best: usize = handler_start;
+    for cont_start in (gap_start..handler_start).rev() {
+        if !starts_at_statement_boundary(stream, gap_start, cont_start) {
+            continue;
+        }
+        if op_spans_match(stream, cont_start, handler_start, tail_lo, tail_hi) {
+            best = cont_start;
+        }
+    }
+    best
+}
+
+fn starts_at_statement_boundary(
+    stream: &DecodedStream,
+    gap_start: usize,
+    cont_start: usize,
+) -> bool {
+    cont_start == gap_start
+        || last_significant_back(stream, gap_start, cont_start)
+            .is_none_or(|k: usize| !op_leaves_value(&stream.ops[k]))
+}
+
+fn handler_continuation_tail_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi {
+        match stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_)
+                if skip_handler_name_cleanup(stream, k + 1, hi) > k + 1 =>
+            {
+                return k + 1;
+            }
+            CanonicalOp::Reraise(_)
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::Swap(_)
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::PopExcept => break,
+            _ => k += 1,
+        }
+    }
+    k
+}
+
+fn tail_is_implicit_none_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> bool {
+    let ops: Vec<&CanonicalOp> = significant_ops(stream, lo, hi);
+    match ops.as_slice() {
+        [CanonicalOp::ReturnConst(idx)] => {
+            matches!(code.consts.get(*idx as usize), Some(Object::None))
+        }
+        [load, CanonicalOp::Return] => loads_none(code, load),
+        _ => false,
+    }
+}
+
+fn structure_try_except_family(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    extended_body_end: usize,
+    hi: usize,
+) -> Result<(Stmt, usize, Vec<Stmt>)> {
+    let combo: Option<ComboFinally> = find_combo_finally(stream, region, hi);
+    let except_region_end: usize = combo
+        .as_ref()
+        .map_or(region.region_end, |c: &ComboFinally| c.except_region_end);
+
+    let finalbody: Vec<Stmt> = match &combo {
+        Some(c) => {
+            let fin_body: Vec<Stmt> =
+                structure_stmts(code, stream, c.finally_body_start, c.finally_body_end)?;
+            non_empty(fin_body)
+        }
+        None => Vec::new(),
+    };
+
+    let inline_copy_len: usize = combo
+        .as_ref()
+        .map_or(0, |c: &ComboFinally| c.inline_copy_len);
+    let has_combo: bool = combo.is_some();
+    let comp_end: usize = extend_protected_end_over_comp(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+    );
+    let await_end: usize = skip_await_send_loop(stream, comp_end, region.handler_start);
+    let sc_end: usize = extend_end_past_shortcircuit_stmt(stream, await_end, region.handler_start);
+    let protected_end: usize = if stream.is_pre_311() || has_combo {
+        sc_end
+    } else {
+        let with_return: usize =
+            protected_body_end_with_return(stream, region.try_start, sc_end, region.handler_start);
+        let over_guard: usize = extend_protected_end_over_guard_return(
+            stream,
+            region.try_start,
+            with_return,
+            region.handler_start,
+        );
+        extend_protected_end_over_guarded_return_body(
+            stream,
+            region.try_start,
+            over_guard,
+            region.handler_start,
+        )
+    };
+
+    if stream.is_pre_311() && !has_combo {
+        let (stmt, consumed): (Stmt, usize) =
+            structure_pre311_try_except(code, stream, region, extended_body_end, hi)?;
+        return Ok((stmt, consumed, Vec::new()));
+    }
+
+    if !has_combo
+        && let Some(result) = structure_modern_try_with_continuation(
+            code,
+            stream,
+            region,
+            protected_end,
+            except_region_end,
+        )?
+    {
+        return Ok(result);
+    }
+
+    if !has_combo
+        && let Some(result) = structure_modern_try_with_forward_continuation(
+            code,
+            stream,
+            region,
+            protected_end,
+            extended_body_end,
+        )?
+    {
+        return Ok(result);
+    }
+
+    let plain_normal_region: Option<(usize, usize)> =
+        try_else_split(stream, region, protected_end, except_region_end, has_combo);
+
+    let handler_cont_split: Option<(usize, usize, usize)> = if plain_normal_region.is_none() {
+        try_else_handler_continuation_split(
+            stream,
+            region,
+            protected_end,
+            except_region_end,
+            has_combo,
+        )
+    } else {
+        None
+    };
+
+    let normal_region: Option<(usize, usize)> = plain_normal_region.or_else(|| {
+        handler_cont_split
+            .map(|(else_start, cont_start, _): (usize, usize, usize)| (else_start, cont_start))
+    });
+
+    let continuation_region: Option<(usize, usize)> = if has_combo || normal_region.is_some() {
+        None
+    } else {
+        try_continuation_split(stream, region, protected_end, except_region_end)
+    };
+
+    let lift_modern_tail: bool = normal_region.is_none()
+        && continuation_region.is_none()
+        && !has_combo
+        && modern_try_construct_tail_present(stream, region, protected_end);
+
+    let mut body: Vec<Stmt> = if has_combo {
+        structure_finally_protected_body(
+            code,
+            stream,
+            region.try_start,
+            protected_end,
+            region.handler_start,
+            inline_copy_len,
+        )?
+    } else if normal_region.is_some()
+        || continuation_region.is_some()
+        || protected_end > extended_body_end
+    {
+        let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(protected_end);
+        structure_stmts(code, stream, region.try_start, protected_end)?
+    } else {
+        let _body_cap: StructureHiCapGuard = StructureHiCapGuard::enter(extended_body_end);
+        structure_stmts(code, stream, region.try_start, extended_body_end)?
+    };
+    let lifted_tail: Vec<Stmt> =
+        if lift_modern_tail && body.len() >= 2 && matches!(body.last(), Some(Stmt::Return(_))) {
+            body.pop().into_iter().collect()
+        } else {
+            Vec::new()
+        };
+
+    let else_fallthrough_tail: Option<(usize, usize, usize)> =
+        if !has_combo && normal_region.is_some() && handler_cont_split.is_none() {
+            else_construct_fallthrough_tail(code, stream, region, except_region_end)
+        } else {
+            None
+        };
+    let handler_bound: usize = else_fallthrough_tail.map_or(
+        except_region_end,
+        |(pop_except, _, _): (usize, usize, usize)| pop_except + 1,
+    );
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, handler_bound)?;
+    let handlers: Vec<ExceptHandler> = if has_combo {
+        trim_inline_finally_from_handlers(handlers, &finalbody)
+    } else {
+        handlers
+    };
+
+    let body_had_comp: bool = protected_end > region.protected_end;
+    let (orelse, construct_tail): (Vec<Stmt>, Vec<Stmt>) = match normal_region {
+        Some((s, e)) => {
+            let continuation: Option<(usize, usize)> = handler_cont_split
+                .map(|(_, cont_start, cont_end): (usize, usize, usize)| (cont_start, cont_end))
+                .or_else(|| {
+                    else_fallthrough_tail.map(|(_, tail_start, tail_end): (usize, usize, usize)| {
+                        (tail_start, tail_end)
+                    })
+                });
+            if !has_combo
+                && !body_had_comp
+                && let Some((split_orelse, split_tail)) =
+                    split_else_tail_at_terminating_nop(code, stream, s, e, continuation)?
+            {
+                (split_orelse, split_tail)
+            } else {
+                let mut raw: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
+                if let Some((_, cont_start, cont_end)) = handler_cont_split {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, cont_start, cont_end)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
+                    }
+                    (raw, tail)
+                } else if has_combo {
+                    let before_len: usize = raw.len();
+                    strip_leading_stmts(&mut raw, &finalbody);
+                    let recovered_continuation: bool = raw.len() < before_len
+                        && !matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. }));
+                    if recovered_continuation {
+                        while raw.last().is_some_and(is_implicit_none_return) {
+                            raw.pop();
+                        }
+                        (Vec::new(), raw)
+                    } else {
+                        let tail: Vec<Stmt> =
+                            split_construct_tail_after_finally(&mut raw, &finalbody);
+                        while matches!(raw.last(), Some(Stmt::Return(_))) {
+                            raw.pop();
+                        }
+                        (raw, tail)
+                    }
+                } else if let Some((_, tail_start, tail_end)) = else_fallthrough_tail {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, tail_end)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
+                    }
+                    (raw, tail)
+                } else if body_had_comp {
+                    (Vec::new(), raw)
+                } else {
+                    (raw, Vec::new())
+                }
+            }
+        }
+        None => match continuation_region {
+            Some((s, e)) => {
+                if !has_combo
+                    && !body_had_comp
+                    && let Some((split_orelse, split_tail)) =
+                        split_else_tail_at_terminating_nop(code, stream, s, e, None)?
+                {
+                    (split_orelse, split_tail)
+                } else {
+                    let mut tail: Vec<Stmt> = structure_stmts(code, stream, s, e)?;
+                    while tail.last().is_some_and(is_implicit_none_return) {
+                        tail.pop();
+                    }
+                    (Vec::new(), tail)
+                }
+            }
+            None => (Vec::new(), lifted_tail),
+        },
+    };
+    let handlers: Vec<ExceptHandler> = if construct_tail.is_empty() {
+        handlers
+    } else {
+        strip_shared_exit_return(handlers, &construct_tail)
+    };
+
+    let consumed: usize = combo
+        .as_ref()
+        .map_or(except_region_end, |c: &ComboFinally| c.region_end);
+    Ok((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse,
+            finalbody,
+            line: None,
+        },
+        consumed,
+        construct_tail,
+    ))
+}
+
+fn find_construct_terminating_nop(
+    stream: &DecodedStream,
+    else_start: usize,
+    handler_start: usize,
+) -> Option<usize> {
+    let hi: usize = handler_start.min(stream.ops.len());
+    let mut k: usize = else_start;
+    while k < hi {
+        if matches!(stream.ops[k], CanonicalOp::Nop) {
+            let prev_terminates: bool =
+                last_significant_back(stream, else_start, k).is_some_and(|p: usize| {
+                    matches!(
+                        stream.ops[p],
+                        CanonicalOp::Return
+                            | CanonicalOp::ReturnConst(_)
+                            | CanonicalOp::Raise(_)
+                            | CanonicalOp::Reraise(_)
+                    )
+                });
+            let jumped_to: bool = (else_start..k).any(|j: usize| {
+                matches!(
+                    stream.ops[j],
+                    CanonicalOp::PopJumpIfFalse(_)
+                        | CanonicalOp::PopJumpIfTrue(_)
+                        | CanonicalOp::PopJumpIfFalseRel(_)
+                        | CanonicalOp::PopJumpIfTrueRel(_)
+                        | CanonicalOp::JumpForward(_)
+                ) && resolve_jump_target(stream, j, &stream.ops[j]).is_some_and(|t: usize| t == k)
+            });
+            if prev_terminates
+                && jumped_to
+                && first_significant(stream, k + 1, hi).is_some()
+                && slice_has_real_stmt(stream, k + 1, hi)
+            {
+                return Some(k);
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
+fn split_else_tail_at_terminating_nop(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    else_start: usize,
+    else_end: usize,
+    continuation: Option<(usize, usize)>,
+) -> Result<Option<(Vec<Stmt>, Vec<Stmt>)>> {
+    if stream.is_pre_311() {
+        return Ok(None);
+    }
+    let Some(nop): Option<usize> = find_construct_terminating_nop(stream, else_start, else_end)
+    else {
+        return Ok(None);
+    };
+    let Some(else_first): Option<usize> = first_significant(stream, else_start, nop) else {
+        return Ok(None);
+    };
+    if !else_entry_is_fallthrough(&stream.ops[else_first])
+        || !slice_has_real_stmt(stream, else_start, nop)
+        || !slice_has_real_stmt(stream, nop, else_end)
+    {
+        return Ok(None);
+    }
+    if stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            stream
+                .index_for_offset(e.start)
+                .is_some_and(|si: usize| (else_start..nop).contains(&si))
+        })
+    {
+        return Ok(None);
+    }
+    let orelse: Vec<Stmt> = structure_stmts(code, stream, else_start, nop)?;
+    if orelse.is_empty() {
+        return Ok(None);
+    }
+    let mut tail: Vec<Stmt> = structure_stmts(code, stream, nop, else_end)?;
+    if let Some((cont_start, cont_end)) = continuation {
+        let mut cont: Vec<Stmt> = structure_stmts(code, stream, cont_start, cont_end)?;
+        while cont.last().is_some_and(is_implicit_none_return) {
+            cont.pop();
+        }
+        tail.extend(cont);
+    }
+    while tail.last().is_some_and(is_implicit_none_return) {
+        tail.pop();
+    }
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((orelse, tail)))
+}
+
+fn is_bare_handler_scaffolding(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::PushExcInfo
+            | CanonicalOp::CheckExcMatch
+            | CanonicalOp::CheckEgMatch
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
+            | CanonicalOp::LoadAttr(_)
+            | CanonicalOp::BuildTuple(_)
+            | CanonicalOp::Pop
+            | CanonicalOp::Copy(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+    )
+}
+
+fn bare_handler_is_sole_clause(
+    stream: &DecodedStream,
+    handler_start: usize,
+    pop_except: usize,
+    except_region_end: usize,
+) -> bool {
+    let Some(dispatch): Option<usize> = (handler_start..pop_except).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        )
+    }) else {
+        return false;
+    };
+    resolve_jump_target(stream, dispatch, &stream.ops[dispatch])
+        .and_then(|t: usize| first_significant(stream, t, except_region_end))
+        .is_some_and(|t: usize| matches!(stream.ops.get(t), Some(CanonicalOp::Reraise(_))))
+}
+
+fn else_construct_fallthrough_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    except_region_end: usize,
+) -> Option<(usize, usize, usize)> {
+    if active_version().is_none_or(|v: PyVersion| (v.major(), v.minor()) < (3, 12)) {
+        return None;
+    }
+    let pop_except: usize =
+        handler_pop_except_idx(stream, region.handler_start, except_region_end)?;
+    if !(region.handler_start..pop_except)
+        .all(|k: usize| is_bare_handler_scaffolding(&stream.ops[k]))
+    {
+        return None;
+    }
+    if !bare_handler_is_sole_clause(stream, region.handler_start, pop_except, except_region_end) {
+        return None;
+    }
+    let after_teardown: usize =
+        skip_except_name_teardown(stream, pop_except + 1, except_region_end);
+    let tail_start: usize =
+        first_significant(stream, after_teardown, except_region_end).unwrap_or(except_region_end);
+    if !stream
+        .ops
+        .get(tail_start)
+        .is_some_and(else_entry_is_fallthrough)
+    {
+        return None;
+    }
+    let tail_end: usize = handler_continuation_tail_end(stream, tail_start, except_region_end);
+    if tail_start >= tail_end
+        || !slice_has_real_stmt(stream, tail_start, tail_end)
+        || tail_is_implicit_none_return(code, stream, tail_start, tail_end)
+        || (tail_start..tail_end).any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+    {
+        return None;
+    }
+    Some((pop_except, tail_start, tail_end))
+}
+
+fn structure_modern_try_with_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    except_region_end: usize,
+) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
+    let Some(pop_except): Option<usize> =
+        handler_pop_except_idx(stream, region.handler_start, except_region_end)
+    else {
+        return Ok(None);
+    };
+    let tail_start: usize = skip_handler_name_cleanup(
+        stream,
+        first_significant(stream, pop_except + 1, except_region_end).unwrap_or(except_region_end),
+        except_region_end,
+    );
+    let tail_end: usize = handler_continuation_tail_end(stream, tail_start, except_region_end);
+    if tail_start >= tail_end
+        || !slice_has_real_stmt(stream, tail_start, tail_end)
+        || tail_is_implicit_none_return(code, stream, tail_start, tail_end)
+    {
+        return Ok(None);
+    }
+    let cont_start: usize = modern_continuation_start(
+        stream,
+        protected_end,
+        region.handler_start,
+        tail_start,
+        tail_end,
+    );
+    if cont_start >= region.handler_start {
+        return Ok(None);
+    }
+    if region_holds_cold_sibling_try(stream, protected_end, cont_start, region.handler_start) {
+        return Ok(None);
+    }
+
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, protected_end)?;
+
+    let else_end: usize = trim_try_body_jump(stream, protected_end, cont_start);
+    let orelse: Vec<Stmt> = if protected_end < else_end
+        && first_significant(stream, protected_end, else_end)
+            .is_some_and(|k: usize| else_entry_is_fallthrough(&stream.ops[k]))
+    {
+        structure_stmts(code, stream, protected_end, else_end)?
+    } else {
+        Vec::new()
+    };
+
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, pop_except + 1)?;
+
+    let mut continuation: Vec<Stmt> =
+        structure_stmts(code, stream, cont_start, region.handler_start)?;
+    while continuation.last().is_some_and(is_implicit_none_return) {
+        continuation.pop();
+    }
+
+    Ok(Some((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse,
+            finalbody: Vec::new(),
+            line: None,
+        },
+        except_region_end,
+        continuation,
+    )))
+}
+
+fn region_holds_cold_sibling_try(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    handler_start: usize,
+) -> bool {
+    if lo >= hi {
+        return false;
+    }
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let Some(start): Option<usize> = stream.index_for_offset(e.start) else {
+                return false;
+            };
+            let Some(target): Option<usize> = stream.index_for_offset(e.target) else {
+                return false;
+            };
+            (lo..hi).contains(&start)
+                && target >= handler_start
+                && matches!(stream.ops.get(target), Some(CanonicalOp::PushExcInfo))
+        })
+}
+
+fn has_back_edge_into(stream: &DecodedStream, lo: usize, hi: usize, target_floor: usize) -> bool {
+    (lo..hi.min(stream.ops.len())).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t <= target_floor)
+    })
+}
+
+fn structure_modern_try_with_forward_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    protected_end: usize,
+    extended_body_end: usize,
+) -> Result<Option<(Stmt, usize, Vec<Stmt>)>> {
+    let Some(pop_except): Option<usize> =
+        handler_pop_except_idx(stream, region.handler_start, region.region_end)
+    else {
+        return Ok(None);
+    };
+    let after_pop: usize =
+        first_significant(stream, pop_except + 1, region.region_end).unwrap_or(region.region_end);
+    if !matches!(stream.ops.get(after_pop), Some(CanonicalOp::JumpForward(_))) {
+        return Ok(None);
+    }
+    let Some(jump_target): Option<usize> =
+        resolve_jump_target(stream, after_pop, &stream.ops[after_pop])
+            .filter(|t: &usize| *t > after_pop)
+    else {
+        return Ok(None);
+    };
+    let Some(chain_end): Option<usize> =
+        handler_chain_end(stream, region.handler_start, region.region_end)
+    else {
+        return Ok(None);
+    };
+    if jump_target < chain_end
+        || jump_target >= region.region_end
+        || chain_end >= region.region_end
+        || !slice_has_real_stmt(stream, jump_target, region.region_end)
+        || has_back_edge_into(
+            stream,
+            region.handler_start,
+            region.region_end,
+            region.try_start,
+        )
+        || (region.handler_start + 1..chain_end)
+            .any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+        || (region.try_start..protected_end)
+            .any(|k: usize| matches!(stream.ops[k], CanonicalOp::PushExcInfo))
+    {
+        return Ok(None);
+    }
+
+    if try_else_split(stream, region, protected_end, chain_end, true).is_some() {
+        return Ok(None);
+    }
+    let body_end: usize = trim_try_body_jump(stream, region.try_start, extended_body_end);
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, chain_end)?;
+
+    Ok(Some((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        },
+        chain_end,
+        Vec::new(),
+    )))
+}
+
+fn split_construct_tail_after_finally(raw: &mut Vec<Stmt>, finalbody: &[Stmt]) -> Vec<Stmt> {
+    if finalbody.is_empty() || finalbody.len() > raw.len() {
+        return Vec::new();
+    }
+    let mut copy_at: Option<usize> = None;
+    let limit: usize = raw.len() - finalbody.len();
+    for start in (0..=limit).rev() {
+        let window_matches: bool = raw[start..start + finalbody.len()]
+            .iter()
+            .zip(finalbody.iter())
+            .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
+        if window_matches {
+            copy_at = Some(start);
+            break;
+        }
+    }
+    let Some(copy_at): Option<usize> = copy_at else {
+        strip_trailing_stmts(raw, finalbody);
+        return Vec::new();
+    };
+    let tail_start: usize = copy_at + finalbody.len();
+    let tail: Vec<Stmt> = raw.split_off(tail_start);
+    raw.truncate(copy_at);
+    tail.into_iter()
+        .filter(|s: &Stmt| matches!(s, Stmt::Return(_)))
+        .collect()
+}
+
+fn pre311_else_is_real(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    else_start: usize,
+    else_end: usize,
+) -> bool {
+    let Some(last): Option<usize> = (else_start..else_end)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return false;
+    };
+    if !matches!(stream.ops[last], CanonicalOp::Return) {
+        return false;
+    }
+    let Some(prev): Option<usize> = (else_start..last)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return false;
+    };
+    if !loads_none(code, &stream.ops[prev]) {
+        return false;
+    }
+    (else_start..prev)
+        .rev()
+        .find_map(|k: usize| match stream.ops[k] {
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_) => Some(true),
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => None,
+            _ => Some(false),
+        })
+        .unwrap_or(false)
+}
+
+fn structure_pre311_try_except(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    extended_body_end: usize,
+    hi: usize,
+) -> Result<(Stmt, usize)> {
+    let region_bound: usize = hi.min(stream.ops.len());
+    let pop_block: Option<usize> = stream
+        .pre311_pop_block_idx
+        .range(region.try_start..region.handler_start)
+        .next_back()
+        .copied();
+
+    let mut body_end: usize = extended_body_end;
+    let mut else_region: Option<(usize, usize)> = None;
+    let mut fallthrough_continuation: Option<(usize, usize)> = None;
+    let mut handler_region_end: usize = region.region_end;
+    let mut consumed: usize = region.region_end;
+
+    if let Some(pb) = pop_block {
+        let after: usize = pre311_skip_pop_except(stream, pb + 1, region.handler_start);
+        if let Some(jt) = pre311_body_exit_jump_target(stream, pb, region.handler_start)
+            && jt > region.handler_start
+        {
+            let else_start: usize = pre311_skip_jumps(stream, jt, region_bound);
+            let else_end: usize = pre311_else_end(stream, else_start, region_bound);
+            let shared_with_handler: bool =
+                pre311_handler_swallow_target(stream, region.handler_start, jt).is_some_and(
+                    |t: usize| pre311_skip_jumps(stream, t, region_bound) == else_start,
+                );
+            let handler_join: Option<usize> =
+                pre311_handler_swallow_target(stream, region.handler_start, jt)
+                    .map(|t: usize| pre311_skip_jumps(stream, t, region_bound))
+                    .filter(|&t: &usize| t > else_start && t <= region_bound);
+            let handler_reaches_else: bool = (region.handler_start..jt).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|target: usize| {
+                    pre311_skip_jumps(stream, target, region_bound) == else_start
+                })
+            });
+            let handler_breaks: bool = (region.handler_start..jt).any(|k: usize| {
+                matches!(
+                    stream.ops[k],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|target: usize| {
+                    target >= jt
+                        && matches!(
+                            trailing_loop_jump_stmt(stream, region.handler_start, k + 1),
+                            Some(Stmt::Break)
+                        )
+                })
+            });
+            let real_else: bool = !pre311_enclosed_by_finally(stream, region)
+                && (pre311_else_is_real(code, stream, else_start, else_end)
+                    || handler_breaks && !handler_reaches_else);
+            if let Some(hj) = handler_join
+                && !pre311_enclosed_by_finally(stream, region)
+                && !pre311_span_is_implicit_none_exit(stream, hj, region_bound)
+                && pre311_region_has_real_stmt(stream, hj, region_bound)
+                && pre311_region_has_real_stmt(stream, else_start, hj)
+            {
+                let bounded_else_end: usize =
+                    pre311_else_end(stream, else_start, hj).max(else_start);
+                body_end = pb;
+                handler_region_end = jt;
+                else_region = Some((else_start, bounded_else_end));
+                consumed = hj;
+            } else if pre311_region_has_real_stmt(stream, else_start, else_end)
+                && !shared_with_handler
+                && (real_else || pre311_enclosed_by_finally(stream, region))
+            {
+                body_end = pb;
+                handler_region_end = jt;
+                else_region = Some((else_start, else_end));
+                consumed = consumed.max(else_end);
+            } else if pre311_region_has_real_stmt(stream, else_start, else_end)
+                && !shared_with_handler
+            {
+                body_end = pb;
+                handler_region_end = jt;
+                consumed = else_start;
+            } else if shared_with_handler {
+                body_end = pb;
+                handler_region_end = jt;
+                consumed = consumed.max(jt);
+            }
+        } else if matches!(stream.ops.get(region.handler_start), Some(CanonicalOp::Dup)) {
+            let else_start: usize = pre311_skip_jumps(stream, after, region.handler_start);
+            let else_end: usize = pre311_else_end(stream, else_start, region.handler_start);
+            let first_real: Option<usize> = (else_start..else_end)
+                .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop));
+            let ends_in_return: bool = (else_start..else_end)
+                .rev()
+                .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+                .is_some_and(|k: usize| {
+                    matches!(
+                        stream.ops[k],
+                        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+                    )
+                });
+            let body_return_via_finally: bool =
+                ends_in_return && pre311_enclosed_by_finally(stream, region);
+            if !body_return_via_finally
+                && !pre311_span_is_implicit_none_exit(stream, else_start, else_end)
+                && first_real.is_some_and(|k: usize| else_entry_is_fallthrough(&stream.ops[k]))
+            {
+                body_end = pb;
+                else_region = Some((else_start, else_end));
+                fallthrough_continuation = Some((else_start, else_end));
+            }
+        }
+    }
+
+    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    let mut handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
+    let mut orelse: Vec<Stmt> = match else_region {
+        Some((s, e)) => structure_stmts(code, stream, s, e)?,
+        None => Vec::new(),
+    };
+    if let Some((else_start, else_end)) = else_region
+        && let Some(shared) = shared_construct_exit_return_at_range(
+            &orelse,
+            &handlers,
+            active_loop_exit_tail_range(),
+            (else_start, else_end),
+        )
+    {
+        orelse.clear();
+        handlers = strip_shared_exit_return_with_loop_ownership(
+            handlers,
+            &shared,
+            Some((else_start, else_end)),
+        );
+        consumed = else_start;
+    }
+    if let Some((continuation_start, _)) = fallthrough_continuation
+        && let Some(shared) = shared_construct_exit_return(&orelse, &handlers)
+    {
+        orelse.clear();
+        handlers = strip_shared_exit_return(handlers, &shared);
+        consumed = continuation_start;
+    }
+    Ok((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers,
+            orelse,
+            finalbody: Vec::new(),
+            line: None,
+        },
+        consumed,
+    ))
+}
+
+fn pre311_enclosed_by_finally(stream: &DecodedStream, region: &TryRegion) -> bool {
+    let Some(try_off): Option<u32> = stream.offsets.get(region.try_start).copied() else {
+        return false;
+    };
+    let Some(handler_off): Option<u32> = stream.offsets.get(region.handler_start).copied() else {
+        return false;
+    };
+    for entry in &stream.exception_table {
+        let Some(enc_handler): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
+        if enc_handler <= region.handler_start {
+            continue;
+        }
+        if entry.start > try_off || entry.end() < handler_off {
+            continue;
+        }
+        let enc_end: usize = pre311_handler_region_end(stream, enc_handler, stream.ops.len());
+        if is_pre311_finally_handler_shape(stream, enc_handler, enc_end.min(stream.ops.len())) {
+            return true;
+        }
+    }
+    false
+}
+
+fn pre311_skip_pop_except(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(CanonicalOp::PopExcept | CanonicalOp::Nop | CanonicalOp::Cache)
+        )
+    {
+        k += 1;
+    }
+    k
+}
+
+fn pre311_body_exit_jump_target(
+    stream: &DecodedStream,
+    pop_block: usize,
+    handler_start: usize,
+) -> Option<usize> {
+    let k: usize = pre311_skip_pop_except(stream, pop_block + 1, handler_start);
+    if k >= handler_start {
+        return None;
+    }
+    if matches!(
+        stream.ops.get(k),
+        Some(CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_))
+    ) {
+        return resolve_jump_target(stream, k, &stream.ops[k]);
+    }
+    None
+}
+
+fn pre311_handler_swallow_target(
+    stream: &DecodedStream,
+    handler_start: usize,
+    body_exit: usize,
+) -> Option<usize> {
+    (handler_start..body_exit)
+        .rev()
+        .filter(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+            )
+        })
+        .find_map(|k: usize| {
+            resolve_jump_target(stream, k, &stream.ops[k]).filter(|t: &usize| *t >= body_exit)
+        })
+}
+
+fn pre311_region_has_real_stmt(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        !matches!(
+            stream.ops[k],
+            CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::Reraise(_)
+                | CanonicalOp::PopExcept
+        )
+    })
+}
+
+fn pre311_skip_jumps(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        )
+    {
+        k += 1;
+    }
+    k
+}
+
+fn pre311_span_is_implicit_none_exit(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let significant: Vec<usize> = (lo..hi)
+        .filter(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .collect();
+    match significant.as_slice() {
+        [only] => matches!(stream.ops[*only], CanonicalOp::ReturnConst(_)),
+        [load, ret] => {
+            is_none_const_push(&stream.ops[*load])
+                && matches!(stream.ops[*ret], CanonicalOp::Return)
+        }
+        _ => false,
+    }
+}
+
+fn pre311_else_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut end: usize = hi;
+    while end > lo
+        && matches!(
+            stream.ops.get(end - 1),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        )
+    {
+        end -= 1;
+    }
+    end
+}
+
+pub(super) fn is_pure_finally_handler_shape(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+    is_pre311: bool,
+) -> bool {
+    if is_pre311 {
+        return is_pre311_finally_handler_shape(stream, handler_start, region_end);
+    }
+    let mut i: usize = handler_start;
+    if !matches!(stream.ops.get(i), Some(CanonicalOp::PushExcInfo)) {
+        return false;
+    }
+    i += 1;
+    if matches!(
+        first_significant(stream, i, region_end).map(|k: usize| &stream.ops[k]),
+        Some(CanonicalOp::WithExceptStart)
+    ) {
+        return false;
+    }
+    if matches!(stream.ops.get(i), Some(CanonicalOp::Pop)) {
+        return false;
+    }
+    for k in i..region_end {
+        match stream.ops[k] {
+            CanonicalOp::CheckExcMatch
+            | CanonicalOp::CheckEgMatch
+            | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
+            | CanonicalOp::JumpIfNotExcMatch(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::Dup => return false,
+            CanonicalOp::Reraise(_) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_pre311_finally_handler_shape(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> bool {
+    let mut i: usize = handler_start;
+    while i < region_end
+        && matches!(
+            stream.ops.get(i),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_))
+        )
+    {
+        i += 1;
+    }
+    if matches!(stream.ops.get(i), Some(CanonicalOp::Pop | CanonicalOp::Dup)) {
+        return false;
+    }
+    for k in i..region_end {
+        match stream.ops[k] {
+            CanonicalOp::CheckExcMatch
+            | CanonicalOp::CheckEgMatch
+            | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
+            | CanonicalOp::JumpIfNotExcMatch(_)
+            | CanonicalOp::PopExcept => return false,
+            CanonicalOp::Dup if dup_is_exc_match_probe(stream, k, region_end) => return false,
+            CanonicalOp::Reraise(_) => return true,
+            _ if stream.pre311_end_finally_idx.contains(&k) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn dup_is_exc_match_probe(stream: &DecodedStream, dup_idx: usize, region_end: usize) -> bool {
+    let probe_end: usize = (dup_idx + 8).min(region_end);
+    (dup_idx + 1..probe_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckExcMatch
+                | CanonicalOp::CheckEgMatch
+                | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
+                | CanonicalOp::JumpIfNotExcMatch(_)
+        )
+    })
+}
+
+fn handler_body_first(stream: &DecodedStream, handler_start: usize) -> usize {
+    if matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        handler_start + 1
+    } else {
+        handler_start
+    }
+}
+
+fn finally_body_end(stream: &DecodedStream, fin_start: usize, region_end: usize) -> usize {
+    (fin_start..region_end)
+        .find(|&k: &usize| {
+            matches!(stream.ops[k], CanonicalOp::Reraise(_))
+                || stream.pre311_end_finally_idx.contains(&k)
+        })
+        .unwrap_or(region_end)
+}
+
+fn pre311_inner_except_region_end(stream: &DecodedStream, region: &TryRegion) -> Option<usize> {
+    let mut end: Option<usize> = None;
+    for entry in &stream.exception_table {
+        let Some(inner_handler): Option<usize> = stream.index_for_offset(entry.target) else {
+            continue;
+        };
+        if inner_handler <= region.try_start || inner_handler >= region.handler_start {
+            continue;
+        }
+        let inner_end: usize =
+            pre311_handler_region_end(stream, inner_handler, region.handler_start);
+        let bounded: usize = inner_end.min(region.handler_start);
+        if !is_pre311_finally_handler_shape(stream, inner_handler, bounded) {
+            end = Some(end.map_or(bounded, |prev: usize| prev.max(bounded)));
+        }
+    }
+    end
+}
+
+fn try_structure_guard_over_finally(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&k: &usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok(None);
+    };
+    if guard <= lo {
+        return Ok(None);
+    }
+    let Some(false_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&t: &usize| t > region.protected_end && t <= region.region_end && t <= hi)
+    else {
+        return Ok(None);
+    };
+    if false_target > region.handler_start && false_target < region.region_end {
+        return Ok(None);
+    }
+    if (lo..guard).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k]) || stream.none_jump_kind.contains_key(&k))
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > guard)
+    }) {
+        return Ok(None);
+    }
+    let body_lo: usize = (guard + 1..region.try_start)
+        .find(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        .unwrap_or(region.try_start);
+    if body_lo < region.try_start
+        && (body_lo..region.try_start).any(|k: usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Push(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    {
+        return Ok(None);
+    }
+    let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
+    else {
+        return Ok(None);
+    };
+    let (test_head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if is_none_jump
+        || matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfFalseRel(_)
+        ) {
+        test
+    } else {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    };
+    let (finally_stmt, fin_tail): (Stmt, Vec<Stmt>) =
+        structure_pure_finally(code, stream, region, region.protected_end)?;
+    if !matches!(finally_stmt, Stmt::Try { .. }) {
+        return Ok(None);
+    }
+    let fin_start: usize = handler_body_first(stream, region.handler_start);
+    let fin_end: usize = finally_body_end(stream, fin_start, region.region_end);
+    let finally_len: usize = fin_end.saturating_sub(fin_start);
+    let cont_start: usize = (region.protected_end + finally_len).min(region.handler_start);
+    let normal_cont_end: usize = false_target.max(cont_start).min(region.handler_start);
+    let mut normal_cont: Vec<Stmt> = if cont_start < normal_cont_end {
+        structure_stmts(code, stream, cont_start, normal_cont_end)?
+    } else {
+        Vec::new()
+    };
+    normal_cont.extend(fin_tail);
+    while normal_cont.last().is_some_and(is_implicit_none_return) {
+        normal_cont.pop();
+    }
+    let guard_exit: Vec<Stmt> = if false_target < region.handler_start {
+        let mut gx: Vec<Stmt> = structure_stmts(code, stream, false_target, region.handler_start)?;
+        while gx.last().is_some_and(is_implicit_none_return) {
+            gx.pop();
+        }
+        gx
+    } else {
+        Vec::new()
+    };
+    let threaded: bool = !normal_cont.is_empty()
+        && !guard_exit.is_empty()
+        && stmt_sequences_equal_ignoring_lines(&normal_cont, &guard_exit);
+    let (inside_if, after_if): (Vec<Stmt>, Vec<Stmt>) = if threaded {
+        (Vec::new(), normal_cont)
+    } else {
+        (normal_cont, guard_exit)
+    };
+    let mut if_body: Vec<Stmt> = vec![finally_stmt];
+    if_body.extend(inside_if);
+    let pre_head: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    let mut out: Vec<Stmt> = pre_head;
+    out.push(Stmt::If {
+        test,
+        body: non_empty(if_body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(after_if);
+    if region.region_end < hi {
+        out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+    }
+    Ok(Some(out))
+}
+
+fn structure_pure_finally(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body_real_end: usize,
+) -> Result<(Stmt, Vec<Stmt>)> {
+    let _ = body_real_end;
+    let fin_start: usize = handler_body_first(stream, region.handler_start);
+    let fin_end: usize = finally_body_end(stream, fin_start, region.region_end);
+    if is_guarded_finally_raise_pair(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+        fin_start,
+        fin_end,
+    ) && !guarded_finally_raise_copies_match(
+        stream,
+        region.try_start,
+        region.protected_end,
+        region.handler_start,
+        fin_start,
+        fin_end,
+    ) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(region.protected_end)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "guarded finally raise copies differ between inline and handler paths"
+                .to_owned(),
+        });
+    }
+    let finalbody: Vec<Stmt> = structure_stmts(code, stream, fin_start, fin_end)?;
+    let finally_len: usize = fin_end.saturating_sub(fin_start);
+
+    let protected_end: usize = region.protected_end.max(region.try_start);
+    let body: Vec<Stmt> = if stream.is_pre_311() {
+        let peeled: usize = pre311_inline_finally_start(
+            stream,
+            region.try_start,
+            region.handler_start,
+            finally_len,
+        );
+        let inline_start: usize = match pre311_inner_except_region_end(stream, region) {
+            Some(inner_end) if peeled < inner_end => region.handler_start,
+            _ => peeled,
+        };
+        structure_finally_protected_body(
+            code,
+            stream,
+            region.try_start,
+            inline_start,
+            region.handler_start,
+            finally_len,
+        )?
+    } else {
+        structure_finally_protected_body(
+            code,
+            stream,
+            region.try_start,
+            protected_end,
+            region.handler_start,
+            finally_len,
+        )?
+    };
+    let (mut body, tail, merged_finally): (Vec<Stmt>, Vec<Stmt>, bool) = if stream.is_pre_311() {
+        fold_pre311_combo_inner(body, &finalbody)
+    } else {
+        (body, Vec::new(), false)
+    };
+    if merged_finally && body.len() == 1 {
+        let single: Stmt = body.remove(0);
+        return Ok((single, tail));
+    }
+    Ok((
+        Stmt::Try {
+            body: non_empty(body),
+            handlers: Vec::new(),
+            orelse: Vec::new(),
+            finalbody: non_empty(finalbody),
+            line: None,
+        },
+        tail,
+    ))
+}
+
+fn fold_pre311_combo_inner(body: Vec<Stmt>, finalbody: &[Stmt]) -> (Vec<Stmt>, Vec<Stmt>, bool) {
+    if finalbody.is_empty() || body.len() != 1 || !matches!(body.first(), Some(Stmt::Try { .. })) {
+        return (body, Vec::new(), false);
+    }
+    let Some(Stmt::Try {
+        body: inner_body,
+        handlers,
+        orelse,
+        finalbody: inner_final,
+        line,
+    }): Option<Stmt> = body.into_iter().next()
+    else {
+        return (Vec::new(), Vec::new(), false);
+    };
+    if !inner_final.is_empty() || handlers.is_empty() {
+        return (
+            vec![Stmt::Try {
+                body: inner_body,
+                handlers,
+                orelse,
+                finalbody: inner_final,
+                line,
+            }],
+            Vec::new(),
+            false,
+        );
+    }
+    let mut inner_body: Vec<Stmt> = inner_body;
+    strip_clause_inline_finally(&mut inner_body, finalbody, false);
+    let handlers: Vec<ExceptHandler> = handlers
+        .into_iter()
+        .map(|mut h: ExceptHandler| {
+            strip_clause_inline_finally(&mut h.body, finalbody, false);
+            if h.body.is_empty() {
+                h.body = vec![Stmt::Pass];
+            }
+            h
+        })
+        .collect();
+    let mut orelse: Vec<Stmt> = orelse;
+    let tail: Vec<Stmt> = strip_clause_inline_finally(&mut orelse, finalbody, true);
+    (
+        vec![Stmt::Try {
+            body: non_empty(inner_body),
+            handlers,
+            orelse,
+            finalbody: finalbody.to_vec(),
+            line,
+        }],
+        tail,
+        true,
+    )
+}
+
+fn strip_clause_inline_finally(
+    clause: &mut Vec<Stmt>,
+    finalbody: &[Stmt],
+    lift_tail: bool,
+) -> Vec<Stmt> {
+    if finalbody.is_empty() || clause.len() < finalbody.len() {
+        return Vec::new();
+    }
+    let limit: usize = clause.len() - finalbody.len();
+    let mut copy_at: Option<usize> = None;
+    for start in (0..=limit).rev() {
+        let window_matches: bool = clause[start..start + finalbody.len()]
+            .iter()
+            .zip(finalbody.iter())
+            .all(|(a, b): (&Stmt, &Stmt)| stmts_equal_ignoring_lines(a, b));
+        if window_matches {
+            copy_at = Some(start);
+            break;
+        }
+    }
+    let Some(copy_at): Option<usize> = copy_at else {
+        return Vec::new();
+    };
+    if lift_tail {
+        let tail: Vec<Stmt> = clause.split_off(copy_at + finalbody.len());
+        clause.truncate(copy_at);
+        return tail
+            .into_iter()
+            .filter(|s: &Stmt| matches!(s, Stmt::Return(_)))
+            .collect();
+    }
+    clause.drain(copy_at..copy_at + finalbody.len());
+    Vec::new()
+}
+
+fn pre311_inline_finally_start(
+    stream: &DecodedStream,
+    try_start: usize,
+    handler_start: usize,
+    finally_len: usize,
+) -> usize {
+    if finally_len == 0 {
+        return handler_start;
+    }
+    let fin_body_start: usize = handler_start;
+    let mut candidate: usize = handler_start.saturating_sub(finally_len);
+    while candidate > try_start {
+        if finally_runs_match(stream, fin_body_start, candidate, finally_len) {
+            return candidate;
+        }
+        candidate -= 1;
+    }
+    if candidate >= try_start && finally_runs_match(stream, fin_body_start, candidate, finally_len)
+    {
+        return candidate;
+    }
+    handler_start
+}
+
+fn finally_runs_match(stream: &DecodedStream, a: usize, b: usize, len: usize) -> bool {
+    if a + len > stream.ops.len() || b + len > stream.ops.len() {
+        return false;
+    }
+    (0..len).all(|k: usize| {
+        std::mem::discriminant(&stream.ops[a + k]) == std::mem::discriminant(&stream.ops[b + k])
+    })
+}
+
+fn is_targeted_jump(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::ContinueLoop(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+    )
+}
+
+fn finally_copy_op_eq(a: &CanonicalOp, b: &CanonicalOp) -> bool {
+    if is_targeted_jump(a) && is_targeted_jump(b) {
+        std::mem::discriminant(a) == std::mem::discriminant(b)
+    } else {
+        a == b
+    }
+}
+
+fn finally_inline_copy_end(
+    stream: &DecodedStream,
+    copy_start: usize,
+    boundary: usize,
+    fin_start: usize,
+    fin_end: usize,
+) -> Option<usize> {
+    let fin_ops: Vec<&CanonicalOp> = significant_ops(stream, fin_start, fin_end);
+    if fin_ops.is_empty() {
+        return None;
+    }
+    let mut matched: usize = 0;
+    let mut k: usize = copy_start;
+    while k < boundary && matched < fin_ops.len() {
+        match &stream.ops[k] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            op => {
+                if finally_copy_op_eq(op, fin_ops[matched]) {
+                    matched += 1;
+                } else {
+                    return None;
+                }
+            }
+        }
+        k += 1;
+    }
+    (matched == fin_ops.len()).then_some(k)
+}
+
+fn guarded_finally_significant_indices(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<Vec<usize>> {
+    if lo > hi || hi > stream.ops.len() {
+        return None;
+    }
+    Some(
+        (lo..hi)
+            .filter(|&index: &usize| {
+                !matches!(
+                    stream.ops[index],
+                    CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+                )
+            })
+            .collect(),
+    )
+}
+
+fn guarded_finally_target_position(
+    stream: &DecodedStream,
+    indices: &[usize],
+    lo: usize,
+    hi: usize,
+    jump: usize,
+) -> Option<usize> {
+    let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])?;
+    if target < lo || target > hi {
+        return None;
+    }
+    let normalized_target: usize = first_significant(stream, target, hi).unwrap_or(hi);
+    indices
+        .iter()
+        .position(|&index: &usize| index == normalized_target)
+        .or_else(|| (normalized_target == hi).then_some(indices.len()))
+}
+
+fn guarded_finally_raise_spans_match(
+    stream: &DecodedStream,
+    inline_start: usize,
+    inline_end: usize,
+    handler_start: usize,
+    handler_end: usize,
+) -> bool {
+    let (Some(inline_indices), Some(handler_indices)): (Option<Vec<usize>>, Option<Vec<usize>>) = (
+        guarded_finally_significant_indices(stream, inline_start, inline_end),
+        guarded_finally_significant_indices(stream, handler_start, handler_end),
+    ) else {
+        return false;
+    };
+    if inline_indices.len() != handler_indices.len() {
+        return false;
+    }
+    inline_indices.iter().zip(handler_indices.iter()).all(
+        |(&inline, &handler): (&usize, &usize)| {
+            let inline_op: &CanonicalOp = &stream.ops[inline];
+            let handler_op: &CanonicalOp = &stream.ops[handler];
+            if is_targeted_jump(inline_op) || is_targeted_jump(handler_op) {
+                if !is_targeted_jump(inline_op)
+                    || !is_targeted_jump(handler_op)
+                    || std::mem::discriminant(inline_op) != std::mem::discriminant(handler_op)
+                {
+                    return false;
+                }
+                let inline_target: Option<usize> = guarded_finally_target_position(
+                    stream,
+                    &inline_indices,
+                    inline_start,
+                    inline_end,
+                    inline,
+                );
+                let handler_target: Option<usize> = guarded_finally_target_position(
+                    stream,
+                    &handler_indices,
+                    handler_start,
+                    handler_end,
+                    handler,
+                );
+                return inline_target.is_some() && inline_target == handler_target;
+            }
+            inline_op == handler_op
+        },
+    )
+}
+
+#[must_use]
+fn is_guarded_finally_raise_pair(
+    stream: &DecodedStream,
+    try_start: usize,
+    inline_start: usize,
+    handler_start: usize,
+    handler_body_start: usize,
+    handler_body_end: usize,
+) -> bool {
+    if stream.is_pre_311()
+        || try_start >= inline_start
+        || inline_start >= handler_start
+        || handler_body_start >= handler_body_end
+    {
+        return false;
+    }
+    let Some(back_edge): Option<usize> = last_significant_back(stream, inline_start, handler_start)
+    else {
+        return false;
+    };
+    if !is_back_edge(&stream.ops[back_edge])
+        || resolve_jump_target(stream, back_edge, &stream.ops[back_edge])
+            .is_none_or(|target: usize| target >= try_start)
+    {
+        return false;
+    }
+    (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| is_forward_cond_jump(&stream.ops[index]))
+        .any(|guard: usize| {
+            (guard + 1..handler_body_end)
+                .any(|index: usize| matches!(stream.ops[index], CanonicalOp::Raise(_)))
+        })
+}
+
+#[must_use]
+fn guarded_finally_raise_copies_match(
+    stream: &DecodedStream,
+    try_start: usize,
+    inline_start: usize,
+    handler_start: usize,
+    handler_body_start: usize,
+    handler_body_end: usize,
+) -> bool {
+    if !is_guarded_finally_raise_pair(
+        stream,
+        try_start,
+        inline_start,
+        handler_start,
+        handler_body_start,
+        handler_body_end,
+    ) {
+        return false;
+    }
+    let Some(back_edge): Option<usize> = last_significant_back(stream, inline_start, handler_start)
+    else {
+        return false;
+    };
+    let handler_guards: Vec<usize> = (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| is_forward_cond_jump(&stream.ops[index]))
+        .collect();
+    let handler_raises: Vec<usize> = (handler_body_start..handler_body_end)
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::Raise(_)))
+        .collect();
+    let ([guard], [raise]): (&[usize], &[usize]) =
+        (handler_guards.as_slice(), handler_raises.as_slice())
+    else {
+        return false;
+    };
+    let Some(resume): Option<usize> = resolve_jump_target(stream, *guard, &stream.ops[*guard])
+    else {
+        return false;
+    };
+    if is_chain_cond_jump(&stream.ops, *guard)
+        || !matches!(stream.ops[*raise], CanonicalOp::Raise(1))
+        || *raise <= *guard
+        || *raise >= resume
+        || resume > handler_body_end
+        || last_significant_back(stream, *guard + 1, resume) != Some(*raise)
+    {
+        return false;
+    }
+    guarded_finally_raise_spans_match(
+        stream,
+        inline_start,
+        back_edge,
+        handler_body_start,
+        handler_body_end,
+    )
+}
+
+#[must_use]
+fn finally_arm_return_copies_match(
+    stream: &DecodedStream,
+    inline_start: usize,
+    inline_end: usize,
+    handler_start: usize,
+    handler_end: usize,
+) -> bool {
+    let inline_ops: Vec<&CanonicalOp> = significant_ops(stream, inline_start, inline_end);
+    let handler_ops: Vec<&CanonicalOp> = significant_ops(stream, handler_start, handler_end);
+    let Some(inline_return): Option<&&CanonicalOp> = inline_ops.last() else {
+        return false;
+    };
+    let Some(handler_return): Option<&&CanonicalOp> = handler_ops.last() else {
+        return false;
+    };
+    if !finally_copy_op_eq(inline_return, handler_return) {
+        return false;
+    }
+    match inline_return {
+        CanonicalOp::ReturnConst(_) => matches!(
+            (inline_ops.as_slice(), handler_ops.as_slice()),
+            (
+                [CanonicalOp::ReturnConst(_)],
+                [
+                    CanonicalOp::Pop,
+                    CanonicalOp::PopExcept,
+                    CanonicalOp::ReturnConst(_)
+                ]
+            )
+        ),
+        CanonicalOp::Return => {
+            if inline_ops.len() < 2 || handler_ops.len() != inline_ops.len() + 4 {
+                return false;
+            }
+            let cleanup_start: usize = handler_ops.len() - 5;
+            if !matches!(
+                &handler_ops[cleanup_start..],
+                [
+                    CanonicalOp::Swap(2),
+                    CanonicalOp::Pop,
+                    CanonicalOp::Swap(2),
+                    CanonicalOp::PopExcept,
+                    CanonicalOp::Return
+                ]
+            ) {
+                return false;
+            }
+            inline_ops[..inline_ops.len() - 1]
+                .iter()
+                .zip(&handler_ops[..cleanup_start])
+                .all(|(inline, handler): (&&CanonicalOp, &&CanonicalOp)| {
+                    finally_copy_op_eq(inline, handler)
+                })
+        }
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FinallyArmRaiseLoop {
+    try_start: usize,
+    protected_end: usize,
+    inline_end: usize,
+    handler_start: usize,
+}
+
+#[must_use]
+fn guarded_finally_raise_span_candidate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    if lo >= hi || hi > stream.ops.len() {
+        return false;
+    }
+    let guards: Vec<usize> = (lo..hi)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let raises: Vec<usize> = (lo..hi)
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::Raise(1)))
+        .collect();
+    matches!(
+        (guards.as_slice(), raises.as_slice()),
+        ([guard], [raise]) if guard < raise
+    )
+}
+
+fn finally_arm_raise_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+    fallthrough_index: Option<usize>,
+) -> Result<Option<FinallyArmRaiseLoop>> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+        || loop_region.back_edge >= loop_region.exit
+        || !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return Ok(None);
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && first_significant(stream, loop_region.header, try_start).is_none()
+                && try_start < protected_end
+                && protected_end < loop_region.back_edge
+                && handler_start > loop_region.exit
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return Ok(None);
+    };
+    let Some(try_start): Option<usize> = stream.index_for_offset(primary.start) else {
+        return Ok(None);
+    };
+    let Some(protected_end): Option<usize> = stream.index_for_offset_ceil(primary.end()) else {
+        return Ok(None);
+    };
+    let Some(handler_start): Option<usize> = stream.index_for_offset(primary.target) else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) || first_significant(stream, loop_region.back_edge + 1, handler_start)
+        != Some(loop_region.exit)
+    {
+        return Ok(None);
+    }
+    let Some(tail_terminal): Option<usize> =
+        last_significant_back(stream, loop_region.exit, handler_start)
+    else {
+        return Ok(None);
+    };
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) {
+        return Ok(None);
+    }
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    if !is_pure_finally_handler_shape(stream, handler_start, handler_end, false) {
+        return Ok(None);
+    }
+    let handler_body_start: usize = handler_body_first(stream, handler_start);
+    let handler_body_end: usize = finally_body_end(stream, handler_body_start, handler_end);
+    let finally_len: usize = handler_body_end.saturating_sub(handler_body_start);
+    let Some(inline_end): Option<usize> = protected_end.checked_add(finally_len) else {
+        return Ok(None);
+    };
+    if finally_len == 0
+        || inline_end > loop_region.back_edge
+        || !guarded_finally_raise_span_candidate(stream, protected_end, inline_end)
+        || !guarded_finally_raise_span_candidate(stream, handler_body_start, handler_body_end)
+    {
+        return Ok(None);
+    }
+    if fallthrough_index
+        .is_some_and(|index: usize| !(handler_body_start..handler_body_end).contains(&index))
+    {
+        return Ok(None);
+    }
+    if !guarded_finally_raise_spans_match(
+        stream,
+        protected_end,
+        inline_end,
+        handler_body_start,
+        handler_body_end,
+    ) {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(protected_end)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "guarded finally raise copies differ between inline and handler paths"
+                .to_owned(),
+        });
+    }
+    Ok(Some(FinallyArmRaiseLoop {
+        try_start,
+        protected_end,
+        inline_end,
+        handler_start,
+    }))
+}
+
+pub(super) fn preflight_guarded_finally_raise_mismatch(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    fallthrough_index: usize,
+) -> Result<()> {
+    let Some(loop_region): Option<LoopRegion> = find_loop(stream, lo, hi) else {
+        return Ok(());
+    };
+    let _: Option<FinallyArmRaiseLoop> =
+        finally_arm_raise_loop(stream, &loop_region, Some(fallthrough_index))?;
+    Ok(())
+}
+
+fn structure_infinite_while_raise_exit_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    loop_region: &LoopRegion,
+) -> Result<Option<Stmt>> {
+    let guards: Vec<usize> = (lo..loop_region.back_edge)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && !is_chain_cond_jump(&stream.ops, index)
+                && resolve_jump_target(stream, index, &stream.ops[index])
+                    == Some(loop_region.back_edge)
+        })
+        .collect();
+    let [guard]: &[usize] = guards.as_slice() else {
+        return Ok(None);
+    };
+    let Some(break_jump): Option<usize> =
+        first_significant(stream, *guard + 1, loop_region.back_edge)
+    else {
+        return Ok(None);
+    };
+    if last_significant_back(stream, *guard + 1, loop_region.back_edge) != Some(break_jump)
+        || !matches!(
+            stream.ops[break_jump],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        )
+        || resolve_jump_target(stream, break_jump, &stream.ops[break_jump])
+            != Some(loop_region.exit)
+    {
+        return Ok(None);
+    }
+    let (test_head, test_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..*guard])?;
+    let [raw_test]: &[Expr] = test_values.as_slice() else {
+        return Ok(None);
+    };
+    if !test_head.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Stmt::If {
+        test: fallthrough_cond_test(stream, *guard, raw_test.clone()),
+        body: vec![Stmt::Break],
+        orelse: Vec::new(),
+        line: None,
+    }))
+}
+
+pub(super) fn structure_infinite_while_finally_arm_raise_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    let Some(shape): Option<FinallyArmRaiseLoop> =
+        finally_arm_raise_loop(stream, loop_region, None)?
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> =
+        structure_stmts(code, stream, shape.protected_end, shape.inline_end)?;
+    if body.is_empty() || finalbody.is_empty() {
+        return Ok(None);
+    }
+    let mut loop_body: Vec<Stmt> = vec![Stmt::Try {
+        body,
+        handlers: Vec::new(),
+        orelse: Vec::new(),
+        finalbody,
+        line: None,
+    }];
+    let Some(exit_guard): Option<Stmt> =
+        structure_infinite_while_raise_exit_guard(code, stream, shape.inline_end, loop_region)?
+    else {
+        return Ok(None);
+    };
+    loop_body.push(exit_guard);
+    Ok(Some((loop_body, shape.handler_start)))
+}
+
+#[derive(Clone, Copy)]
+struct FinallyArmReturnLoop {
+    try_start: usize,
+    protected_end: usize,
+    back_edge: usize,
+    handler_start: usize,
+}
+
+fn finally_arm_return_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Option<FinallyArmReturnLoop> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+    {
+        return None;
+    }
+    if !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return None;
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && first_significant(stream, loop_region.header, try_start).is_none()
+                && try_start < protected_end
+                && protected_end < loop_region.back_edge
+                && handler_start == loop_region.exit
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return None;
+    };
+    let try_start: usize = stream.index_for_offset(primary.start)?;
+    let protected_end: usize = stream.index_for_offset_ceil(primary.end())?;
+    let handler_start: usize = stream.index_for_offset(primary.target)?;
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) || first_significant(stream, loop_region.back_edge + 1, handler_start + 1)
+        != Some(handler_start)
+    {
+        return None;
+    }
+    let inline_guards: Vec<usize> = (protected_end..loop_region.back_edge)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [inline_guard]: &[usize] = inline_guards.as_slice() else {
+        return None;
+    };
+    let inline_resume: usize =
+        resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
+            .filter(|target: &usize| *target > *inline_guard && *target < loop_region.back_edge)?;
+    let inline_return_index: usize =
+        last_significant_back(stream, *inline_guard + 1, inline_resume)?;
+    if !matches!(
+        stream.ops[inline_return_index],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) {
+        return None;
+    }
+    let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 1 && entry.lasti && entry.start >= primary.target
+        })
+        .collect();
+    cleanup_entries
+        .sort_unstable_by_key(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.start);
+    let [first_cleanup, second_cleanup]: &[&crate::bytecode::flow::ExceptionTableEntry] =
+        cleanup_entries.as_slice()
+    else {
+        return None;
+    };
+    if first_cleanup.target != second_cleanup.target {
+        return None;
+    }
+    let cleanup_start: usize = stream.index_for_offset(first_cleanup.target)?;
+    let first_cleanup_start: usize = stream.index_for_offset(first_cleanup.start)?;
+    let first_cleanup_end: usize = stream.index_for_offset_ceil(first_cleanup.end())?;
+    let second_cleanup_start: usize = stream.index_for_offset(second_cleanup.start)?;
+    let second_cleanup_end: usize = stream.index_for_offset_ceil(second_cleanup.end())?;
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    let cleanup_ops: Vec<&CanonicalOp> = significant_ops(stream, cleanup_start, handler_end);
+    if first_cleanup_start != handler_start
+        || second_cleanup_end != cleanup_start
+        || !matches!(
+            cleanup_ops.as_slice(),
+            [
+                CanonicalOp::Copy(3),
+                CanonicalOp::PopExcept,
+                CanonicalOp::Reraise(1)
+            ]
+        )
+    {
+        return None;
+    }
+    let handler_guards: Vec<usize> = (handler_start + 1..cleanup_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [handler_guard]: &[usize] = handler_guards.as_slice() else {
+        return None;
+    };
+    let handler_resume: usize =
+        resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
+            .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
+    let handler_return_index: usize =
+        last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    let copies_match: bool = finally_arm_return_copies_match(
+        stream,
+        *inline_guard + 1,
+        inline_resume,
+        *handler_guard + 1,
+        handler_resume,
+    );
+    if !matches!(
+        stream.ops[handler_return_index],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) || !copies_match
+        || handler_return_index.checked_sub(1) != Some(first_cleanup_end)
+        || second_cleanup_start != handler_resume
+    {
+        return None;
+    }
+    let handler_reraise: usize = last_significant_back(stream, handler_resume, cleanup_start)?;
+    if !matches!(stream.ops[handler_reraise], CanonicalOp::Reraise(0))
+        || !significant_slices_match(
+            stream,
+            protected_end,
+            *inline_guard + 1,
+            handler_start + 1,
+            *handler_guard + 1,
+        )
+        || !significant_slices_match(
+            stream,
+            inline_resume,
+            loop_region.back_edge,
+            handler_resume,
+            handler_reraise,
+        )
+    {
+        return None;
+    }
+    Some(FinallyArmReturnLoop {
+        try_start,
+        protected_end,
+        back_edge: loop_region.back_edge,
+        handler_start,
+    })
+}
+
+pub(super) fn structure_infinite_while_finally_arm_return_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    let Some(shape): Option<FinallyArmReturnLoop> = finally_arm_return_loop(stream, loop_region)
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> = structure_stmts(code, stream, shape.protected_end, shape.back_edge)?;
+    if body.is_empty() || finalbody.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![Stmt::Try {
+            body,
+            handlers: Vec::new(),
+            orelse: Vec::new(),
+            finalbody,
+            line: None,
+        }],
+        shape.handler_start,
+    )))
+}
+
+#[derive(Clone, Copy)]
+struct FinallyArmBreakLoop {
+    try_start: usize,
+    protected_end: usize,
+    back_edge: usize,
+    exit: usize,
+    handler_start: usize,
+}
+
+fn significant_slices_match(
+    stream: &DecodedStream,
+    first_start: usize,
+    first_end: usize,
+    second_start: usize,
+    second_end: usize,
+) -> bool {
+    let first: Vec<&CanonicalOp> = significant_ops(stream, first_start, first_end);
+    let second: Vec<&CanonicalOp> = significant_ops(stream, second_start, second_end);
+    first.len() == second.len()
+        && first
+            .iter()
+            .zip(second)
+            .all(|(left, right): (&&CanonicalOp, &CanonicalOp)| finally_copy_op_eq(left, right))
+}
+
+fn finally_arm_break_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Option<FinallyArmBreakLoop> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+    {
+        return None;
+    }
+    if !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return None;
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && try_start < protected_end
+                && protected_end < loop_region.back_edge
+                && handler_start > loop_region.exit
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return None;
+    };
+    let try_start: usize = stream.index_for_offset(primary.start)?;
+    let protected_end: usize = stream.index_for_offset_ceil(primary.end())?;
+    let handler_start: usize = stream.index_for_offset(primary.target)?;
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) || loop_region.exit <= loop_region.back_edge
+        || loop_region.exit >= handler_start
+        || first_significant(stream, loop_region.back_edge + 1, handler_start)
+            != Some(loop_region.exit)
+    {
+        return None;
+    }
+    let tail_terminal: usize = last_significant_back(stream, loop_region.exit, handler_start)?;
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) {
+        return None;
+    }
+    let inline_guards: Vec<usize> = (protected_end..loop_region.back_edge)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [inline_guard]: &[usize] = inline_guards.as_slice() else {
+        return None;
+    };
+    let inline_resume: usize =
+        resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
+            .filter(|target: &usize| *target > *inline_guard && *target < loop_region.back_edge)?;
+    let inline_break: usize = last_significant_back(stream, *inline_guard + 1, inline_resume)?;
+    if first_significant(stream, *inline_guard + 1, inline_resume) != Some(inline_break)
+        || !matches!(
+            stream.ops[inline_break],
+            CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+        )
+        || resolve_jump_target(stream, inline_break, &stream.ops[inline_break])
+            != Some(loop_region.exit)
+    {
+        return None;
+    }
+    let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 1 && entry.lasti && entry.start >= primary.target
+        })
+        .collect();
+    cleanup_entries
+        .sort_unstable_by_key(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.start);
+    let [first_cleanup, second_cleanup]: &[&crate::bytecode::flow::ExceptionTableEntry] =
+        cleanup_entries.as_slice()
+    else {
+        return None;
+    };
+    if first_cleanup.target != second_cleanup.target {
+        return None;
+    }
+    let cleanup_start: usize = stream.index_for_offset(first_cleanup.target)?;
+    let first_cleanup_start: usize = stream.index_for_offset(first_cleanup.start)?;
+    let first_cleanup_end: usize = stream.index_for_offset_ceil(first_cleanup.end())?;
+    let second_cleanup_start: usize = stream.index_for_offset(second_cleanup.start)?;
+    let second_cleanup_end: usize = stream.index_for_offset_ceil(second_cleanup.end())?;
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    let cleanup_ops: Vec<&CanonicalOp> = significant_ops(stream, cleanup_start, handler_end);
+    if first_cleanup_start != handler_start
+        || second_cleanup_end != cleanup_start
+        || !matches!(
+            cleanup_ops.as_slice(),
+            [
+                CanonicalOp::Copy(3),
+                CanonicalOp::PopExcept,
+                CanonicalOp::Reraise(1)
+            ]
+        )
+    {
+        return None;
+    }
+    let handler_guards: Vec<usize> = (handler_start + 1..cleanup_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [handler_guard]: &[usize] = handler_guards.as_slice() else {
+        return None;
+    };
+    let handler_resume: usize =
+        resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
+            .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
+    let handler_break_ops: Vec<&CanonicalOp> =
+        significant_ops(stream, *handler_guard + 1, handler_resume);
+    let [CanonicalOp::Pop, CanonicalOp::PopExcept, handler_break]: &[&CanonicalOp] =
+        handler_break_ops.as_slice()
+    else {
+        return None;
+    };
+    let handler_break_index: usize =
+        last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    if !matches!(
+        handler_break,
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) || resolve_jump_target(stream, handler_break_index, handler_break)
+        != Some(loop_region.exit)
+        || handler_break_index.checked_sub(1) != Some(first_cleanup_end)
+        || second_cleanup_start != handler_resume
+    {
+        return None;
+    }
+    let handler_reraise: usize = last_significant_back(stream, handler_resume, cleanup_start)?;
+    if !matches!(stream.ops[handler_reraise], CanonicalOp::Reraise(0))
+        || !significant_slices_match(
+            stream,
+            protected_end,
+            *inline_guard + 1,
+            handler_start + 1,
+            *handler_guard + 1,
+        )
+        || !significant_slices_match(
+            stream,
+            inline_resume,
+            loop_region.back_edge,
+            handler_resume,
+            handler_reraise,
+        )
+    {
+        return None;
+    }
+    Some(FinallyArmBreakLoop {
+        try_start,
+        protected_end,
+        back_edge: loop_region.back_edge,
+        exit: loop_region.exit,
+        handler_start,
+    })
+}
+
+pub(super) fn structure_infinite_while_finally_arm_break_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    let Some(shape): Option<FinallyArmBreakLoop> = finally_arm_break_loop(stream, loop_region)
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> = structure_stmts(code, stream, shape.protected_end, shape.back_edge)?;
+    if body.is_empty() || finalbody.is_empty() || shape.exit != loop_region.exit {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![Stmt::Try {
+            body,
+            handlers: Vec::new(),
+            orelse: Vec::new(),
+            finalbody,
+            line: None,
+        }],
+        shape.handler_start,
+    )))
+}
+
+#[derive(Clone, Copy)]
+struct FinallyArmContinueLoop {
+    try_start: usize,
+    protected_end: usize,
+    inline_end: usize,
+    tail_start: usize,
+    handler_start: usize,
+}
+
+fn finally_arm_continue_loop(
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Option<FinallyArmContinueLoop> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.header >= loop_region.back_edge
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit != loop_region.back_edge.checked_add(1)?
+        || !is_back_edge(&stream.ops[loop_region.back_edge])
+        || resolve_jump_target(
+            stream,
+            loop_region.back_edge,
+            &stream.ops[loop_region.back_edge],
+        ) != Some(loop_region.header)
+    {
+        return None;
+    }
+    let primary_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 0 && !entry.lasti
+        })
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            let (Some(try_start), Some(protected_end), Some(handler_start)): (
+                Option<usize>,
+                Option<usize>,
+                Option<usize>,
+            ) = (
+                stream.index_for_offset(entry.start),
+                stream.index_for_offset_ceil(entry.end()),
+                stream.index_for_offset(entry.target),
+            ) else {
+                return false;
+            };
+            try_start >= loop_region.header
+                && first_significant(stream, loop_region.header, try_start).is_none()
+                && try_start < protected_end
+                && protected_end < handler_start
+                && handler_start < loop_region.back_edge
+        })
+        .collect();
+    let [primary]: &[&crate::bytecode::flow::ExceptionTableEntry] = primary_entries.as_slice()
+    else {
+        return None;
+    };
+    let try_start: usize = stream.index_for_offset(primary.start)?;
+    let protected_end: usize = stream.index_for_offset_ceil(primary.end())?;
+    let handler_start: usize = stream.index_for_offset(primary.target)?;
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) {
+        return None;
+    }
+    let inline_guards: Vec<usize> = (protected_end..handler_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [inline_guard]: &[usize] = inline_guards.as_slice() else {
+        return None;
+    };
+    let inline_resume: usize =
+        resolve_jump_target(stream, *inline_guard, &stream.ops[*inline_guard])
+            .filter(|target: &usize| *target > *inline_guard && *target < handler_start)?;
+    let inline_continue: usize = last_significant_back(stream, *inline_guard + 1, inline_resume)?;
+    if first_significant(stream, *inline_guard + 1, inline_resume) != Some(inline_continue)
+        || !is_back_edge(&stream.ops[inline_continue])
+        || resolve_jump_target(stream, inline_continue, &stream.ops[inline_continue])
+            != Some(loop_region.header)
+    {
+        return None;
+    }
+    let mut cleanup_entries: Vec<&crate::bytecode::flow::ExceptionTableEntry> = stream
+        .exception_table
+        .iter()
+        .filter(|entry: &&crate::bytecode::flow::ExceptionTableEntry| {
+            entry.length != 0 && entry.depth == 1 && entry.lasti && entry.start >= primary.target
+        })
+        .collect();
+    cleanup_entries
+        .sort_unstable_by_key(|entry: &&crate::bytecode::flow::ExceptionTableEntry| entry.start);
+    let [first_cleanup, second_cleanup]: &[&crate::bytecode::flow::ExceptionTableEntry] =
+        cleanup_entries.as_slice()
+    else {
+        return None;
+    };
+    if first_cleanup.target != second_cleanup.target {
+        return None;
+    }
+    let cleanup_start: usize = stream.index_for_offset(first_cleanup.target)?;
+    let first_cleanup_start: usize = stream.index_for_offset(first_cleanup.start)?;
+    let first_cleanup_end: usize = stream.index_for_offset_ceil(first_cleanup.end())?;
+    let second_cleanup_start: usize = stream.index_for_offset(second_cleanup.start)?;
+    let second_cleanup_end: usize = stream.index_for_offset_ceil(second_cleanup.end())?;
+    let handler_end: usize = handler_join(stream, handler_start, stream.ops.len());
+    if first_cleanup_start != handler_start
+        || second_cleanup_end != cleanup_start
+        || !matches!(
+            significant_ops(stream, cleanup_start, handler_end).as_slice(),
+            [
+                CanonicalOp::Copy(3),
+                CanonicalOp::PopExcept,
+                CanonicalOp::Reraise(1)
+            ]
+        )
+    {
+        return None;
+    }
+    let handler_guards: Vec<usize> = (handler_start + 1..cleanup_start)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+        .collect();
+    let [handler_guard]: &[usize] = handler_guards.as_slice() else {
+        return None;
+    };
+    let handler_resume: usize =
+        resolve_jump_target(stream, *handler_guard, &stream.ops[*handler_guard])
+            .filter(|target: &usize| *target > *handler_guard && *target < cleanup_start)?;
+    let handler_continue_ops: Vec<&CanonicalOp> =
+        significant_ops(stream, *handler_guard + 1, handler_resume);
+    let [CanonicalOp::Pop, CanonicalOp::PopExcept, handler_continue]: &[&CanonicalOp] =
+        handler_continue_ops.as_slice()
+    else {
+        return None;
+    };
+    let handler_continue_index: usize =
+        last_significant_back(stream, *handler_guard + 1, handler_resume)?;
+    let handler_reraise: usize = last_significant_back(stream, handler_resume, cleanup_start)?;
+    if !matches!(
+        handler_continue,
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) || resolve_jump_target(stream, handler_continue_index, handler_continue)
+        != Some(loop_region.header)
+        || handler_continue_index != loop_region.back_edge
+        || handler_resume != loop_region.exit
+        || handler_continue_index.checked_sub(1) != Some(first_cleanup_end)
+        || second_cleanup_start != handler_resume
+        || !matches!(stream.ops[handler_reraise], CanonicalOp::Reraise(0))
+        || !significant_slices_match(
+            stream,
+            protected_end,
+            *inline_guard + 1,
+            handler_start + 1,
+            *handler_guard + 1,
+        )
+    {
+        return None;
+    }
+    let inline_end: usize = finally_inline_copy_end(
+        stream,
+        inline_resume,
+        handler_start,
+        handler_resume,
+        handler_reraise,
+    )?;
+    let tail_start: usize = first_significant(stream, inline_end, handler_start)?;
+    let tail_terminal: usize = last_significant_back(stream, tail_start, handler_start)?;
+    if !matches!(
+        stream.ops[tail_terminal],
+        CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+    ) || (tail_start..handler_start).any(|index: usize| is_targeted_jump(&stream.ops[index]))
+    {
+        return None;
+    }
+    Some(FinallyArmContinueLoop {
+        try_start,
+        protected_end,
+        inline_end,
+        tail_start,
+        handler_start,
+    })
+}
+
+pub(super) fn structure_infinite_while_finally_arm_continue_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize, usize)>> {
+    let Some(shape): Option<FinallyArmContinueLoop> =
+        finally_arm_continue_loop(stream, loop_region)
+    else {
+        return Ok(None);
+    };
+    let body: Vec<Stmt> = structure_stmts(code, stream, shape.try_start, shape.protected_end)?;
+    let finalbody: Vec<Stmt> =
+        structure_stmts(code, stream, shape.protected_end, shape.inline_end)?;
+    if body.is_empty() || finalbody.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((
+        vec![
+            Stmt::Try {
+                body,
+                handlers: Vec::new(),
+                orelse: Vec::new(),
+                finalbody,
+                line: None,
+            },
+            Stmt::Break,
+        ],
+        shape.tail_start,
+        shape.handler_start,
+    )))
+}
+
+#[derive(Clone, Copy)]
+struct SplitFinallyLoopExit {
+    protected_end: usize,
+    resumed_end: usize,
+    break_jump: usize,
+    exit: usize,
+    handler_start: usize,
+    handler_end: usize,
+}
+
+fn split_finally_loop_exit(
+    stream: &DecodedStream,
+    copy_start: usize,
+    body_resume: usize,
+    back_edge: usize,
+    hi: usize,
+) -> Option<SplitFinallyLoopExit> {
+    if stream.is_pre_311() || copy_start >= body_resume || body_resume >= back_edge {
+        return None;
+    }
+    let jump: usize = last_significant_back(stream, copy_start, body_resume)?;
+    if !matches!(
+        stream.ops[jump],
+        CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+    ) {
+        return None;
+    }
+    let exit: usize = resolve_jump_target(stream, jump, &stream.ops[jump])?;
+    if exit <= back_edge || exit > hi {
+        return None;
+    }
+    for entry in &stream.exception_table {
+        let handler_start: usize = stream.index_for_offset(entry.target)?;
+        if handler_start <= back_edge || handler_start > hi || exit >= handler_start {
+            continue;
+        }
+        let mut ranges: Vec<(usize, usize)> = stream
+            .exception_table
+            .iter()
+            .filter(|candidate: &&crate::bytecode::flow::ExceptionTableEntry| {
+                candidate.target == entry.target && candidate.length != 0
+            })
+            .filter_map(
+                |candidate: &crate::bytecode::flow::ExceptionTableEntry| -> Option<(usize, usize)> {
+                    Some((
+                        stream.index_for_offset(candidate.start)?,
+                        stream.index_for_offset_ceil(candidate.end())?,
+                    ))
+                },
+            )
+            .collect();
+        ranges.sort_unstable();
+        let [first, second]: &[(usize, usize)] = ranges.as_slice() else {
+            continue;
+        };
+        if first.1 > copy_start || second.0 != body_resume || second.1 > back_edge {
+            continue;
+        }
+        let handler_end: usize = handler_join(stream, handler_start, hi);
+        if !is_pure_finally_handler_shape(stream, handler_start, handler_end, false) {
+            continue;
+        }
+        let final_start: usize = handler_body_first(stream, handler_start);
+        let final_end: usize = finally_body_end(stream, final_start, handler_end);
+        let break_copy_end: usize =
+            finally_inline_copy_end(stream, copy_start, jump, final_start, final_end)?;
+        if first_significant(stream, break_copy_end, body_resume) != Some(jump) {
+            continue;
+        }
+        let normal_copy_end: usize =
+            finally_inline_copy_end(stream, second.1, back_edge, final_start, final_end)?;
+        if first_significant(stream, normal_copy_end, back_edge + 1) != Some(back_edge) {
+            continue;
+        }
+        let tail_terminal: usize = last_significant_back(stream, exit, handler_start)?;
+        if !matches!(
+            stream.ops[tail_terminal],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        ) {
+            continue;
+        }
+        return Some(SplitFinallyLoopExit {
+            protected_end: first.1,
+            resumed_end: second.1,
+            break_jump: jump,
+            exit,
+            handler_start,
+            handler_end,
+        });
+    }
+    None
+}
+
+pub(super) fn inline_finally_break_exit(
+    stream: &DecodedStream,
+    copy_start: usize,
+    body_resume: usize,
+    back_edge: usize,
+    hi: usize,
+) -> Option<usize> {
+    split_finally_loop_exit(stream, copy_start, body_resume, back_edge, hi)
+        .map(|split: SplitFinallyLoopExit| split.exit)
+}
+
+fn slice_significant_contains_finally(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    fin_start: usize,
+    fin_end: usize,
+) -> bool {
+    let fin_ops: Vec<&CanonicalOp> = significant_ops(stream, fin_start, fin_end);
+    if fin_ops.is_empty() {
+        return false;
+    }
+    let hay: Vec<&CanonicalOp> = significant_ops(stream, lo, hi);
+    if hay.len() < fin_ops.len() {
+        return false;
+    }
+    (0..=hay.len() - fin_ops.len()).any(|i: usize| hay[i..i + fin_ops.len()] == fin_ops[..])
+}
+
+fn region_has_enclosing_modern_finally(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> bool {
+    let Some(&try_off): Option<&u32> = stream.offsets.get(region.try_start) else {
+        return false;
+    };
+    let Some(&handler_off): Option<&u32> = stream.offsets.get(region.handler_start) else {
+        return false;
+    };
+    stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            if e.start < try_off || e.start >= handler_off {
+                return false;
+            }
+            let Some(other_handler): Option<usize> = stream.index_for_offset(e.target) else {
+                return false;
+            };
+            if other_handler <= region.handler_start || other_handler >= hi {
+                return false;
+            }
+            if !matches!(
+                stream.ops.get(other_handler),
+                Some(CanonicalOp::PushExcInfo)
+            ) {
+                return false;
+            }
+            let other_end: usize = handler_join(stream, other_handler, hi);
+            is_pure_finally_handler_shape(stream, other_handler, other_end, false)
+        })
+}
+
+fn recover_finally_continuation(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    copy_start: usize,
+    boundary: usize,
+    fin_start: usize,
+    fin_end: usize,
+    body: &[Stmt],
+) -> Result<Vec<Stmt>> {
+    if matches!(body.last(), Some(Stmt::Return(_) | Stmt::Raise { .. })) {
+        return Ok(Vec::new());
+    }
+    if fin_end <= fin_start {
+        return Ok(Vec::new());
+    }
+    let Some(cont_start): Option<usize> =
+        finally_inline_copy_end(stream, copy_start, boundary, fin_start, fin_end)
+    else {
+        return Ok(Vec::new());
+    };
+    if cont_start >= boundary || !slice_has_real_stmt(stream, cont_start, boundary) {
+        return Ok(Vec::new());
+    }
+    if slice_significant_contains_finally(stream, cont_start, boundary, fin_start, fin_end) {
+        return Ok(Vec::new());
+    }
+    let mut cont: Vec<Stmt> = structure_stmts(code, stream, cont_start, boundary)?;
+    while cont.last().is_some_and(is_implicit_none_return) {
+        cont.pop();
+    }
+    Ok(cont)
+}
+
+fn recover_modern_finally_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body: &[Stmt],
+    hi: usize,
+) -> Result<Vec<Stmt>> {
+    if stream.is_pre_311() || region.is_with || !region.is_finally {
+        return Ok(Vec::new());
+    }
+    if region_has_enclosing_modern_finally(stream, region, hi) {
+        return Ok(Vec::new());
+    }
+    let fin_start: usize = handler_body_first(stream, region.handler_start);
+    let fin_end: usize = finally_body_end(stream, fin_start, region.region_end);
+    let copy_start: usize = region
+        .protected_end
+        .max(region.try_start)
+        .min(region.handler_start);
+    recover_finally_continuation(
+        code,
+        stream,
+        copy_start,
+        region.handler_start,
+        fin_start,
+        fin_end,
+        body,
+    )
+}
+
+fn loop_spanning_finally_body_end(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+    finally_len: usize,
+) -> Option<usize> {
+    let back_edge: usize = (protected_end..handler_start).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| t >= try_start && t < protected_end)
+    })?;
+    if finally_len == 0 {
+        return None;
+    }
+    let fin_body_start: usize = handler_body_first(stream, handler_start);
+    let mut candidate: usize = handler_start.saturating_sub(finally_len);
+    while candidate > back_edge {
+        if finally_runs_match(stream, fin_body_start, candidate, finally_len) {
+            return Some(candidate);
+        }
+        candidate -= 1;
+    }
+    None
+}
+
+fn structure_finally_protected_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+    finally_len: usize,
+) -> Result<Vec<Stmt>> {
+    if let Some(body_end) =
+        loop_spanning_finally_body_end(stream, try_start, protected_end, handler_start, finally_len)
+    {
+        return structure_stmts(code, stream, try_start, body_end);
+    }
+    let inline_start: usize = protected_end;
+    let inline_end: usize = (inline_start + finally_len).min(handler_start);
+    let trailing_return: bool = (inline_end..handler_start)
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+        .is_some_and(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+        });
+    if trailing_return && region_is_linear(stream, try_start, protected_end) {
+        let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[try_start..protected_end])?;
+        let mut out: Vec<Stmt> = head;
+        if let Some(value) = residual.into_iter().next_back() {
+            out.push(Stmt::Return(Some(value)));
+        }
+        return Ok(out);
+    }
+    if trailing_return {
+        let value_start: usize = trailing_value_run_start(stream, try_start, protected_end);
+        if value_start > try_start
+            && region_is_linear(stream, value_start, protected_end)
+            && let Ok((tail_head, tail_residual)) =
+                build_linear_stmts_sim(code, &stream.ops[value_start..protected_end])
+            && tail_head.is_empty()
+            && let Some(value) = tail_residual.into_iter().next_back()
+        {
+            let mut out: Vec<Stmt> = structure_stmts(code, stream, try_start, value_start)?;
+            out.push(Stmt::Return(Some(value)));
+            return Ok(out);
+        }
+    }
+    structure_stmts(code, stream, try_start, protected_end)
+}
+
+pub(super) fn structure_infinite_while_split_finally_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    loop_region: &LoopRegion,
+) -> Result<Option<(Vec<Stmt>, usize)>> {
+    if stream.is_pre_311()
+        || !loop_region.infinite
+        || !matches!(loop_region.kind, LoopKind::While)
+        || loop_region.back_edge >= stream.ops.len()
+        || loop_region.exit >= stream.ops.len()
+    {
+        return Ok(None);
+    }
+    let Some(first_cond): Option<usize> =
+        (loop_region.header..loop_region.back_edge).find(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index]) && !is_chain_cond_jump(&stream.ops, index)
+        })
+    else {
+        return Ok(None);
+    };
+    let Some(body_resume): Option<usize> =
+        resolve_jump_target(stream, first_cond, &stream.ops[first_cond])
+            .filter(|target: &usize| *target > first_cond && *target < loop_region.back_edge)
+    else {
+        return Ok(None);
+    };
+    let Some(copy_start): Option<usize> = first_significant(stream, first_cond + 1, body_resume)
+    else {
+        return Ok(None);
+    };
+    let Some(split): Option<SplitFinallyLoopExit> = split_finally_loop_exit(
+        stream,
+        copy_start,
+        body_resume,
+        loop_region.back_edge,
+        stream.ops.len(),
+    ) else {
+        return Ok(None);
+    };
+    if split.exit != loop_region.exit {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> =
+        find_try_region(stream, loop_region.header, split.handler_end)
+    else {
+        return Ok(None);
+    };
+    let kind_matches: bool = region.is_finally && !region.is_with;
+    let start_matches: bool =
+        (loop_region.header..loop_region.back_edge).contains(&region.try_start);
+    let bounds_match: bool = region.protected_end == split.protected_end;
+    let handler_matches: bool = region.handler_start == split.handler_start;
+    if !kind_matches || !start_matches || !bounds_match || !handler_matches {
+        return Ok(None);
+    }
+    let matching_guards: usize = (region.try_start..split.protected_end)
+        .filter(|&index: &usize| {
+            is_forward_cond_jump(&stream.ops[index])
+                && !is_chain_cond_jump(&stream.ops, index)
+                && resolve_jump_target(stream, index, &stream.ops[index]) == Some(body_resume)
+        })
+        .count();
+    if matching_guards != 1 {
+        return Ok(None);
+    }
+    let mut logical: DecodedStream = stream.clone();
+    logical.ops[split.protected_end..split.break_jump].fill(CanonicalOp::Nop);
+    logical.ops[split.exit..split.handler_start].fill(CanonicalOp::Nop);
+    let Some(logical_region): Option<TryRegion> =
+        find_try_region(&logical, loop_region.header, split.handler_end)
+    else {
+        return Ok(None);
+    };
+    if !logical_region.is_finally || logical_region.protected_end != split.resumed_end {
+        return Ok(None);
+    }
+    let body: Vec<Stmt> = structure_try(
+        code,
+        &logical,
+        loop_region.header,
+        logical_region.region_end,
+        &logical_region,
+    )?;
+    Ok(Some((body, split.handler_start)))
+}
+
+fn trailing_value_run_start(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut start: usize = hi;
+    while start > lo {
+        let prev: usize = start - 1;
+        if matches!(
+            stream.ops[prev],
+            CanonicalOp::Pop
+                | CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfTrue(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::StoreFast(_)
+                | CanonicalOp::StoreName(_)
+                | CanonicalOp::StoreGlobal(_)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+        ) {
+            break;
+        }
+        start = prev;
+    }
+    start
+}
+
+pub(super) fn region_is_linear(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    !(lo..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::PopJumpIfFalse(_)
+                | CanonicalOp::PopJumpIfTrue(_)
+                | CanonicalOp::ForIter(_)
+                | CanonicalOp::GetIter
+                | CanonicalOp::BeforeWith
+        )
+    })
+}
+
+pub(super) const SPECIAL_ENTER: u32 = 0;
+pub(super) const SPECIAL_EXIT: u32 = 1;
+pub(super) const SPECIAL_AENTER: u32 = 2;
+pub(super) const SPECIAL_AEXIT: u32 = 3;
+
+pub(super) fn special_method_name(slot: u32) -> Option<&'static str> {
+    match slot {
+        SPECIAL_ENTER => Some("__enter__"),
+        SPECIAL_EXIT => Some("__exit__"),
+        SPECIAL_AENTER => Some("__aenter__"),
+        SPECIAL_AEXIT => Some("__aexit__"),
+        _ => None,
+    }
+}
+
+fn find_special_pair_setup_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    exit_slot: u32,
+    enter_slot: u32,
+) -> Option<(usize, usize)> {
+    let mut i: usize = lo;
+    while i < hi {
+        if matches!(stream.ops[i], CanonicalOp::Copy(1))
+            && let Some(special) = first_significant(stream, i + 1, hi)
+            && stream.ops[special] == CanonicalOp::LoadSpecial(exit_slot)
+        {
+            let enter: usize = (special + 1..hi)
+                .find(|&k: &usize| stream.ops[k] == CanonicalOp::LoadSpecial(enter_slot))?;
+            let call: usize = (enter + 1..hi)
+                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+            return Some((i, call + 1));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn find_async_with_setup_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Option<(usize, usize)> {
+    find_special_pair_setup_end(stream, lo, hi, SPECIAL_AEXIT, SPECIAL_AENTER)
+}
+
+fn find_with_setup_end(stream: &DecodedStream, lo: usize, hi: usize) -> Option<(usize, usize)> {
+    find_special_pair_setup_end(stream, lo, hi, SPECIAL_EXIT, SPECIAL_ENTER)
+}
+
+fn structure_async_with(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Result<Option<(Stmt, Vec<Stmt>)>> {
+    let with_except: usize = match (region.handler_start..region.region_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::WithExceptStart))
+    {
+        Some(idx) => idx,
+        None => return Ok(None),
+    };
+    if !first_significant(stream, with_except + 1, region.region_end)
+        .is_some_and(|k: usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
+    {
+        return Ok(None);
+    }
+    let before_idx: Option<usize> = (region.try_start..region.try_end)
+        .find(|&i: &usize| matches!(stream.ops[i], CanonicalOp::BeforeAsyncWith));
+    let (context_end, setup_end): (usize, usize) = if let Some(idx) = before_idx {
+        (idx, idx + 1)
+    } else {
+        let Some((copy_idx, setup_end)): Option<(usize, usize)> =
+            find_async_with_setup_end(stream, region.try_start, region.try_end)
+        else {
+            return Ok(None);
+        };
+        (copy_idx, setup_end)
+    };
+    let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[region.try_start..context_end])?;
+    let Some(context_expr): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let enter_await: usize = (setup_end..region.try_end)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
+        .unwrap_or(setup_end);
+    let after_poll: usize = skip_await_poll(stream, enter_await + 1, region.try_end);
+    let mut body_start: usize = after_poll;
+    let mut optional_vars: Option<Expr> = None;
+    match stream.ops.get(after_poll) {
+        Some(CanonicalOp::StoreFast(slot)) => {
+            optional_vars = local_target(code, *slot, after_poll).ok();
+            body_start += 1;
+        }
+        Some(CanonicalOp::StoreName(slot)) => {
+            optional_vars =
+                name_at(&code.names, *slot, after_poll, "name")
+                    .ok()
+                    .map(|id: String| Expr::Name {
+                        id,
+                        ctx: ExprCtx::Store,
+                        line: None,
+                    });
+            body_start += 1;
+        }
+        Some(CanonicalOp::Pop) => body_start += 1,
+        _ => {}
+    }
+    let search_end: usize = region.region_end.max(region.try_end);
+    let body_end: usize = with_body_end(code, stream, body_start, search_end, region.handler_start);
+    if let Some(ret) = async_with_stashed_return(code, stream, body_start, body_end)? {
+        return Ok(Some((
+            Stmt::With {
+                items: vec![WithItem {
+                    context_expr,
+                    optional_vars,
+                }],
+                body: vec![ret],
+                is_async: true,
+                line: None,
+            },
+            Vec::new(),
+        )));
+    }
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+    let owned_by_enclosing_try: bool =
+        async_with_return_owned_by_enclosing_try(stream, body_end, search_end, stream.ops.len());
+    let trailing: Option<Stmt> = async_with_trailing_return(code, stream, body_end, search_end)?;
+    let post_with: Vec<Stmt> = if trailing.is_some() || owned_by_enclosing_try {
+        Vec::new()
+    } else {
+        async_with_post_tail(code, stream, body_end, region.handler_start)?
+    };
+    if let Some(ret) = trailing {
+        body.push(ret);
+    }
+    Ok(Some((
+        Stmt::With {
+            items: vec![WithItem {
+                context_expr,
+                optional_vars,
+            }],
+            body: non_empty(body),
+            is_async: true,
+            line: None,
+        },
+        post_with,
+    )))
+}
+
+fn async_with_stashed_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Result<Option<Stmt>> {
+    let Some(swap): Option<usize> = (body_start..body_end)
+        .rev()
+        .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))
+    else {
+        return Ok(None);
+    };
+    if !matches!(stream.ops[swap], CanonicalOp::Swap(2)) {
+        return Ok(None);
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[body_start..swap])?;
+    if !head.is_empty() {
+        return Ok(None);
+    }
+    let Some(value): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    Ok(Some(Stmt::Return(Some(value))))
+}
+
+fn async_with_post_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    handler_start: usize,
+) -> Result<Vec<Stmt>> {
+    let Some(tail_start): Option<usize> = async_with_cleanup_end(stream, body_end, handler_start)
+    else {
+        return Ok(Vec::new());
+    };
+    if tail_start >= handler_start || !slice_has_real_stmt(stream, tail_start, handler_start) {
+        return Ok(Vec::new());
+    }
+    structure_stmts(code, stream, tail_start, handler_start)
+}
+
+fn async_with_cleanup_end(stream: &DecodedStream, body_end: usize, hi: usize) -> Option<usize> {
+    let mut i: usize = body_end;
+    let mut loads: usize = 0;
+    while i < hi && loads < 3 {
+        match &stream.ops[i] {
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                loads += 1;
+            }
+            CanonicalOp::Push(0)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    if loads < 3 {
+        return None;
+    }
+    let call: usize =
+        (i..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+    let after_await: usize = (call + 1..hi)
+        .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
+        .map_or(call + 1, |g: usize| skip_await_poll(stream, g + 1, hi));
+    Some(
+        first_significant(stream, after_await, hi)
+            .filter(|&k: &usize| matches!(stream.ops[k], CanonicalOp::Pop))
+            .map_or(after_await, |p: usize| p + 1),
+    )
+}
+
+fn async_with_return_owned_by_enclosing_try(
+    stream: &DecodedStream,
+    ret_start: usize,
+    hi: usize,
+    scan_end: usize,
+) -> bool {
+    let Some(ret_idx): Option<usize> = (ret_start..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return false;
+    };
+    (ret_idx + 1..scan_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::CheckEgMatch | CanonicalOp::CheckExcMatch
+        )
+    })
+}
+
+fn async_with_trailing_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    hi: usize,
+) -> Result<Option<Stmt>> {
+    let Some(ret_start): Option<usize> = async_with_cleanup_end(stream, body_end, hi) else {
+        return Ok(None);
+    };
+    if async_with_exit_guarded_by_branch(stream, ret_start, hi) {
+        return Ok(None);
+    }
+    if async_with_return_owned_by_enclosing_try(stream, ret_start, hi, stream.ops.len()) {
+        return Ok(None);
+    }
+    recover_return_at(code, stream, ret_start, hi)
+}
+
+fn async_with_exit_guarded_by_branch(stream: &DecodedStream, ret_start: usize, hi: usize) -> bool {
+    let Some(ret_idx): Option<usize> = (ret_start..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return false;
+    };
+    (ret_start..ret_idx).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::ForIter(_)
+                    | CanonicalOp::GetAnext
+                    | CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::JumpBackward(_)
+            )
+    })
+}
+
+pub(super) fn recover_return_at(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    ret_start: usize,
+    hi: usize,
+) -> Result<Option<Stmt>> {
+    let Some(ret_idx): Option<usize> = (ret_start..hi).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return Ok(None);
+    };
+    if let CanonicalOp::ReturnConst(c) = &stream.ops[ret_idx] {
+        let value: Expr = load_const(code, *c, ret_idx)?;
+        return Ok(Some(Stmt::Return(Some(value))));
+    }
+    let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[ret_start..ret_idx])?;
+    Ok(Some(Stmt::Return(residual.into_iter().next_back())))
+}
+
+pub(super) fn skip_await_poll(stream: &DecodedStream, from: usize, hi: usize) -> usize {
+    let mut i: usize = from;
+    while i < hi {
+        match &stream.ops[i] {
+            CanonicalOp::YieldFrom => return i + 1,
+            CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadCommonConst(7)
+            | CanonicalOp::Push(0)
+            | CanonicalOp::Send(_)
+            | CanonicalOp::Yield
+            | CanonicalOp::Resume(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::EndSend
+            | CanonicalOp::CleanupThrow
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => i += 1,
+            _ => break,
+        }
+    }
+    i
+}
+
+#[derive(Debug)]
+struct WithSetup {
+    item: WithItem,
+    setup_line: Option<u32>,
+    next_start: usize,
+}
+
+type WithChainEntry = (WithItem, Option<u32>);
+
+const fn is_with_target_address_op(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadAttr(_)
+            | CanonicalOp::LoadSubscr
+            | CanonicalOp::LoadFromDictOrDeref(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
+            | CanonicalOp::BuildSlice(_)
+            | CanonicalOp::BuildTuple(_)
+    )
+}
+
+fn with_target_chain_end(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
+    let bound: usize = hi.min(stream.ops.len());
+    let mut i: usize = from;
+    while i < bound {
+        match &stream.ops[i] {
+            CanonicalOp::StoreAttr(_) | CanonicalOp::StoreSubscr | CanonicalOp::StoreSlice => {
+                return Some(i + 1);
+            }
+            op if is_with_target_address_op(op) => i += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn recover_with_target(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    setup_end: usize,
+    hi: usize,
+) -> (Option<Expr>, usize) {
+    let bound: usize = hi.min(stream.ops.len());
+    let declined: (Option<Expr>, usize) = (None, setup_end);
+    let Some(op): Option<&CanonicalOp> = stream.ops.get(setup_end) else {
+        return declined;
+    };
+    match op {
+        CanonicalOp::StoreFast(slot) => (
+            local_target(code, *slot, setup_end).ok(),
+            setup_end.saturating_add(1),
+        ),
+        CanonicalOp::StoreName(slot) | CanonicalOp::StoreGlobal(slot) => (
+            name_at(&code.names, *slot, setup_end, "name")
+                .ok()
+                .map(|id: String| Expr::Name {
+                    id,
+                    ctx: ExprCtx::Store,
+                    line: None,
+                }),
+            setup_end.saturating_add(1),
+        ),
+        CanonicalOp::StoreFastLoadFast(slot, _) => {
+            (local_target(code, *slot, setup_end).ok(), setup_end)
+        }
+        CanonicalOp::Pop => (None, setup_end.saturating_add(1)),
+        CanonicalOp::UnpackSequence(_) | CanonicalOp::UnpackEx(_) => {
+            single_store_target(code, &stream.ops[..bound], setup_end)
+                .map_or(declined, |(target, next): (Expr, usize)| {
+                    (Some(target), next)
+                })
+        }
+        _ => with_target_chain_end(stream, setup_end, bound)
+            .and_then(|end: usize| {
+                recover_chain_target(code, &stream.ops, setup_end, end)
+                    .map(|target: Expr| (Some(target), end))
+            })
+            .unwrap_or(declined),
+    }
+}
+
+fn recover_with_setup(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    ctx_start: usize,
+    hi: usize,
+) -> Result<Option<WithSetup>> {
+    let before_idx: Option<usize> =
+        (ctx_start..hi).find(|&i: &usize| matches!(stream.ops[i], CanonicalOp::BeforeWith));
+    let modern: Option<(usize, usize)> = find_with_setup_end(stream, ctx_start, hi);
+    let (ctx_end, setup_end): (usize, usize) = match (before_idx, modern) {
+        (Some(before_idx), Some((copy_idx, _))) if before_idx <= copy_idx => {
+            (before_idx, before_idx + 1)
+        }
+        (Some(before_idx), None) => (before_idx, before_idx + 1),
+        (_, Some((copy_idx, modern_end))) => (copy_idx, modern_end),
+        (None, None) => return Ok(None),
+    };
+    let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[ctx_start..ctx_end])?;
+    let carried_fused_store: usize = usize::from(matches!(
+        stream.ops.get(ctx_start),
+        Some(CanonicalOp::StoreFastLoadFast(_, _))
+    ));
+    if stmts.len() > carried_fused_store {
+        return Ok(None);
+    }
+    let Some(context_expr): Option<Expr> = residual.into_iter().next_back() else {
+        return Ok(None);
+    };
+    let (optional_vars, next_start): (Option<Expr>, usize) =
+        recover_with_target(code, stream, setup_end, hi);
+    Ok(Some(WithSetup {
+        item: WithItem {
+            context_expr,
+            optional_vars,
+        },
+        setup_line: stream.line_at(ctx_end),
+        next_start,
+    }))
+}
+
+fn collect_with_chain(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Result<(Vec<WithChainEntry>, usize)> {
+    let search_end: usize = region.region_end.max(region.try_end);
+    let mut items: Vec<WithChainEntry> = Vec::new();
+    let mut cursor: usize = region.try_start;
+    let mut pending: Option<WithSetup> = recover_with_setup(code, stream, cursor, search_end)?;
+    while let Some(setup) = pending {
+        let next_start: usize = setup.next_start;
+        items.push((setup.item, setup.setup_line));
+        if next_start <= cursor {
+            break;
+        }
+        cursor = next_start;
+        pending = recover_with_setup(code, stream, cursor, search_end)?;
+    }
+    Ok((items, cursor))
+}
+
+fn structure_with(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &TryRegion,
+) -> Result<(Stmt, Vec<Stmt>)> {
+    if let Some(stmt_and_tail) = structure_async_with(code, stream, region)? {
+        return Ok(stmt_and_tail);
+    }
+    let (chain, body_start): (Vec<WithChainEntry>, usize) =
+        collect_with_chain(code, stream, region)?;
+    if chain.is_empty() {
+        return Err(DecompileError::AstDesync {
+            offset: region.try_start,
+            reason: "with region carries no recoverable context-manager setup, so the statement \
+                     header cannot be reconstructed from its body"
+                .to_owned(),
+        });
+    }
+    let search_end: usize = region.region_end.max(region.try_end);
+    let bounds: WithBodyBounds =
+        with_body_bounds(code, stream, body_start, search_end, region.handler_start);
+    let scanned_end: usize = bounds.end;
+    let body_end: usize =
+        clamp_with_body_to_protected(stream, region, body_start, scanned_end, search_end);
+    if body_end < scanned_end
+        && let Some(cont_start) = skip_with_cleanup_block(stream, body_end, search_end)
+        && cont_start < region.handler_start
+        && slice_has_real_stmt(stream, cont_start, region.handler_start)
+    {
+        let (body, _tail): (Vec<Stmt>, Vec<Stmt>) =
+            structure_with_body(code, stream, body_start, body_end, search_end)?;
+        let continuation: Vec<Stmt> =
+            structure_stmts(code, stream, cont_start, region.handler_start)?;
+        return Ok((assemble_with_chain(chain, body), continuation));
+    }
+    if let Some(extension) = bounds.extension {
+        let (elide_start, elide_end): (usize, usize) = extension.elide;
+        let mut patched: DecodedStream = stream.clone();
+        for op in &mut patched.ops[elide_start..elide_end] {
+            *op = CanonicalOp::Nop;
+        }
+        let (body, _tail): (Vec<Stmt>, Vec<Stmt>) =
+            structure_with_body(code, &patched, body_start, extension.end, search_end)?;
+        let tail_start: usize =
+            skip_with_cleanup_block(stream, elide_start, elide_end).unwrap_or(elide_start);
+        let tail: Vec<Stmt> = structure_stmts(code, stream, tail_start, elide_end)?;
+        return Ok((assemble_with_chain(chain, body), tail));
+    }
+    let (body, mut tail): (Vec<Stmt>, Vec<Stmt>) =
+        structure_with_body(code, stream, body_start, body_end, search_end)?;
+    if tail.is_empty()
+        && let Some(cont_start) = with_handler_backjump_continuation(stream, region, body_end)
+    {
+        tail = structure_stmts(code, stream, cont_start, region.handler_start)?;
+    }
+    Ok((assemble_with_chain(chain, body), tail))
+}
+
+fn clamp_with_body_to_protected(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body_start: usize,
+    scanned_end: usize,
+    search_end: usize,
+) -> usize {
+    if stream.is_pre_311() || region.try_end <= body_start || region.try_end >= scanned_end {
+        return scanned_end;
+    }
+    let protected: usize = region.try_end;
+    let is_own_exit_cleanup: bool = matches!(
+        stream.ops.get(protected),
+        Some(CanonicalOp::Swap(_) | CanonicalOp::RotN(_))
+    ) || (is_none_const_push(&stream.ops[protected])
+        && is_exit_none_triple(stream, protected, search_end));
+    if !is_own_exit_cleanup {
+        return scanned_end;
+    }
+    let Some(after_cleanup): Option<usize> = skip_with_cleanup_block(stream, protected, search_end)
+    else {
+        return scanned_end;
+    };
+    let continues: bool = after_cleanup < search_end
+        && slice_has_real_stmt(stream, after_cleanup, search_end.min(scanned_end));
+    if continues { protected } else { scanned_end }
+}
+
+fn with_handler_backjump_continuation(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    body_end: usize,
+) -> Option<usize> {
+    if region.handler_start <= body_end {
+        return None;
+    }
+    let pop_except: usize =
+        handler_pop_except_idx(stream, region.handler_start, region.region_end)?;
+    let mut exit: usize = pop_except + 1;
+    while exit < region.region_end
+        && matches!(
+            stream.ops[exit],
+            CanonicalOp::Pop | CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+        )
+    {
+        exit += 1;
+    }
+    if exit >= region.region_end
+        || !matches!(stream.ops[exit], CanonicalOp::JumpBackwardNoInterrupt(_))
+    {
+        return None;
+    }
+    let cont_start: usize = resolve_jump_target(stream, exit, &stream.ops[exit])
+        .filter(|t: &usize| (body_end..region.handler_start).contains(t))?;
+    slice_has_real_stmt(stream, cont_start, region.handler_start).then_some(cont_start)
+}
+
+fn with_enclosing_try_region(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> Option<TryRegion> {
+    if !region.is_with || stream.is_pre_311() || region.handler_start >= hi {
+        return None;
+    }
+    let with_cleanup_end: usize = handler_chain_end(stream, region.handler_start, hi)?;
+    let enclosing: TryRegion =
+        find_protected_try_with_outer_handler(stream, region.try_start, with_cleanup_end, hi)?;
+    let body_starts_in_with: bool =
+        (region.try_start..region.protected_end).contains(&enclosing.try_start);
+    let handler_after_with: bool = enclosing.handler_start >= with_cleanup_end;
+    let real_except: bool = matches!(
+        stream.ops.get(enclosing.handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) && !matches!(
+        stream.ops.get(enclosing.handler_start + 1),
+        Some(CanonicalOp::WithExceptStart)
+    );
+    (body_starts_in_with && handler_after_with && real_except).then_some(enclosing)
+}
+
+fn try_enclosing_except_region(
+    stream: &DecodedStream,
+    region: &TryRegion,
+    hi: usize,
+) -> Option<(usize, usize, usize)> {
+    if region.is_with || region.is_finally || stream.is_pre_311() || region.handler_start >= hi {
+        return None;
+    }
+    if (region.handler_start..region.region_end)
+        .any(|k: usize| matches!(stream.ops.get(k), Some(CanonicalOp::CheckEgMatch)))
+    {
+        return None;
+    }
+    let inner_handler_off: u32 = stream.offsets.get(region.handler_start).copied()?;
+    let inner_end: usize =
+        handler_chain_end(stream, region.handler_start, hi)?.max(region.region_end);
+    let inner_end_off: u32 = stream.offsets.get(inner_end).copied().unwrap_or(u32::MAX);
+    let outer_handler_start: usize = stream
+        .exception_table
+        .iter()
+        .filter(|e: &&crate::bytecode::flow::ExceptionTableEntry| {
+            (inner_handler_off..inner_end_off).contains(&e.start)
+        })
+        .filter_map(|e: &crate::bytecode::flow::ExceptionTableEntry| {
+            let hs: usize = stream.index_for_offset(e.target)?;
+            ((inner_end..hi).contains(&hs)
+                && matches!(stream.ops.get(hs), Some(CanonicalOp::PushExcInfo))
+                && !matches!(stream.ops.get(hs + 1), Some(CanonicalOp::WithExceptStart)))
+            .then_some(hs)
+        })
+        .min()?;
+    let outer_region_end: usize = handler_chain_end(stream, outer_handler_start, hi)?.min(hi);
+    if is_pure_finally_handler_shape(stream, outer_handler_start, outer_region_end, false) {
+        return None;
+    }
+    Some((outer_handler_start, outer_region_end, inner_end))
+}
+
+fn assemble_with_chain(chain: Vec<WithChainEntry>, body: Vec<Stmt>) -> Stmt {
+    let mut groups: Vec<Vec<WithItem>> = Vec::new();
+    let mut last_line: Option<u32> = None;
+    for (item, item_line) in chain {
+        let same_line: bool = matches!((item_line, last_line), (Some(l), Some(p)) if l == p);
+        if same_line && let Some(group) = groups.last_mut() {
+            group.push(item);
+        } else {
+            groups.push(vec![item]);
+        }
+        last_line = item_line.or(last_line);
+    }
+    let mut inner_body: Vec<Stmt> = non_empty(body);
+    for items in groups.into_iter().rev() {
+        inner_body = vec![Stmt::With {
+            items,
+            body: inner_body,
+            is_async: false,
+            line: None,
+        }];
+    }
+    inner_body.into_iter().next().unwrap_or(Stmt::Pass)
+}
+
+fn structure_with_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+    region_end: usize,
+) -> Result<(Vec<Stmt>, Vec<Stmt>)> {
+    let mut trim_end: usize = body_end;
+    while trim_end > body_start
+        && matches!(
+            stream.ops[trim_end - 1],
+            CanonicalOp::Swap(_) | CanonicalOp::RotN(_)
+        )
+    {
+        trim_end -= 1;
+    }
+    let swap_present: bool = trim_end < body_end;
+    let trailing_return: bool = is_with_trailing_return(stream, body_end, region_end);
+    let has_internal_control_flow: bool =
+        with_body_has_internal_control_flow(stream, body_start, trim_end);
+    if swap_present && trailing_return && !has_internal_control_flow {
+        let (stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[body_start..trim_end])?;
+        let mut out: Vec<Stmt> = stmts;
+        if let Some(value) = residual.into_iter().next_back() {
+            out.push(Stmt::Return(Some(value)));
+        }
+        return Ok((out, Vec::new()));
+    }
+    if swap_present
+        && trailing_return
+        && let Some((prefix_end, value)) =
+            with_stashed_return_value(code, stream, body_start, trim_end)
+    {
+        let mut out: Vec<Stmt> = structure_stmts(code, stream, body_start, prefix_end)?;
+        out.push(Stmt::Return(Some(value)));
+        return Ok((out, Vec::new()));
+    }
+    let body: Vec<Stmt> = if has_internal_control_flow
+        && let Some(folded) = elide_inline_with_exits(stream, body_start, body_end)
+    {
+        structure_stmts(code, &folded, body_start, body_end)?
+    } else {
+        structure_stmts(code, stream, body_start, body_end)?
+    };
+    let tail: Vec<Stmt> = if swap_present {
+        Vec::new()
+    } else {
+        with_post_cleanup_tail(code, stream, body_end, region_end)?
+    };
+    Ok((body, tail))
+}
+
+fn with_stashed_return_value(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_start: usize,
+    trim_end: usize,
+) -> Option<(usize, Expr)> {
+    let value_start: usize = (body_start..trim_end)
+        .rev()
+        .find(|&k: &usize| is_value_boundary_at(stream, k))
+        .map_or(body_start, |b: usize| b + 1);
+    if value_start >= trim_end {
+        return None;
+    }
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[value_start..trim_end]).ok()?;
+    if !head.is_empty() {
+        return None;
+    }
+    residual
+        .into_iter()
+        .next_back()
+        .map(|value: Expr| (value_start, value))
+}
+
+pub(super) fn offset_is_unprotected(stream: &DecodedStream, off: u32) -> bool {
+    !stream
+        .exception_table
+        .iter()
+        .any(|e: &crate::bytecode::flow::ExceptionTableEntry| e.start <= off && off < e.end())
+}
+
+fn no_swap_inline_with_exit(stream: &DecodedStream, i: usize, body_end: usize) -> Option<usize> {
+    if !(is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, body_end)) {
+        return None;
+    }
+    let call: usize = {
+        let mut seen: usize = 0;
+        let mut k: usize = i;
+        while k < body_end && seen < 3 {
+            if matches!(
+                stream.ops[k],
+                CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup
+            ) {
+                seen += 1;
+            }
+            k += 1;
+        }
+        first_significant(stream, k, body_end)?
+    };
+    let call_off: u32 = *stream.offsets.get(call)?;
+    if !offset_is_unprotected(stream, call_off) {
+        return None;
+    }
+    let after: usize = skip_with_cleanup_block(stream, i, body_end)?;
+    let term: usize = {
+        let mut k: usize = first_significant(stream, after, body_end)?;
+        while k < body_end
+            && matches!(
+                stream.ops[k],
+                CanonicalOp::LoadConst(_)
+                    | CanonicalOp::LoadSmallInt(_)
+                    | CanonicalOp::LoadCommonConst(_)
+                    | CanonicalOp::LoadFast(_)
+                    | CanonicalOp::LoadFastLoadFast(_, _)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        {
+            k += 1;
+        }
+        k
+    };
+    matches!(
+        stream.ops.get(term),
+        Some(
+            CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::Raise(_)
+                | CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+        )
+    )
+    .then_some(after)
+}
+
+fn elide_inline_with_exits(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> Option<DecodedStream> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = body_start;
+    while i < body_end {
+        if matches!(stream.ops[i], CanonicalOp::Swap(_) | CanonicalOp::RotN(_))
+            && let Some(after) = skip_with_cleanup_block(stream, i, body_end)
+            && first_significant(stream, after, body_end).is_some_and(|t: usize| {
+                matches!(
+                    stream.ops[t],
+                    CanonicalOp::Return
+                        | CanonicalOp::ReturnConst(_)
+                        | CanonicalOp::Raise(_)
+                        | CanonicalOp::JumpForward(_)
+                        | CanonicalOp::JumpAbsolute(_)
+                        | CanonicalOp::JumpBackward(_)
+                        | CanonicalOp::JumpBackwardNoInterrupt(_)
+                )
+            })
+        {
+            spans.push((i, after));
+            i = after;
+        } else if let Some(after) = no_swap_inline_with_exit(stream, i, body_end) {
+            spans.push((i, after));
+            i = after;
+        } else {
+            i += 1;
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut ops: Vec<CanonicalOp> = stream.ops.clone();
+    for (lo, hi) in spans {
+        for op in &mut ops[lo..hi] {
+            *op = CanonicalOp::Nop;
+        }
+    }
+    Some(DecodedStream {
+        ops,
+        offsets: stream.offsets.clone(),
+        next_offsets: stream.next_offsets.clone(),
+        code_len: stream.code_len,
+        lines: stream.lines.clone(),
+        wordcode: stream.wordcode,
+        instr_unit_jumps: stream.instr_unit_jumps,
+        relative_cond_jumps: stream.relative_cond_jumps,
+        exception_table: stream.exception_table.clone(),
+        pre311_end_finally_idx: stream.pre311_end_finally_idx.clone(),
+        pre311_pop_block_idx: stream.pre311_pop_block_idx.clone(),
+        pre311_break_loop_idx: stream.pre311_break_loop_idx.clone(),
+        setup_loop_end: stream.setup_loop_end.clone(),
+        none_jump_kind: stream.none_jump_kind.clone(),
+        version: stream.version.clone(),
+    })
+}
+
+fn with_body_has_internal_control_flow(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+) -> bool {
+    (body_start..body_end).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+            )
+    })
+}
+
+fn with_post_cleanup_tail(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    region_end: usize,
+) -> Result<Vec<Stmt>> {
+    let mut ret_start: usize = body_end;
+    let mut cleanups: usize = 0;
+    while let Some(next) = skip_with_cleanup_block(stream, ret_start, region_end) {
+        ret_start = next;
+        cleanups += 1;
+    }
+    if cleanups == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(ret_idx): Option<usize> = (ret_start..region_end).find(|&k: &usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) else {
+        return Ok(Vec::new());
+    };
+    let has_exc_scaffold: bool = (ret_start..ret_idx).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+        )
+    });
+    if has_exc_scaffold {
+        return Ok(Vec::new());
+    }
+    let tail_end: usize = (ret_start..region_end)
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+            )
+        })
+        .unwrap_or(region_end);
+    let branched: bool = (ret_start..tail_end).any(|k: usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| (ret_start..=tail_end).contains(&t))
+    });
+    let looped: bool = (ret_start..tail_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::ForIter(_) | CanonicalOp::ForLoopLegacy(_)
+        ) || (matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k])
+            .is_some_and(|t: usize| (ret_start..tail_end).contains(&t)))
+    });
+    if (branched || looped) && slice_has_real_stmt(stream, ret_start, tail_end) {
+        return structure_stmts(code, stream, ret_start, tail_end);
+    }
+    let (mut stmts, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[ret_start..ret_idx])?;
+    let return_value: Option<Expr> = if let CanonicalOp::ReturnConst(c) = &stream.ops[ret_idx] {
+        Some(load_const(code, *c, ret_idx)?)
+    } else {
+        residual.into_iter().next_back()
+    };
+    stmts.push(Stmt::Return(return_value));
+    Ok(stmts)
+}
+
+fn is_with_trailing_return(stream: &DecodedStream, body_end: usize, region_end: usize) -> bool {
+    let mut i: usize = body_end;
+    while let Some(next) = skip_with_cleanup_block(stream, i, region_end) {
+        i = next;
+    }
+    while i < region_end {
+        match &stream.ops[i] {
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => i += 1,
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) => return true,
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn skip_with_cleanup_block(
+    stream: &DecodedStream,
+    start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let mut i: usize = first_significant(stream, start, region_end)?;
+    while matches!(stream.ops[i], CanonicalOp::Swap(_) | CanonicalOp::RotN(_)) {
+        i = first_significant(stream, i + 1, region_end)?;
+    }
+    let mut loads: usize = 0;
+    while i < region_end && loads < 3 {
+        match &stream.ops[i] {
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                loads += 1;
+            }
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    if loads < 3 {
+        return None;
+    }
+    i = first_significant(stream, i, region_end)?;
+    if !matches!(
+        stream.ops[i],
+        CanonicalOp::CallFunction(_) | CanonicalOp::CallFunctionKw(_)
+    ) {
+        return None;
+    }
+    i = first_significant(stream, i + 1, region_end)?;
+    if !matches!(stream.ops[i], CanonicalOp::Pop) {
+        return None;
+    }
+    Some(i + 1)
+}
+
+fn with_body_exit_count(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    handler_bound: usize,
+) -> usize {
+    let mut exits: Vec<bool> = Vec::new();
+    let mut i: usize = lo;
+    while i < handler_bound {
+        let cleanup_start: bool =
+            matches!(stream.ops[i], CanonicalOp::Swap(_) | CanonicalOp::RotN(_))
+                || (is_none_const_push(&stream.ops[i])
+                    && is_exit_none_triple(stream, i, handler_bound));
+        if cleanup_start && let Some(after) = skip_with_cleanup_block(stream, i, handler_bound) {
+            let value_at: Option<usize> = (after < handler_bound
+                && matches!(
+                    stream.ops[after],
+                    CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(_)
+                ))
+            .then_some(after);
+            let mut k: usize = after;
+            while k < handler_bound
+                && matches!(
+                    stream.ops[k],
+                    CanonicalOp::LoadConst(_)
+                        | CanonicalOp::LoadSmallInt(_)
+                        | CanonicalOp::LoadCommonConst(_)
+                        | CanonicalOp::LoadFast(_)
+                        | CanonicalOp::LoadFastLoadFast(_, _)
+                        | CanonicalOp::Nop
+                        | CanonicalOp::Cache
+                        | CanonicalOp::ExtendedArg(_)
+                )
+            {
+                k += 1;
+            }
+            if matches!(
+                stream.ops.get(k),
+                Some(
+                    CanonicalOp::Return
+                        | CanonicalOp::ReturnConst(_)
+                        | CanonicalOp::Raise(_)
+                        | CanonicalOp::JumpForward(_)
+                        | CanonicalOp::JumpAbsolute(_)
+                        | CanonicalOp::JumpBackward(_)
+                        | CanonicalOp::JumpBackwardNoInterrupt(_)
+                )
+            ) {
+                let returns_none: bool = matches!(stream.ops.get(k), Some(CanonicalOp::Return))
+                    && value_at.is_some_and(|v: usize| loads_none(code, &stream.ops[v]));
+                exits.push(returns_none);
+            }
+            i = after;
+        } else {
+            i += 1;
+        }
+    }
+    if exits.last() == Some(&true) {
+        exits.pop();
+    }
+    exits.len()
+}
+
+struct WithBodyExtension {
+    end: usize,
+    elide: (usize, usize),
+}
+
+struct WithBodyBounds {
+    end: usize,
+    extension: Option<WithBodyExtension>,
+}
+
+fn with_body_bounds(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    own_handler: usize,
+) -> WithBodyBounds {
+    let handler_bound: usize = (lo..hi)
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+            )
+        })
+        .unwrap_or(hi);
+    if with_body_exit_count(code, stream, lo, handler_bound) >= 2 {
+        return WithBodyBounds {
+            end: handler_bound,
+            extension: None,
+        };
+    }
+    let pure_exit: Option<usize> = (lo..hi).find(|&i: &usize| {
+        is_none_const_push(&stream.ops[i])
+            && is_exit_none_triple(stream, i, hi)
+            && with_cleanup_tail_is_pure(stream, i, hi)
+    });
+    let first_exit: Option<usize> = pure_exit.or_else(|| {
+        (lo..hi).find(|&i: &usize| {
+            is_none_const_push(&stream.ops[i]) && is_exit_none_triple(stream, i, hi)
+        })
+    });
+    let end: usize = first_exit.unwrap_or(hi);
+    let extension: Option<WithBodyExtension> =
+        with_body_end_over_nested_handler(stream, lo, end, own_handler.min(hi)).map(
+            |nested: TryRegion| WithBodyExtension {
+                end: nested.region_end,
+                elide: (end, nested.handler_start),
+            },
+        );
+    WithBodyBounds { end, extension }
+}
+
+fn with_body_end(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    own_handler: usize,
+) -> usize {
+    with_body_bounds(code, stream, lo, hi, own_handler).end
+}
+
+fn with_body_end_over_nested_handler(
+    stream: &DecodedStream,
+    lo: usize,
+    first_exit: usize,
+    own_handler: usize,
+) -> Option<TryRegion> {
+    if first_exit >= own_handler || lo >= first_exit {
+        return None;
+    }
+    let nested: TryRegion = find_try_region(stream, lo, own_handler)?;
+    if nested.is_with
+        || nested.try_start < lo
+        || nested.handler_start < first_exit
+        || nested.region_end > own_handler
+        || nested.region_end <= first_exit
+    {
+        return None;
+    }
+    let rejoins_cleanup: bool = (nested.handler_start..nested.region_end).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpForward(_)
+        ) && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t <= first_exit)
+    });
+    (rejoins_cleanup || nested.is_finally).then_some(nested)
+}
+
+fn with_cleanup_tail_is_pure(stream: &DecodedStream, triple_start: usize, hi: usize) -> bool {
+    let mut i: usize = triple_start;
+    while let Some(next) = skip_with_cleanup_block(stream, i, hi) {
+        i = next;
+    }
+    (i..hi)
+        .take_while(|&k: &usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
+            )
+        })
+        .all(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::LoadConst(_)
+                    | CanonicalOp::LoadSmallInt(_)
+                    | CanonicalOp::LoadCommonConst(_)
+                    | CanonicalOp::LoadFast(_)
+                    | CanonicalOp::Cache
+                    | CanonicalOp::Nop
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        })
+}
+
+#[inline]
+fn is_none_const_push(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7)
+    )
+}
+
+fn is_exit_none_triple(stream: &DecodedStream, start: usize, hi: usize) -> bool {
+    let mut seen: usize = 0;
+    let mut i: usize = start;
+    while i < hi && seen < 3 {
+        match &stream.ops[i] {
+            CanonicalOp::LoadConst(_) | CanonicalOp::LoadCommonConst(7) | CanonicalOp::Dup => {
+                seen += 1;
+            }
+            CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_) => {}
+            _ => return false,
+        }
+        i += 1;
+    }
+    if seen < 3 {
+        return false;
+    }
+    first_significant(stream, i, hi).is_some_and(|call: usize| {
+        matches!(
+            stream.ops[call],
+            CanonicalOp::CallFunction(_) | CanonicalOp::CallFunctionKw(_)
+        )
+    })
+}
+
+fn skip_await_send_loop(stream: &DecodedStream, end: usize, handler_start: usize) -> usize {
+    if !matches!(
+        stream.ops.get(end),
+        Some(CanonicalOp::Yield | CanonicalOp::Send(_))
+    ) {
+        return end;
+    }
+    let mut k: usize = end;
+    while k < handler_start {
+        match stream.ops.get(k) {
+            Some(CanonicalOp::EndSend) => {
+                let mut after: usize = k + 1;
+                while after < handler_start
+                    && matches!(
+                        stream.ops.get(after),
+                        Some(CanonicalOp::Cache | CanonicalOp::Nop)
+                    )
+                {
+                    after += 1;
+                }
+                if matches!(stream.ops.get(after), Some(CanonicalOp::Pop)) {
+                    after += 1;
+                }
+                return after;
+            }
+            Some(
+                CanonicalOp::Yield
+                | CanonicalOp::Send(_)
+                | CanonicalOp::Resume(_)
+                | CanonicalOp::CleanupThrow
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_),
+            ) => k += 1,
+            _ => return end,
+        }
+    }
+    end
+}
+
+fn extend_try_body(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    try_end: usize,
+    handler_start: usize,
+) -> usize {
+    let mut end: usize = try_end;
+    let mut balanced: bool = try_end
+        .checked_sub(1)
+        .and_then(|p: usize| stream.ops.get(p))
+        .is_some_and(|op: &CanonicalOp| {
+            matches!(
+                op,
+                CanonicalOp::Pop
+                    | CanonicalOp::StoreFast(_)
+                    | CanonicalOp::StoreName(_)
+                    | CanonicalOp::StoreGlobal(_)
+                    | CanonicalOp::StoreAttr(_)
+                    | CanonicalOp::StoreSubscr
+            )
+        });
+    while end < handler_start {
+        let after_await: usize = skip_await_send_loop(stream, end, handler_start);
+        if after_await > end {
+            end = after_await;
+            continue;
+        }
+        match stream.ops.get(end) {
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)) => {
+                end += 1;
+            }
+            Some(CanonicalOp::ReturnConst(slot)) if balanced && is_const_none(code, *slot) => {
+                break;
+            }
+            Some(
+                CanonicalOp::Return
+                | CanonicalOp::ReturnConst(_)
+                | CanonicalOp::StoreFast(_)
+                | CanonicalOp::StoreName(_)
+                | CanonicalOp::StoreGlobal(_)
+                | CanonicalOp::StoreAttr(_)
+                | CanonicalOp::StoreSubscr
+                | CanonicalOp::Pop,
+            ) => {
+                end += 1;
+                balanced = true;
+            }
+            _ => break,
+        }
+    }
+    end
+}
+
+fn is_const_none(code: &CodeObject, slot: crate::bytecode::opcode::ConstIndex) -> bool {
+    matches!(
+        load_const(code, slot, 0),
+        Ok(Expr::Constant {
+            value: ConstValue::None,
+            ..
+        })
+    )
+}
+
+fn extend_end_past_shortcircuit_stmt(stream: &DecodedStream, end: usize, hi: usize) -> usize {
+    let mut end: usize = end;
+    while protected_end_splits_shortcircuit(stream, end) {
+        let Some(terminator): Option<usize> = (end..hi).find(|&k: &usize| match stream.ops[k] {
+            CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_) => true,
+            CanonicalOp::Pop => !is_shortcircuit_cleanup_pop(stream, k),
+            _ => false,
+        }) else {
+            return end;
+        };
+        let next: usize = (terminator + 1).min(hi);
+        if next <= end {
+            return end;
+        }
+        end = next;
+    }
+    end
+}
+
+fn op_leaves_value(op: &CanonicalOp) -> bool {
+    !matches!(
+        op,
+        CanonicalOp::StoreFast(_)
+            | CanonicalOp::StoreName(_)
+            | CanonicalOp::StoreGlobal(_)
+            | CanonicalOp::StoreAttr(_)
+            | CanonicalOp::StoreSubscr
+            | CanonicalOp::StoreFastLoadFast(_, _)
+            | CanonicalOp::StoreFastStoreFast(_, _)
+            | CanonicalOp::Pop
+            | CanonicalOp::DiscardTop
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::PopExcept
+            | CanonicalOp::PushExcInfo
+            | CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+    )
+}
+
+fn extend_body_over_trailing_guard(
+    stream: &DecodedStream,
+    try_start: usize,
+    body_end: usize,
+    false_target: usize,
+) -> usize {
+    if body_end == 0 || body_end >= false_target {
+        return body_end;
+    }
+    let Some(last): Option<usize> = last_significant_back(stream, try_start, body_end) else {
+        return body_end;
+    };
+    if !is_forward_cond_jump(&stream.ops[last]) || is_chain_cond_jump(&stream.ops, last) {
+        return body_end;
+    }
+    let Some(target): Option<usize> = resolve_jump_target(stream, last, &stream.ops[last])
+        .filter(|t: &usize| *t > body_end && *t <= false_target)
+    else {
+        return body_end;
+    };
+    let tail_terminates: bool =
+        last_significant_back(stream, body_end, target).is_some_and(|k: usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+            )
+        });
+    let tail_has_no_handler_boundary: bool = (body_end..target).all(|k: usize| {
+        stream
+            .offsets
+            .get(k)
+            .copied()
+            .is_none_or(|off: u32| !is_handler_target(stream, off))
+    });
+    if tail_terminates && tail_has_no_handler_boundary {
+        target
+    } else {
+        body_end
+    }
+}
+
+fn protected_body_end_with_return(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    if protected_end >= handler_start {
+        return protected_end;
+    }
+    let Some(first): Option<usize> = first_significant(stream, protected_end, handler_start) else {
+        return protected_end;
+    };
+    let ret: usize = match stream.ops.get(first) {
+        Some(CanonicalOp::Return) => first,
+        Some(CanonicalOp::Swap(2)) => {
+            match return_after_handler_cleanup(stream, first, handler_start) {
+                Some(k) => k,
+                None if loop_frame_depth() > 0 => {
+                    match return_after_iter_cleanup(stream, first, handler_start) {
+                        Some(k) => k,
+                        None => return protected_end,
+                    }
+                }
+                None => return protected_end,
+            }
+        }
+        Some(
+            CanonicalOp::Swap(_) | CanonicalOp::Copy(_) | CanonicalOp::RotN(_) | CanonicalOp::Pop,
+        ) if loop_frame_depth() > 0 => {
+            match return_after_iter_cleanup(stream, first, handler_start) {
+                Some(k) => k,
+                None => return protected_end,
+            }
+        }
+        _ => return protected_end,
+    };
+    let leaves_value: bool = last_significant_back(stream, try_start, protected_end)
+        .is_some_and(|k: usize| op_leaves_value(&stream.ops[k]));
+    if leaves_value { ret + 1 } else { protected_end }
+}
+
+fn single_const_return_tail_end(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
+    let mut k: usize = from;
+    let mut returns: usize = 0;
+    while k < hi {
+        match stream.ops.get(k) {
+            Some(
+                CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_),
+            ) => k += 1,
+            Some(CanonicalOp::Return | CanonicalOp::ReturnConst(_)) => {
+                returns += 1;
+                k += 1;
+            }
+            _ => break,
+        }
+    }
+    (returns == 1 && k > from).then_some(k)
+}
+
+fn extend_protected_end_over_guard_return(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    if protected_end >= handler_start {
+        return protected_end;
+    }
+    let body_falls_through: bool = last_significant_back(stream, try_start, protected_end)
+        .is_some_and(|k: usize| {
+            !matches!(
+                stream.ops[k],
+                CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+            )
+        });
+    if !body_falls_through {
+        return protected_end;
+    }
+    let Some(tail_end): Option<usize> =
+        single_const_return_tail_end(stream, protected_end, handler_start)
+    else {
+        return protected_end;
+    };
+    let guards_targeting_tail: usize = (try_start..protected_end)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k])
+                && !is_chain_cond_jump(&stream.ops, k)
+                && !is_value_form_shortcircuit(&stream.ops, k)
+                && resolve_jump_target(stream, k, &stream.ops[k])
+                    .is_some_and(|t: usize| (protected_end..tail_end).contains(&t))
+        })
+        .count();
+    if guards_targeting_tail == 1 {
+        tail_end
+    } else {
+        protected_end
+    }
+}
+
+fn first_nonraising_return_unit_end(
+    stream: &DecodedStream,
+    from: usize,
+    hi: usize,
+) -> Option<usize> {
+    let mut k: usize = from;
+    let mut saw_value: bool = false;
+    while k < hi {
+        match stream.ops.get(k) {
+            Some(
+                CanonicalOp::LoadConst(_)
+                | CanonicalOp::LoadSmallInt(_)
+                | CanonicalOp::LoadCommonConst(_)
+                | CanonicalOp::LoadFast(_),
+            ) if !saw_value => {
+                saw_value = true;
+                k += 1;
+            }
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)) => k += 1,
+            Some(CanonicalOp::ReturnConst(_)) if !saw_value => return Some(k + 1),
+            Some(CanonicalOp::Return) if saw_value => return Some(k + 1),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn extend_protected_end_over_guarded_return_body(
+    stream: &DecodedStream,
+    try_start: usize,
+    protected_end: usize,
+    handler_start: usize,
+) -> usize {
+    if protected_end >= handler_start {
+        return protected_end;
+    }
+    let Some(guard): Option<usize> = last_significant_back(stream, try_start, protected_end) else {
+        return protected_end;
+    };
+    let is_guard: bool = is_forward_cond_jump(&stream.ops[guard])
+        && !is_chain_cond_jump(&stream.ops, guard)
+        && !is_value_form_shortcircuit(&stream.ops, guard);
+    if !is_guard {
+        return protected_end;
+    }
+    let Some(unit_end): Option<usize> =
+        first_nonraising_return_unit_end(stream, protected_end, handler_start)
+    else {
+        return protected_end;
+    };
+    let jumps_over_unit: bool = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .is_some_and(|t: usize| t >= unit_end && t <= handler_start);
+    if !jumps_over_unit {
+        return protected_end;
+    }
+    let unit_is_jump_target: bool = (try_start..protected_end).any(|k: usize| {
+        (is_forward_cond_jump(&stream.ops[k])
+            || matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+            ))
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|t: usize| t == protected_end)
+    });
+    if unit_is_jump_target {
+        return protected_end;
+    }
+    unit_end
+}
+
+fn return_after_iter_cleanup(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
+    let mut k: usize = from;
+    while k < hi {
+        match stream.ops.get(k) {
+            Some(
+                CanonicalOp::Swap(_)
+                | CanonicalOp::Copy(_)
+                | CanonicalOp::RotN(_)
+                | CanonicalOp::Pop
+                | CanonicalOp::Cache
+                | CanonicalOp::Nop
+                | CanonicalOp::ExtendedArg(_),
+            ) => k += 1,
+            Some(CanonicalOp::Return) => return Some(k),
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn return_after_handler_cleanup(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
+    let mut swap: usize = first_significant(stream, from, hi)?;
+    if !matches!(stream.ops.get(swap), Some(CanonicalOp::Swap(2))) {
+        return None;
+    }
+    loop {
+        let pop_except: usize = first_significant(stream, swap + 1, hi)?;
+        if !matches!(stream.ops.get(pop_except), Some(CanonicalOp::PopExcept)) {
+            return None;
+        }
+        let next: usize = first_significant(stream, pop_except + 1, hi)?;
+        match stream.ops.get(next) {
+            Some(CanonicalOp::Return) => return Some(next),
+            Some(CanonicalOp::Swap(2)) => swap = next,
+            _ => return None,
+        }
+    }
+}
+
+fn trim_try_body_jump(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut end: usize = hi;
+    while end > lo
+        && matches!(
+            stream.ops.get(end - 1),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+            )
+        )
+    {
+        end -= 1;
+    }
+    end
+}
+
+fn handler_tail_returns_through_pop_except(
+    stream: &DecodedStream,
+    body_start: usize,
+    next_handler: usize,
+) -> bool {
+    if next_handler <= body_start || next_handler >= stream.ops.len() {
+        return false;
+    }
+    if !matches!(stream.ops.get(next_handler), Some(CanonicalOp::Return)) {
+        return false;
+    }
+    let mut k: usize = next_handler;
+    while k > body_start
+        && matches!(
+            stream.ops.get(k - 1),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        k -= 1;
+    }
+    if k == body_start || !matches!(stream.ops.get(k - 1), Some(CanonicalOp::PopExcept)) {
+        return false;
+    }
+    k -= 1;
+    while k > body_start
+        && matches!(
+            stream.ops.get(k - 1),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        k -= 1;
+    }
+    k > body_start && matches!(stream.ops.get(k - 1), Some(CanonicalOp::Swap(2)))
+}
+
+fn handler_return_idiom_body_end(stream: &DecodedStream, next_handler: usize) -> usize {
+    (next_handler + 1).min(stream.ops.len())
+}
+
+fn bare_handler_return_idiom_end(
+    stream: &DecodedStream,
+    bare_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let hi: usize = region_end.min(stream.ops.len());
+    let pop_except: usize =
+        (bare_start..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::PopExcept))?;
+    if pop_except <= bare_start
+        || !matches!(stream.ops.get(pop_except - 1), Some(CanonicalOp::Swap(2)))
+    {
+        return None;
+    }
+    let mut ret: usize = pop_except + 1;
+    while matches!(
+        stream.ops.get(ret),
+        Some(CanonicalOp::Cache | CanonicalOp::Nop)
+    ) {
+        ret += 1;
+    }
+    matches!(stream.ops.get(ret), Some(CanonicalOp::Return)).then_some(ret + 1)
+}
+
+fn parse_except_handlers(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Result<Vec<ExceptHandler>> {
+    if !matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::PushExcInfo)
+    ) && matches!(
+        stream.ops.get(handler_start),
+        Some(CanonicalOp::Dup | CanonicalOp::Pop)
+    ) {
+        return parse_pre311_except_handlers(code, stream, handler_start, region_end);
+    }
+    let mut handlers: Vec<ExceptHandler> = Vec::new();
+    let mut i: usize = handler_start;
+    if matches!(stream.ops.get(i), Some(CanonicalOp::PushExcInfo)) {
+        i += 1;
+    }
+    while i < region_end {
+        while i < region_end && matches!(stream.ops[i], CanonicalOp::Nop | CanonicalOp::Cache) {
+            i += 1;
+        }
+        if i >= region_end {
+            break;
+        }
+        let clause_start: usize = i;
+        let mut check_at: Option<usize> = None;
+        for k in clause_start..region_end {
+            if matches!(
+                stream.ops[k],
+                CanonicalOp::CheckExcMatch | CanonicalOp::CheckEgMatch
+            ) {
+                check_at = Some(k);
+                break;
+            }
+            if matches!(stream.ops[k], CanonicalOp::Reraise(_)) {
+                break;
+            }
+        }
+        let Some(check_idx): Option<usize> = check_at else {
+            let bare_start: usize =
+                if matches!(stream.ops.get(clause_start), Some(CanonicalOp::Pop)) {
+                    clause_start + 1
+                } else {
+                    clause_start
+                };
+            let bare_is_function_scope: bool =
+                (code.flags & PY_CO_FLAG_FUNCTION_SCOPE) == PY_CO_FLAG_FUNCTION_SCOPE;
+            let bare_end: usize = bare_is_function_scope
+                .then(|| bare_handler_return_idiom_end(stream, bare_start, region_end))
+                .flatten()
+                .unwrap_or_else(|| bare_except_body_end(stream, bare_start, region_end));
+            let bare_body: Vec<Stmt> = structure_stmts(code, stream, bare_start, bare_end)?;
+            handlers.push(ExceptHandler {
+                typ: None,
+                name: None,
+                body: non_empty(bare_body),
+                line: None,
+            });
+            break;
+        };
+        let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[clause_start..check_idx])?;
+        let exc_type: Option<Expr> = residual.into_iter().next_back();
+        let dispatch_idx: usize = check_idx + 1;
+        let next_handler: usize = if matches!(
+            stream.ops.get(dispatch_idx),
+            Some(CanonicalOp::PopJumpIfFalse(_) | CanonicalOp::PopJumpIfTrue(_))
+        ) {
+            resolve_jump_target(stream, dispatch_idx, &stream.ops[dispatch_idx])
+                .filter(|t: &usize| *t > dispatch_idx && *t <= region_end)
+                .unwrap_or(region_end)
+        } else {
+            region_end
+        };
+        let mut body_start: usize =
+            first_significant(stream, dispatch_idx + 1, next_handler).unwrap_or(dispatch_idx + 1);
+        let mut name: Option<String> = None;
+        let mut bound_store: Option<CanonicalOp> = None;
+        match stream.ops.get(body_start) {
+            Some(CanonicalOp::StoreFast(slot)) => {
+                name = local_name_at(code, *slot, body_start).ok();
+                bound_store = Some(CanonicalOp::StoreFast(*slot));
+                body_start += 1;
+            }
+            Some(CanonicalOp::StoreName(slot)) => {
+                name = name_at(&code.names, *slot, body_start, "name").ok();
+                bound_store = Some(CanonicalOp::StoreName(*slot));
+                body_start += 1;
+            }
+            Some(CanonicalOp::Pop) => {
+                body_start += 1;
+            }
+            _ => {}
+        }
+        let is_function_scope: bool =
+            (code.flags & PY_CO_FLAG_FUNCTION_SCOPE) == PY_CO_FLAG_FUNCTION_SCOPE;
+        let is_return_idiom: bool = is_function_scope
+            && handler_tail_returns_through_pop_except(stream, body_start, next_handler);
+        let raw_body_end: usize = if is_return_idiom {
+            handler_return_idiom_body_end(stream, next_handler)
+        } else if name.is_some() {
+            handler_body_end_at_pop_except(stream, body_start, next_handler)
+        } else {
+            handler_body_end(stream, body_start, next_handler)
+        };
+        let pass_through_cap: Option<usize> = if is_return_idiom {
+            None
+        } else {
+            handler_pass_through_return_cap(stream, body_start, next_handler)
+        };
+        let raw_body_end: usize = if is_return_idiom {
+            raw_body_end
+        } else {
+            pass_through_cap.map_or(raw_body_end, |cap: usize| cap.min(raw_body_end))
+        };
+        let body_end: usize = if is_return_idiom {
+            raw_body_end
+        } else {
+            extend_over_nested_cold_handler(stream, body_start, raw_body_end, region_end)
+        };
+        let body_end: usize = match (&bound_store, is_return_idiom, pass_through_cap) {
+            (Some(store), false, None) => {
+                extend_named_handler_over_trailing_branch(stream, body_end, next_handler, store)
+            }
+            _ => body_end,
+        };
+        let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+        if let Some(bound) = name.as_deref() {
+            strip_named_exc_cleanup(&mut handler_body, bound);
+        }
+        let handler_body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
+            stream,
+            handler_body,
+            body_start,
+            body_end,
+            next_handler,
+        );
+        handlers.push(ExceptHandler {
+            typ: exc_type,
+            name,
+            body: non_empty(handler_body),
+            line: None,
+        });
+        i = next_handler;
+        if matches!(stream.ops.get(i), Some(CanonicalOp::Reraise(_))) {
+            break;
+        }
+    }
+    if handlers.is_empty() {
+        handlers.push(ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![Stmt::Pass],
+            line: None,
+        });
+    }
+    Ok(handlers)
+}
+
+fn parse_pre311_except_handlers(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Result<Vec<ExceptHandler>> {
+    let mut handlers: Vec<ExceptHandler> = Vec::new();
+    let mut i: usize = handler_start;
+    let continuation: Option<usize> = pre311_construct_continuation(stream, handler_start);
+    while i < region_end {
+        while i < region_end
+            && matches!(
+                stream.ops[i],
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        {
+            i += 1;
+        }
+        if i >= region_end {
+            break;
+        }
+        let clause_start: usize = i;
+        if is_pre311_reraise_epilogue(stream, clause_start, region_end) {
+            break;
+        }
+        let is_bare: bool = matches!(stream.ops[clause_start], CanonicalOp::Pop);
+        if is_bare {
+            let body_start: usize = pre311_skip_three_pops(stream, clause_start, region_end);
+            let body_end: usize =
+                pre311_handler_body_end(stream, body_start, region_end, continuation);
+            let next: usize = pre311_advance_after_handler(stream, body_end, region_end);
+            let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+            let body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
+                stream, body, body_start, body_end, region_end,
+            );
+            handlers.push(ExceptHandler {
+                typ: None,
+                name: None,
+                body: non_empty(body),
+                line: None,
+            });
+            i = next;
+            continue;
+        }
+        if !matches!(stream.ops[clause_start], CanonicalOp::Dup) {
+            break;
+        }
+        let mut j: usize = clause_start + 1;
+        let type_start: usize = j;
+        let mut type_end: Option<usize> = None;
+        let mut next_handler: usize = region_end;
+        while j < region_end {
+            match &stream.ops[j] {
+                CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch) => {
+                    type_end = Some(j);
+                    let dispatch: usize = j + 1;
+                    next_handler = resolve_jump_target(stream, dispatch, &stream.ops[dispatch])
+                        .filter(|t: &usize| *t > dispatch && *t <= region_end)
+                        .unwrap_or(region_end);
+                    j = dispatch + 1;
+                    break;
+                }
+                CanonicalOp::JumpIfNotExcMatch(_) => {
+                    type_end = Some(j);
+                    next_handler = resolve_jump_target(stream, j, &stream.ops[j])
+                        .filter(|t: &usize| *t > j && *t <= region_end)
+                        .unwrap_or(region_end);
+                    j += 1;
+                    break;
+                }
+                _ => j += 1,
+            }
+        }
+        let Some(type_end_idx): Option<usize> = type_end else {
+            break;
+        };
+        let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[type_start..type_end_idx])?;
+        let exc_type: Option<Expr> = residual.into_iter().next_back();
+        let after_dispatch: usize = j;
+        let mut body_start: usize = pre311_skip_first_pop(stream, after_dispatch, next_handler);
+        let mut name: Option<String> = None;
+        match stream.ops.get(body_start) {
+            Some(CanonicalOp::StoreFast(slot)) => {
+                name = local_name_at(code, *slot, body_start).ok();
+                body_start += 1;
+                if matches!(stream.ops.get(body_start), Some(CanonicalOp::Pop)) {
+                    body_start += 1;
+                }
+                if matches!(stream.ops.get(body_start), Some(CanonicalOp::Nop)) {
+                    body_start += 1;
+                }
+            }
+            Some(CanonicalOp::StoreName(slot)) => {
+                name = name_at(&code.names, *slot, body_start, "name").ok();
+                body_start += 1;
+                if matches!(stream.ops.get(body_start), Some(CanonicalOp::Pop)) {
+                    body_start += 1;
+                }
+                if matches!(stream.ops.get(body_start), Some(CanonicalOp::Nop)) {
+                    body_start += 1;
+                }
+            }
+            Some(CanonicalOp::Pop) => {
+                body_start += 1;
+                if matches!(stream.ops.get(body_start), Some(CanonicalOp::Pop)) {
+                    body_start += 1;
+                }
+            }
+            _ => {}
+        }
+        let body_end: usize =
+            pre311_handler_body_end(stream, body_start, next_handler, continuation);
+        let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+        if let Some(bound) = name.as_deref() {
+            strip_named_exc_cleanup(&mut handler_body, bound);
+        }
+        let handler_body: Vec<Stmt> = append_handler_loop_jump_after_teardown(
+            stream,
+            handler_body,
+            body_start,
+            body_end,
+            next_handler,
+        );
+        handlers.push(ExceptHandler {
+            typ: exc_type,
+            name,
+            body: non_empty(handler_body),
+            line: None,
+        });
+        i = next_handler;
+    }
+    if handlers.is_empty() {
+        handlers.push(ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![Stmt::Pass],
+            line: None,
+        });
+    }
+    Ok(handlers)
+}
+
+fn is_pre311_reraise_epilogue(stream: &DecodedStream, clause_start: usize, hi: usize) -> bool {
+    if !matches!(stream.ops.get(clause_start), Some(CanonicalOp::Pop)) {
+        return false;
+    }
+    let mut k: usize = clause_start + 1;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(CanonicalOp::Cache | CanonicalOp::ExtendedArg(_))
+        )
+    {
+        k += 1;
+    }
+    stream.pre311_end_finally_idx.contains(&k)
+}
+
+fn pre311_skip_three_pops(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    let mut pops: u32 = 0;
+    while k < hi && pops < 3 {
+        match stream.ops.get(k) {
+            Some(CanonicalOp::Pop) => {
+                pops += 1;
+                k += 1;
+            }
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)) => k += 1,
+            _ => break,
+        }
+    }
+    k
+}
+
+fn pre311_skip_first_pop(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_))
+        )
+    {
+        k += 1;
+    }
+    if matches!(stream.ops.get(k), Some(CanonicalOp::Pop)) {
+        k += 1;
+    }
+    k
+}
+
+fn pre311_handler_body_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    continuation: Option<usize>,
+) -> usize {
+    let mut end: usize = hi;
+    while end > lo
+        && matches!(
+            stream.ops.get(end - 1),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::PopExcept
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+                    | CanonicalOp::Reraise(_)
+            )
+        )
+    {
+        let stops_here: bool = match trailing_loop_jump_stmt(stream, lo, end) {
+            Some(Stmt::Break) => true,
+            Some(Stmt::Continue) => {
+                pre311_handler_tail_skips_continuation(stream, lo, end, continuation)
+            }
+            _ => false,
+        };
+        if stops_here {
+            return end;
+        }
+        end -= 1;
+    }
+    end
+}
+
+fn append_handler_loop_jump_after_teardown(
+    stream: &DecodedStream,
+    body: Vec<Stmt>,
+    body_start: usize,
+    body_end: usize,
+    handler_end: usize,
+) -> Vec<Stmt> {
+    if active_version()
+        .is_none_or(|version: PyVersion| (version.major(), version.minor()) != (3, 10))
+    {
+        return append_handler_loop_jump(stream, body, body_start, body_end);
+    }
+    let tail_end: usize = handler_end.min(stream.ops.len());
+    let jump: Option<usize> = (body_end..tail_end).find(|&index: &usize| {
+        matches!(
+            stream.ops[index],
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+        )
+    });
+    let Some(jump): Option<usize> = jump else {
+        return append_handler_loop_jump(stream, body, body_start, body_end);
+    };
+    let mut teardown: std::ops::Range<usize> = body_end..jump;
+    if !teardown
+        .clone()
+        .any(|index: usize| matches!(stream.ops[index], CanonicalOp::PopExcept))
+        || !teardown.all(|index: usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::PopExcept
+                    | CanonicalOp::Cache
+                    | CanonicalOp::Nop
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    {
+        return append_handler_loop_jump(stream, body, body_start, body_end);
+    }
+    append_handler_loop_jump(stream, body, body_start, jump + 1)
+}
+
+fn pre311_construct_continuation(stream: &DecodedStream, handler_start: usize) -> Option<usize> {
+    let pop_block: usize = stream
+        .pre311_pop_block_idx
+        .range(..handler_start)
+        .next_back()
+        .copied()?;
+    pre311_body_exit_jump_target(stream, pop_block, handler_start)
+}
+
+fn pre311_handler_tail_skips_continuation(
+    stream: &DecodedStream,
+    lo: usize,
+    end: usize,
+    continuation: Option<usize>,
+) -> bool {
+    let Some(cont): Option<usize> = continuation else {
+        return false;
+    };
+    let Some(tail_idx): Option<usize> = (lo..end).rev().find(|&k: &usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    }) else {
+        return false;
+    };
+    let reachable: bool = !(lo..tail_idx).any(|k: usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            matches!(
+                op,
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+            )
+        })
+    });
+    if !reachable {
+        return false;
+    }
+    let Some(tail_op): Option<&CanonicalOp> = stream.ops.get(tail_idx) else {
+        return false;
+    };
+    resolve_jump_target(stream, tail_idx, tail_op).is_some_and(|target: usize| target != cont)
+}
+
+fn pre311_advance_after_handler(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::PopExcept
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+                    | CanonicalOp::Reraise(_)
+            )
+        )
+    {
+        k += 1;
+    }
+    k
+}
+
+fn parse_except_star_handlers(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Result<Vec<ExceptHandler>> {
+    let mut handlers: Vec<ExceptHandler> = Vec::new();
+    let mut i: usize = handler_start;
+    while i < region_end {
+        let check_at: Option<usize> = (i..region_end)
+            .take_while(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Reraise(_)))
+            .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CheckEgMatch));
+        let Some(check_idx): Option<usize> = check_at else {
+            break;
+        };
+        let type_start: usize = eg_clause_type_start(stream, check_idx, i);
+        let (_, residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[type_start..check_idx])?;
+        let exc_type: Option<Expr> = residual.into_iter().next_back();
+        let dispatch_idx: usize =
+            first_significant(stream, check_idx + 1, region_end).unwrap_or(check_idx + 1);
+        let dispatch_idx: usize =
+            if matches!(stream.ops.get(dispatch_idx), Some(CanonicalOp::Copy(1))) {
+                first_significant(stream, dispatch_idx + 1, region_end).unwrap_or(dispatch_idx + 1)
+            } else {
+                dispatch_idx
+            };
+        let next_clause: usize =
+            resolve_jump_target(stream, dispatch_idx, &stream.ops[dispatch_idx])
+                .filter(|t: &usize| *t > dispatch_idx && *t <= region_end)
+                .unwrap_or(region_end);
+        let mut body_start: usize =
+            first_significant(stream, dispatch_idx + 1, next_clause).unwrap_or(dispatch_idx + 1);
+        let mut name: Option<String> = None;
+        match stream.ops.get(body_start) {
+            Some(CanonicalOp::StoreFast(slot)) => {
+                name = local_name_at(code, *slot, body_start).ok();
+                body_start += 1;
+            }
+            Some(CanonicalOp::StoreName(slot)) => {
+                name = name_at(&code.names, *slot, body_start, "name").ok();
+                body_start += 1;
+            }
+            Some(CanonicalOp::Pop) => {
+                body_start += 1;
+            }
+            _ => {}
+        }
+        let body_end: usize = eg_body_end(stream, body_start, next_clause);
+        let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
+        if let Some(bound) = name.as_deref() {
+            strip_named_exc_cleanup(&mut handler_body, bound);
+        }
+        handlers.push(ExceptHandler {
+            typ: exc_type,
+            name,
+            body: non_empty(handler_body),
+            line: None,
+        });
+        i = next_clause;
+    }
+    if handlers.is_empty() {
+        handlers.push(ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![Stmt::Pass],
+            line: None,
+        });
+    }
+    Ok(handlers)
+}
+
+fn eg_clause_type_start(stream: &DecodedStream, check_idx: usize, lo: usize) -> usize {
+    let mut i: usize = check_idx;
+    while i > lo
+        && !matches!(
+            stream.ops.get(i - 1),
+            Some(
+                CanonicalOp::Pop
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::PushExcInfo
+                    | CanonicalOp::Copy(_)
+                    | CanonicalOp::ListAppend
+            )
+        )
+    {
+        i -= 1;
+    }
+    i
+}
+
+fn eg_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    (lo..hi)
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::ListAppend
+                    | CanonicalOp::PopExcept
+            )
+        })
+        .unwrap_or(hi)
+}
+
+fn strip_named_exc_cleanup(body: &mut Vec<Stmt>, bound: &str) {
+    body.retain(|s: &Stmt| !is_bound_clear_stmt(s, bound));
+    strip_trailing_bound_clear(body, bound);
+    strip_nested_bound_clear_pairs(body, bound);
+}
+
+fn strip_nested_bound_clear_pairs(body: &mut Vec<Stmt>, bound: &str) {
+    for stmt in body.iter_mut() {
+        match stmt {
+            Stmt::If {
+                body: b, orelse, ..
+            }
+            | Stmt::For {
+                body: b, orelse, ..
+            }
+            | Stmt::While {
+                body: b, orelse, ..
+            } => {
+                strip_nested_bound_clear_pairs(b, bound);
+                strip_nested_bound_clear_pairs(orelse, bound);
+            }
+            Stmt::With { body: b, .. } => strip_nested_bound_clear_pairs(b, bound),
+            Stmt::Try {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                strip_nested_bound_clear_pairs(b, bound);
+                strip_nested_bound_clear_pairs(orelse, bound);
+                strip_nested_bound_clear_pairs(finalbody, bound);
+                for handler in handlers.iter_mut() {
+                    strip_nested_bound_clear_pairs(&mut handler.body, bound);
+                }
+            }
+            _ => {}
+        }
+    }
+    remove_adjacent_bound_clear_pairs(body, bound);
+}
+
+fn remove_adjacent_bound_clear_pairs(body: &mut Vec<Stmt>, bound: &str) {
+    let mut i: usize = 0;
+    while i + 1 < body.len() {
+        if is_bound_assign_none_stmt(&body[i], bound) && is_bound_del_stmt(&body[i + 1], bound) {
+            body.remove(i + 1);
+            body.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn strip_trailing_bound_clear(body: &mut Vec<Stmt>, bound: &str) {
+    if pop_trailing_bound_clear_pair(body, bound) {
+        return;
+    }
+    match body.last_mut() {
+        Some(
+            Stmt::If {
+                body: b, orelse, ..
+            }
+            | Stmt::For {
+                body: b, orelse, ..
+            }
+            | Stmt::While {
+                body: b, orelse, ..
+            },
+        ) => {
+            strip_trailing_bound_clear(b, bound);
+            strip_trailing_bound_clear(orelse, bound);
+        }
+        Some(Stmt::With { body: b, .. }) => strip_trailing_bound_clear(b, bound),
+        Some(
+            Stmt::Try {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body: b,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            },
+        ) => {
+            strip_trailing_bound_clear(b, bound);
+            strip_trailing_bound_clear(orelse, bound);
+            strip_trailing_bound_clear(finalbody, bound);
+            for handler in handlers.iter_mut() {
+                strip_trailing_bound_clear(&mut handler.body, bound);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pop_trailing_bound_clear_pair(body: &mut Vec<Stmt>, bound: &str) -> bool {
+    let n: usize = body.len();
+    let del_at: Option<usize> = if n >= 1 && is_bound_del_stmt(&body[n - 1], bound) {
+        Some(n - 1)
+    } else if n >= 2
+        && is_bound_del_stmt(&body[n - 2], bound)
+        && is_implicit_none_return(&body[n - 1])
+    {
+        Some(n - 2)
+    } else {
+        None
+    };
+    let Some(del_idx): Option<usize> = del_at else {
+        return false;
+    };
+    if del_idx == 0 || !is_bound_assign_none_stmt(&body[del_idx - 1], bound) {
+        return false;
+    }
+    body.remove(del_idx);
+    body.remove(del_idx - 1);
+    true
+}
+
+fn is_bound_assign_none_stmt(stmt: &Stmt, bound: &str) -> bool {
+    matches!(
+        stmt,
+        Stmt::Assign { targets, value, .. }
+            if targets.len() == 1
+                && matches!(&targets[0], Expr::Name { id, .. } if id == bound)
+                && matches!(value, Expr::Constant { value: ConstValue::None, .. })
+    )
+}
+
+fn is_bound_del_stmt(stmt: &Stmt, bound: &str) -> bool {
+    matches!(
+        stmt,
+        Stmt::Delete(targets)
+            if targets.iter().all(|e: &Expr| matches!(e, Expr::Name { id, .. } if id == bound))
+    )
+}
+
+fn is_bound_clear_stmt(stmt: &Stmt, bound: &str) -> bool {
+    match stmt {
+        Stmt::Assign { targets, value, .. } => {
+            targets.len() == 1
+                && matches!(&targets[0], Expr::Name { id, .. } if id == bound)
+                && matches!(
+                    value,
+                    Expr::Constant {
+                        value: ConstValue::None,
+                        ..
+                    }
+                )
+        }
+        Stmt::Delete(targets) => targets
+            .iter()
+            .all(|e: &Expr| matches!(e, Expr::Name { id, .. } if id == bound)),
+        _ => false,
+    }
+}
+
+fn extend_over_nested_cold_handler(
+    stream: &DecodedStream,
+    body_start: usize,
+    body_end: usize,
+    limit: usize,
+) -> usize {
+    if stream.is_pre_311() || stream.exception_table.is_empty() {
+        return body_end;
+    }
+    let Some(start_off): Option<u32> = stream.offsets.get(body_start).copied() else {
+        return body_end;
+    };
+    let mut end: usize = body_end;
+    while let Some(end_off) = stream.offsets.get(end).copied() {
+        let mut grew: bool = false;
+        for entry in &stream.exception_table {
+            if entry.start < start_off || entry.start >= end_off {
+                continue;
+            }
+            let Some(handler_idx): Option<usize> = stream.index_for_offset(entry.target) else {
+                continue;
+            };
+            if handler_idx < end
+                || handler_idx >= limit
+                || !matches!(stream.ops.get(handler_idx), Some(CanonicalOp::PushExcInfo))
+            {
+                continue;
+            }
+            let nested_end: usize = handler_join(stream, handler_idx, limit);
+            if nested_end > end {
+                end = nested_end;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    end.min(limit)
+}
+
+fn extend_named_handler_over_trailing_branch(
+    stream: &DecodedStream,
+    naive_end: usize,
+    next_handler: usize,
+    store: &CanonicalOp,
+) -> usize {
+    let hi: usize = next_handler.min(stream.ops.len());
+    let (want_fast, slot): (bool, u32) = match *store {
+        CanonicalOp::StoreFast(s) => (true, s),
+        CanonicalOp::StoreName(s) => (false, s),
+        _ => return naive_end,
+    };
+    if matches!(
+        stream.ops.get(naive_end),
+        Some(
+            CanonicalOp::JumpForward(_)
+                | CanonicalOp::JumpAbsolute(_)
+                | CanonicalOp::JumpBackward(_)
+                | CanonicalOp::JumpBackwardNoInterrupt(_)
+        )
+    ) {
+        return naive_end;
+    }
+    let Some(cleanup): Option<usize> =
+        named_exc_cleanup_copy_at(stream, naive_end, hi, want_fast, slot)
+    else {
+        return naive_end;
+    };
+    if cleanup > naive_end && handler_gap_has_statement(stream, naive_end, cleanup) {
+        cleanup
+    } else {
+        naive_end
+    }
+}
+
+fn named_exc_cleanup_copy_at(
+    stream: &DecodedStream,
+    from: usize,
+    hi: usize,
+    want_fast: bool,
+    slot: u32,
+) -> Option<usize> {
+    (from..hi.saturating_sub(3)).find(|&k: &usize| {
+        matches!(stream.ops.get(k), Some(CanonicalOp::LoadConst(_)))
+            && bound_store_matches(stream.ops.get(k + 1), want_fast, slot)
+            && bound_delete_matches(stream.ops.get(k + 2), want_fast, slot)
+            && matches!(stream.ops.get(k + 3), Some(CanonicalOp::Reraise(_)))
+    })
+}
+
+fn bound_store_matches(op: Option<&CanonicalOp>, want_fast: bool, slot: u32) -> bool {
+    match op {
+        Some(CanonicalOp::StoreFast(s)) => want_fast && *s == slot,
+        Some(CanonicalOp::StoreName(s)) => !want_fast && *s == slot,
+        _ => false,
+    }
+}
+
+fn bound_delete_matches(op: Option<&CanonicalOp>, want_fast: bool, slot: u32) -> bool {
+    match op {
+        Some(CanonicalOp::DeleteFast(s)) => want_fast && *s == slot,
+        Some(CanonicalOp::DeleteName(s)) => !want_fast && *s == slot,
+        _ => false,
+    }
+}
+
+fn handler_gap_has_statement(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    (lo..hi).any(|k: usize| {
+        !matches!(
+            stream.ops.get(k),
+            Some(
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::PopExcept
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::PushExcInfo
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        )
+    })
+}
+
+fn handler_body_end_at_pop_except(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut depth: u32 = 0;
+    let mut pop_at: Option<usize> = None;
+    for k in lo..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => {
+                pop_at = Some(k);
+                break;
+            }
+            CanonicalOp::PopExcept => depth -= 1,
+            _ => {}
+        }
+    }
+    let Some(pop): Option<usize> = pop_at else {
+        return handler_body_end(stream, lo, hi);
+    };
+    let after_cleanup: usize = skip_handler_name_cleanup(stream, pop + 1, hi);
+    let trailing: usize = handler_trailing_terminator_end(stream, after_cleanup, hi);
+    if trailing > pop { trailing } else { pop }
+}
+
+fn handler_pass_through_return_cap(
+    stream: &DecodedStream,
+    body_start: usize,
+    next_handler: usize,
+) -> Option<usize> {
+    let hi: usize = next_handler.min(stream.ops.len());
+    let mut depth: u32 = 0;
+    let mut pop_at: Option<usize> = None;
+    for k in body_start..hi {
+        match stream.ops[k] {
+            CanonicalOp::PushExcInfo => depth += 1,
+            CanonicalOp::PopExcept if depth == 0 => {
+                pop_at = Some(k);
+                break;
+            }
+            CanonicalOp::PopExcept => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    let pop: usize = pop_at?;
+    let (tail_lo, tail_hi): (usize, usize) = pop_except_tail_return(stream, pop, hi)?;
+    pass_through_tail_loads_nonconstant(stream, tail_lo, tail_hi).then_some(pop)
+}
+
+fn pass_through_tail_loads_nonconstant(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let mut saw_nonconstant: bool = false;
+    for k in lo..hi {
+        match stream.ops[k] {
+            CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_) => {}
+            CanonicalOp::Pop => return false,
+            _ => saw_nonconstant = true,
+        }
+    }
+    saw_nonconstant
+}
+
+fn skip_handler_name_cleanup(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut i: usize = lo;
+    while i < hi
+        && matches!(
+            stream.ops.get(i),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        i += 1;
+    }
+    let load_const: Option<&CanonicalOp> = stream.ops.get(i);
+    let store: Option<&CanonicalOp> = stream.ops.get(i + 1);
+    let delete: Option<&CanonicalOp> = stream.ops.get(i + 2);
+    let cleared: bool = matches!(load_const, Some(CanonicalOp::LoadConst(_)))
+        && matches!(
+            store,
+            Some(CanonicalOp::StoreFast(_) | CanonicalOp::StoreName(_))
+        )
+        && matches!(
+            delete,
+            Some(CanonicalOp::DeleteFast(_) | CanonicalOp::DeleteName(_))
+        );
+    if cleared { i + 3 } else { lo }
+}
+
+fn handler_trailing_terminator_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut k: usize = lo;
+    while k < hi
+        && matches!(
+            stream.ops.get(k),
+            Some(CanonicalOp::Cache | CanonicalOp::Nop)
+        )
+    {
+        k += 1;
+    }
+    let mut last_significant: usize = k;
+    while k < hi {
+        match stream.ops[k] {
+            CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::Reraise(_) => return last_significant,
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_) | CanonicalOp::Raise(_) => {
+                last_significant = k + 1;
+                k += 1;
+                while k < hi
+                    && matches!(
+                        stream.ops.get(k),
+                        Some(CanonicalOp::Cache | CanonicalOp::Nop)
+                    )
+                {
+                    k += 1;
+                }
+                return last_significant;
+            }
+            CanonicalOp::Cache | CanonicalOp::Nop => {}
+            _ => {
+                last_significant = k + 1;
+            }
+        }
+        k += 1;
+    }
+    last_significant
+}
+
+fn handler_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+    let mut end: usize = hi;
+    while end > lo
+        && matches!(
+            stream.ops.get(end - 1),
+            Some(
+                CanonicalOp::PopExcept
+                    | CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::Reraise(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+            )
+        )
+    {
+        end -= 1;
+    }
+    end
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod with_region_bounds {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::super::DecodedStream;
+    use super::super::loops::stmts_equal_ignoring_lines;
+    use super::{
+        SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
+        loop_frame_owns_shared_exit_tail, shared_construct_exit_return,
+        shared_construct_exit_return_at_range, single_residual, special_method_name,
+        strip_shared_exit_return, strip_shared_exit_suffix,
+    };
+    use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt};
+    use crate::bytecode::flow::ExceptionTableEntry;
+    use crate::bytecode::opcode::CanonicalOp;
+    use crate::bytecode::version::PyVersion;
+
+    fn stream_with(ops: Vec<CanonicalOp>, table: Vec<ExceptionTableEntry>) -> DecodedStream {
+        let n: usize = ops.len();
+        DecodedStream {
+            ops,
+            offsets: (0..n).map(|i: usize| (i as u32) * 2).collect(),
+            next_offsets: (0..n).map(|i: usize| (i as u32 + 1) * 2).collect(),
+            code_len: (n as u32) * 2,
+            lines: vec![None; n],
+            wordcode: true,
+            instr_unit_jumps: true,
+            relative_cond_jumps: true,
+            exception_table: table,
+            pre311_end_finally_idx: BTreeSet::new(),
+            pre311_pop_block_idx: BTreeSet::new(),
+            pre311_break_loop_idx: BTreeSet::new(),
+            setup_loop_end: BTreeMap::new(),
+            none_jump_kind: BTreeMap::new(),
+            version: PyVersion::V3_14,
+        }
+    }
+
+    fn with_shaped_ops() -> Vec<CanonicalOp> {
+        vec![
+            CanonicalOp::LoadFast(0),
+            CanonicalOp::Copy(1),
+            CanonicalOp::LoadSpecial(SPECIAL_EXIT),
+            CanonicalOp::Swap(2),
+            CanonicalOp::Swap(3),
+            CanonicalOp::LoadSpecial(SPECIAL_ENTER),
+            CanonicalOp::CallFunction(0),
+            CanonicalOp::Pop,
+            CanonicalOp::Return,
+            CanonicalOp::PushExcInfo,
+            CanonicalOp::WithExceptStart,
+            CanonicalOp::Reraise(2),
+        ]
+    }
+
+    const fn entry(start: u32, length: u32, target: u32) -> ExceptionTableEntry {
+        ExceptionTableEntry {
+            start,
+            length,
+            target,
+            depth: 2,
+            lasti: true,
+        }
+    }
+
+    #[test]
+    fn guard_recovery_requires_exactly_one_residual_expression() {
+        let first: Expr = Expr::Constant {
+            value: ConstValue::False,
+            line: None,
+        };
+        let second: Expr = Expr::Constant {
+            value: ConstValue::True,
+            line: None,
+        };
+        assert_eq!(single_residual(Vec::new()), None);
+        assert_eq!(single_residual(vec![first.clone()]), Some(first));
+        assert_eq!(single_residual(vec![second.clone(), second]), None);
+    }
+
+    fn named_return(name: &str, line: u32) -> Stmt {
+        Stmt::Return(Some(Expr::Name {
+            id: name.to_owned(),
+            ctx: ExprCtx::Load,
+            line: Some(line),
+        }))
+    }
+
+    #[test]
+    fn shared_exit_return_rejects_a_different_expression() {
+        let exit: Stmt = named_return("first", 11);
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("second", 11)],
+            line: Some(11),
+        }];
+        assert_eq!(
+            shared_construct_exit_return(std::slice::from_ref(&exit), &handlers),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_exit_return_accepts_the_same_nested_expression_with_shifted_lines() {
+        let exit: Stmt = Stmt::Return(Some(Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::Or,
+            values: vec![
+                Expr::Name {
+                    id: "value".to_owned(),
+                    ctx: ExprCtx::Load,
+                    line: Some(11),
+                },
+                Expr::Constant {
+                    value: ConstValue::None,
+                    line: Some(11),
+                },
+            ],
+        }));
+        let handler_return: Stmt = Stmt::Return(Some(Expr::BoolOp {
+            op: crate::ast::node::BoolOpKind::Or,
+            values: vec![
+                Expr::Name {
+                    id: "value".to_owned(),
+                    ctx: ExprCtx::Load,
+                    line: Some(29),
+                },
+                Expr::Constant {
+                    value: ConstValue::None,
+                    line: Some(29),
+                },
+            ],
+        }));
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![handler_return],
+            line: Some(29),
+        }];
+        assert_eq!(
+            shared_construct_exit_return(std::slice::from_ref(&exit), &handlers),
+            Some(vec![exit])
+        );
+    }
+
+    #[test]
+    fn matching_returns_at_distinct_instruction_ranges_remain_unpromoted() {
+        let exit: Stmt = named_return("value", 11);
+        let handlers: Vec<ExceptHandler> = vec![ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("value", 29)],
+            line: Some(29),
+        }];
+
+        assert_eq!(
+            shared_construct_exit_return_at_range(
+                std::slice::from_ref(&exit),
+                &handlers,
+                Some((7, 11)),
+                (12, 16),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn structural_stmt_comparison_ignores_nested_lines_but_not_return_values() {
+        let left: Stmt = named_return("value", 11);
+        let shifted: Stmt = named_return("value", 29);
+        let different: Stmt = named_return("other", 29);
+        assert!(stmts_equal_ignoring_lines(&left, &shifted));
+        assert!(!stmts_equal_ignoring_lines(&left, &different));
+    }
+
+    #[test]
+    fn shared_exit_strip_ignores_return_expression_line_metadata() {
+        let handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![named_return("value", 29)],
+            line: Some(23),
+        };
+        let tail: Stmt = named_return("value", 11);
+        let stripped: Vec<ExceptHandler> =
+            strip_shared_exit_return(vec![handler], std::slice::from_ref(&tail));
+        assert_eq!(stripped[0].body, vec![Stmt::Pass]);
+    }
+
+    #[test]
+    fn shared_exit_suffix_strips_two_handler_edges_without_conflating_prefixes() {
+        let handlers: Vec<ExceptHandler> = vec![
+            ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![Stmt::Pass, named_return("value", 29)],
+                line: Some(29),
+            },
+            ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![
+                    Stmt::Expr(Expr::Name {
+                        id: "second".to_owned(),
+                        ctx: ExprCtx::Load,
+                        line: Some(31),
+                    }),
+                    named_return("value", 31),
+                ],
+                line: Some(31),
+            },
+        ];
+        let continuation: Vec<Stmt> = vec![named_return("value", 11)];
+
+        let stripped: Vec<ExceptHandler> = strip_shared_exit_suffix(handlers, &continuation);
+
+        assert_eq!(stripped[0].body, vec![Stmt::Pass]);
+        assert_eq!(
+            stripped[1].body,
+            vec![Stmt::Expr(Expr::Name {
+                id: "second".to_owned(),
+                ctx: ExprCtx::Load,
+                line: Some(31),
+            })]
+        );
+    }
+
+    #[test]
+    fn loop_exit_ownership_requires_a_claim_when_a_loop_frame_is_active() {
+        assert!(loop_frame_owns_shared_exit_tail(0, None, None));
+        assert!(!loop_frame_owns_shared_exit_tail(1, None, None));
+        assert!(loop_frame_owns_shared_exit_tail(
+            1,
+            Some((7, 11)),
+            Some((7, 11))
+        ));
+        assert!(!loop_frame_owns_shared_exit_tail(
+            1,
+            Some((7, 11)),
+            Some((8, 11))
+        ));
+    }
+
+    #[test]
+    fn shared_exit_strip_accepts_only_a_single_return() {
+        let non_return_tails: Vec<Stmt> = vec![
+            Stmt::Raise {
+                exc: None,
+                cause: None,
+                line: Some(7),
+            },
+            Stmt::Break,
+            Stmt::Continue,
+            Stmt::Expr(Expr::Name {
+                id: "value".to_owned(),
+                ctx: ExprCtx::Load,
+                line: Some(7),
+            }),
+        ];
+
+        for tail in non_return_tails {
+            let handler: ExceptHandler = ExceptHandler {
+                typ: None,
+                name: None,
+                body: vec![tail.clone()],
+                line: None,
+            };
+            let unchanged: Vec<ExceptHandler> =
+                strip_shared_exit_return(vec![handler.clone()], std::slice::from_ref(&tail));
+            assert_eq!(unchanged, vec![handler]);
+        }
+
+        let return_none: Stmt = Stmt::Return(None);
+        let multi_statement_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![return_none.clone()],
+            line: None,
+        };
+        let unchanged_multi: Vec<ExceptHandler> = strip_shared_exit_return(
+            vec![multi_statement_handler.clone()],
+            &[return_none.clone(), Stmt::Pass],
+        );
+        assert_eq!(unchanged_multi, vec![multi_statement_handler]);
+
+        let none_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![return_none.clone()],
+            line: None,
+        };
+        let stripped_none: Vec<ExceptHandler> =
+            strip_shared_exit_return(vec![none_handler], std::slice::from_ref(&return_none));
+        assert_eq!(stripped_none[0].body, vec![Stmt::Pass]);
+
+        let yielding_expression: Expr = Expr::Yield(Some(Box::new(Expr::Name {
+            id: "value".to_owned(),
+            ctx: ExprCtx::Load,
+            line: Some(7),
+        })));
+        let yielding_return: Stmt = Stmt::Return(Some(yielding_expression));
+        let yielding_handler: ExceptHandler = ExceptHandler {
+            typ: None,
+            name: None,
+            body: vec![yielding_return.clone()],
+            line: None,
+        };
+        let stripped_yielding: Vec<ExceptHandler> = strip_shared_exit_return(
+            vec![yielding_handler],
+            std::slice::from_ref(&yielding_return),
+        );
+        assert_eq!(stripped_yielding[0].body, vec![Stmt::Pass]);
+    }
+
+    #[test]
+    fn every_special_slot_the_compiler_emits_names_a_method_and_no_other_does() {
+        assert_eq!(special_method_name(SPECIAL_ENTER), Some("__enter__"));
+        assert_eq!(special_method_name(SPECIAL_EXIT), Some("__exit__"));
+        assert_eq!(special_method_name(SPECIAL_AENTER), Some("__aenter__"));
+        assert_eq!(special_method_name(SPECIAL_AEXIT), Some("__aexit__"));
+        for slot in [4u32, 5, 255, u32::MAX] {
+            assert_eq!(
+                special_method_name(slot),
+                None,
+                "slot {slot} is not one CPython emits, and naming it __aexit__ would turn a decode \
+                 failure into a context manager the reader believes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_table_still_yields_its_with_region() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 4, 18)]);
+        let region: TryRegion =
+            find_try_region(&stream, 0, 12).expect("a well formed entry yields a region");
+        assert!(
+            region.is_with(),
+            "the handler shape names this a with region"
+        );
+    }
+
+    #[test]
+    fn a_zero_length_protected_range_is_rejected_rather_than_followed() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 0, 18)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "a protected range covering no instruction protects nothing, and building a region \
+             from it invents a body"
+        );
+    }
+
+    #[test]
+    fn a_handler_target_past_the_code_is_rejected_rather_than_followed() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 4, 4096)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "a handler outside the code object cannot be entered, so no region may claim it"
+        );
+    }
+
+    #[test]
+    fn a_protected_start_off_an_instruction_boundary_is_rejected() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(15, 4, 18)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "an odd start lands inside an instruction, and rounding it to a neighbour would move \
+             the body the region claims"
+        );
+    }
+
+    #[test]
+    fn overlapping_entries_resolve_to_the_earliest_body_and_never_panic() {
+        let stream: DecodedStream = stream_with(
+            with_shaped_ops(),
+            vec![entry(14, 4, 18), entry(12, 6, 18), entry(0, 0, 18)],
+        );
+        let region: TryRegion =
+            find_try_region(&stream, 0, 12).expect("the sound entries still yield a region");
+        assert!(
+            region.try_start <= 7,
+            "the earliest protected body wins, and the zero-length sibling contributes nothing"
+        );
+    }
+}

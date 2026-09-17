@@ -1,0 +1,325 @@
+{
+  "schema": "disrobe.demo.python-tests/v1",
+  "captured_at": "2026-09-08T07:28:10.223392-04:00",
+  "pytest_version": "9.1.1",
+  "python_version": "3.14.5",
+  "package_version": "0.10.5",
+  "extension_sha256": "d7c05b8954a9d3be8b22b2fda5044cf262652cf5b6c1085f7535a73db4c198b1",
+  "result": {
+    "tests": 60,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "junit_sha256": "e5cab6bd254afaff8fdbc0ac2683ce8d365fae4652a5ecde33fed5d8521a4b01",
+  "command": [
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "--maxfail=1",
+    "crates/disrobe-python/tests"
+  ],
+  "cases": [
+    {
+      "classname": "crates.disrobe-python.tests.test_cli_parity",
+      "name": "test_every_mapped_verb_has_a_binding",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_cli_parity",
+      "name": "test_mapped_bindings_are_callable",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_cli_parity",
+      "name": "test_typed_return_classes_exported",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_cli_parity",
+      "name": "test_extensibility_surface_exported",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_cli_parity",
+      "name": "test_no_verb_is_both_mapped_and_cli_only",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_javascript_returns_typed_unminify",
+      "time": "0.006"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_typescript_alias_routes",
+      "time": "0.006"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_php_returns_typed_decode",
+      "time": "0.002"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_kotlin_classfile_returns_jvmclass",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_lua_bytecode_returns_decompilation",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_ruby_yarv_returns_analysis",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_swift_macho_returns_swiftreport",
+      "time": "0.004"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_parse_go_returns_go_analysis",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_disasm_ruby_yields_yarv_listing",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_lua_returns_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_ruby_returns_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_php_returns_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_kotlin_classfile_returns_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_jvm_class_returns_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_decompile_javascript_returns_canonical_source",
+      "time": "0.006"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_dispatch_languages",
+      "name": "test_dispatch_no_longer_defers_to_cli",
+      "time": "0.009"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_pyinstaller_encrypted_honesty",
+      "name": "test_encrypted_unrecovered_key_is_not_reported_as_plaintext",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_pyinstaller_encrypted_honesty",
+      "name": "test_entry_bytes_refuses_to_return_ciphertext_as_recovered",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_pyinstaller_encrypted_honesty",
+      "name": "test_unencrypted_archive_still_reports_recovered_content",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_version_is_string",
+      "time": "0.010"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_wasm_lift_returns_typed_source_for_every_target",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_wasm_lift_refusal_is_json_visible",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_wasm_lift_typescript_owns_shared_atomic_memory",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_jvm_dex_decompile_recovers_core_library_calls",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_codeobject_mutation_and_roundtrip",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_codeobject_source_hash_rejects_non_ascii_without_panic",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_envelope_verify_typed",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_query_typed_returns",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_strings_ioc_typed",
+      "time": "0.208"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_native_typed_returns",
+      "time": "0.004"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_flutter_engine_symbol_map_keeps_validated_identity_and_provenance",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_flutter_engine_symbol_map_refuses_mismatched_build_id",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries",
+      "time": "0.007"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_native_diff_and_sigmaker",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_native_match_returns_the_shared_bounded_report",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_native_match_refusals_keep_the_native_reason_codes",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_yara_generate_typed",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_decompile_canonical_source",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_extensibility_registry",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_extract_recursive_typed",
+      "time": "0.002"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_report_json_roundtrip",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_report_from_obj_rejects_recursive_container",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_report_count_accepts_u64_max",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_py_decompile_typed_roundtrip",
+      "time": "0.156"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_py_disasm_typed",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_py_deob_typed",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_js_detect_typed",
+      "time": "0.007"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_pickle_typed",
+      "time": "0.002"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_container_typed",
+      "time": "0.006"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_byte_coverage_accounts_for_every_byte_of_a_real_image",
+      "time": "0.001"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_byte_coverage_reports_an_appended_overlay",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_byte_coverage_refuses_bytes_that_are_not_an_image",
+      "time": "0.000"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_powershell_and_batch_typed",
+      "time": "0.007"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_native_format_and_detect_typed",
+      "time": "0.022"
+    },
+    {
+      "classname": "crates.disrobe-python.tests.test_typed_surface",
+      "name": "test_typed_report_has_llm_accessor",
+      "time": "0.001"
+    }
+  ]
+}

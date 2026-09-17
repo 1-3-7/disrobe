@@ -1,0 +1,166 @@
+INFO  Using log config file: jar:file:/${GHIDRA_HOME}/Ghidra/Framework/Generic/lib/Generic.jar!/generic.log4j.xml (LoggingInitialization)
+INFO  Using log file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\application.log (LoggingInitialization)
+INFO  Loading user preferences: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\preferences (Preferences)
+INFO  Loading previous preferences: ${APPDATA}\ghidra\ghidra_12.1.3_PUBLIC\preferences (Preferences)
+INFO  Searching for classes... (ClassSearcher)
+INFO  Class search complete (536 ms) (ClassSearcher)
+INFO  Initializing SSL Context (DefaultSSLContextInitializer)
+INFO  Initializing Random Number Generator... (SecureRandomFactory)
+INFO  Random Number Generator initialization complete: SHA1PRNG (SecureRandomFactory)
+INFO  Trust manager disabled, cacerts have not been set (DefaultTrustManagerFactory)
+INFO  Headless startup complete (1724 ms) (AnalyzeHeadless)
+INFO  Class searcher loaded 59 extension points (20 false positives) (ClassSearcher)
+INFO  HEADLESS Script Paths:
+    ${GHIDRA_HOME}\Ghidra\Features\SwiftDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\PIC\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\JVM\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\DecompilerDependent\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Decompiler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\DATA\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\8051\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Processors\Atmel\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PDB\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\WildcardAssembler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\GnuDemangler\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\PyGhidra\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger\ghidra_scripts
+    ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input
+    ${GHIDRA_HOME}\Ghidra\Features\SystemEmulation\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BSim\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\MicrosoftCodeAnalyzer\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\Base\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FunctionID\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Debug\Debugger-rmi-trace\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\FileFormats\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\VersionTracking\ghidra_scripts
+    ${GHIDRA_HOME}\Ghidra\Features\BytePatterns\ghidra_scripts (HeadlessAnalyzer)
+INFO  HEADLESS: execution starts (HeadlessAnalyzer)
+INFO  Creating temporary project: ${RUN_DIRECTORY}\projects\aspack_clockres_packed-5139d9dbb022408f8d73d5895c94d7a7\aspack_clockres_packed (HeadlessAnalyzer)
+INFO  Creating project: ${RUN_DIRECTORY}\projects\aspack_clockres_packed-5139d9dbb022408f8d73d5895c94d7a7\aspack_clockres_packed (DefaultProject)
+INFO  REPORT: Processing input files:  (HeadlessAnalyzer)
+INFO       project: ${RUN_DIRECTORY}\projects\aspack_clockres_packed-5139d9dbb022408f8d73d5895c94d7a7\aspack_clockres_packed (HeadlessAnalyzer)
+INFO  IMPORTING: file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe (HeadlessAnalyzer)
+WARN  Section .adata begins after end of file! (FileHeader)
+INFO  Using Loader: Portable Executable (PE) (ProgramLoader)
+INFO  Using Language/Compiler: x86:LE:32:default:windows (ProgramLoader)
+INFO  Using Library Search Path: [host-specific search path omitted from public export]
+WARN  Section .adata begins after end of file! (FileHeader)
+WARN  Certificate address is not valid. (SecurityDataDirectory)
+INFO  TLS callbacks at 1000374c (TLSDirectory)
+WARN  Invalid or missing function at 100ca39c (ExportDataDirectory)
+INFO  Additional info:
+Loading file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe?MD5=c1590cd929b8ec29a20a952ef58d5393...
+------------------------------------------------
+
+Searching 45 paths for library ADVAPI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/advapi32.dll?MD5=e05908f79c914e9f6915632c7a37dd91...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library COMDLG32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/comdlg32.dll?MD5=dff2875ca3b15b633c9ca94d3f6a5068...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library GDI32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/gdi32.dll?MD5=37002dbb23f87dae9ebd7dd7b5051995...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library KERNEL32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/kernel32.dll?MD5=2d8ecc5a2aade7639ca790ef2e8e6e36...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library USER32.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/user32.dll?MD5=f20db7901b5acab93edf2366986a6fd3...
+[user32.dll]: failed to create WEVTResource at 100e7a70: Failed to resolve data length for WEVTResource
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Library not saved to project.
+------------------------------------------------
+
+Searching 45 paths for library VERSION.DLL...
+Loading file:///${SYSTEM_ROOT}/SysWOW64/version.dll?MD5=e540ee5a5c515d5c3005f0cd6d133124...
+Using existing exports file: ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\version.exports
+Library not saved to project.
+------------------------------------------------
+
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\kernel32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\user32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\gdi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\comdlg32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\advapi32.exports
+Applying ${APPDATA}\ghidra\ghidra_12.1.2_PUBLIC\symbols\win32\version.exports
+Linking the External Programs of 'Clockres.packed.aspack.exe' to imported libraries...
+  [KERNEL32.DLL] -> not found in project
+  [USER32.DLL] -> not found in project
+  [GDI32.DLL] -> not found in project
+  [COMDLG32.DLL] -> not found in project
+  [ADVAPI32.DLL] -> not found in project
+  [VERSION.DLL] -> not found in project
+------------------------------------------------
+
+ (ProgramLoader)
+INFO  IMPORTING: Loaded 0 additional files (HeadlessAnalyzer)
+INFO  ANALYZING all memory and code: file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe (HeadlessAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___raise_securityfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+WARN  Ignoring leading '_' chars on no-return name '___report_rangecheckfailure' specified in file: ${GHIDRA_HOME}\Ghidra\Features\Base\data\PEFunctionsThatDoNotReturn (NoReturnFunctionAnalyzer)
+INFO  Skipping PDB processing: missing PDB information in program metadata (PdbUniversalAnalyzer)
+INFO  Packed database cache: ${LOCALAPPDATA}\ghidra\packed-db-cache (PackedDatabaseCache)
+INFO  Applied data type archive: windows_vs12_32 (ApplyDataArchiveAnalyzer)
+WARN  Decompiling 00423001, pcode error at 459f34f7: Could not follow disassembly flow into non-existing memory at 459f34f7 (DecompileCallback)
+INFO  -----------------------------------------------------
+    ASCII Strings                              0.288 secs
+    Apply Data Archives                        0.350 secs
+    Call Convention ID                         0.000 secs
+    Call-Fixup Installer                       0.001 secs
+    Create Address Tables                      0.032 secs
+    Create Function                            0.003 secs
+    Data Reference                             0.008 secs
+    Decompiler Parameter ID                    0.714 secs
+    Decompiler Switch Analysis                 0.000 secs
+    Demangler Microsoft                        0.005 secs
+    Disassemble                                0.010 secs
+    Disassemble Entry Points                   0.020 secs
+    Embedded Media                             0.005 secs
+    External Entry References                  0.000 secs
+    Function ID                                0.072 secs
+    Function Start Pre Search                  0.003 secs
+    Function Start Search                      0.020 secs
+    Function Start Search After Code           0.001 secs
+    Function Start Search After Data           0.002 secs
+    Non-Returning Functions - Discovered       0.005 secs
+    Non-Returning Functions - Known            0.002 secs
+    PDB Universal                              0.001 secs
+    Reference                                  0.000 secs
+    Scalar Operand References                  0.001 secs
+    Shared Return Calls                        0.001 secs
+    Stack                                      0.007 secs
+    Subroutine References                      0.000 secs
+    Windows x86 PE Exception Handling          0.004 secs
+    Windows x86 PE RTTI Analyzer               0.007 secs
+    Windows x86 Thread Environment Block (TEB) Analyzer     0.006 secs
+    WindowsResourceReference                   0.353 secs
+    X86 Function Callee Purge                  0.001 secs
+    x86 Constant Reference Analyzer            0.020 secs
+-----------------------------------------------------
+     Total Time   1 secs
+-----------------------------------------------------
+ (AutoAnalysisManager)
+INFO  REPORT: Analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe (HeadlessAnalyzer)
+INFO  REPORT: Execute script: GhidraReport.java '${RUN_DIRECTORY}\reports\aspack_clockres_packed.json'  (HeadlessAnalyzer)
+INFO  SCRIPT: ${REPOSITORY_ROOT}\benches\ghidra-cleaner-input\GhidraReport.java (HeadlessAnalyzer)
+INFO  GhidraReport.java> GhidraReport wrote ${RUN_DIRECTORY}\reports\aspack_clockres_packed.json (GhidraScript)
+INFO  ANALYZING changes made by post scripts: file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe (HeadlessAnalyzer)
+INFO  REPORT: Post-analysis succeeded for file: file:///${CORPUS_ROOT}/native/packers/aspack/Clockres.packed.aspack.exe (HeadlessAnalyzer)
+INFO  /Clockres.packed.aspack.exe: file created (-) (LocalFileSystem)
+INFO  REPORT: Save succeeded for: /Clockres.packed.aspack.exe (aspack_clockres_packed:/Clockres.packed.aspack.exe) (HeadlessAnalyzer)
+INFO  REPORT: Import succeeded (HeadlessAnalyzer)
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::staticFieldOffset has been called by org.apache.felix.framework.util.SecureAction (file:/${GHIDRA_HOME}/Ghidra/Features/Base/lib/org.apache.felix.framework-7.0.5.jar)
+WARNING: Please consider reporting this to the maintainers of class org.apache.felix.framework.util.SecureAction
+WARNING: sun.misc.Unsafe::staticFieldOffset will be removed in a future release

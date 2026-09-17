@@ -1,0 +1,87 @@
+name: verify-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'release tag to verify (defaults to the latest release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: resolve tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "REL_TAG=${{ inputs.tag }}" >> "$GITHUB_ENV"
+          elif [[ -n "${{ github.event.release.tag_name }}" ]]; then
+            echo "REL_TAG=${{ github.event.release.tag_name }}" >> "$GITHUB_ENV"
+          else
+            echo "REL_TAG=latest" >> "$GITHUB_ENV"
+          fi
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          gh release download "$REL_TAG" --repo "$GITHUB_REPOSITORY" --dir verify --clobber
+
+      - name: verify SHA256SUMS
+        shell: bash
+        working-directory: verify
+        run: sha256sum -c SHA256SUMS --strict
+
+      - name: verify cosign signatures
+        shell: bash
+        working-directory: verify
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundles=(*.cosign.bundle)
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            echo "no .cosign.bundle files in release $REL_TAG" >&2
+            exit 1
+          fi
+          for bundle in "${bundles[@]}"; do
+            artifact="${bundle%.cosign.bundle}"
+            echo "verifying cosign signature for $artifact"
+            cosign verify-blob \
+              --bundle "$bundle" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+              "$artifact"
+          done
+
+      - name: verify build provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        working-directory: verify
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(*.tar.zst *.zip *.cyclonedx.json)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "no build artifacts in release $REL_TAG" >&2
+            exit 1
+          fi
+          for artifact in "${artifacts[@]}"; do
+            echo "verifying build provenance for $artifact"
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY"
+          done

@@ -1,0 +1,65 @@
+{
+  "title": "Python decompiler version coverage",
+  "subtitle": "declared bytecode ranges; recovery quality and verification differ by tool",
+  "note": "Bars summarize upstream bytecode-version claims checked on 2026-09-09, not accuracy on a shared corpus. Disrobe also disassembles legacy CPython 1.0-2.7. Numeric versions encode as 3 + minor/100 so labels remain ordered.",
+  "axis": {
+    "min": 3.0,
+    "max": 3.15,
+    "ticks": [3.0, 3.03, 3.06, 3.09, 3.12, 3.15]
+  },
+  "tools": [
+    {
+      "name": "disrobe",
+      "highlight": true,
+      "segments": [
+        { "from": 3.0, "to": 3.15, "kind": "disasm", "label": "disassemble 3.0-3.15" },
+        { "from": 3.06, "to": 3.15, "kind": "verified", "label": "current 3.x recompile gates" }
+      ],
+      "mode": "deterministic, no LLM; + legacy 1.0-2.7 disasm",
+      "source": "README.md and xtask/data/recovery.json: CPython 1.0-3.15 dispatch, normalized opcode-structure comparison for the CPython 3.14.5 corpora, and legacy recompile or structural-token checks"
+    },
+    {
+      "name": "uncompyle6",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.08, "kind": "range", "label": "3.0-3.8" }
+      ],
+      "mode": "deterministic; also covers 2.x",
+      "source": "https://github.com/rocky/python-uncompyle6: CPython 3.0-3.8 bytecode; repository is not archived"
+    },
+    {
+      "name": "decompyle3",
+      "highlight": false,
+      "segments": [
+        { "from": 3.07, "to": 3.08, "kind": "range", "label": "3.7-3.8" }
+      ],
+      "mode": "deterministic",
+      "source": "https://github.com/rocky/python-decompile3#requirements: tested bytecode versions 3.7 and 3.8"
+    },
+    {
+      "name": "pycdc",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.15, "kind": "partial", "label": "broad but partial, no version guarantee" }
+      ],
+      "mode": "deterministic, best-effort",
+      "source": "zrax/pycdc README: aims at all versions, no per-version correctness guarantee"
+    },
+    {
+      "name": "pychd",
+      "highlight": false,
+      "segments": [
+        { "from": 3.0, "to": 3.14, "kind": "range", "label": "3.0-3.14" }
+      ],
+      "mode": "rules-only or LLM-assisted",
+      "source": "https://github.com/diohabara/pychd: CPython 3.0-3.14; offline deterministic rules recover declarations and common bodies, with unrecovered bodies left as pass; optional LLM assistance fills remaining bodies"
+    }
+  ],
+  "legend": [
+    { "kind": "disasm", "label": "disassemble" },
+    { "kind": "verified", "label": "recompile-verified" },
+    { "kind": "range", "label": "supported range" },
+    { "kind": "partial", "label": "broad, no guarantee" }
+  ],
+  "footnote": "Version support does not establish recovery accuracy or benchmark independence. pychd offers deterministic offline rules and optional LLM assistance; its reported hybrid results include a contamination caveat. Disrobe uses in-tree recovery rules. No shared-corpus accuracy comparison is shown."
+}

@@ -1,0 +1,44 @@
+[package]
+name = "disrobe-pass-jvm"
+description = "JVM bytecode + Java/Kotlin/Scala/Groovy + Android DEX deobfuscation pass: ProGuard/R8 mapping reverse, Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard reversers."
+version.workspace = true
+readme.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["jvm", "java", "kotlin", "android", "deobfuscation"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+disrobe-cfg = { workspace = true }
+disrobe-core = { workspace = true }
+disrobe-bytes = { workspace = true }
+miette = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+disrobe-tool-process = { workspace = true }
+disrobe-binfmt = { workspace = true }
+zip = { workspace = true }
+object = { workspace = true }
+encoding_rs = "0.8"
+disrobe-llm-metadata = { workspace = true, optional = true }
+
+[features]
+default = []
+chain = ["disrobe-core/chain"]
+llm-metadata = ["dep:disrobe-llm-metadata"]
+lifter-diag = []
+opcode-census = []
+semantic-reach = []
+
+[dev-dependencies]
+object = { workspace = true, features = ["write"] }

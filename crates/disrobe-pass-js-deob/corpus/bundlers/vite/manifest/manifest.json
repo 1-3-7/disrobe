@@ -1,0 +1,20 @@
+{
+  "src/main.ts": {
+    "file": "assets/main-DEADBEEF.js",
+    "src": "src/main.ts",
+    "isEntry": true,
+    "imports": ["_shared-CAFEBABE.js"],
+    "dynamicImports": ["src/pages/lazy.tsx"],
+    "css": ["assets/main-DEADBEEF.css"]
+  },
+  "src/pages/lazy.tsx": {
+    "file": "assets/lazy-FEEDFACE.js",
+    "src": "src/pages/lazy.tsx",
+    "isDynamicEntry": true,
+    "imports": []
+  },
+  "_shared-CAFEBABE.js": {
+    "file": "assets/shared-CAFEBABE.js",
+    "imports": []
+  }
+}

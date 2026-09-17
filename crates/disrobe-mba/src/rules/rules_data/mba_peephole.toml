@@ -1,0 +1,376 @@
+commutative_match = true
+
+[[rules]]
+name = "add_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive identity over fixed-width bitvectors"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "sub_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive identity over fixed-width bitvectors"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "mul_zero_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "multiplicative annihilator over fixed-width bitvectors"
+pattern = { kind = "binary", op = "mul", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "mul_one_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "multiplicative identity over fixed-width bitvectors"
+pattern = { kind = "binary", op = "mul", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "o" } }
+when = [{ check = "is_one", expr = "o" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "sub_self_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive inverse over fixed-width bitvectors"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "xor_self_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "xor_all_ones_is_not"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "complement law over fixed-width bitvectors"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
+when = [{ check = "is_all_ones", expr = "m" }]
+rewrite = { build = "unary", op = "not", operand = { build = "use", expr = "x" } }
+
+[[rules]]
+name = "double_not_cancels"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra involution"
+pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "double_negation_cancels"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "additive inverse over fixed-width bitvectors"
+pattern = { kind = "unary", op = "neg", operand = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "negated_not_is_add_one"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "two's-complement negation over fixed-width bitvectors"
+pattern = { kind = "unary", op = "neg", operand = { kind = "unary", op = "not", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "const", value = 1 } }
+
+[[rules]]
+name = "not_negated_is_sub_one"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "two's-complement negation over fixed-width bitvectors"
+pattern = { kind = "unary", op = "not", operand = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "x" } } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "const", value = 1 } }
+
+[[rules]]
+name = "add_negated_is_sub"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "subtraction as addition of additive inverse over fixed-width bitvectors"
+pattern = { kind = "binary", op = "add", left = { kind = "any_expr", bind = "x" }, right = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "y" } } }
+rewrite = { build = "binary", op = "sub", left = { build = "use", expr = "x" }, right = { build = "use", expr = "y" } }
+
+[[rules]]
+name = "sub_negated_is_add"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "subtraction of additive inverse over fixed-width bitvectors"
+pattern = { kind = "binary", op = "sub", left = { kind = "any_expr", bind = "x" }, right = { kind = "unary", op = "neg", operand = { kind = "any_expr", bind = "y" } } }
+rewrite = { build = "binary", op = "add", left = { build = "use", expr = "x" }, right = { build = "use", expr = "y" } }
+
+[[rules]]
+name = "and_zero_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra annihilator"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "and_all_ones_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
+when = [{ check = "is_all_ones", expr = "m" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_self_idempotent"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_complement_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "or_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_all_ones_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra annihilator"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "m" } }
+when = [{ check = "is_all_ones", expr = "m" }]
+rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "or_self_idempotent"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra idempotence"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "equal", left = "x", right = "y" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_complement_all_ones"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "xor_zero_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean algebra identity"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "xor_complement_all_ones"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean complement law"
+pattern = { kind = "binary", op = "xor", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_expr", bind = "y" } }
+when = [{ check = "complement", left = "x", right = "y" }]
+rewrite = { build = "all_ones" }
+
+[[rules]]
+name = "shl_zero_count_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift identity"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "shr_zero_count_identity"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift identity"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "z" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "shl_zero_input_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift annihilator"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_const", bind = "z" }, right = { kind = "any_expr", bind = "x" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shr_zero_input_annihilates"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical shift annihilator"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_const", bind = "z" }, right = { kind = "any_expr", bind = "x" } }
+when = [{ check = "is_zero", expr = "z" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_constant_folds"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvshl constant evaluation"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_const", bind = "value" }, right = { kind = "any_const", bind = "amount" } }
+rewrite = { build = "fold_shl_const", value = "value", amount = "amount" }
+
+[[rules]]
+name = "shr_constant_folds"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvlshr constant evaluation"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_const", bind = "value" }, right = { kind = "any_const", bind = "amount" } }
+rewrite = { build = "fold_shr_const", value = "value", amount = "amount" }
+
+[[rules]]
+name = "shl_count_at_or_above_width_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvshl with a count at least the operand width"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_at_least_width", expr = "amount" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shr_count_at_or_above_width_is_zero"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "SMT-LIB fixed-size bit-vector bvlshr with a count at least the operand width"
+pattern = { kind = "binary", op = "shr", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_at_least_width", expr = "amount" }]
+rewrite = { build = "const", value = 0 }
+
+[[rules]]
+name = "shl_in_range_count_normalizes_to_multiplication"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width logical left shift as multiplication by two to the count"
+pattern = { kind = "binary", op = "shl", left = { kind = "any_expr", bind = "x" }, right = { kind = "any_const", bind = "amount" } }
+when = [{ check = "shift_count_below_width", expr = "amount" }]
+rewrite = { build = "shl_const_as_mul", expr = "x", amount = "amount" }
+
+[[rules]]
+name = "ite_zero_selects_otherwise"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width conditional with a zero condition"
+pattern = { kind = "ite", cond = { kind = "any_const", bind = "c" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "is_zero", expr = "c" }]
+rewrite = { build = "use", expr = "otherwise" }
+
+[[rules]]
+name = "ite_nonzero_selects_then"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width conditional with a nonzero condition"
+pattern = { kind = "ite", cond = { kind = "any_const", bind = "c" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "is_non_zero", expr = "c" }]
+rewrite = { build = "use", expr = "then" }
+
+[[rules]]
+name = "ite_equal_branches"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "conditional branch identity when both outcomes are equal"
+pattern = { kind = "ite", cond = { kind = "any_expr", bind = "cond" }, then = { kind = "any_expr", bind = "then" }, otherwise = { kind = "any_expr", bind = "otherwise" } }
+when = [{ check = "equal", left = "then", right = "otherwise" }]
+rewrite = { build = "use", expr = "then" }
+
+[[rules]]
+name = "slice_const"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "bounded fixed-width extraction from a constant"
+pattern = { kind = "any_const_slice", bind = "slice" }
+rewrite = { build = "fold_const_slice", expr = "slice" }
+
+[[rules]]
+name = "const_unary"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width unary operation on a constant"
+pattern = { kind = "any_const_unary", bind = "unary" }
+rewrite = { build = "fold_const_unary", expr = "unary" }
+
+[[rules]]
+name = "const_binary"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width binary operation on constants"
+pattern = { kind = "any_const_binary", bind = "binary" }
+rewrite = { build = "fold_const_binary", expr = "binary" }
+
+[[rules]]
+name = "const_compose"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "fixed-width composition of constants"
+pattern = { kind = "any_const_compose", bind = "compose" }
+rewrite = { build = "fold_const_compose", expr = "compose" }
+
+[[rules]]
+name = "and_absorption_left"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x and (x or y)"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "same" }, right = { kind = "any_expr", bind = "other" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "and_absorption_right"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x and (y or x)"
+pattern = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "other" }, right = { kind = "any_expr", bind = "same" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_absorption_left"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x or (x and y)"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "same" }, right = { kind = "any_expr", bind = "other" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }
+
+[[rules]]
+name = "or_absorption_right"
+widths = [1, 2, 4, 8, 16, 32, 64]
+proof = "shared_equivalence"
+source = "Boolean absorption x or (y and x)"
+pattern = { kind = "binary", op = "or", left = { kind = "any_expr", bind = "x" }, right = { kind = "binary", op = "and", left = { kind = "any_expr", bind = "other" }, right = { kind = "any_expr", bind = "same" } } }
+when = [{ check = "equal", left = "x", right = "same" }]
+rewrite = { build = "use", expr = "x" }

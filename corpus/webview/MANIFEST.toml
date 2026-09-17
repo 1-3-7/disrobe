@@ -1,0 +1,37 @@
+schema_version = 1
+crate = "disrobe-pass-webview"
+generated = "2026-08-05"
+toolchain = "tauri 2.11.5, tauri 1.8.3, rustc 1.96.1 x86_64-pc-windows-msvc, wails CLI v2.13.0 with github.com/wailsapp/wails/v2 v2.13.0, go 1.26.3"
+purpose = "Real toolchain builds of the two embedded-asset webview desktop families, each committed beside the frontend tree it was built from, so recovery is graded against the source files rather than against the carver's own output."
+
+[provenance]
+build = [
+    "write one fixed frontend tree of eleven files: markup, style sheet, script, source map, manifest, plain text, a zero-length file, a nested script, a png, a webassembly module and a web font",
+    "tauri: cargo build --release over that tree as frontendDist, for both major versions, with --remap-path-prefix so no developer path reaches the image",
+    "wails: wails build -trimpath -ldflags \"-s -w\" over the same tree as the embedded frontend directory",
+    "every image is built from a neutral working directory, because a compiler writes its build directory into its output",
+]
+oracle = "The frontend tree beside each image is the reference. A carve must produce the same relative path set and byte-identical content for every file."
+
+[[fixture]]
+path = "tauri/wvfix.exe"
+family = "tauri"
+host = "pe32+ x86-64"
+embedding = "generated asset map of (key, blob) constants, every blob brotli compressed"
+tree = "tauri/dist"
+note = "the zero-length asset is stored as a one-byte brotli stream, so a carve that reports raw bytes hands back content the source file never had"
+
+[[fixture]]
+path = "tauri-v1/wvfix1.exe"
+family = "tauri"
+host = "pe32+ x86-64"
+embedding = "same record shape and blob framing as the version 2 build, which is why one carve path covers both"
+tree = "tauri-v1/dist"
+
+[[fixture]]
+path = "wails/wvfix.exe"
+family = "wails"
+host = "pe32+ x86-64"
+embedding = "go embedded filesystem record array, uncompressed blobs, each record carrying a truncated sha256 of its own bytes"
+tree = "wails/frontend/dist"
+note = "the image also carries an import name table and a media type table, both of which are pointer-shaped runs that must not be mistaken for the asset map"

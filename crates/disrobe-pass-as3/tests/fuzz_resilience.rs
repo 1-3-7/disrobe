@@ -1,0 +1,309 @@
+#![allow(clippy::expect_used)]
+use std::time::Duration;
+
+use disrobe_pass_as3::abc;
+use disrobe_pass_as3::abc::{AbcFile, MethodBody};
+use disrobe_pass_as3::lift_body;
+use disrobe_pass_as3::swf;
+use disrobe_testkit::{
+    CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
+};
+
+const RANDOM_SPAN_BYTES: usize = 1024;
+const CASES_PER_INPUT: usize = 8_704;
+const BATCH_SIZE: usize = 4_352;
+const CASE_BUDGET: Duration = Duration::from_millis(10);
+const SUITE_BUDGET: Duration = Duration::from_mins(3);
+
+const SATURATION_DOMAIN: u64 = 0x4153_3300_0001_0002;
+const SATURATION_PATTERNS: [(u8, u32); 1] = [(u8::MAX, 2)];
+const ENTROPY_SPAN_SEED: u64 = 0x4153_3300_0001_0003;
+
+fn entropy_span(len: usize) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(ENTROPY_SPAN_SEED);
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(rng.next_byte());
+    }
+    out
+}
+
+const ABC_CONSTANT_POOL_KINDS: usize = 7;
+
+fn abc_seed() -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(&abc::ABC_MINOR.to_le_bytes());
+    bytes.extend_from_slice(&abc::ABC_MAJOR.to_le_bytes());
+    bytes.extend(std::iter::repeat_n(0x00u8, ABC_CONSTANT_POOL_KINDS));
+    bytes.push(0x01);
+    bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    bytes.push(0x00);
+    bytes.push(0x00);
+    bytes.push(0x01);
+    bytes.extend_from_slice(&[0x00, 0x00]);
+    bytes.push(0x00);
+    bytes
+}
+
+fn swf_seed() -> Vec<u8> {
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"FWS");
+    bytes.push(13);
+    bytes.extend_from_slice(&64u32.to_le_bytes());
+    bytes.resize(64, 0);
+    bytes
+}
+
+fn corpus() -> Vec<CorpusEntry> {
+    vec![
+        CorpusEntry::new("empty", Vec::<u8>::new()),
+        CorpusEntry::new("abc-header", abc_seed()),
+        CorpusEntry::new("swf-header", swf_seed()),
+        CorpusEntry::new("random-span", vec![0u8; RANDOM_SPAN_BYTES]),
+        CorpusEntry::new("entropy-span", entropy_span(RANDOM_SPAN_BYTES)),
+    ]
+}
+
+fn saturate(bytes: &[u8], case_seed: u64) -> Vec<u8> {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ SATURATION_DOMAIN);
+    let mut out: Vec<u8> = bytes.to_vec();
+    let pick: usize = rng.below_usize(SATURATION_PATTERNS.len().saturating_add(1));
+    let Some(&(value, sparsity)): Option<&(u8, u32)> = SATURATION_PATTERNS.get(pick) else {
+        let changes: usize = rng.below_usize(out.len().saturating_add(1));
+        for _ in 0..changes {
+            let index: usize = rng.below_usize(out.len());
+            if let Some(byte) = out.get_mut(index) {
+                *byte = rng.next_byte();
+            }
+        }
+        return out;
+    };
+    for byte in &mut out {
+        if rng.next_u64().trailing_zeros() >= sparsity {
+            *byte = value;
+        }
+    }
+    out
+}
+
+fn probe(bytes: &[u8]) {
+    drop(measured_probe(bytes));
+}
+
+fn measured_probe(bytes: &[u8]) -> SeedReach {
+    let mut reach: SeedReach = SeedReach::new();
+    reach.record_result(
+        "abc-constant-pool",
+        &abc::parse(bytes),
+        |file: &abc::AbcFile| {
+            !file.methods.is_empty() || !file.scripts.is_empty() || !file.classes.is_empty()
+        },
+    );
+    drop(abc::disasm(bytes));
+    reach.drove();
+    reach.record("swf-compression", swf::detect(bytes).is_some());
+    reach.record_result("swf-tags", &swf::parse(bytes), |movie: &swf::Swf| {
+        !movie.tags.is_empty()
+    });
+    reach
+}
+
+const SHAPELESS: [ShapelessSeed; 3] = [
+    ShapelessSeed {
+        name: "empty",
+        reason: "the zero-length input every entry point must refuse rather than parse",
+    },
+    ShapelessSeed {
+        name: "random-span",
+        reason: "a kilobyte of zero bytes, present so the readers are driven over a buffer none of                  them can claim",
+    },
+    ShapelessSeed {
+        name: "entropy-span",
+        reason: "a pseudo-random span whose purpose is to be unparseable by every reader",
+    },
+];
+
+#[test]
+fn every_unmutated_seed_reaches_the_surface_it_is_named_for() {
+    let mut tally: ReachTally = ReachTally::new();
+    for entry in corpus() {
+        let reach: SeedReach = measured_probe(entry.bytes());
+        tally.observe(entry.name(), &reach, &SHAPELESS);
+    }
+    println!("\n{}\n", tally.summary("as3"));
+    tally.assert_every_seed_reaches("as3");
+    assert_eq!(tally.total(), corpus().len());
+}
+
+fn check(case: &StressCase<'_>) {
+    probe(case.bytes());
+    probe(&saturate(case.bytes(), case.case_seed()));
+}
+
+fn config() -> StressConfig {
+    StressConfig {
+        cases_per_input: CASES_PER_INPUT,
+        batch_size: BATCH_SIZE,
+        case_budget: CASE_BUDGET,
+        suite_budget: SUITE_BUDGET,
+        ..StressConfig::default()
+    }
+}
+
+mod resilience {
+    disrobe_testkit::stress_suite!(
+        check: super::check,
+        corpus: super::corpus,
+        config: super::config
+    );
+}
+
+#[test]
+fn the_saturation_probe_rewrites_the_bytes_it_is_handed_and_replays_from_its_seed() {
+    const SAMPLE: usize = 512;
+    let original: Vec<u8> = vec![0x33u8; SAMPLE];
+    let mut untouched: usize = 0;
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    for case_seed in 0..SAMPLE as u64 {
+        let probed: Vec<u8> = saturate(&original, case_seed);
+        assert_eq!(probed, saturate(&original, case_seed));
+        if probed == original {
+            untouched = untouched.saturating_add(1);
+        }
+        if !distinct.contains(&probed) {
+            distinct.push(probed);
+        }
+    }
+    assert!(
+        untouched < SAMPLE / 16,
+        "{untouched} of {SAMPLE} probe outputs came back unchanged"
+    );
+    assert!(
+        distinct.len() > SAMPLE / 2,
+        "only {} distinct probe outputs",
+        distinct.len()
+    );
+}
+
+#[test]
+fn every_unmutated_seed_finishes() {
+    for entry in corpus() {
+        probe(entry.bytes());
+    }
+}
+
+#[test]
+fn the_constructed_swf_seed_reads_as_an_uncompressed_swf() {
+    let detection: Option<swf::SwfCompression> = swf::detect(&swf_seed());
+    assert_eq!(detection, Some(swf::SwfCompression::None));
+    let parsed: disrobe_pass_as3::Result<swf::Swf> = swf::parse(&swf_seed());
+    assert!(
+        parsed.is_ok(),
+        "the constructed swf header must parse, or every swf-shaped case is inert: {parsed:?}"
+    );
+}
+
+fn bare_abc() -> AbcFile {
+    AbcFile {
+        minor: abc::ABC_MINOR,
+        major: abc::ABC_MAJOR,
+        cpool: disrobe_pass_as3::ConstantPool::default(),
+        methods: Vec::new(),
+        metadata_count: 0,
+        instances: Vec::new(),
+        classes: Vec::new(),
+        scripts: Vec::new(),
+        method_bodies: Vec::new(),
+    }
+}
+
+const fn body(code: Vec<u8>) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 1,
+        local_count: 1,
+        init_scope_depth: 0,
+        max_scope_depth: 0,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
+#[test]
+fn zero_case_lookupswitch_reaches_lift_body_without_panicking() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x47,
+    ];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_ok(),
+        "zero-case lookupswitch must be handled: {lifted:?}"
+    );
+}
+
+#[test]
+fn out_of_range_lookupswitch_targets_are_rejected_without_panicking() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0xFF, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0x7F, 0x47,
+    ];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_ok(),
+        "out-of-range lookupswitch targets must be rejected locally: {lifted:?}"
+    );
+}
+
+#[test]
+fn malformed_lookupswitch_case_count_is_rejected_by_the_parser_path() {
+    let code: Vec<u8> = vec![0x24, 0x00, 0x1B, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_err(),
+        "a truncated case table must fail closed in the production parser: {lifted:?}"
+    );
+}
+
+fn structured_switch_arms(code: Vec<u8>) -> Vec<Vec<disrobe_pass_as3::lifter::CaseLabel>> {
+    let lifted: disrobe_pass_as3::LiftedBody = lift_body(&bare_abc(), &body(code), None)
+        .expect("a bounded lookupswitch shape must lift without failing");
+    lifted
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            disrobe_pass_as3::lifter::Stmt::StructuredSwitch { cases, .. } => Some(cases),
+            _ => None,
+        })
+        .flatten()
+        .map(|case| case.labels.clone())
+        .collect()
+}
+
+#[test]
+fn a_lookupswitch_whose_default_and_only_case_share_a_target_folds_into_one_arm() {
+    use disrobe_pass_as3::lifter::CaseLabel;
+
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x47,
+    ];
+    assert_eq!(
+        structured_switch_arms(code),
+        vec![vec![CaseLabel::Value(0), CaseLabel::Default]],
+        "a target shared by the default edge and a case value is one arm carrying both labels, \
+         never two arms or a dropped edge"
+    );
+}
+
+#[test]
+fn a_lookupswitch_that_targets_itself_is_not_folded() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
+    ];
+    assert!(
+        structured_switch_arms(code).is_empty(),
+        "a dispatch whose targets resolve to the dispatch itself is cyclic, not a switch region"
+    );
+}

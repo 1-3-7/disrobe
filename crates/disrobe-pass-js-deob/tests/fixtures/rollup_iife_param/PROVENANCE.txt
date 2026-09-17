@@ -1,0 +1,12 @@
+Producer: Rollup 4.62.4, then Terser 5.49.0
+Runtime used for generation: Node.js 24.19.0 on Windows x64
+
+Rollup command:
+node rollup/dist/bin/rollup entry.js --format iife --external @fixture/math-utils,@fixture/text-format --globals @fixture/math-utils:globalThis.MathUtils,@fixture/text-format:globalThis.TextFormat --file rollup.js
+
+Terser command:
+node terser/bin/terser rollup.js --compress --mangle --output fixture.min.js
+
+SHA-256 entry.js: E897DA67F2163E1619094ADB1267C65D9461792C28A90A09B21A5C12CE5329AB
+SHA-256 rollup.js: 768754F23D8D7EB210F10BBA41B7FFCCC725AE44CC6070E4894901E40F654B2A
+SHA-256 fixture.min.js: E9F7C5C0E6CA1DADFB87F0D4DA77133DA9F0457F41DB0A74DB39A6C92A409932

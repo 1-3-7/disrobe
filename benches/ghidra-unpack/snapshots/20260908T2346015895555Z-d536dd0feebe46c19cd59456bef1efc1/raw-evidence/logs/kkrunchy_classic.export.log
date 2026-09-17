@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\kkrunchy\hello.packed.kkrunchy_classic.exe
+  packer:       kkrunchy
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\kkrunchy_classic-64f3730ec9ca4bf2969f5d29fd429dd1\hello.packed.kkrunchy_classic.unpacked.exe
+  layout:       standalone-object
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    1024 bytes placed (0 section(s) overlaid)
+  oep:          unchanged
+  symbols:      1
+  sidecar:      ${RUN_DIRECTORY}\export\kkrunchy_classic-64f3730ec9ca4bf2969f5d29fd429dd1\hello.packed.kkrunchy_classic.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\kkrunchy_classic-64f3730ec9ca4bf2969f5d29fd429dd1\export.manifest.json

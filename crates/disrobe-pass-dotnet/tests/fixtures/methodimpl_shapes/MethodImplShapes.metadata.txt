@@ -1,0 +1,55 @@
+== HeapSizes ==
+StringHeapSizeIsLarge=False
+StringHeap=397 BlobHeap=36 GuidHeap=16 UserStringHeap=8
+== TypeDef ==
+rid=1 ns= name=<Module> attrs=0x00000000 base=nil
+rid=2 ns=MethodImplShapes name=ReuseSlotOverride attrs=0x00100109 base=TypeReference[1]
+rid=3 ns=MethodImplShapes name=FinalReuseSlotOverride attrs=0x00100109 base=TypeReference[1]
+rid=4 ns=MethodImplShapes name=NewSlotVirtual attrs=0x00100109 base=TypeReference[1]
+rid=5 ns=MethodImplShapes name=FinalWithoutVirtual attrs=0x00100109 base=TypeReference[1]
+rid=6 ns=MethodImplShapes name=MethodDefImplBody attrs=0x00100109 base=TypeReference[1]
+rid=7 ns=MethodImplShapes name=AssemblyRefTypeRefImplBody attrs=0x00100109 base=TypeReference[1]
+rid=8 ns=MethodImplShapes name=ModuleRefTypeRefImplBody attrs=0x00100109 base=TypeReference[1]
+rid=9 ns=MethodImplShapes name=TypeSpecImplBody attrs=0x00100109 base=TypeReference[1]
+rid=10 ns=MethodImplShapes name=UnrelatedImplBody attrs=0x00100109 base=TypeReference[1]
+rid=11 ns=MethodImplShapes name=AllThreeOverrides attrs=0x00100109 base=TypeReference[1]
+rid=12 ns=MethodImplShapes name=IGauge attrs=0x000000A1 base=nil
+rid=13 ns=MethodImplShapes name=Meter attrs=0x00100001 base=TypeReference[2]
+== TypeRef ==
+rid=1 ns=System name=ValueType scope=AssemblyReference[1]
+rid=2 ns=System name=Object scope=AssemblyReference[1]
+rid=3 ns=MethodImplShapes name=Foreign scope=ModuleReference[1]
+== MethodDef ==
+rid=1 name=Equals attrs=0x00C6 rva=8272 owner=2
+rid=2 name=Equals attrs=0x00E6 rva=8288 owner=3
+rid=3 name=Equals attrs=0x01C6 rva=8304 owner=4
+rid=4 name=Equals attrs=0x00A6 rva=8320 owner=5
+rid=5 name=Equals attrs=0x00C6 rva=8336 owner=6
+rid=6 name=Equals attrs=0x00C6 rva=8352 owner=7
+rid=7 name=Equals attrs=0x00C6 rva=8368 owner=8
+rid=8 name=Equals attrs=0x00C6 rva=8384 owner=9
+rid=9 name=Equals attrs=0x00C6 rva=8400 owner=10
+rid=10 name=GetHashCode attrs=0x00C6 rva=8416 owner=10
+rid=11 name=Equals attrs=0x00C6 rva=8432 owner=11
+rid=12 name=GetHashCode attrs=0x00C6 rva=8448 owner=11
+rid=13 name=ToString attrs=0x00C6 rva=8464 owner=11
+rid=14 name=Read attrs=0x05C6 rva=0 owner=12
+rid=15 name=MethodImplShapes.IGauge.Read attrs=0x01E1 rva=8480 owner=13
+rid=16 name=.ctor attrs=0x1886 rva=8496 owner=13
+== MemberRef ==
+rid=1 name=Equals parent=TypeReference[2]
+rid=2 name=Equals parent=TypeReference[3]
+rid=3 name=Equals parent=TypeSpecification[1]
+rid=4 name=GetHashCode parent=TypeReference[2]
+rid=5 name=.ctor parent=TypeReference[2]
+== MethodImpl ==
+rid=1 class=TypeDefinition[6] body=MethodDefinition[5] decl=MemberReference[1]
+rid=2 class=TypeDefinition[7] body=MemberReference[1] decl=MemberReference[1]
+rid=3 class=TypeDefinition[8] body=MemberReference[2] decl=MemberReference[1]
+rid=4 class=TypeDefinition[9] body=MemberReference[3] decl=MemberReference[1]
+rid=5 class=TypeDefinition[10] body=MethodDefinition[10] decl=MemberReference[4]
+rid=6 class=TypeDefinition[13] body=MethodDefinition[15] decl=MethodDefinition[14]
+== ModuleRef ==
+rid=1 name=Sibling.netmodule
+== AssemblyRef ==
+rid=1 name=mscorlib version=4.0.0.0

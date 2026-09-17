@@ -1,0 +1,27 @@
+{
+  "schema": "disrobe.jscrambler.template.v1",
+  "name": "Date Lock",
+  "version": "8.5",
+  "harvested_at": "2026-05-25T20:18:00Z",
+  "description": "Set your JavaScript application to only run in a specific period of time. Good to deliver demos with time to live and to enforce license agreements.",
+  "transforms_camel_case": [
+    "dateLock",
+    "objectPropertiesSparsing",
+    "variableMasking",
+    "whitespaceRemoval",
+    "identifiersRenaming",
+    "globalVariableIndirection",
+    "dotToBracketNotation",
+    "duplicateLiteralsRemoval",
+    "stringConcealing",
+    "functionReordering",
+    "functionOutlining",
+    "propertyKeysObfuscation",
+    "regexObfuscation",
+    "booleanToAnything"
+  ],
+  "transform_count": 14,
+  "category": "lock-config",
+  "tier": "paid",
+  "requires_options": ["startDate", "endDate", "timezoneOffset"]
+}

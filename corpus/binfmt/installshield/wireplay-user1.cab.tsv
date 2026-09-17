@@ -1,0 +1,9 @@
+index	disposition	path	expanded_size	compressed_size	sha256
+0	recovered	USERSETUP_LANGINDOSIND/infolist.txt	1123	617	fc8b6e91e633ff09ba7386d70ab70dbe494eb0525808b35e93eefa230a359214
+1	recovered	USERSETUP_LANGINDOSIND/license.txt	831	407	5a549f5b243bcad7419359edd3855a23ae237daa0cc217261d4ef4f48430000f
+2	invalid-record		0	0	-
+3	invalid-record		0	0	-
+4	invalid-record		0	0	-
+5	invalid-record		0	0	-
+6	invalid-record		0	0	-
+7	recovered	USERSTRING_0009OSIND/value.shl	724	428	5d86e4aa54f21566bb7505b453dfe8023e17914dc62cd180897059216254bd5b

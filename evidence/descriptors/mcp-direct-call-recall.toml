@@ -1,0 +1,17 @@
+id = "mcp-direct-call-recall"
+ecosystem = "mcp"
+title = "MCP direct-call edge recall on a committed stripped ELF"
+claim = "The MCP call_graph tool returns all 5 toolchain-derived direct-call edges for the committed stripped ELF."
+oracle_strength = "strong"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "caller and callee addresses from the committed unstripped toolchain twin, compared with the MCP server's stdio response for the stripped subject"
+reproduce = "cargo test -p disrobe-mcp --test mcp_protocol_roundtrip navigation_tools_round_trip_a_committed_stripped_elf_over_stdio"
+note = "This claim covers one committed ELF pair and does not establish recall for other binaries, architectures, or toolchains."
+
+[source]
+recovery_group = "MCP direct-call edges on a committed stripped ELF"
+recovery_bar = "recall"
+floor = 100.0

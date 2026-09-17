@@ -1,0 +1,97 @@
+title = "JSConfuser recovery corpus (state-sum CFF, RGF eval-payload, base91 string concealing)"
+oracle = "node execution of the original source, compared byte-for-byte against node execution of the deobfuscated source (crates/disrobe-pass-js-deob/tests/jsconfuser_node_oracle.rs). expected.json records the original-source stdout. the obfuscated and recovered forms must both reproduce it; recovery is additionally proven by asserting the obfuscation markers are gone and a recovery counter is non-zero, so a no-op pass-through fails."
+node_version = "24.16.0"
+js_confuser_version = "2.0.1"
+
+[[sample]]
+file = "obf_checksum.stringconceal.js"
+source = "src_checksum.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', stringConcealing: true, compact: true }"
+recovered = "base91 string pool decoded back to literals at every accessor call site; the top-level concealed pool is fully recovered and the program is byte-identical under node"
+notes = "the base91 alphabet and the pool array are static in the output, so the decode (basE91 then utf-8) is reproduced in-tree. js-confuser nests a second inner pool; the in-tree pass recovers the outer pool layer and behavior is preserved end to end"
+
+[[sample]]
+file = "obf_stringcompression.real.js"
+source = "src_stringcompression.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', stringCompression: true, compact: true, renameVariables: false, stringConcealing: false, stringEncoding: false, controlFlowFlattening: false }"
+recovered = "LZString stringCompression output is decoded statically: the generated compressed UTF-16 pool is resolved, `decompressFromUTF16` is replaced by the recovered literal dictionary, and the recovered program remains byte-identical under node"
+notes = "generated with js-confuser 2.0.1. this fixture uses the real bracket-property call shape `LZ[\"decompressFromUTF16\"](compressedString)`, so the gate catches both the LZString decoder and the static assignment resolver"
+
+[[sample]]
+file = "obf_tokenizer.rgf.js"
+source = "src_tokenizer.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', rgf: true, compact: true }"
+recovered = "each rgf eval-payload (a static string passed to _rgf_eval) is parsed, the embedded replacement function is extracted, and the dispatch wrapper is rewritten to the real function with its real parameters and body; the eval scaffolding and integrity guard are removed"
+notes = "the payloads are static string literals, so the inner functions are statically present. a payload built from a runtime atob/Function expression is walled (no body fabricated)"
+
+[[sample]]
+file = "obf_statesum.real.js"
+source = "src_statesum.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
+recovered = "fully devirtualized: the in-tree partial evaluator (crates/disrobe-pass-js-deob/src/jsconfuser/cff_vm) models the generator state machine, resolves the with(stateObject) scope proxy to its object slots, tracks the state-sum across iterations through the object-slot and arithmetic case labels and relative-add transitions, recurses into the nested sub-machines, and emits straight-line code. the generator/with/dispatcher envelope is gone and stdout is byte-identical under node (real_jsconfuser_cff_is_devirtualized_to_straight_line). this program has no runtime input, so it reduces to its observable effect"
+notes = "the real js-confuser 2.0.1 controlFlowFlattening emitter wraps the state-sum dispatcher in a function* generator guarded by a with(stateObject) scope proxy, with object-slot case labels, mutually-dependent register transitions, and nested sub-machines read back through the generator return value. the partial evaluator devirtualizes all of it for real instead of walling"
+
+[[sample]]
+file = "obf_statesum.spec.js"
+source = "src_statesum.js"
+produced_by = "spec-constructed-per-documented-algorithm"
+algorithm = "state-sum control-flow flattening: the dispatched block id is the SUM of several state variables (block = s0+s1+...+sN), case labels are arithmetic over those variables, and each block's successor is encoded as relative compound-adds to the state variables. this is the documented JSConfuser controlFlowFlattening state model, hand-applied to the benign source"
+recovered = "both state machines are devirtualized: the running state-sum is tracked from the initial values, each arithmetic case label is resolved to its block, the relative-add transitions rebuild the successor edges, and the reachable blocks are emitted as straight-line code; the while/switch dispatcher is gone and behavior is byte-identical under node"
+notes = "the documented/non-generator state-sum form, kept as a minimal regression fixture for the linearizer alongside the real generator-wrapped output in obf_statesum.real.js"
+
+[[sample]]
+file = "obf_statesum_runtime.real.js"
+source = "src_statesum_runtime.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
+recovered = "devirtualized with the runtime input preserved: the source reads process.argv[2], so the recovered straight-line code keeps Number(process.argv[2]) symbolic and reproduces the original computation byte-for-byte across an input battery (real_runtime_branchless_cff_devirtualized_keeps_runtime_input). proves the partial evaluator is not output-capture: the result is a function of runtime data, not a folded constant"
+
+[[sample]]
+file = "obf_statesum_branch.real.js"
+source = "src_statesum_branch.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
+recovered = "devirtualized with both control-flow edges kept: classify(n) branches on the runtime input (n > 100, n > 10), encoded as predicate-gated state-sum transitions inside a nested sub-machine that signals its parent through a flag slot. the partial evaluator forks on the symbolic predicates, reconstructs the if/else decision tree with the real predicates, resolves the path-invariant flag side-channel, and matches the original across all boundary inputs (real_runtime_branch_cff_devirtualized_keeps_both_edges)"
+
+[[sample]]
+file = "obf_statesum_strings.real.js"
+source = "src_statesum_strings.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
+recovered = "devirtualized with a static-trip-count loop unrolled and the runtime string input preserved: greet(name, count) concatenates in a while loop; for a literal count the loop unrolls to the folded concatenation, and where the name is process.argv-derived it stays symbolic. stdout is byte-identical across an input battery (real_runtime_string_loop_cff_devirtualized)"
+
+[[sample]]
+file = "obf_statesum_loop.real.js"
+source = "src_statesum_loop.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, compact: true }"
+recovered = "devirtualized with the runtime-trip-count loop relooped into a structured while: sumTo(n) accumulates in while(i<=n) where n is the runtime process.argv input. the partial evaluator detects the symbolic loop condition, promotes the loop-carried with-slots (acc, i) to fresh local variables, replays the body once to emit the structured loop body with the real runtime predicate, and prunes the path it does not take. the loop is recovered as a real while with the runtime bound, not unrolled or passed through. byte-identical across an input battery (real_runtime_tripcount_loop_relooped_keeps_runtime_bound, runtime_tripcount_loop_is_relooped_not_unrolled)"
+
+[[sample]]
+file = "obf_deadcode.real.js"
+source = "src_deadcode.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', deadCode: true, compact: true }"
+recovered = "the deadCode injections are removed: js-confuser plants `if(\"<rand>\" in <emptyDummyFunction>){ <dead>() }` guards whose `in` test against an empty function is always false, plus the `<dead>` function declarations they call. the pass identifies the empty dummy functions structurally, deletes the statically-false guards, and removes the dead function declarations once they are unreferenced. byte-identical across an input battery (real_dead_code_branches_removed_behavior_matches_node)"
+
+[[sample]]
+file = "obf_deadcode_cff.real.js"
+source = "src_deadcode.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', controlFlowFlattening: true, deadCode: true, compact: true }"
+recovered = "deadCode combined with controlFlowFlattening: the dead `\"<rand>\" in <fn>` guards are buried inside the generator/with/switch state machine with the dummy as a with-slot function value. the partial evaluator folds `in` against the concrete function value (false for any non-standard key), so the dead branch is eliminated during devirtualization and the dispatcher collapses to the real if/else decision tree. byte-identical across an input battery (real_dead_code_with_cff_behavior_matches_node)"
+
+[[sample]]
+file = "obf_integrity.real.js"
+source = "src_integrity.js"
+produced_by = "real-js-confuser"
+options = "{ target: 'node', deadCode: true, lock: { integrity: true }, compact: true }"
+recovered = "the self-integrity wrappers are unwrapped: js-confuser moves each function body into a renamed helper and wraps the original name in a guard that murmur-hashes the helper's source and runs it only when the hash matches, trapping in while(true){} otherwise. since the intact program always passes its own check, the wrapper is a pure self-check with no observable effect; the pass rewrites each wrapper to delegate directly to the real helper and drops the tamper trap. the deadCode guards are also removed. byte-identical across an input battery (real_integrity_self_check_unwrapped_behavior_matches_node)"
+
+[residual_walls]
+runtime_derived_string_key = "a string-concealing decoder whose alphabet table is assigned from a runtime call (not a static literal) is flagged runtime_keyed and left untouched; no literal is fabricated because the key is not statically present"
+runtime_derived_rgf_payload = "an rgf array entry whose eval payload is a runtime expression (atob/Function over runtime state) rather than a static string literal is counted as a runtime wall and not inlined"

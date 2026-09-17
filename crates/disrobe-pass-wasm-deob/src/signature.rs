@@ -1,0 +1,1229 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Serialize;
+use wasmparser::{KnownCustom, NameSectionReader, Parser, Payload, TypeRef, ValType};
+
+use crate::boundary_links::{
+    BoundaryEvidence, BoundaryIdentitySource, BoundaryLanguage, BoundaryLink, BoundaryLinks,
+    BoundaryLinksError, BoundarySymbol, BoundarySymbolKind, BoundaryWasmReferenceType,
+    BoundaryWasmType, BoundaryWasmValueType, MAX_BOUNDARY_LINKS,
+};
+use crate::boundary_name_propagation::{
+    BoundaryNameConfidence, BoundaryNameEvidence, BoundaryNamePropagationError,
+    MAX_BOUNDARY_NAME_SEEDS, RecoveredBoundaryName, propagate_boundary_names,
+};
+use crate::error::{Error, Result};
+
+pub(crate) const MAX_FUNCTION_LOCALS: usize = 100_000;
+const MAX_BOUNDARY_RESOURCES: usize = MAX_BOUNDARY_LINKS;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FunctionSig {
+    pub name: String,
+    #[serde(skip)]
+    pub params: Vec<ValType>,
+    #[serde(skip)]
+    pub results: Vec<ValType>,
+    pub exported: bool,
+    pub imported: bool,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_names: Vec<Option<String>>,
+}
+
+impl FunctionSig {
+    #[inline]
+    #[must_use]
+    pub fn placeholder(defined_index: u32) -> Self {
+        Self {
+            name: format!("func_{defined_index}"),
+            params: Vec::new(),
+            results: Vec::new(),
+            exported: false,
+            imported: false,
+            local_names: Vec::new(),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn local_name(&self, index: u32) -> Option<&str> {
+        self.local_names
+            .get(index as usize)
+            .and_then(Option::as_deref)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModuleSignatures {
+    sigs: Vec<FunctionSig>,
+    type_signatures: Vec<(Vec<ValType>, Vec<ValType>)>,
+    imported_function_count: u32,
+    export_aliases: Vec<ExportAlias>,
+    boundary_links: BoundaryLinks,
+    boundary_link_collection_status: BoundaryLinkCollectionStatus,
+    recovered_boundary_names: Vec<RecoveredBoundaryName>,
+    boundary_name_recovery_status: BoundaryNameRecoveryStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BoundaryLinkCollectionStatus {
+    #[default]
+    Complete,
+    Truncated {
+        link_count: usize,
+        retained_link_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BoundaryNameRecoveryStatus {
+    #[default]
+    Complete,
+    Truncated {
+        root_count: usize,
+        retained_root_count: usize,
+    },
+    Failed {
+        failure: BoundaryNameRecoveryFailure,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryNameRecoveryFailure {
+    InvalidTrustedRoot,
+    UnknownTrustedRoot,
+    WorkLimitExceeded,
+    PathReconstructionFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExportAlias {
+    pub function_index: u32,
+    pub canonical: String,
+    pub aliases: Vec<String>,
+}
+
+impl ModuleSignatures {
+    #[inline]
+    #[must_use]
+    pub fn defined(&self) -> &[FunctionSig] {
+        let start: usize = self.imported_function_count as usize;
+        self.sigs.get(start..).unwrap_or(&[])
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn imported_function_count(&self) -> usize {
+        self.imported_function_count as usize
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn by_function_index(&self, function_index: u32) -> Option<&FunctionSig> {
+        self.sigs.get(function_index as usize)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn defined_sig(&self, defined_index: u32) -> Option<&FunctionSig> {
+        self.by_function_index(self.imported_function_count.saturating_add(defined_index))
+    }
+
+    #[must_use]
+    pub fn call_signatures(&self) -> Vec<(Vec<ValType>, Vec<ValType>)> {
+        self.sigs
+            .iter()
+            .map(|s| (s.params.clone(), s.results.clone()))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn type_signatures(&self) -> Vec<(Vec<ValType>, Vec<ValType>)> {
+        self.type_signatures.clone()
+    }
+
+    #[must_use]
+    pub fn callee_names(&self) -> Vec<String> {
+        self.sigs.iter().map(|s| s.name.clone()).collect()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn export_aliases(&self) -> &[ExportAlias] {
+        &self.export_aliases
+    }
+
+    #[must_use]
+    pub fn aliased_exports(&self) -> Vec<&ExportAlias> {
+        self.export_aliases
+            .iter()
+            .filter(|a| !a.aliases.is_empty())
+            .collect()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn boundary_links(&self) -> &BoundaryLinks {
+        &self.boundary_links
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn boundary_relations(&self) -> &[BoundaryLink] {
+        self.boundary_links.links()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn boundary_link_collection_status(&self) -> &BoundaryLinkCollectionStatus {
+        &self.boundary_link_collection_status
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn recovered_boundary_names(&self) -> &[RecoveredBoundaryName] {
+        &self.recovered_boundary_names
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn boundary_name_recovery_status(&self) -> &BoundaryNameRecoveryStatus {
+        &self.boundary_name_recovery_status
+    }
+
+    #[inline]
+    pub fn defined_sig_mut(&mut self, defined_index: u32) -> Option<&mut FunctionSig> {
+        let abs: usize =
+            (self.imported_function_count as usize).checked_add(defined_index as usize)?;
+        self.sigs.get_mut(abs)
+    }
+
+    pub fn attach_local_names<F>(&mut self, mut provider: F) -> usize
+    where
+        F: FnMut(u32) -> Vec<Option<String>>,
+    {
+        let defined_count: u32 = u32::try_from(
+            self.sigs
+                .len()
+                .saturating_sub(self.imported_function_count as usize),
+        )
+        .unwrap_or(u32::MAX);
+        let mut attached: usize = 0;
+        for defined_index in 0..defined_count {
+            let names: Vec<Option<String>> = provider(defined_index);
+            if names.iter().any(Option::is_some)
+                && let Some(sig) = self.defined_sig_mut(defined_index)
+            {
+                sig.local_names = names;
+                attached += 1;
+            }
+        }
+        attached
+    }
+}
+
+#[must_use]
+pub fn dwarf_local_names(
+    parameter_names: &[Option<String>],
+    variable_names: &[Option<String>],
+) -> Vec<Option<String>> {
+    let capacity: usize = parameter_names
+        .len()
+        .saturating_add(variable_names.len())
+        .min(MAX_FUNCTION_LOCALS);
+    let mut out: Vec<Option<String>> = Vec::with_capacity(capacity);
+    out.extend(parameter_names.iter().take(MAX_FUNCTION_LOCALS).cloned());
+    let remaining: usize = MAX_FUNCTION_LOCALS.saturating_sub(out.len());
+    out.extend(variable_names.iter().take(remaining).cloned());
+    out
+}
+
+fn bounded_valtypes(values: &[ValType]) -> Vec<ValType> {
+    let count: usize = values.len().min(MAX_FUNCTION_LOCALS);
+    let mut out: Vec<ValType> = Vec::with_capacity(count);
+    out.extend(values.iter().take(count).copied());
+    out
+}
+
+struct RawFuncType {
+    params: Vec<ValType>,
+    results: Vec<ValType>,
+}
+
+struct RawFunctionImport {
+    type_index: u32,
+    module: String,
+    field: String,
+}
+
+struct RawResourceImport {
+    kind: BoundarySymbolKind,
+    module: String,
+    field: String,
+    index: u32,
+    resource_type: BoundaryWasmType,
+}
+
+struct RawResourceExport {
+    kind: BoundarySymbolKind,
+    field: String,
+    index: u32,
+}
+
+pub fn extract_signatures(bytes: &[u8]) -> Result<ModuleSignatures> {
+    let mut func_types: Vec<RawFuncType> = Vec::new();
+    let mut function_type_indices: Vec<u32> = Vec::new();
+    let mut function_imports: Vec<RawFunctionImport> = Vec::new();
+    let mut resource_imports: Vec<RawResourceImport> = Vec::new();
+    let mut resource_exports: Vec<RawResourceExport> = Vec::new();
+    let mut prospective_boundary_link_count: usize = 0;
+    let mut memory_types: Vec<BoundaryWasmType> = Vec::new();
+    let mut table_types: Vec<BoundaryWasmType> = Vec::new();
+    let mut global_types: Vec<BoundaryWasmType> = Vec::new();
+    let mut export_names: Vec<(u32, String)> = Vec::new();
+    let mut name_section_names: Vec<(u32, String)> = Vec::new();
+    let mut name_section_locals: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload: Payload<'_> = payload.map_err(|e| Error::Parse(e.to_string()))?;
+        match payload {
+            Payload::TypeSection(reader) => {
+                for group in reader {
+                    let group: wasmparser::RecGroup =
+                        group.map_err(|e| Error::Parse(e.to_string()))?;
+                    for sub in group.into_types() {
+                        match &sub.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(ft) => {
+                                func_types.push(RawFuncType {
+                                    params: bounded_valtypes(ft.params()),
+                                    results: bounded_valtypes(ft.results()),
+                                });
+                            }
+                            _ => func_types.push(RawFuncType {
+                                params: Vec::new(),
+                                results: Vec::new(),
+                            }),
+                        }
+                    }
+                }
+            }
+            Payload::ImportSection(reader) => {
+                for import in reader.into_imports() {
+                    let import: wasmparser::Import<'_> =
+                        import.map_err(|e| Error::Parse(e.to_string()))?;
+                    match import.ty {
+                        TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
+                            function_imports.push(RawFunctionImport {
+                                type_index,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                            });
+                        }
+                        TypeRef::Memory(memory) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = memory_boundary_type(memory);
+                            let index: u32 = u32::try_from(memory_types.len()).unwrap_or(u32::MAX);
+                            memory_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Memory,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Table(table) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = table_boundary_type(table)?;
+                            let index: u32 = u32::try_from(table_types.len()).unwrap_or(u32::MAX);
+                            table_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Table,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Global(global) => {
+                            ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            let resource_type: BoundaryWasmType = global_boundary_type(global)?;
+                            let index: u32 = u32::try_from(global_types.len()).unwrap_or(u32::MAX);
+                            global_types.push(resource_type.clone());
+                            resource_imports.push(RawResourceImport {
+                                kind: BoundarySymbolKind::Global,
+                                module: import.module.to_owned(),
+                                field: import.name.to_owned(),
+                                index,
+                                resource_type,
+                            });
+                        }
+                        TypeRef::Tag(_) => {}
+                    }
+                }
+            }
+            Payload::MemorySection(reader) => {
+                for memory in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    memory_types.push(memory_boundary_type(
+                        memory.map_err(|e| Error::Parse(e.to_string()))?,
+                    ));
+                }
+            }
+            Payload::TableSection(reader) => {
+                for table in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    table_types.push(table_boundary_type(
+                        table.map_err(|e| Error::Parse(e.to_string()))?.ty,
+                    )?);
+                }
+            }
+            Payload::GlobalSection(reader) => {
+                for global in reader {
+                    ensure_resource_capacity(&memory_types, &table_types, &global_types)?;
+                    global_types.push(global_boundary_type(
+                        global.map_err(|e| Error::Parse(e.to_string()))?.ty,
+                    )?);
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                for ty in reader {
+                    function_type_indices.push(ty.map_err(|e| Error::Parse(e.to_string()))?);
+                }
+            }
+            Payload::ExportSection(reader) => {
+                for exp in reader {
+                    let exp: wasmparser::Export<'_> =
+                        exp.map_err(|e| Error::Parse(e.to_string()))?;
+                    match exp.kind {
+                        wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                            export_names.push((exp.index, exp.name.to_owned()));
+                        }
+                        wasmparser::ExternalKind::Memory => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Memory,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Table => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Table,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Global => {
+                            reserve_boundary_link(&mut prospective_boundary_link_count)?;
+                            resource_exports.push(RawResourceExport {
+                                kind: BoundarySymbolKind::Global,
+                                field: exp.name.to_owned(),
+                                index: exp.index,
+                            });
+                        }
+                        wasmparser::ExternalKind::Tag => {}
+                    }
+                }
+            }
+            Payload::CustomSection(reader) if reader.name() == "name" => {
+                if let KnownCustom::Name(names) = reader.as_known() {
+                    collect_name_section(names, &mut name_section_names, &mut name_section_locals);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let imported_function_count: u32 = u32::try_from(function_imports.len()).unwrap_or(u32::MAX);
+
+    let name_by_index: BTreeMap<u32, &str> = {
+        let mut index: BTreeMap<u32, &str> = BTreeMap::new();
+        for (function_index, name) in &name_section_names {
+            index.entry(*function_index).or_insert(name.as_str());
+        }
+        index
+    };
+    let export_by_index: BTreeMap<u32, &str> = {
+        let mut index: BTreeMap<u32, &str> = BTreeMap::new();
+        for (function_index, name) in &export_names {
+            index.entry(*function_index).or_insert(name.as_str());
+        }
+        index
+    };
+    let exported_indices: BTreeSet<u32> = export_names.iter().map(|(i, _)| *i).collect();
+
+    let mut sigs: Vec<FunctionSig> =
+        Vec::with_capacity(function_imports.len() + function_type_indices.len());
+
+    for (idx, import) in function_imports.iter().enumerate() {
+        let (params, results): (Vec<ValType>, Vec<ValType>) =
+            type_signature(&func_types, import.type_index);
+        let function_index: u32 = u32::try_from(idx).unwrap_or(u32::MAX);
+        sigs.push(FunctionSig {
+            name: resolve_name(
+                function_index,
+                imported_function_count,
+                &name_by_index,
+                &export_by_index,
+            ),
+            params,
+            results,
+            exported: exported_indices.contains(&function_index),
+            imported: true,
+            local_names: Vec::new(),
+        });
+    }
+
+    for (defined_idx, type_index) in function_type_indices.iter().enumerate() {
+        let (params, results): (Vec<ValType>, Vec<ValType>) =
+            type_signature(&func_types, *type_index);
+        let function_index: u32 =
+            imported_function_count.saturating_add(u32::try_from(defined_idx).unwrap_or(u32::MAX));
+        sigs.push(FunctionSig {
+            name: resolve_name(
+                function_index,
+                imported_function_count,
+                &name_by_index,
+                &export_by_index,
+            ),
+            params,
+            results,
+            exported: exported_indices.contains(&function_index),
+            imported: false,
+            local_names: name_section_locals
+                .get(&function_index)
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    let export_aliases: Vec<ExportAlias> = dedup_export_aliases(&export_names);
+    let (boundary_links, boundary_link_collection_status): (
+        BoundaryLinks,
+        BoundaryLinkCollectionStatus,
+    ) = direct_boundary_links(
+        &function_imports,
+        &resource_imports,
+        &export_names,
+        &resource_exports,
+        &memory_types,
+        &table_types,
+        &global_types,
+        &name_by_index,
+    )
+    .map_err(|error: BoundaryLinksError| Error::Parse(error.to_string()))?;
+    let (recovered_boundary_names, boundary_name_recovery_status): (
+        Vec<RecoveredBoundaryName>,
+        BoundaryNameRecoveryStatus,
+    ) = recover_trusted_boundary_names(&boundary_links);
+    let type_signatures: Vec<(Vec<ValType>, Vec<ValType>)> = func_types
+        .iter()
+        .map(|func_type: &RawFuncType| {
+            (
+                bounded_valtypes(&func_type.params),
+                bounded_valtypes(&func_type.results),
+            )
+        })
+        .collect();
+
+    Ok(ModuleSignatures {
+        sigs,
+        type_signatures,
+        imported_function_count,
+        export_aliases,
+        boundary_links,
+        boundary_link_collection_status,
+        recovered_boundary_names,
+        boundary_name_recovery_status,
+    })
+}
+
+fn ensure_resource_capacity(
+    memory_types: &[BoundaryWasmType],
+    table_types: &[BoundaryWasmType],
+    global_types: &[BoundaryWasmType],
+) -> Result<()> {
+    let resource_count: usize = memory_types
+        .len()
+        .checked_add(table_types.len())
+        .and_then(|count: usize| count.checked_add(global_types.len()))
+        .ok_or_else(|| Error::Parse("WebAssembly resource count overflow".to_owned()))?;
+    if resource_count >= MAX_BOUNDARY_RESOURCES {
+        return Err(Error::Parse(format!(
+            "WebAssembly resource count exceeds the {MAX_BOUNDARY_RESOURCES}-resource limit"
+        )));
+    }
+    Ok(())
+}
+
+fn reserve_boundary_link(count: &mut usize) -> Result<()> {
+    if *count >= MAX_BOUNDARY_LINKS {
+        return Err(Error::Parse(format!(
+            "WebAssembly boundary links exceed the {MAX_BOUNDARY_LINKS}-link limit"
+        )));
+    }
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| Error::Parse("WebAssembly boundary link count overflow".to_owned()))?;
+    Ok(())
+}
+
+fn recover_trusted_boundary_names(
+    boundary_links: &BoundaryLinks,
+) -> (Vec<RecoveredBoundaryName>, BoundaryNameRecoveryStatus) {
+    let roots_by_symbol: BTreeMap<BoundarySymbol, u32> = boundary_links
+        .links()
+        .iter()
+        .flat_map(|link: &BoundaryLink| [&link.source, &link.target])
+        .filter_map(|symbol: &BoundarySymbol| {
+            (symbol.language.as_str() == "webassembly"
+                && symbol.identity_source == BoundaryIdentitySource::NameSection)
+                .then_some(symbol.index.map(|index: u32| (symbol.clone(), index)))
+                .flatten()
+        })
+        .collect();
+    let root_count: usize = roots_by_symbol.len();
+    let roots: std::result::Result<Vec<RecoveredBoundaryName>, BoundaryNameRecoveryFailure> =
+        roots_by_symbol
+            .into_iter()
+            .take(MAX_BOUNDARY_NAME_SEEDS)
+            .map(|(symbol, function_index): (BoundarySymbol, u32)| {
+                let name: String = symbol.name.clone();
+                RecoveredBoundaryName::seed(
+                    symbol,
+                    name,
+                    BoundaryNameConfidence::Certain,
+                    BoundaryNameEvidence::NameSection { function_index },
+                )
+                .map_err(BoundaryNameRecoveryFailure::from)
+            })
+            .collect();
+    let roots: Vec<RecoveredBoundaryName> = match roots {
+        Ok(roots) => roots,
+        Err(failure) => {
+            return (Vec::new(), BoundaryNameRecoveryStatus::Failed { failure });
+        }
+    };
+    let recovered: Vec<RecoveredBoundaryName> =
+        match propagate_boundary_names(boundary_links, &roots) {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                return (
+                    Vec::new(),
+                    BoundaryNameRecoveryStatus::Failed {
+                        failure: error.into(),
+                    },
+                );
+            }
+        };
+    let status: BoundaryNameRecoveryStatus = if root_count > MAX_BOUNDARY_NAME_SEEDS {
+        BoundaryNameRecoveryStatus::Truncated {
+            root_count,
+            retained_root_count: MAX_BOUNDARY_NAME_SEEDS,
+        }
+    } else {
+        BoundaryNameRecoveryStatus::Complete
+    };
+    (recovered, status)
+}
+
+impl From<BoundaryNamePropagationError> for BoundaryNameRecoveryFailure {
+    fn from(error: BoundaryNamePropagationError) -> Self {
+        match error {
+            BoundaryNamePropagationError::UnknownSeedSymbol { .. } => Self::UnknownTrustedRoot,
+            BoundaryNamePropagationError::WorkLimitExceeded { .. } => Self::WorkLimitExceeded,
+            BoundaryNamePropagationError::PathReconstructionFailed => {
+                Self::PathReconstructionFailed
+            }
+            BoundaryNamePropagationError::EmptyName
+            | BoundaryNamePropagationError::NameTooLong { .. }
+            | BoundaryNamePropagationError::CertainArityOnly
+            | BoundaryNamePropagationError::TooManyNames { .. } => Self::InvalidTrustedRoot,
+        }
+    }
+}
+
+fn direct_boundary_links(
+    function_imports: &[RawFunctionImport],
+    resource_imports: &[RawResourceImport],
+    export_names: &[(u32, String)],
+    resource_exports: &[RawResourceExport],
+    memory_types: &[BoundaryWasmType],
+    table_types: &[BoundaryWasmType],
+    global_types: &[BoundaryWasmType],
+    name_by_index: &BTreeMap<u32, &str>,
+) -> std::result::Result<(BoundaryLinks, BoundaryLinkCollectionStatus), BoundaryLinksError> {
+    let capacity: usize = function_imports
+        .len()
+        .saturating_add(resource_imports.len())
+        .saturating_add(export_names.len());
+    let mut candidates: Vec<BoundaryLink> = Vec::with_capacity(capacity.min(MAX_BOUNDARY_LINKS));
+    let mut link_count: usize = 0;
+    for (function_index, import) in function_imports.iter().enumerate() {
+        let function_index: u32 = u32::try_from(function_index).unwrap_or(u32::MAX);
+        let (name, source): (String, BoundaryIdentitySource) =
+            boundary_identity(function_index, &import.field, name_by_index);
+        collect_boundary_link(
+            &mut candidates,
+            &mut link_count,
+            BoundaryLink {
+                source: BoundarySymbol {
+                    language: BoundaryLanguage::javascript(),
+                    kind: BoundarySymbolKind::Function,
+                    module: Some(import.module.clone()),
+                    name: import.field.clone(),
+                    index: None,
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                target: BoundarySymbol {
+                    language: BoundaryLanguage::webassembly(),
+                    kind: BoundarySymbolKind::Function,
+                    module: None,
+                    name,
+                    index: Some(function_index),
+                    identity_source: source,
+                },
+                evidence: BoundaryEvidence::WasmImport {
+                    module: import.module.clone(),
+                    field: import.field.clone(),
+                },
+            },
+        );
+    }
+    for import in resource_imports {
+        collect_boundary_link(
+            &mut candidates,
+            &mut link_count,
+            BoundaryLink {
+                source: BoundarySymbol {
+                    language: BoundaryLanguage::javascript(),
+                    kind: import.kind,
+                    module: Some(import.module.clone()),
+                    name: import.field.clone(),
+                    index: None,
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                target: BoundarySymbol {
+                    language: BoundaryLanguage::webassembly(),
+                    kind: import.kind,
+                    module: None,
+                    name: sanitize_identifier(&import.field),
+                    index: Some(import.index),
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                evidence: BoundaryEvidence::ResourceImport {
+                    module: import.module.clone(),
+                    field: import.field.clone(),
+                    index: import.index,
+                    resource_type: import.resource_type.clone(),
+                },
+            },
+        );
+    }
+    for (function_index, field) in export_names {
+        let (name, source): (String, BoundaryIdentitySource) =
+            boundary_identity(*function_index, field, name_by_index);
+        collect_boundary_link(
+            &mut candidates,
+            &mut link_count,
+            BoundaryLink {
+                source: BoundarySymbol {
+                    language: BoundaryLanguage::webassembly(),
+                    kind: BoundarySymbolKind::Function,
+                    module: None,
+                    name,
+                    index: Some(*function_index),
+                    identity_source: source,
+                },
+                target: BoundarySymbol {
+                    language: BoundaryLanguage::javascript(),
+                    kind: BoundarySymbolKind::Function,
+                    module: None,
+                    name: field.clone(),
+                    index: None,
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                evidence: BoundaryEvidence::WasmExport {
+                    field: field.clone(),
+                },
+            },
+        );
+    }
+    for export in resource_exports {
+        let Some(resource_type): Option<&BoundaryWasmType> = resource_type_for_export(
+            export.kind,
+            export.index,
+            memory_types,
+            table_types,
+            global_types,
+        ) else {
+            continue;
+        };
+        let kind: BoundarySymbolKind = export.kind;
+        let field: String = export.field.clone();
+        let index: u32 = export.index;
+        collect_boundary_link(
+            &mut candidates,
+            &mut link_count,
+            BoundaryLink {
+                source: BoundarySymbol {
+                    language: BoundaryLanguage::webassembly(),
+                    kind,
+                    module: None,
+                    name: sanitize_identifier(&field),
+                    index: Some(index),
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                target: BoundarySymbol {
+                    language: BoundaryLanguage::javascript(),
+                    kind,
+                    module: None,
+                    name: field.clone(),
+                    index: None,
+                    identity_source: BoundaryIdentitySource::BoundaryField,
+                },
+                evidence: BoundaryEvidence::ResourceExport {
+                    field,
+                    index,
+                    resource_type: resource_type.clone(),
+                },
+            },
+        );
+    }
+    let retained_link_count: usize = candidates.len();
+    let boundary_links: BoundaryLinks = BoundaryLinks::new(candidates)?;
+    let status: BoundaryLinkCollectionStatus = if link_count > retained_link_count {
+        BoundaryLinkCollectionStatus::Truncated {
+            link_count,
+            retained_link_count,
+        }
+    } else {
+        BoundaryLinkCollectionStatus::Complete
+    };
+    Ok((boundary_links, status))
+}
+
+fn collect_boundary_link(
+    candidates: &mut Vec<BoundaryLink>,
+    link_count: &mut usize,
+    link: BoundaryLink,
+) {
+    *link_count = link_count.saturating_add(1);
+    if candidates.len() < MAX_BOUNDARY_LINKS {
+        candidates.push(link);
+    }
+}
+
+fn resource_type_for_export<'a>(
+    kind: BoundarySymbolKind,
+    index: u32,
+    memory_types: &'a [BoundaryWasmType],
+    table_types: &'a [BoundaryWasmType],
+    global_types: &'a [BoundaryWasmType],
+) -> Option<&'a BoundaryWasmType> {
+    let index: usize = usize::try_from(index).ok()?;
+    match kind {
+        BoundarySymbolKind::Memory => memory_types.get(index),
+        BoundarySymbolKind::Table => table_types.get(index),
+        BoundarySymbolKind::Global => global_types.get(index),
+        BoundarySymbolKind::Function => None,
+    }
+}
+
+const fn memory_boundary_type(memory: wasmparser::MemoryType) -> BoundaryWasmType {
+    BoundaryWasmType::Memory {
+        minimum: memory.initial,
+        maximum: memory.maximum,
+        memory64: memory.memory64,
+        shared: memory.shared,
+        page_size_log2: memory.page_size_log2,
+    }
+}
+
+fn table_boundary_type(table: wasmparser::TableType) -> Result<BoundaryWasmType> {
+    let element_type: BoundaryWasmReferenceType =
+        BoundaryWasmReferenceType::from_wasm(table.element_type).map_err(Error::Parse)?;
+    Ok(BoundaryWasmType::Table {
+        element_type,
+        minimum: table.initial,
+        maximum: table.maximum,
+        table64: table.table64,
+        shared: table.shared,
+    })
+}
+
+fn global_boundary_type(global: wasmparser::GlobalType) -> Result<BoundaryWasmType> {
+    let value_type: BoundaryWasmValueType =
+        BoundaryWasmValueType::from_wasm(global.content_type).map_err(Error::Parse)?;
+    Ok(BoundaryWasmType::Global {
+        value_type,
+        mutable: global.mutable,
+        shared: global.shared,
+    })
+}
+
+fn boundary_identity(
+    function_index: u32,
+    boundary_field: &str,
+    name_by_index: &BTreeMap<u32, &str>,
+) -> (String, BoundaryIdentitySource) {
+    name_by_index.get(&function_index).map_or_else(
+        || {
+            (
+                sanitize_identifier(boundary_field),
+                BoundaryIdentitySource::BoundaryField,
+            )
+        },
+        |name: &&str| {
+            (
+                sanitize_identifier(name),
+                BoundaryIdentitySource::NameSection,
+            )
+        },
+    )
+}
+
+#[must_use]
+pub fn dedup_export_aliases(export_names: &[(u32, String)]) -> Vec<ExportAlias> {
+    let mut order: Vec<u32> = Vec::new();
+    let mut grouped: std::collections::BTreeMap<u32, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (index, name) in export_names {
+        let bucket: &mut Vec<String> = grouped.entry(*index).or_default();
+        if bucket.is_empty() {
+            order.push(*index);
+        }
+        bucket.push(sanitize_identifier(name));
+    }
+    order
+        .into_iter()
+        .filter_map(|index: u32| {
+            let names: Vec<String> = grouped.remove(&index)?;
+            let mut iter: std::vec::IntoIter<String> = names.into_iter();
+            let canonical: String = iter.next()?;
+            Some(ExportAlias {
+                function_index: index,
+                canonical,
+                aliases: iter.collect(),
+            })
+        })
+        .collect()
+}
+
+fn type_signature(func_types: &[RawFuncType], type_index: u32) -> (Vec<ValType>, Vec<ValType>) {
+    func_types.get(type_index as usize).map_or_else(
+        || (Vec::new(), Vec::new()),
+        |ft| (bounded_valtypes(&ft.params), bounded_valtypes(&ft.results)),
+    )
+}
+
+fn resolve_name(
+    function_index: u32,
+    imported_function_count: u32,
+    name_by_index: &BTreeMap<u32, &str>,
+    export_by_index: &BTreeMap<u32, &str>,
+) -> String {
+    if let Some(&name) = name_by_index.get(&function_index) {
+        return sanitize_identifier(name);
+    }
+    if let Some(&name) = export_by_index.get(&function_index) {
+        return sanitize_identifier(name);
+    }
+    if function_index < imported_function_count {
+        format!("import_{function_index}")
+    } else {
+        format!("func_{}", function_index - imported_function_count)
+    }
+}
+
+fn collect_name_section(
+    reader: NameSectionReader<'_>,
+    out: &mut Vec<(u32, String)>,
+    locals_out: &mut std::collections::BTreeMap<u32, Vec<Option<String>>>,
+) {
+    for subsection in reader {
+        let Ok(name): std::result::Result<wasmparser::Name<'_>, _> = subsection else {
+            break;
+        };
+        match name {
+            wasmparser::Name::Function(map) => {
+                for naming in map {
+                    let Ok(naming): std::result::Result<wasmparser::Naming<'_>, _> = naming else {
+                        break;
+                    };
+                    out.push((naming.index, naming.name.to_owned()));
+                }
+            }
+            wasmparser::Name::Local(indirect) => {
+                for group in indirect {
+                    let Ok(group): std::result::Result<wasmparser::IndirectNaming<'_>, _> = group
+                    else {
+                        break;
+                    };
+                    let mut names: Vec<Option<String>> = Vec::new();
+                    for naming in group.names {
+                        let Ok(naming): std::result::Result<wasmparser::Naming<'_>, _> = naming
+                        else {
+                            break;
+                        };
+                        let idx: usize = naming.index as usize;
+                        if idx >= MAX_FUNCTION_LOCALS {
+                            continue;
+                        }
+                        if names.len() <= idx {
+                            names.resize(idx + 1, None);
+                        }
+                        names[idx] = Some(naming.name.to_owned());
+                    }
+                    if names.iter().any(Option::is_some) {
+                        locals_out.insert(group.index, names);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn sanitize_identifier(raw: &str) -> String {
+    let mut out: String = String::with_capacity(raw.len());
+    for (i, ch) in raw.chars().enumerate() {
+        let ok: bool = if i == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if ok { ch } else { '_' });
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+#[must_use]
+pub fn signatures_or_placeholders(bytes: &[u8]) -> ModuleSignatures {
+    extract_signatures(bytes).unwrap_or_default()
+}
+
+#[must_use]
+pub fn count_defined_function_bodies(bytes: &[u8]) -> usize {
+    let mut count: usize = 0;
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Ok(Payload::CodeSectionEntry(_)) = payload {
+            count += 1;
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    const ARITH4: &[u8] = include_bytes!("../tests/fixtures/arith4.wasm");
+
+    #[test]
+    fn extracts_five_defined_signatures_with_export_names() {
+        let sigs: ModuleSignatures = extract_signatures(ARITH4).expect("sigs");
+        let defined: &[FunctionSig] = sigs.defined();
+        assert_eq!(defined.len(), 5, "five defined functions");
+        let add: &FunctionSig = &defined[0];
+        assert_eq!(add.name, "add");
+        assert_eq!(add.params, vec![ValType::I32, ValType::I32]);
+        assert_eq!(add.results, vec![ValType::I32]);
+        assert!(add.exported);
+    }
+
+    #[test]
+    fn recovers_f64_signature() {
+        let sigs: ModuleSignatures = extract_signatures(ARITH4).expect("sigs");
+        let defined: &[FunctionSig] = sigs.defined();
+        let mul: &FunctionSig = &defined[4];
+        assert_eq!(mul.name, "mul_f64");
+        assert_eq!(mul.params, vec![ValType::F64, ValType::F64]);
+        assert_eq!(mul.results, vec![ValType::F64]);
+    }
+
+    #[test]
+    fn preserves_type_index_signatures_independently_of_function_order() {
+        let bytes: Vec<u8> = wat::parse_str(
+            r"(module
+              (type $unused (func (param f64) (result f32)))
+              (type $called (func (param i64) (result i32)))
+              (func (type $called)
+                local.get 0
+                i32.wrap_i64))",
+        )
+        .expect("wat");
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        assert_eq!(
+            sigs.type_signatures(),
+            vec![
+                (vec![ValType::F64], vec![ValType::F32]),
+                (vec![ValType::I64], vec![ValType::I32]),
+            ]
+        );
+        assert_eq!(
+            sigs.call_signatures(),
+            vec![(vec![ValType::I64], vec![ValType::I32])]
+        );
+    }
+
+    #[test]
+    fn body_count_matches_signature_count() {
+        let sigs: ModuleSignatures = extract_signatures(ARITH4).expect("sigs");
+        assert_eq!(sigs.defined().len(), count_defined_function_bodies(ARITH4));
+    }
+
+    #[test]
+    fn garbage_yields_error() {
+        assert!(extract_signatures(b"not wasm").is_err());
+    }
+
+    #[test]
+    fn dedup_export_aliases_groups_same_index() {
+        let raw: Vec<(u32, String)> = vec![
+            (3, "compute".to_owned()),
+            (3, "computeAlias".to_owned()),
+            (4, "other".to_owned()),
+        ];
+        let aliases: Vec<ExportAlias> = dedup_export_aliases(&raw);
+        assert_eq!(aliases.len(), 2);
+        let compute: &ExportAlias = aliases
+            .iter()
+            .find(|a| a.function_index == 3)
+            .expect("index 3");
+        assert_eq!(compute.canonical, "compute");
+        assert_eq!(compute.aliases, vec!["computeAlias".to_owned()]);
+        let other: &ExportAlias = aliases
+            .iter()
+            .find(|a| a.function_index == 4)
+            .expect("index 4");
+        assert!(other.aliases.is_empty());
+    }
+
+    #[test]
+    fn aliased_exports_recovered_from_module() {
+        let wat: &str = r#"
+            (module
+              (func $impl (param i32) (result i32) local.get 0)
+              (export "run" (func $impl))
+              (export "run_alias" (func $impl)))
+        "#;
+        let bytes: Vec<u8> = wat::parse_str(wat).expect("wat");
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        let aliased: Vec<&ExportAlias> = sigs.aliased_exports();
+        assert_eq!(aliased.len(), 1, "one function exported under two names");
+        assert_eq!(aliased[0].canonical, "run");
+        assert_eq!(aliased[0].aliases, vec!["run_alias".to_owned()]);
+    }
+
+    #[test]
+    fn signature_vectors_are_capped_before_clone() {
+        let values: Vec<ValType> = vec![ValType::I32; MAX_FUNCTION_LOCALS + 8];
+        let bounded: Vec<ValType> = bounded_valtypes(&values);
+        assert_eq!(bounded.len(), MAX_FUNCTION_LOCALS);
+
+        let raw: RawFuncType = RawFuncType {
+            params: values.clone(),
+            results: values,
+        };
+        let (params, results): (Vec<ValType>, Vec<ValType>) = type_signature(&[raw], 0);
+        assert_eq!(params.len(), MAX_FUNCTION_LOCALS);
+        assert_eq!(results.len(), MAX_FUNCTION_LOCALS);
+    }
+
+    #[test]
+    fn dwarf_local_names_caps_combined_names() {
+        let params: Vec<Option<String>> = vec![Some("p".to_owned()); MAX_FUNCTION_LOCALS + 8];
+        let vars: Vec<Option<String>> = vec![Some("v".to_owned()); 8];
+        let names: Vec<Option<String>> = dwarf_local_names(&params, &vars);
+        assert_eq!(names.len(), MAX_FUNCTION_LOCALS);
+        assert_eq!(names.first().and_then(Option::as_deref), Some("p"));
+        assert_eq!(names.last().and_then(Option::as_deref), Some("p"));
+    }
+
+    #[test]
+    fn resolve_name_prefers_name_section_then_export_then_placeholder() {
+        let mut name_by_index: BTreeMap<u32, &str> = BTreeMap::new();
+        name_by_index.insert(5, "from_name_section");
+        let mut export_by_index: BTreeMap<u32, &str> = BTreeMap::new();
+        export_by_index.insert(5, "from_export");
+        export_by_index.insert(6, "only_export");
+
+        assert_eq!(
+            resolve_name(5, 2, &name_by_index, &export_by_index),
+            "from_name_section",
+            "name section wins over export"
+        );
+        assert_eq!(
+            resolve_name(6, 2, &name_by_index, &export_by_index),
+            "only_export",
+            "export used when the name section has no entry"
+        );
+        assert_eq!(
+            resolve_name(1, 2, &name_by_index, &export_by_index),
+            "import_1",
+            "imported placeholder below the import count"
+        );
+        assert_eq!(
+            resolve_name(4, 2, &name_by_index, &export_by_index),
+            "func_2",
+            "defined placeholder offsets by the import count"
+        );
+    }
+
+    fn many_exported_module(count: usize) -> Vec<u8> {
+        let mut source: String = String::with_capacity(count * 48 + 16);
+        source.push_str("(module\n");
+        for i in 0..count {
+            source.push_str("  (func (export \"f");
+            source.push_str(&i.to_string());
+            source.push_str("\") (result i32) i32.const 0)\n");
+        }
+        source.push(')');
+        wat::parse_str(&source).expect("many-export module parses")
+    }
+
+    #[test]
+    fn resolves_many_export_names_within_bound() {
+        let count: usize = 15000;
+        let bytes: Vec<u8> = many_exported_module(count);
+        let start: std::time::Instant = std::time::Instant::now();
+        let sigs: ModuleSignatures = extract_signatures(&bytes).expect("sigs");
+        let elapsed: std::time::Duration = start.elapsed();
+        let defined: &[FunctionSig] = sigs.defined();
+        assert_eq!(defined.len(), count, "one signature per function");
+        for (i, sig) in defined.iter().enumerate() {
+            assert_eq!(sig.name, format!("f{i}"), "export name resolved by index");
+            assert!(sig.exported, "each function is exported");
+        }
+        assert_eq!(
+            sigs.boundary_relations().len(),
+            MAX_BOUNDARY_LINKS,
+            "the optional boundary sidecar remains bounded"
+        );
+        assert_eq!(
+            sigs.boundary_link_collection_status(),
+            &BoundaryLinkCollectionStatus::Truncated {
+                link_count: count,
+                retained_link_count: MAX_BOUNDARY_LINKS,
+            },
+            "the incomplete sidecar is explicit"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "signature extraction must scale, took {elapsed:?}"
+        );
+    }
+}

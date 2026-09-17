@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "disrobe-cextract"
+version = "0.1.0"
+description = "C-level PyEval_EvalCode intercept for capturing PyArmor v6/v7 user-code bytecode via PEP 669 sys.monitoring (Py 3.12+) and PyEval_SetProfile (Py 3.9-3.11). Companion to the disrobe deobfuscator suite."
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "disrobe_cextract"
+strip = true

@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: tag-eta n-of node
+    namespace: internal/example
+    scope: function
+    description: placeholder fixture exercising the n-of node with a 2-of-3 bound
+  features:
+    - n-of:
+        n: 2
+        of:
+          - mnemonic: mov
+          - mnemonic: ret
+          - mnemonic: cmp

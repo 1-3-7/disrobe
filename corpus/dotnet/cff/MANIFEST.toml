@@ -1,0 +1,116 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-06-13"
+toolchain = "yck1509/ConfuserEx Confuser.CLI (real control-flow protection, SwitchMangler)"
+note = "benign self-authored sample; flattened by the real ConfuserEx 'ctrl flow' protection, graded against the known original"
+
+[provenance]
+compiler = "csc.exe (.NET Framework 4.x), -optimize+"
+flattener = "Confuser.CLI -n cff.crproj with <protection id=\"ctrl flow\"/>, preset=none (no renaming, so original method names survive for grading)"
+transform = "control-flow flattening: each method body rewritten to while(true){ switch(state){...} }, NormalPredicate, intensity 60, SwitchMangler key-stepped state encoding"
+verified = "the flattened exe executes under the .NET runtime and prints output byte-identical to the clean exe (behavioral oracle); the recovered CFG edge-set equals the clean CFG built by disrobe's own Cfg::build (structural oracle)"
+recovery = "NormalPredicate: 6/6 flattened benign methods fully recovered, 49/49 coalesced block-signatures matched (100%) vs the known-original clean CFG. x86Predicate and ExpressionPredicate (CffPred.* samples): 8/8 methods fully recovered, 56/56 block-signatures matched (100%) per predicate"
+
+[[fixture]]
+name = "CffSample.cs"
+path = "CffSample.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source: CRC32, a char-class tokenizer + word counter, gcd, collatz step-count, clamp; real loops and if-chains"
+
+[[fixture]]
+name = "CffSample.clean.exe"
+path = "CffSample.clean.exe"
+kind = "managed-pe-exe"
+provenance = "real"
+source = "CffSample.cs"
+description = "unobfuscated baseline: ground-truth CFG and behavior the deflattener is graded against"
+
+[[fixture]]
+name = "CffSample.ctrlflow.exe"
+path = "CffSample.ctrlflow.exe"
+kind = "confuserex-ctrlflow-flattened-pe-exe"
+provenance = "real"
+description = "the clean exe after real ConfuserEx 'ctrl flow' protection; each method body is a while(true)/switch dispatcher"
+
+[[fixture]]
+name = "cff.crproj"
+path = "cff.crproj"
+kind = "confuserex-project"
+provenance = "real"
+description = "the exact ConfuserEx project used: preset none, single 'ctrl flow' protection on CffSample.exe"
+
+[[fixture]]
+name = "DecryptSample.cs"
+path = "DecryptSample.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source for the constant/string decryptor inliner: a pure static Decrypt(int) that builds a char[] (RuntimeHelpers.InitializeArray-backed) and XOR-decodes it"
+
+[[fixture]]
+name = "DecryptSample.exe"
+path = "DecryptSample.exe"
+kind = "managed-pe-exe"
+provenance = "real"
+source = "DecryptSample.cs"
+description = "real compiled sample; the inliner virtually executes its own Decrypt method per call site to recover the literals 'genuine' (Decrypt 100) and 'payload' (Decrypt 200)"
+
+[[fixture]]
+name = "CffPred.cs"
+path = "CffPred.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "benign source for the predicate-mode control-flow corpus: FNV-1a, Adler-32, gcd, collatz, clamp, a char-class word counter, and a pure char[] decoder; real loops and if-chains across eight methods"
+
+[[fixture]]
+name = "CffPred.clean.exe"
+path = "CffPred.clean.exe"
+kind = "managed-pe-exe"
+provenance = "real"
+source = "CffPred.cs"
+description = "unobfuscated baseline (csc.exe .NET Framework 4.x, -optimize+) for the predicate samples; the ground-truth CFG and behavior the deflattener is graded against"
+
+[[fixture]]
+name = "CffPred.x86pred.exe"
+path = "CffPred.x86pred.exe"
+kind = "confuserex-ctrlflow-x86predicate-pe-exe"
+provenance = "real"
+source = "CffPred.clean.exe"
+description = "the clean exe after real ConfuserEx 'ctrl flow' with predicate=x86: each switch key is encoded and the per-type decoder is an embedded native x86 stub (MethodImplAttributes.Native, raw machine code at the method RVA). disrobe locates the stub bytes and emulates them through the in-house stub_emu x86 interpreter to recover the real key"
+
+[[fixture]]
+name = "CffPred.exprpred.exe"
+path = "CffPred.exprpred.exe"
+kind = "confuserex-ctrlflow-expressionpredicate-pe-exe"
+provenance = "real"
+source = "CffPred.clean.exe"
+description = "the clean exe after real ConfuserEx 'ctrl flow' with predicate=Expression: each switch key is encoded and the decoder is a pure inverse expression (stloc temp; xor/add/mul/neg/not over that temp) inlined into the switch header. disrobe folds the inverse symbolically over the encoded constant to recover the real key"
+
+[[fixture]]
+name = "cff_x86.crproj"
+path = "cff_x86.crproj"
+kind = "confuserex-project"
+provenance = "real"
+description = "the exact ConfuserEx project for the x86 predicate: preset none, single 'ctrl flow' protection with argument predicate=x86 on CffPred.exe"
+
+[[fixture]]
+name = "cff_exp.crproj"
+path = "cff_exp.crproj"
+kind = "confuserex-project"
+provenance = "real"
+description = "the exact ConfuserEx project for the Expression predicate: preset none, single 'ctrl flow' protection with argument predicate=Expression on CffPred.exe"
+
+[recovered_methods]
+Crc32 = "uint Crc32(byte[]) : nested for loops, branch on (crc & 1); CRC32('hello')=907060870"
+Classify = "int Classify(char) : 4-way if-chain over char ranges; '7'=1 'q'=2 '#'=3"
+CountWords = "int CountWords(string) : for loop with in-word state machine; 'the quick brown fox'=4"
+Gcd = "int Gcd(int,int) : euclid while loop + negative-result guard; Gcd(48,36)=12"
+Collatz = "int Collatz(int) : while loop with even/odd branch; Collatz(27)=111"
+Clamp = "int Clamp(int,int,int) : two-guard clamp; Clamp(150,0,100)=100"
+
+[predicate_recovery]
+note = "ConfuserEx x86Predicate and ExpressionPredicate are no longer walled. Both encode the switch key (and every per-block key) and recover it before the rem.un index: x86 via an embedded native x86 stub called from the header, Expression via a pure inverse expression inlined into the header. The deflatten interpreter tracks all locals symbolically (so the Expression inverse folds to a constant) and routes the header call through a KeyOracle: a native int->int stub is emulated with the in-house stub_emu x86 interpreter, a pure managed int->int helper is virtually executed with the CIL emulator. The recovered key drives the dispatcher exactly as the NormalPredicate path does."
+verified = "both predicate exes execute under the .NET runtime and print byte-identical output to CffPred.clean.exe (behavioral oracle); the recovered CFG of all eight benign methods equals the clean CFG built by disrobe's own Cfg::build (structural oracle), 56/56 coalesced block-signatures per predicate (100%)"
+
+[walled]
+note = "A decryptor or switch key derived from runtime-only state (a function input not present statically) keeps the real predicate and both edges (correct devirtualization, not a guess); a decryptor whose key is genuinely absent from the artifact is surfaced as RuntimeKeyUnavailable rather than fabricated."

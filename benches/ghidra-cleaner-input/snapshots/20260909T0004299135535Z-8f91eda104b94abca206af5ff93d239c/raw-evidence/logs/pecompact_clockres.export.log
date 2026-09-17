@@ -1,0 +1,12 @@
+native export: OK
+  input:        ${CORPUS_ROOT}\native\packers\pecompact\Clockres.packed.pecompact.exe
+  packer:       pecompact
+  format:       ghidra
+  rebuilt:      ${RUN_DIRECTORY}\export\pecompact_clockres-2a1a82ee7fba415b9491b0f7835c4515\Clockres.packed.pecompact.unpacked.exe
+  layout:       memory-image-overlay
+  unbind:       0 of 0 relocation(s) unapplied, 0 of 0 import thunk(s) restored, 0 of 0 resource offset(s) restored
+  recovered:    68264 bytes placed (2 section(s) overlaid)
+  oep:          RVA 0x3e87
+  symbols:      2
+  sidecar:      ${RUN_DIRECTORY}\export\pecompact_clockres-2a1a82ee7fba415b9491b0f7835c4515\Clockres.packed.pecompact.ghidra.java
+  manifest:     ${RUN_DIRECTORY}\export\pecompact_clockres-2a1a82ee7fba415b9491b0f7835c4515\export.manifest.json

@@ -1,0 +1,12 @@
+inherited ChildForm: TChildForm
+  Caption = 'Derived'
+  inline Frame1: TFrame1
+    Left = 4
+    inherited Inner: TInner
+      Tag = 9
+    end
+  end
+  object Plain: TPlain
+    Tag = 1
+  end
+end

@@ -1,0 +1,217 @@
+Bytecode File Information:
+  Bytecode version number: 71
+  Source hash: b257add7a2612f9ba11f86d18c3294285a0e8449
+  Function count: 8
+  String count: 15
+  String Kind Entry count: 2
+  RegExp count: 0
+  CommonJS module offset: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..0]: !
+s1[ASCII, 1..8]: counter-
+s2[ASCII, 9..23]: disrobe-hermes-
+s3[ASCII, 24..29]: global
+i4[ASCII, 30..36] #E53A863C: Counter
+i5[ASCII, 37..39] #58FA9DBB: add
+i6[ASCII, 40..49] #F3091991: globalThis
+i7[ASCII, 50..54] #1D013422: greet
+i8[ASCII, 55..63] #24B6CCBE: increment
+i9[ASCII, 64..68] #1BA84CF3: label
+i10[ASCII, 69..72] #418D1DE6: main
+i11[ASCII, 73..77] #A689F65B: print
+i12[ASCII, 78..86] #807C5F3D: prototype
+i13[ASCII, 87..94] #4EC7C7DE: sumRange
+i14[ASCII, 95..99] #DF50693D: value
+
+Function<global>(1 params, 26 registers, 2 symbols):
+Offset in debug table: src 0x0, vars 0x0
+    DeclareGlobalVar  "add"
+    DeclareGlobalVar  "sumRange"
+    DeclareGlobalVar  "greet"
+    DeclareGlobalVar  "Counter"
+    DeclareGlobalVar  "main"
+    CreateEnvironment r0
+    GetGlobalObject   r1
+    LoadConstUndefined r2
+    CreateClosure     r3, r0, 1
+    PutById           r1, r3, 1, "add"
+    CreateClosure     r4, r0, 2
+    PutById           r1, r4, 2, "sumRange"
+    CreateClosure     r5, r0, 3
+    PutById           r1, r5, 3, "greet"
+    CreateClosure     r6, r0, 4
+    PutById           r1, r6, 4, "Counter"
+    CreateClosure     r7, r0, 5
+    PutById           r1, r7, 5, "main"
+    Mov               r8, r2
+    GetByIdShort      r9, r1, 1, "Counter"
+    GetByIdShort      r10, r9, 2, "prototype"
+    CreateClosure     r11, r0, 6
+    StoreToEnvironment r0, 0, r11
+    PutById           r10, r11, 6, "increment"
+    Mov               r8, r11
+    GetByIdShort      r12, r1, 1, "Counter"
+    GetByIdShort      r13, r12, 2, "prototype"
+    CreateClosure     r14, r0, 7
+    StoreToEnvironment r0, 1, r14
+    PutById           r13, r14, 7, "label"
+    Mov               r8, r14
+    GetByIdShort      r15, r1, 3, "main"
+    Mov               r19, r2
+    Call              r16, r15, 1
+    Mov               r8, r16
+    Mov               r17, r8
+    Ret               r17
+
+Function<add>(3 params, 8 registers, 2 symbols):
+Offset in debug table: src 0x2b, vars 0x0
+    CreateEnvironment r0
+    LoadParam         r1, 1
+    LoadParam         r2, 2
+    LoadConstUndefined r3
+    StoreToEnvironment r0, 0, r1
+    StoreToEnvironment r0, 1, r2
+    LoadFromEnvironment r4, r0, 0
+    LoadFromEnvironment r5, r0, 1
+    Add               r6, r4, r5
+    Ret               r6
+
+Function<sumRange>(2 params, 7 registers, 3 symbols):
+Offset in debug table: src 0x32, vars 0x0
+    CreateEnvironment r0
+    LoadParam         r1, 1
+    LoadConstUndefined r2
+    LoadConstZero     r3
+    LoadConstUInt8    r4, 1
+    StoreNPToEnvironment r0, 0, r2
+    StoreNPToEnvironment r0, 1, r2
+    StoreToEnvironment r0, 2, r1
+    StoreNPToEnvironment r0, 0, r3
+    StoreNPToEnvironment r0, 1, r4
+    LoadFromEnvironment r1, r0, 1
+    LoadFromEnvironment r3, r0, 2
+    LessEq            r5, r1, r3
+    JmpFalse          L1, r5
+L2:
+    LoadFromEnvironment r1, r0, 0
+    LoadFromEnvironment r3, r0, 1
+    Add               r5, r1, r3
+    StoreToEnvironment r0, 0, r5
+    LoadFromEnvironment r1, r0, 1
+    Add               r3, r1, r4
+    StoreToEnvironment r0, 1, r3
+    LoadFromEnvironment r1, r0, 1
+    LoadFromEnvironment r3, r0, 2
+    LessEq            r5, r1, r3
+    JmpTrue           L2, r5
+L1:
+    LoadFromEnvironment r1, r0, 0
+    Ret               r1
+
+Function<greet>(2 params, 10 registers, 2 symbols):
+Offset in debug table: src 0x42, vars 0x0
+    CreateEnvironment r0
+    LoadParam         r1, 1
+    LoadConstUndefined r2
+    LoadConstString   r3, "disrobe-hermes-"
+    LoadConstString   r4, "!"
+    StoreNPToEnvironment r0, 0, r2
+    StoreToEnvironment r0, 1, r1
+    StoreToEnvironment r0, 0, r3
+    LoadFromEnvironment r5, r0, 0
+    LoadFromEnvironment r6, r0, 1
+    Add               r7, r5, r6
+    Add               r8, r7, r4
+    Ret               r8
+
+Function<Counter>(2 params, 6 registers, 1 symbols):
+Offset in debug table: src 0x4c, vars 0x0
+    CreateEnvironment r0
+    LoadParam         r1, 1
+    LoadThisNS        r2
+    LoadConstUndefined r3
+    StoreToEnvironment r0, 0, r1
+    LoadFromEnvironment r4, r0, 0
+    PutById           r2, r4, 1, "value"
+    Ret               r3
+
+Function<main>(1 params, 36 registers, 1 symbols):
+Offset in debug table: src 0x53, vars 0x0
+    CreateEnvironment r0
+    LoadConstUndefined r1
+    GetGlobalObject   r2
+    LoadConstUInt8    r3, 2
+    LoadConstUInt8    r4, 3
+    LoadConstUInt8    r5, 10
+    StoreNPToEnvironment r0, 0, r1
+    GetByIdShort      r6, r2, 1, "Counter"
+    GetByIdShort      r7, r2, 2, "add"
+    Mov               r29, r1
+    Mov               r28, r3
+    Mov               r27, r4
+    Call              r8, r7, 3
+    GetByIdShort      r9, r6, 3, "prototype"
+    CreateThis        r10, r9, r6
+    Mov               r29, r10
+    Mov               r28, r8
+    Construct         r11, r6, 2
+    SelectObject      r12, r10, r11
+    StoreToEnvironment r0, 0, r12
+    LoadFromEnvironment r13, r0, 0
+    GetByIdShort      r14, r13, 4, "increment"
+    Mov               r29, r13
+    Call              r15, r14, 1
+    TryGetById        r15, r2, 5, "globalThis"
+    GetByIdShort      r16, r15, 6, "print"
+    LoadFromEnvironment r17, r0, 0
+    GetByIdShort      r18, r17, 7, "label"
+    Mov               r29, r17
+    Call              r19, r18, 1
+    Mov               r29, r15
+    Mov               r28, r19
+    Call              r20, r16, 2
+    TryGetById        r20, r2, 5, "globalThis"
+    GetByIdShort      r21, r20, 6, "print"
+    GetByIdShort      r22, r2, 8, "sumRange"
+    Mov               r29, r1
+    Mov               r28, r5
+    Call              r23, r22, 2
+    Mov               r29, r20
+    Mov               r28, r23
+    Call              r24, r21, 2
+    LoadFromEnvironment r24, r0, 0
+    GetByIdShort      r25, r24, 9, "value"
+    Ret               r25
+
+Function<increment>(1 params, 7 registers, 0 symbols):
+Offset in debug table: src 0x90, vars 0x0
+    CreateEnvironment r0
+    LoadThisNS        r0
+    LoadConstUInt8    r1, 1
+    LoadConstUndefined r2
+    GetByIdShort      r3, r0, 1, "value"
+    Add               r4, r3, r1
+    PutById           r0, r4, 1, "value"
+    GetByIdShort      r5, r0, 1, "value"
+    Ret               r5
+
+Function<label>(1 params, 17 registers, 0 symbols):
+Offset in debug table: src 0xa0, vars 0x0
+    CreateEnvironment r0
+    LoadThisNS        r0
+    GetGlobalObject   r1
+    LoadConstString   r2, "counter-"
+    LoadConstUndefined r3
+    GetByIdShort      r4, r1, 1, "greet"
+    GetByIdShort      r5, r0, 2, "value"
+    Add               r6, r2, r5
+    Mov               r10, r3
+    Mov               r9, r6
+    Call              r7, r4, 2
+    Ret               r7
