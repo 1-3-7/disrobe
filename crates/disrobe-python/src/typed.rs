@@ -664,6 +664,22 @@ typed_report!(
 );
 
 typed_report!(
+    PyarmorWrapperUnpack,
+    "PyarmorWrapperUnpack",
+    "Path-aware static PyArmor wrapper unpack: resolved runtime, plaintext and PYC geometry, BCC count, and any static fallback reason.",
+    llm,
+    accessors {
+        runtime_path -> Option<String> : |d| field_str(d, "runtime_path"),
+        plaintext_len -> Option<u64> : |d| field_u64(d, "plaintext_len"),
+        plaintext_blake3_hex -> Option<String> : |d| field_str(d, "plaintext_blake3_hex"),
+        pyc_len -> Option<u64> : |d| field_u64(d, "pyc_len"),
+        wrap_stripped -> bool : |d| field_bool(d, "wrap_stripped"),
+        bcc_blob_count -> Option<u64> : |d| field_u64(d, "bcc_blob_count"),
+        fallback_reason -> Option<String> : |d| field_str(d, "fallback_reason"),
+    }
+);
+
+typed_report!(
     PyarmorClassification,
     "PyarmorClassification",
     "PyArmor wrapper-mode classification: script type, bootstrap import, and the RFT/ECC/mix-str feature flags.",
@@ -1413,6 +1429,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ObfuscatorPass>()?;
     m.add_class::<PyarmorDetection>()?;
     m.add_class::<PyarmorUnpack>()?;
+    m.add_class::<PyarmorWrapperUnpack>()?;
     m.add_class::<PyarmorClassification>()?;
     m.add_class::<PyInstallerArchive>()?;
     m.add_class::<NuitkaDetection>()?;

@@ -123,6 +123,28 @@ print(report.status)
 print(report.plaintext_len, report.plaintext_blake3_hex)
 ```
 
+When the wrapper file and its sibling runtime are available, use
+`pyarmor_unpack_wrapper` instead. It receives wrapper source and the wrapper's path,
+then statically locates and parses the sibling runtime; it does not load or execute
+either file. Its separate report exposes wrapper-flow fields such as the resolved
+runtime path and optional PYC length.
+
+```python
+from __future__ import annotations
+
+from pathlib import Path
+
+import disrobe
+
+wrapper_path: Path = Path("protected.py")
+wrapper_source: str = wrapper_path.read_text(encoding="utf-8")
+wrapper_report: disrobe.PyarmorWrapperUnpack = disrobe.pyarmor_unpack_wrapper(
+    wrapper_source, wrapper_path=str(wrapper_path)
+)
+
+print(wrapper_report.runtime_path, wrapper_report.pyc_len)
+```
+
 ## Inspect JavaScript
 
 Detect an obfuscator family from UTF-8 source:
@@ -168,7 +190,7 @@ print(report.to_json())
 | Native code | `native_format`, `native_detect`, `native_symbols`, `native_disasm`, `native_callgraph`, `native_imports_dot`, `native_entropy`, `native_sbom`, `native_fingerprint`, `native_signatures`, `native_sigmaker`, `native_diff`, `native_match`, `native_patch`, `native_deobfuscate`, `native_probe_backends` |
 | IR queries | `query_functions`, `query_calls_to`, `query_xrefs_to`, `query_string_decoders`, `query_complexity_over`, `query_capability_sites`, `query_call_graph` |
 | Python | `py_decompile`, `py_disasm`, `py_deob`, `py_deob_detect`, `py_deob_list_passes`, `py_deob_detect_pass` |
-| PyArmor | `pyarmor_detect`, `pyarmor_unpack`, `pyarmor_classify` |
+| PyArmor | `pyarmor_detect`, `pyarmor_unpack`, `pyarmor_unpack_wrapper`, `pyarmor_classify` |
 | PyInstaller | `pyinstaller_extract`, `pyinstaller_entry_bytes` |
 | Nuitka | `nuitka_detect`, `nuitka_extract` |
 | Hermes | `hermes_disasm`, `hermes_lift`, `hermes_info` |

@@ -100,6 +100,45 @@ def test_pyarmor_unpack_with_the_matching_runtime_decrypts_the_payload() -> None
     assert _static_fields(legacy) == _static_fields(decrypted)
 
 
+def test_pyarmor_unpack_wrapper_statically_resolves_the_sibling_runtime() -> None:
+    wrapper_source: str = _verified(WRAPPER, WRAPPER_SHA256).decode("utf-8")
+    runtime: bytes = _verified(RUNTIME, RUNTIME_SHA256)
+    report: disrobe.PyarmorWrapperUnpack = disrobe.pyarmor_unpack_wrapper(
+        wrapper_source,
+        wrapper_path=str(WRAPPER),
+    )
+    payload_report: disrobe.PyarmorUnpack = disrobe.pyarmor_unpack(
+        _payload(), runtime=runtime
+    )
+
+    assert report.runtime_path is not None
+    assert pathlib.Path(report.runtime_path).resolve() == RUNTIME.resolve()
+    assert report.plaintext_len is not None
+    assert report.plaintext_len > 0
+    assert report.plaintext_blake3_hex is not None
+    assert report.plaintext_len == payload_report.plaintext_len
+    assert report.plaintext_blake3_hex == payload_report.plaintext_blake3_hex
+    assert report.fallback_reason is None
+
+
+def test_pyarmor_unpack_wrapper_rejects_missing_sibling_runtime(
+    tmp_path: pathlib.Path,
+) -> None:
+    wrapper_source: str = _verified(WRAPPER, WRAPPER_SHA256).decode("utf-8")
+    missing_wrapper_path: pathlib.Path = tmp_path / WRAPPER.name
+
+    with pytest.raises(disrobe.DisrobeError):
+        disrobe.pyarmor_unpack_wrapper(
+            wrapper_source,
+            wrapper_path=str(missing_wrapper_path),
+        )
+
+
+def test_pyarmor_unpack_wrapper_uses_the_supplied_source() -> None:
+    with pytest.raises(disrobe.DisrobeError):
+        disrobe.pyarmor_unpack_wrapper("not a PyArmor wrapper", wrapper_path=str(WRAPPER))
+
+
 def test_pyarmor_unpack_rejects_a_runtime_that_is_not_a_pyarmor_runtime() -> None:
     with pytest.raises(disrobe.DisrobeError):
         disrobe.pyarmor_unpack(_payload(), runtime=b"MZ" + bytes(62))

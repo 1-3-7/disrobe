@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::time::Instant;
 
 use disrobe_pass_pyarmor::{
     Detection as PyarmorDetection, ModeClassification, PyarmorLlmInput, StaticDecryptStatus,
-    StaticUnpackConfig, StaticUnpackOutput, classify_modes, detect_from_wrapper,
-    unpack_static_with_config,
+    StaticUnpackConfig, StaticUnpackOutput, UnpackOutput as WrapperUnpackOutput, classify_modes,
+    detect_from_wrapper, unpack_static_with_config, unpack_wrapper_text,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -13,7 +14,10 @@ use serde::Serialize;
 use crate::convert::to_value;
 use crate::err::map;
 use crate::llm::{bundled_value, make_input_descriptor, make_step, parse_pack};
-use crate::typed::{PyarmorClassification, PyarmorDetection as PyPyarmorDetection, PyarmorUnpack};
+use crate::typed::{
+    PyarmorClassification, PyarmorDetection as PyPyarmorDetection, PyarmorUnpack,
+    PyarmorWrapperUnpack,
+};
 
 const PASS_PYARMOR: &str = "disrobe-pass-pyarmor";
 const PASS_PYARMOR_VERSION: &str = disrobe_pass_pyarmor::VERSION;
@@ -64,6 +68,18 @@ struct PyarmorUnpackReport {
     inner_cipher_recovered_co: usize,
     inner_cipher_recovered_bytes: usize,
     diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PyarmorWrapperUnpackReport {
+    detection: PyarmorDetectionReport,
+    runtime_path: String,
+    plaintext_len: usize,
+    plaintext_blake3_hex: String,
+    pyc_len: Option<usize>,
+    wrap_stripped: bool,
+    bcc_blob_count: usize,
+    fallback_reason: Option<String>,
 }
 
 #[pyfunction]
@@ -180,6 +196,52 @@ fn pyarmor_unpack(
     Ok(PyarmorUnpack::from_value(value))
 }
 
+#[pyfunction]
+#[pyo3(signature = (wrapper_source, *, wrapper_path, pack = None))]
+#[pyo3(text_signature = "(wrapper_source, *, wrapper_path, pack='pack-1')")]
+fn pyarmor_unpack_wrapper(
+    wrapper_source: &str,
+    wrapper_path: &str,
+    pack: Option<&str>,
+) -> PyResult<PyarmorWrapperUnpack> {
+    let pack_kind: disrobe_llm_metadata::Pack = parse_pack(pack)?;
+    let started: Instant = Instant::now();
+    let output: WrapperUnpackOutput = unpack_wrapper_text(wrapper_source, Path::new(wrapper_path))
+        .map_err(map("pyarmor wrapper unpack"))?;
+    let detection: PyarmorDetection = output.detection.clone();
+    let report: PyarmorWrapperUnpackReport = PyarmorWrapperUnpackReport {
+        detection: PyarmorDetectionReport::from(&detection),
+        runtime_path: output.runtime_path.display().to_string(),
+        plaintext_len: output.plaintext.len(),
+        plaintext_blake3_hex: blake3::hash(&output.plaintext).to_hex().to_string(),
+        pyc_len: output.pyc.as_ref().map(Vec::len),
+        wrap_stripped: output.wrap_stripped,
+        bcc_blob_count: output.bcc_blobs.len(),
+        fallback_reason: output.fallback_reason,
+    };
+    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
+    let llm_input: PyarmorLlmInput = PyarmorLlmInput {
+        detection: Some(detection),
+        recovered_keys: Vec::new(),
+        authorized_keys: false,
+        input_path: wrapper_path.to_owned(),
+        input_size_bytes: crate::llm::usize_to_u64_saturating(wrapper_source.len()),
+        input_hash_blake3: crate::llm::blake3_hex(wrapper_source.as_bytes()),
+        duration_ms,
+    };
+    let step: disrobe_llm_metadata::PipelineStep = make_step(
+        PASS_PYARMOR,
+        PASS_PYARMOR_VERSION,
+        "raw",
+        "surface",
+        duration_ms,
+    );
+    let input: disrobe_llm_metadata::InputDescriptor =
+        make_input_descriptor(wrapper_path, wrapper_source.as_bytes());
+    let value: serde_json::Value = bundled_value(&report, &llm_input, pack_kind, step, input)?;
+    Ok(PyarmorWrapperUnpack::from_value(value))
+}
+
 fn status_label(s: StaticDecryptStatus) -> String {
     match s {
         StaticDecryptStatus::Functional => "functional",
@@ -230,6 +292,7 @@ fn pyarmor_classify(source: &str, payload: &[u8]) -> PyResult<PyarmorClassificat
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pyarmor_detect, m)?)?;
     m.add_function(wrap_pyfunction!(pyarmor_unpack, m)?)?;
+    m.add_function(wrap_pyfunction!(pyarmor_unpack_wrapper, m)?)?;
     m.add_function(wrap_pyfunction!(pyarmor_classify, m)?)?;
     Ok(())
 }
