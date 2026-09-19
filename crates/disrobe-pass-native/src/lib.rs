@@ -25,6 +25,8 @@ mod basic_blocks;
 pub mod bindiff;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
+#[allow(clippy::redundant_pub_crate)]
+mod code_symbol;
 pub mod crypto_consts;
 pub mod cxx_recovery;
 pub mod debug;

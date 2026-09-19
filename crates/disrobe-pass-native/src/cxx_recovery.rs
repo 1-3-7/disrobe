@@ -9,6 +9,7 @@ use object::RelocationTarget;
 use object::read::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable};
 use serde::{Deserialize, Serialize};
 
+use crate::code_symbol::CodeSymbols;
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,10 +559,11 @@ fn collect_pointer_relocations(file: &object::File<'_>) -> BTreeMap<u64, String>
 }
 
 fn function_symbols(file: &object::File<'_>) -> BTreeMap<u64, String> {
+    let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(file);
     file.dynamic_symbols()
         .chain(file.symbols())
         .filter_map(|sym| {
-            if sym.kind() != object::SymbolKind::Text {
+            if !code_symbols.names_code(&sym) {
                 return None;
             }
             let name: &str = sym.name().ok()?;

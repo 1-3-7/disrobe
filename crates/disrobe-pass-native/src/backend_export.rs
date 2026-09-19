@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use object::{Object, ObjectSymbol, SymbolKind};
 use serde::{Deserialize, Serialize};
 
+use crate::code_symbol::CodeSymbols;
 use crate::cxx_recovery::{CxxDemangled, demangle_auto};
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
@@ -641,12 +642,20 @@ pub fn collect_recovered_symbols_with_oep(
 
     let mut seen: BTreeMap<(u64, String), RecoveredSymbol> = BTreeMap::new();
 
-    let mut ingest = |sym_name: &str, address: u64, kind: SymbolKind, origin: SymbolOrigin| {
+    let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(&file);
+    let class_of = |symbol: &object::Symbol<'_, '_>| -> SymbolClass {
+        if code_symbols.names_code(symbol) {
+            SymbolClass::Function
+        } else {
+            class_for(symbol.kind())
+        }
+    };
+
+    let mut ingest = |sym_name: &str, address: u64, class: SymbolClass, origin: SymbolOrigin| {
         if sym_name.is_empty() || address == 0 {
             return;
         }
         let demangled: Option<String> = demangle_symbol(sym_name);
-        let class: SymbolClass = class_for(kind);
         let name: String = sym_name.to_owned();
         let key: (u64, String) = (address, name.clone());
         seen.entry(key).or_insert_with(|| RecoveredSymbol {
@@ -666,7 +675,7 @@ pub fn collect_recovered_symbols_with_oep(
         ingest(
             name,
             symbol.address(),
-            symbol.kind(),
+            class_of(&symbol),
             SymbolOrigin::SymbolTable,
         );
     }
@@ -677,7 +686,7 @@ pub fn collect_recovered_symbols_with_oep(
         ingest(
             name,
             symbol.address(),
-            symbol.kind(),
+            class_of(&symbol),
             SymbolOrigin::DynamicSymbol,
         );
     }

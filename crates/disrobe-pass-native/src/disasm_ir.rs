@@ -25,6 +25,7 @@ use crate::arch::{
     Arch as DisasmArch, ArmMappingSymbols, ArmRegionKind, ArmRun, DisasmInsn, decode_one_x86,
     disassemble,
 };
+use crate::code_symbol::CodeSymbols;
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
     Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, MAX_DISCOVERY_FUNCTIONS,
@@ -2076,6 +2077,7 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
     let mut out: Vec<DisasmSymbol> = Vec::new();
     let mut seen: BTreeSet<(u64, String)> = BTreeSet::new();
     if let Ok(file) = object::File::parse(bytes) {
+        let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(&file);
         for sym in file.symbols() {
             let Ok(name): core::result::Result<&str, object::Error> = sym.name() else {
                 continue;
@@ -2083,7 +2085,8 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
             if name.is_empty() {
                 continue;
             }
-            let is_text: bool = matches!(sym.kind(), ObjSymbolKind::Text | ObjSymbolKind::Label);
+            let is_text: bool =
+                matches!(sym.kind(), ObjSymbolKind::Label) || code_symbols.names_code(&sym);
             let undefined: bool = sym.is_undefined();
             if !is_text && !undefined {
                 continue;

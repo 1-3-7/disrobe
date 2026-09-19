@@ -17,6 +17,7 @@ use iced_x86::{InstructionInfoFactory, OpAccess, Register};
 use indexmap::{IndexMap, IndexSet};
 
 use crate::arch::{Arch, DisasmInsn, decode_one_x86, disassemble};
+use crate::code_symbol::CodeSymbols;
 use crate::desync::is_rust_panic_bounds_check_name;
 use crate::error::{Error, Result};
 use crate::flow_facts::{
@@ -2628,6 +2629,7 @@ fn object_transfer_facts(
         return facts;
     };
     let section_address: u64 = code_section.address();
+    let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(&file);
     let local_relocations: Option<ExactX86CallRelocations> = match local_calls {
         LocalCallAnalysis::Disabled => None,
         LocalCallAnalysis::LeafOnly(_) => ExactX86CallRelocations::read(&file, &code_section),
@@ -2693,7 +2695,7 @@ fn object_transfer_facts(
                     == Some(symbol_index)
                 && let Some((setup, exit)) = outlined_exits
                     .entry(symbol_index.0)
-                    .or_insert_with(|| outlined_noreturn_exit(&file, &symbol))
+                    .or_insert_with(|| outlined_noreturn_exit(&file, &code_symbols, &symbol))
                     .clone()
             {
                 facts.noreturn_exit_sites.insert(insn.address, exit);
@@ -2702,7 +2704,7 @@ fn object_transfer_facts(
             }
             if let LocalCallAnalysis::LeafOnly(abi) = local_calls
                 && insn.mnemonic == "call"
-                && symbol.kind() == object::SymbolKind::Text
+                && code_symbols.names_code(&symbol)
                 && (local_proofs.len() < MAX_LOCAL_NORETURN_CALLEES
                     || local_proofs.contains_key(&symbol_index.0))
                 && local_relocations
@@ -2710,9 +2712,9 @@ fn object_transfer_facts(
                     .and_then(|relocations: &ExactX86CallRelocations| relocations.target(insn))
                     == Some(symbol_index)
             {
-                let proven: bool = *local_proofs
-                    .entry(symbol_index.0)
-                    .or_insert_with(|| local_noreturn_leaf_is_proven(object, &file, &symbol, abi));
+                let proven: bool = *local_proofs.entry(symbol_index.0).or_insert_with(|| {
+                    local_noreturn_leaf_is_proven(object, &file, &code_symbols, &symbol, abi)
+                });
                 if proven {
                     facts
                         .noreturn_exit_sites
@@ -2721,7 +2723,7 @@ fn object_transfer_facts(
             }
             let section_limit: Option<u64> = section_address.checked_add(code_section.size());
             if insn.mnemonic != "call"
-                && matches!(symbol.kind(), object::SymbolKind::Text)
+                && code_symbols.names_code(&symbol)
                 && symbol.section_index() == Some(code_section.index())
                 && section_limit
                     .is_some_and(|limit: u64| (section_address..limit).contains(&symbol.address()))
@@ -2805,15 +2807,17 @@ fn object_transfer_facts(
     facts
 }
 
-fn local_noreturn_leaf_is_proven(
+fn local_noreturn_leaf_is_proven<'data>(
     object: &[u8],
-    file: &object::File<'_>,
-    symbol: &object::Symbol<'_, '_>,
+    file: &object::File<'data>,
+    code_symbols: &CodeSymbols<'data, '_>,
+    symbol: &object::Symbol<'data, '_>,
     abi: Abi,
 ) -> bool {
     use object::{ObjectSection as _, ObjectSymbol as _};
 
-    let Some((code, base)): Option<(&[u8], u64)> = symbol_code_slice(file, symbol) else {
+    let Some((code, base)): Option<(&[u8], u64)> = symbol_code_slice(file, code_symbols, symbol)
+    else {
         return false;
     };
     if code.len() > MAX_LOCAL_NORETURN_BYTES {
@@ -2875,14 +2879,12 @@ fn local_noreturn_leaf_is_proven(
 
 fn outlined_noreturn_exit<'data>(
     file: &object::File<'data>,
+    code_symbols: &CodeSymbols<'data, '_>,
     symbol: &object::Symbol<'data, '_>,
 ) -> Option<(Vec<Stmt>, NoreturnCallSite)> {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
-    if !matches!(
-        symbol.kind(),
-        object::SymbolKind::Text | object::SymbolKind::Section
-    ) {
+    if !matches!(symbol.kind(), object::SymbolKind::Section) && !code_symbols.names_code(symbol) {
         return None;
     }
     let section_index: object::SectionIndex = symbol.section_index()?;
@@ -2895,13 +2897,13 @@ fn outlined_noreturn_exit<'data>(
         .symbols()
         .filter(|candidate: &object::Symbol<'_, '_>| {
             candidate.section_index() == Some(section_index)
-                && candidate.kind() == object::SymbolKind::Text
                 && candidate.address() == entry
+                && code_symbols.names_code(candidate)
         })
         .take(2)
         .collect();
     let [callee]: [object::Symbol<'_, '_>; 1] = callees.try_into().ok()?;
-    let (code, base): (&[u8], u64) = symbol_code_slice(file, &callee)?;
+    let (code, base): (&[u8], u64) = symbol_code_slice(file, code_symbols, &callee)?;
     if code.is_empty() || code.len() > MAX_LOCAL_NORETURN_BYTES || base < section.address() {
         return None;
     }
@@ -3593,12 +3595,13 @@ fn callee_code_by_target(object: &[u8], target: u64) -> Option<(Vec<u8>, u64)> {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
     let file: object::File<'_> = object::File::parse(object).ok()?;
+    let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(&file);
     if let Some(sym) = file.symbols().find(|s: &object::Symbol<'_, '_>| {
         s.address() == target
-            && s.kind() == object::SymbolKind::Text
+            && code_symbols.names_code(s)
             && s.name().is_ok_and(|n: &str| !n.is_empty())
     }) {
-        return symbol_code(&file, &sym);
+        return symbol_code(&file, &code_symbols, &sym);
     }
     for section in file.sections() {
         let base: u64 = section.address();
@@ -3610,18 +3613,24 @@ fn callee_code_by_target(object: &[u8], target: u64) -> Option<(Vec<u8>, u64)> {
                 continue;
             };
             let sym: object::Symbol<'_, '_> = file.symbol_by_index(idx).ok()?;
-            return symbol_code(&file, &sym);
+            return symbol_code(&file, &code_symbols, &sym);
         }
     }
     None
 }
 
-fn symbol_code(file: &object::File<'_>, sym: &object::Symbol<'_, '_>) -> Option<(Vec<u8>, u64)> {
-    symbol_code_slice(file, sym).map(|(code, address): (&[u8], u64)| (code.to_vec(), address))
+fn symbol_code<'data>(
+    file: &object::File<'data>,
+    code_symbols: &CodeSymbols<'data, '_>,
+    sym: &object::Symbol<'data, '_>,
+) -> Option<(Vec<u8>, u64)> {
+    symbol_code_slice(file, code_symbols, sym)
+        .map(|(code, address): (&[u8], u64)| (code.to_vec(), address))
 }
 
 fn symbol_code_slice<'data>(
     file: &object::File<'data>,
+    code_symbols: &CodeSymbols<'data, '_>,
     sym: &object::Symbol<'data, '_>,
 ) -> Option<(&'data [u8], u64)> {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
@@ -3639,7 +3648,7 @@ fn symbol_code_slice<'data>(
             .filter(|s: &object::Symbol<'_, '_>| {
                 matches!(s.section(), object::SymbolSection::Section(idx) if idx == section_index)
                     && s.address() > sym_addr
-                    && s.kind() == object::SymbolKind::Text
+                    && code_symbols.names_code(s)
                     && s.name().is_ok_and(|n: &str| !n.is_empty())
             })
             .filter_map(|s: object::Symbol<'_, '_>| {

@@ -97,6 +97,9 @@ corpus/external/
 corpus/scratch/
 corpus/**/*.exe
 !corpus/native/anti-analysis/large-benign-x86_64-pc-windows-msvc.exe
+!corpus/native/linkers/base32-clang19-gnuld.exe
+!corpus/native/linkers/base32-clang19-lld.exe
+!corpus/native/linkers/i386-thunks-clang19-lld.exe
 !corpus/python/freezers/cxfreeze/extracted/hello.exe
 !corpus/python/freezers/py2exe/hello.exe
 !corpus/binfmt/dotnet-single-file/*.exe

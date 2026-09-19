@@ -13,14 +13,13 @@ mod corpus;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::build_disasm_payload;
+use crate::code_symbol::CodeSymbols;
 use crate::desync::{
     Bitness, CodeWindow, DirectCallTargetEvidence, DiscoveryInput, direct_call_target_evidence,
 };
 use corpus::{Artifact, BuildKey, Compiler, Flavor, Toolchain};
 use disrobe_ir::payload::{DisasmPayload, DisasmSymbol, DisasmSymbolKind};
-use object::{
-    Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind, SymbolSection,
-};
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolSection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiscoveryGrade {
@@ -49,9 +48,10 @@ fn true_text_starts(bytes: &[u8]) -> BTreeSet<u64> {
         })
         .map(|section: object::Section<'_, '_>| section.index().0)
         .collect();
+    let code_symbols: CodeSymbols<'_, '_> = CodeSymbols::new(&file);
     let mut starts: BTreeSet<u64> = BTreeSet::new();
     for symbol in file.symbols() {
-        if !matches!(symbol.kind(), ObjSymbolKind::Text) {
+        if !code_symbols.names_code(&symbol) {
             continue;
         }
         if let SymbolSection::Section(index) = symbol.section()
