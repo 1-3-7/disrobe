@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from os import PathLike
 from typing import Any, Literal, Protocol, TypedDict, Union, overload, runtime_checkable
 
-from typing_extensions import Self
+from typing_extensions import NotRequired, Self
 
 __version__: str
 __doc__: str
@@ -79,21 +79,80 @@ InstructionFlow = Literal[
     "interrupt",
 ]
 
-class LlmBundle(TypedDict, total=False):
+_LlmMetadataFormat = Literal["json", "jsonl", "cbor", "msgpack"]
+_LlmCategory = Literal[
+    "ast",
+    "disasm",
+    "cfg",
+    "dfg",
+    "symbols",
+    "strings",
+    "types",
+    "imports",
+    "constants",
+    "signatures",
+    "provenance",
+    "roundtrip_verdict",
+    "source_map",
+    "manifest",
+    "decryption_keys",
+    "confidence",
+    "opcode_coverage",
+    "pii_map",
+]
+
+class _LlmToolDescriptor(TypedDict):
+    name: str
+    version: str
+    git_commit: NotRequired[str]
+    build_profile: NotRequired[str]
+
+class _LlmInputDescriptor(TypedDict):
+    path: str
+    size_bytes: int
+    hash_blake3: str
+    magic_bytes_hex: NotRequired[str]
+    detected_formats: NotRequired[list[str]]
+
+class _LlmSelection(TypedDict):
+    pack: Pack | None
+    categories: list[_LlmCategory]
+    excluded: list[_LlmCategory]
+    format: _LlmMetadataFormat
+    authorized_decryption_keys: bool
+
+_LlmPipelineStep = TypedDict(
+    "_LlmPipelineStep",
+    {
+        "pass": str,
+        "version": str,
+        "rung_in": str,
+        "rung_out": str,
+        "duration_ms": float,
+        "input_hash_blake3": NotRequired[str],
+        "output_hash_blake3": NotRequired[str],
+        "capabilities_required": NotRequired[list[str]],
+        "capabilities_produced": NotRequired[list[str]],
+        "config": NotRequired[dict[str, object]],
+    },
+)
+
+class LlmBundle(TypedDict):
     """Top-level shape of ``result["llm"]`` when an LLM metadata pack was emitted.
 
     Mirrors the on-disk ``disrobe.metadata.llm.v1`` schema produced by the CLI
-    ``--llm`` flag family. Keys present depend on which ``pack`` was requested.
+    ``--llm`` flag family. All top-level keys are present; category entries
+    depend on which ``pack`` was requested.
     """
 
-    schema: str
-    schema_version: str
+    schema: Literal["disrobe.metadata.llm.v1"]
+    schema_version: Literal["1.0.0"]
     generated_at: str
-    tool: dict[str, Any]
-    selection: dict[str, Any]
-    input: dict[str, Any]
-    pipeline: list[dict[str, Any]]
-    categories: dict[str, Any]
+    tool: _LlmToolDescriptor
+    selection: _LlmSelection
+    input: _LlmInputDescriptor
+    pipeline: list[_LlmPipelineStep]
+    categories: dict[_LlmCategory, object]
 
 class DisrobeError(Exception):
     """Raised by every disrobe binding when the underlying pass fails."""
