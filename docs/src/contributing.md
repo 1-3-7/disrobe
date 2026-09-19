@@ -1,15 +1,20 @@
 # Contributing
 
-Contributions are welcome; see the [contributing guide](https://github.com/1-3-7/disrobe/blob/main/.github/CONTRIBUTING.md).
+This guide covers building, testing, and extending Disrobe, including the evidence required for recovery claims.
 
 ## Building and testing
 
-`disrobe` builds with a single stable Rust 1.95+ toolchain:
+Use the Rust toolchain pinned in `rust-toolchain.toml`; rustup selects it automatically in the checkout:
 
 ```sh
 cargo build --release
 cargo test -p <crate> --features <the crate's test features>
 ```
+
+Building the Python bindings requires Python on `PATH`; set `PYO3_PYTHON` to select a specific interpreter.
+With `lefthook` installed, run `cargo xtask setup-hooks` once to install the Git hooks. The pre-push
+hook checks changed crates with `cargo xtask prepush`; use `cargo xtask prepush --full` to check the
+whole workspace.
 
 > The JVM decompiler can be memory-intensive on adversarial input. Prefer per-crate test runs over a bare workspace-wide `cargo test --workspace` when iterating locally.
 
@@ -52,7 +57,7 @@ that hides tests. The failure names the crate and prints the command to use inst
 Every commit on `main` must pass the workspace clippy gate with zero warnings:
 
 ```sh
-cargo clippy --all-targets -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt -p <crate> -- --check
 ```
 
@@ -94,6 +99,10 @@ Every capability claim must be backed by a fixture in `corpus/` and a passing te
 Test recovery against independently produced corpus artifacts and the upstream format specification. Hand-built fixtures should cover boundaries and failure cases as well. Record the input versions, recovered members, and remaining losses; distinguish detection from recovery in the command output and documentation.
 
 ## Contributor license
+
+Keep pull requests focused. Use lowercase, specific commit subjects without `type:` prefixes,
+and a GitHub noreply address if you want to keep your email private. Preserve existing legal
+attribution; do not add unrelated authorship or co-author credits.
 
 Contributions are accepted only under the [Disrobe Contributor Assignment and License Agreement](https://github.com/1-3-7/disrobe/blob/main/CONTRIBUTING-LICENSE.md), which implements Section 6 of the [LICENSE](https://github.com/1-3-7/disrobe/blob/main/LICENSE). Before a pull request can be merged, post the complete acceptance statement from that agreement as a comment on the pull request, from the account that authored the commits it covers. Opening a pull request grants no rights in Disrobe beyond the LICENSE.
 
