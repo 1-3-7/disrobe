@@ -3575,6 +3575,16 @@ fn resolved_signature(
         else {
             continue;
         };
+        if nested_base == callee_base {
+            let signature: RecoveredSignature =
+                RecoveredSignature::from_bindings(abi, Vec::new()).ok()?;
+            resolved.push(ResolvedCall {
+                target,
+                name: None,
+                signature,
+            });
+            continue;
+        }
         let Some(signature): Option<RecoveredSignature> =
             resolved_signature(object, &nested_code, nested_base, abi, depth - 1)
         else {
@@ -30118,6 +30128,134 @@ mod tests {
             vec![Reg::Rcx],
             "the forwarded first argument register must be recovered as the caller's sole parameter"
         );
+    }
+
+    fn direct_recursive_object(code: &[u8]) -> Vec<u8> {
+        use object::write::{Object, Symbol, SymbolSection};
+
+        let mut writer: Object<'_> = Object::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::X86_64,
+            object::Endianness::Little,
+        );
+        let section: object::write::SectionId =
+            writer.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
+        let _: u64 = writer.append_section_data(section, code, 1);
+        writer.add_symbol(Symbol {
+            name: b"recursive_two".to_vec(),
+            value: 0,
+            size: u64::try_from(code.len()).expect("function size"),
+            kind: object::SymbolKind::Text,
+            scope: object::SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(section),
+            flags: object::SymbolFlags::None,
+        });
+        writer.write().expect("direct recursive object")
+    }
+
+    #[test]
+    fn direct_recursion_resolves_actual_abi_parameters_before_emitting_the_call() {
+        for (abi, code, call) in [
+            (
+                Abi::SysV,
+                vec![0x48, 0x01, 0xf7, 0xe8, 0xf8, 0xff, 0xff, 0xff, 0xc3],
+                "r_rax = recursive_two(r_rdi, r_rsi);",
+            ),
+            (
+                Abi::MsX64,
+                vec![0x48, 0x01, 0xd1, 0xe8, 0xf8, 0xff, 0xff, 0xff, 0xc3],
+                "r_rax = recursive_two(r_rcx, r_rdx);",
+            ),
+        ] {
+            let object: Vec<u8> = direct_recursive_object(&code);
+            assert_eq!(
+                resolved_int_arity_in_object(&object, &code, 0, abi),
+                Some(2),
+                "the provisional direct-self signature must be replaced with two inferred arguments for {abi:?}"
+            );
+            let program: RecoveredProgram = recover_program(
+                &object,
+                &[ProgramFunction {
+                    name: "recursive_two".to_owned(),
+                    address: 0,
+                    code,
+                }],
+                abi,
+            );
+            assert!(
+                program.unrecovered.is_empty(),
+                "direct recursion must recover for {abi:?}: {:?}",
+                program.unrecovered
+            );
+            let recovered: &RecoveredFunction = program
+                .recovered
+                .first()
+                .expect("the recursive function must recover");
+            assert_eq!(
+                recovered.signature.callable_arity(),
+                2,
+                "the final signature must preserve both actual parameters for {abi:?}"
+            );
+            assert!(
+                recovered.source.contains(call),
+                "the final recursive call must receive the inferred arguments for {abi:?}: {}",
+                recovered.source
+            );
+        }
+    }
+
+    #[test]
+    fn direct_recursion_retains_an_unchanged_argument_forwarded_to_the_next_frame() {
+        for (abi, code, call) in [
+            (
+                Abi::SysV,
+                vec![
+                    0x48, 0x85, 0xff, 0x74, 0x0a, 0x48, 0x83, 0xef, 0x01, 0xe8, 0xf2, 0xff, 0xff,
+                    0xff, 0xc3, 0x48, 0x89, 0xf0, 0xc3,
+                ],
+                "r_rax = recursive_two(r_rdi, r_rsi);",
+            ),
+            (
+                Abi::MsX64,
+                vec![
+                    0x48, 0x85, 0xc9, 0x74, 0x0a, 0x48, 0x83, 0xe9, 0x01, 0xe8, 0xf2, 0xff, 0xff,
+                    0xff, 0xc3, 0x48, 0x89, 0xd0, 0xc3,
+                ],
+                "r_rax = recursive_two(r_rcx, r_rdx);",
+            ),
+        ] {
+            let object: Vec<u8> = direct_recursive_object(&code);
+            assert_eq!(
+                resolved_int_arity_in_object(&object, &code, 0, abi),
+                Some(2),
+                "the base-case read must retain the unchanged forwarded argument for {abi:?}"
+            );
+            let program: RecoveredProgram = recover_program(
+                &object,
+                &[ProgramFunction {
+                    name: "recursive_two".to_owned(),
+                    address: 0,
+                    code,
+                }],
+                abi,
+            );
+            assert!(
+                program.unrecovered.is_empty(),
+                "unchanged-argument recursion must recover for {abi:?}: {:?}",
+                program.unrecovered
+            );
+            let recovered: &RecoveredFunction = program
+                .recovered
+                .first()
+                .expect("the recursive function must recover");
+            assert_eq!(recovered.signature.callable_arity(), 2);
+            assert!(
+                recovered.source.contains(call),
+                "the unchanged argument must remain in the recursive call for {abi:?}: {}",
+                recovered.source
+            );
+        }
     }
 
     #[test]
