@@ -80,8 +80,8 @@ fn navigation_structured(result: &CallToolResult) -> Value {
         .content
         .as_slice()
         .first()
-        .and_then(|content: &rmcp::model::Content| content.raw.as_text())
-        .map(|text: &rmcp::model::RawTextContent| text.text.as_str())
+        .and_then(|content: &rmcp::model::ContentBlock| content.as_text())
+        .map(|text: &rmcp::model::TextContent| text.text.as_str())
         .expect("navigation output must mirror structured content as text");
     assert_eq!(
         serde_json::from_str::<Value>(mirrored).expect("mirrored navigation JSON"),
@@ -258,7 +258,7 @@ fn o200k_token_count<T: serde::Serialize>(value: &T) -> usize {
 async fn initialize_advertises_real_analysis_tools_over_stdio() {
     let client: Client = connect().await;
 
-    let info: &rmcp::model::ServerInfo = client
+    let info: std::sync::Arc<rmcp::model::ServerInfo> = client
         .peer_info()
         .expect("server must return ServerInfo from the initialize handshake");
     assert!(

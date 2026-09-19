@@ -7,7 +7,7 @@ use disrobe_query::{
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::tool::IntoCallToolResult;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::{Deserialize, Serialize};
 
 use super::{decode_inline_bytes, ensure_text_bytes, hex32};
@@ -54,7 +54,7 @@ impl<T: Serialize> IntoCallToolResult for Json<T> {
                 None,
             )
         })?;
-        let mut result: CallToolResult = CallToolResult::success(vec![Content::text(text)]);
+        let mut result: CallToolResult = CallToolResult::success(vec![ContentBlock::text(text)]);
         result.structured_content = Some(value);
         Ok(result)
     }
@@ -791,7 +791,7 @@ fn scope_hash(parts: &[&str]) -> [u8; 32] {
 fn serialized_len<T: Serialize>(value: &T) -> Result<usize, ErrorData> {
     let structured: serde_json::Value = serde_json::to_value(value).map_err(serialization_error)?;
     let text: String = serde_json::to_string(&structured).map_err(serialization_error)?;
-    let mut result: CallToolResult = CallToolResult::success(vec![Content::text(text)]);
+    let mut result: CallToolResult = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(structured);
     serde_json::to_vec(&result)
         .map(|encoded: Vec<u8>| encoded.len())
