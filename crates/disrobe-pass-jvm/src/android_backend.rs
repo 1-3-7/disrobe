@@ -1424,7 +1424,14 @@ mod tests {
         target: &std::path::Path,
         link: &std::path::Path,
     ) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(target, link)
+        std::os::windows::fs::symlink_dir(target, link).map_err(|error: std::io::Error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Windows directory symlink creation is required for JADX output-path safety tests; enable Developer Mode or grant the test process symbolic-link privilege: {error}"
+                ),
+            )
+        })
     }
 
     #[cfg(unix)]
@@ -1440,7 +1447,14 @@ mod tests {
         target: &std::path::Path,
         link: &std::path::Path,
     ) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
+        std::os::windows::fs::symlink_file(target, link).map_err(|error: std::io::Error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Windows file symlink creation is required for JADX output-path safety tests; enable Developer Mode or grant the test process symbolic-link privilege: {error}"
+                ),
+            )
+        })
     }
 
     #[test]
@@ -1451,20 +1465,7 @@ mod tests {
         let target: PathBuf = outside.path().join("Escaped.java");
         std::fs::write(&target, b"class Escaped {}")?;
         let link: PathBuf = scratch.path().join("Escaped.java");
-        match create_file_symlink(&target, &link) {
-            Ok(()) => {}
-            Err(error)
-                if cfg!(windows)
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-                    ) =>
-            {
-                eprintln!("SKIP: file symlinks unavailable: {error}");
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        }
+        create_file_symlink(&target, &link)?;
         let result: JadxResult<File> = open_java_source(scratch.path(), &link);
         assert!(matches!(
             result,
@@ -1495,20 +1496,7 @@ mod tests {
         let outside: ScratchDir = ScratchDir::create("disrobe_jadx_symlink_target")?;
         std::fs::write(outside.path().join("Escaped.java"), b"class Escaped {}")?;
         let sources: PathBuf = scratch.path().join("sources");
-        match create_directory_symlink(outside.path(), &sources) {
-            Ok(()) => {}
-            Err(error)
-                if cfg!(windows)
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-                    ) =>
-            {
-                eprintln!("SKIP: directory symlinks unavailable: {error}");
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        }
+        create_directory_symlink(outside.path(), &sources)?;
         let result: JadxResult<BTreeMap<String, String>> =
             collect_java_sources_with_limits(scratch.path(), 4, 64, 128);
         assert!(matches!(
@@ -1527,20 +1515,7 @@ mod tests {
         let sources: PathBuf = scratch.path().join("sources");
         std::fs::create_dir(&sources)?;
         let link: PathBuf = sources.join("escaped");
-        match create_directory_symlink(outside.path(), &link) {
-            Ok(()) => {}
-            Err(error)
-                if cfg!(windows)
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-                    ) =>
-            {
-                eprintln!("SKIP: directory symlinks unavailable: {error}");
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        }
+        create_directory_symlink(outside.path(), &link)?;
         let result: JadxResult<BTreeMap<String, String>> =
             collect_java_sources_with_limits(scratch.path(), 4, 64, 128);
         assert!(matches!(

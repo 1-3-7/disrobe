@@ -22,7 +22,7 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-jvm", 65),
     ("disrobe-pass-lua", 29),
     ("disrobe-pass-mobile", 5),
-    ("disrobe-pass-native", 286),
+    ("disrobe-pass-native", 285),
     ("disrobe-pass-nativelang", 2),
     ("disrobe-pass-nuitka", 45),
     ("disrobe-pass-php", 6),
@@ -66,8 +66,25 @@ fn opens_a_print(line: &str) -> bool {
         || trimmed.contains(" eprintln!(")
 }
 
-fn is_bare_return(line: &str) -> bool {
-    matches!(line.trim(), "return;" | "return ;")
+fn return_suffix(line: &str) -> Option<&str> {
+    let trimmed: &str = line.trim();
+    let suffix: &str = trimmed.strip_prefix("return")?;
+    match suffix.chars().next()? {
+        ';' => Some(suffix),
+        character if character.is_whitespace() => Some(suffix.trim_start()),
+        _ => None,
+    }
+}
+
+fn is_successful_return(line: &str) -> bool {
+    let Some(suffix): Option<&str> = return_suffix(line) else {
+        return false;
+    };
+    suffix == ";"
+        || suffix
+            .chars()
+            .filter(|character: &char| !character.is_whitespace())
+            .eq("Ok(());".chars())
 }
 
 fn test_attribute(line: &str) -> bool {
@@ -203,9 +220,13 @@ pub(crate) fn sites_in_source_with_helpers(
         let stop: usize = index
             .saturating_add(RETURN_WINDOW)
             .min(lines.len().saturating_sub(1));
-        let returns: bool = lines
-            .get(index..=stop)
-            .is_some_and(|window: &[&str]| window.iter().any(|entry: &&str| is_bare_return(entry)));
+        let returns: bool = lines.get(index..=stop).is_some_and(|window: &[&str]| {
+            window
+                .iter()
+                .copied()
+                .find(|entry: &&str| return_suffix(entry).is_some())
+                .is_some_and(is_successful_return)
+        });
         if !returns {
             continue;
         }
@@ -400,6 +421,49 @@ mod tests {
     }
 
     #[test]
+    fn successful_return_forms_are_recognized_without_matching_identifiers_or_text() {
+        for (line, expected) in [
+            ("return;", true),
+            ("return\t ;", true),
+            ("return Ok(()) ;", true),
+            ("return\tOk( ( ) ) ;", true),
+            ("return Err(\"missing\") ;", false),
+            ("return Ok(value);", false),
+            ("returnOk(());", false),
+            ("// return Ok(());", false),
+            ("println!(\"return Ok(());\");", false),
+        ] {
+            assert_eq!(
+                is_successful_return(line),
+                expected,
+                "return classification disagreed for {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_skip_print_followed_by_a_whitespace_tolerant_result_return_is_a_site() {
+        let source: &str = concat!(
+            "#[test]\n",
+            "fn probe() -> Result<(), String> {\n",
+            "    if absent() {\n",
+            "        eprintln!(\"skip: corpus absent\");\n",
+            "        return Ok( ( ) ) ;\n",
+            "    }\n",
+            "    assert!(false);\n",
+            "    Ok(())\n",
+            "}\n"
+        );
+        let sites: Vec<SkipSite> = sites_in_source("crates/x/tests/a.rs", source);
+        assert_eq!(
+            sites.len(),
+            1,
+            "a successful Result return must be found: {sites:?}"
+        );
+        assert!(sites[0].in_test, "it sits inside a #[test]: {sites:?}");
+    }
+
+    #[test]
     fn a_skip_print_without_a_return_is_not_a_site() {
         let source: &str = "#[test]\nfn probe() {\n    eprintln!(\"skip: nothing\");\n    \
                             assert!(true);\n}\n";
@@ -440,6 +504,22 @@ mod tests {
         assert!(
             sites_in_source("crates/x/tests/a.rs", &source).is_empty(),
             "a return far below an unrelated print must not be paired with it"
+        );
+    }
+
+    #[test]
+    fn the_first_return_in_the_window_controls_skip_pairing() {
+        let source: &str = concat!(
+            "#[test]\n",
+            "fn probe() -> Result<(), String> {\n",
+            "    eprintln!(\"skip: corpus absent\");\n",
+            "    return Err(\"missing corpus\".to_owned());\n",
+            "    return Ok(());\n",
+            "}\n"
+        );
+        assert!(
+            sites_in_source("crates/x/tests/a.rs", source).is_empty(),
+            "a later successful return cannot hide the first error return"
         );
     }
 

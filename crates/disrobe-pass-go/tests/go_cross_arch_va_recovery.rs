@@ -268,7 +268,10 @@ fn assert_target(target: &Target) {
 fn function_names_and_vas_match_nm_across_arch_and_container() -> Result<(), String> {
     let go_version: Option<String> = common::require_go_1_26_3_for_grading()?;
     let Some(go_version): Option<String> = go_version else {
-        return Ok(());
+        return Err(
+            "Go 1.26.3 is required for cross-architecture VA grading; install it or set GOTOOLCHAIN=go1.26.3"
+                .to_owned(),
+        );
     };
     eprintln!("live Go toolchain: {go_version}");
     let targets: [Target; 7] = [

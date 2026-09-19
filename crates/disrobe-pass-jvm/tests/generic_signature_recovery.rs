@@ -133,8 +133,11 @@ fn corpus_classes(path: &Path) -> TestResult<Vec<(String, ClassFile)>> {
 #[test]
 fn real_javac_generic_signatures_round_trip_exactly() -> TestResult {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; generic signature recovery not enforced");
-        return Ok(());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "javac is required for generic signature recovery; install a JDK and add javac to PATH",
+        )
+        .into());
     };
     let purpose: String = format!("disrobe_generic_signature_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -169,8 +172,11 @@ fn real_javac_generic_signatures_round_trip_exactly() -> TestResult {
 #[test]
 fn malformed_signature_falls_back_atomically_to_erased_declarations() -> TestResult {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; malformed signature rejection not enforced");
-        return Ok(());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "javac is required for malformed signature rejection; install a JDK and add javac to PATH",
+        )
+        .into());
     };
     let purpose: String = format!("disrobe_malformed_signature_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -216,8 +222,11 @@ fn malformed_signature_falls_back_atomically_to_erased_declarations() -> TestRes
 #[test]
 fn edge_cases_outer_signatures_round_trip_exactly() -> TestResult {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; corpus generic signature recovery not enforced");
-        return Ok(());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "javac is required for corpus generic signature recovery; install a JDK and add javac to PATH",
+        )
+        .into());
     };
     let jar: PathBuf = corpus_jar();
     let classes: Vec<(String, ClassFile)> = corpus_classes(&jar)?;

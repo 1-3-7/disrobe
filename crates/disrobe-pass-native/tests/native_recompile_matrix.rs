@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use common::{
     CompileOutcome, CompilerFamily, CompilerId, RunOutcome, available_compilers, codegen_flags,
     compile_object_reasoned, function_code, link_and_run_reasoned, link_objects_to_exe,
-    msvc_probe_reason, scratch_dir, strip_includes,
+    msvc_probe_reason, object_compiler, scratch_dir, strip_includes,
 };
 use disrobe_core::rng::seeded;
 use disrobe_pass_native::{
@@ -521,8 +521,10 @@ fn launched_harness_failures_are_mismatches() {
 #[derive(Debug, Clone)]
 struct MatrixRow {
     shape: &'static str,
-    compiler: String,
-    compiler_version: String,
+    reference_compiler: String,
+    reference_compiler_version: String,
+    recovery_input_compiler: String,
+    recovery_input_compiler_version: String,
     opt: &'static str,
     abi: &'static str,
     arch: &'static str,
@@ -532,10 +534,24 @@ struct MatrixRow {
     teeth_confirmed: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ProducerIdentity {
+    program: String,
+    version: String,
+}
+
 fn row_key(row: &MatrixRow) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
-        row.shape, row.compiler, row.opt, row.abi, row.arch, row.link_shape
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        row.shape,
+        row.reference_compiler,
+        row.reference_compiler_version,
+        row.recovery_input_compiler,
+        row.recovery_input_compiler_version,
+        row.opt,
+        row.abi,
+        row.arch,
+        row.link_shape
     )
 }
 
@@ -830,6 +846,54 @@ fn build_original_object(
     compile_object_reasoned(compiler, opt, &flags, shape.c_source, &out)
 }
 
+fn recovery_input_program(compiler: &CompilerId, abi: AbiTarget) -> String {
+    let (program, _): (String, Vec<&'static str>) = object_compiler(compiler.bin, abi.as_pseudo());
+    program
+}
+
+fn resolve_producer_identity(
+    compiler: &CompilerId,
+    abi: AbiTarget,
+    versions: &mut BTreeMap<String, String>,
+) -> Result<ProducerIdentity, String> {
+    let program: String = recovery_input_program(compiler, abi);
+    let version: String = if program == compiler.bin {
+        compiler.version.clone()
+    } else if let Some(cached) = versions.get(&program) {
+        cached.clone()
+    } else {
+        let probed: String = common::probe_version(&program)
+            .ok_or_else(|| format!("{program} did not provide a usable --version response"))?;
+        versions.insert(program.clone(), probed.clone());
+        probed
+    };
+    Ok(ProducerIdentity { program, version })
+}
+
+fn build_recovery_object(
+    compiler: &CompilerId,
+    abi: AbiTarget,
+    shape: &ShapeCase,
+    opt: &str,
+    tag: &str,
+) -> CompileOutcome {
+    let mut flags: Vec<&str> = compile_flags(compiler.family, shape.permit_sibling_calls);
+    if matches!(abi, AbiTarget::SysV) {
+        flags.push("-fcf-protection=none");
+    }
+    flags.push("-c");
+    let scratch = scratch_dir("disrobe-native-matrix-recovery");
+    let out: PathBuf = scratch.path().join(format!("{tag}.o"));
+    common::compile_x86_object_reasoned(
+        compiler.bin,
+        abi.as_pseudo(),
+        opt,
+        &flags,
+        shape.c_source,
+        &out,
+    )
+}
+
 fn link_executable_and_extract(
     compiler: &str,
     family: CompilerFamily,
@@ -879,10 +943,12 @@ fn link_sysv_executable_and_extract(
     let obj_path: PathBuf = dir.join(format!("{tag}_orig.o"));
     std::fs::write(&obj_path, plain_sysv_object).map_err(|e: std::io::Error| e.to_string())?;
     let stub_out: PathBuf = dir.join(format!("{tag}_stub.o"));
+    let mut stub_flags: Vec<&str> = sysv_flags.to_vec();
+    stub_flags.push("-c");
     match compile_object_reasoned(
         "clang",
         opt,
-        sysv_flags,
+        &stub_flags,
         "int main(void){ return 0; }\n",
         &stub_out,
     ) {
@@ -912,18 +978,27 @@ fn link_sysv_executable_and_extract(
     }
 }
 
-fn grade_row(
-    shape: &ShapeCase,
-    compiler: &CompilerId,
-    opt: &'static str,
-    abi: AbiTarget,
-    link_shape: LinkShape,
-    row_seed: u64,
-) -> MatrixRow {
+fn grade_row(task: &Task, row_seed: u64) -> MatrixRow {
+    let (shape, compiler, recovery_compiler, recovery_producer, opt, abi, link_shape): &Task = task;
+    let opt: &'static str = opt;
+    let abi: AbiTarget = *abi;
+    let link_shape: LinkShape = *link_shape;
+    let recovery_compiler: Option<&CompilerId> = match abi {
+        AbiTarget::MsX64 => Some(compiler),
+        AbiTarget::SysV => recovery_compiler.as_ref(),
+    };
     let mut row: MatrixRow = MatrixRow {
         shape: shape.shape_tag,
-        compiler: compiler.bin.to_owned(),
-        compiler_version: compiler.version.clone(),
+        reference_compiler: compiler.bin.to_owned(),
+        reference_compiler_version: compiler.version.clone(),
+        recovery_input_compiler: recovery_producer.as_ref().map_or_else(
+            |_| "unavailable".to_owned(),
+            |identity| identity.program.clone(),
+        ),
+        recovery_input_compiler_version: recovery_producer.as_ref().map_or_else(
+            |_| "unavailable".to_owned(),
+            |identity| identity.version.clone(),
+        ),
         opt,
         abi: abi.tag(),
         arch: "x86_64",
@@ -931,6 +1006,18 @@ fn grade_row(
         verdict: Verdict::NotGraded("ungraded".to_owned()),
         seed: Some(row_seed),
         teeth_confirmed: false,
+    };
+
+    if let Err(reason) = recovery_producer {
+        row.verdict = Verdict::NotGraded(reason.clone());
+        return row;
+    }
+
+    let Some(recovery_compiler): Option<&CompilerId> = recovery_compiler else {
+        row.verdict = Verdict::NotGraded(
+            "SysV recovery input requires clang, which is not available on PATH".to_owned(),
+        );
+        return row;
     };
 
     let tag: String = format!(
@@ -956,15 +1043,29 @@ fn grade_row(
         }
     };
 
+    let recovery_object: Vec<u8> = match build_recovery_object(
+        recovery_compiler,
+        abi,
+        shape,
+        opt,
+        &format!("{tag}_recovery"),
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            row.verdict = Verdict::NotGraded(reason);
+            return row;
+        }
+    };
+
     let object_for_recovery: Vec<u8> = match (abi, link_shape) {
-        (AbiTarget::MsX64, LinkShape::ObjectInPlace) => plain_object.clone(),
+        (AbiTarget::MsX64, LinkShape::ObjectInPlace) => recovery_object,
         (AbiTarget::MsX64, LinkShape::LinkedExecutable) => {
             match link_executable_and_extract(
                 compiler.bin,
                 compiler.family,
                 shape,
                 opt,
-                &plain_object,
+                &recovery_object,
                 &tag,
             ) {
                 Ok(bytes) => bytes,
@@ -983,34 +1084,11 @@ fn grade_row(
             if !shape.permit_sibling_calls {
                 sysv_flags.push("-fno-optimize-sibling-calls");
             }
-            let mut sysv_object_flags: Vec<&str> = sysv_flags.clone();
-            sysv_object_flags.push("-c");
-            let scratch = scratch_dir("disrobe-native-matrix-sysv");
-            let out: PathBuf = scratch.path().join(format!("{tag}_sysv.o"));
-            let sysv_object: Vec<u8> = match compile_object_reasoned(
-                "clang",
-                opt,
-                &sysv_object_flags,
-                shape.c_source,
-                &out,
-            ) {
-                CompileOutcome::Object(bytes) => bytes,
-                CompileOutcome::Rejected(reason) => {
-                    row.verdict =
-                        Verdict::NotGraded(format!("sysv cross-compile via clang: {reason}"));
-                    return row;
-                }
-            };
             match sysv_link_shape {
-                LinkShape::ObjectInPlace => sysv_object,
+                LinkShape::ObjectInPlace => recovery_object,
                 LinkShape::LinkedExecutable => {
-                    sysv_object_flags.push("-w");
-                    match link_sysv_executable_and_extract(
-                        opt,
-                        &sysv_object_flags,
-                        &sysv_object,
-                        &tag,
-                    ) {
+                    match link_sysv_executable_and_extract(opt, &sysv_flags, &recovery_object, &tag)
+                    {
                         Ok(bytes) => bytes,
                         Err(reason) => {
                             row.verdict = Verdict::NotGraded(reason);
@@ -1124,29 +1202,33 @@ fn compute_row_seed(
 type Task = (
     &'static ShapeCase,
     CompilerId,
+    Option<CompilerId>,
+    Result<ProducerIdentity, String>,
     &'static str,
     AbiTarget,
     LinkShape,
 );
 
-const GRADED_OPT_LEVELS: [&str; 3] = ["-O0", "-O1", "-O2"];
+const OPT_LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Og"];
 const LINK_SHAPES: [LinkShape; 2] = [LinkShape::ObjectInPlace, LinkShape::LinkedExecutable];
 const ABI_TARGETS: [AbiTarget; 2] = [AbiTarget::MsX64, AbiTarget::SysV];
 
 #[test]
 fn whole_function_recompile_matrix_grades_every_shape() {
     let compilers: Vec<CompilerId> = available_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping the native recompile matrix: no gcc/clang/cc on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the native recompile matrix requires at least one of gcc, clang, or cc on PATH"
+    );
 
     let mut not_graded: Vec<MatrixRow> = Vec::new();
     for shape in SHAPES {
         not_graded.push(MatrixRow {
             shape: shape.shape_tag,
-            compiler: "n/a".to_owned(),
-            compiler_version: "n/a".to_owned(),
+            reference_compiler: "n/a".to_owned(),
+            reference_compiler_version: "n/a".to_owned(),
+            recovery_input_compiler: "n/a".to_owned(),
+            recovery_input_compiler_version: "n/a".to_owned(),
             opt: "n/a",
             abi: "n/a",
             arch: "aarch64",
@@ -1161,8 +1243,10 @@ fn whole_function_recompile_matrix_grades_every_shape() {
     }
     not_graded.push(MatrixRow {
         shape: "scalar_float_double",
-        compiler: "n/a".to_owned(),
-        compiler_version: "n/a".to_owned(),
+        reference_compiler: "n/a".to_owned(),
+        reference_compiler_version: "n/a".to_owned(),
+        recovery_input_compiler: "n/a".to_owned(),
+        recovery_input_compiler_version: "n/a".to_owned(),
         opt: "n/a",
         abi: "n/a",
         arch: "x86_64",
@@ -1174,28 +1258,78 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         seed: None,
         teeth_confirmed: false,
     });
-    if let Some(reason) = msvc_probe_reason() {
-        not_graded.push(MatrixRow {
-            shape: "any",
-            compiler: "cl".to_owned(),
-            compiler_version: "n/a".to_owned(),
-            opt: "n/a",
-            abi: "ms_x64",
-            arch: "x86_64",
-            link_shape: "n/a",
-            verdict: Verdict::NotGraded(reason),
-            seed: None,
-            teeth_confirmed: false,
-        });
-    }
+    let msvc_reason: String = msvc_probe_reason().unwrap_or_else(|| {
+        "cl.exe is available but this GCC-attribute-based matrix has no MSVC source/flag adapter"
+            .to_owned()
+    });
+    not_graded.push(MatrixRow {
+        shape: "any",
+        reference_compiler: "cl".to_owned(),
+        reference_compiler_version: "n/a".to_owned(),
+        recovery_input_compiler: "cl".to_owned(),
+        recovery_input_compiler_version: "n/a".to_owned(),
+        opt: "n/a",
+        abi: "ms_x64",
+        arch: "x86_64",
+        link_shape: "n/a",
+        verdict: Verdict::NotGraded(msvc_reason),
+        seed: None,
+        teeth_confirmed: false,
+    });
 
     let mut tasks: Vec<Task> = Vec::new();
+    let mut producer_versions: BTreeMap<String, String> = BTreeMap::new();
+    let msx64_recovery_producers: BTreeMap<&'static str, Result<ProducerIdentity, String>> =
+        compilers
+            .iter()
+            .map(|compiler: &CompilerId| {
+                (
+                    compiler.bin,
+                    resolve_producer_identity(compiler, AbiTarget::MsX64, &mut producer_versions),
+                )
+            })
+            .collect();
+    let sysv_recovery_compiler: Option<CompilerId> = compilers
+        .iter()
+        .find(|compiler: &&CompilerId| compiler.bin == "clang")
+        .cloned();
+    let sysv_recovery_producer: Result<ProducerIdentity, String> =
+        sysv_recovery_compiler.as_ref().map_or_else(
+            || Err("SysV recovery input requires clang, which is not available on PATH".to_owned()),
+            |compiler: &CompilerId| {
+                resolve_producer_identity(compiler, AbiTarget::SysV, &mut producer_versions)
+            },
+        );
     for shape in SHAPES {
         for compiler in &compilers {
-            for &opt in &GRADED_OPT_LEVELS {
+            for &opt in &OPT_LEVELS {
                 for &abi in &ABI_TARGETS {
                     for &link_shape in &LINK_SHAPES {
-                        tasks.push((shape, compiler.clone(), opt, abi, link_shape));
+                        let recovery_compiler: Option<CompilerId> = match abi {
+                            AbiTarget::MsX64 => Some(compiler.clone()),
+                            AbiTarget::SysV => sysv_recovery_compiler.clone(),
+                        };
+                        let recovery_producer: Result<ProducerIdentity, String> = match abi {
+                            AbiTarget::MsX64 => msx64_recovery_producers
+                                .get(compiler.bin)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    Err(format!(
+                                        "missing cached MS x64 recovery producer for {}",
+                                        compiler.bin
+                                    ))
+                                }),
+                            AbiTarget::SysV => sysv_recovery_producer.clone(),
+                        };
+                        tasks.push((
+                            shape,
+                            compiler.clone(),
+                            recovery_compiler,
+                            recovery_producer,
+                            opt,
+                            abi,
+                            link_shape,
+                        ));
                     }
                 }
             }
@@ -1219,12 +1353,13 @@ fn whole_function_recompile_matrix_grades_every_shape() {
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         q.pop()
                     };
-                    let Some((idx, (shape, compiler, opt, abi, link_shape))) = next else {
+                    let Some((idx, task)) = next else {
                         break;
                     };
-                    let row_seed: u64 = compute_row_seed(shape, compiler.bin, opt, abi, link_shape);
-                    let row: MatrixRow =
-                        grade_row(shape, &compiler, opt, abi, link_shape, row_seed);
+                    let (shape, compiler, _, _, opt, abi, link_shape): &Task = &task;
+                    let row_seed: u64 =
+                        compute_row_seed(shape, compiler.bin, opt, *abi, *link_shape);
+                    let row: MatrixRow = grade_row(&task, row_seed);
                     let hash: u64 = row_hash(&row, shape.c_source);
                     results
                         .lock()
@@ -1239,6 +1374,43 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     graded.sort_by_key(|(idx, _, _)| *idx);
+
+    let expected_graded_rows: usize = SHAPES
+        .len()
+        .saturating_mul(compilers.len())
+        .saturating_mul(OPT_LEVELS.len())
+        .saturating_mul(ABI_TARGETS.len())
+        .saturating_mul(LINK_SHAPES.len());
+    assert_eq!(
+        graded.len(),
+        expected_graded_rows,
+        "the matrix must retain one row for every scheduled shape/compiler/optimization/ABI/link combination"
+    );
+    let unique_row_keys: std::collections::BTreeSet<String> = graded
+        .iter()
+        .map(|(_, row, _): &(usize, MatrixRow, u64)| row_key(row))
+        .collect();
+    assert_eq!(
+        unique_row_keys.len(),
+        expected_graded_rows,
+        "the matrix must retain a unique row key for every scheduled shape/compiler/optimization/ABI/link combination"
+    );
+    let (_, sysv_leaf, _): &(usize, MatrixRow, u64) = graded
+        .iter()
+        .find(|(_, row, _)| {
+            row.shape == "leaf"
+                && row.reference_compiler == "clang"
+                && row.opt == "-O0"
+                && row.abi == "sysv"
+                && row.link_shape == "linked_executable"
+        })
+        .expect("the linked SysV regression requires clang and lld on PATH");
+    assert!(
+        matches!(sysv_leaf.verdict, Verdict::Equivalent),
+        "the linked SysV leaf must recover and match its native reference: {:?}",
+        sysv_leaf.verdict
+    );
+    assert!(sysv_leaf.teeth_confirmed);
 
     let ledger_input: Vec<(MatrixRow, u64)> = graded
         .iter()
@@ -1264,10 +1436,12 @@ fn whole_function_recompile_matrix_grades_every_shape() {
             shapes_with_equivalent.insert(row.shape);
         }
         println!(
-            "row: shape={} compiler={} compiler_version={:?} opt={} abi={} arch={} link_shape={} seed={:?} verdict={}",
+            "row: shape={} reference_compiler={} reference_compiler_version={:?} recovery_input_compiler={} recovery_input_compiler_version={:?} opt={} abi={} arch={} link_shape={} seed={:?} verdict={}",
             row.shape,
-            row.compiler,
-            row.compiler_version,
+            row.reference_compiler,
+            row.reference_compiler_version,
+            row.recovery_input_compiler,
+            row.recovery_input_compiler_version,
             row.opt,
             row.abi,
             row.arch,
