@@ -22,6 +22,7 @@ use common::{
     msvc_probe_reason, object_compiler, scratch_dir, strip_includes,
 };
 use disrobe_core::rng::seeded;
+use disrobe_ir::{Envelope, RawPayload, Rung, Sidecar, decode_raw, encode_raw};
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
     RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
@@ -36,7 +37,9 @@ const RANDOM_DRAWS_PER_ROW: usize = 8;
 const RESAMPLE_ATTEMPTS: usize = 64;
 const ENTRY_RETURN_WIDTH: u32 = 64;
 const WORKER_COUNT: usize = 4;
-const LEDGER_FILE: &str = "native_recompile_matrix_truth.json";
+const LEDGER_FILE: &str = "native-recompile-matrix-truth.dr";
+const TRUTH_LEDGER_SCHEMA_VERSION: u16 = 1;
+const TRUTH_WITNESS_SOURCE: &str = "disrobe.native-recompile-matrix-truth/v1";
 const HARNESS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -525,6 +528,7 @@ struct MatrixRow {
     reference_compiler_version: String,
     recovery_input_compiler: String,
     recovery_input_compiler_version: String,
+    recovery_input_root: Option<[u8; 32]>,
     opt: &'static str,
     abi: &'static str,
     arch: &'static str,
@@ -555,48 +559,195 @@ fn row_key(row: &MatrixRow) -> String {
     )
 }
 
-fn row_hash(row: &MatrixRow, source: &str) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher: std::collections::hash_map::DefaultHasher =
-        std::collections::hash_map::DefaultHasher::new();
-    row_key(row).hash(&mut hasher);
-    source.hash(&mut hasher);
-    HARNESS_VERSION.hash(&mut hasher);
-    hasher.finish()
+fn row_hash(row: &MatrixRow, source: &str, entry: &str) -> [u8; 32] {
+    let mut hasher: blake3::Hasher = blake3::Hasher::new();
+    let row_key: String = row_key(row);
+    for segment in [row_key.as_bytes(), source.as_bytes(), entry.as_bytes()] {
+        let length: u64 = segment.len() as u64;
+        hasher.update(&length.to_le_bytes());
+        hasher.update(segment);
+    }
+    hasher.update(&HARNESS_VERSION.to_le_bytes());
+    match row.recovery_input_root {
+        Some(root) => hasher.update(&root),
+        None => hasher.update(b"no-recovery-input"),
+    };
+    match row.seed {
+        Some(seed) => {
+            hasher.update(b"seed-present");
+            hasher.update(&seed.to_le_bytes());
+        }
+        None => {
+            hasher.update(b"seed-absent");
+        }
+    }
+    *hasher.finalize().as_bytes()
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+enum TruthLabel {
+    Equivalent,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 struct TruthEntry {
-    input_hash: u64,
-    verdict_label: String,
+    input_root: [u8; 32],
+    label: TruthLabel,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TruthLedger {
+    schema_version: u16,
     entries: BTreeMap<String, TruthEntry>,
 }
 
-fn ledger_path() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR")).join(LEDGER_FILE)
-}
-
-fn load_ledger(path: &Path) -> TruthLedger {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes: Vec<u8>| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
-fn save_ledger(path: &Path, ledger: &TruthLedger) {
-    if let Ok(bytes) = serde_json::to_vec_pretty(ledger) {
-        let _: std::io::Result<()> = std::fs::write(path, bytes);
+impl Default for TruthLedger {
+    fn default() -> Self {
+        Self {
+            schema_version: TRUTH_LEDGER_SCHEMA_VERSION,
+            entries: BTreeMap::new(),
+        }
     }
 }
 
-fn reconcile_ledger(rows: &[(MatrixRow, u64)]) {
-    let path: PathBuf = ledger_path();
-    let ledger_existed: bool = path.is_file();
-    let mut ledger: TruthLedger = load_ledger(&path);
+fn ledger_path() -> Result<PathBuf, String> {
+    let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    while !root.join("Cargo.lock").is_file() {
+        if !root.pop() {
+            return Err(
+                "could not resolve the workspace root for the native truth witness".to_owned(),
+            );
+        }
+    }
+    Ok(root.join(".disrobe").join(LEDGER_FILE))
+}
+
+fn load_ledger(path: &Path) -> Result<(TruthLedger, bool), String> {
+    let exists: bool = path.try_exists().map_err(|error: std::io::Error| {
+        format!("cannot inspect truth witness {}: {error}", path.display())
+    })?;
+    if !exists {
+        return Ok((TruthLedger::default(), false));
+    }
+    let envelope: Envelope = Envelope::read_from_path(path)
+        .map_err(|error| format!("cannot read truth witness {}: {error}", path.display()))?;
+    if envelope.rung != Rung::Raw {
+        return Err(format!(
+            "truth witness {} has {:?} rung, expected Raw",
+            path.display(),
+            envelope.rung
+        ));
+    }
+    let sidecar: Sidecar = Sidecar::decode(&envelope.cold).map_err(|error| {
+        format!(
+            "cannot decode truth witness sidecar {}: {error}",
+            path.display()
+        )
+    })?;
+    if sidecar.produced_by != "disrobe-pass-native/native-recompile-matrix"
+        || sidecar.provenance.get("schema").map(String::as_str) != Some(TRUTH_WITNESS_SOURCE)
+    {
+        return Err(format!(
+            "truth witness {} has an unexpected sidecar identity",
+            path.display()
+        ));
+    }
+    let raw: RawPayload = decode_raw(&envelope.hot).map_err(|error| {
+        format!(
+            "cannot decode truth witness payload {}: {error}",
+            path.display()
+        )
+    })?;
+    if raw.source_path != TRUTH_WITNESS_SOURCE
+        || raw.detected_format.as_deref() != Some(TRUTH_WITNESS_SOURCE)
+    {
+        return Err(format!(
+            "truth witness {} has an unexpected raw payload identity",
+            path.display()
+        ));
+    }
+    if raw.source_hash != *blake3::hash(&raw.source_bytes).as_bytes() {
+        return Err(format!(
+            "truth witness {} has a mismatched raw payload hash",
+            path.display()
+        ));
+    }
+    let ledger: TruthLedger =
+        serde_json::from_slice(&raw.source_bytes).map_err(|error: serde_json::Error| {
+            format!("cannot decode truth witness {}: {error}", path.display())
+        })?;
+    if ledger.schema_version != TRUTH_LEDGER_SCHEMA_VERSION {
+        return Err(format!(
+            "truth witness {} uses schema {}, expected {}",
+            path.display(),
+            ledger.schema_version,
+            TRUTH_LEDGER_SCHEMA_VERSION
+        ));
+    }
+    Ok((ledger, true))
+}
+
+fn save_ledger(path: &Path, ledger: &TruthLedger) -> Result<(), String> {
+    let parent: &Path = path
+        .parent()
+        .ok_or_else(|| format!("truth witness {} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|error: std::io::Error| {
+        format!(
+            "cannot create truth witness directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let ledger_bytes: Vec<u8> =
+        serde_json::to_vec(ledger).map_err(|error: serde_json::Error| {
+            format!("cannot encode truth witness {}: {error}", path.display())
+        })?;
+    let hot: Vec<u8> = encode_raw(&RawPayload {
+        source_path: TRUTH_WITNESS_SOURCE.to_owned(),
+        source_hash: *blake3::hash(&ledger_bytes).as_bytes(),
+        source_bytes: ledger_bytes,
+        detected_format: Some(TRUTH_WITNESS_SOURCE.to_owned()),
+    })
+    .map_err(|error| {
+        format!(
+            "cannot encode truth witness payload {}: {error}",
+            path.display()
+        )
+    })?;
+    let sidecar: Sidecar = Sidecar {
+        produced_by: "disrobe-pass-native/native-recompile-matrix".to_owned(),
+        produced_by_version: env!("CARGO_PKG_VERSION").to_owned(),
+        capabilities: Vec::new(),
+        provenance: BTreeMap::from([("schema".to_owned(), TRUTH_WITNESS_SOURCE.to_owned())]),
+    };
+    let cold: Vec<u8> = sidecar.encode().map_err(|error| {
+        format!(
+            "cannot encode truth witness sidecar {}: {error}",
+            path.display()
+        )
+    })?;
+    Envelope::new(Rung::Raw, hot, cold)
+        .write_to_path_with(path, false)
+        .map_err(|error| format!("cannot write truth witness {}: {error}", path.display()))
+}
+
+fn entry_for_row(row: &MatrixRow) -> Result<&'static str, String> {
+    SHAPES
+        .iter()
+        .find(|shape: &&ShapeCase| shape.shape_tag == row.shape)
+        .map(|shape: &ShapeCase| shape.entry)
+        .ok_or_else(|| format!("truth witness has no entrypoint for shape {}", row.shape))
+}
+
+fn entry_key(row: &MatrixRow, entry: &str) -> String {
+    format!("{}|entry={entry}", row_key(row))
+}
+
+fn truth_label(row: &MatrixRow) -> Option<TruthLabel> {
+    matches!(row.verdict, Verdict::Equivalent).then_some(TruthLabel::Equivalent)
+}
+
+fn reconcile_ledger_at(path: &Path, rows: &[(MatrixRow, [u8; 32])]) -> Result<(), String> {
+    let (mut ledger, ledger_existed): (TruthLedger, bool) = load_ledger(path)?;
     if !ledger_existed {
         println!(
             "truth ledger: no prior ledger at {}; this is a first run, recording fresh truth for every row",
@@ -604,31 +755,166 @@ fn reconcile_ledger(rows: &[(MatrixRow, u64)]) {
         );
     }
     let mut regressions: Vec<String> = Vec::new();
-    for (row, hash) in rows {
-        let key: String = row_key(row);
+    for (row, input_root) in rows {
+        let entry: &str = entry_for_row(row)?;
+        let key: String = entry_key(row, entry);
+        let label: Option<TruthLabel> = truth_label(row);
         if let Some(prior) = ledger.entries.get(&key)
-            && prior.input_hash == *hash
-            && prior.verdict_label == "equivalent"
-            && row.verdict.label() != "equivalent"
+            && prior.input_root == *input_root
+            && prior.label == TruthLabel::Equivalent
+            && label != Some(TruthLabel::Equivalent)
         {
             regressions.push(format!(
-                "{key}: was equivalent under input_hash {hash}, now {}",
+                "{key}: was equivalent under input root {:?}, now {}",
+                prior.input_root,
                 row.verdict.label()
             ));
         }
-        ledger.entries.insert(
-            key,
-            TruthEntry {
-                input_hash: *hash,
-                verdict_label: row.verdict.label().to_owned(),
-            },
-        );
+        match label {
+            Some(label) => {
+                ledger.entries.insert(
+                    key,
+                    TruthEntry {
+                        input_root: *input_root,
+                        label,
+                    },
+                );
+            }
+            None => {
+                ledger.entries.remove(&key);
+            }
+        }
     }
-    save_ledger(&path, &ledger);
-    assert!(
-        regressions.is_empty(),
-        "truth ledger detected a regression versus the last recorded equivalence: {regressions:?}"
+    if !regressions.is_empty() {
+        return Err(format!(
+            "truth ledger detected a regression versus the last recorded equivalence: {regressions:?}"
+        ));
+    }
+    save_ledger(path, &ledger)
+}
+
+fn reconcile_ledger(rows: &[(MatrixRow, [u8; 32])]) -> Result<(), String> {
+    let path: PathBuf = ledger_path()?;
+    reconcile_ledger_at(&path, rows)
+}
+
+fn ledger_test_row(verdict: Verdict) -> MatrixRow {
+    MatrixRow {
+        shape: "leaf",
+        reference_compiler: "gcc".to_owned(),
+        reference_compiler_version: "gcc test".to_owned(),
+        recovery_input_compiler: "clang".to_owned(),
+        recovery_input_compiler_version: "clang test".to_owned(),
+        recovery_input_root: Some([0xA5; 32]),
+        opt: "-O0",
+        abi: "sysv",
+        arch: "x86_64",
+        link_shape: "object_in_place",
+        verdict,
+        seed: Some(MASTER_SEED),
+        teeth_confirmed: true,
+    }
+}
+
+#[test]
+fn truth_witness_persists_only_the_graded_entry_in_a_dr_envelope() {
+    let scratch = scratch_dir("disrobe-native-truth-witness-reread");
+    let path: PathBuf = scratch.path().join(LEDGER_FILE);
+    let row: MatrixRow = ledger_test_row(Verdict::Equivalent);
+    let entry: &str = entry_for_row(&row).expect("leaf entry");
+    let input_root: [u8; 32] = row_hash(&row, "original source", entry);
+
+    reconcile_ledger_at(&path, &[(row.clone(), input_root)]).expect("write truth witness");
+
+    let (ledger, existed): (TruthLedger, bool) = load_ledger(&path).expect("re-read truth witness");
+    assert!(existed);
+    assert_eq!(ledger.schema_version, TRUTH_LEDGER_SCHEMA_VERSION);
+    assert_eq!(ledger.entries.len(), 1);
+    assert_eq!(
+        ledger.entries.get(&entry_key(&row, entry)),
+        Some(&TruthEntry {
+            input_root,
+            label: TruthLabel::Equivalent,
+        })
     );
+    assert!(
+        ledger
+            .entries
+            .keys()
+            .all(|key: &String| key.ends_with(&format!("entry={entry}"))),
+        "a row-level result must not assert a truth label for an ungraded helper"
+    );
+}
+
+#[test]
+fn truth_witness_rederives_a_stale_input_root() {
+    let scratch = scratch_dir("disrobe-native-truth-witness-stale");
+    let path: PathBuf = scratch.path().join(LEDGER_FILE);
+    let row: MatrixRow = ledger_test_row(Verdict::Equivalent);
+    let entry: &str = entry_for_row(&row).expect("leaf entry");
+    let stale_root: [u8; 32] = row_hash(&row, "old source", entry);
+    let mut reseeded: MatrixRow = row.clone();
+    reseeded.seed = Some(MASTER_SEED ^ 1);
+    let current_root: [u8; 32] = row_hash(&reseeded, "old source", entry);
+    assert_ne!(
+        stale_root, current_root,
+        "the driver seed must bind the truth witness"
+    );
+
+    reconcile_ledger_at(&path, &[(row.clone(), stale_root)]).expect("write stale witness");
+    reconcile_ledger_at(&path, &[(reseeded.clone(), current_root)])
+        .expect("re-derive stale witness");
+
+    let (ledger, _): (TruthLedger, bool) = load_ledger(&path).expect("read re-derived witness");
+    assert_eq!(
+        ledger
+            .entries
+            .get(&entry_key(&reseeded, entry))
+            .map(|entry: &TruthEntry| entry.input_root),
+        Some(current_root)
+    );
+}
+
+#[test]
+fn truth_witness_rejects_matching_input_regression_without_overwriting_equivalence() {
+    let scratch = scratch_dir("disrobe-native-truth-witness-regression");
+    let path: PathBuf = scratch.path().join(LEDGER_FILE);
+    let equivalent: MatrixRow = ledger_test_row(Verdict::Equivalent);
+    let entry: &str = entry_for_row(&equivalent).expect("leaf entry");
+    let input_root: [u8; 32] = row_hash(&equivalent, "stable source", entry);
+    reconcile_ledger_at(&path, &[(equivalent.clone(), input_root)])
+        .expect("write equivalent witness");
+
+    let rejected: MatrixRow =
+        ledger_test_row(Verdict::SoundRejected("recovery refused".to_owned()));
+    let error: String = reconcile_ledger_at(&path, &[(rejected, input_root)])
+        .expect_err("matching input must not lose its equivalent truth claim");
+    assert!(error.contains("regression"));
+
+    let (ledger, _): (TruthLedger, bool) = load_ledger(&path).expect("read preserved witness");
+    assert_eq!(
+        ledger.entries.get(&entry_key(&equivalent, entry)),
+        Some(&TruthEntry {
+            input_root,
+            label: TruthLabel::Equivalent,
+        })
+    );
+}
+
+#[test]
+fn truth_witness_surfaces_read_and_write_failures() {
+    let scratch = scratch_dir("disrobe-native-truth-witness-io");
+    let malformed: PathBuf = scratch.path().join(LEDGER_FILE);
+    std::fs::write(&malformed, b"not a disrobe envelope").expect("write malformed witness");
+    let read_error: String = load_ledger(&malformed).expect_err("malformed witness must fail");
+    assert!(read_error.contains("cannot read truth witness"));
+
+    let blocked_parent: PathBuf = scratch.path().join("not-a-directory");
+    std::fs::write(&blocked_parent, b"file").expect("write blocking parent");
+    let write_error: String =
+        save_ledger(&blocked_parent.join(LEDGER_FILE), &TruthLedger::default())
+            .expect_err("truth witness write failure must propagate");
+    assert!(write_error.contains("cannot create truth witness directory"));
 }
 
 fn clamp_ub_safe(shape: &ShapeCase, seed: u64, candidate: (i64, i64, i64)) -> (i64, i64, i64) {
@@ -999,6 +1285,7 @@ fn grade_row(task: &Task, row_seed: u64) -> MatrixRow {
             |_| "unavailable".to_owned(),
             |identity| identity.version.clone(),
         ),
+        recovery_input_root: None,
         opt,
         abi: abi.tag(),
         arch: "x86_64",
@@ -1099,6 +1386,7 @@ fn grade_row(task: &Task, row_seed: u64) -> MatrixRow {
             }
         }
     };
+    row.recovery_input_root = Some(*blake3::hash(&object_for_recovery).as_bytes());
 
     let recovered: RecoveredProgram =
         match recover_shape(&object_for_recovery, shape, abi.as_pseudo()) {
@@ -1229,6 +1517,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
             reference_compiler_version: "n/a".to_owned(),
             recovery_input_compiler: "n/a".to_owned(),
             recovery_input_compiler_version: "n/a".to_owned(),
+            recovery_input_root: None,
             opt: "n/a",
             abi: "n/a",
             arch: "aarch64",
@@ -1247,6 +1536,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         reference_compiler_version: "n/a".to_owned(),
         recovery_input_compiler: "n/a".to_owned(),
         recovery_input_compiler_version: "n/a".to_owned(),
+        recovery_input_root: None,
         opt: "n/a",
         abi: "n/a",
         arch: "x86_64",
@@ -1268,6 +1558,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         reference_compiler_version: "n/a".to_owned(),
         recovery_input_compiler: "cl".to_owned(),
         recovery_input_compiler_version: "n/a".to_owned(),
+        recovery_input_root: None,
         opt: "n/a",
         abi: "ms_x64",
         arch: "x86_64",
@@ -1339,7 +1630,8 @@ fn whole_function_recompile_matrix_grades_every_shape() {
     let indexed_tasks: Vec<(usize, Task)> = tasks.into_iter().enumerate().collect();
 
     let queue: Mutex<Vec<(usize, Task)>> = Mutex::new(indexed_tasks);
-    let results: Mutex<Vec<(usize, MatrixRow, u64)>> = Mutex::new(Vec::with_capacity(total_tasks));
+    let results: Mutex<Vec<(usize, MatrixRow, [u8; 32])>> =
+        Mutex::new(Vec::with_capacity(total_tasks));
     let workers: usize = WORKER_COUNT
         .min(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get));
 
@@ -1360,7 +1652,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
                     let row_seed: u64 =
                         compute_row_seed(shape, compiler.bin, opt, *abi, *link_shape);
                     let row: MatrixRow = grade_row(&task, row_seed);
-                    let hash: u64 = row_hash(&row, shape.c_source);
+                    let hash: [u8; 32] = row_hash(&row, shape.c_source, shape.entry);
                     results
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1370,7 +1662,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         }
     });
 
-    let mut graded: Vec<(usize, MatrixRow, u64)> = results
+    let mut graded: Vec<(usize, MatrixRow, [u8; 32])> = results
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     graded.sort_by_key(|(idx, _, _)| *idx);
@@ -1388,14 +1680,14 @@ fn whole_function_recompile_matrix_grades_every_shape() {
     );
     let unique_row_keys: std::collections::BTreeSet<String> = graded
         .iter()
-        .map(|(_, row, _): &(usize, MatrixRow, u64)| row_key(row))
+        .map(|(_, row, _): &(usize, MatrixRow, [u8; 32])| row_key(row))
         .collect();
     assert_eq!(
         unique_row_keys.len(),
         expected_graded_rows,
         "the matrix must retain a unique row key for every scheduled shape/compiler/optimization/ABI/link combination"
     );
-    let (_, sysv_leaf, _): &(usize, MatrixRow, u64) = graded
+    let (_, sysv_leaf, _): &(usize, MatrixRow, [u8; 32]) = graded
         .iter()
         .find(|(_, row, _)| {
             row.shape == "leaf"
@@ -1412,11 +1704,11 @@ fn whole_function_recompile_matrix_grades_every_shape() {
     );
     assert!(sysv_leaf.teeth_confirmed);
 
-    let ledger_input: Vec<(MatrixRow, u64)> = graded
+    let ledger_input: Vec<(MatrixRow, [u8; 32])> = graded
         .iter()
-        .map(|(_, row, hash): &(usize, MatrixRow, u64)| (row.clone(), *hash))
+        .map(|(_, row, hash): &(usize, MatrixRow, [u8; 32])| (row.clone(), *hash))
         .collect();
-    reconcile_ledger(&ledger_input);
+    reconcile_ledger(&ledger_input).unwrap_or_else(|error: String| panic!("{error}"));
 
     let mut equivalent: usize = 0;
     let mut mismatched: Vec<String> = Vec::new();
