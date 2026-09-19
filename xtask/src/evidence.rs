@@ -944,9 +944,20 @@ fn expected_readme_pair_rows(resolved: &[Resolved]) -> Result<BTreeMap<String, S
     for record in resolved {
         for pair in &record.pairs {
             let slug: String = format!("{}:{}", record.id, pair.id);
-            let row: String = render_readme_pair(record, pair);
-            if rows.insert(slug.clone(), row).is_some() {
-                bail!("README evidence pair marker `{slug}` is declared more than once");
+            let summary: String = format!(
+                "{} · {} | {} | {}",
+                competitor_display(pair),
+                pair.label,
+                pair.disrobe.result_phrase(),
+                pair.competitor.result_phrase(),
+            );
+            for (key, row) in [
+                (format!("{slug}:summary"), summary),
+                (slug, render_readme_pair(record, pair)),
+            ] {
+                if rows.insert(key.clone(), row).is_some() {
+                    bail!("README evidence pair marker `{key}` is declared more than once");
+                }
             }
         }
     }
@@ -2354,6 +2365,8 @@ mod tests {
         let record: Resolved = apk_record();
         let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[record])?;
         let source: &str = concat!(
+            "| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->stale<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->stale<!-- /evidence-pair --> |\n",
             "| <!-- evidence-pair:apk-jadx-cfr:jar -->stale<!-- /evidence-pair --> |\n",
             "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n",
             "| APK secrets | 8 / 8 | apkleaks | win | command |\n",
@@ -2362,6 +2375,8 @@ mod tests {
         assert_eq!(
             once,
             concat!(
+                "| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->CFR 0.152 · JVM classfile | 181 / 181 emitted regions compile clean | 152 / 166 emitted regions compile clean<!-- /evidence-pair --> |\n",
+                "| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 63 / 163 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> |\n",
                 "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 181 / 181 emitted regions compile clean | CFR 0.152: 152 / 166 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
                 "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 63 / 163 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
                 "| APK secrets | 8 / 8 | apkleaks | win | command |\n",
@@ -2375,9 +2390,13 @@ mod tests {
     #[test]
     fn readme_pair_markers_require_the_exact_declared_set() -> Result<()> {
         let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
-        let cases: [(&str, &str); 3] = [
+        let cases: [(&str, &str); 4] = [
             (
                 "| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n",
+                "missing evidence pair marker `apk-jadx-cfr:dex:summary`",
+            ),
+            (
+                "| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->stale<!-- /evidence-pair --> |\n| <!-- evidence-pair:apk-jadx-cfr:dex -->stale<!-- /evidence-pair --> |\n",
                 "missing evidence pair marker `apk-jadx-cfr:jar`",
             ),
             (
@@ -2404,6 +2423,8 @@ mod tests {
     fn readme_pair_numeric_mutation_is_stale() -> Result<()> {
         let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
         let source: &str = concat!(
+            "| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->stale<!-- /evidence-pair --> |\n",
+            "| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->stale<!-- /evidence-pair --> |\n",
             "| <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: 105 / 106 methods recompile | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
             "| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 130 / 132 methods recompile | JADX 1.5.5: 128 / 130 methods recompile | mixed: `disrobe` recovers two more clean methods; JADX has the higher clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |\n",
         );
@@ -2414,6 +2435,38 @@ mod tests {
         let mut stale: Vec<String> = Vec::new();
         sync_file(&path, &rendered, true, &mut stale)?;
         assert_eq!(stale, vec![path.display().to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn readme_summary_drift_fails_even_when_detailed_rows_are_current() -> Result<()> {
+        let expected: BTreeMap<String, String> = expected_readme_pair_rows(&[apk_record()])?;
+        let mut source: String = String::new();
+        for (slug, row) in &expected {
+            push_line!(
+                source,
+                "| <!-- evidence-pair:{slug} -->{row}<!-- /evidence-pair --> |"
+            );
+        }
+        let directory: tempfile::TempDir = tempfile::tempdir()?;
+        let path: PathBuf = directory.path().join("README.md");
+        for changed_count in ["64 / 163", "63 / 164"] {
+            let mutated: String = source.replace(
+                "<!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 63 / 163",
+                &format!("<!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | {changed_count}"),
+            );
+            assert_ne!(mutated, source);
+            assert!(mutated.contains(&format!(
+                "<!-- evidence-pair:apk-jadx-cfr:dex -->{}<!-- /evidence-pair -->",
+                expected["apk-jadx-cfr:dex"],
+            )));
+            let repaired: String = rewrite_readme_pairs(&mutated, &expected)?;
+            assert_eq!(repaired, source);
+            fs::write(&path, &mutated)?;
+            let mut stale: Vec<String> = Vec::new();
+            sync_file(&path, &repaired, true, &mut stale)?;
+            assert_eq!(stale, vec![path.display().to_string()]);
+        }
         Ok(())
     }
 

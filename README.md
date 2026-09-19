@@ -364,8 +364,8 @@ Measurements use the pinned inputs, tool versions, and scoring rules linked belo
 
 | Tool and input | Disrobe result | Named tool result | What the measurement checks |
 |---|---|---|---|
-| JADX 1.5.5 · committed EdgeCases DEX | 157 clean regions from 228 emitted | 281 clean regions from 303 emitted | Real `javac`, complete-source compilation then bounded isolation of regions blocking attribution; different emitted populations |
-| CFR 0.152 · committed EdgeCases JAR | 181 clean regions from 181 emitted | 152 clean regions from 166 emitted | The same compiler/scorer procedure; different emitted populations |
+| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 157 / 228 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> | Committed EdgeCases DEX; real `javac`, complete-source compilation then bounded isolation of regions blocking attribution; different emitted populations |
+| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->CFR 0.152 · JVM classfile | 181 / 181 emitted regions compile clean | 152 / 166 emitted regions compile clean<!-- /evidence-pair --> | Committed EdgeCases JAR; the same compiler/scorer procedure; different emitted populations |
 | APKLeaks 2.6.3 · planted-secrets APK | 8 / 8 planted secrets | 5 / 8 planted secrets | Exact-token recall on the same APK; Disrobe also finds the planted AWS secret access key, Basic credential, and JWT |
 
 [Inputs, raw tool results, and reproduction commands](benches/head-to-head/results.md).
