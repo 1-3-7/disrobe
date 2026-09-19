@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1459,
-    "parse_shaped": 597,
+    "entry_points": 1460,
+    "parse_shaped": 598,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 663,
     "named_by_a_suite_recording_seed_reach": 132,
-    "named_by_neither": 763
+    "named_by_neither": 764
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -456,8 +456,8 @@
     },
     {
       "crate": "disrobe-pass-jvm",
-      "entry_points": 71,
-      "parse_shaped": 26,
+      "entry_points": 72,
+      "parse_shaped": 27,
       "with_declared_coverage_guided_target": 9,
       "with_replay_proven_semantic_reach": 6,
       "named_by_a_resilience_suite": 18,
@@ -480,6 +480,7 @@
         "disrobe-pass-jvm/src/dalvik_strdec.rs::recover_with_native_keys",
         "disrobe-pass-jvm/src/dalvik_strdec.rs::recover_with_native_keys_report",
         "disrobe-pass-jvm/src/dex.rs::parse_multi_dex",
+        "disrobe-pass-jvm/src/dex.rs::parse_system_metadata",
         "disrobe-pass-jvm/src/dex2jar.rs::build_class_model",
         "disrobe-pass-jvm/src/dex2jar.rs::diagnose_dex_bytes",
         "disrobe-pass-jvm/src/dex2jar.rs::diagnose_dex_methods",

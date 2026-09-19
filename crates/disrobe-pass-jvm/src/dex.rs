@@ -235,6 +235,1466 @@ pub struct DexFile {
     pub method_handles_size: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexInnerClass {
+    pub simple_name: Option<String>,
+    pub access_flags: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexEnclosingMethod {
+    pub class: String,
+    pub name: String,
+    pub descriptor: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexClassMetadata {
+    pub member_classes: Vec<String>,
+    pub inner_class: Option<DexInnerClass>,
+    pub enclosing_class: Option<String>,
+    pub enclosing_method: Option<DexEnclosingMethod>,
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexSystemMetadata {
+    pub classes: BTreeMap<String, DexClassMetadata>,
+    pub field_signatures: BTreeMap<u32, String>,
+    pub method_signatures: BTreeMap<u32, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexMetadataDiagnostic {
+    pub class: Option<String>,
+    pub offset: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DexSystemMetadataReport {
+    pub metadata: DexSystemMetadata,
+    pub diagnostics: Vec<DexMetadataDiagnostic>,
+    pub suppressed_diagnostics: usize,
+}
+
+impl DexSystemMetadataReport {
+    fn record_error(&mut self, class: Option<&str>, error: &Error) {
+        let offset: usize = match error {
+            Error::BadBytecode { offset, .. } | Error::Truncated { offset, .. } => *offset,
+            _ => 0,
+        };
+        self.record(class, offset, error.to_string());
+    }
+
+    fn record(&mut self, class: Option<&str>, offset: usize, reason: String) {
+        if self.diagnostics.len() >= MAX_SYSTEM_METADATA_DIAGNOSTICS {
+            self.suppressed_diagnostics = self.suppressed_diagnostics.saturating_add(1);
+            return;
+        }
+        self.diagnostics.push(DexMetadataDiagnostic {
+            class: class.map(str::to_owned),
+            offset,
+            reason,
+        });
+    }
+}
+
+const MAX_SYSTEM_ANNOTATION_DEPTH: usize = 64;
+const MAX_SYSTEM_ANNOTATION_VALUES: usize = 1_048_576;
+const MIN_SYSTEM_METADATA_BYTES: usize = 4 * 1024 * 1024;
+const MAX_SYSTEM_METADATA_BYTES: usize = 64 * 1024 * 1024;
+const SYSTEM_METADATA_BYTES_PER_INPUT_BYTE: usize = 8;
+const MAX_SYSTEM_METADATA_DIAGNOSTICS: usize = 256;
+const MAX_SYSTEM_METADATA_NORMALIZATION_ROUNDS: usize = 8;
+
+struct SystemMetadataBudget {
+    values_remaining: usize,
+    bytes_remaining: usize,
+}
+
+impl SystemMetadataBudget {
+    fn new(input_len: usize) -> Self {
+        Self {
+            values_remaining: input_len.min(MAX_SYSTEM_ANNOTATION_VALUES),
+            bytes_remaining: input_len
+                .saturating_mul(SYSTEM_METADATA_BYTES_PER_INPUT_BYTE)
+                .clamp(MIN_SYSTEM_METADATA_BYTES, MAX_SYSTEM_METADATA_BYTES),
+        }
+    }
+
+    fn claim_values(&mut self, count: usize, offset: usize) -> Result<()> {
+        self.values_remaining =
+            self.values_remaining
+                .checked_sub(count)
+                .ok_or(Error::BadBytecode {
+                    offset,
+                    reason: "DEX system annotation value budget exceeded",
+                })?;
+        Ok(())
+    }
+
+    const fn require_values(&self, count: usize, offset: usize) -> Result<()> {
+        if count > self.values_remaining {
+            return Err(Error::BadBytecode {
+                offset,
+                reason: "DEX system annotation value budget exceeded",
+            });
+        }
+        Ok(())
+    }
+
+    fn claim_bytes(&mut self, count: usize, offset: usize) -> Result<()> {
+        self.bytes_remaining =
+            self.bytes_remaining
+                .checked_sub(count)
+                .ok_or(Error::BadBytecode {
+                    offset,
+                    reason: "DEX system metadata output budget exceeded",
+                })?;
+        Ok(())
+    }
+}
+
+enum SystemAnnotationValue {
+    Int(i32),
+    String(u32),
+    Type(u32),
+    Method(u32),
+    Array(Vec<Self>),
+    Null,
+}
+
+#[derive(Clone)]
+enum ParsedSystemAnnotation {
+    MemberClasses(Vec<String>),
+    InnerClass(DexInnerClass),
+    EnclosingClass(String),
+    EnclosingMethod(DexEnclosingMethod),
+    Signature(String),
+}
+
+const fn system_metadata_error(offset: usize, reason: &'static str) -> Error {
+    Error::BadBytecode { offset, reason }
+}
+
+fn data_bounds(dex: &DexFile, bytes: &[u8]) -> Result<(usize, usize)> {
+    let start: usize = dex.header.data_off as usize;
+    let end: usize = start
+        .checked_add(dex.header.data_size as usize)
+        .ok_or_else(|| system_metadata_error(start, "DEX data section range overflow"))?;
+    if end > bytes.len() {
+        return Err(system_metadata_error(
+            start,
+            "DEX data section is out of range",
+        ));
+    }
+    Ok((start, end))
+}
+
+fn require_data_offset(
+    offset: u32,
+    data_start: usize,
+    data_end: usize,
+    reason: &'static str,
+) -> Result<usize> {
+    let offset: usize = offset as usize;
+    if !(data_start..data_end).contains(&offset) {
+        return Err(system_metadata_error(offset, reason));
+    }
+    Ok(offset)
+}
+
+fn encoded_unsigned(
+    bytes: &[u8],
+    cursor: &mut usize,
+    value_arg: u8,
+    reason: &'static str,
+) -> Result<u32> {
+    if value_arg > 3 {
+        return Err(system_metadata_error(*cursor, reason));
+    }
+    let size: usize = usize::from(value_arg) + 1;
+    let end: usize = cursor
+        .checked_add(size)
+        .ok_or_else(|| system_metadata_error(*cursor, reason))?;
+    let value_bytes: &[u8] = bytes
+        .get(*cursor..end)
+        .ok_or_else(|| system_metadata_error(*cursor, reason))?;
+    let mut value: u32 = 0;
+    for (index, byte) in value_bytes.iter().enumerate() {
+        value |= u32::from(*byte) << (index * 8);
+    }
+    *cursor = end;
+    Ok(value)
+}
+
+fn encoded_int(bytes: &[u8], cursor: &mut usize, value_arg: u8) -> Result<i32> {
+    let value: u32 = encoded_unsigned(
+        bytes,
+        cursor,
+        value_arg,
+        "DEX system annotation integer has invalid width",
+    )?;
+    let bits: usize = (usize::from(value_arg) + 1) * 8;
+    let signed: u32 = if bits < 32 && value & (1_u32 << (bits - 1)) != 0 {
+        value | (!0_u32 << bits)
+    } else {
+        value
+    };
+    Ok(signed as i32)
+}
+
+fn parse_system_value(
+    bytes: &[u8],
+    cursor: &mut usize,
+    depth: usize,
+    budget: &mut SystemMetadataBudget,
+) -> Result<SystemAnnotationValue> {
+    if depth > MAX_SYSTEM_ANNOTATION_DEPTH {
+        return Err(system_metadata_error(
+            *cursor,
+            "DEX system annotation nesting depth exceeded",
+        ));
+    }
+    budget.claim_values(1, *cursor)?;
+    let header: u8 = *bytes.get(*cursor).ok_or_else(|| {
+        system_metadata_error(*cursor, "DEX system annotation value is truncated")
+    })?;
+    *cursor = cursor
+        .checked_add(1)
+        .ok_or_else(|| system_metadata_error(*cursor, "DEX annotation offset overflow"))?;
+    let value_type: u8 = header & 0x1f;
+    let value_arg: u8 = header >> 5;
+    match value_type {
+        0x04 => Ok(SystemAnnotationValue::Int(encoded_int(
+            bytes, cursor, value_arg,
+        )?)),
+        0x17 => Ok(SystemAnnotationValue::String(encoded_unsigned(
+            bytes,
+            cursor,
+            value_arg,
+            "DEX system annotation string index has invalid width",
+        )?)),
+        0x18 => Ok(SystemAnnotationValue::Type(encoded_unsigned(
+            bytes,
+            cursor,
+            value_arg,
+            "DEX system annotation type index has invalid width",
+        )?)),
+        0x1a => Ok(SystemAnnotationValue::Method(encoded_unsigned(
+            bytes,
+            cursor,
+            value_arg,
+            "DEX system annotation method index has invalid width",
+        )?)),
+        0x1c if value_arg == 0 => {
+            let (count, next): (u32, usize) = read_uleb128(bytes, *cursor)?;
+            *cursor = next;
+            let count: usize = count as usize;
+            if count > bytes.len().saturating_sub(*cursor) {
+                return Err(system_metadata_error(
+                    *cursor,
+                    "DEX system annotation array is truncated",
+                ));
+            }
+            budget.require_values(count, *cursor)?;
+            let mut values: Vec<SystemAnnotationValue> = Vec::new();
+            values.try_reserve_exact(count).map_err(|_| {
+                system_metadata_error(*cursor, "DEX system annotation array allocation failed")
+            })?;
+            for _ in 0..count {
+                values.push(parse_system_value(bytes, cursor, depth + 1, budget)?);
+            }
+            Ok(SystemAnnotationValue::Array(values))
+        }
+        0x1e if value_arg == 0 => Ok(SystemAnnotationValue::Null),
+        _ => Err(system_metadata_error(
+            *cursor,
+            "DEX system annotation value has an invalid type",
+        )),
+    }
+}
+
+fn annotation_elements(
+    dex: &DexFile,
+    bytes: &[u8],
+    cursor: &mut usize,
+    expected_count: usize,
+    budget: &mut SystemMetadataBudget,
+) -> Result<BTreeMap<String, SystemAnnotationValue>> {
+    let (count, next): (u32, usize) = read_uleb128(bytes, *cursor)?;
+    *cursor = next;
+    if count as usize != expected_count {
+        return Err(system_metadata_error(
+            *cursor,
+            "DEX system annotation element count is invalid",
+        ));
+    }
+    let mut elements: BTreeMap<String, SystemAnnotationValue> = BTreeMap::new();
+    let mut previous_name_index: Option<u32> = None;
+    for _ in 0..count {
+        let (name_index, next): (u32, usize) = read_uleb128(bytes, *cursor)?;
+        *cursor = next;
+        if previous_name_index.is_some_and(|previous: u32| name_index <= previous) {
+            return Err(system_metadata_error(
+                *cursor,
+                "DEX system annotation elements are not strictly sorted",
+            ));
+        }
+        previous_name_index = Some(name_index);
+        let name: &String = dex.strings.get(name_index as usize).ok_or_else(|| {
+            system_metadata_error(
+                *cursor,
+                "DEX system annotation element name is out of range",
+            )
+        })?;
+        budget.claim_bytes(name.len(), *cursor)?;
+        let value: SystemAnnotationValue = parse_system_value(bytes, cursor, 0, budget)?;
+        if elements.insert(name.clone(), value).is_some() {
+            return Err(system_metadata_error(
+                *cursor,
+                "DEX system annotation element is duplicated",
+            ));
+        }
+    }
+    Ok(elements)
+}
+
+fn take_only_element(
+    mut elements: BTreeMap<String, SystemAnnotationValue>,
+    offset: usize,
+) -> Result<SystemAnnotationValue> {
+    if elements.len() != 1 {
+        return Err(system_metadata_error(
+            offset,
+            "DEX system annotation element set is invalid",
+        ));
+    }
+    elements.remove("value").ok_or_else(|| {
+        system_metadata_error(offset, "DEX system annotation value element is absent")
+    })
+}
+
+fn method_descriptor(method: &MethodId) -> String {
+    let mut descriptor: String = String::from("(");
+    for parameter in &method.proto.parameters {
+        descriptor.push_str(parameter);
+    }
+    descriptor.push(')');
+    descriptor.push_str(&method.proto.return_type);
+    descriptor
+}
+
+#[derive(Clone, Copy)]
+enum SignatureTarget {
+    Class,
+    Field,
+    Method,
+}
+
+#[derive(Clone, Copy)]
+struct SignatureSyntaxError;
+
+type SignatureSyntaxResult = std::result::Result<(), SignatureSyntaxError>;
+
+struct SignatureSyntax<'a> {
+    bytes: &'a [u8],
+    position: usize,
+    depth: usize,
+    nodes: usize,
+}
+
+impl<'a> SignatureSyntax<'a> {
+    fn new(value: &'a str) -> std::result::Result<Self, SignatureSyntaxError> {
+        if value.is_empty() || value.len() > usize::from(u16::MAX) {
+            return Err(SignatureSyntaxError);
+        }
+        Ok(Self {
+            bytes: value.as_bytes(),
+            position: 0,
+            depth: 0,
+            nodes: 0,
+        })
+    }
+
+    fn parse(mut self, target: SignatureTarget) -> SignatureSyntaxResult {
+        match target {
+            SignatureTarget::Class => self.class_signature()?,
+            SignatureTarget::Field => self.reference_type()?,
+            SignatureTarget::Method => self.method_signature()?,
+        }
+        if self.position == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(SignatureSyntaxError)
+        }
+    }
+
+    fn node(&mut self) -> SignatureSyntaxResult {
+        self.nodes = self.nodes.checked_add(1).ok_or(SignatureSyntaxError)?;
+        if self.nodes > 4_096 {
+            return Err(SignatureSyntaxError);
+        }
+        Ok(())
+    }
+
+    fn enter(&mut self) -> SignatureSyntaxResult {
+        self.depth = self.depth.checked_add(1).ok_or(SignatureSyntaxError)?;
+        if self.depth > MAX_SYSTEM_ANNOTATION_DEPTH {
+            return Err(SignatureSyntaxError);
+        }
+        Ok(())
+    }
+
+    const fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.position).copied()
+    }
+
+    fn consume(&mut self, expected: u8) -> bool {
+        if self.peek() == Some(expected) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, expected: u8) -> SignatureSyntaxResult {
+        if self.consume(expected) {
+            Ok(())
+        } else {
+            Err(SignatureSyntaxError)
+        }
+    }
+
+    fn identifier(&mut self) -> SignatureSyntaxResult {
+        let start: usize = self.position;
+        while let Some(byte) = self.peek() {
+            if matches!(byte, b'.' | b';' | b'[' | b'/' | b'<' | b'>' | b':') {
+                break;
+            }
+            if byte == 0 || byte.is_ascii_control() {
+                return Err(SignatureSyntaxError);
+            }
+            self.position += 1;
+        }
+        if self.position == start {
+            Err(SignatureSyntaxError)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn type_parameters(&mut self) -> SignatureSyntaxResult {
+        if !self.consume(b'<') {
+            return Ok(());
+        }
+        let mut count: usize = 0;
+        while self.peek() != Some(b'>') {
+            count = count.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if count > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.node()?;
+            self.identifier()?;
+            self.expect(b':')?;
+            if matches!(self.peek(), Some(b'L' | b'T' | b'[')) {
+                self.reference_type()?;
+            }
+            while self.consume(b':') {
+                self.reference_type()?;
+            }
+        }
+        if count == 0 {
+            return Err(SignatureSyntaxError);
+        }
+        self.expect(b'>')
+    }
+
+    fn java_type(&mut self) -> SignatureSyntaxResult {
+        self.node()?;
+        match self.peek() {
+            Some(b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z') => {
+                self.position += 1;
+                Ok(())
+            }
+            Some(b'L' | b'T' | b'[') => self.reference_type(),
+            _ => Err(SignatureSyntaxError),
+        }
+    }
+
+    fn reference_type(&mut self) -> SignatureSyntaxResult {
+        self.enter()?;
+        self.node()?;
+        let result: SignatureSyntaxResult = match self.peek() {
+            Some(b'L') => self.class_type(),
+            Some(b'T') => {
+                self.position += 1;
+                self.identifier()?;
+                self.expect(b';')
+            }
+            Some(b'[') => {
+                self.position += 1;
+                self.java_type()
+            }
+            _ => Err(SignatureSyntaxError),
+        };
+        self.leave();
+        result
+    }
+
+    fn class_type(&mut self) -> SignatureSyntaxResult {
+        self.expect(b'L')?;
+        self.identifier()?;
+        let mut package_segments: usize = 0;
+        while self.consume(b'/') {
+            package_segments = package_segments
+                .checked_add(1)
+                .ok_or(SignatureSyntaxError)?;
+            if package_segments > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.identifier()?;
+        }
+        self.type_arguments()?;
+        let mut suffixes: usize = 0;
+        while self.consume(b'.') {
+            suffixes = suffixes.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if suffixes > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.identifier()?;
+            self.type_arguments()?;
+        }
+        self.expect(b';')
+    }
+
+    fn type_arguments(&mut self) -> SignatureSyntaxResult {
+        if !self.consume(b'<') {
+            return Ok(());
+        }
+        let mut count: usize = 0;
+        while self.peek() != Some(b'>') {
+            count = count.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if count > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.node()?;
+            match self.peek() {
+                Some(b'*') => self.position += 1,
+                Some(b'+' | b'-') => {
+                    self.position += 1;
+                    self.reference_type()?;
+                }
+                _ => self.reference_type()?,
+            }
+        }
+        if count == 0 {
+            return Err(SignatureSyntaxError);
+        }
+        self.expect(b'>')
+    }
+
+    fn class_signature(&mut self) -> SignatureSyntaxResult {
+        self.type_parameters()?;
+        self.class_type()?;
+        let mut interfaces: usize = 0;
+        while self.position < self.bytes.len() {
+            interfaces = interfaces.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if interfaces > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.class_type()?;
+        }
+        Ok(())
+    }
+
+    fn method_signature(&mut self) -> SignatureSyntaxResult {
+        self.type_parameters()?;
+        self.expect(b'(')?;
+        let mut parameters: usize = 0;
+        while self.peek() != Some(b')') {
+            parameters = parameters.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if parameters > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            self.java_type()?;
+        }
+        self.expect(b')')?;
+        if !self.consume(b'V') {
+            self.java_type()?;
+        }
+        let mut throws: usize = 0;
+        while self.consume(b'^') {
+            throws = throws.checked_add(1).ok_or(SignatureSyntaxError)?;
+            if throws > 1_024 {
+                return Err(SignatureSyntaxError);
+            }
+            match self.peek() {
+                Some(b'L') => self.class_type()?,
+                Some(b'T') => {
+                    self.position += 1;
+                    self.identifier()?;
+                    self.expect(b';')?;
+                }
+                _ => return Err(SignatureSyntaxError),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_signature_syntax(value: &str, target: SignatureTarget, offset: usize) -> Result<()> {
+    SignatureSyntax::new(value)
+        .and_then(|parser: SignatureSyntax<'_>| parser.parse(target))
+        .map_err(|_: SignatureSyntaxError| {
+            system_metadata_error(offset, "DEX Signature grammar is invalid")
+        })
+}
+
+fn parse_relevant_annotation(
+    dex: &DexFile,
+    bytes: &[u8],
+    annotation_offset: usize,
+    descriptor: &str,
+    cursor: &mut usize,
+    budget: &mut SystemMetadataBudget,
+) -> Result<ParsedSystemAnnotation> {
+    match descriptor {
+        "Ldalvik/annotation/MemberClasses;" => {
+            let elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 1, budget)?;
+            let SystemAnnotationValue::Array(values) =
+                take_only_element(elements, annotation_offset)?
+            else {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX MemberClasses value is not an array",
+                ));
+            };
+            let mut members: Vec<String> = Vec::new();
+            members.try_reserve_exact(values.len()).map_err(|_| {
+                system_metadata_error(annotation_offset, "DEX MemberClasses allocation failed")
+            })?;
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            for value in values {
+                let SystemAnnotationValue::Type(index) = value else {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX MemberClasses element is not a type",
+                    ));
+                };
+                let member: &String = dex.type_names.get(index as usize).ok_or_else(|| {
+                    system_metadata_error(
+                        annotation_offset,
+                        "DEX MemberClasses type index is out of range",
+                    )
+                })?;
+                budget.claim_bytes(member.len(), annotation_offset)?;
+                if !seen.insert(member.clone()) {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX MemberClasses member is duplicated",
+                    ));
+                }
+                members.push(member.clone());
+            }
+            Ok(ParsedSystemAnnotation::MemberClasses(members))
+        }
+        "Ldalvik/annotation/InnerClass;" => {
+            let mut elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 2, budget)?;
+            let access_flags: i32 = match elements.remove("accessFlags") {
+                Some(SystemAnnotationValue::Int(value)) => value,
+                _ => {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX InnerClass accessFlags value is invalid",
+                    ));
+                }
+            };
+            let simple_name: Option<String> = match elements.remove("name") {
+                Some(SystemAnnotationValue::Null) => None,
+                Some(SystemAnnotationValue::String(index)) => {
+                    let value: &String = dex.strings.get(index as usize).ok_or_else(|| {
+                        system_metadata_error(
+                            annotation_offset,
+                            "DEX InnerClass name index is out of range",
+                        )
+                    })?;
+                    budget.claim_bytes(value.len(), annotation_offset)?;
+                    Some(value.clone())
+                }
+                _ => {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX InnerClass name value is invalid",
+                    ));
+                }
+            };
+            if !elements.is_empty()
+                || !(0..=i32::from(u16::MAX)).contains(&access_flags)
+                || access_flags as u16 & !0x761f != 0
+            {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX InnerClass access flags are invalid",
+                ));
+            }
+            Ok(ParsedSystemAnnotation::InnerClass(DexInnerClass {
+                simple_name,
+                access_flags: access_flags as u16,
+            }))
+        }
+        "Ldalvik/annotation/EnclosingClass;" => {
+            let elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 1, budget)?;
+            let SystemAnnotationValue::Type(index) =
+                take_only_element(elements, annotation_offset)?
+            else {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX EnclosingClass value is not a type",
+                ));
+            };
+            let class: &String = dex.type_names.get(index as usize).ok_or_else(|| {
+                system_metadata_error(
+                    annotation_offset,
+                    "DEX EnclosingClass type index is out of range",
+                )
+            })?;
+            budget.claim_bytes(class.len(), annotation_offset)?;
+            Ok(ParsedSystemAnnotation::EnclosingClass(class.clone()))
+        }
+        "Ldalvik/annotation/EnclosingMethod;" => {
+            let elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 1, budget)?;
+            let SystemAnnotationValue::Method(index) =
+                take_only_element(elements, annotation_offset)?
+            else {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX EnclosingMethod value is not a method",
+                ));
+            };
+            let method: &MethodId = dex.method_ids.get(index as usize).ok_or_else(|| {
+                system_metadata_error(
+                    annotation_offset,
+                    "DEX EnclosingMethod method index is out of range",
+                )
+            })?;
+            let descriptor: String = method_descriptor(method);
+            let output_bytes: usize = method
+                .class
+                .len()
+                .saturating_add(method.name.len())
+                .saturating_add(descriptor.len());
+            budget.claim_bytes(output_bytes, annotation_offset)?;
+            Ok(ParsedSystemAnnotation::EnclosingMethod(
+                DexEnclosingMethod {
+                    class: method.class.clone(),
+                    name: method.name.clone(),
+                    descriptor,
+                },
+            ))
+        }
+        "Ldalvik/annotation/Signature;" => {
+            let elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 1, budget)?;
+            let SystemAnnotationValue::Array(values) =
+                take_only_element(elements, annotation_offset)?
+            else {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX Signature value is not an array",
+                ));
+            };
+            let mut signature: String = String::new();
+            for value in values {
+                let SystemAnnotationValue::String(index) = value else {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX Signature fragment is not a string",
+                    ));
+                };
+                let fragment: &String = dex.strings.get(index as usize).ok_or_else(|| {
+                    system_metadata_error(
+                        annotation_offset,
+                        "DEX Signature string index is out of range",
+                    )
+                })?;
+                budget.claim_bytes(fragment.len(), annotation_offset)?;
+                signature.try_reserve(fragment.len()).map_err(|_| {
+                    system_metadata_error(annotation_offset, "DEX Signature allocation failed")
+                })?;
+                signature.push_str(fragment);
+            }
+            if signature.is_empty() {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX Signature value is empty",
+                ));
+            }
+            Ok(ParsedSystemAnnotation::Signature(signature))
+        }
+        _ => Err(system_metadata_error(
+            annotation_offset,
+            "DEX system annotation type is unsupported",
+        )),
+    }
+}
+
+struct CachedAnnotationSet {
+    annotations: Vec<ParsedSystemAnnotation>,
+    output_bytes: usize,
+}
+
+struct MetadataParser<'a> {
+    dex: &'a DexFile,
+    bytes: &'a [u8],
+    data_start: usize,
+    data_end: usize,
+    budget: SystemMetadataBudget,
+    cache: BTreeMap<u32, CachedAnnotationSet>,
+    failed: BTreeMap<u32, (usize, &'static str)>,
+}
+
+impl MetadataParser<'_> {
+    fn annotation_set(&mut self, set_offset: u32) -> Result<Vec<ParsedSystemAnnotation>> {
+        if set_offset == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(cached) = self.cache.get(&set_offset) {
+            self.budget
+                .claim_bytes(cached.output_bytes, set_offset as usize)?;
+            return Ok(cached.annotations.clone());
+        }
+        if let Some((offset, reason)) = self.failed.get(&set_offset) {
+            return Err(system_metadata_error(*offset, reason));
+        }
+        let bytes_before: usize = self.budget.bytes_remaining;
+        let annotations: Vec<ParsedSystemAnnotation> = match parse_annotation_set(
+            self.dex,
+            self.bytes,
+            set_offset,
+            self.data_start,
+            self.data_end,
+            &mut self.budget,
+        ) {
+            Ok(annotations) => annotations,
+            Err(Error::BadBytecode { offset, reason }) => {
+                self.failed.insert(set_offset, (offset, reason));
+                return Err(system_metadata_error(offset, reason));
+            }
+            Err(error) => return Err(error),
+        };
+        let output_bytes: usize = bytes_before.saturating_sub(self.budget.bytes_remaining);
+        self.cache.insert(
+            set_offset,
+            CachedAnnotationSet {
+                annotations: annotations.clone(),
+                output_bytes,
+            },
+        );
+        Ok(annotations)
+    }
+}
+
+fn parse_annotation_set(
+    dex: &DexFile,
+    bytes: &[u8],
+    set_offset: u32,
+    data_start: usize,
+    data_end: usize,
+    budget: &mut SystemMetadataBudget,
+) -> Result<Vec<ParsedSystemAnnotation>> {
+    if set_offset == 0 {
+        return Ok(Vec::new());
+    }
+    let bounded_bytes: &[u8] = bytes
+        .get(..data_end)
+        .ok_or_else(|| system_metadata_error(data_end, "DEX data section is out of range"))?;
+    let set_offset: usize = require_data_offset(
+        set_offset,
+        data_start,
+        data_end,
+        "DEX annotation set offset is out of range",
+    )?;
+    let count: usize = required_u32_at(bounded_bytes, set_offset)? as usize;
+    let entries_start: usize = set_offset
+        .checked_add(4)
+        .ok_or_else(|| system_metadata_error(set_offset, "DEX annotation set range overflow"))?;
+    let entries_end: usize = entries_start
+        .checked_add(
+            count.checked_mul(4).ok_or_else(|| {
+                system_metadata_error(set_offset, "DEX annotation set size overflow")
+            })?,
+        )
+        .ok_or_else(|| system_metadata_error(set_offset, "DEX annotation set range overflow"))?;
+    if entries_end > data_end || entries_end > bytes.len() {
+        return Err(system_metadata_error(
+            set_offset,
+            "DEX annotation set is truncated",
+        ));
+    }
+    budget.claim_values(count, set_offset)?;
+    let mut parsed: Vec<ParsedSystemAnnotation> = Vec::new();
+    parsed.try_reserve_exact(count.min(5)).map_err(|_| {
+        system_metadata_error(set_offset, "DEX system annotation allocation failed")
+    })?;
+    let mut previous_type_index: Option<u32> = None;
+    for index in 0..count {
+        let entry_offset: usize = entries_start + index * 4;
+        let annotation_offset: usize = require_data_offset(
+            required_u32_at(bounded_bytes, entry_offset)?,
+            data_start,
+            data_end,
+            "DEX annotation item offset is out of range",
+        )?;
+        let visibility: u8 = *bounded_bytes.get(annotation_offset).ok_or_else(|| {
+            system_metadata_error(annotation_offset, "DEX annotation item is truncated")
+        })?;
+        let type_cursor: usize = annotation_offset + 1;
+        let (type_index, mut cursor): (u32, usize) = read_uleb128(bounded_bytes, type_cursor)?;
+        if previous_type_index.is_some_and(|previous: u32| type_index <= previous) {
+            return Err(system_metadata_error(
+                annotation_offset,
+                "DEX annotation set is not strictly sorted",
+            ));
+        }
+        previous_type_index = Some(type_index);
+        let descriptor: &String = dex.type_names.get(type_index as usize).ok_or_else(|| {
+            system_metadata_error(
+                annotation_offset,
+                "DEX annotation type index is out of range",
+            )
+        })?;
+        let relevant: bool = matches!(
+            descriptor.as_str(),
+            "Ldalvik/annotation/MemberClasses;"
+                | "Ldalvik/annotation/InnerClass;"
+                | "Ldalvik/annotation/EnclosingClass;"
+                | "Ldalvik/annotation/EnclosingMethod;"
+                | "Ldalvik/annotation/Signature;"
+        );
+        if !relevant {
+            continue;
+        }
+        if visibility != 0x02 {
+            return Err(system_metadata_error(
+                annotation_offset,
+                "DEX system annotation visibility is invalid",
+            ));
+        }
+        parsed.push(parse_relevant_annotation(
+            dex,
+            bounded_bytes,
+            annotation_offset,
+            descriptor,
+            &mut cursor,
+            budget,
+        )?);
+    }
+    Ok(parsed)
+}
+
+fn assign_class_annotations(
+    target: &mut DexClassMetadata,
+    annotations: Vec<ParsedSystemAnnotation>,
+    offset: usize,
+    invalid_signatures: &mut Vec<usize>,
+) -> Result<()> {
+    for annotation in annotations {
+        let duplicate: bool = match annotation {
+            ParsedSystemAnnotation::MemberClasses(value) => {
+                if target.member_classes.is_empty() {
+                    target.member_classes = value;
+                    false
+                } else {
+                    true
+                }
+            }
+            ParsedSystemAnnotation::InnerClass(value) => {
+                target.inner_class.replace(value).is_some()
+            }
+            ParsedSystemAnnotation::EnclosingClass(value) => {
+                target.enclosing_class.replace(value).is_some()
+            }
+            ParsedSystemAnnotation::EnclosingMethod(value) => {
+                target.enclosing_method.replace(value).is_some()
+            }
+            ParsedSystemAnnotation::Signature(value) => {
+                if validate_signature_syntax(&value, SignatureTarget::Class, offset).is_ok() {
+                    target.signature.replace(value).is_some()
+                } else {
+                    invalid_signatures.push(offset);
+                    false
+                }
+            }
+        };
+        if duplicate {
+            return Err(system_metadata_error(
+                offset,
+                "DEX system annotation is duplicated",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn assign_signature_annotations(
+    annotations: Vec<ParsedSystemAnnotation>,
+    offset: usize,
+    target: SignatureTarget,
+    invalid_signatures: &mut Vec<usize>,
+) -> Result<Option<String>> {
+    let mut signature: Option<String> = None;
+    for annotation in annotations {
+        let ParsedSystemAnnotation::Signature(value) = annotation else {
+            return Err(system_metadata_error(
+                offset,
+                "DEX system annotation has an invalid target",
+            ));
+        };
+        if validate_signature_syntax(&value, target, offset).is_err() {
+            invalid_signatures.push(offset);
+            continue;
+        }
+        if signature.replace(value).is_some() {
+            return Err(system_metadata_error(
+                offset,
+                "DEX Signature annotation is duplicated",
+            ));
+        }
+    }
+    Ok(signature)
+}
+
+fn validate_annotation_set_ref_list(
+    parser: &mut MetadataParser<'_>,
+    list_offset: u32,
+) -> Result<()> {
+    let list_offset: usize = require_data_offset(
+        list_offset,
+        parser.data_start,
+        parser.data_end,
+        "DEX parameter annotation list offset is out of range",
+    )?;
+    let count: usize = required_u32_at(parser.bytes, list_offset)? as usize;
+    let entries_start: usize = list_offset.checked_add(4).ok_or_else(|| {
+        system_metadata_error(list_offset, "DEX parameter annotation list range overflow")
+    })?;
+    let entries_end: usize = entries_start
+        .checked_add(count.checked_mul(4).ok_or_else(|| {
+            system_metadata_error(list_offset, "DEX parameter annotation list size overflow")
+        })?)
+        .ok_or_else(|| {
+            system_metadata_error(list_offset, "DEX parameter annotation list range overflow")
+        })?;
+    if entries_end > parser.data_end || entries_end > parser.bytes.len() {
+        return Err(system_metadata_error(
+            list_offset,
+            "DEX parameter annotation list is truncated",
+        ));
+    }
+    parser.budget.claim_values(count, list_offset)?;
+    for index in 0..count {
+        let set_offset: u32 = required_u32_at(parser.bytes, entries_start + index * 4)?;
+        let annotations: Vec<ParsedSystemAnnotation> = parser.annotation_set(set_offset)?;
+        if !annotations.is_empty() {
+            return Err(system_metadata_error(
+                list_offset,
+                "DEX system annotation has an invalid parameter target",
+            ));
+        }
+    }
+    Ok(())
+}
+
+type MetadataViolations = (
+    BTreeMap<String, &'static str>,
+    Vec<(String, String, &'static str)>,
+);
+
+fn clear_relationship(class: &mut DexClassMetadata) {
+    class.inner_class = None;
+    class.enclosing_class = None;
+    class.enclosing_method = None;
+}
+
+fn relationship_owner(class: &DexClassMetadata) -> Option<&str> {
+    class.enclosing_class.as_deref().or_else(|| {
+        class
+            .enclosing_method
+            .as_ref()
+            .map(|method: &DexEnclosingMethod| method.class.as_str())
+    })
+}
+
+fn system_metadata_violations(metadata: &DexSystemMetadata) -> MetadataViolations {
+    let mut cleared: BTreeMap<String, &'static str> = BTreeMap::new();
+    let mut dropped_members: Vec<(String, String, &'static str)> = Vec::new();
+    for (name, class) in &metadata.classes {
+        if class.inner_class.is_some()
+            != (class.enclosing_class.is_some() ^ class.enclosing_method.is_some())
+        {
+            cleared.insert(
+                name.clone(),
+                "DEX inner-class annotations are incomplete or conflicting",
+            );
+            continue;
+        }
+        if relationship_owner(class)
+            .is_some_and(|owner: &str| !metadata.classes.contains_key(owner))
+        {
+            cleared.insert(
+                name.clone(),
+                "DEX enclosing class is not defined in this DEX",
+            );
+            continue;
+        }
+        for child in &class.member_classes {
+            let reason: Option<&'static str> = match metadata.classes.get(child) {
+                None => Some("DEX MemberClasses child is not defined in this DEX"),
+                Some(child_metadata)
+                    if child == name
+                        || child_metadata
+                            .inner_class
+                            .as_ref()
+                            .and_then(|inner: &DexInnerClass| inner.simple_name.as_ref())
+                            .is_none()
+                        || child_metadata.enclosing_class.as_deref() != Some(name.as_str())
+                        || child_metadata.enclosing_method.is_some() =>
+                {
+                    Some("DEX MemberClasses relationship is invalid or conflicting")
+                }
+                Some(_) => None,
+            };
+            if let Some(reason) = reason {
+                dropped_members.push((name.clone(), child.clone(), reason));
+            }
+        }
+    }
+    for start in metadata.classes.keys() {
+        if cleared.contains_key(start) {
+            continue;
+        }
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut current: &str = start;
+        for depth in 0..=MAX_SYSTEM_ANNOTATION_DEPTH {
+            if !seen.insert(current) {
+                cleared.insert(
+                    start.clone(),
+                    "DEX enclosing-class relationship contains a cycle",
+                );
+                break;
+            }
+            let Some(next): Option<&str> =
+                metadata.classes.get(current).and_then(relationship_owner)
+            else {
+                break;
+            };
+            if depth == MAX_SYSTEM_ANNOTATION_DEPTH {
+                cleared.insert(start.clone(), "DEX enclosing-class depth exceeded");
+                break;
+            }
+            current = next;
+        }
+    }
+    (cleared, dropped_members)
+}
+
+fn normalize_system_metadata(report: &mut DexSystemMetadataReport) {
+    for _ in 0..MAX_SYSTEM_METADATA_NORMALIZATION_ROUNDS {
+        let (cleared, dropped_members): MetadataViolations =
+            system_metadata_violations(&report.metadata);
+        if cleared.is_empty() && dropped_members.is_empty() {
+            return;
+        }
+        for (owner, child, reason) in dropped_members {
+            if let Some(class) = report.metadata.classes.get_mut(&owner) {
+                class
+                    .member_classes
+                    .retain(|member: &String| *member != child);
+            }
+            report.record(Some(&owner), 0, format!("{reason}: {child}"));
+        }
+        for (name, reason) in cleared {
+            if let Some(class) = report.metadata.classes.get_mut(&name) {
+                clear_relationship(class);
+            }
+            report.record(Some(&name), 0, reason.to_owned());
+        }
+    }
+    let (cleared, dropped_members): MetadataViolations =
+        system_metadata_violations(&report.metadata);
+    if cleared.is_empty() && dropped_members.is_empty() {
+        return;
+    }
+    for class in report.metadata.classes.values_mut() {
+        clear_relationship(class);
+        class.member_classes.clear();
+    }
+    report.record(
+        None,
+        0,
+        "DEX system metadata relationships did not converge and were dropped".to_owned(),
+    );
+}
+
+impl DexSystemMetadata {
+    #[must_use]
+    pub fn normalize(self) -> DexSystemMetadataReport {
+        let mut report: DexSystemMetadataReport = DexSystemMetadataReport {
+            metadata: self,
+            ..DexSystemMetadataReport::default()
+        };
+        normalize_system_metadata(&mut report);
+        report
+    }
+}
+
+struct ParsedClassMetadata {
+    class: DexClassMetadata,
+    field_signatures: Vec<(u32, String)>,
+    method_signatures: Vec<(u32, String)>,
+    invalid_signatures: Vec<usize>,
+}
+
+fn metadata_budget_exhausted(error: &Error, budget: &SystemMetadataBudget) -> bool {
+    matches!(error, Error::BadBytecode { reason, .. } if reason.ends_with("budget exceeded"))
+        && (budget.values_remaining == 0 || budget.bytes_remaining == 0)
+}
+
+fn parse_class_metadata(
+    parser: &mut MetadataParser<'_>,
+    class_offset: usize,
+    descriptor: &str,
+) -> Result<ParsedClassMetadata> {
+    let mut parsed: ParsedClassMetadata = ParsedClassMetadata {
+        class: DexClassMetadata::default(),
+        field_signatures: Vec::new(),
+        method_signatures: Vec::new(),
+        invalid_signatures: Vec::new(),
+    };
+    let directory_offset: u32 = required_u32_at(parser.bytes, class_offset + 20)?;
+    if directory_offset == 0 {
+        return Ok(parsed);
+    }
+    let directory_offset: usize = require_data_offset(
+        directory_offset,
+        parser.data_start,
+        parser.data_end,
+        "DEX annotation directory offset is out of range",
+    )?;
+    let directory_end: usize = directory_offset.checked_add(16).ok_or_else(|| {
+        system_metadata_error(directory_offset, "DEX annotation directory range overflow")
+    })?;
+    if directory_end > parser.data_end || directory_end > parser.bytes.len() {
+        return Err(system_metadata_error(
+            directory_offset,
+            "DEX annotation directory is truncated",
+        ));
+    }
+    let class_annotations_offset: u32 = required_u32_at(parser.bytes, directory_offset)?;
+    let field_count: usize = required_u32_at(parser.bytes, directory_offset + 4)? as usize;
+    let method_count: usize = required_u32_at(parser.bytes, directory_offset + 8)? as usize;
+    let parameter_count: usize = required_u32_at(parser.bytes, directory_offset + 12)? as usize;
+    let entry_count: usize = field_count
+        .checked_add(method_count)
+        .and_then(|count: usize| count.checked_add(parameter_count))
+        .ok_or_else(|| {
+            system_metadata_error(directory_offset, "DEX annotation directory count overflow")
+        })?;
+    let entries_end: usize = directory_end
+        .checked_add(entry_count.checked_mul(8).ok_or_else(|| {
+            system_metadata_error(directory_offset, "DEX annotation directory size overflow")
+        })?)
+        .ok_or_else(|| {
+            system_metadata_error(directory_offset, "DEX annotation directory range overflow")
+        })?;
+    if entries_end > parser.data_end || entries_end > parser.bytes.len() {
+        return Err(system_metadata_error(
+            directory_offset,
+            "DEX annotation directory entries are truncated",
+        ));
+    }
+    parser.budget.claim_values(entry_count, directory_offset)?;
+    let class_annotations: Vec<ParsedSystemAnnotation> =
+        parser.annotation_set(class_annotations_offset)?;
+    assign_class_annotations(
+        &mut parsed.class,
+        class_annotations,
+        directory_offset,
+        &mut parsed.invalid_signatures,
+    )?;
+    let mut cursor: usize = directory_end;
+    let mut previous_field: Option<u32> = None;
+    for _ in 0..field_count {
+        let field_index: u32 = required_u32_at(parser.bytes, cursor)?;
+        let set_offset: u32 = required_u32_at(parser.bytes, cursor + 4)?;
+        if previous_field.is_some_and(|previous: u32| field_index <= previous)
+            || parser
+                .dex
+                .field_ids
+                .get(field_index as usize)
+                .is_none_or(|field: &FieldId| field.class != descriptor)
+        {
+            return Err(system_metadata_error(
+                cursor,
+                "DEX annotated field index is invalid or unsorted",
+            ));
+        }
+        previous_field = Some(field_index);
+        let annotations: Vec<ParsedSystemAnnotation> = parser.annotation_set(set_offset)?;
+        if let Some(signature) = assign_signature_annotations(
+            annotations,
+            cursor,
+            SignatureTarget::Field,
+            &mut parsed.invalid_signatures,
+        )? {
+            parsed.field_signatures.push((field_index, signature));
+        }
+        cursor += 8;
+    }
+    let mut previous_method: Option<u32> = None;
+    for _ in 0..method_count {
+        let method_index: u32 = required_u32_at(parser.bytes, cursor)?;
+        let set_offset: u32 = required_u32_at(parser.bytes, cursor + 4)?;
+        if previous_method.is_some_and(|previous: u32| method_index <= previous)
+            || parser
+                .dex
+                .method_ids
+                .get(method_index as usize)
+                .is_none_or(|method: &MethodId| method.class != descriptor)
+        {
+            return Err(system_metadata_error(
+                cursor,
+                "DEX annotated method index is invalid or unsorted",
+            ));
+        }
+        previous_method = Some(method_index);
+        let annotations: Vec<ParsedSystemAnnotation> = parser.annotation_set(set_offset)?;
+        if let Some(signature) = assign_signature_annotations(
+            annotations,
+            cursor,
+            SignatureTarget::Method,
+            &mut parsed.invalid_signatures,
+        )? {
+            parsed.method_signatures.push((method_index, signature));
+        }
+        cursor += 8;
+    }
+    let mut previous_parameter_method: Option<u32> = None;
+    for _ in 0..parameter_count {
+        let method_index: u32 = required_u32_at(parser.bytes, cursor)?;
+        let list_offset: u32 = required_u32_at(parser.bytes, cursor + 4)?;
+        if previous_parameter_method.is_some_and(|previous: u32| method_index <= previous)
+            || parser
+                .dex
+                .method_ids
+                .get(method_index as usize)
+                .is_none_or(|method: &MethodId| method.class != descriptor)
+        {
+            return Err(system_metadata_error(
+                cursor,
+                "DEX annotated parameter method index is invalid or unsorted",
+            ));
+        }
+        previous_parameter_method = Some(method_index);
+        validate_annotation_set_ref_list(parser, list_offset)?;
+        cursor += 8;
+    }
+    Ok(parsed)
+}
+
+pub fn parse_system_metadata(dex: &DexFile, bytes: &[u8]) -> DexSystemMetadataReport {
+    let mut report: DexSystemMetadataReport = DexSystemMetadataReport::default();
+    for descriptor in &dex.class_descriptors {
+        report
+            .metadata
+            .classes
+            .entry(descriptor.clone())
+            .or_default();
+    }
+    let (data_start, data_end): (usize, usize) = match data_bounds(dex, bytes) {
+        Ok(bounds) => bounds,
+        Err(error) => {
+            report.record_error(None, &error);
+            return report;
+        }
+    };
+    let mut parser: MetadataParser<'_> = MetadataParser {
+        dex,
+        bytes,
+        data_start,
+        data_end,
+        budget: SystemMetadataBudget::new(bytes.len()),
+        cache: BTreeMap::new(),
+        failed: BTreeMap::new(),
+    };
+    let class_defs_offset: usize = dex.header.class_defs_off as usize;
+    let mut parsed_descriptors: BTreeSet<&str> = BTreeSet::new();
+    for (class_index, descriptor) in dex.class_descriptors.iter().enumerate() {
+        let Some(class_offset): Option<usize> = class_index
+            .checked_mul(32)
+            .and_then(|relative: usize| class_defs_offset.checked_add(relative))
+        else {
+            report.record(
+                Some(descriptor),
+                class_defs_offset,
+                "DEX class definition offset overflow".to_owned(),
+            );
+            break;
+        };
+        if !parsed_descriptors.insert(descriptor.as_str()) {
+            report.record(
+                Some(descriptor),
+                class_offset,
+                "DEX class definition is duplicated".to_owned(),
+            );
+            continue;
+        }
+        match parse_class_metadata(&mut parser, class_offset, descriptor) {
+            Ok(parsed) => {
+                for offset in parsed.invalid_signatures {
+                    report.record(
+                        Some(descriptor),
+                        offset,
+                        "DEX Signature grammar is invalid".to_owned(),
+                    );
+                }
+                report
+                    .metadata
+                    .field_signatures
+                    .extend(parsed.field_signatures);
+                report
+                    .metadata
+                    .method_signatures
+                    .extend(parsed.method_signatures);
+                report
+                    .metadata
+                    .classes
+                    .insert(descriptor.clone(), parsed.class);
+            }
+            Err(error) => {
+                let exhausted: bool = metadata_budget_exhausted(&error, &parser.budget);
+                report.record_error(Some(descriptor), &error);
+                if exhausted {
+                    break;
+                }
+            }
+        }
+    }
+    normalize_system_metadata(&mut report);
+    report
+}
+
 #[inline]
 fn count_cap(declared: u32, record_stride: usize, total_len: usize) -> usize {
     let max_records: usize = total_len / record_stride.max(1) + 1;
@@ -488,7 +1948,7 @@ fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
         parse_method_ids(bytes, &header, &strings, &type_names, &proto_ids)?;
     let (call_site_ids_size, method_handles_size): (usize, usize) =
         parse_extended_pool_sizes(bytes, &header)?;
-    Ok(DexFile {
+    let dex: DexFile = DexFile {
         header,
         strings,
         type_names,
@@ -499,7 +1959,8 @@ fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
         method_ids,
         call_site_ids_size,
         method_handles_size,
-    })
+    };
+    Ok(dex)
 }
 
 #[cfg(feature = "semantic-reach")]
@@ -2339,6 +3800,225 @@ pub(crate) fn partial_code_failure_fixture() -> (DexFile, Vec<u8>) {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn nested_array_value(depth: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        for _ in 0..depth {
+            bytes.extend_from_slice(&[0x1c, 0x01]);
+        }
+        bytes.push(0x1e);
+        bytes
+    }
+
+    fn system_value_reason(
+        bytes: &[u8],
+        budget: &mut SystemMetadataBudget,
+    ) -> Option<&'static str> {
+        let mut cursor: usize = 0;
+        match parse_system_value(bytes, &mut cursor, 0, budget) {
+            Ok(_) => None,
+            Err(Error::BadBytecode { reason, .. }) => Some(reason),
+            Err(_) => Some("unexpected non-bytecode system value error"),
+        }
+    }
+
+    #[test]
+    fn system_annotation_array_depth_is_capped_at_sixty_four() {
+        let mut budget: SystemMetadataBudget = SystemMetadataBudget::new(1 << 20);
+        assert_eq!(
+            system_value_reason(&nested_array_value(64), &mut budget),
+            None
+        );
+        let mut budget: SystemMetadataBudget = SystemMetadataBudget::new(1 << 20);
+        assert_eq!(
+            system_value_reason(&nested_array_value(65), &mut budget),
+            Some("DEX system annotation nesting depth exceeded")
+        );
+    }
+
+    #[test]
+    fn system_annotation_value_budget_refuses_before_allocation() {
+        let three_nulls: [u8; 5] = [0x1c, 0x03, 0x1e, 0x1e, 0x1e];
+        let mut budget: SystemMetadataBudget = SystemMetadataBudget::new(4);
+        assert_eq!(system_value_reason(&three_nulls, &mut budget), None);
+        let declared_but_absent: [u8; 4] = [0x1c, 0x80, 0x80, 0x04];
+        let mut budget: SystemMetadataBudget = SystemMetadataBudget::new(4);
+        assert_eq!(
+            system_value_reason(&declared_but_absent, &mut budget),
+            Some("DEX system annotation array is truncated")
+        );
+        assert_eq!(budget.values_remaining, 3);
+        let eight_nulls: [u8; 10] = [0x1c, 0x08, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e];
+        let mut budget: SystemMetadataBudget = SystemMetadataBudget::new(4);
+        assert_eq!(
+            system_value_reason(&eight_nulls, &mut budget),
+            Some("DEX system annotation value budget exceeded")
+        );
+    }
+
+    fn nested_list_signature(depth: usize) -> String {
+        let mut value: String = "Ljava/lang/Object;".to_owned();
+        for _ in 0..depth {
+            value = format!("Ljava/util/List<{value}>;");
+        }
+        value
+    }
+
+    fn type_argument_class(name: &str, count: usize) -> String {
+        format!("L{name}<{}>;", "Ljava/lang/Object;".repeat(count))
+    }
+
+    #[test]
+    fn signature_reference_depth_is_capped_at_sixty_four() {
+        assert!(
+            validate_signature_syntax(&nested_list_signature(63), SignatureTarget::Field, 0)
+                .is_ok()
+        );
+        assert!(
+            validate_signature_syntax(&nested_list_signature(64), SignatureTarget::Field, 0)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn signature_node_count_is_capped_at_4096() {
+        let at_limit: String = format!(
+            "{}{}",
+            type_argument_class("a/A", 1_024),
+            type_argument_class("b/B", 1_024)
+        );
+        assert!(validate_signature_syntax(&at_limit, SignatureTarget::Class, 0).is_ok());
+        let past_limit: String = format!("{at_limit}{}", type_argument_class("c/C", 1));
+        assert!(validate_signature_syntax(&past_limit, SignatureTarget::Class, 0).is_err());
+    }
+
+    #[test]
+    fn a_failed_annotation_set_is_charged_once() {
+        let original: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+        let dex: DexFile = parse(original).expect("parse EdgeCases");
+        let set_offset: u32 = (0..dex.class_descriptors.len())
+            .find_map(|index: usize| {
+                let class_offset: usize = dex.header.class_defs_off as usize + index * 32;
+                let directory: usize = read_u32_at(original, class_offset + 20)? as usize;
+                if directory == 0 {
+                    return None;
+                }
+                read_u32_at(original, directory).filter(|offset: &u32| *offset != 0)
+            })
+            .expect("class annotation set");
+        let count: usize = read_u32_at(original, set_offset as usize).expect("set count") as usize;
+        assert!(count > 0);
+        let mut bytes: Vec<u8> = original.to_vec();
+        let first_entry: usize = set_offset as usize + 4;
+        bytes[first_entry..first_entry + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let (data_start, data_end): (usize, usize) =
+            data_bounds(&dex, &bytes).expect("data bounds");
+        let mut parser: MetadataParser<'_> = MetadataParser {
+            dex: &dex,
+            bytes: &bytes,
+            data_start,
+            data_end,
+            budget: SystemMetadataBudget::new(bytes.len()),
+            cache: BTreeMap::new(),
+            failed: BTreeMap::new(),
+        };
+        let failure = |result: Result<Vec<ParsedSystemAnnotation>>| -> (usize, &'static str) {
+            match result {
+                Err(Error::BadBytecode { offset, reason }) => (offset, reason),
+                Err(_) => (0, "unexpected non-bytecode annotation set error"),
+                Ok(_) => (0, "corrupted annotation set parsed"),
+            }
+        };
+        let values_before: usize = parser.budget.values_remaining;
+        let (first_offset, first): (usize, &'static str) =
+            failure(parser.annotation_set(set_offset));
+        let values_after_first: usize = parser.budget.values_remaining;
+        assert_eq!(values_before - values_after_first, count);
+        for _ in 0..8 {
+            assert_eq!(
+                failure(parser.annotation_set(set_offset)),
+                (first_offset, first)
+            );
+        }
+        assert_eq!(parser.budget.values_remaining, values_after_first);
+        assert!(
+            first.contains("annotation item offset is out of range"),
+            "{first}"
+        );
+    }
+
+    #[test]
+    fn repeated_annotation_set_references_parse_once() {
+        let bytes: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+        let dex: DexFile = parse(bytes).expect("parse EdgeCases");
+        let (data_start, data_end): (usize, usize) = data_bounds(&dex, bytes).expect("data bounds");
+        let set_offset: u32 = (0..dex.class_descriptors.len())
+            .find_map(|index: usize| {
+                let class_offset: usize = dex.header.class_defs_off as usize + index * 32;
+                let directory: usize = read_u32_at(bytes, class_offset + 20)? as usize;
+                if directory == 0 {
+                    return None;
+                }
+                read_u32_at(bytes, directory).filter(|offset: &u32| *offset != 0)
+            })
+            .expect("class annotation set");
+        let mut probe: MetadataParser<'_> = MetadataParser {
+            dex: &dex,
+            bytes,
+            data_start,
+            data_end,
+            budget: SystemMetadataBudget::new(bytes.len()),
+            cache: BTreeMap::new(),
+            failed: BTreeMap::new(),
+        };
+        let values_before: usize = probe.budget.values_remaining;
+        let annotation_count: usize = probe.annotation_set(set_offset).expect("probe parse").len();
+        let parse_cost: usize = values_before - probe.budget.values_remaining;
+        assert!(parse_cost > 0);
+        let mut parser: MetadataParser<'_> = MetadataParser {
+            dex: &dex,
+            bytes,
+            data_start,
+            data_end,
+            budget: SystemMetadataBudget {
+                values_remaining: parse_cost,
+                bytes_remaining: MAX_SYSTEM_METADATA_BYTES,
+            },
+            cache: BTreeMap::new(),
+            failed: BTreeMap::new(),
+        };
+        assert_eq!(
+            parser
+                .annotation_set(set_offset)
+                .expect("first reference")
+                .len(),
+            annotation_count
+        );
+        assert_eq!(
+            parser
+                .annotation_set(set_offset)
+                .expect("cached reference")
+                .len(),
+            annotation_count
+        );
+        assert_eq!(parser.budget.values_remaining, 0);
+    }
+
+    #[test]
+    fn metadata_output_budget_scales_with_input_between_floor_and_ceiling() {
+        assert_eq!(
+            SystemMetadataBudget::new(1_024).bytes_remaining,
+            MIN_SYSTEM_METADATA_BYTES
+        );
+        assert_eq!(
+            SystemMetadataBudget::new(1_024 * 1_024).bytes_remaining,
+            8 * 1_024 * 1_024
+        );
+        assert_eq!(
+            SystemMetadataBudget::new(usize::MAX).bytes_remaining,
+            MAX_SYSTEM_METADATA_BYTES
+        );
+    }
 
     fn legacy_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
         let mut value: u32 = 0;

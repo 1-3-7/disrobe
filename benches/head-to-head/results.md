@@ -12,12 +12,12 @@ Regenerate with `cargo run --locked -p disrobe-bench-head-to-head`. Add `-- --ch
 
 | tool | version | metric | value | status |
 |---|---|---|---|---|
-| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | emitted-region compile yield (clean / emitted) | 63 clean / 163 emitted (38.7%) | ok |
+| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | emitted-region compile yield (clean / emitted) | 157 clean / 228 emitted (68.9%) | ok |
 | jadx (DEX input) | 1.5.5 | emitted-region compile yield (clean / emitted) | 281 clean / 303 emitted (92.7%) | ok |
 | disrobe (in-house JVM, JAR input) | n/a (in-process) | emitted-region compile yield (clean / emitted) | 181 clean / 181 emitted (100.0%) | ok |
 | cfr (JAR input) | CFR 0.152 | emitted-region compile yield (clean / emitted) | 152 clean / 166 emitted (91.6%) | ok |
 
-DEX leg: `disrobe` emitted-region compile yield: 63 clean of 163 emitted (38.7%), beside 1 compiler defect outside any method; `jadx` (1.5.5): 281 clean of 303 emitted (92.7%), beside 1 compiler defect outside any method. The denominators describe different emitted-region populations and do not support a cross-tool ranking. JAR leg: `disrobe` emitted-region compile yield: 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152): 152 clean of 166 emitted (91.6%). The denominators describe different emitted-region populations and do not support a cross-tool ranking. All rows use the same stubbed real-`javac` procedure. The scorer compiles the complete emitted source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Regions inside an isolated method or type are unclean; peer regions are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. Each ratio describes only that tool's emitted regions.
+DEX leg: `disrobe` emitted-region compile yield: 157 clean of 228 emitted (68.9%); `jadx` (1.5.5): 281 clean of 303 emitted (92.7%), beside 1 compiler defect outside any method. The denominators describe different emitted-region populations and do not support a cross-tool ranking. JAR leg: `disrobe` emitted-region compile yield: 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152): 152 clean of 166 emitted (91.6%). The denominators describe different emitted-region populations and do not support a cross-tool ranking. All rows use the same stubbed real-`javac` procedure. The scorer compiles the complete emitted source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Regions inside an isolated method or type are unclean; peer regions are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. Each ratio describes only that tool's emitted regions.
 
 ## Secret recall: disrobe frisk and APKLeaks
 

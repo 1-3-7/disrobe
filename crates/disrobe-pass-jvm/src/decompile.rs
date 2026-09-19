@@ -109,7 +109,8 @@ pub fn decompile_class_named(cf: &ClassFile) -> (String, DecompiledClass) {
     crate::name_disambig::ensure_writable_identifier_scope(
         declared_identifiers(std::iter::once(cf)),
         || {
-            let decompiled: DecompiledClass = decompile_class_scoped(cf);
+            let decompiled: DecompiledClass =
+                with_emitted_lambda_targets(cf, || decompile_class_scoped(cf));
             let filename: String = cf.this_class_name().map_or_else(
                 |_| "UnknownClass.java".to_owned(),
                 |raw| {
@@ -771,15 +772,17 @@ fn render_method(
     annotation_default: Option<&str>,
     class_signature: Option<&crate::signature::RecoveredClassSignature>,
 ) -> RenderedMethod {
-    render_method_mode(
-        cf,
-        method,
-        class_simple,
-        is_interface,
-        annotation_default,
-        class_signature,
-        true,
-    )
+    with_capture_name_scope(|| {
+        render_method_mode(
+            cf,
+            method,
+            class_simple,
+            is_interface,
+            annotation_default,
+            class_signature,
+            true,
+        )
+    })
 }
 
 fn render_method_mode(
@@ -1868,6 +1871,16 @@ const fn is_atomic_receiver(e: &Expr) -> bool {
 }
 
 fn render_field_access(receiver: &Expr, owner: &str, name: &str) -> String {
+    if matches!(receiver, Expr::This)
+        && let Some(binding) =
+            CAPTURE_FIELD_BINDINGS.with(|slot: &RefCell<BTreeMap<(String, String), String>>| {
+                slot.borrow()
+                    .get(&(owner.to_owned(), name.to_owned()))
+                    .cloned()
+            })
+    {
+        return binding;
+    }
     let owner_src: String = descriptor::binary_to_source(owner);
     let field: String = descriptor::java_writable_identifier(name);
     if matches!(receiver, Expr::This) {
@@ -2010,6 +2023,9 @@ fn lift_method_body(
     let lifted: std::result::Result<MethodBody, &'static str> =
         with_object_locals(object_locals, boolean_locals, array_casts, || {
             with_deferred_allocations(allocations, || {
+                if anonymous_local_uses_undeclared_member(cf, &insns) {
+                    return Err(ANONYMOUS_UNDECLARED_MEMBER);
+                }
                 match lift_structured(
                     cf,
                     code,
@@ -2101,6 +2117,11 @@ fn lift_method_body_flat(
         match lifted {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{indent}{s};");
+            }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{indent}{statement};");
+                }
             }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{indent}{s}");
@@ -2733,6 +2754,14 @@ fn classify_bool_block(
                 }
                 let _ = writeln!(prelude, "        {s};");
             }
+            LiftResult::Statements(statements) if allow_prelude && stack.is_empty() => {
+                for statement in statements {
+                    if statement.contains(HOLE_RENDER) {
+                        return None;
+                    }
+                    let _ = writeln!(prelude, "        {statement};");
+                }
+            }
             _ => return None,
         }
     }
@@ -2841,15 +2870,48 @@ fn compute_slot_types(
     let seen_types: BTreeMap<u16, BTreeSet<String>> = reference_seen_types(cf, insns, &handler_pcs);
     let mut inferred: BTreeMap<u16, String> =
         infer_reference_local_types(cf, insns, param_types, &handler_pcs);
-    for (slot, ty) in constructed_local_types(cf, insns) {
-        let conflicts_with_seen: bool = seen_types
-            .get(&slot)
-            .is_some_and(|tys: &BTreeSet<String>| tys.iter().any(|t: &String| *t != ty));
-        if exc_conflicted.contains(&slot) || conflicts_with_seen {
+    let mut anonymous_declaration_types: BTreeMap<u16, String> = BTreeMap::new();
+    let constructed: ConstructedLocalTypes = constructed_local_types(cf, insns);
+    for (slot, concrete_type) in constructed.all {
+        let anonymous_type: Option<String> = anonymous_declaration_type(&concrete_type);
+        let conflicts_with_seen: bool =
+            seen_types.get(&slot).is_some_and(|tys: &BTreeSet<String>| {
+                anonymous_type.as_ref().map_or_else(
+                    || tys.iter().any(|seen: &String| *seen != concrete_type),
+                    |declaration_type: &String| {
+                        anonymous_seen_type_conflicts(tys, declaration_type)
+                    },
+                )
+            });
+        if let Some(declaration_type) = anonymous_type
+            && !conflicts_with_seen
+            && !exc_conflicted.contains(&slot)
+        {
+            anonymous_declaration_types.insert(slot, declaration_type.clone());
+            inferred.insert(slot, declaration_type);
+        } else if exc_conflicted.contains(&slot) || conflicts_with_seen {
             inferred.insert(slot, "Object".to_string());
         } else {
-            inferred.insert(slot, ty);
+            inferred.insert(slot, concrete_type);
         }
+    }
+    for (slot, declaration_type) in constructed.anonymous {
+        let Some(declaration_type) = declaration_type else {
+            continue;
+        };
+        if exc_conflicted.contains(&slot) {
+            continue;
+        }
+        if seen_types
+            .get(&slot)
+            .is_some_and(|types: &BTreeSet<String>| {
+                anonymous_seen_type_conflicts(types, &declaration_type)
+            })
+        {
+            continue;
+        }
+        anonymous_declaration_types.insert(slot, declaration_type.clone());
+        inferred.insert(slot, declaration_type);
     }
     for (slot, ty) in constructed_array_local_types(cf, insns) {
         let conflicts_with_seen: bool = seen_types
@@ -2922,7 +2984,168 @@ fn compute_slot_types(
             .unwrap_or_else(|| "Object".to_string());
         slot_type.insert(slot, resolved);
     }
+    for (slot, declaration_type) in anonymous_declaration_types {
+        slot_type.insert(slot, declaration_type);
+    }
     slot_type
+}
+
+fn anonymous_seen_type_conflicts(seen_types: &BTreeSet<String>, declaration_type: &str) -> bool {
+    seen_types.iter().any(|seen_type: &String| {
+        seen_type != "Object"
+            && seen_type != "java.lang.Object"
+            && seen_type != declaration_type
+            && anonymous_declaration_type(seen_type).as_deref() != Some(declaration_type)
+    })
+}
+
+const ANONYMOUS_UNDECLARED_MEMBER: &str =
+    "anonymous local is used through a member its source supertype does not declare";
+
+const OBJECT_OVERRIDABLE_METHODS: [(&str, &str); 5] = [
+    ("toString", "()Ljava/lang/String;"),
+    ("hashCode", "()I"),
+    ("equals", "(Ljava/lang/Object;)Z"),
+    ("clone", "()Ljava/lang/Object;"),
+    ("finalize", "()V"),
+];
+
+struct LocalMemberAccess {
+    slot: u16,
+    owner: String,
+    name: String,
+    descriptor: String,
+    field: bool,
+}
+
+fn local_receiver_member_accesses(cf: &ClassFile, insns: &[Instruction]) -> Vec<LocalMemberAccess> {
+    let mut stack: Vec<Option<u16>> = Vec::new();
+    let mut accesses: Vec<LocalMemberAccess> = Vec::new();
+    for insn in insns {
+        let op: u8 = insn.opcode;
+        match (op, &insn.operands) {
+            (0x2A..=0x2D, _) => stack.push(Some(u16::from(op - 0x2A))),
+            (0x19, Operands::Local(slot)) => stack.push(Some(*slot)),
+            (0x01..=0x18 | 0x1A..=0x29, _) => stack.push(None),
+            (0x59, _) => {
+                let Some(top): Option<Option<u16>> = stack.last().copied() else {
+                    stack.clear();
+                    continue;
+                };
+                stack.push(top);
+            }
+            (0xB4..=0xB9, Operands::ConstPool(_) | Operands::InvokeInterface { .. }) => {
+                let index: u16 = match insn.operands {
+                    Operands::ConstPool(index) | Operands::InvokeInterface { index, .. } => index,
+                    _ => continue,
+                };
+                let Some((owner, name, descriptor)): Option<(String, String, String)> =
+                    bytecode::resolve_ref(cf, index)
+                        .and_then(|reference: String| split_member(&reference))
+                else {
+                    stack.clear();
+                    continue;
+                };
+                let field: bool = matches!(op, 0xB4 | 0xB5);
+                let (argument_count, pushes): (usize, bool) = if field {
+                    (usize::from(op == 0xB5), op == 0xB4)
+                } else {
+                    let Some(parsed): Option<MethodDescriptor> =
+                        descriptor::parse_method(&descriptor)
+                    else {
+                        stack.clear();
+                        continue;
+                    };
+                    (
+                        parsed.params.len(),
+                        !matches!(parsed.returns, JavaType::Void),
+                    )
+                };
+                if stack.len() < argument_count {
+                    stack.clear();
+                    continue;
+                }
+                stack.truncate(stack.len() - argument_count);
+                if op != 0xB8 {
+                    let receiver: Option<u16> = stack.pop().flatten();
+                    if let Some(slot) = receiver
+                        && matches!(op, 0xB4..=0xB6)
+                        && name != "<init>"
+                    {
+                        accesses.push(LocalMemberAccess {
+                            slot,
+                            owner: descriptor::binary_to_source(&owner),
+                            name,
+                            descriptor,
+                            field,
+                        });
+                    }
+                }
+                if pushes {
+                    stack.push(None);
+                }
+            }
+            _ => stack.clear(),
+        }
+    }
+    accesses
+}
+
+fn anonymous_local_uses_undeclared_member(cf: &ClassFile, insns: &[Instruction]) -> bool {
+    let constructed: ConstructedLocalTypes = constructed_local_types(cf, insns);
+    if constructed.anonymous.values().all(Option::is_none) {
+        return false;
+    }
+    local_receiver_member_accesses(cf, insns)
+        .into_iter()
+        .any(|access: LocalMemberAccess| {
+            let Some(Some(declaration_type)): Option<&Option<String>> =
+                constructed.anonymous.get(&access.slot)
+            else {
+                return false;
+            };
+            if anonymous_declaration_type(&access.owner).as_ref() != Some(declaration_type) {
+                return false;
+            }
+            anon_inner_for(&access.owner).is_some_and(|anon: ClassFile| {
+                anonymous_member_is_undeclared_on_supertype(&anon, &access)
+            })
+        })
+}
+
+fn anonymous_member_is_undeclared_on_supertype(
+    anon: &ClassFile,
+    access: &LocalMemberAccess,
+) -> bool {
+    if access.field {
+        return anon.fields.iter().any(|field: &FieldInfo| {
+            anon.utf8_at(field.name_index)
+                .is_ok_and(|name: &str| name == access.name)
+        });
+    }
+    let Some(method): Option<&MethodInfo> = anon.methods.iter().find(|method: &&MethodInfo| {
+        anon.utf8_at(method.name_index)
+            .is_ok_and(|name: &str| name == access.name)
+            && anon
+                .utf8_at(method.descriptor_index)
+                .is_ok_and(|descriptor: &str| descriptor == access.descriptor)
+    }) else {
+        return false;
+    };
+    let Ok(superclass): core::result::Result<&str, _> = anon.class_name(anon.super_class) else {
+        return false;
+    };
+    match (superclass, anon.interfaces.len()) {
+        ("java/lang/Object", 0) => {
+            !OBJECT_OVERRIDABLE_METHODS
+                .iter()
+                .any(|(name, descriptor): &(&str, &str)| {
+                    *name == access.name && *descriptor == access.descriptor
+                })
+        }
+        ("java/lang/Object", 1) => method.access_flags & ACC_PUBLIC == 0,
+        _ => false,
+    }
 }
 
 fn boolean_array_names(
@@ -3345,8 +3568,16 @@ fn infer_reference_local_slots(
     (slots, distinct)
 }
 
-fn constructed_local_types(cf: &ClassFile, insns: &[Instruction]) -> BTreeMap<u16, String> {
-    let mut out: BTreeMap<u16, String> = BTreeMap::new();
+struct ConstructedLocalTypes {
+    all: BTreeMap<u16, String>,
+    anonymous: BTreeMap<u16, Option<String>>,
+}
+
+fn constructed_local_types(cf: &ClassFile, insns: &[Instruction]) -> ConstructedLocalTypes {
+    let mut out: ConstructedLocalTypes = ConstructedLocalTypes {
+        all: BTreeMap::new(),
+        anonymous: BTreeMap::new(),
+    };
     let mut pending: Vec<String> = Vec::new();
     let mut last_constructed: Option<String> = None;
     for insn in insns {
@@ -3365,26 +3596,50 @@ fn constructed_local_types(cf: &ClassFile, insns: &[Instruction]) -> BTreeMap<u1
                 }
             }
             0x3A | 0x4B..=0x4E => {
+                let slot: u16 = match (insn.opcode, &insn.operands) {
+                    (0x3A, Operands::Local(idx)) => *idx,
+                    (0x4B..=0x4E, _) => u16::from(insn.opcode - 0x4B),
+                    _ => continue,
+                };
+                if allocation_store_is_deferred(insn.pc)
+                    && let Some(ty) = pending.last().cloned()
+                {
+                    record_constructed_local_type(&mut out, slot, ty);
+                }
                 if let Some(ty) = last_constructed.take() {
-                    let slot: u16 = match (insn.opcode, &insn.operands) {
-                        (0x3A, Operands::Local(idx)) => *idx,
-                        (0x4B..=0x4E, _) => u16::from(insn.opcode - 0x4B),
-                        _ => continue,
-                    };
-                    match out.get(&slot) {
-                        Some(existing) if *existing != ty => {
-                            out.insert(slot, "Object".to_string());
-                        }
-                        _ => {
-                            out.insert(slot, ty);
-                        }
-                    }
+                    record_constructed_local_type(&mut out, slot, ty);
                 }
             }
             _ => last_constructed = None,
         }
     }
     out
+}
+
+fn record_constructed_local_type(
+    out: &mut ConstructedLocalTypes,
+    slot: u16,
+    concrete_type: String,
+) {
+    let declaration_type: Option<String> = anonymous_declaration_type(&concrete_type);
+    match out.anonymous.entry(slot) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(declaration_type);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if entry.get().is_some() && entry.get().as_ref() != declaration_type.as_ref() {
+                entry.insert(None);
+            }
+        }
+    }
+    match out.all.get(&slot) {
+        Some(existing) if *existing != concrete_type => {
+            out.all.insert(slot, "Object".to_string());
+        }
+        _ => {
+            out.all.insert(slot, concrete_type);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -4631,7 +4886,9 @@ fn finally_continue_latch(
 
 fn render_for_update(ctx: &RenderCtx<'_>, latch: BlockId) -> Option<String> {
     let mut rendered: String = String::new();
-    render_latch_inline(ctx, latch, &mut rendered, 0);
+    if !render_latch_inline(ctx, latch, &mut rendered, 0) {
+        return None;
+    }
     let trimmed: &str = rendered.trim();
     if trimmed.lines().count() != 1 {
         return None;
@@ -4886,8 +5143,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
         Region::Continue { label, latch } => {
             if let Some(latch_bid) = latch
                 && !ctx.rendered_blocks.contains(latch_bid)
+                && !render_latch_inline(ctx, *latch_bid, out, level)
             {
-                render_latch_inline(ctx, *latch_bid, out, level);
+                ctx.fully_lifted = false;
             }
             let pad: String = indent_string(level);
             match label {
@@ -5149,8 +5407,9 @@ fn value_stored_to_slot(ctx: &RenderCtx<'_>, bid: BlockId, slot: u16) -> Option<
             LiftResult::Pushed
             | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_) => {}
-            LiftResult::Unhandled => return None,
+            LiftResult::PushedWithPrelude(_) | LiftResult::Unhandled => return None,
         }
     }
     None
@@ -5379,7 +5638,8 @@ fn try_render_foreach(
     true
 }
 
-fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, level: usize) {
+fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, level: usize) -> bool {
+    let mut lifted: bool = true;
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
     let pad: String = indent_string(level);
     let mut stack: Vec<Expr> = ctx
@@ -5407,12 +5667,21 @@ fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, leve
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
             }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
+            }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
             }
-            LiftResult::Pushed | LiftResult::Elided | LiftResult::Unhandled => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
+            LiftResult::Unhandled => {
+                lifted = false;
+            }
         }
     }
+    lifted
 }
 
 fn render_block_seeded(
@@ -5524,6 +5793,11 @@ fn render_block_seeded(
                 let s: String = finally_scoped_local_statement(ctx, ins, s);
                 let _ = writeln!(out, "{pad}{s};");
             }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
+            }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
@@ -5562,8 +5836,10 @@ fn lift_lock_expr(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Elided
+            LiftResult::PushedWithPrelude(_)
+            | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_)
             | LiftResult::Unhandled => {
                 return None;
@@ -5594,8 +5870,10 @@ fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> 
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Elided
+            LiftResult::PushedWithPrelude(_)
+            | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_)
             | LiftResult::Unhandled => {
                 return None;
@@ -5636,8 +5914,9 @@ fn simulate_block(ctx: &RenderCtx<'_>, bid: BlockId, entry: &[Expr]) -> (Vec<Exp
             LiftResult::Pushed
             | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_) => {}
-            LiftResult::Unhandled => {
+            LiftResult::PushedWithPrelude(_) | LiftResult::Unhandled => {
                 stack.clear();
                 clean = false;
             }
@@ -5876,8 +6155,10 @@ fn arm_is_pure_value(ctx: &RenderCtx<'_>, bid: BlockId, prefix_len: usize) -> bo
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Elided
+            LiftResult::PushedWithPrelude(_)
+            | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_)
             | LiftResult::Unhandled => {
                 return false;
@@ -5949,8 +6230,9 @@ fn head_condition_to(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> Optio
             LiftResult::Pushed
             | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_) => {}
-            LiftResult::Unhandled => return None,
+            LiftResult::PushedWithPrelude(_) | LiftResult::Unhandled => return None,
         }
     }
     if stack.iter().any(expr_has_hole) {
@@ -6207,6 +6489,11 @@ fn render_head_prefix_and_condition(
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
             }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
+            }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
@@ -6264,8 +6551,9 @@ fn join_seed_use_count(ctx: &RenderCtx<'_>, bid: BlockId) -> usize {
             LiftResult::Pushed
             | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_) => {}
-            LiftResult::Unhandled => break,
+            LiftResult::PushedWithPrelude(_) | LiftResult::Unhandled => break,
         }
         let after: usize = stack
             .iter()
@@ -6332,6 +6620,11 @@ fn render_if_condition(
         match lifted {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
+            }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
             }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
@@ -6446,6 +6739,11 @@ fn render_switch_subject(
         match lifted {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
+            }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
             }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
@@ -6787,6 +7085,11 @@ fn lift_switch_arm_body(
             ctx.bool_return,
         ) {
             LiftResult::Pushed | LiftResult::Elided => {}
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(stmts, "{pad}{statement};");
+                }
+            }
             LiftResult::Statement(s) => {
                 let _ = writeln!(stmts, "{pad}{s};");
             }
@@ -7072,6 +7375,11 @@ fn render_string_switch(
         ) {
             LiftResult::Statement(s) => {
                 let _ = writeln!(out, "{pad}{s};");
+            }
+            LiftResult::PushedWithPrelude(statements) | LiftResult::Statements(statements) => {
+                for statement in statements {
+                    let _ = writeln!(out, "{pad}{statement};");
+                }
             }
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
@@ -7453,8 +7761,10 @@ fn lift_value_slice(ctx: &RenderCtx<'_>, slice: &[Instruction]) -> Option<Expr> 
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Elided
+            LiftResult::PushedWithPrelude(_)
+            | LiftResult::Elided
             | LiftResult::Statement(_)
+            | LiftResult::Statements(_)
             | LiftResult::ControlFlow(_)
             | LiftResult::Unhandled => {
                 return None;
@@ -8621,8 +8931,10 @@ fn branch_targets(insns: &[Instruction]) -> BTreeSet<u32> {
 
 enum LiftResult {
     Pushed,
+    PushedWithPrelude(Vec<String>),
     Elided,
     Statement(String),
+    Statements(Vec<String>),
     ControlFlow(String),
     Unhandled,
 }
@@ -8720,6 +9032,98 @@ thread_local! {
     static ANON_INLINE_STACK: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    static CAPTURE_FIELD_BINDINGS: RefCell<BTreeMap<(String, String), String>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+thread_local! {
+    static EMITTED_LAMBDA_TARGETS: RefCell<BTreeSet<(String, String, String)>> =
+        const { RefCell::new(BTreeSet::new()) };
+}
+
+struct ThreadLocalRestore<V: 'static> {
+    key: &'static std::thread::LocalKey<RefCell<V>>,
+    previous: Option<V>,
+}
+
+impl<V: 'static> Drop for ThreadLocalRestore<V> {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            let _: core::result::Result<V, std::thread::AccessError> = self
+                .key
+                .try_with(|slot: &RefCell<V>| slot.replace(previous));
+        }
+    }
+}
+
+fn replace_thread_local<V: 'static>(
+    key: &'static std::thread::LocalKey<RefCell<V>>,
+    value: V,
+) -> ThreadLocalRestore<V> {
+    let previous: V = key.with(|slot: &RefCell<V>| slot.replace(value));
+    ThreadLocalRestore {
+        key,
+        previous: Some(previous),
+    }
+}
+
+thread_local! {
+    static CAPTURE_NAME_ORDINAL: RefCell<Option<usize>> = const { RefCell::new(None) };
+}
+
+fn with_capture_name_scope<T>(body: impl FnOnce() -> T) -> T {
+    if CAPTURE_NAME_ORDINAL.with(|slot: &RefCell<Option<usize>>| slot.borrow().is_some()) {
+        return body();
+    }
+    let _restore: ThreadLocalRestore<Option<usize>> =
+        replace_thread_local(&CAPTURE_NAME_ORDINAL, Some(0));
+    body()
+}
+
+fn next_capture_name(allocation_pc: u32) -> Option<String> {
+    CAPTURE_NAME_ORDINAL.with(|slot: &RefCell<Option<usize>>| {
+        let mut ordinal: std::cell::RefMut<'_, Option<usize>> = slot.borrow_mut();
+        let current: usize = (*ordinal)?;
+        *ordinal = Some(current.checked_add(1)?);
+        Some(format!("disrobeCapture${allocation_pc}${current}"))
+    })
+}
+
+fn with_capture_field_bindings<T>(
+    bindings: BTreeMap<(String, String), String>,
+    body: impl FnOnce() -> T,
+) -> T {
+    let _restore: ThreadLocalRestore<BTreeMap<(String, String), String>> =
+        replace_thread_local(&CAPTURE_FIELD_BINDINGS, bindings);
+    body()
+}
+
+fn with_emitted_lambda_targets<T>(cf: &ClassFile, body: impl FnOnce() -> T) -> T {
+    let owner: Option<String> = cf.this_class_name().ok().map(str::to_owned);
+    let targets: BTreeSet<(String, String, String)> = owner.map_or_else(BTreeSet::new, |owner| {
+        cf.methods
+            .iter()
+            .filter_map(|method: &MethodInfo| {
+                let name: &str = cf.utf8_at(method.name_index).ok()?;
+                let descriptor: &str = cf.utf8_at(method.descriptor_index).ok()?;
+                (name.starts_with("lambda$") && descriptor::parse_method(descriptor).is_some())
+                    .then(|| (owner.clone(), name.to_owned(), descriptor.to_owned()))
+            })
+            .collect()
+    });
+    let _restore: ThreadLocalRestore<BTreeSet<(String, String, String)>> =
+        replace_thread_local(&EMITTED_LAMBDA_TARGETS, targets);
+    body()
+}
+
+fn emitted_lambda_target(owner: &str, name: &str, descriptor: &str) -> bool {
+    EMITTED_LAMBDA_TARGETS.with(|slot: &RefCell<BTreeSet<(String, String, String)>>| {
+        slot.borrow()
+            .contains(&(owner.to_owned(), name.to_owned(), descriptor.to_owned()))
+    })
+}
+
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
 struct ApiOutlineKey {
     owner: String,
@@ -8772,6 +9176,26 @@ fn api_outline_projection(
             matching.next().is_none().then_some(projection)
         },
     )
+}
+
+fn resolved_invoke_target(
+    owner: &str,
+    name: &str,
+    method_descriptor: &str,
+    is_static: bool,
+) -> Option<(String, String)> {
+    let projection: Option<ApiOutlineProjection> = is_static
+        .then(|| api_outline_projection(owner, name, method_descriptor))
+        .flatten();
+    match (
+        projection,
+        emitted_lambda_target(owner, name, method_descriptor),
+    ) {
+        (Some(_), true) => None,
+        (Some(projected), false) => Some((projected.owner, projected.name)),
+        (None, true) => Some((owner.to_owned(), recompile_safe_method_name(name))),
+        (None, false) => Some((owner.to_owned(), name.to_owned())),
+    }
 }
 
 const API_OUTLINE_MAX_CLASSES: usize = 512;
@@ -9260,12 +9684,46 @@ fn anon_inner_for(internal_name: &str) -> Option<ClassFile> {
 
 const ANON_INLINE_MAX_DEPTH: usize = 16;
 
-fn inline_anonymous_class(type_name: &str, ctor_args: &[String]) -> Option<String> {
+fn anonymous_inline_admitted(type_name: &str) -> bool {
+    ANON_INLINE_STACK.with(|slot: &RefCell<Vec<String>>| {
+        let stack: std::cell::Ref<'_, Vec<String>> = slot.borrow();
+        anonymous_stack_admits(&stack, type_name)
+    })
+}
+
+fn anonymous_stack_admits(stack: &[String], type_name: &str) -> bool {
+    stack.len() < ANON_INLINE_MAX_DEPTH && !stack.iter().any(|open: &String| open == type_name)
+}
+
+fn anonymous_declaration_type(type_name: &str) -> Option<String> {
+    if !anonymous_inline_admitted(type_name) {
+        return None;
+    }
+    let anon: ClassFile = anon_inner_for(type_name)?;
+    let generic_class: Option<crate::signature::RecoveredClassSignature> =
+        crate::signature::recover_class(&anon);
+    anonymous_allocation_type(&anon, generic_class.as_ref())
+}
+
+struct CaptureBinding {
+    ty: JavaType,
+    name: String,
+    value: String,
+}
+
+struct AnonymousAllocation {
+    bindings: Vec<CaptureBinding>,
+    expression: String,
+}
+
+fn inline_anonymous_class(
+    type_name: &str,
+    ctor_args: &[String],
+    allocation_pc: u32,
+) -> Option<AnonymousAllocation> {
     let admitted: bool = ANON_INLINE_STACK.with(|slot: &RefCell<Vec<String>>| {
         let mut stack: std::cell::RefMut<'_, Vec<String>> = slot.borrow_mut();
-        if stack.len() >= ANON_INLINE_MAX_DEPTH
-            || stack.iter().any(|open: &String| open == type_name)
-        {
+        if !anonymous_stack_admits(&stack, type_name) {
             return false;
         }
         stack.push(type_name.to_owned());
@@ -9274,8 +9732,8 @@ fn inline_anonymous_class(type_name: &str, ctor_args: &[String]) -> Option<Strin
     if !admitted {
         return None;
     }
-    let rendered: Option<String> = anon_inner_for(type_name)
-        .and_then(|anon: ClassFile| render_anonymous_class(&anon, ctor_args));
+    let rendered: Option<AnonymousAllocation> = anon_inner_for(type_name)
+        .and_then(|anon: ClassFile| render_anonymous_class(&anon, ctor_args, allocation_pc));
     ANON_INLINE_STACK.with(|slot: &RefCell<Vec<String>>| {
         let mut stack: std::cell::RefMut<'_, Vec<String>> = slot.borrow_mut();
         debug_assert_eq!(stack.last().map(String::as_str), Some(type_name));
@@ -9284,9 +9742,17 @@ fn inline_anonymous_class(type_name: &str, ctor_args: &[String]) -> Option<Strin
     rendered
 }
 
-fn allocation_expression(type_name: &str, ctor_args: &[String]) -> String {
-    inline_anonymous_class(type_name, ctor_args)
-        .unwrap_or_else(|| format!("new {type_name}({})", ctor_args.join(", ")))
+fn allocation_expression(
+    type_name: &str,
+    ctor_args: &[String],
+    allocation_pc: u32,
+) -> AnonymousAllocation {
+    inline_anonymous_class(type_name, ctor_args, allocation_pc).unwrap_or_else(|| {
+        AnonymousAllocation {
+            bindings: Vec::new(),
+            expression: format!("new {type_name}({})", ctor_args.join(", ")),
+        }
+    })
 }
 
 fn with_object_locals<T>(
@@ -10165,6 +10631,10 @@ fn field_put(
     }
 }
 
+const fn evaluation_order_neutral(expr: &Expr) -> bool {
+    matches!(expr, Expr::Const(_) | Expr::Local(_) | Expr::This)
+}
+
 fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> LiftResult {
     let idx: u16 = match &insn.operands {
         Operands::ConstPool(i) => *i,
@@ -10179,6 +10649,11 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
         return LiftResult::Unhandled;
     };
     let Some(parsed): Option<MethodDescriptor> = descriptor::parse_method(&desc) else {
+        return LiftResult::Unhandled;
+    };
+    let Some((target_owner, target_name)): Option<(String, String)> =
+        resolved_invoke_target(&owner, &name, &desc, op == 0xB8)
+    else {
         return LiftResult::Unhandled;
     };
     let argc: usize = parsed.params.len();
@@ -10205,18 +10680,57 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
             && let Some(Expr::Local(target)) = receiver.as_ref()
         {
             let allocated: String = descriptor::binary_to_source(&internal);
-            return LiftResult::Statement(format!(
-                "{target} = {}",
-                allocation_expression(&allocated, &ctor_args)
-            ));
+            let allocation: AnonymousAllocation =
+                allocation_expression(&allocated, &ctor_args, insn.pc);
+            if !allocation.bindings.is_empty() && !stack.iter().all(evaluation_order_neutral) {
+                return LiftResult::Unhandled;
+            }
+            let mut statements: Vec<String> = allocation
+                .bindings
+                .into_iter()
+                .map(|binding: CaptureBinding| {
+                    format!(
+                        "final {} {} = {}",
+                        binding.ty.render(),
+                        binding.name,
+                        binding.value
+                    )
+                })
+                .collect();
+            statements.push(format!("{target} = {}", allocation.expression));
+            return LiftResult::Statements(statements);
         }
         match receiver {
             Some(Expr::New(ty)) => {
-                let folded: Expr = Expr::Opaque(allocation_expression(&ty, &ctor_args));
+                let allocation: AnonymousAllocation =
+                    allocation_expression(&ty, &ctor_args, insn.pc);
+                let prelude: Vec<String> = allocation
+                    .bindings
+                    .into_iter()
+                    .map(|binding: CaptureBinding| {
+                        format!(
+                            "final {} {} = {}",
+                            binding.ty.render(),
+                            binding.name,
+                            binding.value
+                        )
+                    })
+                    .collect();
+                let folded: Expr = Expr::Opaque(allocation.expression);
                 if matches!(stack.last(), Some(Expr::New(under)) if *under == ty) {
                     stack.pop();
+                    if !prelude.is_empty() && !stack.iter().all(evaluation_order_neutral) {
+                        return LiftResult::Unhandled;
+                    }
                     stack.push(folded);
-                    return LiftResult::Pushed;
+                    return if prelude.is_empty() {
+                        LiftResult::Pushed
+                    } else {
+                        LiftResult::PushedWithPrelude(prelude)
+                    };
+                }
+                if !prelude.is_empty() {
+                    return LiftResult::Unhandled;
                 }
                 return LiftResult::Statement(folded.render());
             }
@@ -10234,20 +10748,7 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
         }
     }
 
-    let projection: Option<ApiOutlineProjection> = is_static
-        .then(|| api_outline_projection(&owner, &name, &desc))
-        .flatten();
-    let projected_owner: &str = projection
-        .as_ref()
-        .map_or(owner.as_str(), |projected: &ApiOutlineProjection| {
-            projected.owner.as_str()
-        });
-    let projected_name: &str = projection
-        .as_ref()
-        .map_or(name.as_str(), |projected: &ApiOutlineProjection| {
-            projected.name.as_str()
-        });
-    let owner_src: String = descriptor::binary_to_source(projected_owner);
+    let owner_src: String = descriptor::binary_to_source(&target_owner);
     let virtual_dispatch: bool = matches!(op, 0xB6 | 0xB9);
     let typed_receiver: Option<Expr> =
         receiver.map(|r: Expr| narrow_invoke_receiver(r, &owner_src, virtual_dispatch));
@@ -10256,7 +10757,7 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
     let call: Expr = Expr::Invoke {
         receiver: typed_receiver.map(Box::new),
         owner: owner_src,
-        method: projected_name.to_owned(),
+        method: target_name,
         args,
         returns_bool: matches!(parsed.returns, JavaType::Boolean),
     };
@@ -11137,45 +11638,291 @@ fn anon_capture_field_order(anon_cf: &ClassFile) -> Vec<String> {
     order
 }
 
-fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Option<String> {
+fn d8_capture_field_name(name: &str) -> bool {
+    name.strip_prefix("f$").is_some_and(|suffix: &str| {
+        !suffix.is_empty() && suffix.bytes().all(|byte: u8| byte.is_ascii_digit())
+    })
+}
+
+fn load_slot(insn: &Instruction) -> Option<u16> {
+    match (&insn.opcode, &insn.operands) {
+        (0x15..=0x19, Operands::Local(slot)) => Some(*slot),
+        (0x1A..=0x1D, _) => Some(u16::from(insn.opcode - 0x1A)),
+        (0x1E..=0x21, _) => Some(u16::from(insn.opcode - 0x1E)),
+        (0x22..=0x25, _) => Some(u16::from(insn.opcode - 0x22)),
+        (0x26..=0x29, _) => Some(u16::from(insn.opcode - 0x26)),
+        (0x2A..=0x2D, _) => Some(u16::from(insn.opcode - 0x2A)),
+        _ => None,
+    }
+}
+
+const fn load_matches_type(insn: &Instruction, ty: &JavaType) -> bool {
+    match ty {
+        JavaType::Boolean | JavaType::Byte | JavaType::Char | JavaType::Int | JavaType::Short => {
+            matches!(insn.opcode, 0x15 | 0x1A..=0x1D)
+        }
+        JavaType::Long => matches!(insn.opcode, 0x16 | 0x1E..=0x21),
+        JavaType::Float => matches!(insn.opcode, 0x17 | 0x22..=0x25),
+        JavaType::Double => matches!(insn.opcode, 0x18 | 0x26..=0x29),
+        JavaType::Object(_) | JavaType::Array(_) => matches!(insn.opcode, 0x19 | 0x2A..=0x2D),
+        JavaType::Void => false,
+    }
+}
+
+struct D8CaptureField {
+    name: String,
+    ty: JavaType,
+    parameter: usize,
+}
+
+fn d8_capture_plan(anon_cf: &ClassFile, argument_count: usize) -> Option<Vec<D8CaptureField>> {
+    if anon_cf.access_flags & (ACC_SYNTHETIC | ACC_FINAL) != (ACC_SYNTHETIC | ACC_FINAL) {
+        return None;
+    }
+    let fields: Vec<(&FieldInfo, String, JavaType)> = anon_cf
+        .fields
+        .iter()
+        .filter_map(|field: &FieldInfo| {
+            let name: &str = anon_cf.utf8_at(field.name_index).ok()?;
+            d8_capture_field_name(name).then_some((field, name))
+        })
+        .map(|(field, name): (&FieldInfo, &str)| {
+            let descriptor: &str = anon_cf.utf8_at(field.descriptor_index).ok()?;
+            let ty: JavaType = descriptor::parse_field(descriptor)?;
+            Some((field, name.to_owned(), ty))
+        })
+        .collect::<Option<Vec<(&FieldInfo, String, JavaType)>>>()?;
+    if fields.is_empty()
+        || fields.len() != anon_cf.fields.len()
+        || fields.len() != argument_count
+        || fields
+            .iter()
+            .any(|(field, _, _): &(&FieldInfo, String, JavaType)| {
+                field.access_flags & (ACC_SYNTHETIC | ACC_FINAL | ACC_STATIC)
+                    != (ACC_SYNTHETIC | ACC_FINAL)
+            })
+    {
+        return None;
+    }
+    let mut constructors = anon_cf.methods.iter().filter(|method: &&MethodInfo| {
+        anon_cf
+            .utf8_at(method.name_index)
+            .is_ok_and(|name: &str| name == "<init>")
+    });
+    let constructor: &MethodInfo = constructors.next()?;
+    if constructors.next().is_some() {
+        return None;
+    }
+    let constructor_descriptor: &str = anon_cf.utf8_at(constructor.descriptor_index).ok()?;
+    let parsed: MethodDescriptor = descriptor::parse_method(constructor_descriptor)?;
+    if parsed.params.len() != argument_count || !matches!(parsed.returns, JavaType::Void) {
+        return None;
+    }
+    let mut parameters: BTreeMap<u16, (usize, JavaType)> = BTreeMap::new();
+    let mut slot: u16 = 1;
+    for (index, ty) in parsed.params.iter().enumerate() {
+        parameters.insert(slot, (index, ty.clone()));
+        slot = slot.checked_add(if ty.category_two() { 2 } else { 1 })?;
+    }
+    let MethodCode::Decoded(code): MethodCode = find_code(anon_cf, constructor) else {
+        return None;
+    };
+    if !code.exception_table.is_empty() || code.dropped_exception_entries != 0 {
+        return None;
+    }
+    let instructions: Vec<Instruction> = disassemble(&code.code).ok()?;
+    let owner: &str = anon_cf.this_class_name().ok()?;
+    let superclass: &str = anon_cf.class_name(anon_cf.super_class).ok()?;
+    let candidates: BTreeMap<String, JavaType> = fields
+        .iter()
+        .map(|(_, name, ty): &(&FieldInfo, String, JavaType)| (name.clone(), ty.clone()))
+        .collect();
+    if instructions.len() != fields.len().checked_mul(3)?.checked_add(3)?
+        || instructions
+            .first()
+            .is_none_or(|instruction: &Instruction| instruction.opcode != 0x2A)
+        || instructions
+            .last()
+            .is_none_or(|instruction: &Instruction| instruction.opcode != 0xB1)
+    {
+        return None;
+    }
+    let super_call: &Instruction = instructions.get(1)?;
+    let Operands::ConstPool(super_reference_index) = super_call.operands else {
+        return None;
+    };
+    if super_call.opcode != 0xB7
+        || bytecode::resolve_ref(anon_cf, super_reference_index).as_deref()
+            != Some(format!("{superclass}.<init>:()V").as_str())
+    {
+        return None;
+    }
+    let mut assigned: BTreeMap<String, usize> = BTreeMap::new();
+    for assignment in instructions[2..instructions.len() - 1].chunks_exact(3) {
+        let [receiver, load, write]: &[Instruction] = assignment else {
+            return None;
+        };
+        if receiver.opcode != 0x2A || write.opcode != 0xB5 {
+            return None;
+        }
+        let Operands::ConstPool(reference_index) = write.operands else {
+            return None;
+        };
+        let reference: String = bytecode::resolve_ref(anon_cf, reference_index)?;
+        let (write_owner, write_name, write_descriptor): (String, String, String) =
+            split_member(&reference)?;
+        let field_ty: &JavaType = candidates.get(&write_name)?;
+        if write_owner != owner
+            || descriptor::parse_field(&write_descriptor).as_ref() != Some(field_ty)
+        {
+            return None;
+        }
+        let loaded_slot: u16 = load_slot(load)?;
+        let (parameter, parameter_ty): &(usize, JavaType) = parameters.get(&loaded_slot)?;
+        if parameter_ty != field_ty
+            || !load_matches_type(load, parameter_ty)
+            || assigned.insert(write_name, *parameter).is_some()
+        {
+            return None;
+        }
+    }
+    if assigned.len() != fields.len()
+        || anon_cf.methods.iter().any(|method: &MethodInfo| {
+            if std::ptr::eq(method, constructor) {
+                return false;
+            }
+            match find_code(anon_cf, method) {
+                MethodCode::Absent => false,
+                MethodCode::Refused(_) => true,
+                MethodCode::Decoded(other_code) => {
+                    disassemble(&other_code.code).map_or(true, |body| {
+                        body.iter().any(|instruction: &Instruction| {
+                            if instruction.opcode != 0xB5 {
+                                return false;
+                            }
+                            let Operands::ConstPool(reference_index) = instruction.operands else {
+                                return true;
+                            };
+                            let Some(reference): Option<String> =
+                                bytecode::resolve_ref(anon_cf, reference_index)
+                            else {
+                                return true;
+                            };
+                            let Some((write_owner, write_name, _)): Option<(
+                                String,
+                                String,
+                                String,
+                            )> = split_member(&reference) else {
+                                return true;
+                            };
+                            write_owner == owner && candidates.contains_key(&write_name)
+                        })
+                    })
+                }
+            }
+        })
+    {
+        return None;
+    }
+    let mut plan: Vec<D8CaptureField> = assigned
+        .into_iter()
+        .map(|(name, parameter): (String, usize)| {
+            Some(D8CaptureField {
+                ty: candidates.get(&name)?.clone(),
+                name,
+                parameter,
+            })
+        })
+        .collect::<Option<Vec<D8CaptureField>>>()?;
+    plan.sort_by_key(|field: &D8CaptureField| field.parameter);
+    if plan
+        .iter()
+        .enumerate()
+        .any(|(index, field): (usize, &D8CaptureField)| index != field.parameter)
+    {
+        return None;
+    }
+    Some(plan)
+}
+
+fn anonymous_allocation_type(
+    anon_cf: &ClassFile,
+    generic_class: Option<&crate::signature::RecoveredClassSignature>,
+) -> Option<String> {
+    if anon_cf.super_class == 0 {
+        return None;
+    }
+    let super_name: &str = anon_cf.class_name(anon_cf.super_class).ok()?;
+    let source_type: String = match (super_name, anon_cf.interfaces.as_slice()) {
+        ("java/lang/Object", []) => "Object".to_string(),
+        ("java/lang/Object", [iface]) => match generic_class {
+            Some(signature) => {
+                let [rendered]: &[String] = signature.interfaces.as_slice() else {
+                    return None;
+                };
+                rendered.clone()
+            }
+            None => anon_cf
+                .class_name(*iface)
+                .ok()
+                .map(descriptor::binary_to_source)?,
+        },
+        ("java/lang/Object", _) | (_, [_, ..]) => return None,
+        (superclass, []) => generic_class.map_or_else(
+            || descriptor::binary_to_source(superclass),
+            |signature: &crate::signature::RecoveredClassSignature| signature.superclass.clone(),
+        ),
+    };
+    let concrete_type: String = anon_cf
+        .this_class_name()
+        .ok()
+        .map(descriptor::binary_to_source)?;
+    (!source_type.is_empty() && source_type != concrete_type).then_some(source_type)
+}
+
+fn render_anonymous_class(
+    anon_cf: &ClassFile,
+    captured_args: &[String],
+    allocation_pc: u32,
+) -> Option<AnonymousAllocation> {
     let generic_class: Option<crate::signature::RecoveredClassSignature> =
         crate::signature::recover_class(anon_cf);
-    let super_name: Option<String> = (anon_cf.super_class != 0)
-        .then(|| {
-            anon_cf
-                .class_name(anon_cf.super_class)
-                .ok()
-                .map(str::to_string)
-        })
-        .flatten();
-    let supertype: String = match anon_cf.interfaces.first() {
-        Some(&iface) => generic_class
-            .as_ref()
-            .and_then(|signature: &crate::signature::RecoveredClassSignature| {
-                signature.interfaces.first().cloned()
-            })
-            .or_else(|| {
-                anon_cf
-                    .class_name(iface)
-                    .ok()
-                    .map(descriptor::binary_to_source)
-            })?,
-        None => match super_name.as_deref() {
-            Some("java/lang/Object") | None => "Object".to_string(),
-            Some(other) => generic_class.as_ref().map_or_else(
-                || descriptor::binary_to_source(other),
-                |signature: &crate::signature::RecoveredClassSignature| {
-                    signature.superclass.clone()
-                },
-            ),
-        },
-    };
-    let capture_order: Vec<String> = anon_capture_field_order(anon_cf);
-    let capture_map: BTreeMap<String, String> = capture_order
-        .iter()
-        .zip(captured_args.iter())
-        .map(|(field, arg): (&String, &String)| (field.clone(), arg.clone()))
-        .collect();
+    let supertype: String = anonymous_allocation_type(anon_cf, generic_class.as_ref())?;
+    let owner: String = anon_cf.this_class_name().ok()?.to_owned();
+    let d8_plan: Option<Vec<D8CaptureField>> = d8_capture_plan(anon_cf, captured_args.len());
+    let has_d8_fields: bool = anon_cf.fields.iter().any(|field: &FieldInfo| {
+        anon_cf
+            .utf8_at(field.name_index)
+            .is_ok_and(d8_capture_field_name)
+    });
+    if has_d8_fields && d8_plan.is_none() {
+        return None;
+    }
+    let mut bindings: Vec<CaptureBinding> = Vec::new();
+    let mut capture_map: BTreeMap<(String, String), String> = BTreeMap::new();
+    if let Some(plan) = d8_plan {
+        for field in plan {
+            let name: String = next_capture_name(allocation_pc)?;
+            let value: String = captured_args.get(field.parameter)?.clone();
+            capture_map.insert((owner.clone(), field.name), name.clone());
+            bindings.push(CaptureBinding {
+                ty: field.ty,
+                name,
+                value,
+            });
+        }
+    } else {
+        let capture_order: Vec<String> = anon_capture_field_order(anon_cf);
+        if capture_order.len() > captured_args.len() {
+            return None;
+        }
+        capture_map.extend(
+            capture_order
+                .into_iter()
+                .zip(captured_args.iter().cloned())
+                .map(|(field, argument): (String, String)| ((owner.clone(), field), argument)),
+        );
+    }
     let is_enum: bool = anon_cf.access_flags & ACC_ENUM != 0;
     let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
         crate::attributes::DeclarationAnnotationRenderer::new(anon_cf);
@@ -11203,21 +11950,23 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         if is_bridge_method(method) || method.access_flags & ACC_SYNTHETIC != 0 {
             continue;
         }
-        let rendered: RenderedMethod = render_method(
-            anon_cf,
-            method,
-            &supertype,
-            false,
-            None,
-            generic_class.as_ref(),
-        );
+        let rendered: RenderedMethod = with_capture_field_bindings(capture_map.clone(), || {
+            render_method(
+                anon_cf,
+                method,
+                &supertype,
+                false,
+                None,
+                generic_class.as_ref(),
+            )
+        });
         let annotations: String = render_member_annotations(
             &mut annotation_renderer,
             anon_cf,
             &method.attributes,
             "    ",
         );
-        let body: String = substitute_captures(&rendered.text, &capture_map);
+        let body: String = rendered.text;
         members.push(format!("{annotations}{body}"));
     }
     let mut out: String = format!("new {supertype}() {{\n");
@@ -11227,16 +11976,10 @@ fn render_anonymous_class(anon_cf: &ClassFile, captured_args: &[String]) -> Opti
         }
     }
     out.push('}');
-    Some(out)
-}
-
-fn substitute_captures(text: &str, capture_map: &BTreeMap<String, String>) -> String {
-    let mut out: String = text.to_string();
-    for (field, arg) in capture_map {
-        out = out.replace(&format!("this.{field}"), arg);
-        out = out.replace(field.as_str(), arg);
-    }
-    out
+    Some(AnonymousAllocation {
+        bindings,
+        expression: out,
+    })
 }
 
 fn build_inner_class_stubs(
@@ -11640,6 +12383,763 @@ fn record_method_is_implicit(
 mod tests {
     use super::*;
     use crate::classfile::{Attribute, ConstantPoolEntry};
+
+    fn translated_edgecases_class(entry: &str) -> ClassFile {
+        let translated = crate::dex2jar::translate_dex_bytes(include_bytes!(
+            "../../../corpus/jvm/dex/EdgeCases.dex"
+        ))
+        .expect("translate EdgeCases");
+        crate::parse_classfile(translated.jar_entries.get(entry).expect("translated class"))
+            .expect("parse translated class")
+    }
+
+    fn method_code_info_mut<'a>(class: &'a mut ClassFile, method_name: &str) -> &'a mut Vec<u8> {
+        let method_index: usize = class
+            .methods
+            .iter()
+            .position(|method: &MethodInfo| {
+                class.utf8_at(method.name_index).ok() == Some(method_name)
+            })
+            .expect("method");
+        let attribute_index: usize = class.methods[method_index]
+            .attributes
+            .iter()
+            .position(|attribute: &Attribute| {
+                class.utf8_at(attribute.name_index).ok() == Some("Code")
+            })
+            .expect("Code attribute");
+        &mut class.methods[method_index].attributes[attribute_index].info
+    }
+
+    fn insert_method_code(class: &mut ClassFile, method_name: &str, offset: usize, bytes: &[u8]) {
+        let info: &mut Vec<u8> = method_code_info_mut(class, method_name);
+        let code_length: usize =
+            u32::from_be_bytes(info[4..8].try_into().expect("code length")) as usize;
+        assert!(offset <= code_length);
+        info.splice(8 + offset..8 + offset, bytes.iter().copied());
+        info[4..8].copy_from_slice(
+            &u32::try_from(code_length + bytes.len())
+                .unwrap()
+                .to_be_bytes(),
+        );
+    }
+
+    fn capture_field_reference_index(class: &ClassFile) -> u16 {
+        let constructor: &MethodInfo = class
+            .methods
+            .iter()
+            .find(|method: &&MethodInfo| class.utf8_at(method.name_index).ok() == Some("<init>"))
+            .expect("constructor");
+        let MethodCode::Decoded(code): MethodCode = find_code(class, constructor) else {
+            panic!("constructor Code");
+        };
+        disassemble(&code.code)
+            .expect("constructor instructions")
+            .into_iter()
+            .find_map(|instruction: Instruction| match instruction.operands {
+                Operands::ConstPool(index) if instruction.opcode == 0xB5 => Some(index),
+                _ => None,
+            })
+            .expect("capture field reference")
+    }
+
+    #[test]
+    fn d8_capture_plan_requires_exact_class_field_count_and_descriptor_metadata() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        assert!(d8_capture_plan(&class, 1).is_some());
+        assert!(d8_capture_plan(&class, 0).is_none());
+
+        let mut class_not_synthetic: ClassFile = class.clone();
+        class_not_synthetic.access_flags &= !ACC_SYNTHETIC;
+        assert!(d8_capture_plan(&class_not_synthetic, 1).is_none());
+
+        let mut field_not_final: ClassFile = class.clone();
+        field_not_final.fields[0].access_flags &= !ACC_FINAL;
+        assert!(d8_capture_plan(&field_not_final, 1).is_none());
+
+        let mut field_static: ClassFile = class.clone();
+        field_static.fields[0].access_flags |= ACC_STATIC;
+        assert!(d8_capture_plan(&field_static, 1).is_none());
+
+        let mut descriptor_mismatch: ClassFile = class;
+        let descriptor_index: u16 = descriptor_mismatch.constant_pool.len() as u16;
+        descriptor_mismatch
+            .constant_pool
+            .push(ConstantPoolEntry::Utf8("J".to_owned()));
+        descriptor_mismatch.fields[0].descriptor_index = descriptor_index;
+        assert!(d8_capture_plan(&descriptor_mismatch, 1).is_none());
+    }
+
+    #[test]
+    fn d8_capture_plan_rejects_extra_ordinary_and_unreadable_fields() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let mut ordinary_field: ClassFile = class.clone();
+        let name_index: u16 = ordinary_field.constant_pool.len() as u16;
+        ordinary_field
+            .constant_pool
+            .push(ConstantPoolEntry::Utf8("ordinary".to_owned()));
+        let mut extra: FieldInfo = ordinary_field.fields[0].clone();
+        extra.name_index = name_index;
+        ordinary_field.fields.push(extra);
+        assert!(d8_capture_plan(&ordinary_field, 1).is_none());
+
+        let mut unreadable_field: ClassFile = class;
+        let mut extra: FieldInfo = unreadable_field.fields[0].clone();
+        extra.name_index = u16::MAX;
+        unreadable_field.fields.push(extra);
+        assert!(d8_capture_plan(&unreadable_field, 1).is_none());
+    }
+
+    #[test]
+    fn d8_capture_plan_rejects_conditional_unreachable_and_effectful_initialization() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+
+        let mut conditional: ClassFile = class.clone();
+        insert_method_code(&mut conditional, "<init>", 4, &[0x03, 0x99, 0x00, 0x08]);
+        assert!(d8_capture_plan(&conditional, 1).is_none());
+
+        let mut unreachable: ClassFile = class.clone();
+        insert_method_code(&mut unreachable, "<init>", 4, &[0xA7, 0x00, 0x08]);
+        assert!(d8_capture_plan(&unreachable, 1).is_none());
+
+        let mut effectful: ClassFile = class;
+        insert_method_code(&mut effectful, "<init>", 4, &[0x00]);
+        assert!(d8_capture_plan(&effectful, 1).is_none());
+    }
+
+    #[test]
+    fn d8_capture_plan_rejects_capture_writes_outside_the_constructor() {
+        let mut class: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let reference_index: u16 = capture_field_reference_index(&class);
+        let code_length: usize = {
+            let info: &mut Vec<u8> = method_code_info_mut(&mut class, "get");
+            u32::from_be_bytes(info[4..8].try_into().expect("code length")) as usize
+        };
+        let write: [u8; 6] = [
+            0x2A,
+            0x03,
+            0xB5,
+            (reference_index >> 8) as u8,
+            reference_index as u8,
+            0xB1,
+        ];
+        insert_method_code(&mut class, "get", code_length, &write);
+        assert!(d8_capture_plan(&class, 1).is_none());
+    }
+
+    #[test]
+    fn d8_capture_plan_rejects_duplicate_constructor_writes_and_constructors() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let mut duplicate_constructor: ClassFile = class.clone();
+        let constructor: MethodInfo = duplicate_constructor
+            .methods
+            .iter()
+            .find(|method: &&MethodInfo| {
+                duplicate_constructor.utf8_at(method.name_index).ok() == Some("<init>")
+            })
+            .cloned()
+            .expect("constructor");
+        duplicate_constructor.methods.push(constructor);
+        assert!(d8_capture_plan(&duplicate_constructor, 1).is_none());
+
+        let mut duplicate_write: ClassFile = class;
+        let constructor_index: usize = duplicate_write
+            .methods
+            .iter()
+            .position(|method: &MethodInfo| {
+                duplicate_write.utf8_at(method.name_index).ok() == Some("<init>")
+            })
+            .expect("constructor");
+        let code_attribute_index: usize = duplicate_write.methods[constructor_index]
+            .attributes
+            .iter()
+            .position(|attribute: &Attribute| {
+                duplicate_write.utf8_at(attribute.name_index).ok() == Some("Code")
+            })
+            .expect("Code attribute");
+        let info: &mut Vec<u8> =
+            &mut duplicate_write.methods[constructor_index].attributes[code_attribute_index].info;
+        let code_length: usize =
+            u32::from_be_bytes(info[4..8].try_into().expect("code length")) as usize;
+        let code_start: usize = 8;
+        let code_end: usize = code_start + code_length;
+        let write: Vec<u8> = info[code_start + 4..code_start + 9].to_vec();
+        info.splice(code_end - 1..code_end - 1, write);
+        info[4..8].copy_from_slice(&u32::try_from(code_length + 5).unwrap().to_be_bytes());
+        assert!(d8_capture_plan(&duplicate_write, 1).is_none());
+    }
+
+    #[test]
+    fn d8_capture_prelude_is_hoisted_only_over_an_order_neutral_stack() {
+        let anon: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let outer: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let anon_internal: String = anon.this_class_name().expect("anonymous name").to_owned();
+        let allocated: String = descriptor::binary_to_source(&anon_internal);
+        let constructor_prefix: String = format!("{anon_internal}.<init>:");
+        let constructor_index: u16 = (1..outer.constant_pool.len())
+            .filter_map(|index: usize| u16::try_from(index).ok())
+            .find(|index: &u16| {
+                bytecode::resolve_ref(&outer, *index)
+                    .is_some_and(|reference: String| reference.starts_with(&constructor_prefix))
+            })
+            .expect("outer constructor reference");
+        let constructor: Instruction = Instruction {
+            pc: 40,
+            opcode: 0xB7,
+            mnemonic: "invokespecial",
+            wide: false,
+            operands: Operands::ConstPool(constructor_index),
+        };
+        let effect = |method: &str| Expr::Invoke {
+            receiver: None,
+            owner: "EdgeCases".to_owned(),
+            method: method.to_owned(),
+            args: Vec::new(),
+            returns_bool: false,
+        };
+        let lift = |below: Expr| -> (LiftResult, Vec<Expr>) {
+            let mut stack: Vec<Expr> = vec![
+                below,
+                Expr::New(allocated.clone()),
+                Expr::New(allocated.clone()),
+                effect("compute"),
+            ];
+            let inners: BTreeMap<String, ClassFile> =
+                BTreeMap::from([(allocated.clone(), anon.clone())]);
+            let result: LiftResult = with_capture_name_scope(|| {
+                with_anon_inners(inners, || invoke(&outer, &constructor, &mut stack, 0xB7))
+            });
+            (result, stack)
+        };
+
+        let expected_binding: String =
+            format!("disrobeCapture$40$0 = {}", effect("compute").render());
+        for neutral in [
+            Expr::Local("executor".to_owned()),
+            Expr::This,
+            Expr::Const("7".to_owned()),
+        ] {
+            let (result, stack): (LiftResult, Vec<Expr>) = lift(neutral.clone());
+            let LiftResult::PushedWithPrelude(prelude) = result else {
+                panic!("an order-neutral stack must keep the hoisted capture binding");
+            };
+            assert_eq!(prelude.len(), 1);
+            assert!(prelude[0].starts_with("final "), "{}", prelude[0]);
+            assert!(prelude[0].ends_with(&expected_binding), "{}", prelude[0]);
+            assert_eq!(stack.len(), 2);
+            assert!(stack[0] == neutral);
+            assert!(
+                matches!(&stack[1], Expr::Opaque(text) if text.contains("disrobeCapture$40$0"))
+            );
+        }
+
+        let (result, _): (LiftResult, Vec<Expr>) = lift(effect("executor"));
+        assert!(
+            matches!(result, LiftResult::Unhandled),
+            "hoisting the capture above an unevaluated call reorders its side effects"
+        );
+    }
+
+    #[test]
+    fn d8_capture_bindings_for_a_local_allocation_target_are_separate_statements() {
+        let anon: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let outer: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let anon_internal: String = anon.this_class_name().expect("anonymous name").to_owned();
+        let allocated: String = descriptor::binary_to_source(&anon_internal);
+        let constructor_prefix: String = format!("{anon_internal}.<init>:");
+        let constructor_index: u16 = (1..outer.constant_pool.len())
+            .filter_map(|index: usize| u16::try_from(index).ok())
+            .find(|index: &u16| {
+                bytecode::resolve_ref(&outer, *index)
+                    .is_some_and(|reference: String| reference.starts_with(&constructor_prefix))
+            })
+            .expect("outer constructor reference");
+        let constructor: Instruction = Instruction {
+            pc: 40,
+            opcode: 0xB7,
+            mnemonic: "invokespecial",
+            wide: false,
+            operands: Operands::ConstPool(constructor_index),
+        };
+        let compute: Expr = Expr::Invoke {
+            receiver: None,
+            owner: "EdgeCases".to_owned(),
+            method: "compute".to_owned(),
+            args: Vec::new(),
+            returns_bool: false,
+        };
+        let mut stack: Vec<Expr> = vec![Expr::Local("var3".to_owned()), compute.clone()];
+        let plan: DeferredAllocationPlan = DeferredAllocationPlan {
+            elided_stores: BTreeSet::new(),
+            merged_constructions: BTreeMap::from([(40, anon_internal.clone())]),
+        };
+        let inners: BTreeMap<String, ClassFile> = BTreeMap::from([(allocated, anon.clone())]);
+        let result: LiftResult = with_capture_name_scope(|| {
+            with_anon_inners(inners, || {
+                with_deferred_allocations(plan, || invoke(&outer, &constructor, &mut stack, 0xB7))
+            })
+        });
+
+        let LiftResult::Statements(statements) = result else {
+            panic!("a local allocation target with capture bindings must lift to statements");
+        };
+        assert_eq!(statements.len(), 2, "{statements:?}");
+        assert!(!statements[0].contains('\n'), "{statements:?}");
+        assert!(statements[0].starts_with("final "), "{statements:?}");
+        assert!(
+            statements[0].ends_with(&format!("disrobeCapture$40$0 = {}", compute.render())),
+            "{statements:?}"
+        );
+        assert!(statements[1].starts_with("var3 = new "), "{statements:?}");
+        assert!(stack.is_empty());
+
+        let mut effectful_stack: Vec<Expr> = vec![
+            Expr::Invoke {
+                receiver: None,
+                owner: "EdgeCases".to_owned(),
+                method: "executor".to_owned(),
+                args: Vec::new(),
+                returns_bool: false,
+            },
+            Expr::Local("var3".to_owned()),
+            compute,
+        ];
+        let result: LiftResult = with_capture_name_scope(|| {
+            with_anon_inners(
+                BTreeMap::from([(descriptor::binary_to_source(&anon_internal), anon)]),
+                || {
+                    with_deferred_allocations(
+                        DeferredAllocationPlan {
+                            elided_stores: BTreeSet::new(),
+                            merged_constructions: BTreeMap::from([(40, anon_internal)]),
+                        },
+                        || invoke(&outer, &constructor, &mut effectful_stack, 0xB7),
+                    )
+                },
+            )
+        });
+        assert!(
+            matches!(result, LiftResult::Unhandled),
+            "hoisting a local allocation capture above an unevaluated call reorders its side effects"
+        );
+    }
+
+    #[test]
+    fn unhandled_latch_refuses_inline_updates_and_marks_continue_unlifted() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let instructions: Vec<Instruction> = vec![Instruction {
+            pc: 0,
+            opcode: 0xFF,
+            mnemonic: "invalid",
+            wide: false,
+            operands: Operands::None,
+        }];
+        let latch: BlockId = BlockId(0);
+        let cfg: Cfg = Cfg {
+            blocks: vec![BasicBlock {
+                id: latch,
+                start_pc: 0,
+                end_pc: 0,
+                insn_range: (0, 1),
+                successors: Vec::new(),
+                predecessors: Vec::new(),
+            }],
+            pc_to_block: BTreeMap::from([(0, latch)]),
+            entry: latch,
+            exception_regions: Vec::new(),
+        };
+        let params: Vec<(u16, String)> = Vec::new();
+        let bootstraps: Vec<crate::attributes::BootstrapMethod> = Vec::new();
+        let mut ctx: RenderCtx<'_> = pattern_render_ctx(
+            &class,
+            &cfg,
+            &instructions,
+            &params,
+            &bootstraps,
+            false,
+            false,
+        );
+
+        assert_eq!(render_for_update(&ctx, latch), None);
+        let mut rendered: String = String::new();
+        render_region(
+            &mut ctx,
+            &Region::Continue {
+                label: None,
+                latch: Some(latch),
+            },
+            &mut rendered,
+            0,
+        );
+        assert!(!ctx.fully_lifted);
+        assert_eq!(rendered, "continue;\n");
+    }
+
+    fn two_capture_constructor(class: &ClassFile) -> Vec<Instruction> {
+        let constructor: &MethodInfo = class
+            .methods
+            .iter()
+            .find(|method: &&MethodInfo| class.utf8_at(method.name_index).ok() == Some("<init>"))
+            .expect("constructor");
+        let MethodCode::Decoded(code): MethodCode = find_code(class, constructor) else {
+            panic!("constructor Code");
+        };
+        let instructions: Vec<Instruction> =
+            disassemble(&code.code).expect("constructor instructions");
+        assert_eq!(
+            instructions.len(),
+            9,
+            "two capture assignments plus the frame"
+        );
+        instructions
+    }
+
+    fn set_constructor_opcode(class: &mut ClassFile, pc: u32, opcode: u8) {
+        let info: &mut Vec<u8> = method_code_info_mut(class, "<init>");
+        info[8 + pc as usize] = opcode;
+    }
+
+    fn same_type_two_capture_class(swapped: bool) -> ClassFile {
+        let mut class: ClassFile = translated_edgecases_class("EdgeCases$55.class");
+        for entry in &mut class.constant_pool {
+            if let ConstantPoolEntry::Utf8(text) = entry {
+                *text = text.replace(
+                    "Ljava/util/concurrent/CompletableFuture;",
+                    "Ljava/util/function/Supplier;",
+                );
+            }
+        }
+        if swapped {
+            let instructions: Vec<Instruction> = two_capture_constructor(&class);
+            let (first, second): (&Instruction, &Instruction) =
+                (&instructions[3], &instructions[6]);
+            let (first_pc, first_opcode, second_pc, second_opcode): (u32, u8, u32, u8) =
+                (first.pc, first.opcode, second.pc, second.opcode);
+            set_constructor_opcode(&mut class, first_pc, second_opcode);
+            set_constructor_opcode(&mut class, second_pc, first_opcode);
+        }
+        class
+    }
+
+    fn plan_parameters(class: &ClassFile) -> Option<BTreeMap<String, usize>> {
+        d8_capture_plan(class, 2).map(|plan: Vec<D8CaptureField>| {
+            plan.into_iter()
+                .map(|field: D8CaptureField| (field.name, field.parameter))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn d8_capture_plan_rejects_count_preserving_constructor_mutations() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases$55.class");
+        let instructions: Vec<Instruction> = two_capture_constructor(&class);
+        assert_eq!(
+            plan_parameters(&class),
+            Some(BTreeMap::from([
+                ("f$0".to_owned(), 0),
+                ("f$1".to_owned(), 1)
+            ]))
+        );
+        let mutations: [(&str, u32, u8); 4] = [
+            ("receiver is not this", instructions[2].pc, 0x01),
+            ("capture load uses an int opcode", instructions[3].pc, 0x1B),
+            ("capture write is static", instructions[4].pc, 0xB3),
+            (
+                "second capture loads the first parameter",
+                instructions[6].pc,
+                0x2B,
+            ),
+        ];
+        for (label, pc, opcode) in mutations {
+            let mut mutated: ClassFile = class.clone();
+            set_constructor_opcode(&mut mutated, pc, opcode);
+            assert_eq!(
+                two_capture_constructor(&mutated).len(),
+                instructions.len(),
+                "{label}"
+            );
+            assert!(d8_capture_plan(&mutated, 2).is_none(), "{label}");
+        }
+
+        let mut duplicate_parameter: ClassFile = same_type_two_capture_class(false);
+        let same_type: Vec<Instruction> = two_capture_constructor(&duplicate_parameter);
+        set_constructor_opcode(
+            &mut duplicate_parameter,
+            same_type[6].pc,
+            same_type[3].opcode,
+        );
+        assert!(d8_capture_plan(&duplicate_parameter, 2).is_none());
+    }
+
+    #[test]
+    fn same_type_d8_captures_bind_each_field_to_its_assigned_parameter() {
+        let ordered: ClassFile = same_type_two_capture_class(false);
+        let swapped: ClassFile = same_type_two_capture_class(true);
+        assert_eq!(
+            plan_parameters(&ordered),
+            Some(BTreeMap::from([
+                ("f$0".to_owned(), 0),
+                ("f$1".to_owned(), 1)
+            ]))
+        );
+        assert_eq!(
+            plan_parameters(&swapped),
+            Some(BTreeMap::from([
+                ("f$0".to_owned(), 1),
+                ("f$1".to_owned(), 0)
+            ]))
+        );
+        let arguments: [String; 2] = ["first".to_owned(), "second".to_owned()];
+        let render = |class: &ClassFile| -> AnonymousAllocation {
+            with_capture_name_scope(|| render_anonymous_class(class, &arguments, 7))
+                .expect("render same-type captures")
+        };
+        let ordered_render: AnonymousAllocation = render(&ordered);
+        let swapped_render: AnonymousAllocation = render(&swapped);
+        for allocation in [&ordered_render, &swapped_render] {
+            let bindings: Vec<(&str, &str)> = allocation
+                .bindings
+                .iter()
+                .map(|binding: &CaptureBinding| (binding.name.as_str(), binding.value.as_str()))
+                .collect();
+            assert_eq!(
+                bindings,
+                [
+                    ("disrobeCapture$7$0", "first"),
+                    ("disrobeCapture$7$1", "second")
+                ]
+            );
+        }
+        assert!(
+            ordered_render.expression.contains("disrobeCapture$7$0")
+                && ordered_render.expression.contains("disrobeCapture$7$1"),
+            "{}",
+            ordered_render.expression
+        );
+        let exchanged: String = ordered_render
+            .expression
+            .replace("disrobeCapture$7$0", "\u{0}")
+            .replace("disrobeCapture$7$1", "disrobeCapture$7$0")
+            .replace('\u{0}', "disrobeCapture$7$1");
+        assert_ne!(exchanged, ordered_render.expression);
+        assert_eq!(swapped_render.expression, exchanged);
+    }
+
+    #[test]
+    fn re_rendering_an_allocation_in_one_method_declares_fresh_capture_names() {
+        let anon: ClassFile = translated_edgecases_class("EdgeCases$59.class");
+        let outer: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let anon_internal: String = anon.this_class_name().expect("anonymous name").to_owned();
+        let allocated: String = descriptor::binary_to_source(&anon_internal);
+        let constructor_prefix: String = format!("{anon_internal}.<init>:");
+        let constructor_index: u16 = (1..outer.constant_pool.len())
+            .filter_map(|index: usize| u16::try_from(index).ok())
+            .find(|index: &u16| {
+                bytecode::resolve_ref(&outer, *index)
+                    .is_some_and(|reference: String| reference.starts_with(&constructor_prefix))
+            })
+            .expect("outer constructor reference");
+        let constructor: Instruction = Instruction {
+            pc: 40,
+            opcode: 0xB7,
+            mnemonic: "invokespecial",
+            wide: false,
+            operands: Operands::ConstPool(constructor_index),
+        };
+        let render_once = || -> Vec<String> {
+            let mut stack: Vec<Expr> = vec![
+                Expr::Local("var2".to_owned()),
+                Expr::New(allocated.clone()),
+                Expr::New(allocated.clone()),
+                Expr::Local("var1".to_owned()),
+            ];
+            match invoke(&outer, &constructor, &mut stack, 0xB7) {
+                LiftResult::PushedWithPrelude(prelude) => prelude,
+                _ => Vec::new(),
+            }
+        };
+        let inners: BTreeMap<String, ClassFile> =
+            BTreeMap::from([(allocated.clone(), anon.clone())]);
+        let (first, second): (Vec<String>, Vec<String>) = with_anon_inners(inners, || {
+            with_capture_name_scope(|| (render_once(), render_once()))
+        });
+        let declared = |prelude: &[String]| -> Vec<String> {
+            prelude
+                .iter()
+                .filter_map(|statement: &String| {
+                    statement.split_whitespace().nth(2).map(str::to_owned)
+                })
+                .collect()
+        };
+        assert_eq!(declared(&first), ["disrobeCapture$40$0"]);
+        assert_eq!(declared(&second), ["disrobeCapture$40$1"]);
+
+        let outside_scope: Vec<String> =
+            with_anon_inners(BTreeMap::from([(allocated.clone(), anon)]), render_once);
+        assert!(outside_scope.is_empty());
+    }
+
+    #[test]
+    fn capture_bindings_and_lambda_targets_are_restored_when_rendering_panics() {
+        let bindings: BTreeMap<(String, String), String> = BTreeMap::from([(
+            ("Owner".to_owned(), "f$0".to_owned()),
+            "captureZero".to_owned(),
+        )]);
+        let binding_panic: std::thread::Result<()> =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_capture_field_bindings(bindings, || {
+                    assert_eq!(
+                        render_field_access(&Expr::This, "Owner", "f$0"),
+                        "captureZero"
+                    );
+                    std::panic::resume_unwind(Box::new("capture binding render failure"));
+                });
+            }));
+        assert!(binding_panic.is_err());
+        assert_eq!(render_field_access(&Expr::This, "Owner", "f$0"), "this.f$0");
+
+        let class: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let (name, descriptor): (String, String) = class
+            .methods
+            .iter()
+            .find_map(|method: &MethodInfo| {
+                let name: &str = class.utf8_at(method.name_index).ok()?;
+                let descriptor: &str = class.utf8_at(method.descriptor_index).ok()?;
+                name.starts_with("lambda$")
+                    .then(|| (name.to_owned(), descriptor.to_owned()))
+            })
+            .expect("translated lambda helper");
+        let owner: String = class.this_class_name().expect("owner").to_owned();
+        let lambda_panic: std::thread::Result<()> =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_emitted_lambda_targets(&class, || {
+                    assert!(emitted_lambda_target(&owner, &name, &descriptor));
+                    std::panic::resume_unwind(Box::new("lambda target render failure"));
+                });
+            }));
+        assert!(lambda_panic.is_err());
+        assert!(!emitted_lambda_target(&owner, &name, &descriptor));
+    }
+
+    #[test]
+    fn capture_field_substitution_and_lambda_resolution_are_exact() {
+        let mut bindings: BTreeMap<(String, String), String> = BTreeMap::new();
+        bindings.insert(
+            ("Owner".to_owned(), "f$1".to_owned()),
+            "captureOne".to_owned(),
+        );
+        bindings.insert(
+            ("Owner".to_owned(), "f$10".to_owned()),
+            "captureTen".to_owned(),
+        );
+        with_capture_field_bindings(bindings, || {
+            assert_eq!(
+                render_field_access(&Expr::This, "Owner", "f$1"),
+                "captureOne"
+            );
+            assert_eq!(
+                render_field_access(&Expr::This, "Owner", "f$10"),
+                "captureTen"
+            );
+            assert_eq!(render_field_access(&Expr::This, "Other", "f$1"), "this.f$1");
+        });
+
+        let class: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let (name, descriptor): (String, String) = class
+            .methods
+            .iter()
+            .find_map(|method: &MethodInfo| {
+                let name: &str = class.utf8_at(method.name_index).ok()?;
+                name.starts_with("lambda$").then(|| {
+                    (
+                        name.to_owned(),
+                        class
+                            .utf8_at(method.descriptor_index)
+                            .expect("lambda descriptor")
+                            .to_owned(),
+                    )
+                })
+            })
+            .expect("lambda helper");
+        with_emitted_lambda_targets(&class, || {
+            assert!(emitted_lambda_target("EdgeCases", &name, &descriptor));
+            assert!(!emitted_lambda_target("Other", &name, &descriptor));
+            assert!(!emitted_lambda_target("EdgeCases", &name, "()V"));
+            assert!(!emitted_lambda_target(
+                "EdgeCases",
+                "lambda$missing$0",
+                &descriptor
+            ));
+        });
+    }
+
+    #[test]
+    fn api_outline_projection_and_emitted_lambda_renaming_refuse_the_same_call() {
+        let class: ClassFile = translated_edgecases_class("EdgeCases.class");
+        let (name, method_descriptor): (String, String) = class
+            .methods
+            .iter()
+            .find_map(|method: &MethodInfo| {
+                let name: &str = class.utf8_at(method.name_index).ok()?;
+                name.starts_with("lambda$").then(|| {
+                    (
+                        name.to_owned(),
+                        class
+                            .utf8_at(method.descriptor_index)
+                            .expect("lambda descriptor")
+                            .to_owned(),
+                    )
+                })
+            })
+            .expect("lambda helper");
+        let projections = || -> BTreeMap<ApiOutlineKey, ApiOutlineProjection> {
+            BTreeMap::from([(
+                ApiOutlineKey {
+                    owner: "EdgeCases".to_owned(),
+                    name: name.clone(),
+                    descriptor: method_descriptor.clone(),
+                    fingerprint: [0; 32],
+                },
+                ApiOutlineProjection {
+                    owner: "java/util/Objects".to_owned(),
+                    name: "requireNonNull".to_owned(),
+                },
+            )])
+        };
+        let renamed: Option<(String, String)> =
+            Some(("EdgeCases".to_owned(), recompile_safe_method_name(&name)));
+        assert_ne!(
+            renamed.as_ref().map(|target| target.1.as_str()),
+            Some(name.as_str())
+        );
+
+        assert_eq!(
+            resolved_invoke_target("EdgeCases", &name, &method_descriptor, true),
+            Some(("EdgeCases".to_owned(), name.clone()))
+        );
+        with_api_outline_projections(projections(), || {
+            assert_eq!(
+                resolved_invoke_target("EdgeCases", &name, &method_descriptor, true),
+                Some(("java/util/Objects".to_owned(), "requireNonNull".to_owned()))
+            );
+        });
+        with_emitted_lambda_targets(&class, || {
+            assert_eq!(
+                resolved_invoke_target("EdgeCases", &name, &method_descriptor, true),
+                renamed
+            );
+            with_api_outline_projections(projections(), || {
+                assert_eq!(
+                    resolved_invoke_target("EdgeCases", &name, &method_descriptor, true),
+                    None
+                );
+                assert_eq!(
+                    resolved_invoke_target("EdgeCases", &name, &method_descriptor, false),
+                    renamed
+                );
+            });
+        });
+    }
 
     fn cp_utf8(s: &str) -> ConstantPoolEntry {
         ConstantPoolEntry::Utf8(s.to_string())

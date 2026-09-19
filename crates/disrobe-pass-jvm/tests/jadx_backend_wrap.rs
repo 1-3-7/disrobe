@@ -2,9 +2,10 @@
 use std::path::PathBuf;
 
 use disrobe_pass_jvm::android_backend::{
-    AndroidDecompileOutput, AndroidDecompiler, BackendPreference,
+    AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxCapturedOutcome,
+    run_jadx_on_bytes_captured,
 };
-use disrobe_pass_jvm::{android_decompile_dex, run_jadx_on_bytes};
+use disrobe_pass_jvm::{Error, android_decompile_dex, run_jadx_on_bytes};
 
 fn corpus(parts: &[&str]) -> PathBuf {
     let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -84,14 +85,135 @@ fn jadx_backend_decompiles_real_dex_when_available() {
         eprintln!("SKIP: jadx not on PATH - external backend wrap unverified (honest MissingTool)");
         return;
     }
-    let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "EdgeCases.dex"])).expect("dex");
+    let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "Hello.dex"])).expect("dex");
     let out: AndroidDecompileOutput = run_jadx_on_bytes(&dex_bytes, "input.dex").expect("jadx run");
     assert_eq!(out.engine, AndroidDecompiler::Jadx);
-    assert!(out.class_count >= 1, "jadx must emit at least one .java");
-    let all_src: String = out.sources.values().cloned().collect::<Vec<_>>().join("\n");
+    assert_eq!(out.class_count, 2, "jadx must emit Hello and Greeter");
+    let hello: &String = out
+        .sources
+        .get("defpackage/Hello.java")
+        .expect("jadx must emit defpackage/Hello.java");
     assert!(
-        all_src.contains("class EdgeCases") || all_src.contains("EdgeCases"),
-        "jadx output must mention EdgeCases"
+        hello.contains("class Hello"),
+        "Hello.java must declare Hello"
     );
-    assert!(out.method_count > 0, "jadx output must contain methods");
+    assert!(
+        hello.contains("bumpCounter"),
+        "Hello.java must retain bumpCounter"
+    );
+    assert!(
+        hello.contains("describe"),
+        "Hello.java must retain describe"
+    );
+    let greeter: &String = out
+        .sources
+        .get("defpackage/Greeter.java")
+        .expect("jadx must emit defpackage/Greeter.java");
+    assert!(
+        greeter.contains("class Greeter"),
+        "Greeter.java must declare Greeter"
+    );
+    assert!(greeter.contains("greet"), "Greeter.java must retain greet");
+    assert!(
+        out.method_count >= 5,
+        "jadx output must contain Hello and Greeter methods"
+    );
+    verify_edgecases_producer_outcome().expect("JADX retains the EdgeCases producer outcome");
+}
+
+fn verify_edgecases_producer_outcome() -> Result<(), Error> {
+    let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "EdgeCases.dex"])).expect("dex");
+    let outcome: JadxCapturedOutcome =
+        run_jadx_on_bytes_captured(&dex_bytes, "input.dex").expect("jadx invocation");
+    match outcome {
+        JadxCapturedOutcome::Recovered(output) => {
+            assert_eq!(output.engine, AndroidDecompiler::Jadx);
+            let edgecases: &String = output
+                .sources
+                .get("defpackage/EdgeCases.java")
+                .expect("successful JADX recovery must emit defpackage/EdgeCases.java");
+            assert!(
+                edgecases.contains("class EdgeCases"),
+                "EdgeCases.java must declare EdgeCases"
+            );
+            assert!(
+                edgecases.contains("shapeFacts"),
+                "EdgeCases.java must retain shapeFacts"
+            );
+            assert!(
+                output.method_count > 0,
+                "successful JADX recovery must emit methods"
+            );
+        }
+        JadxCapturedOutcome::ProducerFailed {
+            tool,
+            status,
+            stdout,
+            stderr,
+            output,
+            emitted_methods,
+            ..
+        } => {
+            assert_eq!(tool, "jadx");
+            assert_ne!(
+                status, 0,
+                "producer failures must retain a nonzero exit status"
+            );
+            let diagnostics: String = format!("{stdout}\n{stderr}");
+            assert!(
+                diagnostics.contains("finished with errors"),
+                "the captured JADX diagnostics must report a failed producer run: {diagnostics}"
+            );
+            assert_eq!(output.engine, AndroidDecompiler::Jadx);
+            assert_eq!(
+                output.class_count, 2,
+                "JADX 1.5.5 emits two partial sources"
+            );
+            assert_eq!(
+                output.sources.len(),
+                2,
+                "JADX 1.5.5 emits two partial sources"
+            );
+            let edgecases: &String = output
+                .sources
+                .get("defpackage/EdgeCases.java")
+                .expect("partial JADX output must retain defpackage/EdgeCases.java");
+            assert!(
+                edgecases.contains("RegionMakerVisitor"),
+                "partial EdgeCases.java must retain the RegionMakerVisitor diagnostic"
+            );
+            assert!(
+                edgecases.contains("shapeFacts"),
+                "partial EdgeCases.java must retain shapeFacts"
+            );
+            assert!(
+                output
+                    .sources
+                    .contains_key("com/android/tools/r8/RecordTag.java"),
+                "partial JADX output must retain RecordTag.java"
+            );
+            assert_eq!(output.method_count, emitted_methods);
+            assert!(
+                emitted_methods > 0,
+                "partial JADX output must retain methods"
+            );
+        }
+        JadxCapturedOutcome::Refused(refusal) => {
+            return Err(Error::BackendFailed {
+                tool: "jadx".to_owned(),
+                status: -1,
+                stderr: format!(
+                    "real EdgeCases input must not be refused by the JADX wrapper: {refusal}"
+                ),
+            });
+        }
+        _ => {
+            return Err(Error::BackendFailed {
+                tool: "jadx".to_owned(),
+                status: -1,
+                stderr: "real EdgeCases input produced an unsupported JADX outcome".to_owned(),
+            });
+        }
+    }
+    Ok(())
 }

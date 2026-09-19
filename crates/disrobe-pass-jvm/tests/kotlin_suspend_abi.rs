@@ -474,12 +474,29 @@ fn generated_kotlin_d8_artifact_covers_the_suspend_abi_matrix() {
             parent.as_str() == "Lkotlin/coroutines/jvm/internal/ContinuationImpl;"
         })
         .expect("the compiler emitted an actual ContinuationImpl subclass");
+    let descriptor: &str = continuation_impl.0;
+    let class_name: &str = descriptor
+        .strip_prefix('L')
+        .and_then(|value: &str| value.strip_suffix(';'))
+        .and_then(|value: &str| value.rsplit('/').next())
+        .filter(|value: &&str| {
+            value
+                .bytes()
+                .all(|byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
+        })
+        .expect("ContinuationImpl descriptor has a legal rendered class name");
     assert!(
         stripped_out
             .source
-            .contains("actualStateMachine$_1(kotlin.coroutines.Continuation arg0)"),
-        "the actual ContinuationImpl constructor remains explicit for {}: {}",
-        continuation_impl.0,
+            .contains(&format!("public class {class_name} {{")),
+        "the ContinuationImpl descriptor must render as its class declaration: {descriptor}: {}",
+        stripped_out.source
+    );
+    assert!(
+        stripped_out.source.contains(&format!(
+            "public {class_name}(kotlin.coroutines.Continuation arg0)"
+        )),
+        "the actual ContinuationImpl constructor remains explicit for {descriptor}: {}",
         stripped_out.source
     );
 }

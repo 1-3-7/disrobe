@@ -8,7 +8,7 @@
     clippy::module_name_repetitions
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Seek, SeekFrom, Write};
 use std::mem::size_of;
 
@@ -16,7 +16,10 @@ use crate::dalvik_to_jvm::{
     EmittedCode, diag_has_width_conflict, emit_branch_method_code, emit_method_code, reset_bail_op,
     take_bail_kind, take_bail_op,
 };
-use crate::dex::{CodeItem, DexFile, parse_code_items};
+use crate::dex::{
+    CodeItem, DexClassMetadata, DexEnclosingMethod, DexFile, DexInnerClass, DexSystemMetadata,
+    parse_code_items, parse_system_metadata,
+};
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +37,8 @@ pub struct TranslatedMethod {
     pub descriptor: String,
     pub access_flags: u16,
     pub has_code: bool,
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +46,23 @@ pub struct TranslatedField {
     pub name: String,
     pub descriptor: String,
     pub access_flags: u16,
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranslatedInnerClass {
+    pub inner_name: String,
+    pub outer_name: Option<String>,
+    pub simple_name: Option<String>,
+    pub access_flags: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranslatedEnclosingMethod {
+    pub class_name: String,
+    pub method_name: Option<String>,
+    pub method_descriptor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +73,12 @@ pub struct TranslatedClass {
     pub access_flags: u16,
     pub fields: Vec<TranslatedField>,
     pub methods: Vec<TranslatedMethod>,
+    #[serde(default)]
+    pub inner_classes: Vec<TranslatedInnerClass>,
+    #[serde(default)]
+    pub enclosing_method: Option<TranslatedEnclosingMethod>,
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 impl TranslatedClass {
@@ -760,6 +788,179 @@ fn parse_type_list(
     Ok(out)
 }
 
+fn metadata_owner(class_metadata: &DexClassMetadata) -> Option<&str> {
+    class_metadata.enclosing_class.as_deref().or_else(|| {
+        class_metadata
+            .enclosing_method
+            .as_ref()
+            .map(|method: &DexEnclosingMethod| method.class.as_str())
+    })
+}
+
+const MAX_INNER_CLASS_DEPTH: usize = 64;
+
+fn inner_class_work_budget(metadata: &DexSystemMetadata) -> usize {
+    metadata
+        .classes
+        .len()
+        .saturating_add(1)
+        .saturating_mul(2 * (MAX_INNER_CLASS_DEPTH + 2))
+}
+
+fn claim_inner_class_work(work_remaining: &mut usize, class_descriptor: &str) -> Result<()> {
+    *work_remaining = work_remaining.checked_sub(1).ok_or_else(|| {
+        malformed(
+            class_descriptor,
+            "inner-class metadata walk exceeded its linear work budget",
+        )
+    })?;
+    Ok(())
+}
+
+struct InnerClassIndex<'a> {
+    owners: BTreeMap<&'a str, &'a str>,
+    children: BTreeMap<&'a str, Vec<&'a str>>,
+    members: BTreeSet<&'a str>,
+}
+
+fn inner_class_index(metadata: &DexSystemMetadata) -> InnerClassIndex<'_> {
+    let mut index: InnerClassIndex<'_> = InnerClassIndex {
+        owners: BTreeMap::new(),
+        children: BTreeMap::new(),
+        members: BTreeSet::new(),
+    };
+    for (descriptor, class_metadata) in &metadata.classes {
+        if let Some(owner) = metadata_owner(class_metadata)
+            && metadata.classes.contains_key(owner)
+        {
+            index.owners.insert(descriptor.as_str(), owner);
+            index
+                .children
+                .entry(owner)
+                .or_default()
+                .push(descriptor.as_str());
+        }
+        for member in &class_metadata.member_classes {
+            index.members.insert(member.as_str());
+        }
+    }
+    index
+}
+
+fn translated_inner_entry(
+    descriptor: &str,
+    class_metadata: &DexClassMetadata,
+    inner: &DexInnerClass,
+    is_member: bool,
+    budget: &mut AllocationBudget,
+) -> Result<TranslatedInnerClass> {
+    let inner_name: String = budget.string(&dex_type_to_internal(descriptor))?;
+    let outer_name: Option<String> = class_metadata
+        .enclosing_class
+        .as_deref()
+        .filter(|_| is_member)
+        .map(dex_type_to_internal)
+        .map(|value: String| budget.string(&value))
+        .transpose()?;
+    Ok(TranslatedInnerClass {
+        inner_name,
+        outer_name,
+        simple_name: inner
+            .simple_name
+            .as_deref()
+            .map(|value: &str| budget.string(value))
+            .transpose()?,
+        access_flags: inner.access_flags,
+    })
+}
+
+fn translated_inner_classes(
+    metadata: &DexSystemMetadata,
+    index: &InnerClassIndex<'_>,
+    class_descriptor: &str,
+    work_remaining: &mut usize,
+    budget: &mut AllocationBudget,
+) -> Result<Vec<TranslatedInnerClass>> {
+    let mut related: BTreeSet<&str> = BTreeSet::new();
+    let mut current: &str = class_descriptor;
+    for _ in 0..=MAX_INNER_CLASS_DEPTH {
+        claim_inner_class_work(work_remaining, class_descriptor)?;
+        let Some((key, class_metadata)): Option<(&String, &DexClassMetadata)> =
+            metadata.classes.get_key_value(current)
+        else {
+            break;
+        };
+        if class_metadata.inner_class.is_some() {
+            related.insert(key.as_str());
+        }
+        let Some(owner): Option<&&str> = index.owners.get(current) else {
+            break;
+        };
+        current = owner;
+    }
+    let mut pending: Vec<(&str, usize)> = index
+        .children
+        .get(class_descriptor)
+        .map_or_else(Vec::new, |children: &Vec<&str>| {
+            children.iter().map(|child: &&str| (*child, 1)).collect()
+        });
+    while let Some((descendant, depth)) = pending.pop() {
+        claim_inner_class_work(work_remaining, class_descriptor)?;
+        if depth > MAX_INNER_CLASS_DEPTH || !related.insert(descendant) {
+            continue;
+        }
+        if let Some(children) = index.children.get(descendant) {
+            pending.extend(children.iter().map(|child: &&str| (*child, depth + 1)));
+        }
+    }
+    let mut entries: BTreeMap<String, TranslatedInnerClass> = BTreeMap::new();
+    for descriptor in related {
+        let Some(class_metadata): Option<&DexClassMetadata> = metadata.classes.get(descriptor)
+        else {
+            continue;
+        };
+        let Some(inner): Option<&DexInnerClass> = class_metadata.inner_class.as_ref() else {
+            continue;
+        };
+        let entry: TranslatedInnerClass = translated_inner_entry(
+            descriptor,
+            class_metadata,
+            inner,
+            index.members.contains(descriptor),
+            budget,
+        )?;
+        entries.insert(entry.inner_name.clone(), entry);
+    }
+    let mut out: Vec<TranslatedInnerClass> = budget.vector(entries.len())?;
+    out.extend(entries.into_values());
+    Ok(out)
+}
+
+fn translated_enclosing_method(
+    class_metadata: &DexClassMetadata,
+    is_member: bool,
+    budget: &mut AllocationBudget,
+) -> Result<Option<TranslatedEnclosingMethod>> {
+    if let Some(method) = &class_metadata.enclosing_method {
+        return Ok(Some(TranslatedEnclosingMethod {
+            class_name: budget.string(&dex_type_to_internal(&method.class))?,
+            method_name: Some(budget.string(&method.name)?),
+            method_descriptor: Some(budget.string(&method.descriptor)?),
+        }));
+    }
+    if class_metadata.inner_class.is_some()
+        && !is_member
+        && let Some(class) = &class_metadata.enclosing_class
+    {
+        return Ok(Some(TranslatedEnclosingMethod {
+            class_name: budget.string(&dex_type_to_internal(class))?,
+            method_name: None,
+            method_descriptor: None,
+        }));
+    }
+    Ok(None)
+}
+
 pub fn build_class_model(dex: &DexFile, dex_bytes: &[u8]) -> Result<Vec<TranslatedClass>> {
     let mut budget: AllocationBudget =
         AllocationBudget::new(translation_allocation_limit(Dex2JarLimits::default()));
@@ -771,6 +972,20 @@ fn build_class_model_with_budget(
     dex_bytes: &[u8],
     budget: &mut AllocationBudget,
 ) -> Result<Vec<TranslatedClass>> {
+    let metadata_report: crate::dex::DexSystemMetadataReport =
+        parse_system_metadata(dex, dex_bytes);
+    for diagnostic in &metadata_report.diagnostics {
+        crate::debug::dbg_kv("dex2jar-system-metadata-dropped", || {
+            format!(
+                "{:?} @{}: {}",
+                diagnostic.class, diagnostic.offset, diagnostic.reason
+            )
+        });
+    }
+    let metadata: DexSystemMetadata = metadata_report.metadata;
+    let inner_index: InnerClassIndex<'_> = inner_class_index(&metadata);
+    let mut inner_work_remaining: usize = inner_class_work_budget(&metadata);
+    let empty_metadata: DexClassMetadata = DexClassMetadata::default();
     let header: &crate::dex::DexHeader = &dex.header;
     let class_defs_off: usize = header.class_defs_off as usize;
     let class_count: usize = usize::try_from(header.class_defs_size).unwrap_or(usize::MAX);
@@ -836,9 +1051,26 @@ fn build_class_model_with_budget(
                     dex_bytes,
                     class_data_off as usize,
                     &internal_name,
+                    &metadata,
                     budget,
                 )?
             };
+        let class_metadata: &DexClassMetadata = metadata
+            .classes
+            .get(internal_descriptor)
+            .unwrap_or(&empty_metadata);
+        let inner_classes: Vec<TranslatedInnerClass> = translated_inner_classes(
+            &metadata,
+            &inner_index,
+            internal_descriptor,
+            &mut inner_work_remaining,
+            budget,
+        )?;
+        let enclosing_method: Option<TranslatedEnclosingMethod> = translated_enclosing_method(
+            class_metadata,
+            inner_index.members.contains(internal_descriptor.as_str()),
+            budget,
+        )?;
         classes.push(TranslatedClass {
             internal_name,
             super_name,
@@ -846,6 +1078,13 @@ fn build_class_model_with_budget(
             access_flags: access_flags as u16,
             fields,
             methods,
+            inner_classes,
+            enclosing_method,
+            signature: class_metadata
+                .signature
+                .as_deref()
+                .map(|value: &str| budget.string(value))
+                .transpose()?,
         });
     }
     Ok(classes)
@@ -856,6 +1095,7 @@ fn parse_class_data(
     bytes: &[u8],
     off: usize,
     class: &str,
+    metadata: &DexSystemMetadata,
     budget: &mut AllocationBudget,
 ) -> Result<(Vec<TranslatedField>, Vec<TranslatedMethod>)> {
     let (static_fields, o1): (u32, usize) = crate::dex::read_uleb128(bytes, off)
@@ -881,6 +1121,7 @@ fn parse_class_data(
         static_fields,
         &mut fields,
         class,
+        metadata,
         budget,
     )?;
     cursor = read_encoded_fields(
@@ -890,6 +1131,7 @@ fn parse_class_data(
         instance_fields,
         &mut fields,
         class,
+        metadata,
         budget,
     )?;
     let mut methods: Vec<TranslatedMethod> = budget.vector(method_count)?;
@@ -900,6 +1142,7 @@ fn parse_class_data(
         direct_methods,
         &mut methods,
         class,
+        metadata,
         budget,
     )?;
     let _ = read_encoded_methods(
@@ -909,6 +1152,7 @@ fn parse_class_data(
         virtual_methods,
         &mut methods,
         class,
+        metadata,
         budget,
     )?;
     Ok((fields, methods))
@@ -921,6 +1165,7 @@ fn read_encoded_fields(
     count: u32,
     out: &mut Vec<TranslatedField>,
     class: &str,
+    metadata: &DexSystemMetadata,
     budget: &mut AllocationBudget,
 ) -> Result<usize> {
     let mut field_idx: u32 = 0;
@@ -944,6 +1189,11 @@ fn read_encoded_fields(
             name: budget.string(&field.name)?,
             descriptor: budget.string(&field.type_name)?,
             access_flags: access as u16,
+            signature: metadata
+                .field_signatures
+                .get(&field_idx)
+                .map(|value: &String| budget.string(value))
+                .transpose()?,
         });
         o = n2;
     }
@@ -957,6 +1207,7 @@ fn read_encoded_methods(
     count: u32,
     out: &mut Vec<TranslatedMethod>,
     class: &str,
+    metadata: &DexSystemMetadata,
     budget: &mut AllocationBudget,
 ) -> Result<usize> {
     let mut method_idx: u32 = 0;
@@ -1007,6 +1258,11 @@ fn read_encoded_methods(
             descriptor,
             access_flags: access as u16,
             has_code: code_off != 0,
+            signature: metadata
+                .method_signatures
+                .get(&method_idx)
+                .map(|value: &String| budget.string(value))
+                .transpose()?,
         });
         o = n3;
     }
@@ -1527,6 +1783,8 @@ fn build_method_attr(
     )?;
     let mut recovered: bool = false;
     let mut refusal: Option<String> = None;
+    let attribute_count: u16 = u16::from(needs_code) + u16::from(method.signature.is_some());
+    append_class_bytes(&mut out, &attribute_count.to_be_bytes(), max_class_bytes)?;
     if needs_code {
         let body: BuiltBody = build_real_or_stub_body(dex, cp, method, code_item)?;
         recovered = body.recovered;
@@ -1559,14 +1817,18 @@ fn build_method_attr(
             max_class_bytes,
         )?;
         append_class_bytes(&mut code_attr, &body.sub_attrs, max_class_bytes)?;
-        append_class_bytes(&mut out, &1u16.to_be_bytes(), max_class_bytes)?;
         append_class_bytes(&mut out, &code_attr_name.to_be_bytes(), max_class_bytes)?;
         let attr_len: u32 = u32::try_from(code_attr.len())
             .map_err(|_| malformed(&method.name, "method attribute length exceeds u32"))?;
         append_class_bytes(&mut out, &attr_len.to_be_bytes(), max_class_bytes)?;
         append_class_bytes(&mut out, &code_attr, max_class_bytes)?;
-    } else {
-        append_class_bytes(&mut out, &0u16.to_be_bytes(), max_class_bytes)?;
+    }
+    if let Some(signature) = &method.signature {
+        let attribute_name: u16 = cp.utf8("Signature");
+        let signature_index: u16 = cp.utf8(signature);
+        append_class_bytes(&mut out, &attribute_name.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &2u32.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &signature_index.to_be_bytes(), max_class_bytes)?;
     }
     let _ = descriptor_return_is_void;
     Ok((out, recovered, refusal))
@@ -1708,7 +1970,26 @@ fn write_class_file(
             &cp.utf8(&field.descriptor).to_be_bytes(),
             max_class_bytes,
         )?;
-        append_class_bytes(&mut field_section, &0u16.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(
+            &mut field_section,
+            &u16::from(field.signature.is_some()).to_be_bytes(),
+            max_class_bytes,
+        )?;
+        if let Some(signature) = &field.signature {
+            let attribute_name: u16 = cp.utf8("Signature");
+            let signature_index: u16 = cp.utf8(signature);
+            append_class_bytes(
+                &mut field_section,
+                &attribute_name.to_be_bytes(),
+                max_class_bytes,
+            )?;
+            append_class_bytes(&mut field_section, &2u32.to_be_bytes(), max_class_bytes)?;
+            append_class_bytes(
+                &mut field_section,
+                &signature_index.to_be_bytes(),
+                max_class_bytes,
+            )?;
+        }
     }
     let mut method_section: Vec<u8> = Vec::new();
     append_class_bytes(
@@ -1747,6 +2028,8 @@ fn write_class_file(
         access |= ACC_SUPER;
     }
 
+    let class_attributes: Vec<u8> = build_class_attributes(&mut cp, class, max_class_bytes)?;
+
     cp.check(&class.internal_name)?;
     let constant_pool: Vec<u8> = cp.serialize();
     let mut out: Vec<u8> = Vec::new();
@@ -1782,8 +2065,102 @@ fn write_class_file(
     }
     append_class_bytes(&mut out, &field_section, max_class_bytes)?;
     append_class_bytes(&mut out, &method_section, max_class_bytes)?;
-    append_class_bytes(&mut out, &0u16.to_be_bytes(), max_class_bytes)?;
+    append_class_bytes(&mut out, &class_attributes, max_class_bytes)?;
     Ok((out, recovered, stubbed, stubbed_methods))
+}
+
+fn build_class_attributes(
+    cp: &mut ConstantPool,
+    class: &TranslatedClass,
+    max_class_bytes: usize,
+) -> Result<Vec<u8>> {
+    if class.inner_classes.len() > usize::from(u16::MAX) {
+        return Err(malformed(
+            &class.internal_name,
+            "inner class count exceeds classfile limit",
+        ));
+    }
+    let attribute_count: usize = usize::from(!class.inner_classes.is_empty())
+        + usize::from(class.enclosing_method.is_some())
+        + usize::from(class.signature.is_some());
+    let mut out: Vec<u8> = Vec::new();
+    append_class_bytes(
+        &mut out,
+        &u16::try_from(attribute_count)
+            .map_err(|_| malformed(&class.internal_name, "class attribute count exceeds u16"))?
+            .to_be_bytes(),
+        max_class_bytes,
+    )?;
+    if !class.inner_classes.is_empty() {
+        let attribute_name: u16 = cp.utf8("InnerClasses");
+        let mut info: Vec<u8> = Vec::new();
+        append_class_bytes(
+            &mut info,
+            &u16::try_from(class.inner_classes.len())
+                .map_err(|_| {
+                    malformed(
+                        &class.internal_name,
+                        "inner class count exceeds classfile limit",
+                    )
+                })?
+                .to_be_bytes(),
+            max_class_bytes,
+        )?;
+        for inner in &class.inner_classes {
+            let inner_index: u16 = cp.class(&inner.inner_name);
+            let outer_index: u16 = inner
+                .outer_name
+                .as_deref()
+                .map_or(0, |outer: &str| cp.class(outer));
+            let simple_index: u16 = inner
+                .simple_name
+                .as_deref()
+                .map_or(0, |simple: &str| cp.utf8(simple));
+            append_class_bytes(&mut info, &inner_index.to_be_bytes(), max_class_bytes)?;
+            append_class_bytes(&mut info, &outer_index.to_be_bytes(), max_class_bytes)?;
+            append_class_bytes(&mut info, &simple_index.to_be_bytes(), max_class_bytes)?;
+            append_class_bytes(
+                &mut info,
+                &inner.access_flags.to_be_bytes(),
+                max_class_bytes,
+            )?;
+        }
+        append_class_bytes(&mut out, &attribute_name.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(
+            &mut out,
+            &u32::try_from(info.len())
+                .map_err(|_| malformed(&class.internal_name, "InnerClasses length exceeds u32"))?
+                .to_be_bytes(),
+            max_class_bytes,
+        )?;
+        append_class_bytes(&mut out, &info, max_class_bytes)?;
+    }
+    if let Some(enclosing) = &class.enclosing_method {
+        let attribute_name: u16 = cp.utf8("EnclosingMethod");
+        let class_index: u16 = cp.class(&enclosing.class_name);
+        let method_index: u16 = match (&enclosing.method_name, &enclosing.method_descriptor) {
+            (Some(name), Some(descriptor)) => cp.name_and_type(name, descriptor),
+            (None, None) => 0,
+            _ => {
+                return Err(malformed(
+                    &class.internal_name,
+                    "enclosing method name and descriptor disagree",
+                ));
+            }
+        };
+        append_class_bytes(&mut out, &attribute_name.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &4u32.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &class_index.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &method_index.to_be_bytes(), max_class_bytes)?;
+    }
+    if let Some(signature) = &class.signature {
+        let attribute_name: u16 = cp.utf8("Signature");
+        let signature_index: u16 = cp.utf8(signature);
+        append_class_bytes(&mut out, &attribute_name.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &2u32.to_be_bytes(), max_class_bytes)?;
+        append_class_bytes(&mut out, &signature_index.to_be_bytes(), max_class_bytes)?;
+    }
+    Ok(out)
 }
 
 fn code_items_by_class(items: Vec<CodeItem>) -> BTreeMap<String, BTreeMap<MethodKey, CodeItem>> {
@@ -2213,6 +2590,55 @@ fn classify_stub(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inner_class_translation_work_is_linear_in_metadata_classes() {
+        let child_count: usize = 65_535;
+        let mut metadata: DexSystemMetadata = DexSystemMetadata::default();
+        let mut outer: DexClassMetadata = DexClassMetadata::default();
+        for child_index in 0..child_count {
+            let child: String = format!("LOuter$C{child_index};");
+            outer.member_classes.push(child.clone());
+            metadata.classes.insert(
+                child,
+                DexClassMetadata {
+                    inner_class: Some(DexInnerClass {
+                        simple_name: Some(format!("C{child_index}")),
+                        access_flags: 0x0008,
+                    }),
+                    enclosing_class: Some("LOuter;".to_owned()),
+                    ..DexClassMetadata::default()
+                },
+            );
+        }
+        metadata.classes.insert("LOuter;".to_owned(), outer);
+        let index: InnerClassIndex<'_> = inner_class_index(&metadata);
+        let mut work_remaining: usize = inner_class_work_budget(&metadata);
+        let mut budget: AllocationBudget =
+            AllocationBudget::new(translation_allocation_limit(Dex2JarLimits::default()));
+        let outer_entries: Vec<TranslatedInnerClass> = translated_inner_classes(
+            &metadata,
+            &index,
+            "LOuter;",
+            &mut work_remaining,
+            &mut budget,
+        )
+        .expect("outer inner-class entries");
+        assert_eq!(outer_entries.len(), child_count);
+        for child_index in 0..child_count {
+            let child: String = format!("LOuter$C{child_index};");
+            let entries: Vec<TranslatedInnerClass> = translated_inner_classes(
+                &metadata,
+                &index,
+                &child,
+                &mut work_remaining,
+                &mut budget,
+            )
+            .expect("member inner-class entries");
+            assert_eq!(entries.len(), 1, "{child}");
+            assert_eq!(entries[0].outer_name.as_deref(), Some("Outer"), "{child}");
+        }
+    }
     use crate::dex_builder::{
         ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef,
     };
@@ -2230,6 +2656,7 @@ mod tests {
             descriptor: "(JD)V".to_string(),
             access_flags: ACC_STATIC,
             has_code: true,
+            signature: None,
         };
         assert_eq!(method_local_slots(&m), 4);
     }
@@ -2806,6 +3233,7 @@ mod tests {
                 descriptor: descriptor.to_owned(),
                 access_flags: ACC_STATIC,
                 has_code: true,
+                signature: None,
             };
             let item: CodeItem = CodeItem {
                 method_name: method.name.clone(),
@@ -2847,7 +3275,11 @@ mod tests {
                     descriptor,
                     access_flags: 0x0001,
                     has_code: false,
+                    signature: None,
                 }],
+                inner_classes: Vec::new(),
+                enclosing_method: None,
+                signature: None,
             };
             let error: Error = write_class_file(&dex, &class, &BTreeMap::new(), usize::MAX)
                 .expect_err("JVM parameter-slot limit");
@@ -2886,8 +3318,12 @@ mod tests {
                 name: "x".repeat(usize::from(u16::MAX) + 1),
                 descriptor: "I".to_owned(),
                 access_flags: 0x0001,
+                signature: None,
             }],
             methods: Vec::new(),
+            inner_classes: Vec::new(),
+            enclosing_method: None,
+            signature: None,
         };
         let error: Error = write_class_file(&dex, &class, &BTreeMap::new(), usize::MAX)
             .expect_err("constant-pool UTF-8 length");
@@ -2909,6 +3345,7 @@ mod tests {
                 name: format!("f{index}"),
                 descriptor: format!("Lx/T{index};"),
                 access_flags: 0x0001,
+                signature: None,
             })
             .collect();
         let class: TranslatedClass = TranslatedClass {
@@ -2918,6 +3355,9 @@ mod tests {
             access_flags: 0x0001,
             fields,
             methods: Vec::new(),
+            inner_classes: Vec::new(),
+            enclosing_method: None,
+            signature: None,
         };
         let error: Error = write_class_file(&dex, &class, &BTreeMap::new(), usize::MAX)
             .expect_err("constant-pool index overflow");

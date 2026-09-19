@@ -34,6 +34,7 @@ pub(crate) struct DefaultInterfaceRecovery {
     methods: BTreeMap<(String, String, String), DefaultInterfaceMethod>,
     injected_methods: BTreeMap<String, Vec<DefaultInterfaceMethod>>,
     suppressed_classes: BTreeSet<String>,
+    companion_interfaces: BTreeMap<String, String>,
     suppressed_methods: BTreeSet<(String, String, String)>,
     implemented_interfaces: BTreeMap<String, BTreeSet<String>>,
     calls: BTreeMap<u32, DefaultInterfaceMethod>,
@@ -208,6 +209,11 @@ impl DefaultInterfaceRecovery {
             if !valid {
                 continue;
             }
+            if let Some(method) = methods.first() {
+                recovery
+                    .companion_interfaces
+                    .insert(companion.clone(), method.interface.clone());
+            }
             recovery.suppressed_classes.insert(companion);
             recovery.suppressed_methods.extend(forwarders);
             for (implementation, implemented) in interfaces {
@@ -245,6 +251,10 @@ impl DefaultInterfaceRecovery {
         self.suppressed_classes.contains(class)
     }
 
+    pub(crate) fn recovered_companion_interface(&self, companion: &str) -> Option<&str> {
+        self.companion_interfaces.get(companion).map(String::as_str)
+    }
+
     pub(crate) fn suppresses_method(&self, class: &str, name: &str, descriptor: &str) -> bool {
         self.suppressed_methods.contains(&(
             class.to_string(),
@@ -261,6 +271,10 @@ impl DefaultInterfaceRecovery {
     ) -> Option<&DefaultInterfaceMethod> {
         self.methods
             .get(&(class.to_string(), name.to_string(), descriptor.to_string()))
+    }
+
+    pub(crate) fn recovered_methods(&self) -> impl Iterator<Item = &DefaultInterfaceMethod> {
+        self.methods.values()
     }
 
     pub(crate) fn implemented_interfaces(&self, class: &str) -> Option<&BTreeSet<String>> {

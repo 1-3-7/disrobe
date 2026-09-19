@@ -1,0 +1,23 @@
+schema = "disrobe.jvm.dalvik-boolean-boundary/v1"
+source = "BooleanBoundary.java"
+source_sha256 = "7fa03fc83c88200fdd4c0fc76284be0edabcd6ec854fb96dd38fd05017ca5c5a"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes BooleanBoundary.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[[artifact]]
+path = "BooleanBoundary-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/fixture/bool/BooleanBoundary.class"
+sha256 = "68d0906f68707785a250319c4256ea1d9445c0072db87ff0400a906a02190483"
+bytes = 1712

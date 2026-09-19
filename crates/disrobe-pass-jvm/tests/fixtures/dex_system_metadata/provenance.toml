@@ -1,0 +1,50 @@
+schema = "disrobe.jvm.dex-system-metadata/v1"
+
+[[source]]
+path = "Outer.java"
+sha256 = "ce27fbcf7c92b705d94163e2a8e83a8e73d776abcd62d772aece171136857cdb"
+
+[[source]]
+path = "InitializerLocal.java"
+sha256 = "678d467a94664fd93d746499040706d0c124552bc8807dae24a036daed88e571"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+commands = [
+    "javac -Xlint:-options --release 8 -d classes Outer.java",
+    "javac -Xlint:-options --release 8 -d classes InitializerLocal.java",
+]
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[[artifact]]
+path = "MultidexOuter-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex1 classes/fixture/multidex/Outer.class"
+sha256 = "54043014e2e3974573dcb2d173aebeea175715aaa8ec797c86906185ca5633dc"
+bytes = 1064
+
+[[artifact]]
+path = "MultidexInner-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex2 classes/fixture/multidex/Outer$Inner.class"
+sha256 = "690db1eabf851de138de24d1681e986647e63992a8d2c1c4c1add3d4727a1b8a"
+bytes = 1188
+
+[[artifact]]
+path = "InitializerLocal-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/fixture/initlocal/InitializerLocal.class classes/fixture/initlocal/InitializerLocal$1Counter.class"
+sha256 = "d6b667735a330a3bee990e6f7bd734b064a27466dfad7b66351c8d38024167ef"
+bytes = 1268

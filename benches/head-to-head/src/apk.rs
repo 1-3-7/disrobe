@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -1019,6 +1019,17 @@ fn validate_pinned_jadx_partial_output(
     Ok(())
 }
 
+fn jadx_loaded_from_matches_input(loaded_from: &str, input_path: &Path) -> bool {
+    if loaded_from.contains("/*") || loaded_from.contains("*/") {
+        return false;
+    }
+    let loaded_path: &Path = Path::new(loaded_from);
+    let has_parent: bool = loaded_path
+        .components()
+        .any(|component: Component<'_>| matches!(component, Component::ParentDir));
+    !has_parent && loaded_path == input_path
+}
+
 fn canonical_source_tree_sha256(
     sources: &BTreeMap<String, String>,
     input_path: &Path,
@@ -1036,10 +1047,7 @@ fn canonical_source_tree_sha256(
                 .strip_prefix("/* JADX INFO: loaded from: ")
                 .and_then(|value: &str| value.strip_suffix(" */"))
                 .ok_or_else(|| "JADX loaded-from annotation is malformed".to_owned())?;
-            let expected: &str = input_path
-                .to_str()
-                .ok_or_else(|| "JADX invocation input path is not UTF-8".to_owned())?;
-            if loaded_from != expected || loaded_from.contains("/*") || loaded_from.contains("*/") {
+            if !jadx_loaded_from_matches_input(loaded_from, input_path) {
                 return Err("JADX loaded-from annotation does not name the pinned input".to_owned());
             }
             loaded_from_records = loaded_from_records.saturating_add(1);
@@ -1124,8 +1132,22 @@ fn jadx_method_identity_sha256(
     sources: &BTreeMap<String, String>,
     regions: &[SourceMethodRegion],
 ) -> std::result::Result<String, String> {
-    let mut identities: Vec<String> = Vec::with_capacity(regions.len());
-    let line_starts: BTreeMap<&str, Vec<usize>> = sources
+    let line_starts: BTreeMap<&str, Vec<usize>> = source_line_starts(sources);
+    let mut identities: Vec<String> = regions
+        .iter()
+        .map(|region: &SourceMethodRegion| source_method_declaration(sources, &line_starts, region))
+        .collect::<std::result::Result<Vec<String>, String>>()?;
+    identities.sort_unstable();
+    let mut canonical: Vec<u8> = Vec::new();
+    for identity in identities {
+        canonical.extend_from_slice(&(identity.len() as u64).to_le_bytes());
+        canonical.extend_from_slice(identity.as_bytes());
+    }
+    Ok(sha256_hex(&canonical))
+}
+
+fn source_line_starts(sources: &BTreeMap<String, String>) -> BTreeMap<&str, Vec<usize>> {
+    sources
         .iter()
         .map(|(path, source): (&String, &String)| {
             let mut starts: Vec<usize> = vec![0];
@@ -1136,35 +1158,31 @@ fn jadx_method_identity_sha256(
             );
             (path.as_str(), starts)
         })
-        .collect();
-    for region in regions {
-        let source: &str = sources
-            .get(&region.source)
-            .ok_or_else(|| "method inventory references a missing source".to_owned())?;
-        let starts: &[usize] = line_starts
-            .get(region.source.as_str())
-            .map(Vec::as_slice)
-            .ok_or_else(|| "method inventory lacks a source line index".to_owned())?;
-        let start: usize = source_position_offset(starts, region.start, region.start_column)?;
-        let end: usize = match region.body_start {
-            Some(body_start) => body_start,
-            None => {
-                source_position_offset(starts, region.end.saturating_sub(1), region.end_column)?
-            }
-        };
-        let header: &str = source
-            .get(start..end)
-            .ok_or_else(|| "method inventory declaration range is invalid".to_owned())?;
-        let normalized: String = header.split_whitespace().collect::<Vec<&str>>().join(" ");
-        identities.push(format!("{}\0{normalized}", region.source));
-    }
-    identities.sort_unstable();
-    let mut canonical: Vec<u8> = Vec::new();
-    for identity in identities {
-        canonical.extend_from_slice(&(identity.len() as u64).to_le_bytes());
-        canonical.extend_from_slice(identity.as_bytes());
-    }
-    Ok(sha256_hex(&canonical))
+        .collect()
+}
+
+fn source_method_declaration(
+    sources: &BTreeMap<String, String>,
+    line_starts: &BTreeMap<&str, Vec<usize>>,
+    region: &SourceMethodRegion,
+) -> std::result::Result<String, String> {
+    let source: &str = sources
+        .get(&region.source)
+        .ok_or_else(|| "method inventory references a missing source".to_owned())?;
+    let starts: &[usize] = line_starts
+        .get(region.source.as_str())
+        .map(Vec::as_slice)
+        .ok_or_else(|| "method inventory lacks a source line index".to_owned())?;
+    let start: usize = source_position_offset(starts, region.start, region.start_column)?;
+    let end: usize = match region.body_start {
+        Some(body_start) => body_start,
+        None => source_position_offset(starts, region.end.saturating_sub(1), region.end_column)?,
+    };
+    let header: &str = source
+        .get(start..end)
+        .ok_or_else(|| "method inventory declaration range is invalid".to_owned())?;
+    let normalized: String = header.split_whitespace().collect::<Vec<&str>>().join(" ");
+    Ok(format!("{}\0{normalized}", region.source))
 }
 
 fn source_position_offset(
@@ -1400,7 +1418,7 @@ fn score_source_set(
     sources: &BTreeMap<String, String>,
     original: usize,
 ) -> ToolScore {
-    match score_source_set_prepared(javac, sources, original, None) {
+    match score_source_set_prepared(javac, sources, original, None, None) {
         Ok(score) => score,
         Err(error) => ToolScore::miss(original, error),
     }
@@ -1412,7 +1430,7 @@ fn score_source_set_with_artifacts(
     original: usize,
     artifact_dir: &Path,
 ) -> std::result::Result<ToolScore, String> {
-    score_source_set_prepared(javac, sources, original, Some(artifact_dir))
+    score_source_set_prepared(javac, sources, original, Some(artifact_dir), None)
 }
 
 fn retain_sources_and_score(
@@ -1430,6 +1448,7 @@ fn score_source_set_prepared(
     sources: &BTreeMap<String, String>,
     original: usize,
     artifact_dir: Option<&Path>,
+    clean_regions: Option<&mut BTreeSet<usize>>,
 ) -> std::result::Result<ToolScore, String> {
     if let Err(error) = validate_source_set(sources) {
         return Ok(ToolScore::miss(original, error));
@@ -1450,7 +1469,14 @@ fn score_source_set_prepared(
             });
         }
     };
-    score_source_set_internal(javac, sources, original, &failures.regions, artifact_dir)
+    score_source_set_internal(
+        javac,
+        sources,
+        original,
+        &failures.regions,
+        artifact_dir,
+        clean_regions,
+    )
 }
 
 fn score_source_set_internal(
@@ -1459,6 +1485,7 @@ fn score_source_set_internal(
     original: usize,
     forced_failures: &BTreeSet<usize>,
     artifact_dir: Option<&Path>,
+    clean_regions: Option<&mut BTreeSet<usize>>,
 ) -> std::result::Result<ToolScore, String> {
     if let Err(error) = validate_source_set(sources) {
         return Ok(ToolScore::miss(original, error));
@@ -1501,6 +1528,7 @@ fn score_source_set_internal(
             &regions,
             &verdict,
             forced_failures,
+            clean_regions,
         ));
     }
     Ok(score_parse_isolated_source_regions(
@@ -1510,6 +1538,7 @@ fn score_source_set_internal(
         &regions,
         verdict,
         forced_failures,
+        clean_regions,
     ))
 }
 
@@ -1658,6 +1687,7 @@ fn score_parse_isolated_source_regions(
     regions: &[SourceMethodRegion],
     mut verdict: OracleVerdict,
     forced_failures: &BTreeSet<usize>,
+    clean_regions: Option<&mut BTreeSet<usize>>,
 ) -> ToolScore {
     let emitted: usize = regions.len();
     let mut isolated: BTreeSet<usize> = forced_failures.clone();
@@ -1850,7 +1880,7 @@ fn score_parse_isolated_source_regions(
             break;
         }
     }
-    score_source_method_regions(original, regions, &verdict, &isolated)
+    score_source_method_regions(original, regions, &verdict, &isolated, clean_regions)
 }
 
 fn score_isolation_retry_failure(
@@ -1878,6 +1908,7 @@ fn score_source_method_regions(
     regions: &[SourceMethodRegion],
     verdict: &OracleVerdict,
     isolated: &BTreeSet<usize>,
+    clean_regions: Option<&mut BTreeSet<usize>>,
 ) -> ToolScore {
     let emitted: usize = regions.len();
     let failed: BTreeSet<usize> = verdict
@@ -1894,6 +1925,9 @@ fn score_source_method_regions(
         })
         .count();
     let clean: usize = emitted.saturating_sub(failed.len());
+    if let Some(clean_regions) = clean_regions {
+        clean_regions.extend((0..emitted).filter(|index: &usize| !failed.contains(index)));
+    }
     ToolScore::Certified {
         clean,
         emitted,
@@ -3923,6 +3957,388 @@ pub fn require_pinned_versions(root: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+    const PRODUCTION_DALVIK_CLEAN_METHODS: &str = r"EdgeCases.java\0private EmptyShape() {@2348:9
+EdgeCases.java\0private static int bumpStatic() {@227:5
+EdgeCases.java\0protected AbstractWorker(String arg0) {@2312:9
+EdgeCases.java\0public <X> EdgeCases.Pair<X, B> mapFirst(java.util.function.Function<? super A, ? extends X> arg0) {@2375:9
+EdgeCases.java\0public <Y> EdgeCases.Pair<A, Y> mapSecond(java.util.function.Function<? super B, ? extends Y> arg0) {@2376:9
+EdgeCases.java\0public A first() {@2373:9
+EdgeCases.java\0public B second() {@2377:9
+EdgeCases.java\0public Circle(double arg0) {@2321:9
+EdgeCases.java\0public CounterWorker(String arg0, int arg1, int arg2) {@2331:9
+EdgeCases.java\0public EdgeCases() {@38:5
+EdgeCases.java\0public EdgeCases(int arg0) {@44:5
+EdgeCases.java\0public EdgeCases.Direction opposite() {@2343:9
+EdgeCases.java\0public EdgeCases.Direction turn() {@2344:9
+EdgeCases.java\0public EdgeCases.FluentBuilder<java.util.Map<String, Object>> set(String arg0, Object arg1) {@1484:9
+EdgeCases.java\0public EdgeCases.Outer.Inner makeInner() {@2358:9
+EdgeCases.java\0public EdgeCases.Vector2D add(EdgeCases.Vector2D arg0) {@2432:9
+EdgeCases.java\0public Inner(EdgeCases.Outer arg0) {@2360:13
+EdgeCases.java\0public Integer call() {@2332:9
+EdgeCases.java\0public Integer next() {@1172:9
+EdgeCases.java\0public Outer() {@2357:9
+EdgeCases.java\0public Pair(A arg0, B arg1) {@2371:9
+EdgeCases.java\0public Square(double arg0) {@2397:9
+EdgeCases.java\0public StaticNested(int arg0) {@2365:13
+EdgeCases.java\0public String describe() {@2333:9
+EdgeCases.java\0public String toString() {@2437:9
+EdgeCases.java\0public T unwrap() {@2412:9
+EdgeCases.java\0public TaggedBox(T arg0) {@2410:9
+EdgeCases.java\0public Triangle(double arg0, double arg1) {@2420:9
+EdgeCases.java\0public Vector2D(double arg0, double arg1) {@2431:9
+EdgeCases.java\0public abstract EdgeCases.FluentBuilder<T> set(String arg0, Object arg1);@2353:9
+EdgeCases.java\0public abstract EdgeCases.Tagged[] value();@2415:9
+EdgeCases.java\0public abstract R reduce(T arg0, T arg1);@2381:9
+EdgeCases.java\0public abstract String describe();@2313:9
+EdgeCases.java\0public abstract String value();@2406:9
+EdgeCases.java\0public abstract T build();@2352:9
+EdgeCases.java\0public abstract V get(K arg0);@2386:9
+EdgeCases.java\0public abstract boolean containsKey(K arg0);@2384:9
+EdgeCases.java\0public abstract double area();@2390:9
+EdgeCases.java\0public abstract int add(int arg0, int arg1);@2317:9
+EdgeCases.java\0public abstract int priority();@2405:9
+EdgeCases.java\0public abstract java.util.Optional<V> find(K arg0);@2385:9
+EdgeCases.java\0public abstract void put(K arg0, V arg1);@2387:9
+EdgeCases.java\0public boolean equals(Object arg0) {@2434:9
+EdgeCases.java\0public boolean hasNext() {@1190:9
+EdgeCases.java\0public default String label() {@2391:9
+EdgeCases.java\0public double area() {@2322:9
+EdgeCases.java\0public double area() {@2349:9
+EdgeCases.java\0public double area() {@2398:9
+EdgeCases.java\0public double area() {@2421:9
+EdgeCases.java\0public double base() {@2422:9
+EdgeCases.java\0public double dot(EdgeCases.Vector2D arg0) {@2433:9
+EdgeCases.java\0public double height() {@2425:9
+EdgeCases.java\0public double magnitude() {@2436:9
+EdgeCases.java\0public double radius() {@2325:9
+EdgeCases.java\0public double side() {@2401:9
+EdgeCases.java\0public final Object apply(int arg0) {@1103:9
+EdgeCases.java\0public final Object get() {@1131:9
+EdgeCases.java\0public final Object get() {@1412:9
+EdgeCases.java\0public final Object get() {@1871:9
+EdgeCases.java\0public final Object get() {@2298:9
+EdgeCases.java\0public final Object get() {@281:9
+EdgeCases.java\0public final String toString() {@2326:9
+EdgeCases.java\0public final String toString() {@2378:9
+EdgeCases.java\0public final String toString() {@2402:9
+EdgeCases.java\0public final String toString() {@2426:9
+EdgeCases.java\0public final boolean equals(Object arg0) {@2323:9
+EdgeCases.java\0public final boolean equals(Object arg0) {@2372:9
+EdgeCases.java\0public final boolean equals(Object arg0) {@2399:9
+EdgeCases.java\0public final boolean equals(Object arg0) {@2423:9
+EdgeCases.java\0public final boolean test(Object arg0) {@1730:9
+EdgeCases.java\0public final int add(int arg0, int arg1) {@79:9
+EdgeCases.java\0public final int applyAsInt(Object arg0) {@506:9
+EdgeCases.java\0public final int applyAsInt(int arg0) {@1692:9
+EdgeCases.java\0public final int applyAsInt(int arg0) {@2012:9
+EdgeCases.java\0public final int hashCode() {@2324:9
+EdgeCases.java\0public final int hashCode() {@2374:9
+EdgeCases.java\0public final int hashCode() {@2400:9
+EdgeCases.java\0public final int hashCode() {@2424:9
+EdgeCases.java\0public final java.util.Iterator iterator() {@447:9
+EdgeCases.java\0public final void accept(Object arg0) {@609:9
+EdgeCases.java\0public final void run() {@2314:9
+EdgeCases.java\0public final void run() {@849:9
+EdgeCases.java\0public int compareDeep(EdgeCases.TaggedBox<T> arg0) {@2411:9
+EdgeCases.java\0public int hashCode() {@2435:9
+EdgeCases.java\0public int sum(int arg0) {@2361:13
+EdgeCases.java\0public static <K extends Comparable<K>, V> java.util.SortedMap<K, V> intoSorted(java.util.Map<K, V> arg0) {@1036:5
+EdgeCases.java\0public static <T extends Comparable<? super T>> java.util.List<T> sortedCopy(java.util.Collection<? extends T> arg0) {@1999:5
+EdgeCases.java\0public static <T extends Comparable<T>> T clamp(T arg0, T arg1, T arg2) {@356:5
+EdgeCases.java\0public static <T extends Throwable> T mustNotNull(T arg0) {@1701:5
+EdgeCases.java\0public static <T> T identity(T arg0) {@1018:5
+EdgeCases.java\0public static <T> T tap(T arg0, java.util.function.Consumer<? super T> arg1) {@2132:5
+EdgeCases.java\0public static <T> java.util.List<EdgeCases.Pair<T, T>> windowed(java.util.List<T> arg0) {@2259:5
+EdgeCases.java\0public static <T> java.util.List<T> reverseList(java.util.List<T> arg0) {@1904:5
+EdgeCases.java\0public static <T> java.util.List<java.util.List<T>> chunked(java.util.List<T> arg0, int arg1) {@334:5
+EdgeCases.java\0public static <T> java.util.Optional<T> coalesce(java.util.Optional<T> arg0, java.util.Optional<T> arg1) {@469:5
+EdgeCases.java\0public static <T> java.util.function.Supplier<T> memoize(java.util.function.Supplier<T> arg0) {@1637:5
+EdgeCases.java\0public static <T> java.util.function.ToIntFunction<T> constantInt(int arg0) {@502:5
+EdgeCases.java\0public static <T> java.util.stream.Stream<T> nonNull(java.util.stream.Stream<T> arg0) {@1727:5
+EdgeCases.java\0public static <T> void shuffleInPlace(java.util.List<T> arg0, long arg1) {@1979:5
+EdgeCases.java\0public static EdgeCases.Adder adderFn() {@76:5
+EdgeCases.java\0public static EdgeCases.FluentBuilder<java.util.Map<String, Object>> mapBuilder() {@1473:5
+EdgeCases.java\0public static EdgeCases.Reducer<Integer, Integer> reducerFn() {@1854:5
+EdgeCases.java\0public static Iterable<Integer> closureCaptureLoop(int arg0) {@437:5
+EdgeCases.java\0public static Object deepPattern(Object arg0) {@616:5
+EdgeCases.java\0public static Runnable nestedAnon(int arg0) {@1708:5
+EdgeCases.java\0public static String binFormat(int arg0, int arg1) {@160:5
+EdgeCases.java\0public static String bitTwiddling(int arg0) {@186:5
+EdgeCases.java\0public static String collatzPath(int arg0) {@478:5
+EdgeCases.java\0public static String pickWord(int arg0) {@1746:5
+EdgeCases.java\0public static String rawEscapes() {@1826:5
+EdgeCases.java\0public static String stringInterpolation(String arg0, int arg1) {@2024:5
+EdgeCases.java\0public static String tryWithResources() {@2186:5
+EdgeCases.java\0public static String unpackPair(EdgeCases.Pair<Integer, String> arg0) {@2203:5
+EdgeCases.java\0public static String virtualThreadFanout(int arg0) {@2255:5
+EdgeCases.java\0public static byte[] fillBytes(int arg0, byte arg1) {@883:5
+EdgeCases.java\0public static double accumulate(double[] arg0) {@61:5
+EdgeCases.java\0public static double variance(double[] arg0) {@2222:5
+EdgeCases.java\0public static int boxedMath(Integer arg0, Integer arg1) {@213:5
+EdgeCases.java\0public static int callInner() {@234:5
+EdgeCases.java\0public static int countVowels(String arg0) {@571:5
+EdgeCases.java\0public static int dotInt(int[] arg0, int[] arg1) {@793:5
+EdgeCases.java\0public static int fib(int arg0) {@862:5
+EdgeCases.java\0public static int gcd(int arg0, int arg1) {@942:5
+EdgeCases.java\0public static int hailstone(int arg0) {@969:5
+EdgeCases.java\0public static int recursiveFactorial(int arg0) {@1831:5
+EdgeCases.java\0public static int runWorker(EdgeCases.CounterWorker arg0) {@1910:5
+EdgeCases.java\0public static int sumGrid(int[][] arg0) {@2075:5
+EdgeCases.java\0public static int sumWith(java.util.function.IntBinaryOperator arg0, int... arg1) {@2098:5
+EdgeCases.java\0public static int[] reverseArray(int[] arg0) {@1887:5
+EdgeCases.java\0public static int[] varargsBasic(int arg0, int... arg1) {@2207:5
+EdgeCases.java\0public static java.util.List<Integer> listBuilders() {@1374:5
+EdgeCases.java\0public static java.util.Map<String, Integer> mapBuilders() {@1493:5
+EdgeCases.java\0public static java.util.concurrent.CompletableFuture<Integer> chain(int arg0) {@276:5
+EdgeCases.java\0public static java.util.function.Consumer<Object> debugSink() {@606:5
+EdgeCases.java\0public static java.util.function.Function<Integer, String> formatter() {@931:5
+EdgeCases.java\0public static java.util.function.IntUnaryOperator multiplier(int arg0) {@1688:5
+EdgeCases.java\0public static java.util.function.Supplier<java.util.List<String>> listSupplier() {@1409:5
+EdgeCases.java\0public static java.util.stream.IntStream squares(int arg0) {@2005:5
+EdgeCases.java\0public static long iterativeFactorial(int arg0) {@1065:5
+EdgeCases.java\0public static void main(String[] arg0) {@1421:5
+EdgeCases.java\0public static void rethrow(Throwable arg0) {@1884:5
+EdgeCases.java\0static Integer synthLambda$chain$0(int arg0) {@1116:5
+EdgeCases.java\0static Integer synthLambda$chain$1(Integer arg0) {@1121:5
+EdgeCases.java\0static Integer synthLambda$chain$3(Integer arg0) {@1141:5
+EdgeCases.java\0static Integer synthLambda$main$0(Integer arg0) {@1249:5
+EdgeCases.java\0static Integer synthLambda$main$5() {@1303:5
+EdgeCases.java\0static Integer synthLambda$reducerFn$0(Integer arg0, Integer arg1) {@1344:5
+EdgeCases.java\0static Integer synthLambda$virtualThreadFanout$0(int arg0) {@1359:5
+EdgeCases.java\0static Object synthLambda$repeat$0(Object arg0) {@1352:5
+EdgeCases.java\0static String synthLambda$main$1() {@1255:5
+EdgeCases.java\0static int synthLambda$constantInt$0(int arg0, Object arg1) {@1228:5
+EdgeCases.java\0static int synthLambda$multiplier$0(int arg0, int arg1) {@1340:5
+EdgeCases.java\0static int synthLambda$squares$0(int arg0) {@1355:5
+EdgeCases.java\0static java.util.Iterator synthLambda$closureCaptureLoop$0(int arg0) {@1153:5
+EdgeCases.java\0static java.util.Iterator synthLambda$closureCaptureLoop$1(java.util.List arg0) {@1185:5
+EdgeCases.java\0static void synthLambda$executeWith$0(java.util.concurrent.CompletableFuture arg0, java.util.function.Supplier arg1) {@1236:5
+com/android/tools/r8/RecordTag.java\0protected RecordTag() {@4:5";
+
+    fn located_method_identities(
+        sources: &BTreeMap<String, String>,
+        regions: &[SourceMethodRegion],
+    ) -> core::result::Result<Vec<String>, String> {
+        let line_starts: BTreeMap<&str, Vec<usize>> = source_line_starts(sources);
+        regions
+            .iter()
+            .map(|region: &SourceMethodRegion| {
+                source_method_declaration(sources, &line_starts, region).map(
+                    |declaration: String| {
+                        format!("{declaration}@{}:{}", region.start, region.start_column)
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn score_source_set_with_clean_inventory(
+        javac: &Path,
+        sources: &BTreeMap<String, String>,
+        original: usize,
+    ) -> core::result::Result<(ToolScore, BTreeSet<String>), String> {
+        let mut clean_regions: BTreeSet<usize> = BTreeSet::new();
+        let score: ToolScore =
+            score_source_set_prepared(javac, sources, original, None, Some(&mut clean_regions))?;
+        let identities: Vec<String> =
+            located_method_identities(sources, &source_method_regions(sources))?;
+        let clean: BTreeSet<String> = clean_regions
+            .iter()
+            .map(|index: &usize| {
+                identities
+                    .get(*index)
+                    .cloned()
+                    .ok_or_else(|| format!("clean method region {index} has no identity"))
+            })
+            .collect::<core::result::Result<BTreeSet<String>, String>>()?;
+        Ok((score, clean))
+    }
+
+    #[test]
+    fn production_dalvik_route_preserves_the_exact_clean_method_inventory()
+    -> core::result::Result<(), String> {
+        let javac: PathBuf = find_on_path("javac")
+            .ok_or_else(|| "production Dalvik inventory regression requires javac".to_owned())?;
+        let recovered: AndroidDecompileOutput =
+            android_decompile_dex(EDGECASES_DEX, BackendPreference::PreferInHouse)
+                .map_err(|error| error.to_string())?;
+        let (candidate, actual_clean): (ToolScore, BTreeSet<String>) =
+            score_source_set_with_clean_inventory(&javac, &recovered.sources, 1)?;
+        assert!(
+            matches!(
+                candidate,
+                ToolScore::Certified {
+                    clean: 157,
+                    emitted: 228,
+                    class_level_defects: 0,
+                    ..
+                }
+            ),
+            "{candidate:?}"
+        );
+        let expected_clean: BTreeSet<String> = PRODUCTION_DALVIK_CLEAN_METHODS
+            .lines()
+            .map(|identity: &str| identity.replace("\\0", "\0"))
+            .collect();
+        let candidate_only: BTreeSet<&String> = actual_clean.difference(&expected_clean).collect();
+        let lost: BTreeSet<&String> = expected_clean.difference(&actual_clean).collect();
+        assert!(candidate_only.is_empty(), "{candidate_only:#?}");
+        assert!(lost.is_empty(), "{lost:#?}");
+        Ok(())
+    }
+
+    const DIRECT_DALVIK_CLEAN_METHODS: &str = r"EdgeCases.java\0public AbstractWorker(String arg0) {@1929:9
+EdgeCases.java\0public Circle(double arg0) {@1532:9
+EdgeCases.java\0public Comparable unwrap() {@1898:9
+EdgeCases.java\0public EdgeCases() {@27:5
+EdgeCases.java\0public EdgeCases(int arg0) {@31:5
+EdgeCases.java\0public EdgeCases.Direction opposite() {@1883:9
+EdgeCases.java\0public EdgeCases.Outer.Inner makeInner() {@1708:9
+EdgeCases.java\0public EdgeCases.Pair mapFirst(java.util.function.Function arg0) {@1772:9
+EdgeCases.java\0public EdgeCases.Pair mapSecond(java.util.function.Function arg0) {@1775:9
+EdgeCases.java\0public EdgeCases.Vector2D add(EdgeCases.Vector2D arg0) {@1794:9
+EdgeCases.java\0public Inner(EdgeCases.Outer arg0) {@1713:13
+EdgeCases.java\0public Object first() {@1766:9
+EdgeCases.java\0public Object get(Object arg0) {@2029:9
+EdgeCases.java\0public Object second() {@1778:9
+EdgeCases.java\0public Outer() {@1703:9
+EdgeCases.java\0public Pair(Object arg0, Object arg1) {@1757:9
+EdgeCases.java\0public Repository$_1() {@2024:9
+EdgeCases.java\0public Square(double arg0) {@1575:9
+EdgeCases.java\0public StaticNested(int arg0) {@1725:13
+EdgeCases.java\0public String toString() {@1838:9
+EdgeCases.java\0public TaggedBox(Comparable arg0) {@1890:9
+EdgeCases.java\0public Triangle(double arg0, double arg1) {@1624:9
+EdgeCases.java\0public Vector2D(double arg0, double arg1) {@1788:9
+EdgeCases.java\0public abstract EdgeCases.Direction turn();@1886:9
+EdgeCases.java\0public abstract EdgeCases.FluentBuilder set(String arg0, Object arg1);@1925:9
+EdgeCases.java\0public abstract EdgeCases.Tagged[] value();@1944:9
+EdgeCases.java\0public abstract Object build();@1924:9
+EdgeCases.java\0public abstract Object get(Object arg0);@1914:9
+EdgeCases.java\0public abstract Object reduce(Object arg0, Object arg1);@1667:9
+EdgeCases.java\0public abstract String describe();@1934:9
+EdgeCases.java\0public abstract String value();@1948:9
+EdgeCases.java\0public abstract double area();@1509:9
+EdgeCases.java\0public abstract int add(int arg0, int arg1);@1664:9
+EdgeCases.java\0public abstract int priority();@1947:9
+EdgeCases.java\0public abstract void put(Object arg0, Object arg1);@1915:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1544:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1583:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1636:9
+EdgeCases.java\0public boolean equals(Object arg0) {@1763:9
+EdgeCases.java\0public default String label() {@1510:9
+EdgeCases.java\0public default java.util.Optional find(Object arg0) {@1911:9
+EdgeCases.java\0public double area() {@1541:9
+EdgeCases.java\0public double area() {@1580:9
+EdgeCases.java\0public double area() {@1630:9
+EdgeCases.java\0public double base() {@1633:9
+EdgeCases.java\0public double dot(EdgeCases.Vector2D arg0) {@1797:9
+EdgeCases.java\0public double height() {@1642:9
+EdgeCases.java\0public double magnitude() {@1835:9
+EdgeCases.java\0public double radius() {@1550:9
+EdgeCases.java\0public double side() {@1589:9
+EdgeCases.java\0public int sum(int arg0) {@1719:13
+EdgeCases.java\0public static Comparable clamp(Comparable arg0, Comparable arg1, Comparable arg2) {@168:5
+EdgeCases.java\0public static EdgeCases.Direction[] values() {@1880:9
+EdgeCases.java\0public static EdgeCases.Repository inMemory() {@1919:9
+EdgeCases.java\0public static Integer lambda$chain$0(int arg0) {@666:5
+EdgeCases.java\0public static Integer lambda$chain$1(Integer arg0) {@669:5
+EdgeCases.java\0public static Integer lambda$chain$3(Integer arg0) {@675:5
+EdgeCases.java\0public static Integer lambda$chain$4(Throwable arg0) {@678:5
+EdgeCases.java\0public static Integer lambda$main$0(Integer arg0) {@706:5
+EdgeCases.java\0public static Integer lambda$main$5() {@738:5
+EdgeCases.java\0public static Integer lambda$reducerFn$0(Integer arg0, Integer arg1) {@760:5
+EdgeCases.java\0public static Integer lambda$virtualThreadFanout$0(int arg0) {@769:5
+EdgeCases.java\0public static Object executeWith(java.util.concurrent.Executor arg0, java.util.function.Supplier arg1) {@498:5
+EdgeCases.java\0public static Object identity(Object arg0) {@599:5
+EdgeCases.java\0public static Object lambda$repeat$0(Object arg0) {@763:5
+EdgeCases.java\0public static Object tap(Object arg0, java.util.function.Consumer arg1) {@1343:5
+EdgeCases.java\0public static String bitTwiddling(int arg0) {@114:5
+EdgeCases.java\0public static String joinSquares(int arg0) {@663:5
+EdgeCases.java\0public static String lambda$formatter$0(Integer arg0) {@703:5
+EdgeCases.java\0public static String lambda$main$1() {@709:5
+EdgeCases.java\0public static String pickWord(int arg0) {@1108:5
+EdgeCases.java\0public static String rawEscapes() {@1163:5
+EdgeCases.java\0public static String stringInterpolation(String arg0, int arg1) {@1265:5
+EdgeCases.java\0public static boolean isPalindrome(String arg0) {@615:5
+EdgeCases.java\0public static boolean lambda$main$2(Integer arg0) {@712:5
+EdgeCases.java\0public static boolean lambda$main$3(Integer arg0) {@722:5
+EdgeCases.java\0public static boolean lambda$main$4(Integer arg0) {@730:5
+EdgeCases.java\0public static boolean lambda$main$6(Integer arg0) {@741:5
+EdgeCases.java\0public static boolean lambda$main$7(Integer arg0) {@749:5
+EdgeCases.java\0public static boolean lambda$wordCount$0(String arg0) {@773:5
+EdgeCases.java\0public static int _u002D_$$Nest$fgetouterVal(EdgeCases.Outer arg0) {@1700:9
+EdgeCases.java\0public static int boxedMath(Integer arg0, Integer arg1) {@120:5
+EdgeCases.java\0public static int bumpStatic() {@123:5
+EdgeCases.java\0public static int callInner() {@126:5
+EdgeCases.java\0public static int divSafe(int arg0, int arg1) {@455:5
+EdgeCases.java\0public static int dotInt(int[] arg0, int[] arg1) {@468:5
+EdgeCases.java\0public static int hailstone(int arg0) {@567:5
+EdgeCases.java\0public static int lambda$constantInt$0(int arg0, Object arg1) {@687:5
+EdgeCases.java\0public static int lambda$multiplier$0(int arg0, int arg1) {@757:5
+EdgeCases.java\0public static int lambda$squares$0(int arg0) {@766:5
+EdgeCases.java\0public static int recursiveFactorial(int arg0) {@1166:5
+EdgeCases.java\0public static int sumWith(java.util.function.IntBinaryOperator arg0, int[] arg1) {@1317:5
+EdgeCases.java\0public static java.util.List reverseList(java.util.List arg0) {@1205:5
+EdgeCases.java\0public static java.util.List safeVarargs(Object[] arg0) {@1220:5
+EdgeCases.java\0public static java.util.List sortedCopy(java.util.Collection arg0) {@1255:5
+EdgeCases.java\0public static java.util.Map groupByLength(java.util.List arg0) {@564:5
+EdgeCases.java\0public static java.util.Map partition(java.util.List arg0, java.util.function.Predicate arg1) {@1105:5
+EdgeCases.java\0public static java.util.Set enumSet(Class arg0) {@494:5
+EdgeCases.java\0public static java.util.SortedMap intoSorted(java.util.Map arg0) {@612:5
+EdgeCases.java\0public static java.util.concurrent.CompletableFuture chain(int arg0) {@145:5
+EdgeCases.java\0public static java.util.concurrent.CompletionStage lambda$chain$2(Integer arg0) {@672:5
+EdgeCases.java\0public static java.util.concurrent.atomic.AtomicInteger _u002D_$$Nest$sfgetCTR() {@16:5
+EdgeCases.java\0public static java.util.function.Consumer debugSink() {@334:5
+EdgeCases.java\0public static java.util.function.Function formatter() {@552:5
+EdgeCases.java\0public static java.util.function.IntUnaryOperator multiplier(int arg0) {@1091:5
+EdgeCases.java\0public static java.util.function.Supplier listSupplier() {@780:5
+EdgeCases.java\0public static java.util.function.ToIntFunction constantInt(int arg0) {@254:5
+EdgeCases.java\0public static long iterativeFactorial(int arg0) {@634:5
+EdgeCases.java\0public static void lambda$debugSink$0(Object arg0) {@690:5
+EdgeCases.java\0public static void rethrow(Throwable arg0) {@1190:5
+EdgeCases.java\0public void put(Object arg0, Object arg1) {@2032:9
+EdgeCases.java\0public void run() {@1935:9";
+
+    #[test]
+    fn direct_dalvik_route_scores_exact_clean_inventory() -> core::result::Result<(), String> {
+        let javac: PathBuf = find_on_path("javac")
+            .ok_or_else(|| "direct Dalvik route regression requires javac".to_owned())?;
+        let recovered: disrobe_pass_jvm::DecompiledDex =
+            disrobe_pass_jvm::decompile_dex_from_bytes(EDGECASES_DEX)
+                .map_err(|error| error.to_string())?;
+        let main_unit: BTreeMap<String, String> = recovered
+            .sources
+            .into_iter()
+            .filter(|(path, _source): &(String, String)| path == MAIN_CLASS_FILE)
+            .collect();
+        assert_eq!(main_unit.len(), 1, "direct route main compilation unit");
+        let (score, clean): (ToolScore, BTreeSet<String>) =
+            score_source_set_with_clean_inventory(&javac, &main_unit, 1)?;
+        assert!(
+            matches!(
+                score,
+                ToolScore::Certified {
+                    clean: 112,
+                    emitted: 229,
+                    class_level_defects: 6,
+                    ..
+                }
+            ),
+            "{score:?}"
+        );
+        let expected_clean: BTreeSet<String> = DIRECT_DALVIK_CLEAN_METHODS
+            .lines()
+            .map(|identity: &str| identity.replace("\\0", "\0"))
+            .collect();
+        let candidate_only: BTreeSet<&String> = clean.difference(&expected_clean).collect();
+        let lost: BTreeSet<&String> = expected_clean.difference(&clean).collect();
+        assert!(candidate_only.is_empty(), "{candidate_only:#?}");
+        assert!(lost.is_empty(), "{lost:#?}");
+        Ok(())
+    }
+
     impl ToolScore {
         fn measured(clean: usize, emitted: usize, original: usize, detail: String) -> Self {
             Self::Certified {
@@ -3937,6 +4353,89 @@ mod tests {
 
     const SAMPLE: &str = "package p;\npublic class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\nclass EdgeCases$1 {\n  void synthetic() {}\n}\n";
     const SAMPLE_MAIN_CLASS: &str = "public class EdgeCases {\n  public int a() {\n    return 1;\n  }\n  static class Inner {\n    void hidden() {}\n  }\n  private void b(int x) {\n    System.out.println(x);\n  }\n}\n";
+
+    fn restore_abstract_method(
+        source: &mut String,
+        signature: &str,
+    ) -> core::result::Result<(), String> {
+        let start: usize = source
+            .find(signature)
+            .ok_or_else(|| format!("recovered declaration is absent: {signature}"))?;
+        let body_start: usize = source[start..]
+            .find('{')
+            .map(|relative: usize| start + relative)
+            .ok_or_else(|| format!("recovered body is absent: {signature}"))?;
+        let mut depth: usize = 0;
+        let end: usize = source[body_start..]
+            .char_indices()
+            .find_map(|(relative, character): (usize, char)| match character {
+                '{' => {
+                    depth += 1;
+                    None
+                }
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    (depth == 0).then_some(body_start + relative + 1)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| format!("recovered body is unterminated: {signature}"))?;
+        let declaration: String = source[start..body_start]
+            .replacen("public default", "public abstract", 1)
+            .trim_end()
+            .to_owned()
+            + ";";
+        source.replace_range(start..end, &declaration);
+        Ok(())
+    }
+
+    #[test]
+    fn translated_dex_contract_repairs_remove_five_class_defects_without_score_drift()
+    -> core::result::Result<(), String> {
+        let javac: PathBuf = find_on_path("javac")
+            .ok_or_else(|| "translated DEX contract regression requires javac".to_owned())?;
+        let recovered: AndroidDecompileOutput =
+            android_decompile_dex(EDGECASES_DEX, BackendPreference::PreferInHouse)
+                .map_err(|error| error.to_string())?;
+        let candidate: ToolScore = score_source_set(&javac, &recovered.sources, 1);
+        assert!(
+            matches!(
+                candidate,
+                ToolScore::Certified {
+                    clean: 157,
+                    emitted: 228,
+                    class_level_defects: 0,
+                    ..
+                }
+            ),
+            "{candidate:?}"
+        );
+
+        let mut base_sources: BTreeMap<String, String> = recovered.sources;
+        let mut main: String = base_sources
+            .remove(MAIN_CLASS_FILE)
+            .ok_or_else(|| "main recovered source is absent".to_owned())?;
+        restore_abstract_method(&mut main, "public default String label()")?;
+        base_sources.insert(MAIN_CLASS_FILE.to_owned(), main);
+        let escaped: String = base_sources
+            .remove("EdgeCases_u002D_IA.java")
+            .ok_or_else(|| "escaped recovered source is absent".to_owned())?;
+        base_sources.insert("EdgeCases-IA.java".to_owned(), escaped);
+        let base: ToolScore = score_source_set(&javac, &base_sources, 1);
+        assert!(
+            matches!(
+                base,
+                ToolScore::Certified {
+                    clean: 157,
+                    emitted: 228,
+                    class_level_defects: 5,
+                    ..
+                }
+            ),
+            "{base:?}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn dataset_description_tracks_each_fixture_digest() {
@@ -4381,8 +4880,10 @@ mod tests {
     #[test]
     fn source_tree_canonicalization_accepts_only_exact_loaded_from_annotations()
     -> core::result::Result<(), String> {
-        let loaded_from: PathBuf = std::env::current_dir()
-            .map_err(|error: std::io::Error| error.to_string())?
+        let loaded_from: PathBuf = crate::published::checked_workspace_root()
+            .join("corpus")
+            .join("jvm")
+            .join("dex")
             .join("EdgeCases.dex");
         let exact: BTreeMap<String, String> = BTreeMap::from([(
             MAIN_CLASS_FILE.to_owned(),
@@ -4392,6 +4893,32 @@ mod tests {
             ),
         )]);
         assert!(canonical_source_tree_sha256(&exact, &loaded_from).is_ok());
+        let equivalent_spelling: String = loaded_from
+            .parent()
+            .ok_or_else(|| "loaded-from path has no parent".to_owned())?
+            .join(".")
+            .join("EdgeCases.dex")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let equivalent: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!("/* JADX INFO: loaded from: {equivalent_spelling} */\nclass EdgeCases {{}}\n"),
+        )]);
+        assert!(canonical_source_tree_sha256(&equivalent, &loaded_from).is_ok());
+        let parent_spelling: PathBuf = loaded_from
+            .parent()
+            .ok_or_else(|| "loaded-from path has no parent".to_owned())?
+            .join("nested")
+            .join("..")
+            .join("EdgeCases.dex");
+        let parent_reference: BTreeMap<String, String> = BTreeMap::from([(
+            MAIN_CLASS_FILE.to_owned(),
+            format!(
+                "/* JADX INFO: loaded from: {} */\nclass EdgeCases {{}}\n",
+                parent_spelling.display()
+            ),
+        )]);
+        assert!(canonical_source_tree_sha256(&parent_reference, &loaded_from).is_err());
         let wrong_absolute: PathBuf = loaded_from
             .parent()
             .ok_or_else(|| "loaded-from path has no parent".to_owned())?
@@ -4882,6 +5409,176 @@ mod tests {
         let mut lines: Vec<String> = source.lines().map(str::to_owned).collect();
         lines.insert(line, inserted.to_owned());
         lines.join("\n")
+    }
+
+    #[derive(Debug)]
+    struct CompiledMethodEvidence {
+        type_checked: bool,
+        clean: BTreeSet<String>,
+        failed: BTreeSet<String>,
+    }
+
+    fn stable_method_identities(
+        sources: &BTreeMap<String, String>,
+        regions: &[SourceMethodRegion],
+    ) -> core::result::Result<Vec<String>, String> {
+        let line_starts: BTreeMap<&str, Vec<usize>> = source_line_starts(sources);
+        let declarations: Vec<String> = regions
+            .iter()
+            .map(|region: &SourceMethodRegion| {
+                source_method_declaration(sources, &line_starts, region)
+            })
+            .collect::<core::result::Result<Vec<String>, String>>()?;
+        let totals: BTreeMap<String, usize> = declarations.iter().fold(
+            BTreeMap::new(),
+            |mut counts: BTreeMap<String, usize>, declaration: &String| {
+                *counts.entry(declaration.clone()).or_default() += 1;
+                counts
+            },
+        );
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        Ok(declarations
+            .into_iter()
+            .map(|declaration: String| {
+                let occurrence: &mut usize = seen.entry(declaration.clone()).or_default();
+                *occurrence += 1;
+                if totals.get(&declaration) == Some(&1) {
+                    declaration
+                } else {
+                    format!("{declaration}#{}", *occurrence)
+                }
+            })
+            .collect())
+    }
+
+    fn compile_method_evidence(
+        javac: &Path,
+        sources: &BTreeMap<String, String>,
+    ) -> core::result::Result<CompiledMethodEvidence, String> {
+        let regions: Vec<SourceMethodRegion> = source_method_regions(sources);
+        let identities: Vec<String> = stable_method_identities(sources, &regions)?;
+        let verdict: OracleVerdict = javac_verdict_over_set(javac, sources)?;
+        let failed_indices: BTreeSet<usize> = verdict
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic: &SourceDiagnostic| {
+                diagnostic_region_index(diagnostic, &regions)
+            })
+            .collect();
+        let failed: BTreeSet<String> = failed_indices
+            .iter()
+            .filter_map(|index: &usize| identities.get(*index).cloned())
+            .collect();
+        let clean: BTreeSet<String> = identities
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _identity): &(usize, String)| !failed_indices.contains(index))
+            .map(|(_index, identity): (usize, String)| identity)
+            .collect();
+        Ok(CompiledMethodEvidence {
+            type_checked: verdict.type_checked,
+            clean,
+            failed,
+        })
+    }
+
+    fn assert_production_score_matches_compilation(
+        javac: &Path,
+        sources: &BTreeMap<String, String>,
+        evidence: &CompiledMethodEvidence,
+    ) -> core::result::Result<(), String> {
+        let score: ToolScore = score_source_set(javac, sources, EDGE_CASES_ORIGINAL_METHODS);
+        let ToolScore::Certified { clean, emitted, .. } = score else {
+            return Err(format!(
+                "production scorer did not certify recovered source: {score:?}"
+            ));
+        };
+        assert_eq!(clean, evidence.clean.len());
+        assert_eq!(emitted, evidence.clean.len() + evidence.failed.len());
+        Ok(())
+    }
+
+    fn regress_d8_functional_wrappers(sources: &mut BTreeMap<String, String>) {
+        for source in sources.values_mut() {
+            let mut bindings: BTreeMap<String, String> = BTreeMap::new();
+            let mut regressed: Vec<String> = Vec::new();
+            for line in source.lines() {
+                if line.trim_start().starts_with("final ")
+                    && let Some((declaration, value)) =
+                        line.trim().trim_end_matches(';').split_once(" = ")
+                    && let Some(name) = declaration.split_whitespace().last()
+                    && name.starts_with("disrobeCapture$")
+                {
+                    bindings.insert(name.to_owned(), value.to_owned());
+                    continue;
+                }
+                let mut rewritten: String =
+                    line.replace("EdgeCases.synthLambda$", "EdgeCases.lambda$");
+                for (binding, value) in &bindings {
+                    rewritten = rewritten.replace(binding, value);
+                }
+                regressed.push(rewritten);
+            }
+            *source = regressed.join("\n");
+        }
+    }
+
+    #[test]
+    fn d8_functional_wrappers_gain_exactly_nine_production_scored_methods()
+    -> core::result::Result<(), String> {
+        let javac: PathBuf = find_on_path("javac")
+            .ok_or_else(|| "the exact D8 wrapper gain requires javac on PATH".to_owned())?;
+        let candidate_sources: BTreeMap<String, String> =
+            android_decompile_dex(EDGECASES_DEX, BackendPreference::PreferInHouse)
+                .map_err(|error| error.to_string())?
+                .sources;
+        let mut baseline_sources: BTreeMap<String, String> = candidate_sources.clone();
+        regress_d8_functional_wrappers(&mut baseline_sources);
+
+        let baseline: CompiledMethodEvidence = compile_method_evidence(&javac, &baseline_sources)?;
+        let candidate: CompiledMethodEvidence =
+            compile_method_evidence(&javac, &candidate_sources)?;
+        assert!(
+            baseline.type_checked,
+            "baseline javac attribution was not reached"
+        );
+        assert!(
+            candidate.type_checked,
+            "candidate javac attribution was not reached"
+        );
+        assert_eq!((baseline.clean.len(), baseline.failed.len()), (148, 80));
+        assert_eq!((candidate.clean.len(), candidate.failed.len()), (157, 71));
+        assert!(candidate.failed.is_subset(&baseline.failed));
+        assert!(baseline.clean.is_subset(&candidate.clean));
+        let newly_clean: BTreeSet<String> = candidate
+            .clean
+            .difference(&baseline.clean)
+            .cloned()
+            .collect();
+        assert_eq!(
+            newly_clean,
+            BTreeSet::from([
+                "EdgeCases.java\0public final Object get() {#1".to_owned(),
+                "EdgeCases.java\0public final Object get() {#2".to_owned(),
+                "EdgeCases.java\0public final Object get() {#4".to_owned(),
+                "EdgeCases.java\0public final int applyAsInt(Object arg0) {".to_owned(),
+                "EdgeCases.java\0public final int applyAsInt(int arg0) {#1".to_owned(),
+                "EdgeCases.java\0public final int applyAsInt(int arg0) {#2".to_owned(),
+                "EdgeCases.java\0public final java.util.Iterator iterator() {#1".to_owned(),
+                "EdgeCases.java\0public final void accept(Object arg0) {".to_owned(),
+                "EdgeCases.java\0public final void run() {#1".to_owned(),
+            ])
+        );
+        assert_eq!(
+            baseline
+                .failed
+                .difference(&candidate.failed)
+                .cloned()
+                .collect::<BTreeSet<String>>(),
+            newly_clean
+        );
+        assert_production_score_matches_compilation(&javac, &baseline_sources, &baseline)?;
+        assert_production_score_matches_compilation(&javac, &candidate_sources, &candidate)
     }
 
     #[test]
@@ -5709,6 +6406,7 @@ mod tests {
             &regions,
             verdict,
             &BTreeSet::new(),
+            None,
         );
         assert!(matches!(
             score,

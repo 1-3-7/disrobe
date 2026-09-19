@@ -147,6 +147,9 @@ pub fn decompile_dex(
 }
 
 fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
+    let dex: crate::dex::DexFile = crate::dex::parse(dex_bytes)?;
+    let recovered_defaults: Vec<crate::dalvik_decompile::TranslatedDefaultMethod> =
+        crate::dalvik_decompile::translated_default_methods(&dex, dex_bytes);
     let translated: crate::dex2jar::Dex2JarResult = crate::dex2jar::translate_dex_bytes(dex_bytes)?;
     let mut classes: BTreeMap<String, crate::classfile::ClassFile> = BTreeMap::new();
     let mut unparsed: Vec<String> = Vec::new();
@@ -158,7 +161,8 @@ fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
             Err(error) => unparsed.push(format!("{entry}: {error}")),
         }
     }
-    let sources: BTreeMap<String, String> = render_translated_classes(&classes);
+    let (sources, refused_sources): (BTreeMap<String, String>, Vec<String>) =
+        render_translated_classes(&classes, &recovered_defaults);
     if sources.is_empty() {
         return decompile_dex_directly(dex_bytes);
     }
@@ -166,6 +170,13 @@ fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
         "in-house Dalvik decompiler: {} of {} method bodies recovered, {} stubbed",
         translated.bodies_recovered, translated.method_total, translated.stubbed_body_count
     )];
+    if !refused_sources.is_empty() {
+        notes.push(format!(
+            "{} translated class source(s) were refused and carry no recovered source: {}",
+            refused_sources.len(),
+            refused_sources.join("; ")
+        ));
+    }
     if !unparsed.is_empty() {
         notes.push(format!(
             "{} translated class file(s) did not parse back and carry no recovered source: {}",
@@ -184,8 +195,9 @@ fn decompile_dex_in_house(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
 
 fn render_translated_classes(
     classes: &BTreeMap<String, crate::classfile::ClassFile>,
-) -> BTreeMap<String, String> {
-    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    recovered_defaults: &[crate::dalvik_decompile::TranslatedDefaultMethod],
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut rendered_sources: Vec<(String, String)> = Vec::new();
     for (entry, class) in classes {
         let stem: &str = entry.trim_end_matches(".class");
         if stem.contains('$') {
@@ -203,9 +215,282 @@ fn render_translated_classes(
             .collect();
         let rendered: crate::decompile::DecompiledClass =
             crate::decompile::decompile_class_with_inners(class, &inners);
-        sources.insert(format!("{stem}.java"), rendered.source);
+        let mut source: String = rendered.source;
+        for recovered in recovered_defaults
+            .iter()
+            .filter(|recovered| recovered.source_stem == stem)
+        {
+            replace_unique_generated_method(
+                &mut source,
+                &recovered.owner,
+                &recovered.abstract_declaration,
+                &recovered.definition,
+            );
+        }
+        rendered_sources.push((stem.to_owned(), source));
     }
-    sources
+    assemble_translated_sources(rendered_sources)
+}
+
+fn assemble_translated_sources(
+    rendered_sources: Vec<(String, String)>,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    let mut refused: Vec<String> = Vec::new();
+    for (stem, source) in rendered_sources {
+        let path: String = match translated_source_path(&stem, &source) {
+            Ok(path) => path,
+            Err(error) => {
+                refused.push(format!("{stem}: {error}"));
+                continue;
+            }
+        };
+        if sources.contains_key(&path) {
+            refused.push(format!("{stem}: {}", Error::DuplicateDex2JarPath(path)));
+            continue;
+        }
+        sources.insert(path, source);
+    }
+    (sources, refused)
+}
+
+#[derive(Clone, Copy)]
+struct GeneratedTypeSpan<'a> {
+    name: &'a str,
+    interface: bool,
+    open: usize,
+    close: usize,
+}
+
+fn replace_unique_generated_method(
+    source: &mut String,
+    owner: &[String],
+    declaration: &str,
+    definition: &str,
+) {
+    let masked: String = mask_java_literals_and_comments(source);
+    let spans: Vec<GeneratedTypeSpan<'_>> = generated_type_spans(&masked);
+    let matching: Vec<GeneratedTypeSpan<'_>> = spans
+        .iter()
+        .copied()
+        .filter(|span: &GeneratedTypeSpan<'_>| {
+            span.interface && generated_type_owner(&spans, *span) == owner
+        })
+        .collect();
+    let [interface]: &[GeneratedTypeSpan<'_>] = matching.as_slice() else {
+        return;
+    };
+    let body_start: usize = interface.open.saturating_add(1);
+    let Some(body): Option<&str> = masked.get(body_start..interface.close) else {
+        return;
+    };
+    let mut matches = body
+        .match_indices(declaration)
+        .map(|(offset, matched): (usize, &str)| (body_start + offset, matched))
+        .filter(|(start, _matched): &(usize, &str)| {
+            !spans.iter().any(|nested: &GeneratedTypeSpan<'_>| {
+                nested.open > interface.open
+                    && nested.close < interface.close
+                    && *start > nested.open
+                    && *start < nested.close
+            })
+        });
+    let Some((start, _matched)): Option<(usize, &str)> = matches.next() else {
+        return;
+    };
+    if matches.next().is_some() {
+        return;
+    }
+    let line_start: usize = source[..start]
+        .rfind('\n')
+        .map_or(0, |offset: usize| offset + 1);
+    let indent: &str = &source[line_start..start];
+    if !indent.chars().all(char::is_whitespace) {
+        return;
+    }
+    let replacement: String = definition
+        .lines()
+        .enumerate()
+        .map(|(index, line): (usize, &str)| {
+            if index == 0 {
+                line.to_owned()
+            } else {
+                format!("{indent}{line}")
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    source.replace_range(start..start + declaration.len(), &replacement);
+}
+
+fn generated_type_owner(
+    spans: &[GeneratedTypeSpan<'_>],
+    target: GeneratedTypeSpan<'_>,
+) -> Vec<String> {
+    let mut owners: Vec<GeneratedTypeSpan<'_>> = spans
+        .iter()
+        .copied()
+        .filter(|span: &GeneratedTypeSpan<'_>| {
+            span.open <= target.open && span.close >= target.close
+        })
+        .collect();
+    owners.sort_by_key(|span: &GeneratedTypeSpan<'_>| span.open);
+    owners
+        .into_iter()
+        .map(|span: GeneratedTypeSpan<'_>| span.name.to_owned())
+        .collect()
+}
+
+fn generated_type_spans(masked: &str) -> Vec<GeneratedTypeSpan<'_>> {
+    let bytes: &[u8] = masked.as_bytes();
+    let mut spans: Vec<GeneratedTypeSpan<'_>> = Vec::new();
+    let mut offset: usize = 0;
+    while offset < bytes.len() {
+        if !bytes[offset].is_ascii_alphabetic() {
+            offset += 1;
+            continue;
+        }
+        let keyword_start: usize = offset;
+        while offset < bytes.len()
+            && (bytes[offset].is_ascii_alphanumeric() || matches!(bytes[offset], b'_' | b'$'))
+        {
+            offset += 1;
+        }
+        let Some(keyword): Option<&str> = masked.get(keyword_start..offset) else {
+            continue;
+        };
+        if !matches!(keyword, "class" | "interface" | "enum" | "record") {
+            continue;
+        }
+        while offset < bytes.len() && bytes[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        let name_start: usize = offset;
+        while offset < bytes.len()
+            && (bytes[offset].is_ascii_alphanumeric() || matches!(bytes[offset], b'_' | b'$'))
+        {
+            offset += 1;
+        }
+        if name_start == offset {
+            continue;
+        }
+        let Some(name): Option<&str> = masked.get(name_start..offset) else {
+            continue;
+        };
+        let Some(open): Option<usize> = bytes[offset..]
+            .iter()
+            .position(|byte: &u8| matches!(*byte, b'{' | b';' | b'}'))
+            .and_then(|relative: usize| {
+                let absolute: usize = offset + relative;
+                (bytes[absolute] == b'{').then_some(absolute)
+            })
+        else {
+            continue;
+        };
+        let mut depth: usize = 0;
+        let mut close: Option<usize> = None;
+        for (relative, byte) in bytes[open..].iter().enumerate() {
+            match *byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        close = Some(open + relative);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(close) = close {
+            spans.push(GeneratedTypeSpan {
+                name,
+                interface: keyword == "interface",
+                open,
+                close,
+            });
+        }
+    }
+    spans
+}
+
+fn mask_java_literals_and_comments(source: &str) -> String {
+    let bytes: &[u8] = source.as_bytes();
+    let mut masked: Vec<u8> = bytes.to_vec();
+    let mut offset: usize = 0;
+    while offset < bytes.len() {
+        let (delimiter, line): (u8, bool) = match bytes[offset] {
+            b'"' => (b'"', false),
+            b'\'' => (b'\'', false),
+            b'/' if bytes.get(offset + 1) == Some(&b'/') => (b'\n', true),
+            b'/' if bytes.get(offset + 1) == Some(&b'*') => (b'/', false),
+            _ => {
+                offset += 1;
+                continue;
+            }
+        };
+        let block_comment: bool = bytes[offset] == b'/' && delimiter == b'/';
+        let start: usize = offset;
+        offset += if bytes[start] == b'/' { 2 } else { 1 };
+        while offset < bytes.len() {
+            if line && bytes[offset] == b'\n' {
+                break;
+            }
+            if block_comment && bytes.get(offset..offset + 2) == Some(&b"*/"[..]) {
+                offset += 2;
+                break;
+            }
+            if !line && !block_comment && bytes[offset] == delimiter {
+                offset += 1;
+                break;
+            }
+            if !line && !block_comment && bytes[offset] == b'\\' {
+                offset = offset.saturating_add(2);
+            } else {
+                offset += 1;
+            }
+        }
+        for byte in masked.iter_mut().take(offset.min(bytes.len())).skip(start) {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(masked).unwrap_or_default()
+}
+
+fn translated_source_path(stem: &str, source: &str) -> Result<String> {
+    let mut names = source.lines().filter_map(|line: &str| {
+        if line.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let tokens: Vec<&str> = line.split_ascii_whitespace().collect();
+        let kind: usize = tokens.iter().position(|token: &&str| {
+            matches!(
+                *token,
+                "class" | "interface" | "enum" | "record" | "@interface"
+            )
+        })?;
+        let candidate: &str = tokens.get(kind + 1)?.split('<').next()?;
+        crate::name_disambig::is_java_source_identifier(candidate).then_some(candidate)
+    });
+    let Some(name): Option<&str> = names.next() else {
+        return Err(Error::MalformedDex2JarClass {
+            class: stem.to_owned(),
+            reason: "translated source has no top-level declaration",
+        });
+    };
+    if names.next().is_some() {
+        return Err(Error::MalformedDex2JarClass {
+            class: stem.to_owned(),
+            reason: "translated source has multiple top-level declarations",
+        });
+    }
+    let parent: Option<&str> = stem.rsplit_once('/').map(|(parent, _leaf)| parent);
+    Ok(parent.map_or_else(
+        || format!("{name}.java"),
+        |parent: &str| format!("{parent}/{name}.java"),
+    ))
 }
 
 fn decompile_dex_directly(dex_bytes: &[u8]) -> Result<AndroidDecompileOutput> {
@@ -884,6 +1169,62 @@ mod tests {
     fn count_method_signatures_counts_declarations() {
         let src: &str = "public class Foo {\n  public int bar() {\n  private void baz(int x) {\n}";
         assert_eq!(count_method_signatures(src), 2);
+    }
+
+    #[test]
+    fn translated_source_assembly_refuses_only_the_offending_classes() {
+        let rendered: Vec<(String, String)> = vec![
+            (
+                "pkg/A-B".to_owned(),
+                "package pkg;\npublic class A_u002D_B {\n}\n".to_owned(),
+            ),
+            (
+                "pkg/A_u002D_B".to_owned(),
+                "package pkg;\npublic class A_u002D_B {\n    int second;\n}\n".to_owned(),
+            ),
+            ("pkg/NoDeclaration".to_owned(), "package pkg;\n".to_owned()),
+            (
+                "pkg/Twice".to_owned(),
+                "package pkg;\nclass Twice {\n}\nclass Other {\n}\n".to_owned(),
+            ),
+            (
+                "pkg/Kept".to_owned(),
+                "package pkg;\npublic class Kept {\n}\n".to_owned(),
+            ),
+        ];
+        let (sources, refused): (BTreeMap<String, String>, Vec<String>) =
+            assemble_translated_sources(rendered);
+        assert_eq!(
+            sources.keys().cloned().collect::<Vec<String>>(),
+            vec!["pkg/A_u002D_B.java".to_owned(), "pkg/Kept.java".to_owned()]
+        );
+        assert!(!sources["pkg/A_u002D_B.java"].contains("second"));
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert!(refused[0].starts_with("pkg/A_u002D_B: "), "{refused:?}");
+        assert!(refused[0].contains("pkg/A_u002D_B.java"), "{refused:?}");
+        assert!(refused[1].starts_with("pkg/NoDeclaration: "), "{refused:?}");
+        assert!(
+            refused[1].contains("no top-level declaration"),
+            "{refused:?}"
+        );
+        assert!(refused[2].starts_with("pkg/Twice: "), "{refused:?}");
+        assert!(
+            refused[2].contains("multiple top-level declarations"),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn recovered_default_does_not_bind_to_matching_implementor_declaration() {
+        let original: &str = "public class Outer {\n    interface ShapeMangled {\n        public abstract String label();\n    }\n    class Implementor {\n        public abstract String label();\n    }\n}\n";
+        let mut source: String = original.to_owned();
+        replace_unique_generated_method(
+            &mut source,
+            &["Outer".to_owned(), "Shape".to_owned()],
+            "public abstract String label();",
+            "public default String label() {\n    return \"shape\";\n}",
+        );
+        assert_eq!(source, original);
     }
 
     #[test]

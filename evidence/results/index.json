@@ -7,16 +7,16 @@
       "comparison_basis": "per-tool emitted-region compile yields; no cross-tool ranking",
       "competitors": [
         {
-          "clean": 63,
-          "emitted": 163,
+          "clean": 157,
+          "emitted": 228,
           "is_disrobe": true,
           "leg": "dex",
           "metric": "emitted-region compile yield (clean / emitted)",
           "name": "disrobe (in-house Dalvik, DEX input)",
-          "result": "63 clean / 163 emitted (38.7%)",
+          "result": "157 clean / 228 emitted (68.9%)",
           "role": "disrobe",
           "status": "ok",
-          "value": 38.65030674846626,
+          "value": 68.85964912280701,
           "version": "n/a (in-process)"
         },
         {
@@ -65,7 +65,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 63 / 163 (38.7%) vs JADX 281 / 303 (92.7%); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
+      "measured": "Android DEX: `disrobe` 157 / 228 (68.9%) vs JADX 281 / 303 (92.7%); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -81,10 +81,10 @@
           },
           "disrobe": {
             "certified": true,
-            "clean": 63,
-            "emitted": 163,
+            "clean": 157,
+            "emitted": 228,
             "name": "disrobe (in-house Dalvik, DEX input)",
-            "value": 38.65030674846626,
+            "value": 68.85964912280701,
             "version": "n/a (in-process)"
           },
           "id": "dex",

@@ -21,11 +21,13 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) ins_size: u16,
     pub(crate) is_static: bool,
     pub(crate) is_constructor: bool,
+    pub(crate) return_type: Option<crate::descriptor::JavaType>,
     pub(crate) inline_temporaries: bool,
     pub(crate) param_regs: BTreeMap<u16, String>,
     pub(crate) this_reg: Option<u16>,
     pub(crate) inline_depth: u16,
     pub(crate) inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
+    pub(crate) register_kinds: BTreeMap<u16, ValueKind>,
 }
 
 impl<'a> MethodContext<'a> {
@@ -39,8 +41,12 @@ impl<'a> MethodContext<'a> {
         inlined_helpers: &'a crate::dalvik_desugar::InlinedHelpers,
     ) -> Self {
         let parsed: Option<MethodDescriptor> = descriptor::parse_method(identity.descriptor);
+        let return_type: Option<crate::descriptor::JavaType> = parsed
+            .as_ref()
+            .map(|method: &MethodDescriptor| method.returns.clone());
         let first_param_reg: u16 = registers_size.saturating_sub(ins_size);
         let mut param_regs: BTreeMap<u16, String> = BTreeMap::new();
+        let mut register_kinds: BTreeMap<u16, ValueKind> = BTreeMap::new();
         let mut this_reg: Option<u16> = None;
         let mut cursor: u16 = first_param_reg;
         if !identity.is_static {
@@ -50,6 +56,9 @@ impl<'a> MethodContext<'a> {
         if let Some(md) = &parsed {
             for (i, p) in md.params.iter().enumerate() {
                 param_regs.insert(cursor, format!("arg{i}"));
+                if let Some(kind) = java_type_value_kind(p) {
+                    register_kinds.insert(cursor, kind);
+                }
                 let step: u16 = if p.category_two() { 2 } else { 1 };
                 cursor = cursor.saturating_add(step);
             }
@@ -62,12 +71,31 @@ impl<'a> MethodContext<'a> {
             ins_size,
             is_static: identity.is_static,
             is_constructor: identity.is_constructor,
+            return_type,
             inline_temporaries,
             param_regs,
             this_reg,
             inline_depth: 0,
             inlined_helpers,
+            register_kinds,
         }
+    }
+
+    pub(crate) fn with_temporary_types(mut self, types: &BTreeMap<u16, Option<String>>) -> Self {
+        for (register, ty) in types {
+            if self.param_regs.contains_key(register) || Some(*register) == self.this_reg {
+                continue;
+            }
+            let kind: Option<ValueKind> = match ty.as_deref() {
+                Some("boolean") => Some(ValueKind::Boolean),
+                Some("int" | "byte" | "short" | "char") => Some(ValueKind::IntLike),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                self.register_kinds.insert(*register, kind);
+            }
+        }
+        self
     }
 
     pub(crate) fn register_name(&self, reg: u16) -> Expr {
@@ -104,9 +132,32 @@ impl<'a> MethodContext<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ValueKind {
+    Boolean,
+    IntLike,
+}
+
+const fn java_type_value_kind(ty: &crate::descriptor::JavaType) -> Option<ValueKind> {
+    match ty {
+        crate::descriptor::JavaType::Boolean => Some(ValueKind::Boolean),
+        crate::descriptor::JavaType::Byte
+        | crate::descriptor::JavaType::Char
+        | crate::descriptor::JavaType::Short
+        | crate::descriptor::JavaType::Int => Some(ValueKind::IntLike),
+        crate::descriptor::JavaType::Long
+        | crate::descriptor::JavaType::Float
+        | crate::descriptor::JavaType::Double
+        | crate::descriptor::JavaType::Object(_)
+        | crate::descriptor::JavaType::Array(_)
+        | crate::descriptor::JavaType::Void => None,
+    }
+}
+
 pub(crate) struct RegisterFile {
     slots: BTreeMap<u16, Expr>,
     pending: BTreeSet<u16>,
+    kinds: BTreeMap<u16, ValueKind>,
 }
 
 impl RegisterFile {
@@ -114,6 +165,7 @@ impl RegisterFile {
         Self {
             slots: BTreeMap::new(),
             pending: BTreeSet::new(),
+            kinds: BTreeMap::new(),
         }
     }
 
@@ -130,16 +182,26 @@ impl RegisterFile {
     fn write(&mut self, reg: u16, expr: Expr) {
         self.slots.insert(reg, expr);
         self.pending.insert(reg);
+        self.kinds.remove(&reg);
+    }
+
+    fn write_with_kind(&mut self, reg: u16, expr: Expr, kind: Option<ValueKind>) {
+        self.write(reg, expr);
+        if let Some(kind) = kind {
+            self.kinds.insert(reg, kind);
+        }
     }
 
     fn write_materialized(&mut self, reg: u16, expr: Expr) {
         self.slots.insert(reg, expr);
         self.pending.remove(&reg);
+        self.kinds.remove(&reg);
     }
 
     fn seed_register_with_name(&mut self, ctx: &MethodContext<'_>, reg: u16) {
         self.slots.insert(reg, ctx.register_name(reg));
         self.pending.remove(&reg);
+        self.kinds.remove(&reg);
     }
 
     pub(crate) fn current(&self, ctx: &MethodContext<'_>, reg: u16) -> Expr {
@@ -161,6 +223,13 @@ pub(crate) enum LiftOutcome {
 pub(crate) struct PendingResult {
     expr: Expr,
     materialized_in: Option<u16>,
+    kind: Option<ValueKind>,
+}
+
+fn descriptor_value_kind(type_descriptor: &str) -> Option<ValueKind> {
+    crate::descriptor::parse_field(type_descriptor)
+        .as_ref()
+        .and_then(java_type_value_kind)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -200,7 +269,7 @@ pub(crate) fn lift_insn(
         0x01..=0x09 => move_register(ctx, file, regs),
         0x0A..=0x0C => {
             if let (Some(&dest), Some(result)) = (regs.first(), pending_result.take()) {
-                file.write(dest, result.expr);
+                file.write_with_kind(dest, result.expr, result.kind);
             }
             LiftOutcome::None
         }
@@ -210,12 +279,31 @@ pub(crate) fn lift_insn(
             }
             LiftOutcome::None
         }
-        0x0E => LiftOutcome::Statement("return".to_string()),
+        0x0E => {
+            if matches!(ctx.return_type, Some(crate::descriptor::JavaType::Void)) {
+                LiftOutcome::Statement("return".to_string())
+            } else {
+                LiftOutcome::Unlifted
+            }
+        }
         0x0F..=0x11 => {
-            let value: Expr = regs
-                .first()
-                .map_or_else(|| Expr::Opaque("?".to_string()), |&r| file.read(ctx, r));
-            LiftOutcome::Statement(format!("return {}", value.render()))
+            let Some(return_type): Option<&crate::descriptor::JavaType> = ctx.return_type.as_ref()
+            else {
+                return LiftOutcome::Unlifted;
+            };
+            if !return_opcode_matches(op, return_type) {
+                return LiftOutcome::Unlifted;
+            }
+            let Some(&register): Option<&u16> = regs.first() else {
+                return LiftOutcome::Unlifted;
+            };
+            let value: Expr = file.read(ctx, register);
+            let Some(rendered): Option<String> =
+                render_return_value(ctx, file, op, register, &value)
+            else {
+                return LiftOutcome::Unlifted;
+            };
+            LiftOutcome::Statement(format!("return {rendered}"))
         }
         0x12..=0x19 => const_value(file, regs, insn),
         0x1A | 0x1B => const_string(ctx, file, regs, insn),
@@ -231,8 +319,8 @@ pub(crate) fn lift_insn(
                 .map_or_else(|| Expr::Opaque("?".to_string()), |&r| file.read(ctx, r));
             LiftOutcome::Statement(format!("throw {}", value.render()))
         }
-        0x44..=0x4A => array_get(ctx, file, regs),
-        0x4B..=0x51 => array_put(ctx, file, regs),
+        0x44..=0x4A => array_get(ctx, file, regs, op),
+        0x4B..=0x51 => array_put(ctx, file, regs, op),
         0x52..=0x58 => instance_get(ctx, file, regs, insn),
         0x59..=0x5F => instance_put(ctx, file, regs, insn),
         0x60..=0x66 => static_get(ctx, file, regs, insn),
@@ -241,10 +329,18 @@ pub(crate) fn lift_insn(
         0x7B | 0x7D | 0x7F => unary(ctx, file, regs, "-"),
         0x7C | 0x7E => unary(ctx, file, regs, "~"),
         0x81..=0x8F => numeric_cast(ctx, file, regs, op),
-        0x90..=0x97 | 0x9B..=0xA2 | 0xA6..=0xAF => binary_three(ctx, file, regs, arith_op(op)),
-        0x98..=0x9A | 0xA3..=0xA5 => binary_three(ctx, file, regs, arith_op(op)),
-        0xB0..=0xB7 | 0xBB..=0xC2 | 0xC6..=0xCF => binary_2addr(ctx, file, regs, arith_op(op)),
-        0xB8..=0xBA | 0xC3..=0xC5 => binary_2addr(ctx, file, regs, arith_op(op)),
+        0x90..=0x97 | 0x9B..=0xA2 | 0xA6..=0xAF => {
+            binary_three(ctx, file, regs, arith_op(op), matches!(op, 0x90..=0x97))
+        }
+        0x98..=0x9A | 0xA3..=0xA5 => {
+            binary_three(ctx, file, regs, arith_op(op), matches!(op, 0x98..=0x9A))
+        }
+        0xB0..=0xB7 | 0xBB..=0xC2 | 0xC6..=0xCF => {
+            binary_2addr(ctx, file, regs, arith_op(op), matches!(op, 0xB0..=0xB7))
+        }
+        0xB8..=0xBA | 0xC3..=0xC5 => {
+            binary_2addr(ctx, file, regs, arith_op(op), matches!(op, 0xB8..=0xBA))
+        }
         0x2D..=0x31 => cmp_three(ctx, file, regs),
         0xD0..=0xD7 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         0xD8..=0xE2 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
@@ -271,11 +367,133 @@ fn move_register(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16])
     };
     let value: Expr = file.read(ctx, src);
     let rendered: String = value.render();
+    let kind: Option<ValueKind> = file.kinds.get(&src).copied();
     file.write_materialized(dest, value);
+    if let Some(kind) = kind {
+        file.kinds.insert(dest, kind);
+    }
     if ctx.inline_temporaries {
         LiftOutcome::None
     } else {
         LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    }
+}
+
+fn render_return_value(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    op: u8,
+    register: u16,
+    value: &Expr,
+) -> Option<String> {
+    if op != 0x0F || !matches!(ctx.return_type, Some(crate::descriptor::JavaType::Boolean)) {
+        return Some(value.render());
+    }
+    render_boolean_value(ctx, file, register, value)
+}
+
+const fn return_opcode_matches(op: u8, return_type: &crate::descriptor::JavaType) -> bool {
+    match op {
+        0x0F => matches!(
+            return_type,
+            crate::descriptor::JavaType::Byte
+                | crate::descriptor::JavaType::Char
+                | crate::descriptor::JavaType::Float
+                | crate::descriptor::JavaType::Int
+                | crate::descriptor::JavaType::Short
+                | crate::descriptor::JavaType::Boolean
+        ),
+        0x10 => matches!(
+            return_type,
+            crate::descriptor::JavaType::Long | crate::descriptor::JavaType::Double
+        ),
+        0x11 => matches!(
+            return_type,
+            crate::descriptor::JavaType::Object(_) | crate::descriptor::JavaType::Array(_)
+        ),
+        _ => false,
+    }
+}
+
+fn render_boolean_value(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    register: u16,
+    value: &Expr,
+) -> Option<String> {
+    if expression_is_boolean(value) {
+        return Some(value.render());
+    }
+    if let Expr::Const(constant) = value {
+        return Some(match constant.as_str() {
+            "0" => "false".to_owned(),
+            "1" => "true".to_owned(),
+            _ => format!("{constant} != 0"),
+        });
+    }
+    let kind: ValueKind = file
+        .kinds
+        .get(&register)
+        .copied()
+        .or_else(|| match value {
+            Expr::Local(name) => local_value_kind(ctx, name),
+            _ => None,
+        })
+        .or_else(|| expression_int_kind(value))?;
+    Some(match kind {
+        ValueKind::Boolean => value.render(),
+        ValueKind::IntLike => format!("{} != 0", value.render()),
+    })
+}
+
+fn local_value_kind(ctx: &MethodContext<'_>, name: &str) -> Option<ValueKind> {
+    let register: u16 = ctx
+        .param_regs
+        .iter()
+        .find_map(|(register, parameter): (&u16, &String)| (parameter == name).then_some(*register))
+        .or_else(|| name.strip_prefix("var")?.parse::<u16>().ok())?;
+    ctx.register_kinds.get(&register).copied()
+}
+
+fn expression_int_kind(value: &Expr) -> Option<ValueKind> {
+    match value {
+        Expr::Binary { op, .. }
+            if matches!(
+                *op,
+                "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | ">>>"
+            ) =>
+        {
+            Some(ValueKind::IntLike)
+        }
+        Expr::Unary { op, .. } if matches!(*op, "-" | "~") => Some(ValueKind::IntLike),
+        Expr::Cast { ty, .. } if matches!(ty.as_str(), "int" | "byte" | "short" | "char") => {
+            Some(ValueKind::IntLike)
+        }
+        Expr::Cmp { .. } | Expr::ArrayLength(_) => Some(ValueKind::IntLike),
+        _ => None,
+    }
+}
+
+fn expression_is_boolean(value: &Expr) -> bool {
+    match value {
+        Expr::Const(constant) => matches!(constant.as_str(), "true" | "false"),
+        Expr::InstanceOf { .. } => true,
+        Expr::Invoke { returns_bool, .. } => *returns_bool,
+        Expr::Cast { ty, .. } => ty == "boolean",
+        Expr::Field { boolean, .. } | Expr::StaticField { boolean, .. } => *boolean,
+        Expr::Binary { op, .. } => {
+            matches!(*op, "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||")
+        }
+        Expr::Unary { op, .. } => *op == "!",
+        Expr::Local(_)
+        | Expr::Opaque(_)
+        | Expr::This
+        | Expr::Cmp { .. }
+        | Expr::ArrayLength(_)
+        | Expr::ArrayLoad { .. }
+        | Expr::New(_)
+        | Expr::NewArray { .. }
+        | Expr::ArrayInit { .. } => false,
     }
 }
 
@@ -439,7 +657,12 @@ fn new_array(
     LiftOutcome::None
 }
 
-fn array_get(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> LiftOutcome {
+fn array_get(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    regs: &[u16],
+    op: u8,
+) -> LiftOutcome {
     let (Some(&dest), Some(&array), Some(&index)): (Option<&u16>, Option<&u16>, Option<&u16>) =
         (regs.first(), regs.get(1), regs.get(2))
     else {
@@ -447,17 +670,23 @@ fn array_get(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16]) -> 
     };
     let array_expr: Expr = file.read(ctx, array);
     let index_expr: Expr = file.read(ctx, index);
-    file.write(
+    let kind: Option<ValueKind> = match op {
+        0x47 => Some(ValueKind::Boolean),
+        0x44 | 0x48..=0x4A => Some(ValueKind::IntLike),
+        _ => None,
+    };
+    file.write_with_kind(
         dest,
         Expr::ArrayLoad {
             array: Box::new(array_expr),
             index: Box::new(index_expr),
         },
+        kind,
     );
     LiftOutcome::None
 }
 
-fn array_put(ctx: &MethodContext<'_>, file: &RegisterFile, regs: &[u16]) -> LiftOutcome {
+fn array_put(ctx: &MethodContext<'_>, file: &RegisterFile, regs: &[u16], op: u8) -> LiftOutcome {
     let (Some(&value), Some(&array), Some(&index)): (Option<&u16>, Option<&u16>, Option<&u16>) =
         (regs.first(), regs.get(1), regs.get(2))
     else {
@@ -466,11 +695,20 @@ fn array_put(ctx: &MethodContext<'_>, file: &RegisterFile, regs: &[u16]) -> Lift
     let value_expr: Expr = file.read(ctx, value);
     let array_expr: Expr = file.read(ctx, array);
     let index_expr: Expr = file.read(ctx, index);
+    let rendered_value: String = if op == 0x4E {
+        let Some(rendered): Option<String> = render_boolean_value(ctx, file, value, &value_expr)
+        else {
+            return LiftOutcome::Unlifted;
+        };
+        rendered
+    } else {
+        value_expr.render()
+    };
     LiftOutcome::Statement(format!(
         "{}[{}] = {}",
         array_expr.render(),
         index_expr.render(),
-        value_expr.render()
+        rendered_value
     ))
 }
 
@@ -497,7 +735,7 @@ fn instance_get(
         name,
         boolean,
     };
-    file.write(dest, expr);
+    file.write_with_kind(dest, expr, descriptor_value_kind(&field.type_name));
     LiftOutcome::None
 }
 
@@ -512,15 +750,27 @@ fn instance_put(
         return LiftOutcome::None;
     };
     let Some(field): Option<&FieldId> = insn.index.and_then(|i| ctx.field_id(i)) else {
-        return LiftOutcome::None;
+        return LiftOutcome::Unlifted;
     };
+    if (insn.op == 0x5C) != (field.type_name == "Z") {
+        return LiftOutcome::Unlifted;
+    }
     let value_expr: Expr = file.read(ctx, value);
     let receiver: Expr = file.read(ctx, obj);
     let target: String = match &receiver {
         Expr::This => format!("this.{}", field.name),
         _ => format!("{}.{}", receiver.render(), field.name),
     };
-    LiftOutcome::Statement(format!("{target} = {}", value_expr.render()))
+    let rendered_value: String = if field.type_name == "Z" {
+        let Some(rendered): Option<String> = render_boolean_value(ctx, file, value, &value_expr)
+        else {
+            return LiftOutcome::Unlifted;
+        };
+        rendered
+    } else {
+        value_expr.render()
+    };
+    LiftOutcome::Statement(format!("{target} = {rendered_value}"))
 }
 
 fn static_get(
@@ -536,13 +786,14 @@ fn static_get(
         return LiftOutcome::None;
     };
     let owner: String = source_type(ctx, &field.class);
-    file.write(
+    file.write_with_kind(
         dest,
         Expr::StaticField {
             owner,
             name: field.name.clone(),
             boolean: field.type_name == "Z",
         },
+        descriptor_value_kind(&field.type_name),
     );
     LiftOutcome::None
 }
@@ -557,11 +808,23 @@ fn static_put(
         return LiftOutcome::None;
     };
     let Some(field): Option<&FieldId> = insn.index.and_then(|i| ctx.field_id(i)) else {
-        return LiftOutcome::None;
+        return LiftOutcome::Unlifted;
     };
+    if (insn.op == 0x6A) != (field.type_name == "Z") {
+        return LiftOutcome::Unlifted;
+    }
     let owner: String = source_type(ctx, &field.class);
     let value_expr: Expr = file.read(ctx, value);
-    LiftOutcome::Statement(format!("{owner}.{} = {}", field.name, value_expr.render()))
+    let rendered_value: String = if field.type_name == "Z" {
+        let Some(rendered): Option<String> = render_boolean_value(ctx, file, value, &value_expr)
+        else {
+            return LiftOutcome::Unlifted;
+        };
+        rendered
+    } else {
+        value_expr.render()
+    };
+    LiftOutcome::Statement(format!("{owner}.{} = {rendered_value}", field.name))
 }
 
 fn invoke(
@@ -679,6 +942,7 @@ fn invoke(
             *pending_result = Some(PendingResult {
                 expr: constructed.clone(),
                 materialized_in: receiver_register,
+                kind: None,
             });
             if let Some(&recv_reg) = insn.regs.first() {
                 file.write(recv_reg, constructed);
@@ -688,16 +952,18 @@ fn invoke(
         return direct_init_outcome(target, joined);
     }
 
+    let return_type: &str = core_projection
+        .as_ref()
+        .map_or(method.proto.return_type.as_str(), |projection| {
+            projection.return_type.as_str()
+        });
+    let result_kind: Option<ValueKind> = descriptor_value_kind(return_type);
     let call: Expr = Expr::Invoke {
         receiver: receiver.map(Box::new),
         owner,
         method: name,
         args,
-        returns_bool: core_projection
-            .as_ref()
-            .map_or(method.proto.return_type == "Z", |projection| {
-                projection.return_type == "Z"
-            }),
+        returns_bool: return_type == "Z",
     };
     if returns_void {
         return LiftOutcome::Statement(call.render());
@@ -709,6 +975,7 @@ fn invoke(
     *pending_result = Some(PendingResult {
         expr: call,
         materialized_in,
+        kind: result_kind,
     });
     LiftOutcome::None
 }
@@ -1082,7 +1349,7 @@ fn unary(
     else {
         return LiftOutcome::None;
     };
-    let value: Expr = file.read(ctx, src);
+    let value: Expr = numeric_int_operand(ctx, file, src, file.read(ctx, src));
     let result: Expr = Expr::Unary {
         op,
         value: Box::new(value),
@@ -1116,6 +1383,7 @@ fn binary_three(
     file: &mut RegisterFile,
     regs: &[u16],
     op: &'static str,
+    int_operation: bool,
 ) -> LiftOutcome {
     let (Some(&dest), Some(&lhs), Some(&rhs)): (Option<&u16>, Option<&u16>, Option<&u16>) =
         (regs.first(), regs.get(1), regs.get(2))
@@ -1124,13 +1392,95 @@ fn binary_three(
     };
     let lhs_expr: Expr = file.read(ctx, lhs);
     let rhs_expr: Expr = file.read(ctx, rhs);
-    let result: Expr = Expr::Binary {
+    write_binary(
+        ctx,
+        file,
+        dest,
         op,
-        lhs: Box::new(lhs_expr),
-        rhs: Box::new(rhs_expr),
-    };
-    file.write(dest, result);
+        int_operation,
+        (lhs, lhs_expr),
+        (rhs, rhs_expr),
+    );
     LiftOutcome::None
+}
+
+fn operand_value_kind(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    register: u16,
+    value: &Expr,
+) -> Option<ValueKind> {
+    if expression_is_boolean(value) {
+        return Some(ValueKind::Boolean);
+    }
+    file.kinds
+        .get(&register)
+        .copied()
+        .or_else(|| match value {
+            Expr::Local(name) => local_value_kind(ctx, name),
+            _ => None,
+        })
+        .or_else(|| expression_int_kind(value))
+}
+
+fn numeric_int_operand(
+    ctx: &MethodContext<'_>,
+    file: &RegisterFile,
+    register: u16,
+    value: Expr,
+) -> Expr {
+    if operand_value_kind(ctx, file, register, &value) == Some(ValueKind::Boolean) {
+        Expr::Opaque(format!("({} ? 1 : 0)", value.render()))
+    } else {
+        value
+    }
+}
+
+fn write_binary(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    dest: u16,
+    op: &'static str,
+    int_operation: bool,
+    (lhs, lhs_expr): (u16, Expr),
+    (rhs, rhs_expr): (u16, Expr),
+) {
+    if !int_operation {
+        file.write(
+            dest,
+            Expr::Binary {
+                op,
+                lhs: Box::new(lhs_expr),
+                rhs: Box::new(rhs_expr),
+            },
+        );
+        return;
+    }
+    if matches!(op, "&" | "|" | "^")
+        && operand_value_kind(ctx, file, lhs, &lhs_expr) == Some(ValueKind::Boolean)
+        && operand_value_kind(ctx, file, rhs, &rhs_expr) == Some(ValueKind::Boolean)
+    {
+        file.write_with_kind(
+            dest,
+            Expr::Binary {
+                op,
+                lhs: Box::new(lhs_expr),
+                rhs: Box::new(rhs_expr),
+            },
+            Some(ValueKind::Boolean),
+        );
+        return;
+    }
+    let lhs_value: Expr = numeric_int_operand(ctx, file, lhs, lhs_expr);
+    let rhs_value: Expr = numeric_int_operand(ctx, file, rhs, rhs_expr);
+    file.write(
+        dest,
+        Expr::Binary {
+            op,
+            lhs: Box::new(lhs_value),
+            rhs: Box::new(rhs_value),
+        },
+    );
 }
 
 fn binary_2addr(
@@ -1138,6 +1488,7 @@ fn binary_2addr(
     file: &mut RegisterFile,
     regs: &[u16],
     op: &'static str,
+    int_operation: bool,
 ) -> LiftOutcome {
     let (Some(&dest), Some(&rhs)): (Option<&u16>, Option<&u16>) = (regs.first(), regs.get(1))
     else {
@@ -1145,12 +1496,15 @@ fn binary_2addr(
     };
     let lhs_expr: Expr = file.read(ctx, dest);
     let rhs_expr: Expr = file.read(ctx, rhs);
-    let result: Expr = Expr::Binary {
+    write_binary(
+        ctx,
+        file,
+        dest,
         op,
-        lhs: Box::new(lhs_expr),
-        rhs: Box::new(rhs_expr),
-    };
-    file.write(dest, result);
+        int_operation,
+        (dest, lhs_expr),
+        (rhs, rhs_expr),
+    );
     LiftOutcome::None
 }
 
@@ -1166,7 +1520,22 @@ fn binary_lit(
         return LiftOutcome::None;
     };
     let literal: i64 = insn.literal.unwrap_or(0);
-    let lhs_expr: Expr = file.read(ctx, src);
+    let source: Expr = file.read(ctx, src);
+    if op == "^"
+        && literal == 1
+        && operand_value_kind(ctx, file, src, &source) == Some(ValueKind::Boolean)
+    {
+        file.write_with_kind(
+            dest,
+            Expr::Unary {
+                op: "!",
+                value: Box::new(source),
+            },
+            Some(ValueKind::Boolean),
+        );
+        return LiftOutcome::None;
+    }
+    let lhs_expr: Expr = numeric_int_operand(ctx, file, src, source);
     let result: Expr = if insn.op == 0xD1 || insn.op == 0xD9 {
         Expr::Binary {
             op,
@@ -1330,11 +1699,16 @@ const fn comparez_op(op: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        DirectInitTarget, LiftOutcome, core_projection_matches_invoke, direct_init_outcome,
-        direct_init_target, lambda_parameter_names, render_method_reference, returns_receiver,
+        DirectInitTarget, LiftOutcome, MethodContext, MethodIdentity, RegisterFile,
+        core_projection_matches_invoke, direct_init_outcome, direct_init_target,
+        lambda_parameter_names, lift_insn, render_method_reference, returns_receiver,
     };
+    use crate::dalvik::{DalvikInsn, InsnFormat, opcode};
     use crate::dalvik_core_library::{CoreInvokeShape, CoreLibraryRecovery, CoreMethodProjection};
-    use crate::dalvik_desugar::{MethodRefKind, RecoveredMethodRef};
+    use crate::dalvik_desugar::{
+        DefaultInterfaceRecovery, DesugarView, FunctionalRecovery, InlinedHelpers, MethodRefKind,
+        RecoveredMethodRef,
+    };
     use crate::decompile::Expr;
     use crate::dex::{MethodId, ProtoId};
 
@@ -1348,6 +1722,584 @@ mod tests {
             },
             name: name.to_string(),
         }
+    }
+
+    fn insn(op: u8, regs: Vec<u16>, literal: Option<i64>) -> DalvikInsn {
+        DalvikInsn {
+            pc: 0,
+            op,
+            mnemonic: opcode(op).mnemonic,
+            width: 1,
+            format: InsnFormat::Fmt11x,
+            regs,
+            literal,
+            index: None,
+            branch: None,
+            payload_off: None,
+        }
+    }
+
+    fn indexed_insn(op: u8, regs: Vec<u16>, index: u32) -> DalvikInsn {
+        DalvikInsn {
+            index: Some(index),
+            ..insn(op, regs, None)
+        }
+    }
+
+    fn with_context<T>(
+        descriptor: &str,
+        test: impl FnOnce(&MethodContext<'_>) -> T,
+    ) -> Result<T, String> {
+        with_parameter_context(descriptor, 4, 0, test)
+    }
+
+    fn with_parameter_context<T>(
+        descriptor: &str,
+        registers: u16,
+        ins: u16,
+        test: impl FnOnce(&MethodContext<'_>) -> T,
+    ) -> Result<T, String> {
+        let bytes: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+        let dex: crate::dex::DexFile =
+            crate::dex::parse(bytes).map_err(|error| error.to_string())?;
+        let interfaces: DefaultInterfaceRecovery = DefaultInterfaceRecovery::default();
+        let functionals: FunctionalRecovery = FunctionalRecovery::default();
+        let core_library: CoreLibraryRecovery = CoreLibraryRecovery::default();
+        let inlined_helpers: InlinedHelpers = InlinedHelpers::default();
+        let context: MethodContext<'_> = MethodContext::new(
+            &dex,
+            MethodIdentity {
+                declaring_class: "LProbe;",
+                descriptor,
+                is_static: true,
+                is_constructor: false,
+            },
+            registers,
+            ins,
+            false,
+            DesugarView {
+                interfaces: &interfaces,
+                functionals: &functionals,
+                core_library: &core_library,
+            },
+            &inlined_helpers,
+        );
+        Ok(test(&context))
+    }
+
+    fn return_outcome(descriptor: &str, op: u8, expression: Expr) -> Result<LiftOutcome, String> {
+        with_context(descriptor, |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(0, expression);
+            let mut pending = None;
+            lift_insn(context, &mut file, &insn(op, vec![0], None), &mut pending)
+        })
+    }
+
+    fn return_statement(descriptor: &str, op: u8, expression: Expr) -> Result<String, String> {
+        match return_outcome(descriptor, op, expression)? {
+            LiftOutcome::Statement(statement) => Ok(statement),
+            _ => Err("return did not produce one statement".to_owned()),
+        }
+    }
+
+    fn moved_boolean_expression(context: &MethodContext<'_>) -> RegisterFile {
+        let mut file: RegisterFile = RegisterFile::new();
+        file.write(
+            1,
+            Expr::Invoke {
+                receiver: Some(Box::new(Expr::Local("value".to_owned()))),
+                owner: "String".to_owned(),
+                method: "isEmpty".to_owned(),
+                args: Vec::new(),
+                returns_bool: true,
+            },
+        );
+        let mut pending = None;
+        let _: LiftOutcome = lift_insn(
+            context,
+            &mut file,
+            &insn(0x01, vec![0, 1], None),
+            &mut pending,
+        );
+        file
+    }
+
+    fn field_index(context: &MethodContext<'_>, descriptor: &str) -> Result<u32, String> {
+        context
+            .dex
+            .field_ids
+            .iter()
+            .position(|field| field.type_name == descriptor)
+            .and_then(|index: usize| u32::try_from(index).ok())
+            .ok_or_else(|| format!("fixture contains no indexed {descriptor} field"))
+    }
+
+    #[test]
+    fn integer_field_and_call_results_compare_with_zero_at_boolean_boundaries() -> Result<(), String>
+    {
+        with_parameter_context(
+            "()Z",
+            3,
+            0,
+            |context: &MethodContext<'_>| -> Result<(), String> {
+                let int_field: u32 = field_index(context, "I")?;
+                let int_field_name: String = context
+                    .field_id(int_field)
+                    .ok_or_else(|| "fixture int field disappeared".to_owned())?
+                    .name
+                    .clone();
+                let mut file: RegisterFile = RegisterFile::new();
+                file.write(1, Expr::Local("holder".to_owned()));
+                let mut pending = None;
+                let _: LiftOutcome = lift_insn(
+                    context,
+                    &mut file,
+                    &indexed_insn(0x52, vec![0, 1], int_field),
+                    &mut pending,
+                );
+                let outcome: LiftOutcome =
+                    lift_insn(context, &mut file, &insn(0x0F, vec![0], None), &mut pending);
+                let LiftOutcome::Statement(statement) = outcome else {
+                    return Err("integer field return was not lifted".to_owned());
+                };
+                assert!(
+                    statement.starts_with("return ")
+                        && statement.ends_with(&format!(".{int_field_name} != 0")),
+                    "{statement}"
+                );
+
+                let static_call: u32 = context
+                    .dex
+                    .method_ids
+                    .iter()
+                    .position(|method| {
+                        method.proto.return_type == "I" && method.proto.parameters.is_empty()
+                    })
+                    .and_then(|index: usize| u32::try_from(index).ok())
+                    .ok_or_else(|| "fixture contains no ()I method".to_owned())?;
+                let mut file: RegisterFile = RegisterFile::new();
+                let mut pending = None;
+                let _: LiftOutcome = lift_insn(
+                    context,
+                    &mut file,
+                    &indexed_insn(0x71, Vec::new(), static_call),
+                    &mut pending,
+                );
+                let _: LiftOutcome =
+                    lift_insn(context, &mut file, &insn(0x0A, vec![2], None), &mut pending);
+                let outcome: LiftOutcome =
+                    lift_insn(context, &mut file, &insn(0x0F, vec![2], None), &mut pending);
+                assert!(
+                    matches!(
+                        &outcome,
+                        LiftOutcome::Statement(statement)
+                            if statement.starts_with("return ") && statement.ends_with("() != 0")
+                    ),
+                    "{}",
+                    match &outcome {
+                        LiftOutcome::Statement(statement) => statement.as_str(),
+                        _ => "not a statement",
+                    }
+                );
+                Ok(())
+            },
+        )??;
+        Ok(())
+    }
+
+    #[test]
+    fn boolean_parameters_return_and_store_without_integer_comparison() -> Result<(), String> {
+        with_parameter_context("(Z)Z", 1, 1, |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            let mut pending = None;
+            let outcome: LiftOutcome =
+                lift_insn(context, &mut file, &insn(0x0F, vec![0], None), &mut pending);
+            assert!(matches!(
+                outcome,
+                LiftOutcome::Statement(statement) if statement == "return arg0"
+            ));
+        })?;
+        with_parameter_context("(I)Z", 1, 1, |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            let mut pending = None;
+            let outcome: LiftOutcome =
+                lift_insn(context, &mut file, &insn(0x0F, vec![0], None), &mut pending);
+            assert!(matches!(
+                outcome,
+                LiftOutcome::Statement(statement) if statement == "return arg0 != 0"
+            ));
+        })?;
+        with_parameter_context(
+            "(Z)V",
+            2,
+            1,
+            |context: &MethodContext<'_>| -> Result<(), String> {
+                let index: u32 = field_index(context, "Z")?;
+                let field_name: String = context
+                    .field_id(index)
+                    .ok_or_else(|| "fixture boolean field disappeared".to_owned())?
+                    .name
+                    .clone();
+                let mut file: RegisterFile = RegisterFile::new();
+                file.write(0, Expr::This);
+                let mut pending = None;
+                let outcome: LiftOutcome = lift_insn(
+                    context,
+                    &mut file,
+                    &indexed_insn(0x5C, vec![1, 0], index),
+                    &mut pending,
+                );
+                assert!(matches!(
+                    outcome,
+                    LiftOutcome::Statement(statement)
+                        if statement == format!("this.{field_name} = arg0")
+                ));
+                Ok(())
+            },
+        )??;
+        Ok(())
+    }
+
+    #[test]
+    fn boolean_array_elements_keep_boolean_type_and_unknown_values_refuse() -> Result<(), String> {
+        with_context("()V", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(0, Expr::Local("source".to_owned()));
+            file.write(1, Expr::Const("0".to_owned()));
+            file.write(3, Expr::Local("target".to_owned()));
+            let mut pending = None;
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x47, vec![2, 0, 1], None),
+                &mut pending,
+            );
+            let copied: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x4E, vec![2, 3, 1], None),
+                &mut pending,
+            );
+            assert!(matches!(
+                copied,
+                LiftOutcome::Statement(statement) if statement == "target[0] = source[0]"
+            ));
+            file.write(2, Expr::Opaque("?".to_owned()));
+            let refused: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x4E, vec![2, 3, 1], None),
+                &mut pending,
+            );
+            assert!(matches!(refused, LiftOutcome::Unlifted));
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn move_into_boolean_array_store_preserves_the_boolean_expression() -> Result<(), String> {
+        with_context("()V", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = moved_boolean_expression(context);
+            file.write(2, Expr::Local("flags".to_owned()));
+            file.write(3, Expr::Const("0".to_owned()));
+            let mut pending = None;
+            let outcome: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x4E, vec![0, 2, 3], None),
+                &mut pending,
+            );
+            assert!(matches!(
+                outcome,
+                LiftOutcome::Statement(statement) if statement == "flags[0] = value.isEmpty()"
+            ));
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn move_into_boolean_instance_field_preserves_the_boolean_expression() -> Result<(), String> {
+        with_context("()V", |context: &MethodContext<'_>| -> Result<(), String> {
+            let index: u32 = field_index(context, "Z")?;
+            let field_name: String = context
+                .field_id(index)
+                .ok_or_else(|| "fixture boolean field disappeared".to_owned())?
+                .name
+                .clone();
+            let mut file: RegisterFile = moved_boolean_expression(context);
+            file.write(2, Expr::This);
+            let mut pending = None;
+            let outcome: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &indexed_insn(0x5C, vec![0, 2], index),
+                &mut pending,
+            );
+            assert!(matches!(
+                outcome,
+                LiftOutcome::Statement(statement)
+                    if statement == format!("this.{field_name} = value.isEmpty()")
+            ));
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn move_into_boolean_static_field_preserves_the_boolean_expression() -> Result<(), String> {
+        with_context("()V", |context: &MethodContext<'_>| -> Result<(), String> {
+            let index: u32 = field_index(context, "Z")?;
+            let field = context
+                .field_id(index)
+                .ok_or_else(|| "fixture boolean field disappeared".to_owned())?;
+            let owner: String = super::source_type(context, &field.class);
+            let field_name: String = field.name.clone();
+            let mut file: RegisterFile = moved_boolean_expression(context);
+            let mut pending = None;
+            let outcome: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &indexed_insn(0x6A, vec![0], index),
+                &mut pending,
+            );
+            assert!(matches!(
+                outcome,
+                LiftOutcome::Statement(statement)
+                    if statement == format!("{owner}.{field_name} = value.isEmpty()")
+            ));
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn boolean_field_stores_refuse_both_descriptor_opcode_mismatch_directions() -> Result<(), String>
+    {
+        with_context("()V", |context: &MethodContext<'_>| -> Result<(), String> {
+            let boolean_index: u32 = field_index(context, "Z")?;
+            let integer_index: u32 = field_index(context, "I")?;
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(0, Expr::Const("1".to_owned()));
+            file.write(1, Expr::This);
+            let mut pending = None;
+            for instruction in [
+                indexed_insn(0x5C, vec![0, 1], integer_index),
+                indexed_insn(0x59, vec![0, 1], boolean_index),
+                indexed_insn(0x6A, vec![0], integer_index),
+                indexed_insn(0x67, vec![0], boolean_index),
+            ] {
+                assert!(matches!(
+                    lift_insn(context, &mut file, &instruction, &mut pending),
+                    LiftOutcome::Unlifted
+                ));
+            }
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn instance_and_static_field_stores_refuse_missing_and_out_of_range_indices()
+    -> Result<(), String> {
+        with_context("()V", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(0, Expr::Const("1".to_owned()));
+            file.write(1, Expr::This);
+            let mut pending = None;
+            for instruction in [
+                insn(0x59, vec![0, 1], None),
+                indexed_insn(0x59, vec![0, 1], u32::MAX),
+                insn(0x67, vec![0], None),
+                indexed_insn(0x67, vec![0], u32::MAX),
+            ] {
+                assert!(matches!(
+                    lift_insn(context, &mut file, &instruction, &mut pending),
+                    LiftOutcome::Unlifted
+                ));
+            }
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn exact_boolean_return_normalizes_only_the_int_compatible_boundary() -> Result<(), String> {
+        assert_eq!(
+            return_statement("()Z", 0x0F, Expr::Const("0".to_owned()))?,
+            "return false"
+        );
+        assert_eq!(
+            return_statement("()Z", 0x0F, Expr::Const("1".to_owned()))?,
+            "return true"
+        );
+        assert_eq!(
+            return_statement("()Z", 0x0F, Expr::Const("7".to_owned()))?,
+            "return 7 != 0"
+        );
+        assert_eq!(
+            return_statement(
+                "()Z",
+                0x0F,
+                Expr::InstanceOf {
+                    value: Box::new(Expr::Local("value".to_owned())),
+                    ty: "Probe".to_owned(),
+                },
+            )?,
+            "return (value instanceof Probe)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_and_cross_category_returns_are_refused() -> Result<(), String> {
+        for (descriptor, op) in [
+            ("()Q", 0x0F),
+            ("()Q", 0x0E),
+            ("()Z", 0x10),
+            ("()Z", 0x11),
+            ("()J", 0x0F),
+            ("()Ljava/lang/String;", 0x0F),
+            ("()I", 0x10),
+            ("()I", 0x11),
+            ("()I", 0x0E),
+            ("()V", 0x0F),
+        ] {
+            assert!(matches!(
+                return_outcome(descriptor, op, Expr::Const("1".to_owned()))?,
+                LiftOutcome::Unlifted
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn return_value_without_a_register_is_refused() -> Result<(), String> {
+        with_context("()I", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            let mut pending = None;
+            assert!(matches!(
+                lift_insn(
+                    context,
+                    &mut file,
+                    &insn(0x0F, Vec::new(), None),
+                    &mut pending,
+                ),
+                LiftOutcome::Unlifted
+            ));
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn boolean_register_operands_keep_boolean_or_materialize_for_integer_use() -> Result<(), String>
+    {
+        with_parameter_context("(ZZ)I", 4, 2, |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            let mut pending = None;
+            let (left, right): (u16, u16) = (2, 3);
+            assert_eq!(
+                context.param_regs.keys().copied().collect::<Vec<u16>>(),
+                vec![left, right]
+            );
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x95, vec![0, left, right], None),
+                &mut pending,
+            );
+            assert_eq!(file.current(context, 0).render(), "(arg0 & arg1)");
+            assert_eq!(file.kinds.get(&0), Some(&super::ValueKind::Boolean));
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x90, vec![1, left, right], None),
+                &mut pending,
+            );
+            assert_eq!(
+                file.current(context, 1).render(),
+                "((arg0 ? 1 : 0) + (arg1 ? 1 : 0))"
+            );
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0x7C, vec![2, left], None),
+                &mut pending,
+            );
+            assert_eq!(file.current(context, 2).render(), "(~(arg0 ? 1 : 0))");
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn integer_xor_materializes_a_moved_boolean_expression() -> Result<(), String> {
+        with_context("()I", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(
+                1,
+                Expr::InstanceOf {
+                    value: Box::new(Expr::Local("value".to_owned())),
+                    ty: "Probe".to_owned(),
+                },
+            );
+            let mut pending = None;
+            assert!(matches!(
+                lift_insn(
+                    context,
+                    &mut file,
+                    &insn(0x01, vec![0, 1], None),
+                    &mut pending,
+                ),
+                LiftOutcome::Statement(statement)
+                    if statement == "var0 = (value instanceof Probe)"
+            ));
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0xDF, vec![0, 0], Some(1)),
+                &mut pending,
+            );
+            assert_eq!(
+                file.current(context, 0).render(),
+                "(!(value instanceof Probe))"
+            );
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn integer_xor_materializes_boolean_invoke_result_as_zero_or_one() -> Result<(), String> {
+        with_context("()Z", |context: &MethodContext<'_>| {
+            let mut file: RegisterFile = RegisterFile::new();
+            file.write(
+                0,
+                Expr::Invoke {
+                    receiver: Some(Box::new(Expr::Local("value".to_owned()))),
+                    owner: "String".to_owned(),
+                    method: "isEmpty".to_owned(),
+                    args: Vec::new(),
+                    returns_bool: true,
+                },
+            );
+            let mut pending = None;
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0xDF, vec![0, 0], Some(1)),
+                &mut pending,
+            );
+            assert_eq!(file.current(context, 0).render(), "(!value.isEmpty())");
+            let _: LiftOutcome = lift_insn(
+                context,
+                &mut file,
+                &insn(0xD8, vec![1, 0], Some(1)),
+                &mut pending,
+            );
+            assert_eq!(
+                file.current(context, 1).render(),
+                "(((!value.isEmpty()) ? 1 : 0) + 1)"
+            );
+        })?;
+        Ok(())
     }
 
     #[test]

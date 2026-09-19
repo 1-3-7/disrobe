@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Result, WrapErr, bail};
 use sha2::{Digest, Sha256};
 
-use crate::fileio::read_text_bounded;
+use crate::fileio::{read_text_bounded, tracked_or_nonignored_files};
 
 const MAX_DOC_BYTES: u64 = 8 * 1024 * 1024;
 const EMPTY_DIGEST: &str = "e3b0c44298fc1c14";
@@ -41,17 +41,6 @@ pub(crate) struct Figure {
     pub(crate) covered: bool,
     pub(crate) suppressed: bool,
 }
-
-const SKIPPED_DIR_NAMES: [&str; 6] = [
-    "target",
-    "node_modules",
-    "dist",
-    "out",
-    "venv",
-    "site-packages",
-];
-
-const SCANNED_DOT_DIR_NAMES: [&str; 1] = [".github"];
 
 const EXCLUDED_TREES: [(&str, &str); 4] = [
     (
@@ -91,7 +80,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 39] = [
     FigureBudget {
         path: "README.md",
         figures: 17,
-        digest: "0d65b19c5ed3bab3",
+        digest: "ce8f80798a176093",
     },
     FigureBudget {
         path: "SECURITY.md",
@@ -106,7 +95,7 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 39] = [
     FigureBudget {
         path: "benches/head-to-head/results.md",
         figures: 14,
-        digest: "adc7610ecdfa31b3",
+        digest: "5582214558835a22",
     },
     FigureBudget {
         path: "benches/native-unpack/results.md",
@@ -528,28 +517,19 @@ fn figure_digest(texts: &[&str]) -> String {
 }
 
 fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
-    let walker: walkdir::IntoIter = walkdir::WalkDir::new(root).into_iter();
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in walker.filter_entry(|dirent: &walkdir::DirEntry| !skipped_dir(dirent)) {
-        let dirent: walkdir::DirEntry =
-            entry.wrap_err_with(|| format!("walking {}", root.display()))?;
-        let path: &Path = dirent.path();
-        if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-            files.push(path.to_path_buf());
-        }
-    }
+    let public_files: std::collections::BTreeSet<String> = tracked_or_nonignored_files(root)?;
+    let mut files: Vec<PathBuf> = public_files
+        .into_iter()
+        .filter(|relative: &String| {
+            Path::new(relative)
+                .extension()
+                .and_then(|ext: &std::ffi::OsStr| ext.to_str())
+                == Some("md")
+        })
+        .map(|relative: String| root.join(relative))
+        .collect();
     files.sort();
     Ok(files)
-}
-
-fn skipped_dir(dirent: &walkdir::DirEntry) -> bool {
-    dirent.file_type().is_dir()
-        && dirent.file_name().to_str().is_some_and(|name: &str| {
-            !SCANNED_DOT_DIR_NAMES.contains(&name)
-                && (name.starts_with('.')
-                    || name.starts_with("__")
-                    || SKIPPED_DIR_NAMES.contains(&name))
-        })
 }
 
 fn relative_label(root: &Path, path: &Path) -> String {
@@ -657,6 +637,8 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
 
     fn shapes_of(text: &str) -> Vec<FigureShape> {
         detect(text, &[], &[])
@@ -838,5 +820,55 @@ mod tests {
                 "{path} must be a repository-relative path with forward slashes"
             );
         }
+    }
+
+    #[test]
+    fn manifest_excludes_untracked_ignored_markdown_without_hiding_public_or_tracked_files()
+    -> Result<()> {
+        let directory: tempfile::TempDir = tempfile::tempdir()?;
+        let root: &Path = directory.path();
+        let initialized: std::process::Output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .output()
+            .wrap_err("initializing temporary Git repository")?;
+        assert!(
+            initialized.status.success(),
+            "git init failed: {initialized:?}"
+        );
+        fs::create_dir_all(root.join("private"))?;
+        fs::write(root.join(".gitignore"), "private/\n")?;
+        fs::write(root.join("tracked.md"), "tracked")?;
+        fs::write(root.join("untracked.md"), "visible")?;
+        fs::write(root.join("private/ignored.md"), "private")?;
+        fs::write(root.join("private/tracked.md"), "tracked private")?;
+        let added: std::process::Output = Command::new("git")
+            .args([
+                "add",
+                ".gitignore",
+                "tracked.md",
+                "-f",
+                "private/tracked.md",
+            ])
+            .current_dir(root)
+            .output()
+            .wrap_err("adding temporary tracked files")?;
+        assert!(added.status.success(), "git add failed: {added:?}");
+
+        let found: Vec<String> = manifest(root)?
+            .iter()
+            .map(|path: &PathBuf| relative_label(root, path))
+            .collect();
+        assert!(found.contains(&"tracked.md".to_owned()), "{found:?}");
+        assert!(found.contains(&"untracked.md".to_owned()), "{found:?}");
+        assert!(
+            found.contains(&"private/tracked.md".to_owned()),
+            "{found:?}"
+        );
+        assert!(
+            !found.contains(&"private/ignored.md".to_owned()),
+            "{found:?}"
+        );
+        Ok(())
     }
 }

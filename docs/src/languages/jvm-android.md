@@ -40,6 +40,8 @@ Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik sourc
 
 `disrobe jvm dex2-jar` is the in-house DEX-to-class translator. It writes a deterministic class tree and `classes.jar` without an external executable. `disrobe jvm decompile <dex> --backend dex2-jar` is different: it invokes an installed `d2j-dex2jar` backend and keeps that backend's contract and output separate from the in-house translator.
 
+The in-house translator carries `InnerClasses`, `EnclosingMethod`, and generic `Signature` attributes from DEX system annotations. The Dalvik renderer uses ownership metadata to group nested classes; a `$` in a name alone does not establish nesting. Invalid annotation metadata is reported without rejecting an otherwise parseable DEX.
+
 For a standalone DEX, `jvm decompile --format ghidra|ida|json` writes descriptor-keyed class, method, and field entries beside the normal output. `auto` accepts the same formats when the original input itself reaches a successful `jvm.classify` node and writes the sidecar under `exports/dalvik/`. It does not reuse a DEX extracted from an APK or another container. Each entry keeps the original owner, original member name, descriptor, and replacement as separate values. When the current recovery path has not changed a name, the original and replacement stay identical. The Ghidra and IDAPython scripts resolve the original logical identity in the loaded DEX database before renaming the database object; they do not assign virtual addresses to Dalvik identifiers. IDAPython class renames require IDA 9.4 or later because that release introduced the loader's persistent DEX type-rename store. Method and field renames use the older DEX record APIs.
 
 ## Coverage and fidelity

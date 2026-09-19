@@ -16,7 +16,7 @@ use crate::decompile_struct::{
 use crate::descriptor::{self, MethodDescriptor};
 use crate::dex::{
     ACC_ABSTRACT, ACC_NATIVE, ACC_STATIC, CodeItem, CodeItemsReport, DexCodeState, DexFile,
-    DexMethodCode, parse_code_items,
+    DexInnerClass, DexMethodCode, DexSystemMetadata, parse_code_items, parse_system_metadata,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +30,14 @@ pub struct DecompiledDex {
     pub fallback_methods: usize,
     pub code_scan_complete: bool,
     pub decode_error_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TranslatedDefaultMethod {
+    pub(crate) source_stem: String,
+    pub(crate) owner: Vec<String>,
+    pub(crate) abstract_declaration: String,
+    pub(crate) definition: String,
 }
 
 const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
@@ -51,7 +59,7 @@ fn dex_declared_identifiers(dex: &DexFile) -> std::collections::BTreeSet<String>
     }
     for descriptor_name in &dex.class_descriptors {
         let trimmed: &str = crate::descriptor::descriptor_to_binary_name(descriptor_name);
-        for segment in trimmed.rsplit('/').take(1).flat_map(|s: &str| s.split('$')) {
+        if let Some(segment) = trimmed.rsplit('/').next() {
             names.insert(segment.to_owned());
         }
     }
@@ -59,6 +67,16 @@ fn dex_declared_identifiers(dex: &DexFile) -> std::collections::BTreeSet<String>
 }
 
 fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
+    let metadata_report: crate::dex::DexSystemMetadataReport = parse_system_metadata(dex, bytes);
+    for diagnostic in &metadata_report.diagnostics {
+        crate::debug::dbg_kv("dex-system-metadata-dropped", || {
+            format!(
+                "{:?} @{}: {}",
+                diagnostic.class, diagnostic.offset, diagnostic.reason
+            )
+        });
+    }
+    let metadata: DexSystemMetadata = metadata_report.metadata;
     let code_report: CodeItemsReport = parse_code_items(dex, bytes);
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
@@ -119,12 +137,35 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             })
             .collect();
 
-    let mut source: String = String::with_capacity(4096);
-    let mut sources: BTreeMap<String, String> = BTreeMap::new();
-    let mut class_count: usize = 0;
-    let mut method_count: usize = 0;
-    let mut fully_lifted: usize = 0;
-    let mut fallback: usize = 0;
+    let mut rendered_classes: BTreeMap<String, RenderedClass> = BTreeMap::new();
+    let renders = |class: &str| {
+        by_class.contains_key(class)
+            && !desugar.interfaces.suppresses_class(class)
+            && !desugar.functionals.suppresses_class(class)
+    };
+    let (mut children, mut member_owner): (
+        BTreeMap<String, Vec<String>>,
+        BTreeMap<String, String>,
+    ) = rendered_member_classes(&metadata, renders);
+    let source_members: BTreeMap<String, (String, String)> = source_named_members(
+        by_class.keys().filter(|class: &&String| renders(class)),
+        &metadata,
+        &member_owner,
+        |class: &str| descriptor::binary_to_source(&desugar.core_library.project_type(class)),
+        |companion: &str| {
+            desugar
+                .interfaces
+                .recovered_companion_interface(companion)
+                .map(str::to_owned)
+        },
+    );
+    for (child, (parent, _simple)) in &source_members {
+        children
+            .entry(parent.clone())
+            .or_default()
+            .push(child.clone());
+        member_owner.insert(child.clone(), parent.clone());
+    }
 
     for (class_descriptor, methods) in &by_class {
         if desugar.interfaces.suppresses_class(class_descriptor)
@@ -146,6 +187,14 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
                 KotlinMetadataEvidence::Absent
             ),
             continuation_impl_bridge: continuation_impl_ancestor(dex, class_descriptor),
+            inner_class: metadata
+                .classes
+                .get(class_descriptor)
+                .and_then(|class_metadata| class_metadata.inner_class.as_ref()),
+            nested: member_owner.contains_key(class_descriptor),
+            source_member_name: source_members
+                .get(class_descriptor)
+                .map(|(_parent, simple): &(String, String)| simple.as_str()),
         };
         let mut rendered: RenderedClass = render_class(
             dex,
@@ -157,7 +206,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             &generic_by_method,
             desugar,
         );
-        if class_count == 0 && !desugar.core_library.diagnostics().is_empty() {
+        if rendered_classes.is_empty() && !desugar.core_library.diagnostics().is_empty() {
             let mut annotated: String = String::with_capacity(rendered.text.len());
             for diagnostic in desugar.core_library.diagnostics() {
                 let _: std::fmt::Result = writeln!(annotated, "// {diagnostic}");
@@ -165,25 +214,23 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             annotated.push_str(&rendered.text);
             rendered.text = annotated;
         }
-        if !source.is_empty() {
-            source.push('\n');
-        }
-        source.push_str(&rendered.text);
-        match sources.entry(rendered.source_path) {
-            std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(rendered.text);
-            }
-            std::collections::btree_map::Entry::Occupied(mut slot) => {
-                let merged: &mut String = slot.get_mut();
-                merged.push('\n');
-                merged.push_str(&strip_package_header(&rendered.text));
-            }
-        }
-        class_count += 1;
-        method_count += rendered.method_count;
-        fully_lifted += rendered.fully_lifted;
-        fallback += rendered.fallback;
+        rendered_classes.insert(class_descriptor.clone(), rendered);
     }
+    let class_count: usize = rendered_classes.len();
+    let method_count: usize = rendered_classes
+        .values()
+        .map(|rendered: &RenderedClass| rendered.method_count)
+        .sum();
+    let fully_lifted: usize = rendered_classes
+        .values()
+        .map(|rendered: &RenderedClass| rendered.fully_lifted)
+        .sum();
+    let fallback: usize = rendered_classes
+        .values()
+        .map(|rendered: &RenderedClass| rendered.fallback)
+        .sum();
+    let (mut source, sources): (String, BTreeMap<String, String>) =
+        compose_rendered_sources(rendered_classes, &children, &member_owner);
     let _: Option<()> = code_report
         .unrecovered_tail()
         .map(|tail: &crate::dex::DexCodeTail| {
@@ -205,12 +252,313 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     }
 }
 
+pub(crate) fn translated_default_methods(
+    dex: &DexFile,
+    bytes: &[u8],
+) -> Vec<TranslatedDefaultMethod> {
+    let code_report: CodeItemsReport = parse_code_items(dex, bytes);
+    let interfaces: crate::dalvik_desugar::DefaultInterfaceRecovery =
+        crate::dalvik_desugar::DefaultInterfaceRecovery::analyze(dex, bytes, &code_report);
+    let functionals: crate::dalvik_desugar::FunctionalRecovery =
+        crate::dalvik_desugar::FunctionalRecovery::analyze(dex, bytes, &code_report);
+    let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
+        crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
+    let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
+        interfaces: &interfaces,
+        functionals: &functionals,
+        core_library: &core_library,
+    };
+    let inlined_helpers: crate::dalvik_desugar::InlinedHelpers =
+        crate::dalvik_desugar::InlinedHelpers::default();
+    let metadata: DexSystemMetadata = parse_system_metadata(dex, bytes).metadata;
+    interfaces
+        .recovered_methods()
+        .filter_map(
+            |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+                let target: &DexMethodCode =
+                    code_report
+                        .methods()
+                        .iter()
+                        .find(|method: &&DexMethodCode| {
+                            method.class == recovered.interface
+                                && method.method_name == recovered.name
+                                && method.method_descriptor == recovered.descriptor
+                        })?;
+                let bridge: &CodeItem = code_report.decoded().get(recovered.bridge_item)?;
+                let (source_stem, owner): (String, Vec<String>) =
+                    translated_owner_path(&metadata, &recovered.interface)?;
+                let simple: &str = owner.last()?;
+                let rendered: RenderedMethod = render_method(
+                    dex,
+                    ClassRenderInfo {
+                        simple,
+                        source_file: None,
+                        metadata_is_absent: true,
+                        continuation_impl_bridge: false,
+                    },
+                    bridge,
+                    None,
+                    None,
+                    desugar,
+                    Some(recovered),
+                    &inlined_helpers,
+                );
+                if !rendered.fully_lifted {
+                    return None;
+                }
+                let abstract_declaration: String =
+                    render_unavailable_method(simple, target, None, desugar)
+                        .text
+                        .trim()
+                        .to_owned();
+                Some(TranslatedDefaultMethod {
+                    source_stem,
+                    owner,
+                    abstract_declaration,
+                    definition: rendered
+                        .text
+                        .lines()
+                        .map(|line: &str| line.strip_prefix("    ").unwrap_or(line))
+                        .collect::<Vec<&str>>()
+                        .join("\n"),
+                })
+            },
+        )
+        .collect()
+}
+
+fn translated_owner_path(
+    metadata: &DexSystemMetadata,
+    class_descriptor: &str,
+) -> Option<(String, Vec<String>)> {
+    let mut owner: Vec<String> = Vec::new();
+    let mut current: &str = class_descriptor;
+    for _ in 0..=MAX_NESTED_CLASS_DEPTH {
+        let class_metadata: Option<&crate::dex::DexClassMetadata> = metadata.classes.get(current);
+        let Some(inner): Option<&DexInnerClass> =
+            class_metadata.and_then(|class| class.inner_class.as_ref())
+        else {
+            let binary: &str = descriptor::descriptor_to_binary_name(current);
+            owner.push(descriptor::java_writable_identifier(
+                binary.rsplit('/').next()?,
+            ));
+            owner.reverse();
+            return Some((binary.to_owned(), owner));
+        };
+        owner.push(descriptor::java_writable_identifier(
+            inner.simple_name.as_deref()?,
+        ));
+        current = class_metadata?.enclosing_class.as_deref()?;
+    }
+    None
+}
+
 struct RenderedClass {
     text: String,
     source_path: String,
     method_count: usize,
     fully_lifted: usize,
     fallback: usize,
+}
+
+fn indent_nested_class(rendered: &str) -> String {
+    let mut indented: String = String::with_capacity(rendered.len().saturating_add(64));
+    for line in rendered.lines() {
+        indented.push_str("    ");
+        indented.push_str(line);
+        indented.push('\n');
+    }
+    indented
+}
+
+fn insert_nested_class(parent: &mut String, child: &str) -> bool {
+    let Some(closing_offset): Option<usize> = parent.rfind("}\n") else {
+        return false;
+    };
+    let nested: String = indent_nested_class(child);
+    parent.insert_str(closing_offset, &nested);
+    true
+}
+
+const MAX_NESTED_CLASS_DEPTH: usize = 64;
+
+fn source_named_members<'a>(
+    classes: impl Iterator<Item = &'a String>,
+    metadata: &DexSystemMetadata,
+    member_owner: &BTreeMap<String, String>,
+    source_name: impl Fn(&str) -> String,
+    companion_interface: impl Fn(&str) -> Option<String>,
+) -> BTreeMap<String, (String, String)> {
+    let candidates: Vec<(&String, String)> = classes
+        .map(|class: &String| (class, source_name(class)))
+        .collect();
+    let by_source: BTreeMap<&str, &String> = candidates
+        .iter()
+        .map(|(class, source): &(&String, String)| (source.as_str(), *class))
+        .collect();
+    let mut members: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for (class, source) in &candidates {
+        let unnamed_inner: bool = metadata
+            .classes
+            .get(*class)
+            .and_then(|class_metadata| class_metadata.inner_class.as_ref())
+            .is_some_and(|inner: &DexInnerClass| inner.simple_name.is_none());
+        if !unnamed_inner || member_owner.contains_key(*class) {
+            continue;
+        }
+        let Some((parent_source, simple)): Option<(&str, &str)> = source.rsplit_once('.') else {
+            continue;
+        };
+        let Some(parent): Option<&&String> = by_source.get(parent_source) else {
+            continue;
+        };
+        if *parent == *class || !lexically_encloses(metadata, parent, class, &companion_interface) {
+            continue;
+        }
+        members.insert((*class).clone(), ((*parent).clone(), simple.to_owned()));
+    }
+    members
+}
+
+fn lexically_encloses(
+    metadata: &DexSystemMetadata,
+    ancestor: &str,
+    class: &str,
+    companion_interface: &impl Fn(&str) -> Option<String>,
+) -> bool {
+    let mut current: String = class.to_owned();
+    for _ in 0..=MAX_NESTED_CLASS_DEPTH {
+        let Some(class_metadata): Option<&crate::dex::DexClassMetadata> =
+            metadata.classes.get(&current)
+        else {
+            return false;
+        };
+        if class_metadata.inner_class.is_none() {
+            return false;
+        }
+        let Some(recorded_owner): Option<&str> =
+            class_metadata.enclosing_class.as_deref().or_else(|| {
+                class_metadata
+                    .enclosing_method
+                    .as_ref()
+                    .map(|method: &crate::dex::DexEnclosingMethod| method.class.as_str())
+            })
+        else {
+            return false;
+        };
+        let owner: String =
+            companion_interface(recorded_owner).unwrap_or_else(|| recorded_owner.to_owned());
+        if owner == ancestor {
+            return true;
+        }
+        current = owner;
+    }
+    false
+}
+
+fn rendered_member_classes(
+    metadata: &DexSystemMetadata,
+    renders: impl Fn(&str) -> bool,
+) -> (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) {
+    let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut member_owner: BTreeMap<String, String> = BTreeMap::new();
+    for (owner, class_metadata) in &metadata.classes {
+        if !renders(owner) {
+            continue;
+        }
+        for child in &class_metadata.member_classes {
+            children
+                .entry(owner.clone())
+                .or_default()
+                .push(child.clone());
+            member_owner.insert(child.clone(), owner.clone());
+        }
+    }
+    (children, member_owner)
+}
+
+fn compose_rendered_sources(
+    mut rendered_classes: BTreeMap<String, RenderedClass>,
+    children: &BTreeMap<String, Vec<String>>,
+    member_owner: &BTreeMap<String, String>,
+) -> (String, BTreeMap<String, String>) {
+    let roots: Vec<String> = rendered_classes
+        .keys()
+        .filter(|descriptor: &&String| !member_owner.contains_key(*descriptor))
+        .cloned()
+        .collect();
+    let mut source: String = String::with_capacity(4096);
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    let mut pending: std::collections::VecDeque<String> = roots.into();
+    while let Some(descriptor) = pending
+        .pop_front()
+        .or_else(|| rendered_classes.keys().next().cloned())
+    {
+        let mut detached: Vec<RenderedClass> = Vec::new();
+        let Some(rendered): Option<RenderedClass> = compose_rendered_class(
+            &descriptor,
+            children,
+            &mut rendered_classes,
+            0,
+            &mut detached,
+        ) else {
+            continue;
+        };
+        for emitted in std::iter::once(rendered).chain(detached) {
+            append_rendered_source(&mut source, &mut sources, emitted);
+        }
+    }
+    (source, sources)
+}
+
+fn append_rendered_source(
+    source: &mut String,
+    sources: &mut BTreeMap<String, String>,
+    rendered: RenderedClass,
+) {
+    if !source.is_empty() {
+        source.push('\n');
+    }
+    source.push_str(&rendered.text);
+    match sources.entry(rendered.source_path) {
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(rendered.text);
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot) => {
+            let merged: &mut String = slot.get_mut();
+            merged.push('\n');
+            merged.push_str(&strip_package_header(&rendered.text));
+        }
+    }
+}
+
+fn compose_rendered_class(
+    descriptor: &str,
+    children: &BTreeMap<String, Vec<String>>,
+    rendered_classes: &mut BTreeMap<String, RenderedClass>,
+    depth: usize,
+    detached: &mut Vec<RenderedClass>,
+) -> Option<RenderedClass> {
+    let mut rendered: RenderedClass = rendered_classes.remove(descriptor)?;
+    if depth < MAX_NESTED_CLASS_DEPTH
+        && let Some(member_descriptors) = children.get(descriptor)
+    {
+        for child_descriptor in member_descriptors {
+            let Some(child): Option<RenderedClass> = compose_rendered_class(
+                child_descriptor,
+                children,
+                rendered_classes,
+                depth + 1,
+                detached,
+            ) else {
+                continue;
+            };
+            if !insert_nested_class(&mut rendered.text, &child.text) {
+                detached.push(child);
+            }
+        }
+    }
+    Some(rendered)
 }
 
 fn strip_package_header(rendered: &str) -> String {
@@ -427,6 +775,9 @@ struct KotlinClassEvidence<'a> {
     source_file: Option<&'a str>,
     metadata_is_absent: bool,
     continuation_impl_bridge: bool,
+    inner_class: Option<&'a DexInnerClass>,
+    nested: bool,
+    source_member_name: Option<&'a str>,
 }
 
 fn render_class(
@@ -442,15 +793,29 @@ fn render_class(
     >,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> RenderedClass {
+    let inner_class: Option<&DexInnerClass> = kotlin_evidence.inner_class;
     let projected_class: String = desugar.core_library.project_type(class_descriptor);
-    let binary: String = descriptor::binary_to_source(&projected_class);
-    let (package, simple): (Option<&str>, &str) = match binary.rfind('.') {
-        Some(p) => (Some(&binary[..p]), &binary[p + 1..]),
-        None => (None, binary.as_str()),
+    let binary: &str = descriptor::descriptor_to_binary_name(&projected_class);
+    let (package_binary, binary_simple): (Option<&str>, &str) = match binary.rfind('/') {
+        Some(position) => (Some(&binary[..position]), &binary[position + 1..]),
+        None => (None, binary),
     };
+    let package: Option<String> = package_binary.map(|value: &str| value.replace('/', "."));
+    let top_level_source: String = descriptor::binary_to_source(binary_simple);
+    let top_level_simple: String = if top_level_source.contains('.') {
+        descriptor::java_writable_identifier(binary_simple)
+    } else {
+        top_level_source
+    };
+    let simple: &str = inner_class
+        .and_then(|metadata: &DexInnerClass| metadata.simple_name.as_deref())
+        .or(kotlin_evidence.source_member_name)
+        .unwrap_or(&top_level_simple);
 
     let mut text: String = String::with_capacity(1024);
-    if let Some(pkg) = package {
+    if !kotlin_evidence.nested
+        && let Some(pkg) = package.as_deref()
+    {
         let _ = writeln!(text, "package {pkg};");
         let _ = writeln!(text);
     }
@@ -458,13 +823,12 @@ fn render_class(
         .methods
         .iter()
         .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
-    let class_declaration: &str = if desugar.interfaces.recovers_interface(class_descriptor) {
-        "public interface"
-    } else if class_is_abstract {
-        "public abstract class"
-    } else {
-        "public class"
-    };
+    let class_declaration: String = class_declaration(
+        desugar.interfaces.recovers_interface(class_descriptor),
+        class_is_abstract,
+        inner_class,
+        kotlin_evidence.source_member_name.is_some(),
+    );
     let implemented: String = match desugar.interfaces.implemented_interfaces(class_descriptor) {
         Some(interfaces) if !interfaces.is_empty() => {
             let names: Vec<String> = interfaces
@@ -647,11 +1011,44 @@ fn render_class(
     let _ = writeln!(text, "}}");
     RenderedClass {
         text,
-        source_path: java_source_path(package, simple),
+        source_path: java_source_path(package.as_deref(), simple),
         method_count,
         fully_lifted,
         fallback,
     }
+}
+
+fn class_declaration(
+    recovered_interface: bool,
+    inferred_abstract: bool,
+    inner_class: Option<&DexInnerClass>,
+    source_member: bool,
+) -> String {
+    let flags: u16 = inner_class.map_or(0, |metadata: &DexInnerClass| metadata.access_flags);
+    let mut declaration: String = String::new();
+    if flags & 0x0001 != 0 || inner_class.is_none() {
+        declaration.push_str("public ");
+    } else if flags & 0x0002 != 0 {
+        declaration.push_str("private ");
+    } else if flags & 0x0004 != 0 {
+        declaration.push_str("protected ");
+    }
+    let is_interface: bool = recovered_interface || flags & 0x0200 != 0;
+    if !is_interface && (flags & 0x0008 != 0 || source_member) {
+        declaration.push_str("static ");
+    }
+    if !is_interface && flags & 0x0010 != 0 {
+        declaration.push_str("final ");
+    }
+    if is_interface {
+        declaration.push_str("interface");
+    } else {
+        if inferred_abstract || flags & 0x0400 != 0 {
+            declaration.push_str("abstract ");
+        }
+        declaration.push_str("class");
+    }
+    declaration
 }
 
 fn recovered_strings_annotation(rec: &crate::dalvik_strdec::DexStringRecovery) -> String {
@@ -1136,7 +1533,8 @@ fn lift_method(
         inline_temporaries,
         desugar,
         inlined_helpers,
-    );
+    )
+    .with_temporary_types(&temporary_types(dex, &built.insns));
     let register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>> =
         register_mention_blocks(&built.cfg, &built.insns);
     let mut render: RenderState<'_> = RenderState {
@@ -1719,6 +2117,302 @@ mod tests {
     fn decompiled() -> DecompiledDex {
         let dex: DexFile = crate::dex::parse(EDGECASES_DEX).expect("parse edgecases.dex");
         decompile_dex(&dex, EDGECASES_DEX)
+    }
+
+    #[test]
+    fn malformed_default_companion_is_not_projected_into_translated_source() {
+        let mut dex: DexFile = crate::dex::parse(EDGECASES_DEX).expect("parse mutation source");
+        let bridge: &mut crate::dex::MethodId = dex
+            .method_ids
+            .iter_mut()
+            .find(|method: &&mut crate::dex::MethodId| {
+                method.class.ends_with("Shape$-CC;") && method.name == "$default$label"
+            })
+            .expect("find default companion bridge");
+        bridge.name = "<clinit>".to_owned();
+
+        let recovered: Vec<TranslatedDefaultMethod> =
+            translated_default_methods(&dex, EDGECASES_DEX);
+        assert!(
+            recovered
+                .iter()
+                .all(|method: &TranslatedDefaultMethod| !method.definition.contains(" label("))
+        );
+        let fallback: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
+        assert!(
+            fallback.source.contains("Shape$_u002D_CC"),
+            "{}",
+            fallback.source
+        );
+    }
+
+    fn rendered_class_fixture(name: &str, text: &str) -> RenderedClass {
+        RenderedClass {
+            text: text.to_owned(),
+            source_path: format!("{name}.java"),
+            method_count: 1,
+            fully_lifted: 1,
+            fallback: 0,
+        }
+    }
+
+    fn member_metadata(owner: &str, members: &[&str]) -> DexSystemMetadata {
+        let mut metadata: DexSystemMetadata = DexSystemMetadata::default();
+        metadata.classes.insert(
+            owner.to_owned(),
+            crate::dex::DexClassMetadata {
+                member_classes: members
+                    .iter()
+                    .map(|member: &&str| (*member).to_owned())
+                    .collect(),
+                ..crate::dex::DexClassMetadata::default()
+            },
+        );
+        metadata
+    }
+
+    #[test]
+    fn translated_owner_paths_follow_inner_class_metadata_instead_of_dollar_signs() {
+        let mut metadata: DexSystemMetadata = DexSystemMetadata::default();
+        for top_level in ["Lcash/Money$Box;", "Lcash/Wallet;", "La/c;"] {
+            metadata.classes.insert(
+                top_level.to_owned(),
+                crate::dex::DexClassMetadata::default(),
+            );
+        }
+        for (nested, simple, enclosing) in [
+            ("Lcash/Wallet$Card;", "Card", "Lcash/Wallet;"),
+            ("La/b;", "Card", "La/c;"),
+        ] {
+            metadata.classes.insert(
+                nested.to_owned(),
+                crate::dex::DexClassMetadata {
+                    inner_class: Some(DexInnerClass {
+                        simple_name: Some(simple.to_owned()),
+                        access_flags: 0x0609,
+                    }),
+                    enclosing_class: Some(enclosing.to_owned()),
+                    ..crate::dex::DexClassMetadata::default()
+                },
+            );
+        }
+        metadata.classes.insert(
+            "La/local;".to_owned(),
+            crate::dex::DexClassMetadata {
+                inner_class: Some(DexInnerClass {
+                    simple_name: Some("Local".to_owned()),
+                    access_flags: 0x0600,
+                }),
+                enclosing_method: Some(crate::dex::DexEnclosingMethod {
+                    class: "La/c;".to_owned(),
+                    name: "run".to_owned(),
+                    descriptor: "()V".to_owned(),
+                }),
+                ..crate::dex::DexClassMetadata::default()
+            },
+        );
+
+        let path = |class: &str| translated_owner_path(&metadata, class);
+        assert_eq!(
+            path("Lcash/Money$Box;"),
+            Some(("cash/Money$Box".to_owned(), vec!["Money$Box".to_owned()]))
+        );
+        assert_eq!(
+            path("Lcash/Wallet$Card;"),
+            Some((
+                "cash/Wallet".to_owned(),
+                vec!["Wallet".to_owned(), "Card".to_owned()]
+            ))
+        );
+        assert_eq!(
+            path("La/b;"),
+            Some(("a/c".to_owned(), vec!["c".to_owned(), "Card".to_owned()]))
+        );
+        assert_eq!(path("La/local;"), None);
+    }
+
+    #[test]
+    fn only_metadata_enclosed_unnamed_classes_nest_under_their_reference_parent() {
+        let mut metadata: DexSystemMetadata = member_metadata("LOuter;", &["LOuter$Api;"]);
+        metadata.classes.insert(
+            "LOuter$Api;".to_owned(),
+            crate::dex::DexClassMetadata {
+                inner_class: Some(DexInnerClass {
+                    simple_name: Some("Api".to_owned()),
+                    access_flags: 0x0609,
+                }),
+                enclosing_class: Some("LOuter;".to_owned()),
+                ..crate::dex::DexClassMetadata::default()
+            },
+        );
+        metadata.classes.insert(
+            "LOuter$Api$1;".to_owned(),
+            crate::dex::DexClassMetadata {
+                inner_class: Some(DexInnerClass {
+                    simple_name: None,
+                    access_flags: 0,
+                }),
+                enclosing_method: Some(crate::dex::DexEnclosingMethod {
+                    class: "LOuter$Api;".to_owned(),
+                    name: "create".to_owned(),
+                    descriptor: "()LOuter$Api;".to_owned(),
+                }),
+                ..crate::dex::DexClassMetadata::default()
+            },
+        );
+        for unannotated in ["LOuter$Api$-CC;", "LOuter$Box;"] {
+            metadata.classes.insert(
+                unannotated.to_owned(),
+                crate::dex::DexClassMetadata::default(),
+            );
+        }
+        let classes: Vec<String> = [
+            "LOuter;",
+            "LOuter$Api;",
+            "LOuter$Api$1;",
+            "LOuter$Api$-CC;",
+            "LOuter$Box;",
+        ]
+        .iter()
+        .map(|class: &&str| (*class).to_owned())
+        .collect();
+        let member_owner: BTreeMap<String, String> =
+            BTreeMap::from([("LOuter$Api;".to_owned(), "LOuter;".to_owned())]);
+        let source_names: BTreeMap<&str, &str> = BTreeMap::from([
+            ("LOuter;", "Outer"),
+            ("LOuter$Api;", "Outer.Api"),
+            ("LOuter$Api$1;", "Outer.Api$_1"),
+            ("LOuter$Api$-CC;", "Outer.Api$_u002D_CC"),
+            ("LOuter$Box;", "Outer.Box"),
+        ]);
+        let mut metadata: DexSystemMetadata = metadata;
+        metadata.classes.insert(
+            "LOuter$Api$2;".to_owned(),
+            crate::dex::DexClassMetadata {
+                inner_class: Some(DexInnerClass {
+                    simple_name: None,
+                    access_flags: 0,
+                }),
+                enclosing_method: Some(crate::dex::DexEnclosingMethod {
+                    class: "LOuter$Api$-CC;".to_owned(),
+                    name: "inMemory".to_owned(),
+                    descriptor: "()LOuter$Api;".to_owned(),
+                }),
+                ..crate::dex::DexClassMetadata::default()
+            },
+        );
+        let mut classes: Vec<String> = classes;
+        classes.push("LOuter$Api$2;".to_owned());
+        let mut source_names: BTreeMap<&str, &str> = source_names;
+        source_names.insert("LOuter$Api$2;", "Outer.Api$_2");
+        let name = |class: &str| source_names[class].to_owned();
+
+        let unrecovered_companion: BTreeMap<String, (String, String)> =
+            source_named_members(classes.iter(), &metadata, &member_owner, name, |_: &str| {
+                None
+            });
+        assert_eq!(
+            unrecovered_companion,
+            BTreeMap::from([(
+                "LOuter$Api$1;".to_owned(),
+                ("LOuter;".to_owned(), "Api$_1".to_owned())
+            )])
+        );
+        let recovered_companion: BTreeMap<String, (String, String)> = source_named_members(
+            classes.iter(),
+            &metadata,
+            &member_owner,
+            name,
+            |companion: &str| (companion == "LOuter$Api$-CC;").then(|| "LOuter$Api;".to_owned()),
+        );
+        assert_eq!(
+            recovered_companion,
+            BTreeMap::from([
+                (
+                    "LOuter$Api$1;".to_owned(),
+                    ("LOuter;".to_owned(), "Api$_1".to_owned())
+                ),
+                (
+                    "LOuter$Api$2;".to_owned(),
+                    ("LOuter;".to_owned(), "Api$_2".to_owned())
+                )
+            ])
+        );
+    }
+
+    #[test]
+    fn member_classes_of_an_unrendered_owner_are_emitted_as_roots() {
+        let metadata: DexSystemMetadata = member_metadata("LSynthetic;", &["LReal;"]);
+        let (children, member_owner): (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) =
+            rendered_member_classes(&metadata, |owner: &str| owner != "LSynthetic;");
+        assert!(children.is_empty());
+        assert!(member_owner.is_empty());
+        let rendered: BTreeMap<String, RenderedClass> = BTreeMap::from([(
+            "LReal;".to_owned(),
+            rendered_class_fixture("Real", "public class Real {\n}\n"),
+        )]);
+        let (source, sources): (String, BTreeMap<String, String>) =
+            compose_rendered_sources(rendered, &children, &member_owner);
+        assert_eq!(source, "public class Real {\n}\n");
+        assert_eq!(sources.keys().collect::<Vec<&String>>(), ["Real.java"]);
+
+        let (children, member_owner): (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) =
+            rendered_member_classes(&metadata, |_: &str| true);
+        assert_eq!(
+            member_owner.get("LReal;").map(String::as_str),
+            Some("LSynthetic;")
+        );
+        let orphaned: BTreeMap<String, RenderedClass> = BTreeMap::from([(
+            "LReal;".to_owned(),
+            rendered_class_fixture("Real", "static class Real {\n}\n"),
+        )]);
+        let (source, _): (String, BTreeMap<String, String>) =
+            compose_rendered_sources(orphaned, &children, &member_owner);
+        assert_eq!(source, "static class Real {\n}\n");
+    }
+
+    #[test]
+    fn nested_composition_failure_and_cycles_keep_every_rendered_class() {
+        let metadata: DexSystemMetadata = member_metadata("LOuter;", &["LOuter$Inner;"]);
+        let (children, member_owner): (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) =
+            rendered_member_classes(&metadata, |_: &str| true);
+        let unclosed: BTreeMap<String, RenderedClass> = BTreeMap::from([
+            (
+                "LOuter;".to_owned(),
+                rendered_class_fixture("Outer", "public class Outer {"),
+            ),
+            (
+                "LOuter$Inner;".to_owned(),
+                rendered_class_fixture("Inner", "static class Inner {\n}\n"),
+            ),
+        ]);
+        let (source, sources): (String, BTreeMap<String, String>) =
+            compose_rendered_sources(unclosed, &children, &member_owner);
+        assert_eq!(source, "public class Outer {\nstatic class Inner {\n}\n");
+        assert_eq!(
+            sources.keys().collect::<Vec<&String>>(),
+            ["Inner.java", "Outer.java"]
+        );
+
+        let mut cyclic: DexSystemMetadata = member_metadata("LA;", &["LB;"]);
+        cyclic
+            .classes
+            .extend(member_metadata("LB;", &["LA;"]).classes);
+        let (children, member_owner): (BTreeMap<String, Vec<String>>, BTreeMap<String, String>) =
+            rendered_member_classes(&cyclic, |_: &str| true);
+        let rendered: BTreeMap<String, RenderedClass> = BTreeMap::from([
+            (
+                "LA;".to_owned(),
+                rendered_class_fixture("A", "class A {\n}\n"),
+            ),
+            (
+                "LB;".to_owned(),
+                rendered_class_fixture("B", "class B {\n}\n"),
+            ),
+        ]);
+        let (source, _): (String, BTreeMap<String, String>) =
+            compose_rendered_sources(rendered, &children, &member_owner);
+        assert_eq!(source, "class A {\n    class B {\n    }\n}\n");
     }
 
     #[test]

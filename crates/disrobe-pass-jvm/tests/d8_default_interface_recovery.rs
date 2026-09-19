@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -53,6 +53,27 @@ fn method_source<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn edgecases_unit(recovered: &DecompiledDex) -> &str {
+    recovered
+        .sources
+        .get("EdgeCases.java")
+        .expect("recover the EdgeCases compilation unit")
+}
+
+fn member_source<'a>(unit: &'a str, declaration: &str) -> &'a str {
+    method_source(unit, declaration)
+        .unwrap_or_else(|| panic!("member `{declaration}` is nested in EdgeCases.java:\n{unit}"))
+}
+
+fn no_companion_source(recovered: &DecompiledDex, companion: &str) -> bool {
+    recovered
+        .sources
+        .iter()
+        .all(|(path, source): (&String, &String)| {
+            !path.contains(companion) && !source.contains(companion)
+        })
 }
 
 fn execute_static_repository(
@@ -128,22 +149,32 @@ fn execute_authored_repository(javac: &Path, java: &Path) -> Output {
 
 fn assert_companion_preserved(dex: &DexFile, bytes: &[u8], label: &str) {
     let recovered: DecompiledDex = decompile_dex(dex, bytes);
-    let repository: &String = recovered
-        .sources
-        .get("EdgeCases/Repository.java")
-        .expect("recover Repository");
+    let unit: &str = edgecases_unit(&recovered);
+    let repository: &str = member_source(unit, "public interface Repository {");
     assert!(
-        repository.contains("public abstract class Repository"),
+        repository.contains("public abstract boolean containsKey(Object arg0);"),
         "{label}: {repository}"
     );
     assert!(
         !repository.contains("public static EdgeCases.Repository inMemory("),
         "{label}: {repository}"
     );
+    let (companion_path, companion): (&String, &String) = recovered
+        .sources
+        .iter()
+        .find(|(path, _source): &(&String, &String)| path.contains("Repository$_u002D_CC"))
+        .unwrap_or_else(|| panic!("{label}: the unannotated companion keeps its own source"));
     assert!(
-        recovered
-            .sources
-            .contains_key("EdgeCases/Repository$_u002D_CC.java")
+        companion.contains("public static EdgeCases.Repository inMemory("),
+        "{label}: {companion_path}: {companion}"
+    );
+    assert!(
+        !unit.contains("class Repository$_u002D_CC"),
+        "{label}: a companion without inner-class metadata is never nested"
+    );
+    assert!(
+        unit.contains("EdgeCases.Repository$_u002D_CC.inMemory()"),
+        "{label}: callers keep targeting the preserved companion"
     );
 }
 
@@ -151,42 +182,46 @@ fn assert_companion_preserved(dex: &DexFile, bytes: &[u8], label: &str) {
 fn real_d8_default_interface_companion_returns_to_source_shape() {
     let dex: DexFile = parse_dex(EDGECASES_DEX).expect("parse real D8 artifact");
     let recovered: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
-    let shape: &String = recovered
-        .sources
-        .get("EdgeCases/Shape.java")
-        .expect("recover Shape");
+    let unit: &str = edgecases_unit(&recovered);
+    let shape_member: &str = member_source(unit, "public interface Shape {");
 
-    assert!(shape.contains("public interface Shape"), "{shape}");
-    assert!(shape.contains("default String label()"), "{shape}");
-    assert!(shape.contains("new StringBuilder(\"shape:\")"), "{shape}");
-    assert!(shape.contains("this.getClass()"), "{shape}");
-    assert!(!shape.contains("abstract String label()"), "{shape}");
     assert!(
-        !recovered
-            .sources
-            .contains_key("EdgeCases/Shape$_u002D_CC.java")
+        shape_member.contains("default String label()"),
+        "{shape_member}"
+    );
+    assert!(
+        shape_member.contains("new StringBuilder(\"shape:\")"),
+        "{shape_member}"
+    );
+    assert!(shape_member.contains("this.getClass()"), "{shape_member}");
+    assert!(
+        !shape_member.contains("abstract String label()"),
+        "{shape_member}"
+    );
+    assert!(
+        no_companion_source(&recovered, "Shape$_u002D_CC"),
+        "a fully recovered default companion must be elided"
     );
 
     for implementation in ["Circle", "Square", "Triangle", "EmptyShape"] {
-        let path: String = format!("EdgeCases/{implementation}.java");
-        let source: &String = recovered
-            .sources
-            .get(&path)
-            .expect("recover implementation");
+        let declaration: String =
+            format!("public static final class {implementation} implements EdgeCases.Shape {{");
+        let source: &str = member_source(unit, &declaration);
         assert!(
-            source.contains("implements EdgeCases.Shape"),
-            "{path}: {source}"
+            !source.contains("$default$label"),
+            "{declaration}: {source}"
         );
-        assert!(!source.contains("$default$label"), "{path}: {source}");
-        assert!(!source.contains(" String label()"), "{path}: {source}");
+        assert!(
+            !source.contains(" String label()"),
+            "{declaration}: {source}"
+        );
     }
 
     assert!(
-        !recovered
-            .sources
-            .contains_key("EdgeCases/Repository$_u002D_CC.java"),
+        no_companion_source(&recovered, "Repository$_u002D_CC"),
         "a fully recovered default/static companion must be elided"
     );
+    let shape: String = format!("package EdgeCases;\n{shape_member}\n");
 
     let javac: PathBuf = find_on_path("javac")
         .expect("the D8 default-interface recovery gate requires javac on PATH");
@@ -194,7 +229,7 @@ fn real_d8_default_interface_companion_returns_to_source_shape() {
     let package: PathBuf = scratch.path().join("EdgeCases");
     std::fs::create_dir_all(&package).expect("create Java package directory");
     let source_path: PathBuf = package.join("Shape.java");
-    std::fs::write(&source_path, shape).expect("write recovered interface");
+    std::fs::write(&source_path, &shape).expect("write recovered interface");
     let compiled: Output = Command::new(&javac)
         .arg("-d")
         .arg(scratch.path())
@@ -242,10 +277,8 @@ fn real_d8_default_interface_companion_returns_to_source_shape() {
 fn real_d8_static_interface_methods_return_to_source_shape() {
     let dex: DexFile = parse_dex(EDGECASES_DEX).expect("parse real D8 artifact");
     let recovered: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
-    let repository: &String = recovered
-        .sources
-        .get("EdgeCases/Repository.java")
-        .expect("recover Repository");
+    let unit: &str = edgecases_unit(&recovered);
+    let repository: &str = member_source(unit, "public interface Repository {");
 
     assert!(
         repository.contains("default boolean containsKey("),
@@ -264,17 +297,8 @@ fn real_d8_static_interface_methods_return_to_source_shape() {
         "{repository}"
     );
     assert!(
-        !recovered
-            .sources
-            .contains_key("EdgeCases/Repository$_u002D_CC.java"),
-        "a fully recovered static/default companion must be elided"
-    );
-    assert!(
-        recovered
-            .sources
-            .values()
-            .all(|source: &String| !source.contains("Repository$_u002D_CC")),
-        "every exact invoke-static call must target the authored interface"
+        no_companion_source(&recovered, "Repository$_u002D_CC"),
+        "a fully recovered static/default companion must be elided and every exact invoke-static call must target the authored interface"
     );
     #[cfg(feature = "chain")]
     {
@@ -291,13 +315,17 @@ fn real_d8_static_interface_methods_return_to_source_shape() {
         assert!(!surfaced_source.contains("Repository$_u002D_CC"));
     }
 
-    let recovered_implementation: &String = recovered
-        .sources
-        .get("EdgeCases/Repository$_1.java")
-        .expect("recover Repository implementation");
+    let recovered_implementation: &str = member_source(
+        unit,
+        "static class Repository$_1 implements EdgeCases.Repository {",
+    );
     assert!(
-        recovered_implementation.contains("implements EdgeCases.Repository"),
+        recovered_implementation.contains("public Object get(Object arg0)"),
         "{recovered_implementation}"
+    );
+    assert!(
+        repository.contains("return new EdgeCases.Repository$_1();"),
+        "the static factory must name the nested implementation it allocates:\n{repository}"
     );
     let implementation: &str = "package EdgeCases; public final class Repository$_1 implements Repository { private final java.util.Map<Object, Object> store = new java.util.concurrent.ConcurrentHashMap<>(); public Object get(Object key) { return store.get(key); } public void put(Object key, Object value) { store.put(key, value); } }";
     let recovered_method: &str =
@@ -351,18 +379,7 @@ fn ambiguous_static_companion_method_preserves_the_complete_companion() {
         .expect("find static companion method");
     method.name = "<clinit>".to_string();
 
-    let recovered: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
-    let repository: &String = recovered
-        .sources
-        .get("EdgeCases/Repository.java")
-        .expect("recover Repository");
-    assert!(repository.contains("public abstract class Repository"));
-    assert!(!repository.contains("public static EdgeCases.Repository inMemory("));
-    assert!(
-        recovered
-            .sources
-            .contains_key("EdgeCases/Repository$_u002D_CC.java")
-    );
+    assert_companion_preserved(&dex, EDGECASES_DEX, "ambiguous");
 }
 
 #[test]

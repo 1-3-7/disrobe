@@ -364,7 +364,7 @@ Measurements use the pinned inputs, tool versions, and scoring rules linked belo
 
 | Tool and input | Disrobe result | Named tool result | What the measurement checks |
 |---|---|---|---|
-| JADX 1.5.5 · committed EdgeCases DEX | 63 clean regions from 163 emitted | 281 clean regions from 303 emitted | Real `javac`, complete-source compilation then bounded isolation of regions blocking attribution; different emitted populations |
+| JADX 1.5.5 · committed EdgeCases DEX | 157 clean regions from 228 emitted | 281 clean regions from 303 emitted | Real `javac`, complete-source compilation then bounded isolation of regions blocking attribution; different emitted populations |
 | CFR 0.152 · committed EdgeCases JAR | 181 clean regions from 181 emitted | 152 clean regions from 166 emitted | The same compiler/scorer procedure; different emitted populations |
 | APKLeaks 2.6.3 · planted-secrets APK | 8 / 8 planted secrets | 5 / 8 planted secrets | Exact-token recall on the same APK; Disrobe also finds the planted AWS secret access key, Basic credential, and JWT |
 
@@ -399,7 +399,7 @@ Results distinguish byte recovery, compiler acceptance, and behavioral checks. C
 
 | Input | Disrobe emitted regions | Named tool emitted regions | Population boundary | Reproduce |
 |---|---|---|---|---|
-| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 63 / 163 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 157 / 228 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 181 / 181 emitted regions compile clean | CFR 0.152: 152 / 166 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 
 </details>
