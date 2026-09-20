@@ -12,11 +12,14 @@ import importlib.metadata
 import json
 import pathlib
 import struct
+from collections.abc import Callable
 
 import pytest
 
 import disrobe
 from json_values import JsonValue, json_array, json_object
+
+UNTYPED_WASM_LIFT: Callable[..., disrobe.WasmLift] = disrobe.wasm_lift
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 SAMPLE_ELF = (FIXTURES / "sample.elf").read_bytes()
@@ -87,7 +90,7 @@ def test_wasm_lift_refusal_is_json_visible() -> None:
     assert "valid WebAssembly module" in payload["message"]
 
     with pytest.raises(disrobe.DisrobeError) as target_excinfo:
-        disrobe.wasm_lift(b"", target="javascript")
+        UNTYPED_WASM_LIFT(b"", target="javascript")
     target_payload = json.loads(str(target_excinfo.value))
     assert target_payload == {
         "accepted_targets": ["rust", "typescript", "c", "wat"],
@@ -475,7 +478,7 @@ def test_report_json_boundary_preserves_arbitrary_values() -> None:
 
 
 def test_report_from_obj_rejects_recursive_container() -> None:
-    cyclic: list[object] = []
+    cyclic: list[JsonValue] = []
     cyclic.append(cyclic)
     try:
         disrobe.StringsReport.from_obj(cyclic)
@@ -610,13 +613,17 @@ def test_byte_coverage_accounts_for_every_byte_of_a_real_image() -> None:
     )
     image = image_path.read_bytes()
 
-    coverage = disrobe.byte_coverage(image)
+    coverage: disrobe.ByteCoverage = disrobe.byte_coverage(image)
+    claimed_bytes: int | None = coverage.claimed_bytes
+    unclaimed_bytes: int | None = coverage.unclaimed_bytes
+    slack_bytes: int | None = coverage.slack_bytes
     assert isinstance(coverage, disrobe.ByteCoverage)
     assert coverage.file_len == len(image)
-    assert coverage.claimed_bytes is not None and coverage.claimed_bytes > 0
+    assert claimed_bytes is not None and claimed_bytes > 0
+    assert unclaimed_bytes is not None
+    assert slack_bytes is not None
     assert (
-        coverage.claimed_bytes + coverage.unclaimed_bytes + coverage.slack_bytes
-        == coverage.file_len
+        claimed_bytes + unclaimed_bytes + slack_bytes == coverage.file_len
     ), "every byte belongs to a claimed region, an unclaimed one, or alignment slack"
     assert coverage.region_count > 0
 
@@ -632,10 +639,12 @@ def test_byte_coverage_reports_an_appended_overlay() -> None:
     image = image_path.read_bytes()
     overlaid = image + b"\xa5" * 4096
 
-    coverage = disrobe.byte_coverage(overlaid)
-    assert coverage.unclaimed_bytes >= 4096, (
+    coverage: disrobe.ByteCoverage = disrobe.byte_coverage(overlaid)
+    unclaimed_bytes: int | None = coverage.unclaimed_bytes
+    assert unclaimed_bytes is not None
+    assert unclaimed_bytes >= 4096, (
         "4096 appended bytes belong to no declared structure, so they must be unclaimed, got "
-        f"{coverage.unclaimed_bytes}"
+        f"{unclaimed_bytes}"
     )
     assert coverage.complete is False
 
