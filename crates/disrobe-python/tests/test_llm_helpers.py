@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import disrobe
+from json_values import JsonValue, json_object
 
 
 def _make_pyc() -> bytes:
@@ -28,16 +29,18 @@ def _reports() -> list[disrobe.PyDecompileReport | disrobe.PyDeobReport]:
 @pytest.mark.parametrize("render", [disrobe.agents_md, disrobe.skill_md])
 def test_markdown_renders_accept_typed_reports(render: Callable[[Any], str]) -> None:
     for report in _reports():
-        assert report.raw["llm"] is not None
+        raw: dict[str, JsonValue] = json_object(report.raw)
+        assert raw["llm"] is not None
         from_report: str = render(report)
-        assert from_report == render(report.raw)
+        assert from_report == render(raw)
         assert from_report
 
 
 def test_provenance_accepts_typed_reports() -> None:
     for report in _reports():
+        raw: dict[str, JsonValue] = json_object(report.raw)
         from_report: disrobe.Provenance = disrobe.provenance(report)
-        assert from_report == disrobe.provenance(report.raw)
+        assert from_report == disrobe.provenance(raw)
         assert from_report.schema is not None
 
 

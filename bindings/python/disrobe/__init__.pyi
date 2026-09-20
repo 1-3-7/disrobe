@@ -2,8 +2,8 @@
 
 Every disrobe CLI capability is mirrored here as a typed library function.
 Analysis functions return concrete report objects (not bare dicts); each report
-exposes typed attribute accessors plus a ``raw`` dict escape hatch carrying the
-full underlying record, a ``to_json()`` serializer, and ``from_json_str`` /
+exposes typed attribute accessors plus a ``raw`` JSON-value escape hatch carrying
+the full underlying record, a ``to_json()`` serializer, and ``from_json_str`` /
 ``from_obj`` constructors.
 """
 
@@ -11,12 +11,15 @@ from collections.abc import Sequence
 from os import PathLike
 from typing import Any, Literal, Protocol, TypedDict, Union, overload, runtime_checkable
 
-from typing_extensions import NotRequired, Self
+from typing_extensions import NotRequired, Self, TypeAlias
 
 __version__: str
 __doc__: str
 
 Pack = Literal["pack-1", "pack-2", "pack-3", "pack-4"]
+_JsonScalar: TypeAlias = str | int | float | bool | None
+_JsonValue: TypeAlias = _JsonScalar | list["_JsonValue"] | dict[str, "_JsonValue"]
+_JsonInput: TypeAlias = _JsonValue | _Report | list["_JsonInput"] | dict[object, "_JsonInput"]
 SourceLanguage = Literal["python", "py", "python3"]
 JsLanguage = Literal["javascript", "js", "typescript", "ts"]
 WasmLiftTarget = Literal["rust", "typescript", "c", "wat"]
@@ -133,7 +136,7 @@ _LlmPipelineStep = TypedDict(
         "output_hash_blake3": NotRequired[str],
         "capabilities_required": NotRequired[list[str]],
         "capabilities_produced": NotRequired[list[str]],
-        "config": NotRequired[dict[str, object]],
+        "config": NotRequired[dict[str, _JsonValue]],
     },
 )
 
@@ -152,7 +155,7 @@ class LlmBundle(TypedDict):
     selection: _LlmSelection
     input: _LlmInputDescriptor
     pipeline: list[_LlmPipelineStep]
-    categories: dict[_LlmCategory, object]
+    categories: dict[_LlmCategory, _JsonValue]
 
 class DisrobeError(Exception):
     """Raised by every disrobe binding when the underlying pass fails."""
@@ -170,8 +173,8 @@ class _Report:
     """
 
     @property
-    def raw(self) -> dict[str, Any]:
-        """The full underlying record as a nested dict (no detail dropped)."""
+    def raw(self) -> _JsonValue:
+        """The full underlying JSON value (no detail dropped)."""
         ...
 
     def to_json(self) -> str:
@@ -180,12 +183,12 @@ class _Report:
 
     @classmethod
     def from_json_str(cls, text: str) -> Self:
-        """Rebuild a report from a JSON string produced by ``to_json``."""
+        """Rebuild a report from any valid JSON string."""
         ...
 
     @classmethod
-    def from_obj(cls, obj: _Report | dict[str, Any]) -> Self:
-        """Wrap another typed report or an already-decoded dict as this typed report."""
+    def from_obj(cls, obj: _JsonInput) -> Self:
+        """Wrap another typed report or a JSON-convertible value."""
         ...
 
 class CanonicalSource(_Report):
@@ -485,14 +488,13 @@ ContainerListing = Literal["enumerated", "requires-extraction", "unreadable"]
 class _LlmReport(_Report):
     """A typed report from an LLM-wired or LLM-aware pass.
 
-    Adds the ``llm`` accessor: a populated ``disrobe.metadata.llm.v1`` bundle on
-    the LLM-wired passes (``py_decompile``, ``py_disasm``, ``py_deob``,
-    ``pyarmor_detect``, ``pyarmor_unpack``), and ``None`` on every other pass
-    that still threads the metadata slot through its record.
+    Adds the ``llm`` accessor: the raw JSON metadata value, or ``None`` when the
+    report has no metadata. Values emitted by the CLI use ``LlmBundle``; report
+    constructors also preserve arbitrary JSON without schema validation.
     """
 
     @property
-    def llm(self) -> LlmBundle | None: ...
+    def llm(self) -> _JsonValue: ...
 
 class PyDecompileReport(_LlmReport):
     """Decompiled .pyc: source, marshal/decompile versions, and round-trip outcome."""
@@ -1288,8 +1290,8 @@ class CodeObject:
     def capabilities(self) -> list[str]: ...
     def add_capability(self, name: str, major: int) -> None: ...
     @property
-    def llm(self) -> dict[str, Any] | None: ...
-    def set_llm(self, sidecar: dict[str, Any] | None) -> None: ...
+    def llm(self) -> _JsonValue: ...
+    def set_llm(self, sidecar: _JsonInput) -> None: ...
     def to_dr(self) -> bytes: ...
 
 @runtime_checkable

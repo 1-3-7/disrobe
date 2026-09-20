@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pathlib
-from typing import Any
 
 import disrobe
+from json_values import JsonValue, json_array, json_object
 
 FIXTURES: pathlib.Path = pathlib.Path(__file__).parent / "fixtures"
 SAMPLE_ELF: bytes = (FIXTURES / "sample.elf").read_bytes()
@@ -21,20 +21,35 @@ def _build_disasm_dr() -> bytes:
 
 
 def _first_function_address() -> int:
-    functions: list[dict[str, Any]] = disrobe.native_disasm(SAMPLE_ELF).raw["functions"]
-    address: int = functions[0]["address"]
+    raw: dict[str, JsonValue] = json_object(disrobe.native_disasm(SAMPLE_ELF).raw)
+    functions: list[JsonValue] = json_array(raw["functions"])
+    first: dict[str, JsonValue] = json_object(functions[0])
+    address: JsonValue = first["address"]
+    assert isinstance(address, int)
     return address
 
 
 def test_native_disasm_counts_follow_the_disasm_view() -> None:
     payload: disrobe.DisasmPayload = disrobe.native_disasm(SAMPLE_ELF)
-    raw: dict[str, Any] = payload.raw
-    functions: list[dict[str, Any]] = raw["functions"]
+    raw: dict[str, JsonValue] = json_object(payload.raw)
+    functions: list[dict[str, JsonValue]] = [
+        json_object(value) for value in json_array(raw["functions"])
+    ]
+    instruction_count: JsonValue = raw["instruction_count"]
+    function_count: JsonValue = raw["function_count"]
+    assert isinstance(instruction_count, int)
+    assert isinstance(function_count, int)
 
-    assert payload.instruction_count == raw["instruction_count"]
-    assert payload.instruction_count == sum(f["instruction_count"] for f in functions)
+    instruction_counts: list[int] = []
+    for function in functions:
+        value: JsonValue = function["instruction_count"]
+        assert isinstance(value, int)
+        instruction_counts.append(value)
+
+    assert payload.instruction_count == instruction_count
+    assert payload.instruction_count == sum(instruction_counts)
     assert payload.instruction_count > 0
-    assert payload.function_count == len(functions) == raw["function_count"]
+    assert payload.function_count == len(functions) == function_count
     assert payload.function_count > 0
     assert not hasattr(payload, "symbol_count")
     assert not hasattr(payload, "source_hash")
@@ -42,11 +57,14 @@ def test_native_disasm_counts_follow_the_disasm_view() -> None:
 
 def test_capabilities_counts_follow_the_report() -> None:
     caps: disrobe.Capabilities = disrobe.capabilities(SAMPLE_ELF)
-    raw: dict[str, Any] = caps.raw
+    raw: dict[str, JsonValue] = json_object(caps.raw)
+    capabilities: list[JsonValue] = json_array(raw["capabilities"])
+    matched_rules: JsonValue = raw["matched_rules"]
+    assert isinstance(matched_rules, int)
 
-    assert caps.match_count == len(raw["capabilities"])
+    assert caps.match_count == len(capabilities)
     assert caps.match_count >= 1
-    assert caps.matched_rules == raw["matched_rules"]
+    assert caps.matched_rules == matched_rules
     assert not hasattr(caps, "format")
 
 
@@ -54,27 +72,34 @@ def test_query_kind_is_the_query_tag() -> None:
     dr: bytes = _build_disasm_dr()
     functions: disrobe.FunctionList = disrobe.query_functions(dr)
     decoders: disrobe.QueryReport = disrobe.query_string_decoders(dr)
+    function_raw: dict[str, JsonValue] = json_object(functions.raw)
+    decoder_raw: dict[str, JsonValue] = json_object(decoders.raw)
 
-    assert functions.kind == functions.raw["query"] == "functions"
-    assert functions.count == len(functions.raw["matches"])
+    assert functions.kind == function_raw["query"] == "functions"
+    assert functions.count == len(json_array(function_raw["matches"]))
     assert functions.count >= 1
-    assert decoders.kind == decoders.raw["query"] == "string-decoders"
-    assert decoders.match_count == len(decoders.raw["matches"])
+    assert decoders.kind == decoder_raw["query"] == "string-decoders"
+    assert decoders.match_count == len(json_array(decoder_raw["matches"]))
 
 
 def test_py_deob_detection_counts_matched_markers() -> None:
     detection: disrobe.PyDeobDetection = disrobe.py_deob_detect(HYPERION_SOURCE)
-    raw: dict[str, Any] = detection.raw
+    raw: dict[str, JsonValue] = json_object(detection.raw)
+    markers: list[JsonValue] = json_array(raw["markers"])
+    confidence: JsonValue = raw["confidence"]
+    assert isinstance(confidence, float)
 
-    assert detection.match_count == len(raw["markers"]) == 1
-    assert detection.confidence == raw["confidence"]
+    assert detection.match_count == len(markers) == 1
+    assert detection.confidence == confidence
     assert detection.confidence is not None
     assert detection.confidence > 0.0
 
 
 def test_py_deob_layer_count_follows_the_peel_steps() -> None:
     report: disrobe.PyDeobReport = disrobe.py_deob(BASE64_EXEC_SOURCE, cleanup=False)
-    steps: list[dict[str, Any]] = report.raw["peel"]["steps"]
+    raw: dict[str, JsonValue] = json_object(report.raw)
+    peel: dict[str, JsonValue] = json_object(raw["peel"])
+    steps: list[JsonValue] = json_array(peel["steps"])
 
     assert report.layer_count == len(steps) == 1
 
@@ -84,22 +109,30 @@ def test_yara_rule_count_covers_parsed_and_generated_rules() -> None:
     parsed: disrobe.YaraReport = disrobe.yara_parse(
         "rule a { condition: true }\nrule b { condition: false }\n"
     )
+    generated_raw: dict[str, JsonValue] = json_object(generated.raw)
+    parsed_raw: dict[str, JsonValue] = json_object(parsed.raw)
+    rule: dict[str, JsonValue] = json_object(generated_raw["rule"])
 
-    assert "rules" not in generated.raw
-    assert generated.raw["rule"]["name"] == "elf_sample"
+    assert "rules" not in generated_raw
+    assert rule["name"] == "elf_sample"
     assert generated.rule_count == 1
-    assert parsed.rule_count == len(parsed.raw["rules"]) == 2
+    assert parsed.rule_count == len(json_array(parsed_raw["rules"])) == 2
 
 
 def test_sigmaker_pattern_follows_the_signature() -> None:
     signature: disrobe.SigmakerReport = disrobe.native_sigmaker(
         SAMPLE_ELF, _first_function_address()
     )
-    raw: dict[str, Any] = signature.raw
+    raw: dict[str, JsonValue] = json_object(signature.raw)
+    pattern: JsonValue = raw["ida_pattern"]
+    pattern_bytes: list[JsonValue] = json_array(raw["bytes"])
+    byte_length: JsonValue = raw["byte_length"]
+    assert isinstance(pattern, str)
+    assert isinstance(byte_length, int)
 
-    assert signature.ida_pattern == raw["ida_pattern"]
+    assert signature.ida_pattern == pattern
     assert signature.ida_pattern
-    assert signature.byte_count == len(raw["bytes"]) == raw["byte_length"]
+    assert signature.byte_count == len(pattern_bytes) == byte_length
 
 
 def test_patch_report_follows_the_applied_edits() -> None:
@@ -107,15 +140,27 @@ def test_patch_report_follows_the_applied_edits() -> None:
     patched: bytes
     report: disrobe.PatchReport
     patched, report = disrobe.native_patch(SAMPLE_ELF, at=address, replacement=b"\x90\x90")
-    raw: dict[str, Any] = report.raw
-    edits: list[dict[str, Any]] = raw["edits"]
-    offset: int = edits[0]["file_offset"]
+    raw: dict[str, JsonValue] = json_object(report.raw)
+    edits: list[dict[str, JsonValue]] = [
+        json_object(value) for value in json_array(raw["edits"])
+    ]
+    first_edit: dict[str, JsonValue] = edits[0]
+    offset: JsonValue = first_edit["file_offset"]
+    bytes_changed: JsonValue = raw["bytes_changed"]
+    image_base: JsonValue = raw["image_base"]
+    format_name: JsonValue = raw["format"]
+    virtual_address: JsonValue = first_edit["virtual_address"]
+    assert isinstance(offset, int)
+    assert isinstance(bytes_changed, int)
+    assert isinstance(image_base, int)
+    assert isinstance(format_name, str)
+    assert isinstance(virtual_address, int)
 
-    assert report.at == edits[0]["virtual_address"] == address
-    assert report.bytes_written == raw["bytes_changed"] == 2
+    assert report.at == virtual_address == address
+    assert report.bytes_written == bytes_changed == 2
     assert report.edit_count == len(edits) == 1
-    assert report.format == raw["format"] == "elf"
-    assert report.image_base == raw["image_base"]
+    assert report.format == format_name == "elf"
+    assert report.image_base == image_base
     assert patched[offset : offset + 2] == b"\x90\x90"
     assert SAMPLE_ELF[offset : offset + 2] != b"\x90\x90"
     assert not hasattr(report, "revalidated")

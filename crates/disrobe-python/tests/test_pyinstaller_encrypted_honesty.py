@@ -15,6 +15,7 @@ from __future__ import annotations
 import struct
 
 import disrobe
+from json_values import JsonValue, json_array, json_object
 
 MEI_MAGIC = b"MEI\x0c\x0b\x0a\x0b\x0e"
 
@@ -71,16 +72,27 @@ def _plain_archive() -> bytes:
 def test_encrypted_unrecovered_key_is_not_reported_as_plaintext() -> None:
     img = _encrypted_no_key_archive()
     rep = disrobe.pyinstaller_extract(img)
-    raw = rep.raw
+    raw: dict[str, JsonValue] = json_object(rep.raw)
+    bare_pyc_paths: list[str] = []
+    for value in json_array(raw["bare_pyc_paths"]):
+        assert isinstance(value, str)
+        bare_pyc_paths.append(value)
+    encrypted_paths: list[str] = []
+    for value in json_array(raw["encrypted_unrecovered_paths"]):
+        assert isinstance(value, str)
+        encrypted_paths.append(value)
+    entries: list[dict[str, JsonValue]] = [
+        json_object(value) for value in json_array(raw["entries"])
+    ]
 
     assert rep.encrypted is True
     assert rep.encryption_key_present is False
     assert raw["content_recovered"] is False
 
-    assert "secret.pyc" not in raw["bare_pyc_paths"]
-    assert "secret.pyc" in raw["encrypted_unrecovered_paths"]
+    assert "secret.pyc" not in bare_pyc_paths
+    assert "secret.pyc" in encrypted_paths
 
-    secret = next(e for e in raw["entries"] if e["name"] == "secret")
+    secret: dict[str, JsonValue] = next(entry for entry in entries if entry["name"] == "secret")
     assert secret["decrypted"] is False
     assert secret["content_encrypted"] is True
 
@@ -98,14 +110,21 @@ def test_entry_bytes_refuses_to_return_ciphertext_as_recovered() -> None:
 def test_unencrypted_archive_still_reports_recovered_content() -> None:
     img = _plain_archive()
     rep = disrobe.pyinstaller_extract(img)
-    raw = rep.raw
+    raw: dict[str, JsonValue] = json_object(rep.raw)
+    bare_pyc_paths: list[str] = []
+    for value in json_array(raw["bare_pyc_paths"]):
+        assert isinstance(value, str)
+        bare_pyc_paths.append(value)
+    entries: list[dict[str, JsonValue]] = [
+        json_object(value) for value in json_array(raw["entries"])
+    ]
 
     assert rep.encrypted is False
     assert raw["content_recovered"] is True
-    assert "mod.pyc" in raw["bare_pyc_paths"]
+    assert "mod.pyc" in bare_pyc_paths
     assert raw["encrypted_unrecovered_paths"] == []
 
-    mod = next(e for e in raw["entries"] if e["name"] == "mod")
+    mod: dict[str, JsonValue] = next(entry for entry in entries if entry["name"] == "mod")
     assert mod["content_encrypted"] is False
 
     body = disrobe.pyinstaller_entry_bytes(img, "mod")

@@ -16,6 +16,7 @@ import struct
 import pytest
 
 import disrobe
+from json_values import JsonValue, json_array, json_object
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 SAMPLE_ELF = (FIXTURES / "sample.elf").read_bytes()
@@ -258,10 +259,11 @@ def test_flutter_engine_symbol_map_keeps_validated_identity_and_provenance() -> 
     assert isinstance(report, disrobe.FlutterEngineSymbols)
     assert report.identity == "b71885094a73117bf90d3cfa05824129"
     assert report.symbol_count == 1
-    assert report.raw["symbols"] == [
+    raw: dict[str, JsonValue] = json_object(report.raw)
+    assert raw["symbols"] == [
         {"address": 0, "name": "FlutterEngineExternal"}
     ]
-    assert report.raw["provenance"] == [
+    assert raw["provenance"] == [
         {
             "source": "analyst-map.json",
             "kind": "disrobe.flutter.engine-symbol-map",
@@ -296,8 +298,9 @@ def test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries(
     hit: disrobe.FlutterEngineSymbols = disrobe.flutter_engine_symbols(
         FLUTTER_AOT, cache_dir=cache_dir
     )
-    assert hit.raw["symbols"] == [{"address": 0, "name": "FlutterEngineExternal"}]
-    assert hit.raw["provenance"] == [
+    hit_raw: dict[str, JsonValue] = json_object(hit.raw)
+    assert hit_raw["symbols"] == [{"address": 0, "name": "FlutterEngineExternal"}]
+    assert hit_raw["provenance"] == [
         {
             "source": "cache",
             "kind": "disrobe.flutter.engine-symbol-cache",
@@ -316,7 +319,7 @@ def test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries(
         FLUTTER_AOT, cache_dir=cache_dir
     )
     assert mismatch.symbol_count == 0
-    assert mismatch.raw["provenance"] == []
+    assert json_object(mismatch.raw)["provenance"] == []
 
     record["identity"] = {
         "kind": "elf-build-id",
@@ -328,7 +331,7 @@ def test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries(
         FLUTTER_AOT, cache_dir=cache_dir
     )
     assert invalid.symbol_count == 0
-    assert invalid.raw["provenance"] == []
+    assert json_object(invalid.raw)["provenance"] == []
 
     record["symbols"] = [{"address": 0, "name": "FlutterEngineExternal"}]
     entry.write_text(json.dumps(record), encoding="utf-8")
@@ -336,7 +339,7 @@ def test_flutter_engine_symbol_cache_reuses_only_valid_exact_build_entries(
         FLUTTER_AOT, cache_dir=cache_dir, no_cache=True
     )
     assert no_cache.symbol_count == 0
-    assert no_cache.raw["provenance"] == []
+    assert json_object(no_cache.raw)["provenance"] == []
 
 
 def test_native_diff_and_sigmaker() -> None:
@@ -354,11 +357,15 @@ def test_native_match_returns_the_shared_bounded_report() -> None:
     assert report.pairs > 0
     assert report.shown == 4
     assert report.withheld > 0
-    assert report.raw["a"] == "a"
-    assert report.raw["b"] == "b"
+    raw: dict[str, JsonValue] = json_object(report.raw)
+    assert raw["a"] == "a"
+    assert raw["b"] == "b"
+    verdicts: list[dict[str, JsonValue]] = [
+        json_object(value) for value in json_array(raw["a_verdicts"])
+    ]
     assert all(
         row.get("counterpart") == row["subject"]
-        for row in report.raw["a_verdicts"]
+        for row in verdicts
         if "counterpart" in row
     )
 
@@ -445,6 +452,26 @@ def test_report_json_roundtrip() -> None:
     assert rebuilt.string_count == sr.string_count
     from_obj = disrobe.StringsReport.from_obj(sr.raw)
     assert from_obj.string_count == sr.string_count
+
+
+def test_report_json_boundary_preserves_arbitrary_values() -> None:
+    object_report: disrobe.DisasmPayload = disrobe.DisasmPayload.from_obj({})
+    array_report: disrobe.DisasmPayload = disrobe.DisasmPayload.from_json_str("[]")
+    llm_report: disrobe.PyDeobReport = disrobe.PyDeobReport.from_obj({"llm": {"unrelated": 1}})
+    nested_report: disrobe.DisasmPayload = disrobe.DisasmPayload.from_obj(
+        [object_report, {1: [object_report]}]
+    )
+
+    assert object_report.raw == {}
+    assert array_report.raw == []
+    assert llm_report.llm == {"unrelated": 1}
+    assert nested_report.raw == [{}, {"1": [{}]}]
+
+    code_object: disrobe.CodeObject = disrobe.CodeObject()
+    code_object.set_llm([{"kind": "list"}])
+    assert code_object.llm == [{"kind": "list"}]
+    code_object.set_llm("scalar")
+    assert code_object.llm == "scalar"
 
 
 def test_report_from_obj_rejects_recursive_container() -> None:

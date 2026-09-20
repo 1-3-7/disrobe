@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import disrobe
+from json_values import JsonValue, json_object
 
 UNTYPED_UNPACK: Callable[..., disrobe.PyarmorUnpack] = disrobe.pyarmor_unpack
 
@@ -49,8 +50,8 @@ def _payload() -> bytes:
     raise AssertionError(f"{WRAPPER} has no __pyarmor__ payload literal")
 
 
-def _static_fields(report: disrobe.PyarmorUnpack) -> dict[str, Any]:
-    raw: dict[str, Any] = report.raw
+def _static_fields(report: disrobe.PyarmorUnpack) -> dict[str, JsonValue]:
+    raw: dict[str, JsonValue] = json_object(report.raw)
     return {key: value for key, value in raw.items() if key != "llm"}
 
 
@@ -89,7 +90,7 @@ def test_pyarmor_unpack_with_the_matching_runtime_decrypts_the_payload() -> None
     legacy: disrobe.PyarmorUnpack = disrobe.pyarmor_unpack(
         wrapper_bytes=payload, runtime=runtime
     )
-    raw: dict[str, Any] = decrypted.raw
+    raw: dict[str, JsonValue] = json_object(decrypted.raw)
 
     assert decrypted.status == "functional"
     assert decrypted.plaintext_len is not None
