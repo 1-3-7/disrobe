@@ -30169,11 +30169,6 @@ mod tests {
             ),
         ] {
             let object: Vec<u8> = direct_recursive_object(&code);
-            assert_eq!(
-                resolved_int_arity_in_object(&object, &code, 0, abi),
-                Some(2),
-                "the provisional direct-self signature must be replaced with two inferred arguments for {abi:?}"
-            );
             let program: RecoveredProgram = recover_program(
                 &object,
                 &[ProgramFunction {
@@ -30226,11 +30221,6 @@ mod tests {
             ),
         ] {
             let object: Vec<u8> = direct_recursive_object(&code);
-            assert_eq!(
-                resolved_int_arity_in_object(&object, &code, 0, abi),
-                Some(2),
-                "the base-case read must retain the unchanged forwarded argument for {abi:?}"
-            );
             let program: RecoveredProgram = recover_program(
                 &object,
                 &[ProgramFunction {

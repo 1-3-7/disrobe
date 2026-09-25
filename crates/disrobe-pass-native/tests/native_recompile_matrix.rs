@@ -25,7 +25,8 @@ use disrobe_core::rng::seeded;
 use disrobe_ir::{Envelope, RawPayload, Rung, Sidecar, decode_raw, encode_raw};
 use disrobe_pass_native::{
     ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
-    RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
+    RecoveredProgram as LibRecoveredProgram, build_disasm_payload, function_spans, image_arch,
+    recover_program as lib_recover_program, text_section_window,
 };
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -536,6 +537,7 @@ struct MatrixRow {
     verdict: Verdict,
     seed: Option<u64>,
     teeth_confirmed: bool,
+    linked_functions_extracted: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -813,6 +815,7 @@ fn ledger_test_row(verdict: Verdict) -> MatrixRow {
         verdict,
         seed: Some(MASTER_SEED),
         teeth_confirmed: true,
+        linked_functions_extracted: None,
     }
 }
 
@@ -1011,25 +1014,29 @@ struct RecoveredProgram {
     tu: String,
     entry_params: usize,
     entry_return_width: u32,
+    function_count: usize,
 }
 
 enum RecoverOutcome {
     Ok(RecoveredProgram),
-    SoundRejected(String),
+    SoundRejected {
+        reason: String,
+        function_count: usize,
+    },
+    Prerequisite(String),
 }
 
-fn recover_shape(object: &[u8], shape: &ShapeCase, abi: PseudoAbi) -> RecoverOutcome {
-    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(shape.functions.len());
-    for &fname in shape.functions {
-        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, fname) else {
-            return RecoverOutcome::SoundRejected(format!("{fname} symbol not located in object"));
-        };
-        functions.push(ProgramFunction {
-            name: format!("rec_{fname}"),
-            address: base,
-            code,
-        });
-    }
+fn recover_shape(
+    object: &[u8],
+    shape: &ShapeCase,
+    abi: PseudoAbi,
+    linked_input: bool,
+) -> RecoverOutcome {
+    let functions: Vec<ProgramFunction> = match program_functions(object, shape, linked_input) {
+        Ok(functions) => functions,
+        Err(reason) => return RecoverOutcome::Prerequisite(reason),
+    };
+    let function_count: usize = functions.len();
     let result: LibRecoveredProgram = lib_recover_program(object, &functions, abi);
     if !result.unrecovered.is_empty() {
         let reasons: String = result
@@ -1038,7 +1045,10 @@ fn recover_shape(object: &[u8], shape: &ShapeCase, abi: PseudoAbi) -> RecoverOut
             .map(|u| format!("{}: {}", u.name, u.reason))
             .collect::<Vec<String>>()
             .join("; ");
-        return RecoverOutcome::SoundRejected(reasons);
+        return RecoverOutcome::SoundRejected {
+            reason: reasons,
+            function_count,
+        };
     }
     let mut tu: String = String::new();
     let mut entry_params: usize = 0;
@@ -1056,7 +1066,75 @@ fn recover_shape(object: &[u8], shape: &ShapeCase, abi: PseudoAbi) -> RecoverOut
         tu,
         entry_params,
         entry_return_width,
+        function_count,
     })
+}
+
+fn program_functions(
+    object: &[u8],
+    shape: &ShapeCase,
+    linked_input: bool,
+) -> Result<Vec<ProgramFunction>, String> {
+    let from_symbols: Option<Vec<ProgramFunction>> = shape
+        .functions
+        .iter()
+        .map(|&name: &&str| {
+            function_code(object, name).map(|(code, address): (Vec<u8>, u64)| ProgramFunction {
+                name: format!("rec_{name}"),
+                address,
+                code,
+            })
+        })
+        .collect();
+    if let Some(functions) = from_symbols {
+        return Ok(functions);
+    }
+    if !linked_input || !cfg!(windows) || !object.starts_with(b"MZ") {
+        return Err("input is missing a requested function symbol".to_owned());
+    }
+
+    let payload: disrobe_ir::payload::DisasmPayload = build_disasm_payload(object)
+        .map_err(|error| format!("build linked executable function inventory: {error}"))?;
+    let arch: disrobe_pass_native::Arch = image_arch(object)
+        .ok_or_else(|| "linked executable does not name a supported architecture".to_owned())?;
+    let spans: Vec<disrobe_pass_native::FunctionSpan> = function_spans(&payload, arch);
+    let (text_base, _, text): (u64, u32, &[u8]) = text_section_window(object)
+        .ok_or_else(|| "linked executable has no readable x86 text section".to_owned())?;
+    let mut functions: Vec<ProgramFunction> = Vec::with_capacity(shape.functions.len());
+    for &fname in shape.functions {
+        let span: &disrobe_pass_native::FunctionSpan = spans
+            .iter()
+            .find(|span| span.name == fname || span.name == format!("_{fname}"))
+            .ok_or_else(|| format!("{fname} symbol not located in linked executable"))?;
+        let start: usize = usize::try_from(
+            span.address
+                .checked_sub(text_base)
+                .ok_or_else(|| format!("{fname} span begins before the linked text section"))?,
+        )
+        .map_err(|_| format!("{fname} linked span start does not fit host indexing"))?;
+        let end: usize = usize::try_from(
+            span.end
+                .checked_sub(text_base)
+                .ok_or_else(|| format!("{fname} span ends before the linked text section"))?,
+        )
+        .map_err(|_| format!("{fname} linked span end does not fit host indexing"))?;
+        let code: Vec<u8> = text
+            .get(start..end)
+            .filter(|code: &&[u8]| !code.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "{fname} linked executable span {:#x}..{:#x} is outside its text section",
+                    span.address, span.end
+                )
+            })?
+            .to_vec();
+        functions.push(ProgramFunction {
+            name: format!("rec_{fname}"),
+            address: span.address,
+            code,
+        });
+    }
+    Ok(functions)
 }
 
 fn corrupt_every_return(tu: &str, fn_marker: &str) -> Option<String> {
@@ -1195,27 +1273,100 @@ fn link_executable_and_extract(
     let mut stub_flags: Vec<&str> = compile_flags(family, shape.permit_sibling_calls);
     stub_flags.push("-c");
     let stub_out: PathBuf = dir.join(format!("{tag}_stub.o"));
-    match compile_object_reasoned(
-        compiler,
-        opt,
-        &stub_flags,
-        "int main(void){ return 0; }\n",
-        &stub_out,
-    ) {
+    let stub_source: String = linked_stub_source(shape);
+    match compile_object_reasoned(compiler, opt, &stub_flags, &stub_source, &stub_out) {
         CompileOutcome::Object(_) => {}
         CompileOutcome::Rejected(reason) => return Err(format!("stub main compile: {reason}")),
     }
     let exe: PathBuf = dir.join(format!("{tag}.exe"));
-    match link_objects_to_exe(
-        compiler,
-        opt,
-        &[],
-        &[obj_path.as_path(), stub_out.as_path()],
-        &exe,
-    ) {
+    let link_inputs: [&Path; 2] = [obj_path.as_path(), stub_out.as_path()];
+    let mut link_extra: Vec<String> = Vec::new();
+    if cfg!(windows) {
+        if compiler_uses_msvc_linker(compiler)? {
+            let exports_path: PathBuf = dir.join(format!("{tag}_exports.def"));
+            let exports: String = linked_export_definition(shape);
+            std::fs::write(&exports_path, exports).map_err(|e: std::io::Error| {
+                format!(
+                    "write linked export definition {}: {e}",
+                    exports_path.display()
+                )
+            })?;
+            link_extra.push("-Xlinker".to_owned());
+            link_extra.push(format!("/DEF:{}", exports_path.display()));
+        } else {
+            link_extra.push("-Wl,--export-all-symbols".to_owned());
+        }
+    }
+    let link_extra: Vec<&str> = link_extra.iter().map(String::as_str).collect();
+    match link_objects_to_exe(compiler, opt, &link_extra, &link_inputs, &exe) {
         CompileOutcome::Object(bytes) => Ok(bytes),
         CompileOutcome::Rejected(reason) => Err(format!("link: {reason}")),
     }
+}
+
+fn compiler_uses_msvc_linker(compiler: &str) -> Result<bool, String> {
+    static TARGETS: Mutex<BTreeMap<String, Result<bool, String>>> = Mutex::new(BTreeMap::new());
+    let mut targets: std::sync::MutexGuard<'_, BTreeMap<String, Result<bool, String>>> = TARGETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    targets
+        .entry(compiler.to_owned())
+        .or_insert_with(|| {
+            let output: disrobe_core::subprocess::CapturedOutput =
+                disrobe_core::subprocess::run_captured(
+                    Path::new(compiler),
+                    &["-dumpmachine"],
+                    std::time::Duration::from_secs(5),
+                    4096,
+                )
+                .map_err(|error| format!("{compiler} target probe failed: {error}"))?
+                .ok_or_else(|| format!("{compiler} target probe timed out"))?;
+            if output.exit_code != Some(0) {
+                return Err(format!(
+                    "{compiler} target probe exited {:?}",
+                    output.exit_code
+                ));
+            }
+            let target: &str = std::str::from_utf8(&output.stdout)
+                .map_err(|error| format!("{compiler} target is not UTF-8: {error}"))?
+                .trim();
+            if target.ends_with("-windows-msvc") {
+                Ok(true)
+            } else if target.ends_with("-mingw32") || target.ends_with("-windows-gnu") {
+                Ok(false)
+            } else {
+                Err(format!(
+                    "{compiler} has unsupported PE linker target {target}"
+                ))
+            }
+        })
+        .clone()
+}
+
+fn linked_stub_source(shape: &ShapeCase) -> String {
+    let params: String = (0..shape.entry_arity)
+        .map(|_: usize| "long long")
+        .collect::<Vec<&str>>()
+        .join(", ");
+    let args: String = (0..shape.entry_arity)
+        .map(|_: usize| "0")
+        .collect::<Vec<&str>>()
+        .join(", ");
+    format!(
+        "extern long long {}({params});\nint main(void){{ return (int){}({args}); }}\n",
+        shape.entry, shape.entry
+    )
+}
+
+fn linked_export_definition(shape: &ShapeCase) -> String {
+    let names: String = shape
+        .functions
+        .iter()
+        .copied()
+        .chain(std::iter::once("main"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    format!("EXPORTS\n{names}\n")
 }
 
 fn link_sysv_executable_and_extract(
@@ -1293,6 +1444,7 @@ fn grade_row(task: &Task, row_seed: u64) -> MatrixRow {
         verdict: Verdict::NotGraded("ungraded".to_owned()),
         seed: Some(row_seed),
         teeth_confirmed: false,
+        linked_functions_extracted: None,
     };
 
     if let Err(reason) = recovery_producer {
@@ -1388,11 +1540,27 @@ fn grade_row(task: &Task, row_seed: u64) -> MatrixRow {
     };
     row.recovery_input_root = Some(*blake3::hash(&object_for_recovery).as_bytes());
 
+    let linked_input: bool = matches!(link_shape, LinkShape::LinkedExecutable);
     let recovered: RecoveredProgram =
-        match recover_shape(&object_for_recovery, shape, abi.as_pseudo()) {
-            RecoverOutcome::Ok(r) => r,
-            RecoverOutcome::SoundRejected(reason) => {
+        match recover_shape(&object_for_recovery, shape, abi.as_pseudo(), linked_input) {
+            RecoverOutcome::Ok(r) => {
+                if linked_input {
+                    row.linked_functions_extracted = Some(r.function_count);
+                }
+                r
+            }
+            RecoverOutcome::SoundRejected {
+                reason,
+                function_count,
+            } => {
+                if linked_input {
+                    row.linked_functions_extracted = Some(function_count);
+                }
                 row.verdict = Verdict::SoundRejected(reason);
+                return row;
+            }
+            RecoverOutcome::Prerequisite(reason) => {
+                row.verdict = Verdict::NotGraded(reason);
                 return row;
             }
         };
@@ -1528,6 +1696,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
             ),
             seed: None,
             teeth_confirmed: false,
+            linked_functions_extracted: None,
         });
     }
     not_graded.push(MatrixRow {
@@ -1547,6 +1716,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         ),
         seed: None,
         teeth_confirmed: false,
+        linked_functions_extracted: None,
     });
     let msvc_reason: String = msvc_probe_reason().unwrap_or_else(|| {
         "cl.exe is available but this GCC-attribute-based matrix has no MSVC source/flag adapter"
@@ -1566,6 +1736,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         verdict: Verdict::NotGraded(msvc_reason),
         seed: None,
         teeth_confirmed: false,
+        linked_functions_extracted: None,
     });
 
     let mut tasks: Vec<Task> = Vec::new();
@@ -1703,6 +1874,46 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         sysv_leaf.verdict
     );
     assert!(sysv_leaf.teeth_confirmed);
+
+    if cfg!(windows) {
+        let (_, ms_leaf, _): &(usize, MatrixRow, [u8; 32]) = graded
+            .iter()
+            .find(|(_, row, _)| {
+                row.shape == "leaf"
+                    && row.reference_compiler == "clang"
+                    && row.opt == "-O0"
+                    && row.abi == "ms_x64"
+                    && row.link_shape == "linked_executable"
+            })
+            .expect("the linked MS x64 regression requires clang on PATH");
+        assert!(
+            matches!(ms_leaf.verdict, Verdict::Equivalent),
+            "the linked MS x64 leaf must recover and match its native reference: {:?}",
+            ms_leaf.verdict
+        );
+        assert!(ms_leaf.teeth_confirmed);
+    }
+
+    let incomplete_linked_rows: Vec<String> = graded
+        .iter()
+        .filter_map(|(_, row, _): &(usize, MatrixRow, [u8; 32])| {
+            let expected_function_count: usize = SHAPES
+                .iter()
+                .find(|shape: &&ShapeCase| shape.shape_tag == row.shape)
+                .expect("every scheduled row names a declared shape")
+                .functions
+                .len();
+            (cfg!(windows)
+                && row.abi == "ms_x64"
+                && row.link_shape == LinkShape::LinkedExecutable.tag()
+                && row.linked_functions_extracted != Some(expected_function_count))
+            .then(|| row_key(row))
+        })
+        .collect();
+    assert!(
+        incomplete_linked_rows.is_empty(),
+        "every scheduled linked row must reach recovery with the complete requested function inventory: {incomplete_linked_rows:?}"
+    );
 
     let ledger_input: Vec<(MatrixRow, [u8; 32])> = graded
         .iter()
