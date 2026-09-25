@@ -1,5 +1,5 @@
-[committed]
-style = "none"
+style = "conventional"
+allowed_types = ["feat", "fix", "refactor", "perf", "test", "docs", "build", "ci", "chore", "style", "revert"]
 
 subject_length = 72
 line_length = 72
