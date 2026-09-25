@@ -71,7 +71,7 @@ fn every_github_yaml_parses() {
     }
 }
 
-fn tracked_yaml_under_github() -> BTreeSet<String> {
+fn tracked_under_github() -> BTreeSet<String> {
     let root: PathBuf = workspace_root();
     let output: std::process::Output = Command::new("git")
         .args(["ls-files", "-z", "--", ".github"])
@@ -89,14 +89,6 @@ fn tracked_yaml_under_github() -> BTreeSet<String> {
     let raw: String = String::from_utf8(output.stdout).expect("git ls-files output is utf-8");
     let tracked: BTreeSet<String> = raw
         .split('\0')
-        .filter(|entry: &&str| {
-            matches!(
-                Path::new(entry)
-                    .extension()
-                    .and_then(|s: &std::ffi::OsStr| s.to_str()),
-                Some("yml" | "yaml")
-            )
-        })
         .filter_map(|entry: &str| entry.strip_prefix(".github/"))
         .map(String::from)
         .collect();
@@ -106,6 +98,20 @@ fn tracked_yaml_under_github() -> BTreeSet<String> {
          trustworthy: {tracked:?}"
     );
     tracked
+}
+
+fn tracked_yaml_under_github() -> BTreeSet<String> {
+    tracked_under_github()
+        .into_iter()
+        .filter(|entry: &String| {
+            matches!(
+                Path::new(entry)
+                    .extension()
+                    .and_then(|s: &std::ffi::OsStr| s.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -129,20 +135,24 @@ fn github_yaml_set_is_exact() {
 
 #[test]
 fn no_pr_or_bot_automation_remains() {
-    let gone: [PathBuf; 7] = [
-        github_dir().join("PULL_REQUEST_TEMPLATE.md"),
-        github_dir().join("CODEOWNERS"),
-        github_dir().join("labeler.yml"),
-        github_dir().join("stale.yml"),
-        github_dir().join("dependabot.yml"),
-        github_dir().join("workflows").join("labeler.yml"),
-        github_dir().join("workflows").join("stale.yml"),
+    let gone: [&str; 7] = [
+        "pull_request_template.md",
+        "codeowners",
+        "labeler.yml",
+        "stale.yml",
+        "dependabot.yml",
+        "workflows/labeler.yml",
+        "workflows/stale.yml",
     ];
-    for path in &gone {
+    let tracked: BTreeSet<String> = tracked_under_github()
+        .iter()
+        .map(|entry: &String| entry.to_ascii_lowercase())
+        .collect();
+    for name in gone {
         assert!(
-            !path.exists(),
-            "{} must stay deleted: this repo takes direct pushes only, never PRs or bot automation",
-            path.display()
+            !tracked.contains(name),
+            ".github/{name} must stay deleted in every letter case: this repo takes direct \
+             pushes only, never PRs or bot automation"
         );
     }
 }
