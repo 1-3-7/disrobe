@@ -100,9 +100,10 @@ Test recovery against independently produced corpus artifacts and the upstream f
 
 ## Contributor license
 
-Keep pull requests focused. Use lowercase, specific commit subjects without `type:` prefixes,
-and a GitHub noreply address if you want to keep your email private. Preserve existing legal
-attribution; do not add unrelated authorship or co-author credits.
+Keep pull requests focused. Write each commit subject as a lowercase Conventional Commit with a
+module scope, such as `fix(pass-lua): bound constant pool reads`, and use a GitHub noreply address
+if you want to keep your email private. Preserve existing legal attribution; do not add unrelated
+authorship or co-author credits.
 
 Contributions are accepted only under the [Disrobe Contributor Assignment and License Agreement](https://github.com/1-3-7/disrobe/blob/main/CONTRIBUTING-LICENSE.md), which implements Section 6 of the [LICENSE](https://github.com/1-3-7/disrobe/blob/main/LICENSE). Before a pull request can be merged, post the complete acceptance statement from that agreement as a comment on the pull request, from the account that authored the commits it covers. Opening a pull request grants no rights in Disrobe beyond the LICENSE.
 

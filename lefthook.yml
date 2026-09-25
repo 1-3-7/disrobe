@@ -35,7 +35,7 @@ pre-commit:
 commit-msg:
   commands:
     committed:
-      run: committed {1}
+      run: committed --commit-file {1}
 
 pre-push:
   commands:
