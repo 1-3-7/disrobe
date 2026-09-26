@@ -28,11 +28,11 @@ Include a description and impact, a minimal reproducer (input bytes, command lin
 
 ## Hardening posture
 
-The default parsing path is Rust and keeps `unsafe` out of format decoders. Unsafe blocks are restricted to audited boundary code such as C interop, WASM exports, archive/io shims, build/install helpers, and native-loader interfaces. Strict clippy runs on every commit. `cargo deny` runs on every push plus weekly; `cargo audit` runs weekly. Shared container quota machinery, BLAKE3-pinned fixtures, loopback-default servers, and a warning banner on non-loopback binds backstop the runtime surface. Branch protection on `main` requires review, green CI, linear history, and no force-push.
+The format decoders are Rust without `unsafe`, but the parsing surface also links C libraries that decode untrusted bytes: Capstone, zlib, liblzma, and zstd. In shipped code, `unsafe` is confined to process containment in `disrobe-tool-process`, the PyArmor extension that `--allow-dynamic` loads, the WebAssembly exports and `getrandom` backend, one memory map, and one environment-variable call. CI runs strict clippy and `cargo deny` (RustSec advisories, bans, licenses, and sources) on every push to `main` and weekly. Shared container quota machinery, loopback-default servers, and a warning banner on non-loopback binds backstop the runtime surface.
 
 ## Verifying release artifacts
 
-Release binaries are signed with cosign keyless OIDC and recorded in the Rekor transparency log:
+Release binaries are signed with cosign keyless OIDC and recorded in the Rekor transparency log. For a Windows archive, replace `.tar.zst` with `.zip` in the command below:
 
 ```sh
 cosign verify-blob \
@@ -42,4 +42,4 @@ cosign verify-blob \
   disrobe-<version>-<target>.tar.zst
 ```
 
-Each binary is also built with `cargo auditable`, which embeds a dependency manifest readable with `cargo audit bin disrobe` (five of seven targets; the two cross-compiled Linux targets are a disclosed gap, see [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md#build-provenance-and-sbom)). A CycloneDX SBOM ships as a release asset. GitHub build-provenance attestations are verifiable with `gh attestation verify disrobe-<version>-<target>.tar.zst --repo 1-3-7/disrobe`. `.github/workflows/verify-release.yml` independently re-checks all of this against every published release.
+Release binaries are also built with `cargo auditable`, which embeds a dependency manifest readable with `cargo audit bin disrobe` (five of seven targets; the two cross-compiled Linux targets are a disclosed gap, see [SECURITY.md](https://github.com/1-3-7/disrobe/blob/main/SECURITY.md#build-provenance-and-sbom)). A CycloneDX SBOM ships as a release asset. GitHub build-provenance attestations are verifiable with `gh attestation verify disrobe-<version>-<target>.tar.zst --repo 1-3-7/disrobe`. `.github/workflows/verify-release.yml` re-checks a published release's checksums, cosign bundles, and attestations when run by manual dispatch; its `release: published` trigger does not fire for releases that `release.yml` publishes with the default `GITHUB_TOKEN`.
