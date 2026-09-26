@@ -1,0 +1,155 @@
+[[input]]
+id = "native-zig-elf"
+path = "corpus/native/zig/hello.zig.elf"
+
+[[input]]
+id = "py-pyinstaller"
+path = "corpus/python/freezers/pyinstaller/gauntlet/hello.exe"
+
+[[input]]
+id = "native-pe-large"
+path = "corpus/native/anti-analysis/large-benign-x86_64-pc-windows-msvc.exe"
+
+[[input]]
+id = "native-go-pe"
+path = "corpus/native/compilers/go/hello.go.exe"
+
+[[input]]
+id = "go-garble"
+path = "corpus/go/garble/gauntlet_garble.exe"
+
+[[input]]
+id = "py-nuitka-onefile"
+path = "corpus/python/nuitka/onefile/hello.exe"
+
+[[input]]
+id = "webview-tauri"
+path = "corpus/webview/tauri/wvfix.exe"
+
+[[input]]
+id = "js-jsfuck-7mb"
+path = "corpus/js/jsfuck/obfuscated.megafile.js"
+
+[[input]]
+id = "flutter-libapp"
+path = "corpus/mobile/flutter/disrobe_sample/libapp_arm64.so"
+
+[[input]]
+id = "dotnet-baseline"
+path = "corpus/dotnet/megafile/EdgeCases.baseline.dll"
+
+[[input]]
+id = "dotnet-nativeaot"
+path = "corpus/dotnet/megafile/EdgeCases.nativeaot.exe"
+
+[[input]]
+id = "py-obf-source"
+path = "corpus/python/obfuscators/python_obfuscator_pypi/real_application.py"
+
+[[input]]
+id = "installshield-cab"
+path = "corpus/binfmt/installshield/wireplay-sys1.cab"
+
+[[input]]
+id = "native-nim-elf"
+path = "corpus/native/nim/hello.nim.elf"
+
+[[input]]
+id = "js-turbopack"
+path = "corpus/js/turbopack/chunk-0d2m.q079kiji.js"
+
+[[input]]
+id = "js-jsconfuser-high"
+path = "corpus/js/jsconfuser/obfuscated.megafile.high.js"
+
+[[input]]
+id = "native-vm-guardian"
+path = "corpus/native/obfuscators/guardian-rs/sample.virtualized.exe"
+
+[[input]]
+id = "macho-fat"
+path = "corpus/mac/megafile/EdgeCases.fat"
+
+[[input]]
+id = "archive-rar3"
+path = "corpus/binfmt/rar/mixed-ppmd-lz-rar3.rar"
+subset = true
+
+[[input]]
+id = "dotnet-confuserex2"
+path = "corpus/dotnet/megafile/EdgeCases.confuserex2.dll"
+subset = true
+
+[[input]]
+id = "js-obfuscator-io"
+path = "corpus/js/javascript-obfuscator/obfuscated.megafile.js"
+subset = true
+
+[[input]]
+id = "ruby-yarv"
+path = "corpus/ruby/mri/yarv/edge_cases.rb.yarvc"
+
+[[input]]
+id = "native-upx-lzma"
+path = "corpus/native/packers/upx/hello.packed.lzma.exe"
+
+[[input]]
+id = "jvm-proguard-kt"
+path = "corpus/jvm/proguard/EdgeCasesKt-pg.jar"
+
+[[input]]
+id = "jvm-jar"
+path = "corpus/jvm/megafile/EdgeCases-baseline.jar"
+subset = true
+
+[[input]]
+id = "native-pe-small"
+path = "corpus/native/formats/hello.pe64.exe"
+subset = true
+
+[[input]]
+id = "py-pyc-314"
+path = "corpus/python/decompile/playground/__pycache__/edge_cases.cpython-314.pyc"
+subset = true
+
+[[input]]
+id = "lua-hercules"
+path = "corpus/lua/hercules/gauntlet/gauntlet_obfuscated.lua"
+
+[[input]]
+id = "jvm-dex"
+path = "corpus/jvm/dex/EdgeCases.dex"
+
+[[input]]
+id = "ps1-invoke-obf"
+path = "corpus/shell/powershell/invoke-obfuscation/encoding/edge_cases.ps1"
+
+[[input]]
+id = "vba-bas"
+path = "corpus/shell/vba/megafile/EdgeCases.bas"
+
+[[input]]
+id = "lua-54-bytecode"
+path = "corpus/lua/luac/edge_cases.5_4.luac"
+subset = true
+
+[[input]]
+id = "beam"
+path = "corpus/beam/megafile/edge_cases.beam"
+
+[[input]]
+id = "archive-iso"
+path = "corpus/binfmt/iso/joliet-rockridge.iso"
+
+[[input]]
+id = "wasm-blazor"
+path = "corpus/binfmt/blazor/Bz.belq8bx71h.wasm"
+subset = true
+
+[[input]]
+id = "swf-as3"
+path = "corpus/flash/avm2_disasm_oracle/opcode_breadth.swf"
+
+[[input]]
+id = "php-obf"
+path = "corpus/php/better-php-obfuscator/edge_cases.obf.php"

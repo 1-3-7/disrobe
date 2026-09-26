@@ -317,6 +317,11 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 
+[profile.ci]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.bench]
 inherits = "release"
 debug = true
