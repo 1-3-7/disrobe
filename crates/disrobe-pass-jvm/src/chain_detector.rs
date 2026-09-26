@@ -551,7 +551,7 @@ static CATALOG: [JvmCatalogEntry; CATALOG_COUNT] = [
         id: "jvm-stringer",
         display_name: "Stringer",
         aliases: &["stringer"],
-        quality: SupportQuality::Full,
+        quality: SupportQuality::Partial,
     },
     JvmCatalogEntry {
         key: JvmCatalogKey::Protector(Protector::DashO),
@@ -664,6 +664,15 @@ mod tests {
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(JvmDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn stringer_is_partial_because_committed_stringer_output_stays_detect_only() {
+        let entry: &JvmCatalogEntry = CATALOG
+            .iter()
+            .find(|entry: &&JvmCatalogEntry| entry.id == "jvm-stringer")
+            .expect("the catalog lists Stringer");
+        assert_eq!(entry.quality, SupportQuality::Partial);
     }
 
     #[test]
