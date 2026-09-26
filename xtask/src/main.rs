@@ -29,6 +29,7 @@ mod floors;
 mod fuzz_scope;
 mod fuzz_seeds;
 mod fuzz_surface;
+mod golden;
 mod graph_disjointness;
 mod graphs;
 mod health;
@@ -139,6 +140,10 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         json: bool,
     },
+    Golden {
+        #[command(subcommand)]
+        mode: GoldenMode,
+    },
     SetupHooks,
     #[cfg(feature = "playground")]
     Playground {
@@ -173,6 +178,7 @@ fn main() -> ExitCode {
         Cmd::Evidence { check, list } => run_evidence(check, list),
         Cmd::Prepush { full } => run_prepush(full),
         Cmd::Health { json } => run_health(json),
+        Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
         #[cfg(feature = "playground")]
         Cmd::Playground {
@@ -201,6 +207,75 @@ fn workspace_root() -> Result<PathBuf> {
 fn run_health(as_json: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     health::run(&root, as_json)
+}
+
+#[derive(Subcommand, Debug)]
+enum GoldenMode {
+    Record {
+        #[command(flatten)]
+        run: GoldenArgs,
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    Check {
+        #[command(flatten)]
+        run: GoldenArgs,
+        #[arg(long)]
+        against: Option<PathBuf>,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+struct GoldenArgs {
+    #[arg(long)]
+    bin: PathBuf,
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    #[arg(long)]
+    work: Option<PathBuf>,
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    subset: bool,
+    #[arg(long)]
+    only: Vec<String>,
+    #[arg(long)]
+    jobs: Option<usize>,
+    #[arg(long, default_value_t = 1800)]
+    timeout_secs: u64,
+}
+
+fn run_golden(mode: GoldenMode) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    match mode {
+        GoldenMode::Record { run, to } => {
+            let options: golden::RunOptions = golden_options(&root, run)?;
+            let to: PathBuf = absolute_path(&to.unwrap_or_else(|| root.join(golden::GOLDEN_PATH)))?;
+            golden::record(&root, &options, &to)
+        }
+        GoldenMode::Check { run, against } => {
+            let options: golden::RunOptions = golden_options(&root, run)?;
+            let against: PathBuf =
+                absolute_path(&against.unwrap_or_else(|| root.join(golden::GOLDEN_PATH)))?;
+            golden::check(&root, &options, &against)
+        }
+    }
+}
+
+fn golden_options(root: &Path, args: GoldenArgs) -> Result<golden::RunOptions> {
+    let target: PathBuf =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    Ok(golden::RunOptions {
+        bin: absolute_path(&args.bin)?,
+        repo: absolute_path(&args.repo.unwrap_or_else(|| root.to_path_buf()))?,
+        work: absolute_path(&args.work.unwrap_or_else(|| target.join("golden")))?,
+        subset: args.subset,
+        only: args.only,
+        jobs: args.jobs,
+        timeout: std::time::Duration::from_secs(args.timeout_secs),
+    })
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path).wrap_err_with(|| format!("resolving {}", path.display()))
 }
 
 fn run_bake_fixtures(dry_run: bool, edge_cases: bool) -> Result<()> {
