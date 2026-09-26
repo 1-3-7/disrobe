@@ -10,7 +10,7 @@ const MAX_SECURITY_MD_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_FUZZ_CARGO_TOML_BYTES: u64 = 64 * 1024;
 
 const FUZZING_SECTION_HEADING: &str = "## Fuzzing and panic-safety coverage";
-const ITEM1_START_MARKER: &str = "1. **Continuous coverage-guided fuzzing**";
+const ITEM1_START_MARKER: &str = "1. **Scheduled coverage-guided fuzzing**";
 const ITEM2_START_MARKER: &str = "2. **Property-based tests**";
 
 pub(crate) fn run(root: &Path) -> Result<()> {

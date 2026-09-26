@@ -33,10 +33,10 @@ If you want to disclose publicly after the fix ships, we credit you in the advis
 
 The reporting channel covers any issue in the `disrobe` source tree that affects an instance running locally or in a CI:
 
-- **Memory safety in the parsing surface.** `disrobe` is pure-Rust: `#![forbid(unsafe_code)]` is set on the parsing-surface crates, and the `unsafe` that exists is confined to interop boundaries. `crates/disrobe-pyarmor-cextract/` carries C-level pyo3 / libc interop behind explicit features, `crates/disrobe-wasm/` carries the WebAssembly C-ABI export shims, `crates/disrobe-ir/` has one audited memory-map, and the CLI install path has a single OS env-var call. Any panic / abort on adversarial input that is not a clean `Result::Err` is in scope. Any heap corruption is high severity.
+- **Memory safety in the parsing surface.** `disrobe`'s own crates are Rust, but the parsing surface also links C libraries that decode untrusted bytes: Capstone, zlib, liblzma, and zstd. Any panic / abort on adversarial input that is not a clean `Result::Err` is in scope. Any heap corruption is high severity.
 - **Resource exhaustion on adversarial input.** Zip-bombs, decompression bombs, container-recursion bombs, malformed-length-field bombs. `disrobe`'s binfmt layer (`crates/disrobe-binfmt/src/quota.rs`) enforces per-entry and aggregate quotas; bypasses are in scope.
 - **Path traversal.** zip-slip and equivalents on every container kind (zip, tar.{gz,bz2,xz,zst}, 7z, asar, cab, ar, deb, rpm, NSIS, InstallShield, Inno Setup, AppImage, Docker, OCI, Flatpak, Snap, squashfs, cramfs, ext4). Path-sanitization lives in `crates/disrobe-binfmt/src/quota.rs::sanitize_entry_path` and sibling functions.
-- **HTTP / gRPC server input handling.** `disrobe serve` (HTTP) and the gRPC surface accept `bytes_b64` only, never a filesystem path. Endpoints reject unknown JSON fields via `#[serde(deny_unknown_fields)]`. Any way to make the server read a file via a client-controlled string is high severity.
+- **HTTP / gRPC server input handling.** `disrobe serve` HTTP and WebSocket requests carry `bytes_b64`, and gRPC requests carry protobuf `bytes`, never a filesystem path. JSON endpoints reject unknown fields via `#[serde(deny_unknown_fields)]`. Any way to make the server read a file via a client-controlled string, or to make `serve --mcp` reach outside its workspace, is high severity.
 - **LSP-stdio input handling.** The `disrobe/analyze` LSP method also takes `bytes_b64` only with `deny_unknown_fields`. Same posture as HTTP.
 - **Subprocess invocation.** `disrobe install`, `disrobe doctor --auto-install`, and backends that wrap external tools (CFR, Vineflower, jadx, ILSpy, dnSpy, de4dot, Ghidra, Rizin, ...) construct command lines from configuration and sometimes from user input. Command injection or argument smuggling is in scope.
 - **`.dr` envelope handling.** `crates/disrobe-ir/src/envelope.rs` decodes a content-addressed binary format. Adversarial envelopes that cause read-past-end, integer overflow, or BLAKE3-mismatch acceptance are in scope.
@@ -51,20 +51,19 @@ The reporting channel covers any issue in the `disrobe` source tree that affects
 
 ## Hardening posture
 
-- `#![forbid(unsafe_code)]` is set crate-by-crate across the parsing surface; the `unsafe` that exists sits at interop boundaries: `disrobe-pyarmor-cextract` (C-level pyo3 / libc interop), `disrobe-wasm` (WASM C-ABI export shims), an audited memory-map in `disrobe-ir`, and one OS env-var call in the CLI install path.
-- Workspace clippy gate (`-D warnings -W unreachable_pub -W missing_debug_implementations -W unused`) is required for every commit on `main`.
-- `cargo deny check` (advisories / bans / licenses / sources) runs on every push and weekly on a cron via `EmbarkStudios/cargo-deny-action@v2`.
-- A dedicated `audit` job runs `cargo-deny check advisories` against the RustSec advisory database on the same triggers (every push to `main` and the weekly Monday 06:00 UTC cron).
-- All container extractors share the quota machinery in `crates/disrobe-binfmt/src/quota.rs`: per-entry size cap, aggregate size cap, recursion-depth cap, zip-slip path sanitization.
-- `corpus/native/packers/MANIFEST.toml` and sibling registries pin every fixture by BLAKE3; tests verify byte-identity before exercising the parser.
-- The HTTP / gRPC / LSP servers never read files from disk based on client input. Only `bytes_b64` is accepted; `#[serde(deny_unknown_fields)]` is enforced; non-loopback HTTP binds emit a `tracing::warn!` banner at startup.
-- Every subprocess invocation in the attack surface table below routes its wait and capture through one shared primitive, `disrobe-core::subprocess`. If a caller-set timeout expires, the primitive kills and reaps the child. A caller-set byte cap truncates captured stdout/stderr instead of buffering unbounded output from a hostile or malfunctioning external tool. A pipe read error is treated the same as clean EOF, so the process's real exit code and the output already captured survive instead of being discarded as an indistinguishable timeout. Argv goes through `Command`'s own non-shell argument list, never a shell string, so a path or argument containing shell metacharacters reaches the child literally.
+- Every crate in the parser table below sets `#![forbid(unsafe_code)]` except `disrobe-ir` (`deny`, allowing one memory map), `disrobe-pyarmor-cextract`, and the crates with no lint and no `unsafe` in their source: `disrobe-sleigh`, `disrobe-typerec`, and `disrobe-pyarmor-pytrace`. In shipped code, `unsafe` exists only in `disrobe-tool-process` (Win32 process, Job Object, pipe, and handle calls; Unix process-group calls), `disrobe-pyarmor-cextract` (a CPython extension that the `--allow-dynamic` PyArmor hook imports; it can patch `PyEval_EvalCode` in memory), `disrobe-wasm` (WebAssembly C-ABI export shims and a deterministic `getrandom` backend), that memory map, and one OS env-var call in the CLI install path. The CLI build script and some tests, which do not ship, also use `unsafe`.
+- CI runs the workspace clippy gate (`-D warnings -W unreachable_pub -W missing_debug_implementations -W unused`) on every push to `main`.
+- The CI `deny` job runs `cargo deny --all-features check` (RustSec advisories, bans, licenses, sources) on every push to `main` and weekly.
+- The binfmt container extractors share the quota machinery in `crates/disrobe-binfmt/src/quota.rs`: entry-count, per-entry, and aggregate caps and zip-slip path sanitization. `carve.rs` caps recursive carving depth. Other extractors, such as PyInstaller, PHAR, and BEAM EZ, apply their own caps.
+- Some corpus manifests, including `corpus/native/packers/MANIFEST.toml`, record SHA-256 digests; others record none. Packer tests check each committed fixture's size and CRC-32 against a registry before grading it.
+- The HTTP, WebSocket, gRPC, and LSP servers never read files from disk based on client input. `serve --mcp` reads a client-named file only inside its workspace root and writes only under `.disrobe/`. Non-loopback HTTP binds emit a `tracing::warn!` banner at startup.
+- Spawns in the attack surface table below, except `disrobe-tool-process` itself and the test-support `mock_proc.rs` and `isolate.rs`, wait through the direct-child helper in `disrobe-core::subprocess`. On timeout it kills and reaps only the direct child; its descendants keep running. It truncates captured stdout/stderr at a caller-set byte cap and treats a pipe read error as EOF. If a descendant keeps an output pipe open past a short grace period after the child exits, the helper returns no result, and callers report a timeout without the exit code. `run_captured` in the same module spawns through `disrobe-tool-process`, whose timeout ends the whole Job Object or process group. Arguments go to the child as an argument list, never a shell string, so a path or argument containing shell metacharacters reaches the child literally. The exception is a `.bat` or `.cmd` tool on Windows, which runs through `cmd.exe`; the standard library and `disrobe-tool-process` escape its arguments and refuse any they cannot escape.
 
 ## Fuzzing and panic-safety coverage
 
 Coverage-guided fuzzing, property tests, and panic-safety tests exercise different input populations. Only the first category supplies fuzzer coverage feedback.
 
-1. **Continuous coverage-guided fuzzing** uses `cargo-fuzz` / libFuzzer, with targets defined in `fuzz/Cargo.toml`.
+1. **Scheduled coverage-guided fuzzing** uses `cargo-fuzz` / libFuzzer, with targets defined in `fuzz/Cargo.toml`. `.github/workflows/fuzz.yml` runs each target for a fixed time, weekly and on manual dispatch.
 
     | Target | Scope and checked invariants |
     |---|---|
@@ -80,7 +79,7 @@ Coverage-guided fuzzing, property tests, and panic-safety tests exercise differe
     | `dr_envelope.rs` | Envelope, payload, and sidecar decoders; an encoded envelope decodes unchanged |
     | `nested_dispatch.rs` | Structured recursive container framing; a path hint cannot suppress a format detected without that hint |
 
-    `cargo run -p xtask -- fuzz-seeds` derives seeds and structural truncations from committed `corpus/` samples. Targets use AddressSanitizer, debug assertions, and overflow checks; scheduled campaigns also use libFuzzer fork mode. No undefined-behavior sanitizer run is claimed.
+    `cargo run -p xtask -- fuzz-seeds` derives seeds and structural truncations from committed `corpus/` samples; each campaign starts from them, and no corpus persists between campaigns. Targets use AddressSanitizer, debug assertions, and overflow checks; scheduled campaigns also use libFuzzer fork mode. No undefined-behavior sanitizer run is claimed.
 
     On-disk extraction (`extract_to`, `detect_and_extract_with_hint`, `carve_recursive`) is outside these fuzz targets. Deterministic resilience tests cover those paths separately.
 
@@ -100,7 +99,7 @@ Coverage-guided fuzzing, property tests, and panic-safety tests exercise differe
 
 3. **Ad-hoc panic-safety unit tests** feed selected or lightly randomized truncated, mutated, and malformed bytes to parsers and require a clean error instead of a panic. A name-based census finds approximately 55 files, depending on the patterns included: `*_never_panics`, `no_panic`, `panic_safety`, `fuzz_decode_*`, and resilience/adversarial/fuzz/malformed filenames. These tests provide no shrinking, accumulated corpus, or coverage feedback.
 
-Dedicated coverage remains absent for `disrobe-pass-py-deob`, `disrobe-pass-pyarmor`, `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, `disrobe-nir`, and `disrobe-nir-lift`: they have no dedicated fuzz target, proptest file, or resilience/never-panics test file. Python-obfuscator and PyArmor functional tests include scattered malformed-input assertions; these do not establish dedicated fuzzing coverage for the peelers, native interop, or cross-format lifters.
+Dedicated coverage remains absent for `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, and `disrobe-nir`: they have no dedicated fuzz target, proptest file, or resilience/never-panics test file. `disrobe-nir-lift` has none of these of its own, but the DEX/JVM, CIL, and wasm targets call its lifters directly. `disrobe-pass-py-deob` and `disrobe-pass-pyarmor` have resilience suites but no fuzz target.
 ## Plugin trust model
 
 WASM plugins run under explicit resource and import limits:
@@ -141,22 +140,22 @@ The tables list parser, subprocess, and network surfaces. The attack-surface che
 | Path | What it invokes |
 |---|---|
 | `crates/disrobe-binfmt/src/external_wrap.rs`, `crates/disrobe-core/src/bin/mock_proc.rs`, `crates/disrobe-tool-process/src/unix.rs` | Legacy direct-child execution, controlled fixtures and contained trusted-tool execution. `external_wrap.rs` must migrate before it can claim descendant containment. `mock_proc.rs` is the controlled process-tree fixture used by core tests. `disrobe-tool-process` owns bounded trusted-tool spawn, independent output capture, process containment and timeout cleanup. Unix tools join a new process group. Windows tools enter a Job Object before their primary thread resumes. |
-| `crates/disrobe-cli/src/cli/native.rs`, `crates/disrobe-cli/src/cli/nuitka.rs`, `crates/disrobe-pass-native/src/decompile.rs`, `crates/disrobe-pass-jvm/src/backends.rs` | Optional decompiler/analysis backends (Ghidra, CFR, Vineflower, jadx, ILSpy, dnSpy, de4dot, Rizin) selected with `--backend` |
+| `crates/disrobe-cli/src/cli/native.rs`, `crates/disrobe-cli/src/cli/nuitka.rs`, `crates/disrobe-pass-native/src/decompile.rs`, `crates/disrobe-pass-jvm/src/backends.rs` | Optional external decompilers (Ghidra, Rizin, CFR, Vineflower, Procyon, jadx, ...). For class and jar input, `jvm decompile` runs the first installed JVM decompiler unless `--backend` names an installed JVM decompiler (CFR, Vineflower, Procyon, JD, or Krakatau). `nuitka.rs` probes for a matching Python |
 | `crates/disrobe-cli/src/cli/install/mod.rs` | `disrobe install`'s package-manager / installer action execution, `sudo`-wrapped when the action is admin-required |
 | `crates/disrobe-cli/src/cli/doctor/mod.rs`, `crates/disrobe-cli/src/cli/bug_report.rs` | `disrobe doctor` / `disrobe bug-report` probing an installed tool's version banner |
 | `crates/disrobe-pass-nuitka/src/frozen.rs` (`verify_recompile`) | Spawns a Python interpreter at a caller-supplied path to check a recovered module recompiles |
-| `crates/disrobe-pass-pyarmor/src/dynamic_hook.rs` | `--allow-dynamic` PyArmor key extraction: spawns the located Python interpreter against the obfuscated wrapper under a generated helper script |
-| `crates/disrobe-testkit/src/isolate.rs` | Test-support only, and reachable from no shipped target: `disrobe-testkit` is `publish = false` and is consumed exclusively as a dev-dependency, so nothing in the release binary can call this. It re-executes the *running test binary* (`std::env::current_exe`) twice per stress run: once with `--list --ignored --exact <filter>` to prove the worker test exists before any case runs, and once per batch with that filter plus a batch-file path in an environment variable. Both spawns pass a fixed argv with no shell, take their program path from `current_exe` rather than any caller string, get a null stdin, and are killed on a wall-clock watchdog so a case that hangs cannot outlive its batch. |
+| `crates/disrobe-pass-pyarmor/src/dynamic_hook.rs` | `--allow-dynamic` PyArmor key extraction: spawns the located Python interpreter against the obfuscated wrapper under a generated helper script. The direct-child wait does not contain processes the sample starts |
+| `crates/disrobe-testkit/src/isolate.rs` | Test support only: `disrobe-testkit` is `publish = false` and only a dev-dependency, so no shipped target can call it. It re-executes the running test binary (`std::env::current_exe`) with a fixed argv, no shell, and a null stdin: once with `--list --ignored --exact <filter>` to confirm the worker test exists, then once per batch with a batch-file path in an environment variable. A wall-clock watchdog kills a hung batch worker. |
 
 `crates/disrobe-core/src/recon/git_history.rs`, `crates/disrobe-pass-native/src/pseudo_c.rs`, `crates/disrobe-pass-wasm-deob/src/structured.rs`, and `crates/disrobe-cli/src/cli/config_merge.rs` also call `std::process::Command`. Every call site found there sits inside a `#[cfg(test)]` module (test-only recompile-equivalence grading against a host `rustc`/`git`) and does not ship in the release binary. `crates/disrobe-pass-py-decompile/examples/decomp_one.rs` calls `Command` too. It is an `examples/` binary and is not part of any shipped target.
 
-`crates/disrobe-core/src/format/process.rs` uses the owned contained facade. `crates/disrobe-core/src/subprocess.rs` exposes the bounded legacy direct-child compatibility helper. These adapters do not call `Command::new`, so the inventory table does not list them as spawn sites.
+`crates/disrobe-core/src/format/process.rs` and `run_captured` in `crates/disrobe-core/src/subprocess.rs` spawn through `disrobe-tool-process`. `py decompile` uses `run_captured` to run Python for its recompile check unless `--no-roundtrip` is set, and `dotnet decompile` runs ILSpy, dnSpyEx, dnSpy, or de4dot through it: the tool `--backend` names if it is installed, otherwise the first installed in that order, each located through its `DISROBE_EXTERNAL_*` variable or `PATH`. These adapters do not call `Command::new`, so neither the attack-surface check nor the table covers them.
 
 **Network-capable code** (excluding dev/test-only dependencies):
 
 | Direction | Crate | Path |
 |---|---|---|
-| Inbound (server) | `disrobe-cli` | `disrobe serve`: HTTP via `axum` / `hyper`, gRPC via `tonic`. `bytes_b64`-only bodies, `deny_unknown_fields`, non-loopback bind warns at startup (Boundary 3 in the threat model). Gated behind the `serve` subcommand, not running by default. |
+| Inbound (server) | `disrobe-cli` | `disrobe serve`: HTTP and WebSocket via `axum` / `hyper`, gRPC via `tonic`. Inline-bytes requests, `deny_unknown_fields` on JSON, non-loopback bind warns at startup (Boundary 3 in the threat model). Gated behind the `serve` subcommand, not running by default. |
 | Outbound (client) | `disrobe-cli` | `crates/disrobe-cli/src/cli/install_deps.rs`: `reqwest` calls to fetch release metadata and download optional backend tools (e.g. Ghidra) during `disrobe install` / `disrobe doctor --auto-install`. Opt-in subcommands, not run implicitly. |
 | Outbound (client) | `disrobe-prowl` | OSINT / IOC harvester; queries public web archives and threat-intel feeds via `reqwest`. A dedicated, explicitly-invoked tool, not part of the default parsing path. |
 
@@ -166,12 +165,12 @@ None of the parser crates in the first table above link `reqwest`, `axum`, `hype
 
 - Identity hash: BLAKE3 (the workspace-pinned `blake3` crate).
 - Stream / file hashing: BLAKE3 incremental.
-- Symmetric: AES-CBC / AES-GCM via RustCrypto's `aes` / `aes-gcm` (used only inside specific parsers such as Confidential's swift-decrypt and AES-zip, never on our own envelope format, which is content-addressed not encrypted).
-- Asymmetric: WASM plugin signatures use [minisign](https://github.com/jedisct1/minisign) verification against an operator-supplied public key. The release pipeline signs artifacts with [cosign](https://github.com/sigstore/cosign) keyless OIDC.
+- Symmetric: ciphers including AES (CBC, CTR, CFB8, GCM), DES, 3DES, Blowfish, RC4, ChaCha20, ChaCha20-Poly1305, Salsa20, and the TEA family, from RustCrypto crates or small in-tree implementations. Specific parsers use them only to decrypt or identify protected input, such as PyArmor, SourceDefender, PyInstaller, .NET protector, and AES-zip payloads, never on our own envelope format, which is content-addressed not encrypted.
+- Asymmetric: WASM plugin signatures use [minisign](https://github.com/jedisct1/minisign) verification against an operator-supplied public key. The native pass verifies Authenticode signatures in PE input with RSA and ECDSA. The release pipeline signs artifacts with [cosign](https://github.com/sigstore/cosign) keyless OIDC.
 
 ## Sigstore transparency log
 
-Release artifacts published via the `release.yml` workflow are signed with cosign keyless. Every signature is recorded in the [Rekor public transparency log](https://search.sigstore.dev/). The bundle already carries both the certificate and the signature, so `--bundle` alone is enough to verify a downloaded binary. There is no separate `.sig` file. Verify with:
+Release artifacts published via the `release.yml` workflow are signed with cosign keyless. Every signature is recorded in the [Rekor public transparency log](https://search.sigstore.dev/). The bundle already carries both the certificate and the signature, so `--bundle` alone is enough to verify a downloaded binary. There is no separate `.sig` file. Windows archives use `.zip`, not `.tar.zst`. Verify with:
 
 ```sh
 cosign verify-blob \
@@ -203,7 +202,7 @@ Every release ships three additional pieces of supply-chain evidence beyond the 
 
 ## Independent release verification
 
-`.github/workflows/verify-release.yml` runs independently on `release: published`; `workflow_dispatch` with a `tag` rechecks an older release. With `contents: read` and no signing credentials, it downloads published assets and verifies each archive and the SBOM against `SHA256SUMS`, the cosign bundle, and GitHub build-provenance attestations. This checks the publicly downloadable bytes after publication.
+`.github/workflows/verify-release.yml` runs on `workflow_dispatch` with an optional `tag`. Its `release: published` trigger does not fire for releases that `release.yml` publishes with `GITHUB_TOKEN`. With `contents: read` and no signing credentials, it downloads published assets and verifies each archive and the SBOM against `SHA256SUMS`, the cosign bundle, and GitHub build-provenance attestations. This checks the publicly downloadable bytes after publication.
 
 ## Acknowledgments
 
@@ -215,7 +214,7 @@ This policy is published under the Disrobe Source-Available License, Version 1.1
 
 ### Dependency licenses
 
-`disrobe`'s own dependency-license policy lives in [`deny.toml`](deny.toml) under `[licenses]`: an explicit allowlist (Apache-2.0, MIT, BSD-2/3-Clause, ISC, Zlib, 0BSD, CC0-1.0, Unicode-3.0/DFS-2016, MPL-2.0, CDLA-Permissive-2.0, and LicenseRef-Disrobe-Source-Available-1.1 for disrobe's own crates), plus per-crate clarifications and exceptions for the handful of dependencies whose license metadata needs a manual pointer (`ring`, `libbz2-rs-sys`). This is enforced in CI on every push via `EmbarkStudios/cargo-deny-action`. To regenerate the full report yourself:
+`disrobe`'s own dependency-license policy lives in [`deny.toml`](deny.toml) under `[licenses]`: an explicit allowlist (Apache-2.0 with or without LLVM-exception, MIT, BSD-2/3-Clause, ISC, Zlib, 0BSD, CC0-1.0, Unicode-3.0/DFS-2016, MPL-2.0, CDLA-Permissive-2.0, and LicenseRef-Disrobe-Source-Available-1.1 for disrobe's own crates), plus per-crate clarifications and exceptions for the handful of dependencies whose license metadata needs a manual pointer (`ring`, `libbz2-rs-sys`). The CI `deny` job enforces it. To regenerate the full report yourself:
 
 ```sh
 cargo deny check licenses
@@ -225,7 +224,7 @@ That command lists every dependency's resolved license against the policy in `de
 
 ### Optional external backend tools
 
-`disrobe` can optionally invoke a small set of external decompiler/analysis tools as subprocesses when selected with `--backend` (see the attack surface inventory above, and the "Subprocess invocation" item under In scope). Each ships under its own license. This list is informational only, not a compatibility analysis:
+`disrobe` can optionally invoke a small set of external decompiler/analysis tools as subprocesses when selected with `--backend`; `jvm decompile` (class and jar input) also runs the first installed JVM decompiler unless `--backend` names an installed one, and `dotnet decompile` the first installed .NET decompiler unless `--backend` names an installed one (see the attack surface inventory above, and the "Subprocess invocation" item under In scope). Each ships under its own license. This list is informational only, not a compatibility analysis:
 
 | Tool | License (informational) |
 |---|---|
