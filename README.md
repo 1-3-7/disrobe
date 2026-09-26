@@ -1,496 +1,257 @@
 <img alt="disrobe: recover source, structure, and bytes from compiled software" src="docs/assets/social-card.png" width="1280">
 
-[Get started](#get-started) · [Supported inputs](#find-your-input) · [Automatic recovery](#automatic-recovery) · [Tool comparisons](#compare-tools) · [Evidence](#inspect-the-evidence) · [Documentation](https://1-3-7.github.io/disrobe/)
+# Disrobe
 
-# See the software underneath
+[![Latest release](https://img.shields.io/github/v/release/1-3-7/disrobe)](https://github.com/1-3-7/disrobe/releases/latest)
+[![Documentation](https://img.shields.io/badge/docs-1--3--7.github.io%2Fdisrobe-blue)](https://1-3-7.github.io/disrobe/)
+[![License: Disrobe Source-Available 1.1](https://img.shields.io/badge/license-source--available-red)](LICENSE)
 
-Disrobe is a Rust command-line suite for decompiling, deobfuscating, and unpacking software. Use it to triage an unknown file, recover code for reverse engineering, extract indicators for an investigation, or prepare artifacts for a disassembler.
+**Disrobe is a static decompiler, deobfuscator, and unpacker.** It strips packing and obfuscation from compiled software one layer at a time and recovers the source code or the original bytes underneath.
 
-Recover Python from bytecode and frozen applications, Java from classfiles and DEX, C# from CIL, JavaScript from bundles, Lua from custom virtual machines, and C or Rust from native code. Extract files from installers, firmware, mobile packages, and Electron, Tauri, or Wails applications. Keep recovered source, symbols, strings, types, and provenance together for further analysis.
+Give `disrobe auto` an executable, an app package, a script, or a firmware image. It names each layer (installer, archive, packer, freezer, protector, obfuscator, bytecode), removes it with the matching recovery pass, and runs again on what that pass produced until no pass recognizes what is left. One Rust binary covers Python, JavaScript and WebAssembly, Java and Android, .NET, native PE, ELF, and Mach-O code, Go, Lua, PHP, Ruby, Erlang and Elixir, ActionScript, shell scripts and Office macros, React Native and Flutter apps, installers, and firmware. `disrobe catalog` lists the <!-- m:catalog_family_total -->170<!-- /m --> packers, protectors, obfuscators, and bytecode families it recognizes across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems.
 
-The full build catalogs <!-- m:catalog_family_total -->170<!-- /m --> families across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems and detects <!-- m:containers_formats -->103<!-- /m --> container formats. `disrobe auto` identifies each layer, runs a matching pass, and follows recovered children into their own recovery paths. Dedicated commands expose finer controls, analysis reports, and optional backends. Recovery runs statically by default; source, structure, partial output, and missing-key boundaries remain distinguishable in the result.
+The engines are built in. Python bytecode decompiles without a Python installation, JavaScript recovery needs no Node.js, and the Java, Android, and .NET decompilers need no JVM or .NET SDK; with the default `--backend auto`, `jvm decompile` and `dotnet decompile` use an installed external decompiler first. Disrobe does not launch the program it analyzes unless you pass `--allow-dynamic`, which applies only to PyArmor v6 and v7. The [safety model](#safety-model) lists the bounded interpreters that evaluate code taken from an input and the host tools Disrobe starts.
 
-If Disrobe is useful to you, consider [starring the repository](https://github.com/1-3-7/disrobe).
+It is built for malware analysts, reverse engineers, incident responders, CTF players, and security researchers.
 
-## See it in action
+**License:** [Disrobe Source-Available License 1.1](LICENSE). Personal hobby projects and learning, unpaid independent security research, nonprofit education and research, and journalism are free, as the license defines them. Any use by or for a company requires a [paid license](COMMERCIAL.md).
 
-[![Disrobe CLI: unpack, recover, and inspect software](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/preview.gif)](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/walkthrough.mp4)
+[Quick start](#quick-start) · [What it recovers](#what-it-recovers) · [Measured results](#measured-results) · [How it works](#how-it-works) · [Safety model](#safety-model) · [Documentation](https://1-3-7.github.io/disrobe/)
 
-[Watch the full video](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/walkthrough.mp4) · [Read the transcript](https://1-3-7.github.io/disrobe/latest/assets/walkthrough/transcript.txt)
+## Quick start
 
-Twenty CLI commands in 2 minutes 12 seconds: unpack a native executable, recover Python and Lua, split JavaScript modules, restore source maps, inspect WebAssembly and Android resources, extract indicators, and preserve reports and artifact hashes. The final chapter shows project configuration, IDE setup, analyst annotations, and shell completions. The transcript includes the recorded build's complete command inventory; the [capability map](docs/src/capabilities.md) explains its support limits.
-
-## Get started
-
-Download the archive for your platform from [GitHub Releases](https://github.com/1-3-7/disrobe/releases), check it against the release's `SHA256SUMS`, and put `disrobe` on your `PATH`. Release archives include signature bundles; the [verification guide](docs/src/security.md#verifying-release-artifacts) explains how to inspect them.
-
-| Platform | Release targets |
-|---|---|
-| Windows | x86-64, ARM64 |
-| macOS | x86-64, ARM64 |
-| Linux | x86-64 and ARM64 with glibc; x86-64 with musl |
-
-Check the binary you installed:
+Download the archive for your platform from [GitHub Releases](https://github.com/1-3-7/disrobe/releases/latest), check it against `SHA256SUMS`, and put `disrobe` (`disrobe.exe` on Windows) on your `PATH`. Then run:
 
 ```sh
-disrobe --version
-disrobe --help
+disrobe identify suspect.exe                # compiler, packer, and protector, with evidence
+disrobe auto suspect.exe --out recovered/   # remove the layers Disrobe can recover
+disrobe context --out recovered/            # what each pass recovered, and at what confidence
 ```
 
-To build the CLI from a clone, install the repository's Rust toolchain and the [native build prerequisites](docs/src/installation.md), then run:
+Recorded output of `identify` and the unpacking step, run on a UPX-packed Rust program committed to this repository (`corpus/native/packers/upx/hello.packed.nrv2b.exe`):
+
+```text
+$ disrobe identify hello.packed.exe
+format: pe64 (64-bit) subsystem=windows-cui
+packer     UPX  (96%)  -> disrobe native unpack
+             - [section UPX0] UPX characteristic section
+             - [section UPX1] UPX characteristic section
+             - [section UPX2] UPX characteristic section
+             - [byte scan] UPX packer magic
+...
+
+$ disrobe native unpack hello.packed.exe --out recovered/hello.bin
+native unpack: OK
+  input:        hello.packed.exe
+  packer:       upx
+  status:       Implemented
+  packed_size:  53248
+  recovered:    116810 bytes
+  wrote:        recovered/hello.bin
+```
+
+The unpacking benchmark recovers the same file and compares it with the original build: the `.text` section is byte-identical, 73,160 bytes with no differences ([unpacking measurements](benches/native-unpack/results.md)).
+
+Release archives cover Windows (x86-64, ARM64), macOS (x86-64, ARM64), and Linux (x86-64 and ARM64 with glibc, static x86-64 with musl). Each archive has a separate cosign signature bundle, and [SECURITY.md](SECURITY.md#sigstore-transparency-log) explains the check. Building from source needs the Rust toolchain pinned in `rust-toolchain.toml` (1.96.1; the minimum supported version is 1.95) and a C toolchain for native dependencies:
 
 ```sh
+git clone https://github.com/1-3-7/disrobe
+cd disrobe
 cargo build --locked --release -p disrobe-cli --bin disrobe
 ```
 
-The executable is `target/release/disrobe`, or `target/release/disrobe.exe` on Windows. See the [installation guide](docs/src/installation.md#slim-build) for feature flags and slim builds.
+The [installation guide](docs/src/installation.md) covers feature flags and the optional external backends. Run `disrobe doctor` to probe 46 to 51 external tools depending on the platform and see which optional backends are installed.
 
-### Recover an application
+## What it recovers
 
-Start with an application, library, or package. Identify it, recover its recognized layers, then inspect the recovery summary:
+Each row names the formats Disrobe reads and the protection it removes. Where `disrobe catalog` lists a family, the level shown is the catalog's. Families named first are recovered. *Partial* families are peeled as far as the input allows, and the result names what is left. *Detect only* families are identified, and the result states why the rest cannot be recovered, usually because a key exists only at run time. A name in **bold** is graded on output of the real tool, committed to this repository; the other names are graded on samples written for the tests, or are only detected. Each ecosystem links to its guide.
 
-```sh
-disrobe identify path/to/application
-disrobe auto path/to/application --out recovered/ --capture-stages
-disrobe context --out recovered/
-```
-
-`identify` reports the format and available signals. `auto` extracts and recovers the recognized layers. `context` summarizes the resulting passes, confidence, and provenance. With `--capture-stages`, inspect each stage under `recovered/01-*/`, `recovered/02-*/`, and `recovered/final/`; `chain.json` records the topology and hashes, and `recovery.json` records outcomes and timings.
-
-Use a dedicated command when you know the output you need:
-
-```sh
-disrobe py decompile module.pyc --out python-source/
-disrobe js deob bundle.js --full --out readable.js
-disrobe native decompile application.exe --out native-source/
-disrobe native export packed.exe --format ghidra --out ghidra-input/
-disrobe webview desktop.exe --out frontend/
-```
-
-The native decompiler emits C by default on x86-64; `--format rust` selects Rust. AArch64, ARM32, and MIPS32 emit pseudo-C. `native export` rebuilds supported packed PE images for an external analysis tool; `webview` writes the recovered frontend asset tree without starting the application.
-
-### Try a small, inspectable artifact
-
-The repository includes [a tiny WebAssembly module](playground/public/samples/add.wasm) for the browser playground. From a clone, with the full CLI on your `PATH`:
-
-```sh
-disrobe wasm decompile playground/public/samples/add.wasm --target json --out add.summary.json
-disrobe wasm decompile playground/public/samples/add.wasm --target wat --out add.lifted.wat
-disrobe auto playground/public/samples/add.wasm --out recovered/ --capture-stages
-```
-
-The first command writes `add.summary.json`; the second writes WebAssembly text to `add.lifted.wat`. Automatic recovery
-selects an available chain and writes its artifacts under `recovered/`; `--capture-stages` retains
-intermediate results. These operations inspect the module without running its exported function.
-
-Inspect the recovered files alongside the report: identification alone does not establish recovery. Unsupported constructs, absent key material, and unavailable chains appear in the result. The [result guide](docs/src/reading-a-result.md) explains artifacts, diagnostics, partial outcomes, and provenance.
-
-[Open the browser playground](https://1-3-7.github.io/disrobe/playground/) · [Follow the quickstart](docs/src/quickstart.md)
-
-## Find your input
-
-**Recover** means a reachable path emits source, bytes, or structure. **Partial** means it recovers only part of that information. **Detect-only** means it identifies the family without recovering its protected body. These levels describe operations on supported inputs; a family name alone is not a guarantee that every version or configuration recovers. The lists below include the full family catalog and additional formats exposed by dedicated commands and extractors.
-
-| Input | Recovery and output | Commands and guide |
+| Ecosystem | Formats and bytecode | Packers, protectors, and obfuscators |
 |---|---|---|
-| Python | CPython 1.0 to 3.15 bytecode and marshal to source; PyPy, MicroPython `.mpy` v0 to v6, Jython, IronPython, and Brython disassembly; frozen payload extraction; Cython `.pyd`/`.so` names, signatures, and structural fallback | `py`, `pyinstaller`, `pyarmor`, `pyfreeze`, `nuitka` · [Python](docs/src/languages/python.md) |
-| JavaScript / TypeScript | Source deobfuscation, minification reversal, module splitting, source maps, V8 cached-data and packaged-runtime inspection | `js` · [JavaScript](docs/src/languages/javascript.md) |
-| WebAssembly | `.wasm` to WAT, Rust, TypeScript, C pseudo-source, or JSON; Component Model and GC type-graph inspection; supported obfuscation reversal | `wasm` · [WebAssembly](docs/src/languages/wasm.md) |
-| JVM / Android | `.class`, JAR, DEX, APK, AAB; Java source, Kotlin/Scala idioms, manifest and signing information, protector reports and mapping sidecars | `jvm`, `apk` · [JVM and Android](docs/src/languages/jvm-android.md) |
-| .NET | PE/CLR metadata and CIL to C#, F#, or VB pseudo-source; ReadyToRun and Native AOT inspection; single-file bundle extraction | `dotnet` · [.NET](docs/src/languages/dotnet.md) |
-| Native | PE32/PE64, EFI PE, ELF32/ELF64, kernel modules, thin/fat Mach-O, COFF, MZ, NE, LE, LX, and raw-code identification or analysis; source emission on the architecture-specific paths above | `native`, `macho`, `semdiff` · [Native](docs/src/languages/native.md), [decompile](docs/src/languages/native-decompile.md) |
-| Go | PE/ELF/Mach-O runtime metadata, stripped function and type names, `embed.FS` files, garble reports and recoverable literals | `go` · [Go](docs/src/languages/go.md) |
-| Swift / Objective-C | Mach-O classes, protocols, fields, selectors, demangled symbols; universal slices; dyld shared-cache dylibs | `swift`, `macho` · [Swift](docs/src/languages/swift.md) |
-| Lua | Lua 5.1 to 5.4, LuaJIT 2.0/2.1, Luau bytecode, Garry's Mod Lua (GLua); source and per-input fidelity reports; supported VM and string recovery | `lua` · [Lua](docs/src/languages/lua.md) |
-| PHP | Source/eval-chain peeling, literal-key decode loops and AES layers, Phar extraction, serialized `op_array` recovery; commercial encoder envelopes remain key-limited | `php` · [PHP](docs/src/languages/php.md) |
-| Ruby | MRI/YARV 2.6 to 3.4 InstructionSequence binaries and mruby RITE bytecode to Ruby; freezer and AOT classification | `ruby` · [Ruby](docs/src/languages/ruby.md) |
-| Erlang / Elixir | BEAM modules and EZ archives; surviving abstract code or `Dbgi` to source, Core Erlang fallback, instruction listing | `beam` · [BEAM](docs/src/languages/beam.md) |
-| ActionScript 3 | SWF FWS/CWS/ZWS `DoABC` blocks and raw ABC bytecode to disassembly and AS3 pseudocode | `as3` · [ActionScript](docs/src/languages/as3.md) |
-| Mobile runtimes | Hermes v60 to v96 header parsing, v62/v71/v74/v76/v83/v84/v89/v96 pseudo-JavaScript lift; Flutter Dart kernel source bodies; ARM64 AOT declarations, strings, and disassembly | `hermes`, `flutter`, `mobile` · [Mobile](docs/src/languages/mobile.md) |
-| Shell / documents | PowerShell, Bash, Batch, VBScript, WSH; VBA3/5/6/7 p-code and stomping; Office macro source, BIFF8/BIFF12 XLM formulas, PDF embedded scripts/actions | `shell` · [Shell and documents](docs/src/languages/shell.md) |
-| Other language artifacts | Perl op-trees/bytecode, R RDS and Rcpp metadata, Tcl starkits, Haxe JS/SWF/HashLink/Neko outputs; Nim, Zig, Crystal, and D fingerprints, symbols, and partial structure | `auto`, library APIs · [Script languages](docs/src/languages/shell.md), [native](docs/src/languages/native.md) |
-| Python pickle | Protocol disassembly, symbolic trace, reconstruction, and classification without calling pickle reducers | `pickle` · [Pickle](docs/src/languages/pickle.md) |
-| Archives / firmware / frontends | The complete container list below; Electron ASAR, Tauri v1/v2 embedded maps, Wails v2 `embed.FS` trees | `extract`, `webview`, `auto` · [Containers](docs/src/languages/containers.md), [webview](docs/src/languages/webview.md) |
+| [Python](docs/src/languages/python.md) | CPython 3.8 to 3.15 `.pyc` and marshal data; PyPy 3.9 and 3.10; MicroPython `.mpy`; Jython; IronPython; Brython; Cython modules. Freezers: **PyInstaller** onefile (onedir and encrypted PYZ are read too), **Nuitka** (onefile, standalone, module), **shiv**, **Briefcase**, cx_Freeze, py2exe, pex, and PyOxidizer (experimental) | **PyArmor** v8 and v9, **SourceDefender** v15 and earlier, and source obfuscators (<!-- m:py_source_obfuscators -->20<!-- /m --> schemes, counting the partial ones and both pyobfuscate.com schemes): **Berserker**, **BlankOBF**, **Kramer/Specter**, **Manglify**, **ObfuXtreme**, **Patchwork**, **PlusOBF**, **pyminifier**, **pyobfuscate.com**, **PyObfuscator**, Jawbreaker, Oxyry, Wodx, Xindex, pyc-zipper, the online obfuscator family. *Partial:* PyArmor v6 and v7, **python-obfuscator**, pyobfus, Pypacker. *Detect only:* PyArmor v3 to v5; SourceDefender v16, whose key exists only at run time |
+| [JavaScript and TypeScript](docs/src/languages/javascript.md) | Minified and obfuscated source; bundles from **webpack**, **Vite**, **Rollup** (including its SystemJS format), **esbuild**, **Parcel**, **Bun**, Turbopack, Browserify, and Rolldown; source maps; V8 cached data (`.jsc`, bytenode) from Node 18, 20, 22, and 24; Node SEA, nexe, nw.js; Electron ASAR; **Tauri** and **Wails** apps ([webview guide](docs/src/languages/webview.md)); Deno `eszip` | **obfuscator.io** (javascript-obfuscator), **JS-Confuser**, **aaencode**, **jjencode**, JSFuck, Dean Edwards Packer, JSFiretruck. *Partial:* **Jscrambler**, **jsobfu**; JSDefender and Arxan (Digital.ai) static transforms, only with `--i-have-authorization`. *Detect only:* PACE |
+| [WebAssembly](docs/src/languages/wasm.md) | `.wasm` to WAT, Rust, TypeScript, C, or a JSON summary; Component Model; GC types | *Partial:* Jscrambler WASM, Wobfuscator, wasm-mixer; Tigress (through Emscripten) and wasm-name-obfuscator, detected and classified |
+| [Java and Android](docs/src/languages/jvm-android.md) | `.class` files from Java 1.1 to 25, JAR, DEX 035 to 039, APK, AAB, APKM, XAPK, ODEX, single-DEX OAT; `AndroidManifest.xml`, `resources.arsc`, APK signatures v2 to v4; Kotlin metadata | **Allatori**, **BlackObfuscator**, Zelix KlassMaster (ZKM), DashO, DexGuard. *Partial:* **ProGuard** and **R8** (names from `mapping.txt`), **yGuard**, SkidSuite2 and **Skidfuscator** (number obfuscation), JBCO, Stringer (the committed Stringer output is detected, not decrypted). *Detect only:* runtime markers of Promon SHIELD, Appdome, Zimperium, Guardsquare, and DexProtector; 360 Jiagu, SecNeo (Bangcle), and other packers that decrypt the DEX at start-up |
+| [.NET](docs/src/languages/dotnet.md) | Assemblies to C#, F#, or VB pseudo-source; ReadyToRun; Native AOT; single-file bundles | <!-- m:dotnet_protectors -->23<!-- /m --> protectors: **ConfuserEx2**, **KoiVM** (ConfuserEx VM), Eazfuscator.NET. *Partial:* **ConfuserEx**, **Obfuscar**, **BitMono**, .NET Reactor, SmartAssembly, CryptoObfuscator, Skater, Spices.Net, Agile.NET, ArmDot, Babel, DeepSea, Dotfuscator (and CE), Goliath, DotNetPatcher, NetCryptor. *Detect only:* ILProtector, MaxToCode, Themida (.NET wrapper) |
+| [Native code](docs/src/languages/native.md) | PE32 and PE64, EFI, ELF, Mach-O (thin and fat), COFF, MZ, NE, LE, LX. C pseudo-source from x86-64, AArch64, ARM32, and MIPS32, and Rust for pure integer leaf functions on x86-64 ([decompiler](docs/src/languages/native-decompile.md)); 32-bit x86 disassembly. Symbols and language structures of Rust, C++, Delphi, Nim, Zig, Crystal, and D binaries; DWARF, PDB, and STABS debug data | <!-- m:native_catalog_entries -->27<!-- /m --> packers and protectors ([unpacking](docs/src/languages/native-unpack.md)): **UPX**, **MPRESS**, **FSG**, **NSPack**, **Petite**, **kkrunchy**, **ASPack**, **PECompact**, **MEW**, sRDI, Yoda's Crypter (with the original image). *Partial:* Donut, ASProtect, Morphine, NeoLite, nPack, PolyCryptor, Warzone Crypter. *Detect only:* VMProtect, Themida and WinLicense, Enigma Protector, Obsidium, Armadillo, PELock, PE-Protector, Yoda's Protector. Obfuscation: **OLLVM** flattening, bogus control flow, and instruction substitution; mixed boolean-arithmetic (MBA) expressions; **guardian-rs** virtualization; **obfuscxx** strings; Tigress flattening. *Detect only:* **obfus.h**, **Cryptify** (rust-obfuscator), **obfusheader.h**, AutoIt scripts |
+| [Go](docs/src/languages/go.md) | Go binaries for Windows, Linux, and macOS, go1.15 to go1.26: function names, types, module data, BuildInfo, `embed.FS` files | **garble**: literals recovered on x86-64; standard-library names that garble leaves unhashed are kept, and hashed names stay hashed, because reversing them needs the build seed |
+| [Lua](docs/src/languages/lua.md) | Lua 5.1 to 5.4, LuaJIT 2.1, Luau, and Garry's Mod Lua (GLua) bytecode | **IronBrew2**. *Partial:* **Prometheus**, **WeAreDevs**, **luaobfuscator.com**, Hercules, MoonSec V1 to V3, PSU, AztupBrew, Boronide, DarkSec, SLua. *Detect only:* Luraph |
+| [PHP](docs/src/languages/php.md) | Source, `eval` chains (base64, gzinflate, rot13, XOR) whose keys are literals in the file, Phar archives | Better PHP Obfuscator, **YAK Pro** (yakpro-po), FOPO. *Detect only:* ionCube, SourceGuardian, Zend Guard |
+| [Ruby](docs/src/languages/ruby.md) | YARV instruction sequences (opcode tables for Ruby 2.6 to 3.4), mruby RITE bytecode | *Partial:* OCRA, RubyScript2Exe. *Detect only:* JRuby, TruffleRuby |
+| [Erlang and Elixir](docs/src/languages/beam.md) | `.beam` modules and EZ archives, to Erlang, Elixir, or Core Erlang | None |
+| [ActionScript 3](docs/src/languages/as3.md) | SWF (FWS, CWS, ZWS) and ABC bytecode | *Detect only:* secureSWF, DoSWF, Kindi, Irrfuscator, swfLock |
+| [Shell and Office](docs/src/languages/shell.md) | PowerShell, Bash, Batch; VBA p-code (VBA5, VBA6, and VBA7); Excel 4.0 (XLM) macros in BIFF8 and BIFF12; PDF JavaScript, launch actions, and embedded files; Perl, R, Tcl, Haxe, and Windows Script Host (identified) | Invoke-Obfuscation (token, AST, string, encoding, compress), **Invoke-Stealth**, **Chameleon**, PowerHell, psobf, **Bashfuscator**, **node-bash-obfuscate**, Bash `IFS` and `eval` indirection, Batch `%random%` and `set` indirection, VBA stomping. *Partial:* Invoke-Obfuscation launcher, ISESteroids |
+| [Mobile apps](docs/src/languages/mobile.md) | React Native Hermes bytecode (lifted for eight HBC versions from v62 to v96); Flutter Dart kernel; Flutter `libapp.so` AOT snapshots (declarations and ARM64 disassembly for Dart 3.12.2, structure for other versions); React Native, Cordova, Capacitor, NativeScript, and Xamarin or .NET MAUI packages | None |
+| [Swift and Objective-C](docs/src/languages/swift.md) | Mach-O Swift and Objective-C metadata (class dump, demangling), fat binaries, dyld shared caches (tested on a synthetic cache; `auto` reads split caches, `macho dyldcache` only the named file) | **SwiftShield**, given its rename map |
+| [Pickle and model files](docs/src/languages/pickle.md) | Pickle protocols 0 to 5; PyTorch, TorchScript, and NumPy files that embed pickles; pickle polyglots | Malicious pickles: `pickle safety` traces reducer calls without running them and matches dangerous callables. A benign verdict means that no known pattern matched |
+| [Installers, archives, firmware](docs/src/languages/containers.md) | <!-- m:containers_formats -->103<!-- /m --> container formats, among them ZIP, 7z, RAR, CAB, MSI, NSIS, **Inno Setup**, InstallShield, Squirrel, DMG, PKG, DEB, RPM, AppImage, Snap, Flatpak, MSIX, ISO, VHD, VHDX, WIM, SquashFS, ext4, JFFS2, UBI, YAFFS2, Android sparse images, Docker and OCI images, UEFI firmware volumes, and vendor firmware such as Netgear CHK and TRX | Inno Setup extraction is byte-exact on official 4.0.9, 4.1.6, 6.3.3, and 7.1.0 installers; encrypted installers are refused. LUKS1 volumes open with an `aes-cbc-plain` raw volume key |
 
-<details>
-<summary><strong>Python: every named freezer, protector, and source obfuscator</strong></summary>
+## Measured results
 
-| Family or format | Support and prerequisite |
-|---|---|
-| PyInstaller 2.x to 6.20+ | Recover embedded archives and bytecode, including supported AES-CTR/CFB layers |
-| Nuitka onefile, standalone, module, wheel | Extract onefile payloads; recover symbols and Python-visible structure from compiled forms |
-| cx_Freeze, py2exe, shiv, pex, Briefcase | Packager extraction through `pyfreeze`; the command remains experimental |
-| PyOxidizer | Experimental, unvalidated extraction |
-| SourceDefender `.pye` | Static decryption through `py sourcedefender` and `sourcedefender.decrypt` |
-| PyArmor v3 (legacy DES), PyArmor v4 (legacy mixed), PyArmor v5 (legacy AES) | Detect-only: RSA-wrapped key boundary |
-| PyArmor v6, PyArmor v7 | Partial static recovery; super mode and unavailable keys restrict output |
-| PyArmor v8, PyArmor v9 / 9-Pro | Static wrapper recovery where key material is available. The published <!-- m:pyarmor_frac -->72 / 72<!-- /m --> result counts complete root `CodeObject` decoding only for named v8/v9 default-trial wrappers; it does not establish source equivalence or cover registered-license/pro, BCC, or super mode |
-| Kramer / Specter, Berserker, BlankOBF, PlusOBF, Wodx, pyobfuscate.com, pyobfuscate.com (2026 XOR/lambda), PyObfuscator (mauricelambert), Manglify, Oxyry, pyminifier, online obfuscator family, Xindex, Patchwork, pyc-zipper | Static source/loader recovery through the AST evaluator; individual layers and residuals are reported |
-| Jawbreaker, ObfuXtreme | Recover the body present in the artifact; runtime-fetched payloads remain absent |
-| python-obfuscator (PyPI), pyobfus, Pypacker | Partial wrapper peeling and classification |
+Most figures below come from a committed test that compares Disrobe's output with an independent reference: a compiler, a runtime, a verifier, the original file, or another tool's output. Rows graded `coverage-self-reported` count Disrobe's own output. The populations are small and named, so a figure describes its population and not every input of its kind. CI last measured the push and weekly rows at commit `d9bb5f59`, in runs whose only failures were the `graphs` job and the macOS and Windows shards of one test group. The latest release, v0.10.6, predates some of these figures, so build from source to reproduce one. The [evidence records](evidence/results/EVIDENCE.md) give the fixtures, reference, and reproduction command for each figure that has a descriptor.
 
-PyArmor can need the matching runtime file beside the wrapper. Its dedicated BCC path requires `--allow-bcc` and emits static native lifts plus Python skeletons for modeled bodies; path-aware automatic recovery can publish the same BCC artifacts. Only the PyArmor v6/v7 dynamic hook executes sample code, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools. [Version and mode details](docs/src/languages/python.md#pyarmor).
+The grades: `strong` means an independent reference could have rejected the output (execution, byte identity, a verifier, or an external tool); `recompile-only` means a real compiler accepted the output, with no behavioural check; `coverage-self-reported` means the count comes from Disrobe's own counters. In the **Runs** column, push is every push to `main`, weekly is the scheduled weekly run and release tags, and local means that no CI job provisions the input, so the committed test re-measures the figure where it runs.
 
-</details>
+**Python decompilation, per interpreter.** Each interpreter compiles the same pinned list of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> standard-library modules. A code object counts when the recovered source recompiles to the same normalized opcode structure. Jump targets and most operands are not compared, and modules an interpreter does not ship leave its denominator, so the rows are not a ranking.
 
-<details>
-<summary><strong>JavaScript, WebAssembly, and packaged web applications</strong></summary>
+| Interpreter | Modules | Matching code objects | Rate | Grade | Runs |
+|---|---|---|---|---|---|
+| CPython 3.8.20 | 154 | 4,508 of 5,088 | 88.60% | `recompile-only` | weekly |
+| CPython 3.9.25 | 157 | 4,935 of 5,233 | 94.30% | `recompile-only` | weekly |
+| CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | <!-- m:py_band_310_frac -->5229 / 5458<!-- /m --> | <!-- m:py_band_310_rate -->95.80%<!-- /m --> | `recompile-only` | push |
+| CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5442 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->96.52%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | <!-- m:py_band_312_frac -->5420 / 5659<!-- /m --> | <!-- m:py_band_312_rate -->95.77%<!-- /m --> | `recompile-only` | push |
+| CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | <!-- m:py_band_313_frac -->5732 / 5966<!-- /m --> | <!-- m:py_band_313_rate -->96.07%<!-- /m --> | `recompile-only` | push |
+| CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> | <!-- m:py_stdlib_pinned_count -->6077 of 6286<!-- /m --> | <!-- m:py_stdlib_pinned_pct -->96.67%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | <!-- m:py_band_315_frac -->6227 / 6480<!-- /m --> | <!-- m:py_band_315_rate -->96.09%<!-- /m --> | `recompile-only` | weekly |
 
-| Family or format | Support and route |
-|---|---|
-| obfuscator.io / javascript-obfuscator, JS-Confuser | Recover supported string arrays, dispatcher/control-flow transforms, opaque predicates, and loader layers; direct commands and `js.deob` |
-| Jscrambler, js-obfuscator (jsobfu) | Partial template and static-transform recovery |
-| JSFuck, aaencode, jjencode, JSFiretruck, Dean Edwards Packer | Static decoding through dedicated operations and recognized chain routes |
-| JSDefender, Arxan / Digital.ai | Detection and partial static-transform peeling; protected commercial-JS operations require the command's authorization option |
-| PACE | Detect-only |
-| webpack 4, webpack 5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Parcel, Browserify, SystemJS; AMD modules | Direct unbundling/module recovery. The chain dispatches webpack and Vite; catalog markers for other bundlers do not by themselves make those routes automatic |
-| bytenode `.jsc`, Node SEA, nexe, nw.js | Packaged V8 data inspection/carving; Node SEA and bytenode have explicit chain branches |
-| Electron ASAR, Tauri v1/v2, Wails v2 | Recover embedded frontend trees; Electron/Tauri use `webview.carve`, Wails uses `go.classify`; direct `webview` handles all three |
-| Bun standalone, Deno eszip v2 to v2.3 / `deno compile` | Recover embedded module graphs through the respective container readers; eszip also exposes a direct Rust reader |
-| Wobfuscator, Jscrambler WASM, wasm-mixer / Wasmixer | Partial reversal of supported transforms through `wasm.deob`; tool-shaped fixtures grade the transforms, with no committed output from those obfuscators themselves |
-| Tigress → Emscripten, wasm-name-obfuscator | Detect and classify; the Tigress helper is outside the `wasm deob` run path, and destroyed original names remain unavailable |
+A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m --> core modules gives <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> matching code objects (<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->, local). [Pinned result](evidence/results/py-stdlib-recompile.md) · [Full-population result](evidence/results/py-stdlib-full.md).
 
-[JavaScript routes](docs/src/languages/javascript.md) · [Wasm limits](docs/src/languages/wasm.md) · [Embedded frontend layouts](docs/src/languages/webview.md).
+**Other ecosystems.**
 
-</details>
-
-<details>
-<summary><strong>Native packers, protectors, and obfuscation families</strong></summary>
-
-| Family | Support and route |
-|---|---|
-| Donut, sRDI | Recover the embedded module from supported shellcode-loader layouts |
-| UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy | Implemented unpack routines, reachable through `native unpack` and the packer chain; fidelity varies by family and specimen |
-| ASProtect, Morphine, nPack, NeoLite, PolyCryptor, Warzone Crypter | `StubEvalPending`: emulator behavior has spec-built stub evidence; real vendor-packed recovery is unvalidated and no unpack dispatch is advertised |
-| Yoda's Protector, VMProtect, Themida / WinLicense | CLI and auto detect-only. Separate Rust helpers expose original-assisted carving or protected-section recovery; they do not establish whole-program devirtualization |
-| PE-Protector, PELock, Enigma Protector, Armadillo, Obsidium, WinLicense | Detect-only |
-| DotNetPatcher, NetCryptor | Delegate the managed layer to the .NET pass |
-| OLLVM flattening, bogus control flow, instruction substitution; Tigress CFF | Supported static deobfuscation transforms and reports through the native Rust APIs; applicable analysis appears in native recovery reports |
-| Alcatraz, Emotet CFF, Mirai, Dridex, Trickbot, obfus.h, Cryptify (rust-obfuscator), guardian-rs, obfusheader.h, obfuscxx, Amice | Named native obfuscation signatures; individual string/control-flow helpers have narrower recovery than the complete detected family |
-
-Native analysis also recovers Rust/C++ symbols, C++ RTTI and vtables, Delphi/C++Builder object models and DFM resources, DWARF/PDB/STABS information, imports, call graphs, crypto signatures, and FLIRT matches. Instruction analysis spans x86, ARM, RISC-V, MIPS, PowerPC, SPARC, eBPF, and AVR; source emission is the smaller architecture set listed above. [Native analysis](docs/src/languages/native.md) · [Unpacking and byte-recovery evidence](docs/src/languages/native-unpack.md) · [Deobfuscation](docs/src/anti-analysis.md).
-
-</details>
-
-<details>
-<summary><strong>JVM, Android, .NET, and mobile package families</strong></summary>
-
-| Family | Support and prerequisite |
-|---|---|
-| Zelix KlassMaster, Allatori, Stringer, DashO | String recovery for supported patterns, followed by classfile decompilation |
-| DexGuard | Detection, structural peeling, and in-class string-decrypt emulation for supported keyed constants |
-| BlackObfuscator | DEX dispatcher recognition and block-order annotation |
-| ProGuard / R8 | Mapping replay to a name-restoration sidecar; original names require `mapping.txt` |
-| yGuard, SkidSuite2, JBCO | Detect-only |
-| Promon SHIELD, Guardsquare DexGuard RASP, Guardsquare ThreatCast, Appdome, OneSpan, Arxan / Digital.ai, Zimperium zShield, Licel DexProtector | Android RASP identification and structural reports |
-| ConfuserEx2 | Real-sample constant recovery and control-flow deflattening; encrypted resources can retain a runtime-key boundary |
-| Eazfuscator.NET | Model-graded string decryption and VM lifting; the VM fixture comes from an in-repository virtualizer, not the shipping product |
-| KoiVM (ConfuserEx VM) | Virtualized bodies lifted to CIL on committed real-tool output |
-| ConfuserEx, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, DotNetPatcher, NetCryptor, BitMono | Detection and family-specific partial recovery: names, strings, resources, or method structures. BitMono is in the protector detector beyond the 22-entry .NET chain catalog |
-| Themida (.NET wrapper), ILProtector, MaxToCode | Detect-only for native-loader-keyed bodies |
-| React Native APK, React Native IPA; React Native Hermes bytecode | Extract JS/Hermes payloads and route supported bytecode into the Hermes lift |
-| Flutter Dart kernel; Flutter AOT snapshot (`libapp.so`) | Kernel source-table recovery; AOT declarations, metadata, and ARM64 disassembly. Snapshot version and available names constrain recovery |
-| Xamarin / .NET MAUI APK, Apache Cordova APK, Capacitor APK, NativeScript APK | Runtime identification and supported package/member extraction |
-| Android APK (`classes.dex`), Android app bundle (AAB / APKM / XAPK), IPA | Package inspection and child extraction; downstream recovery depends on the embedded runtime |
-
-The .NET string decoders for SmartAssembly, Spices.Net, Skater, .NET Reactor, Eazfuscator.NET, and CryptoObfuscator are graded on modeled algorithms, not committed vendor-produced assemblies. ConfuserEx2, Obfuscar, and BitMono have real protected-assembly evidence. [JVM/Android](docs/src/languages/jvm-android.md) · [.NET](docs/src/languages/dotnet.md) · [Mobile](docs/src/languages/mobile.md).
-
-</details>
-
-<details>
-<summary><strong>Lua, PHP, shell, Ruby, BEAM, Swift, Go, and ActionScript families</strong></summary>
-
-| Family | Support and prerequisite |
-|---|---|
-| IronBrew2 | VM recovery, execution-differentially checked on real 2.7.0 standard and MAX output |
-| Prometheus | Partial recovery, including supported stacked `Vmify` dispatch trees |
-| MoonSec V1, MoonSec V2, MoonSec V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs LuaU, luaobfuscator.com, SLua (Unity Lua 5.3), Hercules | Partial Lua recovery; MoonSec-shape VM evidence uses a synthetic bootstrap |
-| Luraph | Detect-only |
-| Luau bytecode, Garry's Mod Lua (GLua) | Dialect recognition; Luau lifting and partial GLua recovery |
-| ionCube, SourceGuardian, Zend Guard | Commercial PHP envelope detection; loader-resident keys remain a boundary. Legacy static-key cases can yield partial `op_array` structure |
-| FOPO, Better PHP Obfuscator | Static PHP eval-chain peeling, with literal-key requirements for encrypted layers |
-| Invoke-Obfuscation (token), Invoke-Obfuscation (AST), Invoke-Obfuscation (string), Invoke-Obfuscation (encoding), Invoke-Obfuscation (compress); Invoke-Stealth, PowerHell, Chameleon, psobf | Static PowerShell recovery |
-| Invoke-Obfuscation (launcher), ISESteroids | Partial PowerShell recovery |
-| Bashfuscator (token), Bashfuscator (string), Bashfuscator (obfuscate), Bashfuscator (compress); Bash indirection (IFS/eval); node-bash-obfuscate (chunk-table eval) | Static Bash recovery |
-| Batch obfuscation (`%random%`), Batch obfuscation (set indirection); VBA macro (p-code decompile + stomping) | Batch peeling and VBA source/p-code recovery |
-| YARV InstructionSequence (compiled `.rb`), mruby RITE bytecode | Ruby source recovery |
-| OCRA self-extracting executable, RubyScript2Exe package | Partial freezer classification/recovery |
-| JRuby compiled class, TruffleRuby native image | Detect-only through the Ruby catalog |
-| BEAM file (Erlang / Elixir compiled module), EZ archive (ZIP-wrapped `.beam` modules) | Module extraction, source/debug-chunk recovery, or Core Erlang fallback |
-| garble | Go metadata and supported literals; original name hashing cannot be reversed without the missing seed |
-| Mach-O Swift / Objective-C metadata, Mach-O fat (universal) binary, dyld shared cache | Runtime metadata, slice and dylib recovery |
-| SwiftShield | Mapping parser; the mapping must be supplied to recover original names |
-| SWF (Flash, FWS/CWS/ZWS) DoABC, raw ABC bytecode | Disassembly and method-body pseudocode |
-| secureSWF, DoSWF, Kindi, Irrfuscator, swfLock | Detect-only |
-
-[Family catalog](docs/src/catalog.md) · [Lua](docs/src/languages/lua.md) · [PHP](docs/src/languages/php.md) · [Shell](docs/src/languages/shell.md) · [Ruby](docs/src/languages/ruby.md) · [BEAM](docs/src/languages/beam.md) · [Go](docs/src/languages/go.md) · [Swift](docs/src/languages/swift.md) · [AS3](docs/src/languages/as3.md).
-
-</details>
-
-<details>
-<summary><strong>All 103 registered container formats</strong></summary>
-
-| Category | Formats |
-|---|---|
-| General archives | ZIP, TAR, tar.gz, tar.bz2, tar.xz, tar.zst, 7z, RAR, CAB, CPIO, ar, ARJ, ARC, LZH, LZO/lzop, uzip, Xamarin xalz, PAR2, StuffIt |
-| Application and language archives | JAR, WAR, APK, XPI, WHL, EGG, CRX, NUPKG, VSIX, PYZ, Electron ASAR |
-| Installers and application images | PKG, DMG, DEB, RPM, AppImage, Snap, Flatpak, MSIX/APPX, MSI, NSIS, Squirrel, Inno Setup, InstallShield, Enigma Virtual Box |
-| Filesystems and filesystem streams | SquashFS, cramfs, ext4, romfs, MinixFS, Android sparse, btrfs-send, EROFS, JFFS2, NTFS, UBI/UBIFS, YAFFS2, QNX, partclone |
-| Disk and deployment images | ISO, OCI, Docker image, VHD, VHDX, WIM, GPT, MBR, FAT12/16/32 |
-| Compression streams | XZ, gzip, bzip2, zstd, LZMA, lzip, LZ4, zlib, Unix compress (`.Z`) |
-| Embedded application data | Bun standalone, UnityFS, .NET single-file bundle |
-| Firmware | D-Link SHRS, ENCRPTED_IMG, alpha v1, alpha v2, DEAFBEAD, FPKG; EnGenius; Autel ECC; QNAP; Netgear CHK, TRX v1, TRX v2; Xiaomi HDR1, HDR2; Tesla SBFH; HP BDL, IPKG; Moxa FRM; INSTAR BNEG, HD; Airoha; UEFI firmware volume |
-| Memory and encrypted volumes | Windows minidump, LUKS1 |
-
-The roster declares detection for every entry. Of those routes, 102 use the generic extractor; <!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> have committed inputs that reach member bytes, DMG has detection-only committed evidence, and 59 have no committed input. LUKS1 is graded separately against plaintext and requires an `aes-cbc-plain` raw volume key for decryption; without one it reports the key boundary. Individual compression methods, encrypted members, split volumes, and filesystem features have narrower limits. StuffIt 5 currently returns the archive blob through extraction even though its fork decoders exist. Airoha OTP-AES content is carved verbatim.
-
-Additional Rust readers expose Deno eszip, Apple APFS/HFS+, ELF appended overlays, and Blazor WebCIL structures; they are not extra entries in the 103-format count. [Extraction routes, method versions, and limits](docs/src/languages/containers.md) · [Container registry](crates/disrobe-binfmt/src/container.rs).
-
-</details>
-
-## Automatic recovery
-
-`auto` chooses a pass from the compiled registry, runs it, then re-identifies its output and extracted children. It stops at the confidence threshold, a repeated content hash, or the depth limit (eight by default). Reports and source files tagged as terminal remain outputs rather than being fed back into detection. The following table accounts for every pass registered by a full build; a slim build can omit feature-gated rows.
-
-| Input layer | Registered pass IDs | Automatic output | Dedicated controls or prerequisite |
-|---|---|---|---|
-| Archives, installers, firmware, volumes | `binfmt.container` | Extracted children, followed recursively into language/native passes | `extract` for member reports and the explicit LUKS1 raw-key option |
-| PyInstaller | `pyinstaller.extract` | Embedded members and `.pyc` children | `pyinstaller extract` for archive-specific options |
-| Python freezers | `pyfreeze.extract`, `nuitka.extract` | Extracted payloads or supported compiled-package structure | Experimental `pyfreeze`; Nuitka flavor determines what survives |
-| Protected Python | `pyarmor.unpack`, `sourcedefender.decrypt` | Available plaintext/bytecode, metadata, or key-boundary reports | Matching runtime/key material; dedicated PyArmor mode and strictness options |
-| Python source and bytecode | `py.deob`, `py.decompile`, `py.disasm` | Peeled source, decompiled source, or instruction trace | `py decompile --emit source,disasm,ast`; a matching interpreter is needed for recompilation checks |
-| Pickle | `pickle.classify` | Symbolic analysis and classification | `pickle` for the individual inspection/reconstruction operations |
-| JavaScript | `js.deob` | Supported deobfuscation, webpack/Vite module recovery, Node SEA/bytenode handling | `js unbundle` exposes the broader bundler set; source maps and rename options are direct controls |
-| WebAssembly | `wasm.deob` | Recovered or lifted WAT plus detection, summary, and recovery sidecars | `wasm decompile --target` chooses Rust, TypeScript, C, WAT, or JSON |
-| Electron / Tauri | `webview.carve` | Embedded frontend members | `webview` also supports Wails; automatic Wails recovery uses `go.classify` |
-| PHP / Phar | `php.peel` | Peeled source, `op_array` output, archive children, residual/key reports | Keys and IVs must be statically available for encrypted layers |
-| JVM / DEX | `jvm.classify` | Java source, protector and recovery manifests, class/archive children | `jvm`/`apk` for mapping, signatures, and optional external backends |
-| .NET | `dotnet.classify` | C# and analysis, recovered constants/resources/CIL, or Native AOT metadata | `dotnet` for other source formats and installed rendering backends |
-| Mobile packages / bytecode | `mobile.classify` | Runtime/member extraction, Hermes lift, Dart kernel source or AOT reports | `hermes`, `flutter`, `mobile` for format-specific controls |
-| Lua | `lua.deob` | Recovered Lua and dialect/fidelity sidecars | `lua` for explicit family and output controls |
-| Shell / Office / PDF | `shell.deob` | Peeled scripts, macro source/p-code, XLM and document reports | `shell` for document-specific operations |
-| Ruby | `ruby.classify` | Analysis plus recovered YARV/mruby source where available | `ruby` for flavor-specific reports; JRuby/TruffleRuby classification is not Ruby source recovery |
-| BEAM / EZ | `beam.classify` | Erlang/Elixir/Core Erlang, disassembly, archive children | Surviving debug chunks determine source fidelity |
-| SWF / ABC | `as3.classify` | ABC structure, instruction listings, AS3 pseudocode | Named commercial obfuscators remain detect-only |
-| Go | `go.classify` | Symbols, types, garble analysis, and embedded filesystem members | `go` for DWARF, BuildInfo, and other dedicated reports |
-| Swift / Objective-C | `swift-objc.classify` | Metadata, universal slices, and shared-cache dylibs | Sibling sub-cache/symbol files may be needed; direct `swift`/`macho` controls |
-| Native packers | `native.packer-unpack` | Available unpacked image or embedded module, symbols, signatures, recovery reports | Only implemented packer dispatches unpack; commercial VM tiers can stop at detection |
-| Native images | `native.image-classify` | Identity, symbols, signatures, findings, and a bounded x86-64/AArch64 pseudo-source report | `native decompile` selects a full source-output command; ARM32/MIPS32 source paths are direct |
-| Windows / OS/2 NE | `native.ne-structure` | Segments, entries, imports, and resources | Structural recovery rather than source decompilation |
-| Perl / R / Tcl / Haxe / WSH | `scriptlang.classify` | Language reports, recovered structures, and supported child artifacts | Per-format library APIs expose finer operations |
-| Nim / Zig / Crystal / D | `nativelang.classify` | Language fingerprints, symbols, and partial native structure | Classification requires sufficient surviving language markers |
-
-For example, a recognized PyInstaller application can progress through `pyinstaller.extract` → `pyarmor.unpack` → `py.decompile`; an APK through member extraction → DEX → Java; and a packed native image through unpacking → language or image analysis. Each arrow depends on what that particular layer actually yields.
-
-```sh
-disrobe passes
-disrobe catalog python --json
-disrobe auto input-directory/ --out recovered/ --batch-max-depth 6 --capture-stages
-disrobe chain module.pyc --chain py.decompile --out python-source/
-```
-
-`scan`, `frisk`, `taint`, `vulnmatch`, explicit source-target selection, mapping replay, and optional external-backend invocation remain dedicated operations. [Pass registry](crates/disrobe-passes/src/lib.rs) · [Chain selection and output layout](docs/src/chain.md).
-
-### Analyze and export the result
-
-| Task | Commands | Output or next step |
-|---|---|---|
-| Find indicators, secrets, and static findings | `scan`, `frisk`, `strings`, `ioc`, `indicators`, `behavior` | [Findings and offsets](docs/src/frisk.md) |
-| Inspect functions, flows, and behavior | `query`, `capabilities`, `taint`, `vulnmatch` | [Queryable IR](docs/src/query.md), ATT&CK/MBC mappings and source-to-sink reports |
-| Keep annotations and structured artifacts | `annot`, `rename`, `envelope`, `verify`, `yara` | [Artifact envelopes](docs/src/envelope.md) and analyst state |
-| Follow provenance and compare runs | `chain`, `context`, `status`, `report`, `diff`, `guard`, `semdiff` | [Reports](docs/src/cli/report.md), hashes, and recovery differences |
-| Collect public network data | `prowl` | [Explicit network collection](docs/src/forensics-safety.md), separate from offline recovery |
-
-The [capability map](docs/src/capabilities.md) covers command groups and integrations. Its
-[machine-readable inventory](evidence/capabilities.json) links source, tests, documentation, support
-status, and demos. The [CLI reference](docs/src/cli/reference.md) covers nested commands;
-[global flags](docs/src/cli/global-flags.md) cover shared options. Use `disrobe <command> --help`
-for the interface of your installed build.
-
-Project and service commands are also indexed there: `serve`, `plugin`, `init`, `config`, `catalog`, `passes`, `doctor`, `install`, `install-deps`, `self-update`, `completions`, `man`, `explain`, and `bug-report`. Use `doctor` to probe 46 to 51 external tools depending on the platform and identify missing optional backends.
-
-## Use the same recovery in your workflow
-
-| Surface | Entry point | Guide |
-|---|---|---|
-| Rust | Shared core types and individual pass crates | [Library APIs](docs/src/library.md) |
-| Python | Typed bindings through `import disrobe` | [Python bindings](docs/src/python-bindings.md) |
-| HTTP, gRPC, and LSP | `disrobe serve` | [Service](docs/src/cli/serve.md) |
-| Model Context Protocol | `disrobe-mcp` or `disrobe serve --mcp` | [MCP integration](docs/src/integrations/mcp.md) |
-| Editors and analysis tools | VS Code, IDA Pro, Ghidra, Binary Ninja | [Editor integrations](docs/src/integrations/editor-plugins.md) |
-| GitHub Actions | Repository action and SARIF output | [GitHub Action](docs/src/integrations/github-action.md) |
-| Local commit checks | Hook ID `disrobe` | [pre-commit](docs/src/integrations/pre-commit.md) |
-| Browser | Client-side Wasm worker | [Playground](docs/src/playground.md) |
-| Project context for coding tools | `disrobe init --ide` | [Metadata sidecar](docs/src/llm-sidecar.md) |
-
-## Compare tools
-
-The table maps each recovery task to Disrobe’s commands and related tools. Installed decompilers and exported artifacts provide the integration points shown below.
-
-| Recovery task | Named tools | Disrobe's path | How to choose or combine them |
-|---|---|---|---|
-| Python bytecode to source | pycdc, PyLingual, uncompyle6, decompyle3 | In-process CPython 1.0 to 3.15 decompiler, nested code-object recovery, source/disassembly/AST output | Inspect recovered source, disassembly, and AST from the built-in Python decompiler |
-| Frozen Python extraction | pyinstxtractor-ng, pydecipher | PyInstaller, Nuitka, and freezer extraction followed by bytecode recovery | `auto` can continue from the extracted member through a protector and into the Python decompiler |
-| PyArmor | Pyarmor-Static-Unpack-1shot | Static wrapper/runtime recovery, mode reports, optional static BCC lifting | Supply the matching runtime to recover wrapper data and inspect mode-specific results |
-| Pickle inspection | fickling, Python `pickletools` | Instruction trace, symbolic reducers, classification, and value reconstruction | Inspect without executing reducers; `pickletools` grades inspection, and CPython checks reconstruction on 470 generated fixtures |
-| JavaScript deobfuscation | webcrack, synchrony, REstringer | obfuscator.io, JS-Confuser, supported Jscrambler patterns, esoteric decoders, constant/control-flow recovery | Use `js deob` for explicit options or `auto` when JS is inside a package |
-| JS unbundling and source maps | wakaru, webcrack, sourcemapper | Module extraction, source-map handling, scope-aware renaming, packaged V8 inspection | `js unbundle` exposes more bundler routes than automatic chain dispatch |
-| WebAssembly | WABT `wasm-decompile`, Binaryen | WAT and C/Rust/TypeScript pseudo-source, JSON summaries, supported obfuscation reversal | Inspect a selected source target; wasmtime execution checks below grade recovered behavior independently |
-| JVM source | CFR, Vineflower, Procyon, Fernflower | Native classfile recovery plus protector/string handling | `jvm decompile` writes Disrobe artifacts alongside output from an installed backend; CFR has a measured compile-yield result below |
-| Android packages and DEX | JADX, apktool, androguard, dex2jar | In-process Dalvik recovery, APK metadata/signatures, runtime extraction, Java output | DEX/APK decompilation defaults to the native path; an Android backend is selected explicitly. JADX has a measured leg below |
-| .NET assemblies | ILSpy, dnSpy, dnSpyEx, de4dot | CIL recovery plus protector-specific constants, resources, VM bodies, and Native AOT metadata | `dotnet decompile` writes Disrobe CIL output alongside an installed renderer; `--backend auto` selects ILSpy, dnSpyEx, dnSpy, or de4dot |
-| Native decompilation | Ghidra, IDA, Binary Ninja | In-process x86-64 C/Rust and AArch64/ARM32/MIPS32 pseudo-C; recovered symbol/type reports | Select Ghidra headlessly with `--backend ghidra`, or use editor integrations and exported symbols in an interactive analysis session |
-| Packed native executables | `upx -d`, unipacker, Detect It Easy | Implemented unpackers and bounded stub emulation, rebuilt PE images, embedded loader modules | Export recovered PE images into Ghidra/IDA. The Ghidra measurements below compare the packed and rebuilt inputs |
-| Native obfuscation | Ghidra, IDA, Binary Ninja and deobfuscation scripts | OLLVM/Tigress transforms, MBA simplification, stack strings, native metadata and recovery reports | Select the relevant native operation/API; a VM-protector fingerprint alone does not imply body recovery |
-| Go metadata and garble | GoReSym, redress, gore | `pclntab`, module/type metadata, embedded files, and recoverable garble literals | `go` reports names/types; `native decompile` handles the machine-code source path separately |
-| Swift / Objective-C | `swift-demangle`, class-dump, jtool2 | Runtime class/protocol/selector data, symbol rendering, fat slices, shared-cache dylibs | Supply surviving mappings and sub-cache files; original names erased by renaming need an external map |
-| Lua bytecode and VMs | unluac, luadec, LuaDec51 | Lua/LuaJIT/Luau source plus supported obfuscator and custom-VM recovery | IronBrew2 has real-tool execution-differential evidence; ordinary `.luac` recovery and VM recovery are different operations |
-| Ruby bytecode | MRI disassembly | YARV and mruby source, opcode listings, freezer/AOT classification | MRI recompilation grades opcode-name recall; that measure does not establish execution equivalence |
-| PHP layers | php-malware-finder | Eval-chain and literal-key loop/cipher peeling, Phar extraction, encoder-envelope reports | Use static layers and available key material; native-loader-keyed commercial payloads stay sealed |
-| PowerShell, Bash, VBA | PowerDecode, FLARE tools, olevba | Shell deobfuscation, VBA source/p-code and stomping, XLM formulas, PDF actions | `shell` places script recovery and document findings beside the rest of the artifact analysis |
-| BEAM / ActionScript | Erlang `beam_disasm`, RABCDAsm | BEAM debug-source/Core Erlang recovery and ABC method-body pseudocode | Preserve debug chunks when available; stripped BEAM has a separate real-Erlang execution check |
-| Hermes / React Native | hermes-dec, hbctool, [DroidSaw](https://github.com/droidsaw/droidsaw) | Runtime extraction, HBC structure, supported pseudo-JavaScript lift | HBC parsing covers v60 to v96; source lifting has a narrower measured boundary. Hermes-to-DEX bridge taint is not implemented |
-| Flutter / Dart AOT | reFlutter, Darter, blutter | Kernel source tables, AOT declaration graph, ARM64 bodies, strings, rename-map parsing | Kernel source and AOT metadata are different recovery levels; snapshot versions constrain AOT parsing |
-| Containers and firmware | binwalk, unblob, 7-Zip | Registered format extraction, recursive child routing, firmware decoding/carving, per-member refusal reports | Feed extracted members straight into language passes; compare member bytes rather than treating a recognized magic as successful extraction |
-| Secrets and indicators | APKLeaks, TruffleHog, Gitleaks, LinkFinder | Recovered-tree/APK findings, token offsets, static strings, secret and IOC reports | Scan the APK or recovered tree; compare APKLeaks against the same planted secrets below |
-| Format, packer, compiler identification | Detect It Easy, TrID, PEiD, binwalk | Multi-signal identification, symbols, signatures, and routing hints | Use `identify`/`detect` to select a recovery path, then inspect its actual output |
-| Capabilities and taint | capa, Ghidra scripts, Joern | ATT&CK/MBC findings with offsets, normalized-IR queries, source-to-sink flow reports | Run capability matching and source-to-sink analysis on recovered artifacts; the taint report includes its Juliet test population |
-
-The [comparison inventory](evidence/edge-comparison.md) names the outstanding shared-input comparisons. Backend options are documented in [installation](docs/src/installation.md#optional-external-backends) and the linked language guides above.
-
-### Measured tool comparisons
-
-Measurements use the pinned inputs, tool versions, and scoring rules linked below. DEX and JAR counts measure compilation of each tool’s emitted regions. Those populations differ, so their counts do not rank recovery quality. APK secret recall uses the same eight-token ground truth.
-
-| Tool and input | Disrobe result | Named tool result | What the measurement checks |
-|---|---|---|---|
-| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 157 / 228 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> | Committed EdgeCases DEX; real `javac`, complete-source compilation then bounded isolation of regions blocking attribution; different emitted populations |
-| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->CFR 0.152 · JVM classfile | 181 / 181 emitted regions compile clean | 152 / 166 emitted regions compile clean<!-- /evidence-pair --> | Committed EdgeCases JAR; the same compiler/scorer procedure; different emitted populations |
-| APKLeaks 2.6.3 · planted-secrets APK | 8 / 8 planted secrets | 5 / 8 planted secrets | Exact-token recall on the same APK; Disrobe also finds the planted AWS secret access key, Basic credential, and JWT |
-
-[Inputs, raw tool results, and reproduction commands](benches/head-to-head/results.md).
-
-### Give Ghidra the recovered executable
-
-The same Ghidra 12.1.2 analysis sees different code after Disrobe exports a packed executable as a rebuilt PE. These local snapshots use real benign packed fixtures and record both increases and decreases. The function/instruction/string columns come from the nine-input analysis snapshot; completed C renderings come from the separate six-input decompiler snapshot. A completed rendering is nonempty output, not a source-correctness grade.
-
-| Packed input | Ghidra functions, packed → rebuilt | Instructions, packed → rebuilt | Strings, packed → rebuilt | Completed C renderings, packed → rebuilt |
+| Recovery | Result | Reference | Grade | Runs |
 |---|---|---|---|---|
-| UPX · Rust hello | 4 → 287 | 225 → 19,060 | 23 → 179 | 4 → 287 |
-| ASPack · Clockres | 5 → 243 | 58 → 10,544 | 48 → 116 | 5 → 210 |
-| ASPack · AccessEnum | 5 → 101 | 73 → 5,781 | 62 → 195 | 5 → 101 |
-| PECompact · Clockres | 2 → 306 | 148 → 14,603 | 27 → 27 | 1 → 267 |
-| PECompact · AccessEnum | 2 → 186 | 155 → 9,278 | 52 → 53 | 2 → 186 |
-| MEW · Clockres | 4 → 333 | 125 → 20,990 | 3 → 358 | Not measured |
-| MEW · AccessEnum | 4 → 152 | 125 → 9,592 | 3 → 802 | Not measured |
-| MEW · Autologon | 4 → 295 | 125 → 19,595 | 3 → 406 | Not measured |
-| kkrunchy classic · NASM hello | 4 → 1 | 149 → 10 | 3 → 4 | 4 → 1 |
+| Java class files to Java | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> top-level methods of the EdgeCases corpus recompile | Real `javac` | `recompile-only` | weekly |
+| Java behaviour | 117 / 131 of the same methods behave identically; 8 diverge and 6 cannot be driven in isolation | A real JVM | `strong` | weekly |
+| Android DEX to Java | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes pass; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded | `java -Xverify:all` | `strong` | weekly |
+| .NET assemblies to C# | 18 / 35 complete EdgeCases types recompile standalone | Roslyn `csc` | `recompile-only` | weekly |
+| WebAssembly | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions return the same values, traps, and first 4,096 bytes of linear memory | wasmtime | `strong` | weekly |
+| Stripped BEAM modules | <!-- m:beam_recompile_frac -->19 / 19<!-- /m --> modules recompile, keep their exports, and print the same `test/0` result | Erlang/OTP 27.3.4 | `strong` | weekly |
+| Go type names, stripped binary | <!-- m:go_typename_count -->838 of 838<!-- /m --> names | None: the names come from the binary's own type data | `coverage-self-reported` | weekly |
+| Go function names, stripped binaries | From 88.78% (darwin/amd64) to 100% (windows/386) on seven platforms; the missing names are assembly entry points and linker symbols that a stripped image does not carry | `go tool nm` on the unstripped builds | `strong` | weekly |
+| Hermes bytecode v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions lift with their original names and no fallback operations | A real `hermesc` build and its source | `strong` | weekly |
+| Lua, IronBrew2 2.7.0 | Standard and MAX output recover to programs that run identically | The original programs under Lua | `strong` | weekly |
+| JavaScript, JS-Confuser 2.0.1 | Recovered programs print byte-identical output | The original programs under node 24.16.0 | `strong` | weekly |
+| .NET, Obfuscar 2.2.50 | <!-- m:dotnet_obfuscar_hidden_strings -->15 / 15<!-- /m --> hidden string values recovered byte for byte | The unprotected build's strings | `strong` | weekly |
+| Native unpacking | UPX (NRV2B and LZMA), FSG, NSPack, and Petite recover a `.text` section byte-identical to the original on the committed Hash (FSG, NSPack) and hello (UPX, Petite) pairs; a second FSG pair recovers 31,171 of 33,870 `.text` bytes | The original builds committed beside the packed files | `strong` | weekly |
+| Tauri and Wails frontends | Every embedded file of real Tauri 1.8.3, Tauri 2.11.5, and Wails 2.13.0 builds matches its source file | The frontend trees the builds were made from | `strong` | weekly |
+| Pickle reconstruction | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures pass re-execution equality checks ([Result](evidence/results/pickle-roundtrip.md)) | CPython re-execution | `strong` | weekly |
+| Pickle disassembly and classification | 102 / 102 committed fixtures | CPython `pickletools` | `strong` | weekly |
+| Ruby YARV, Ruby 3.4.9 | Opcode-name recall after recompiling: greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->, megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m -->; order and operands are ignored | MRI recompilation | `recompile-only` | weekly |
+| PyArmor v8 and v9 | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> default-trial wrappers (PyArmor 8.5.12 and 9.2.5) decrypt and decode a complete root code object | Disrobe's own count; source equivalence is not measured | `coverage-self-reported` | weekly |
 
-The kkrunchy counts decrease. More discovered functions are not necessarily more correct functions, and these analysis counts do not replace a byte comparison. Read the [analysis snapshot](benches/ghidra-cleaner-input/snapshots/20260909T0004299135535Z-8f91eda104b94abca206af5ff93d239c/results.md), [decompiler snapshot](benches/ghidra-unpack/snapshots/20260908T2346015895555Z-d536dd0feebe46c19cd59456bef1efc1/results.md), and separate [native byte-recovery measurements](benches/native-unpack/results.md).
+**Against other tools on the same input.** Each pair runs Disrobe and another tool on the same input and grades both outputs the same way. In the Java rows each tool emits its own set of regions, so the counts are not a ranking; the APKLeaks row counts exact matches of eight secrets planted in one APK.
 
-## Inspect the evidence
+| Tool and input | Disrobe | Other tool |
+|---|---|---|
+| <!-- evidence-pair:apk-jadx-cfr:dex:summary -->JADX 1.5.5 · Android DEX | 157 / 228 emitted regions compile clean | 281 / 303 emitted regions compile clean<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:jar:summary -->CFR 0.152 · JVM classfile | 181 / 181 emitted regions compile clean | 152 / 166 emitted regions compile clean<!-- /evidence-pair --> |
+| APKLeaks 2.6.3 · planted-secrets APK | 8 / 8 planted secrets | 5 / 8 planted secrets |
 
-The [evidence index](evidence/README.md) links recovery measurements to their fixtures, comparison methods, commands, and results.
-
-Results distinguish byte recovery, compiler acceptance, and behavioral checks. Compiler acceptance and coverage counts are not equivalence scores.
+These comparisons are re-measured weekly and on pushes that touch their evidence paths. [Inputs, raw tool output, and reproduction commands](benches/head-to-head/results.md).
 
 <details>
-<summary><strong>JADX/CFR scoring details and reproduction commands</strong></summary>
+<summary><strong>Reproduction rows and further measurements</strong></summary>
 
-| Input | Disrobe emitted regions | Named tool emitted regions | Population boundary | Reproduce |
+| Input | Disrobe emitted regions | Other tool emitted regions | Population boundary | Reproduce |
 |---|---|---|---|---|
 | <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 157 / 228 emitted regions compile clean | JADX 1.5.5: 281 / 303 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 181 / 181 emitted regions compile clean | CFR 0.152: 152 / 166 emitted regions compile clean | no cross-tool ranking: each tool has its own emitted-region population | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 
-</details>
+| Surface | Result | Grade | Runs |
+|---|---|---|---|
+| Native unpacking, MPRESS 2.19 | The recovered `.text` section is byte-identical to the original build | `strong` | local (`benches/native-unpack`) |
+| Mixed boolean-arithmetic | 316 expressions with held-out originals. CI requires at least 180 answers within a 2-second budget per expression, no answer refuted by an external solver, and at least one proved equal; the answer count varies with machine load | `coverage-self-reported` | weekly |
+| OLLVM flattening | <!-- m:native_cff_cover_states -->9<!-- /m --> of <!-- m:native_cff_dispatcher_states -->9<!-- /m --> dispatcher states reached in two committed functions from one compiler and optimization level | `coverage-self-reported` | weekly |
+| Luau opcode table | <!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> declared opcodes lifted; `BREAK` and `NEWCLASSMEMBER` decode but are not lifted | `coverage-self-reported` | weekly |
+| Android, three real open-source APKs | <!-- m:dalvik_body_frac -->83662 / 83943<!-- /m --> method bodies lowered; <!-- m:dalvik_body_attested_frac -->2988 of 2998<!-- /m --> bodies placed in isolated carriers also pass the JVM verifier | `coverage-self-reported` | local |
+| Containers | <!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> generic extraction routes write member bytes from an input committed to this repository | `coverage-self-reported` | weekly |
 
-### Recovery checked against independent references
-
-These checks measure Disrobe against an original artifact, compiler, interpreter, or labeled corpus. They are distinct from comparing two decompilers. Each linked result records the input population, prerequisites, and reproduction command.
-
-| Recovery | Recorded result | Reference and limit |
-|---|---|---|
-| Python 3.14.5, pinned modules | <!-- m:py_stdlib_pinned_count -->6077 of 6286<!-- /m --> code objects | CPython recompilation with normalized opcode-structure comparison; jump targets, most operands, and additional recovered objects are not graded. [Result](evidence/results/py-stdlib-recompile.md) |
-| Python 3.14.5, fixed core population | <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects, local measurement | The same normalized comparison across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules; this is not a semantic-equivalence result. [Result](evidence/results/py-stdlib-full.md) |
-| Legacy Python 1.0 to 3.7 | at least <!-- m:py_legacy_count -->150 of 191<!-- /m --> fixtures (regression floor) | Period-interpreter recompilation or structural tokens against original source. [Result](evidence/results/py-legacy-recompile.md) |
-| Pickle classification | 102 / 102 classification fixtures | `pickletools` semantics. [Result](evidence/results/pickle-corpus.md) |
-| Pickle reconstruction | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures pass re-execution equality checks | CPython re-execution. [Result](evidence/results/pickle-roundtrip.md) |
-| JVM source compilation | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods compile | Real `javac`. [Result](evidence/results/jvm-javac-recompile.md) |
-| JVM behavior | 117 / 131 methods match observed execution | Real JVM; eight methods diverge and six are not driven in isolation. [Result](evidence/results/jvm-execution-differential.md) |
-| Android DEX | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes | JVM `-Xverify:all`; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded. [Result](evidence/results/dalvik-verifier.md) |
-| .NET C# | 18 / 35 complete EdgeCases types recompile standalone | Real Roslyn `csc`; legal source does not establish equivalent behavior. [Result](evidence/results/dotnet-whole-type-recompile.md) |
-| .NET VM bodies | Eazfuscator model: 67 / 67 instructions; real KoiVM: 6 / 6 bodies lifted | Separate original/clean-build references; EazVM uses an in-repository virtualizer, KoiVM uses real-tool output. [Evidence](docs/src/languages/dotnet.md) |
-| WebAssembly | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions | wasmtime compares returns, traps, and the first 4,096 bytes of linear memory on the test inputs. [Result](evidence/results/wasm-wasmtime-diff.md) |
-| BEAM without debug chunks | <!-- m:beam_recompile_frac -->19 / 19<!-- /m --> modules | Erlang/OTP 27.3.4 recompilation, export comparison, and `test/0` output/exit status. [Result](evidence/results/beam-erlang-recompile.md) |
-| Lua IronBrew2 | Real 2.7.0 standard and MAX output recovers to matching execution | Real Lua interpreter against original programs; one VM family. [Result](evidence/results/lua-ironbrew.md) |
-| Ruby YARV | Greeter <!-- m:ruby_greeter_pct -->100%<!-- /m -->; megafile <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> opcode-name recall | MRI recompilation; multiset recall ignores order, operands, branch targets, and extra instructions. [Result](evidence/results/ruby-yarv-recompile.md) |
-| Go stripped type names | <!-- m:go_typename_count -->838 of 838<!-- /m --> names | Real go1.26.3 metadata from the comparison build. [Result](evidence/results/go-typemeta.md) |
-| Hermes HBC v96 | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, zero fallback operations | Real `hermesc` sample with original source and function names. [Result](evidence/results/hermes-opcoverage.md) |
-| Native packed bytes | UPX, FSG, NSPack, Petite, MPRESS `.text` byte-identical on named committed pairs; Yoda's Crypter resources byte-identical | RVA-aligned original bytes; whole-image and resource residuals remain separately reported. [Per-input table](benches/native-unpack/results.md) |
-| Planted indicators | 6 / 6 IOC categories represented | Committed endpoints, manifest findings, URLs, IPv4, email, and `.onion` ground truth. [Result](evidence/results/frisk-planted.md) |
-| MCP call graph | 5 / 5 direct edges, all correctly identified | Stripped ELF compared with its distinct unstripped toolchain twin. [Precision](evidence/results/mcp-direct-call-precision.md), [recall](evidence/results/mcp-direct-call-recall.md) |
-| Native taint | 93 / 190 labeled flows recalled; zero false positives, local measurement | NIST Juliet CWE-78 char/system slice, gcc 16.2.0 `-O2`; seven declared flow categories have no cases in this slice. [Result](evidence/results/taint-juliet-cwe78.md) |
-
-<details>
-<summary><strong>Coverage counts and their smaller correctness populations</strong></summary>
-
-| Surface | Count | What it establishes |
-|---|---|---|
-| PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> named v8/v9 default-trial wrappers | Static decryption and complete root `CodeObject` parsing, without an external correctness comparison |
-| Android, three real APKs | <!-- m:dalvik_body_frac -->83662 / 83943<!-- /m --> methods lowered, local | Self-reported body coverage. The separate verifier population is <!-- m:dalvik_body_attested_frac -->2988 of 2998<!-- /m --> bodies presented in isolated carriers |
-| Wasm instruction inventory | <!-- m:wasm_opcoverage_count -->1034 of 1034<!-- /m --> instructions | External `wasm-tools` denominator and re-assemblable WAT; the lowering numerator is self-counted |
-| Luau instruction table | <!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> entries lifted | Disrobe's declared table; `BREAK` and `NEWCLASSMEMBER` remain decoded but unresolved |
-| Swift symbols | Committed symbol population renders to pinned strings | Regression consistency, with no required external demangler comparison |
-| OLLVM flattening | <!-- m:native_cff_cover_states -->9<!-- /m --> reached states out of <!-- m:native_cff_dispatcher_states -->9<!-- /m --> derived states | Dispatcher-state coverage over two committed functions; both counts are derived in-process |
-| Mixed boolean arithmetic | 316 entries; reference run answered 247 and refused 69; external solver proved 236 answers and refuted none | Budgeted recovery and held-out originals; unanswered or unproven entries do not become solver-proved results |
-| Containers | <!-- roster-breadth:containers-exercised -->42<!-- /roster-breadth --> generic routes write member bytes | Exercised breadth within the <!-- m:containers_formats -->103<!-- /m --> detected formats; LUKS1 has its own plaintext comparison |
-
-[Complete evidence records](evidence/results/EVIDENCE.md) describe each population and grading rule.
+[Evidence records](evidence/results/EVIDENCE.md).
 
 </details>
 
-Chart labels use `strong` for an independent correctness reference, `recompile-only` for compiler acceptance, and `coverage-self-reported` for Disrobe's own coverage counters. The comparison method and population define each result's scope.
+## How it works
 
-Browse the [results](evidence/results/EVIDENCE.md), [tool comparisons](evidence/edge-comparison.md), and [reproduction prerequisites](evidence/README.md) for individual measurements.
+`disrobe auto` fingerprints the input, runs the pass with the highest confidence, then fingerprints that pass's output and every child it extracted, and repeats. It stops when no pass clears the confidence threshold, when a content hash repeats, or at the depth limit (8 by default, `--max-depth`). Given a directory, it processes the files under it recursively, skipping hidden directories and symbolic links. The end-to-end tests follow chains such as a PyInstaller archive whose `.pyc` children go on to the decompiler, a PyArmor v8 wrapper inside a PyInstaller archive, and a UPX-packed Rust executable that unpacks and then yields demangled Rust symbols.
 
-## Know the limits
+```sh
+disrobe auto app.exe --out recovered/ --capture-stages   # keep each stage's exact output
+disrobe auto samples/ --out batch/ --jobs 4              # a whole directory, four workers
+disrobe chain module.pyc --chain py.decompile --out src/ # a pass list you choose
+disrobe passes                                           # every registered pass
+```
 
-- **Compiled output loses information.** Original comments, formatting, names, and some type information may be absent.
-- **Family recognition is broader than recovery.** A catalog match or successful parser can coexist with partial source emission. Read the family tier and the actual result.
-- **Native recovery depends on architecture and output language.** The [native guide](docs/src/languages/native-decompile.md) lists supported paths and their tests.
-- **Commercial VM-protector detection is not a general source-recovery promise.** Internal helpers and protected-section artifacts do not establish a complete CLI recovery path. See [native unpacking](docs/src/languages/native-unpack.md).
-- **Missing keys remain missing.** Runtime-derived keys and absent name-hashing seeds cannot be inferred from an unsupported artifact. [Python](docs/src/languages/python.md), [PHP](docs/src/languages/php.md), and [container](docs/src/languages/containers.md) guides state format-specific boundaries.
-- **External backends have their own requirements.** Some commands can select installed tools through `--backend auto`. Check the command's help and [installation guide](docs/src/installation.md#the-dependency-boundary) before choosing a backend.
-- **Analysis defaults to static recovery.** This does not make untrusted input harmless. Resource limits, explicitly selected dynamic operations, and external-process boundaries are described in [forensics safety](docs/src/forensics-safety.md).
+Each `auto` or `chain` output directory holds `chain.json` (`disrobe.chain/v1`), which records the topology, the chosen passes, their confidence, and a BLAKE3 hash of every stage, and `recovery.json` (`disrobe.recovery/v1`), which records each pass's verdict and timing. `auto` also writes `report.sarif`, whose run properties embed a STIX 2.1 bundle. The global flags `--json`, `--ndjson`, and `--sarif` switch output to JSON, streaming JSON, or SARIF 2.1.0, and `disrobe report` renders a finished run as text, JSON, Markdown, HTML, or SARIF.
 
-## Understand the pipeline
+Given the same input, flags, build, and installed formatters, the recovered files are the same whatever the worker count, unless one of the time limits below ends a step early; the weekly run compares `--jobs 1` with `--jobs 4` on a batch of three fixtures. The run records (`chain.json`, `recovery.json`, `report.json`, and `report.sarif`) also record each pass's duration and the worker count, and their timestamps are fixed only when `SOURCE_DATE_EPOCH` is set. These steps stop on elapsed time rather than a step count, so a heavily loaded machine or a higher `--jobs` can change their output: JavaScript string-array probes run one at a time across all workers, are refused after waiting 30 seconds for their turn, and stop after 4 seconds (a rotation search after 180 seconds); the JSFuck, aaencode, jjencode, and JSFiretruck decoders stop after 30 seconds; the Dalvik interpreter after 750 milliseconds; PHP decoding loops after 2 seconds; the two Go garble scans after 8 seconds each; formatters after 5 seconds; and mixed boolean-arithmetic simplification and VM devirtualization after 250 milliseconds per solver query, 5 seconds in total, 750 milliseconds per SMT check, and one minute per binary for the devirtualization that `native decompile` runs unless `--no-devirt` is given.
 
-![Disrobe's intermediate representations, from bytes through program structure to source](docs/assets/ir-ladder.png)
+[Pass list](docs/src/passes.md) · [Chain runner](docs/src/chain.md) · [Reading a result](docs/src/reading-a-result.md) · [Batch processing](docs/src/cli/batch.md) · [Run reports](docs/src/cli/report.md)
 
-The chain runner connects single-purpose passes through shared artifacts and intermediate representations. A pass contributes the output it can justify; downstream consumers retain provenance and report unsupported boundaries. Explore the [architecture](docs/src/architecture.md), [pass model](docs/src/passes.md), [IR ladder](docs/src/ir-ladder.md), and [chain runner](docs/src/chain.md).
+## Safety model
 
-## Documentation and contribution
+Disrobe is built to open hostile files, but it is not a sandbox. Run it on inputs you are allowed to analyze, in an environment you would trust with them.
 
-Start with the [documentation](https://1-3-7.github.io/disrobe/), [quickstart](docs/src/quickstart.md), and [result guide](docs/src/reading-a-result.md). Use `disrobe explain <code>` to look up a diagnostic. For changes to the project, read the [contributing guide](.github/CONTRIBUTING.md) and the relevant feature's tests and evidence.
+| What runs | When | Bound |
+|---|---|---|
+| The program under analysis | Only `pyarmor unpack --allow-dynamic`, for PyArmor v6 and v7 | A watchdog stops the Python process it starts; processes that the wrapper spawns are not contained |
+| JavaScript taken from the input: string-array decoders, jsobfu character folding, JSFuck, aaencode, jjencode, JSFiretruck | By default in `js deob` and in `auto` | The embedded Boa engine, with `fetch` removed. String-array probes stop at 4 seconds and 100,000 loop iterations (a rotation search at 180 seconds and 10 million), recursion depth 256, a 256 KiB prelude, and 4 MiB of generated script. The esoteric decoders stop waiting after 30 seconds, but their worker thread is not killed |
+| Packer stubs and string decoders taken from the input | By default, when a packer needs stub emulation, and in `strings` unless `--no-decode` is given | The in-house x86 emulator, with a step cap per packer and 256 MiB per mapping |
+| .NET, Java, and Dalvik string-decryption methods taken from the input | By default, for the protectors that need them | In-process interpreters: 4 million steps for CIL, up to 6 million for JVM bytecode, and 2 million steps and 750 milliseconds for Dalvik |
+| PHP taken from the input, in loader and decode loops | By default in PHP recovery | The in-house PHP subset interpreter: 4 million steps, 64 MiB of heap, 16 MiB of output, 2 seconds |
+| JS-Confuser control-flow VM bytecode | By default when JS-Confuser's VM is detected | The in-house VM interpreter: 200,000 steps |
+| garble literal thunks | By default on x86-64 garble binaries | The in-house x86-64 emulator: 200,000 steps per thunk, 8 seconds per scan |
+| A local CPython of the matching version, if one is on `PATH` | By default in `py decompile`, `pyfreeze extract`, and `nuitka decompile` | Compiles the recovered source; 60 seconds (120 for Nuitka); `py decompile --no-roundtrip` skips it. The interpreter starts in the current directory without `-I`, so a `py_compile.py` there would run: do not run Disrobe from inside an extracted sample tree |
+| Installed archive tools: unrar, 7z, bsdtar, pkgutil, and hdiutil, which mounts the DMG or ISO image | When the built-in reader cannot extract a RAR, PKG, DMG, or ISO file | 180 seconds per extraction |
+| Ghidra headless | `native decompile --backend ghidra` | 10 minutes |
+| Package managers | `install` and `doctor --auto-install` | 10 minutes per package |
+| Installed external decompilers: ILSpy, dnSpy, dnSpyEx, de4dot, CFR, Vineflower, Procyon, JD, Krakatau, JADX, dex2jar | `dotnet decompile` and `jvm decompile` with the default `--backend auto`, or a backend you name | `--timeout-secs`, 300 seconds by default |
+| Installed code formatters: ruff, prettier, rustfmt, gofmt, clang-format, and others | By default, on recovered source, when the formatter is on `PATH` | The source goes to the formatter on stdin; 5 seconds per call; the output stays unformatted when the formatter is missing or fails |
+| Installed optional tools, with `--version` | `doctor` and `bug-report` | 3 seconds per tool |
 
-The [threat model](docs/src/threat-model.md) describes trust boundaries and input handling. Report security concerns through [SECURITY.md](SECURITY.md). [LEGAL.md](LEGAL.md) describes the project's legal considerations; permission to analyze an artifact depends on your circumstances.
+Only the PyArmor v6/v7 dynamic hook runs sample code natively, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools.
+
+Apart from `prowl`, which queries public web archives and threat-intel services, `serve`, which listens for requests, and `install`, `install-deps`, and `doctor --auto-install`, which download tools, commands make no network requests. Parsers bound their input size, allocation, recursion, and output, with two known exceptions: JavaScript unbundling limits neither its input size nor its module count or output size, and the committed 7.35 MiB JSFuck file `corpus/js/jsfuck/obfuscated.megafile.js` overflows the stack of the embedded JavaScript engine and ends the process, as the [behaviour gate](benches/perf/README.md) records. `--i-have-authorization` gates the commercial JavaScript protector transforms, `lua deob` for MoonSec v3 and IronBrew2, `php decode` for ionCube, SourceGuardian, and Zend Guard input, and the decryption-key metadata category; `auto` applies the Lua transforms without it. The [threat model](docs/src/threat-model.md) describes the trust boundaries, and [SECURITY.md](SECURITY.md) explains how to report a vulnerability.
+
+## Use it from other tools
+
+| Integration | How |
+|---|---|
+| MCP | An MCP server over stdio gives MCP clients the recovery and navigation tools ([guide](docs/src/integrations/mcp.md)) |
+| Python | Typed bindings (`import disrobe`), built from source with maturin ([guide](bindings/python/README.md)) |
+| GitHub Actions | `uses: 1-3-7/disrobe@<tag>` downloads the release binary, runs a command on a path, and uploads SARIF ([guide](docs/src/integrations/github-action.md)) |
+| pre-commit | The `disrobe` hook fails a commit that stages a packed or obfuscated artifact ([guide](docs/src/integrations/pre-commit.md)) |
+| Disassemblers and editors | Integrations for VS Code, IDA Pro, Ghidra, and Binary Ninja ([guide](docs/src/integrations/editor-plugins.md)); `native export` rebuilds a supported packed PE with its entry point restored and writes a symbol map for Ghidra, for IDA, or as JSON |
+| Browser | The [playground](https://1-3-7.github.io/disrobe/playground/) runs a WebAssembly build of Disrobe, and the input stays on your device (files up to 64 MiB) |
+| Rust | Depend on the workspace crates by git revision ([library guide](docs/src/library.md)) |
+
+## Commands
+
+`disrobe <command> --help` is the reference for your build, and the [CLI reference](docs/src/cli/reference.md) covers every subcommand. `disrobe explain <code>` describes a `DR-*` diagnostic.
+
+| Task | Commands |
+|---|---|
+| Recover | `auto`, `chain`, `extract`, `webview`, `pyarmor`, `pyinstaller`, `pyfreeze`, `nuitka` |
+| One language or runtime | `py`, `js`, `wasm`, `native`, `jvm`, `apk`, `dotnet`, `hermes`, `flutter`, `mobile`, `macho`, `swift`, `go`, `lua`, `php`, `ruby`, `beam`, `as3`, `shell`, `pickle` |
+| Identify and scan | `identify`, `detect`, `catalog`, `strings`, `scan`, `ioc`, `indicators`, `frisk`, `behavior`, `capabilities`, `yara` |
+| Navigate and compare | `query`, `semdiff`, `diff` |
+| Reports and evidence | `context`, `report`, `status`, `envelope`, `verify`, `guard`, `annot`, `rename` |
+| Setup and help | `doctor`, `init`, `config`, `completions`, `man`, `explain`, `passes`, `bug-report` |
+| Scheduled for removal | `serve`, `plugin`, `prowl`, `install`, `install-deps`, `self-update`, `taint`, `vulnmatch` |
+
+## Limits
+
+- Compilation discards comments, formatting, and many names and types, so recovered source is a reconstruction. The tables above say how each kind of output is checked.
+- Recognition is broader than recovery. A catalog match can come with partial output, so read the level and the result's own report.
+- A key derived at run time, a payload fetched from the network, or a name-hashing seed cannot be recovered from a file that does not contain it.
+- Commercial virtualizers such as VMProtect, Themida, and WinLicense are detected, not unpacked or devirtualized.
+- Native decompilation covers x86-64, AArch64, ARM32, and MIPS32. ARM32 and MIPS32 output is checked for the operations it contains, not for equivalent behaviour, and 32-bit x86 is only disassembled.
+- Scale is unmeasured for large inputs: the largest committed WebAssembly module is 17,173 bytes, and no figure covers bundles in the tens of megabytes.
+
+## Documentation
+
+- [Documentation site](https://1-3-7.github.io/disrobe/), with the [quickstart](docs/src/quickstart.md), the [result guide](docs/src/reading-a-result.md), and the [family catalog](docs/src/catalog.md).
+- [Evidence harness](evidence/README.md) and [evidence records](evidence/results/EVIDENCE.md).
+- [Contributing guide](.github/CONTRIBUTING.md), [threat model](docs/src/threat-model.md), [security policy](SECURITY.md), and [legal considerations](LEGAL.md). Whether you may analyze a given artifact depends on your circumstances.
 
 ## License
 
-[![License: Disrobe Source-Available](https://img.shields.io/badge/license-Disrobe%20Source--Available-red)](LICENSE)
+Disrobe is proprietary, source-available software under the [Disrobe Source-Available License, Version 1.1](LICENSE). The [relicensing notice](RELICENSING-NOTICE.md) explains how it relates to earlier terms.
 
-Every version of Disrobe is proprietary and source-available under the [Disrobe Source-Available License, Version 1.1](LICENSE), which supersedes the Elastic License 2.0 and Version 1.0 for all versions and revokes all earlier grants as stated in the [relicensing notice](RELICENSING-NOTICE.md).
-
-Personal hobby projects, personal learning, and unpaid independent security research by individuals, nonprofit education and research, and bona fide journalism are free, as defined in the license.
-
-**Any use by or for a company requires a paid license.** See [commercial licensing](COMMERCIAL.md).
+Personal hobby projects, personal learning, unpaid independent security research by individuals, nonprofit education and research, and bona fide journalism are free, as defined in the license. **Any use by or for a company requires a paid license.** See [commercial licensing](COMMERCIAL.md).
 
 **Required credit:** This work used Disrobe, created by 1-3-7: https://github.com/1-3-7/disrobe
 
-Forks other than contribution forks, reposting, rebranding, resale, hosting, and competing development are prohibited. The software is provided as is, at the user's own risk.
-
-See [attribution](ATTRIBUTION.md), [contributor terms](CONTRIBUTING-LICENSE.md), [summary](LICENSE-SUMMARY.md), and [third-party notices](NOTICE).
+Forks other than contribution forks, reposting, rebranding, resale, hosting, and competing development are prohibited. The software is provided as is, at the user's own risk. See [attribution](ATTRIBUTION.md), [contributor terms](CONTRIBUTING-LICENSE.md), the [license summary](LICENSE-SUMMARY.md), and the [notice](NOTICE).
 
 Copyright (c) 2025-2026 1-3-7. All rights reserved.
-
-<sub>Earlier development commits were consolidated into a single baseline as part of the documentation and visual refresh.</sub>
