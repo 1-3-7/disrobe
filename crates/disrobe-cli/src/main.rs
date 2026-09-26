@@ -913,7 +913,7 @@ enum Cmd {
         redact: bool,
         #[arg(
             long,
-            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
+            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink, else copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
         #[arg(
@@ -960,7 +960,7 @@ enum Cmd {
         chain_pin: Option<String>,
         #[arg(
             long,
-            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
+            help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink, else copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
     },

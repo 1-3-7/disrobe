@@ -4,8 +4,6 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LinkKind {
     Symlink,
-    #[cfg_attr(not(windows), allow(dead_code))]
-    Junction,
     Copy,
 }
 
@@ -14,7 +12,6 @@ impl LinkKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Symlink => "symlink",
-            Self::Junction => "junction",
             Self::Copy => "copy",
         }
     }
@@ -43,9 +40,6 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
     }
     if std::os::windows::fs::symlink_dir(&stage_abs, final_dir).is_ok() {
         return Ok(LinkKind::Symlink);
-    }
-    if mklink_junction(&stage_abs, final_dir).is_ok() {
-        return Ok(LinkKind::Junction);
     }
     recursive_copy(&stage_abs, final_dir)?;
     Ok(LinkKind::Copy)
@@ -87,28 +81,6 @@ pub(crate) fn link_final(stage_dir: &Path, final_dir: &Path) -> miette::Result<L
     }
     recursive_copy(stage_dir, final_dir)?;
     Ok(LinkKind::Copy)
-}
-
-#[cfg(windows)]
-fn mklink_junction(stage_dir: &Path, final_dir: &Path) -> std::io::Result<()> {
-    use std::process::Command;
-    let status: std::process::ExitStatus = Command::new("cmd")
-        .args([
-            "/C",
-            "mklink",
-            "/J",
-            &final_dir.display().to_string(),
-            &stage_dir.display().to_string(),
-        ])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "mklink /J exited with {:?}",
-            status.code()
-        )))
-    }
 }
 
 fn remove_dir_any(target: &Path) -> miette::Result<()> {
@@ -195,7 +167,6 @@ mod tests {
     #[test]
     fn link_kind_labels() {
         assert_eq!(LinkKind::Symlink.label(), "symlink");
-        assert_eq!(LinkKind::Junction.label(), "junction");
         assert_eq!(LinkKind::Copy.label(), "copy");
     }
 
@@ -208,10 +179,7 @@ mod tests {
         std::fs::create_dir_all(&stage).expect("mk stage");
         std::fs::write(stage.join("ok.txt"), b"hello").expect("write ok");
         let kind: LinkKind = link_final(&stage, &final_dir).expect("link");
-        assert!(matches!(
-            kind,
-            LinkKind::Symlink | LinkKind::Junction | LinkKind::Copy
-        ));
+        assert!(matches!(kind, LinkKind::Symlink | LinkKind::Copy));
         let inside: std::path::PathBuf = final_dir.join("ok.txt");
         assert!(inside.exists(), "expected ok.txt visible via {kind:?}");
     }
