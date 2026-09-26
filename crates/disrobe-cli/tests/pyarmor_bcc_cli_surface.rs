@@ -18,7 +18,7 @@ const BCC_WRAPPER_SHA256: &str = "b71480d70250997ea96bc3d3d5331d028e8ac657cca9a7
 const BCC_RUNTIME: &str =
     "corpus/python/pyarmor/v9-bcc/default/pyarmor_runtime_015009/pyarmor_runtime.pyd";
 const BCC_RUNTIME_SHA256: &str = "105c97b2dcbdd1a0fc025f7f1c9c8317c0af113531f9d311d7e17cc010ccad9a";
-const README_BCC_SAFETY: &str = "Only the PyArmor v6/v7 dynamic hook executes sample code, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools.";
+const README_BCC_SAFETY: &str = "Only the PyArmor v6/v7 dynamic hook runs sample code natively, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools.";
 
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

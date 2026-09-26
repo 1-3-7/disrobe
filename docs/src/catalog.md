@@ -67,7 +67,7 @@ The [JS](./languages/javascript.md) and [WebAssembly](./languages/wasm.md) guide
 | Surface | Count | Families |
 |---|---|---|
 | **JVM / Android protectors** | <!-- m:jvm_families -->10<!-- /m --> | ProGuard/R8 (mapping replay to a name-restoration sidecar), Zelix KlassMaster, Allatori, Stringer, DashO, DexGuard (detect + structural peel, with in-class string-decrypt emulation for the keyed-constant variants), BlackObfuscator (DEX dispatcher recognition and block-order annotation); yGuard, SkidSuite2, JBCO (detect-only) |
-| **Android RASP vendors** | <!-- m:rasp_vendors -->8<!-- /m --> | Promon SHIELD, Guardsquare DexGuard RASP, Guardsquare ThreatCast, Appdome, OneSpan, Arxan / Digital.ai, Zimperium zShield, Licel DexProtector |
+| **Android RASP vendors** | <!-- m:rasp_vendors -->8<!-- /m --> | Promon SHIELD, Guardsquare DexGuard RASP, Guardsquare ThreatCast, Appdome, OneSpan, Arxan / Digital.ai, Zimperium zShield, Licel DexProtector. No command runs this detector yet; `behavior` and `auto` report the runtime markers of five of them |
 | **.NET protectors** | <!-- m:dotnet_protectors -->23<!-- /m --> | ConfuserEx, ConfuserEx2, Dotfuscator, Dotfuscator CE, SmartAssembly, Babel, DeepSea, Spices.Net, Goliath, Skater, .NET Reactor, Eazfuscator.NET, CryptoObfuscator, ArmDot, Agile.NET, Obfuscar, Themida (.NET wrapper), ILProtector, MaxToCode, KoiVM, DotNetPatcher, NetCryptor, BitMono |
 
 On .NET, ConfuserEx2 constant decryption is reversed on a real committed sample, the Eazfuscator VM tier is devirtualized at 67 of 67 instructions across six bodies against an in-repo EazVM virtualizer of our own, and the KoiVM VM tier is devirtualized on a sample produced by the real KoiVM tool (6 of 6 bodies lifted to CIL). ILProtector, MaxToCode, and the Themida/.NET wrapper derive their per-method key in a native loader absent from the artifact, so those bodies are runtime-key walled. See the [JVM and Android](./languages/jvm-android.md) and [.NET](./languages/dotnet.md) guides.
@@ -91,7 +91,7 @@ IronBrew2 2.7.0 is reversed on real committed output in standard and MAX mode, v
 |---|---|---|
 | **Shell obfuscators** | <!-- m:shell_families -->19<!-- /m --> | PowerShell Invoke-Obfuscation (Token, AST, String, Encoding, Compress, Launcher), Invoke-Stealth, PowerHell, Chameleon, psobf, ISESteroids; Bashfuscator (Token, String, Obfuscate, Compress), bash IFS/eval indirection, and node-bash-obfuscate; Batch `%random%` and set-indirection |
 
-Full VBA p-code decompile (264-opcode table, VBA3/5/6/7) with VBA-stomping detection rounds out the shell pass, alongside Excel 4.0 (XLM) macro-formula recovery (BIFF8/BIFF12 Ptg decode, shared-formula and `Auto_Open` resolution) and PDF maldoc analysis (embedded JavaScript, launch and embedded-file actions, both xref forms, RC4/AESV2 empty-password decrypt). See the [shell guide](./languages/shell.md).
+Full VBA p-code decompile (264-opcode table, VBA5/6/7) with VBA-stomping detection rounds out the shell pass, alongside Excel 4.0 (XLM) macro-formula recovery (BIFF8 and BIFF12 Ptg decode, shared-formula resolution, and `Auto_Open` resolution in BIFF8 workbooks) and PDF maldoc analysis (embedded JavaScript, launch and embedded-file actions, both xref forms, RC4/AESV2 empty-password decrypt). See the [shell guide](./languages/shell.md).
 
 ## PHP
 

@@ -13,7 +13,7 @@
 
 | Other surface | Coverage |
 |---|---|
-| VBA p-code | 264-opcode table across VBA3 / VBA5 / VBA6 / VBA7 (32-bit and 64-bit) with identifier resolution, plus VBA-stomping detection |
+| VBA p-code | 264-opcode table across VBA5 / VBA6 / VBA7 (32-bit and 64-bit) with identifier resolution, plus VBA-stomping detection |
 | Excel 4.0 (XLM) | BIFF8 (`.xls`) and BIFF12 (`.xlsb`) macro sheets, full Ftab and Cetab function tables, shared-formula resolution, auto-run entry points |
 | PDF maldocs | Both cross-reference forms, empty-password RC4 / AESV2 decrypt, embedded JavaScript and every Launch, URI, GoToR, SubmitForm, ImportData, and EmbeddedFile action |
 
@@ -47,7 +47,7 @@ shell deob: OK
 
 From a `.docm` / `.xlsm` / `.bin` Office container, `disrobe` parses the `dir` stream (MS-OVBA), maps each module to its stream and `TextOffset`, and MS-OVBA-decompresses the `CompressedSourceCode` at that offset to emit the original `.bas` / `.cls` text per module (multi-chunk compression and CopyToken bit-count edges handled). Validated against real Word and Excel documents authored via COM, byte-for-byte against the known module text.
 
-The p-code decoder covers a 264-opcode table across VBA3, VBA5, VBA6, and VBA7 in 32-bit and 64-bit forms, with identifier resolution. Tests compare its disassembly with `pcodedmp` dumps. Accepted differences are limited to four pinned classes of `pcodedmp` 1.2.6 defects: a shifted identifier-table index, an unresolved object name, a truncated declaration parameter chain, and a missing user-defined type name.
+The p-code decoder covers a 264-opcode table across VBA5, VBA6, and VBA7 in 32-bit and 64-bit forms, with identifier resolution. Tests compare its disassembly with `pcodedmp` dumps. Accepted differences are limited to four pinned classes of `pcodedmp` 1.2.6 defects: a shifted identifier-table index, an unresolved object name, a truncated declaration parameter chain, and a missing user-defined type name.
 
 Source recovery has a separate comparison against the authored `.bas` files, preserving line order, operators, and operand order. The two committed modules recover 71 of 71 lines for SourceProbe and 552 of 552 for EdgeCases. These counts are enforced by regression tests. VBA-stomping detection compares compiled p-code with stored source, flags divergence, and recovers the compiled behavior from p-code.
 
