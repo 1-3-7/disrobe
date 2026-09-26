@@ -55,7 +55,7 @@ jobs:
             cross: false
             archive: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: compute release tag
         shell: bash
@@ -66,7 +66,7 @@ jobs:
             echo "REL_TAG=latest" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
@@ -75,17 +75,18 @@ jobs:
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
+          toolchain: 1.96.1
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: ${{ matrix.target }}
 
       - name: install cargo-auditable
         if: matrix.cross == false
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
         with:
           tool: cargo-auditable
 
@@ -96,7 +97,7 @@ jobs:
 
       - name: build (cross)
         if: matrix.cross == true
-        uses: houseabsolute/actions-rust-cross@v1
+        uses: houseabsolute/actions-rust-cross@85826e468eac832e251ac58f6191ba784db237c8
         with:
           command: build
           target: ${{ matrix.target }}
@@ -145,13 +146,13 @@ jobs:
 
       - name: Install Node for release walkthrough
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "24"
 
       - name: Install pnpm for release walkthrough
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: "11.10.0"
 
@@ -180,7 +181,7 @@ jobs:
           cd dist
           sha256sum "disrobe-${REL_TAG}-walkthrough.tar.zst" > "disrobe-${REL_TAG}-walkthrough.tar.zst.sha256"
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
 
       - name: cosign sign (unix)
         if: runner.os != 'Windows'
@@ -201,7 +202,7 @@ jobs:
           cosign sign-blob --yes --bundle "$stage.zip.cosign.bundle" "$stage.zip"
           Pop-Location
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-${{ matrix.target }}
           path: |
@@ -219,7 +220,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: compute release tag
         shell: bash
@@ -230,14 +231,16 @@ jobs:
             echo "REL_TAG=latest" >> "$GITHUB_ENV"
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: sbom
 
       - name: install cargo-cyclonedx
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
         with:
           tool: cargo-cyclonedx
 
@@ -255,7 +258,7 @@ jobs:
             shasum -a 256 "disrobe-${REL_TAG}.cyclonedx.json" > "disrobe-${REL_TAG}.cyclonedx.json.sha256"
           fi
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
 
       - name: cosign sign SBOM
         shell: bash
@@ -266,7 +269,7 @@ jobs:
             --bundle "disrobe-${REL_TAG}.cyclonedx.json.cosign.bundle" \
             "disrobe-${REL_TAG}.cyclonedx.json"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-sbom
           path: |
@@ -285,9 +288,9 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           path: dist
           pattern: dist-*
@@ -326,14 +329,14 @@ jobs:
         run: gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
 
       - name: attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
             dist/disrobe-*.tar.zst
             dist/disrobe-*.zip
             dist/disrobe-*.cyclonedx.json
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ env.REL_TAG }}
           name: ${{ env.REL_NAME }}

@@ -10,6 +10,9 @@ on:
         required: false
         default: '300'
 
+permissions:
+  contents: read
+
 env:
   CARGO_INCREMENTAL: 0
   MEMORY_LIMIT_MEGABYTES: 2048
@@ -23,13 +26,15 @@ jobs:
     env:
       SEED_REPLAY_MEMORY_LIMIT_BYTES: 2147483648
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: require the Linux memory limiter
         run: command -v prlimit
       - name: replay the semantic seed contract
-        run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay -- --memory-limit-bytes ${SEED_REPLAY_MEMORY_LIMIT_BYTES} --check xtask/data/fuzz_seed_reach.json
+        run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay -- --memory-limit-bytes "$SEED_REPLAY_MEMORY_LIMIT_BYTES" --check xtask/data/fuzz_seed_reach.json
 
   campaign:
     name: campaign (${{ matrix.target }})
@@ -52,21 +57,24 @@ jobs:
           - dr_envelope
           - nested_dispatch
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: seed the corpus from committed samples
         run: cargo run -p xtask -- fuzz-seeds --target ${{ matrix.target }}
       - name: sustained search under the address sanitizer, with crash deduplication by stack hash
+        env:
+          DURATION: ${{ github.event.inputs.duration || '300' }}
         run: |
-          DURATION=${{ github.event.inputs.duration || '300' }}
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -fork=1 \
-            -max_total_time=${DURATION} \
-            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
-            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
+            -max_total_time="$DURATION" \
+            -rss_limit_mb="$MEMORY_LIMIT_MEGABYTES" \
+            -timeout="$PER_INPUT_TIMEOUT_SECONDS"
       - name: minimize any crash the search found
         if: failure()
         run: |
@@ -76,7 +84,7 @@ jobs:
           done
       - name: upload artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
