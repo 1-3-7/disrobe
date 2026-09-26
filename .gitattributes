@@ -66,3 +66,4 @@ crates/disrobe-pass-jvm/tests/fixtures/** -text
 crates/disrobe-cli/tests/golden/container_breadth.txt -text
 benches/ghidra-cleaner-input/snapshots/** -text
 benches/ghidra-unpack/snapshots/** -text
+benches/perf/golden.txt -text
