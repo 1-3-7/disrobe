@@ -55,12 +55,12 @@ recovered/
 ├── 02-pyarmor/            # exact recorded output of pass 2
 ├── 03-py-decompile/       # exact recorded output of pass 3
 ├── final/                 # terminal stage(s), linked
-│   └── 03-py-decompile/   # symlink -> NTFS junction -> recursive copy fallback (Windows)
+│   └── 03-py-decompile/   # symlink, or a recursive copy when symlinks are unavailable
 ├── chain.json             # the chain topology descriptor
 └── recovery.json          # per-pass status, confidence histogram, timings
 ```
 
-The `final/` link prefers a symlink, falls back to an NTFS junction on Windows, and finally to a recursive copy, so `final/` always resolves to the terminal artifact regardless of platform and privilege.
+The `final/` link prefers a symlink and falls back to a recursive copy, so `final/` always resolves to the terminal artifact regardless of platform and privilege. On Windows without the symlink privilege or Developer Mode, `final/` is a copy.
 
 ## chain.json: the topology descriptor
 
