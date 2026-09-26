@@ -27,9 +27,12 @@ on:
         type: choice
         options: [all, one, two, three, nativelang, javascript]
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,13 +50,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
@@ -65,9 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
+          toolchain: 1.96.1
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -77,15 +83,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
+          toolchain: 1.96.1
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - run: cargo clippy --workspace --all-targets --all-features --keep-going -- -D warnings -W unreachable_pub -W missing_debug_implementations -W unused
@@ -96,12 +103,14 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - run: cargo test -p disrobe-tool-process --all-targets -- --nocapture
 
   graphs:
@@ -110,16 +119,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.16.0"
       - name: install graph renderer test dependencies
@@ -137,6 +148,186 @@ jobs:
       - name: Check workspace structure and dependencies
         run: cargo run -p xtask -- health
 
+  push-tests:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: push tests (changed crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - name: select the workspace crates this push changed
+        id: scope
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          changed="$RUNNER_TEMP/push-changed-paths"
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            echo "this push created $GITHUB_REF, so no earlier commit bounds the change and every workspace crate is in scope"
+            scope=all
+          else
+            git fetch --no-tags --depth=1 origin "$BEFORE"
+            git diff -z --name-only --no-renames "$BEFORE" "$AFTER" > "$changed"
+            scope=changed
+          fi
+          cargo metadata --format-version 1 --no-deps > "$RUNNER_TEMP/push-metadata.json"
+          python3 - "$RUNNER_TEMP/push-metadata.json" "$changed" "$scope" "$RUNNER_TEMP/push-crates.tsv" <<'PY'
+          import json
+          import sys
+          from pathlib import PurePosixPath
+
+          metadata_path: str = sys.argv[1]
+          changed_path: str = sys.argv[2]
+          scope: str = sys.argv[3]
+          selection_path: str = sys.argv[4]
+          with open(metadata_path, encoding="utf-8") as handle:
+              metadata: dict = json.load(handle)
+          root: PurePosixPath = PurePosixPath(metadata["workspace_root"])
+          library_kinds: set[str] = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+          members: dict[str, str] = {}
+          doctested: set[str] = set()
+          untested: set[str] = set()
+          for package in metadata["packages"]:
+              directory: str = PurePosixPath(package["manifest_path"]).parent.relative_to(root).as_posix()
+              if directory != ".":
+                  members[directory] = package["name"]
+              libraries: list[dict] = [target for target in package["targets"] if library_kinds.intersection(target["kind"])]
+              if any(target["doctest"] for target in libraries):
+                  doctested.add(package["name"])
+              if any(not target["test"] for target in libraries) and not any(target["test"] for target in package["targets"]):
+                  untested.add(package["name"])
+          selected: dict[str, str] = {}
+          if scope == "all":
+              selected = {name: directory for directory, name in members.items()}
+          else:
+              with open(changed_path, "rb") as handle:
+                  paths: list[str] = [raw.decode("utf-8", "surrogateescape") for raw in handle.read().split(b"\0") if raw]
+              for path in paths:
+                  owners: list[str] = [directory for directory in members if path.startswith(directory + "/")]
+                  if owners:
+                      owner: str = max(owners, key=len)
+                      selected[members[owner]] = owner
+              print(f"{len(paths)} changed path(s) select {len(selected)} workspace crate(s)")
+              shared: list[str] = sorted(
+                  path for path in paths
+                  if path in {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".config/nextest.toml"}
+                  or path.startswith((".cargo/", "corpus/"))
+              )
+              if shared:
+                  named: str = ", ".join(shared[:10]) + (f" and {len(shared) - 10} more" if len(shared) > 10 else "")
+                  print(f"::warning::this push changes {named}, which every crate shares and no crate directory owns; this job does not test them, and their full coverage is the scheduled run's")
+              if not selected:
+                  print("::notice::this push changes no file inside a workspace crate, so no crate test runs")
+          with open(selection_path, "w", encoding="utf-8") as handle:
+              for name in sorted(selected):
+                  doctests: str = "yes" if name in doctested else "no"
+                  targets: str = "untested" if name in untested else "tested"
+                  print(f"  {name} ({selected[name]}), doctests: {doctests}, test targets: {targets}")
+                  handle.write(f"{name}\t{selected[name]}\t{doctests}\t{targets}\n")
+          PY
+          echo "count=$(wc -l < "$RUNNER_TEMP/push-crates.tsv")" >> "$GITHUB_OUTPUT"
+      - name: free disk space
+        if: steps.scope.outputs.count != '0'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: steps.scope.outputs.count != '0'
+        id: setup-python
+        with:
+          python-version: "3.12"
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        if: steps.scope.outputs.count != '0'
+        with:
+          tool: cargo-nextest@0.9.143
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: steps.scope.outputs.count != '0'
+        with:
+          cache-on-failure: true
+      - name: export PYO3_PYTHON
+        if: steps.scope.outputs.count != '0'
+        run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
+      - name: test the changed crates, failing any crate whose run selects none of its tests
+        if: steps.scope.outputs.count != '0'
+        shell: bash
+        env:
+          DR_AS3_CORPUS_OPTIONAL: "1"
+          DISROBE_PY_BANDS_OPTIONAL: "1"
+        run: |
+          set -euo pipefail
+          echo "DR_AS3_CORPUS_OPTIONAL=1: the SWF corpus the AS3 gates grade is gitignored, so no CI checkout has it; the scheduled test job declares it optional too"
+          echo "DISROBE_PY_BANDS_OPTIONAL=1: this job installs none of the eight pinned CPython bands; py-band-gate grades 3.10, 3.12 and 3.13 on every push, and the scheduled test job grades all eight"
+          packages=()
+          while IFS=$'\t' read -r name _; do
+            packages+=(--package "$name")
+          done < "$RUNNER_TEMP/push-crates.tsv"
+          cargo nextest list --profile ci-push --all-features "${packages[@]}" --message-format json > "$RUNNER_TEMP/push-tests.json"
+          python3 - "$RUNNER_TEMP/push-tests.json" "$RUNNER_TEMP/push-crates.tsv" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          listing_path: str = sys.argv[1]
+          selection_path: str = sys.argv[2]
+          with open(listing_path, encoding="utf-8") as handle:
+              listing: dict = json.load(handle)
+          selected: dict[str, int] = {}
+          skipped: list[tuple[str, str]] = []
+          for suite in listing["rust-suites"].values():
+              matched: int = sum(1 for case in suite["testcases"].values() if case["filter-match"]["status"] == "matches")
+              selected[suite["package-name"]] = selected.get(suite["package-name"], 0) + matched
+              if suite["status"] != "listed":
+                  skipped.append((suite["binary-id"], suite["status"]))
+          for binary, status in sorted(skipped):
+              print(f"{binary}: excluded by the ci-push default filter (nextest status {status}); the scheduled test job runs it")
+          test_attribute: re.Pattern[str] = re.compile(r"^\s*#\[(?:\w+::)*test\b", re.MULTILINE)
+          unselected: list[str] = []
+          with open(selection_path, encoding="utf-8") as handle:
+              for line in handle:
+                  name, directory, _, targets = line.rstrip("\n").split("\t")
+                  count: int = selected.get(name, 0)
+                  if count:
+                      print(f"{name}: {count} test(s) selected")
+                      continue
+                  declared: int = sum(len(test_attribute.findall(path.read_text(encoding="utf-8", errors="replace"))) for path in Path(directory).rglob("*.rs"))
+                  if declared and targets == "untested":
+                      print(f"::warning::{name} sets test = false on its library and has no other test target, so no job runs its {declared} #[test] function(s)")
+                  elif declared:
+                      unselected.append(f"{name} declares {declared} test function(s) under {directory}, but this run selects none of them")
+                  else:
+                      print(f"{name}: declares no test function, so nextest has nothing to run for it")
+          for message in unselected:
+              print(f"::error::{message}")
+          sys.exit(1 if unselected else 0)
+          PY
+          cargo nextest run --profile ci-push --all-features "${packages[@]}" --no-tests=warn
+      - name: run the doctests of the changed crates
+        if: steps.scope.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=()
+          while IFS=$'\t' read -r name _ doctests _; do
+            if [ "$doctests" = yes ]; then
+              packages+=(--package "$name")
+            fi
+          done < "$RUNNER_TEMP/push-crates.tsv"
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "no changed crate has a library target with doctests enabled"
+            exit 0
+          fi
+          cargo test --doc --all-features "${packages[@]}"
+
   javascript:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard == 'javascript'
     name: javascript (${{ matrix.os }})
@@ -151,9 +342,11 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       RUST_TEST_THREADS: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Require JavaScript fixtures
         shell: bash
         run: |
@@ -184,7 +377,7 @@ jobs:
         os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.os != 'all' && format('["{0}"]', github.event.inputs.os) || '["ubuntu-latest","macos-latest","windows-latest"]') }}
         shard: ${{ fromJSON(github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && github.event.inputs.shard != 'all' && (github.event.inputs.shard == 'one' && '["one","nativelang-bodies","nativelang-remainder"]' || github.event.inputs.shard == 'nativelang' && '["nativelang-bodies","nativelang-remainder"]' || format('["{0}"]', github.event.inputs.shard)) || '["one","two","three","nativelang-bodies","nativelang-remainder"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: provision Lua and Luau reference toolchains
         if: matrix.shard == 'three'
         uses: ./.github/actions/lua-oracles
@@ -195,11 +388,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo docker image prune --all --force 2>/dev/null || true
           df -h /
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: "0.12.13"
           enable-cache: true
@@ -259,7 +452,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $extension -PathType Leaf)) { throw "Missing opcache: $extension" }
           "DISROBE_PHP_BIN=$php" >> $env:GITHUB_ENV
           "DZOA_OPCACHE_DLL=$extension" >> $env:GITHUB_ENV
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: temurin
           java-version: "25.0.4+7.0.LTS"
@@ -295,8 +488,10 @@ jobs:
           if ((Get-FileHash -LiteralPath $cfr -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2') { throw 'CFR archive checksum mismatch' }
           java -jar $cfr --version
           if ($LASTEXITCODE -ne 0) { throw 'CFR version probe failed' }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
       - name: provision Go 1.26.3 for graded Go fixtures
@@ -345,7 +540,7 @@ jobs:
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8
         with:
           ruby-version: "3.4.10"
       - name: provision the mruby reference toolchain
@@ -526,7 +721,7 @@ jobs:
             demand makecab DISROBE_REQUIRE_MAKECAB
           fi
       - name: provision the dotnet sdk the il-equivalence floors are measured with
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         env:
           DOTNET_INSTALL_DIR: ${{ runner.temp }}/disrobe-dotnet
         with:
@@ -830,7 +1025,7 @@ jobs:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
       - name: retain Ruby opcode measurement
         if: always() && (matrix.shard == 'one')
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: yarv-evidence-${{ matrix.os }}
           path: ${{ runner.temp }}/yarv-evidence
@@ -843,7 +1038,7 @@ jobs:
           test -f target/determinism-hashes.txt
           cp target/determinism-hashes.txt "target/determinism-hashes-${{ matrix.os }}.txt"
           cat "target/determinism-hashes-${{ matrix.os }}.txt"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: matrix.shard == 'one'
         with:
           name: determinism-hashes-${{ matrix.os }}
@@ -887,9 +1082,11 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       DISROBE_REQUIRE_ERLANG: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
         with:
           otp-version: "28.5.0.3"
@@ -921,7 +1118,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
         with:
           pattern: determinism-hashes-*
           merge-multiple: true
@@ -980,17 +1177,17 @@ jobs:
     name: py recompile-equivalence gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo docker image prune --all --force 2>/dev/null || true
           df -h /
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: "0.12.13"
           enable-cache: true
@@ -998,8 +1195,10 @@ jobs:
         run: uv python install 3.14.5
       - name: provision cpython 3.15.0b4 (the prerelease the 3.15 band bar names)
         run: uv python install 3.15.0b4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
       - name: export PYO3_PYTHON
@@ -1025,17 +1224,17 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo docker image prune --all --force 2>/dev/null || true
           df -h /
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: "0.12.13"
           enable-cache: true
@@ -1045,8 +1244,10 @@ jobs:
         run: uv python install 3.12.13
       - name: provision cpython 3.13.14 (the release the 3.13 band bar names)
         run: uv python install 3.13.14
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
       - name: export PYO3_PYTHON
@@ -1074,7 +1275,7 @@ jobs:
     env:
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/share/boost
@@ -1101,7 +1302,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/luau" --help >/dev/null 2>&1 || true
           "$HOME/.local/bin/luau-compile" --help >/dev/null 2>&1 || true
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8
         with:
           ruby-version: "3.4.10"
       - name: provision pinned mruby 3.3.0
@@ -1168,13 +1369,13 @@ jobs:
           fi
 
           printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
-      - uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
         with:
           php-version: "8.4"
           extensions: opcache
           tools: none
           coverage: none
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24"
       - name: locate the opcache zend_extension the op_array emitter loads
@@ -1188,8 +1389,10 @@ jobs:
           fi
           echo "DZOA_OPCACHE_DLL=${dll}" >> "$GITHUB_ENV"
           echo "resolved opcache: ${dll}"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
       - name: wasmtime re-execution differential (recovered wasm runs identically to clean)
@@ -1206,7 +1409,7 @@ jobs:
         run: cargo test -p disrobe-pass-ruby --test yarv_recompile_oracle -- --nocapture
       - name: retain Ruby opcode measurement
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: yarv-evidence-execution
           path: ${{ runner.temp }}/yarv-evidence
@@ -1236,9 +1439,13 @@ jobs:
     name: deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.96.1
+      - uses: taiki-e/install-action@caf6763a71f372082d0927c4ad43f42b97d889bf
+        with:
+          tool: cargo-deny
       - run: cargo deny --all-features check
 
   typos:
@@ -1246,15 +1453,15 @@ jobs:
     name: typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: crate-ci/typos@master
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461
 
   hygiene:
     if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
     name: source hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - name: reject committed scratch scaffolding
         shell: bash
         run: |
@@ -1296,13 +1503,15 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - run: cargo +1.95.0 check --workspace --all-features
@@ -1313,15 +1522,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         id: setup-python
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
+          toolchain: 1.96.1
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: export PYO3_PYTHON
         shell: bash
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"

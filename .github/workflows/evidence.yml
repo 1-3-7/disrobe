@@ -18,8 +18,11 @@ on:
       - 'crates/disrobe-pass-pickle/**'
       - '.github/workflows/evidence.yml'
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: false
 
 env:
@@ -38,13 +41,15 @@ jobs:
       DISROBE_REQUIRE_JADX: "1"
       DISROBE_REQUIRE_JAVAC: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: temurin
           java-version: '25.0.4+7.0.LTS'
@@ -60,12 +65,12 @@ jobs:
           destination="${{ runner.temp }}/measured-payloads"
           mkdir -p "$destination"
           cp evidence/results/measured/*.json "$destination/"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evidence-measured-payloads
           path: ${{ runner.temp }}/measured-payloads/*.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: evidence-all-measured
@@ -81,10 +86,12 @@ jobs:
       DISROBE_REQUIRE_JADX: "1"
       DISROBE_REQUIRE_JAVAC: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: temurin
           java-version: '25.0.4+7.0.LTS'
@@ -98,7 +105,7 @@ jobs:
       - name: verify committed apk head-to-head measurement
         run: cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr --artifact-root "${{ runner.temp }}/head-to-head"
       - name: upload verified apk measurement
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: evidence-apk-jadx-cfr
@@ -115,13 +122,15 @@ jobs:
       DISROBE_REQUIRE_APKLEAKS: "1"
       DISROBE_REQUIRE_JADX: "1"
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
           distribution: temurin
           java-version: '25.0.4+7.0.LTS'
@@ -148,7 +157,7 @@ jobs:
           print("frisk head-to-head:", [(t["name"], t["display"]) for t in d["tools"]])
           assert dis["value"] >= apkleaks[0]["value"] - 1e-9, "disrobe frisk trails apkleaks"
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: evidence-frisk-apkleaks
@@ -162,9 +171,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: run gate harvest (committed corpora only)
         run: cargo run --locked -p disrobe-bench-head-to-head -- --only gate-harvest --artifact-root "${{ runner.temp }}/head-to-head"
       - name: assert committed-corpus gates are scored (no silent skip)
@@ -178,7 +189,7 @@ jobs:
               assert g["status"] == "ok", f"{gid} skipped in CI: {g}"
               print(gid, "->", g["display"])
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evidence-gate-harvest
           path: evidence/results/measured/gate-harvest.json
@@ -190,11 +201,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: download the complete measured result set
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: evidence-measured-payloads
           path: ci-measured
@@ -225,7 +238,7 @@ jobs:
         run: git diff --exit-code -- evidence/results/measured
       - name: verify the committed report against measured data
         run: cargo run --locked -p xtask -- evidence --check
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evidence-report
           path: |

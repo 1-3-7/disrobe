@@ -5,6 +5,24 @@ use std::path::PathBuf;
 
 use serde_yaml_ng::Value;
 
+const PINNED_TOOLCHAIN_ACTION: &str =
+    "dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0";
+const PUSH_SCOPE_STEP: &str = "select the workspace crates this push changed";
+const PUSH_TESTS_STEP: &str =
+    "test the changed crates, failing any crate whose run selects none of its tests";
+const PUSH_TIER_EXCLUDED_BINARIES: [(&str, &str); 10] = [
+    ("xtask", "python_bindings_e2e"),
+    ("disrobe-taint", "graded_corpus"),
+    ("disrobe-pass-dotnet", "default_feature_boundary"),
+    ("disrobe-pass-nativelang", "body_recovery_oracle"),
+    ("disrobe-pass-nativelang", "body_equivalence"),
+    ("disrobe-pass-nativelang", "oracle"),
+    ("disrobe-pass-nativelang", "dwarf_dewall"),
+    ("disrobe-pass-js-deob", "obfuscator_io_e2e"),
+    ("disrobe-pass-js-deob", "obfuscator_io_differential_oracle"),
+    ("disrobe-pass-js-deob", "reeval_corpus_oracle"),
+];
+
 fn workspace_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
@@ -26,18 +44,99 @@ fn yaml_file(path: PathBuf) -> Value {
         .unwrap_or_else(|error: serde_yaml_ng::Error| panic!("parse {}: {error}", path.display()))
 }
 
-fn rust_toolchain_action() -> String {
+fn rust_toolchain_channel() -> String {
     let path: PathBuf = workspace_root().join("rust-toolchain.toml");
     let source: String = std::fs::read_to_string(&path)
         .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
     let config: toml::Value = toml::from_str(&source)
         .unwrap_or_else(|error: toml::de::Error| panic!("parse {}: {error}", path.display()));
-    let channel: &str = config
+    config
         .get("toolchain")
         .and_then(|value: &toml::Value| value.get("channel"))
         .and_then(toml::Value::as_str)
-        .expect("rust-toolchain.toml toolchain channel");
-    format!("dtolnay/rust-toolchain@{channel}")
+        .expect("rust-toolchain.toml toolchain channel")
+        .to_owned()
+}
+
+fn uses_action(step: &Value, action: &str) -> bool {
+    step.get("uses")
+        .and_then(Value::as_str)
+        .and_then(|reference: &str| reference.split_once('@'))
+        .is_some_and(|(name, _): (&str, &str)| name == action)
+}
+
+fn is_full_commit_sha(revision: &str) -> bool {
+    revision.len() == 40
+        && revision
+            .bytes()
+            .all(|byte: u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn action_references(document: &Value) -> Vec<String> {
+    let mut steps: Vec<&Value> = Vec::new();
+    let mut references: Vec<String> = Vec::new();
+    if let Some(jobs) = document.get("jobs").and_then(Value::as_mapping) {
+        for job in jobs.values() {
+            references.extend(job.get("uses").and_then(Value::as_str).map(str::to_owned));
+            steps.extend(
+                job.get("steps")
+                    .and_then(Value::as_sequence)
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+    }
+    steps.extend(
+        document
+            .get("runs")
+            .and_then(|runs: &Value| runs.get("steps"))
+            .and_then(Value::as_sequence)
+            .into_iter()
+            .flatten(),
+    );
+    references.extend(
+        steps
+            .into_iter()
+            .filter_map(|step: &Value| step.get("uses").and_then(Value::as_str).map(str::to_owned)),
+    );
+    references
+}
+
+fn github_automation_files() -> Vec<PathBuf> {
+    let github: PathBuf = workspace_root().join(".github");
+    let workflows: PathBuf = github.join("workflows");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&workflows)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", workflows.display()))
+        .map(|entry: Result<std::fs::DirEntry, std::io::Error>| {
+            entry
+                .unwrap_or_else(|error: std::io::Error| {
+                    panic!("read {} entry: {error}", workflows.display())
+                })
+                .path()
+        })
+        .filter(|path: &PathBuf| {
+            matches!(
+                path.extension().and_then(std::ffi::OsStr::to_str),
+                Some("yml" | "yaml")
+            )
+        })
+        .collect();
+    let actions: PathBuf = github.join("actions");
+    for entry in std::fs::read_dir(&actions)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", actions.display()))
+    {
+        let action: PathBuf = entry
+            .unwrap_or_else(|error: std::io::Error| {
+                panic!("read {} entry: {error}", actions.display())
+            })
+            .path()
+            .join("action.yml");
+        if action.is_file() {
+            files.push(action);
+        }
+    }
+    files.sort();
+    files
 }
 
 fn command_packages(command: &str, selector: &str) -> BTreeSet<String> {
@@ -441,15 +540,22 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .expect("ci.yml concurrency group");
     assert_eq!(
         group,
-        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}",
-        "ci.yml must keep clippy-only and scoped-test dispatches out of matching full-run cancellation groups"
+        "${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'clippy' && '-clippy' || github.event_name == 'workflow_dispatch' && github.event.inputs.scope == 'tests' && format('-tests-{0}-{1}', github.event.inputs.os, github.event.inputs.shard) || '' }}",
+        "ci.yml must give every pushed commit its own group and keep clippy-only and scoped-test dispatches out of matching full-run cancellation groups"
     );
     assert_eq!(
         concurrency
             .get("cancel-in-progress")
-            .and_then(Value::as_bool),
-        Some(true),
-        "ci.yml must cancel obsolete runs within each event route"
+            .and_then(Value::as_str),
+        Some("${{ github.event_name != 'push' }}"),
+        "ci.yml must never cancel a push run and must cancel obsolete scheduled and dispatched runs within each route"
+    );
+    assert_eq!(
+        jobs.get("push-tests")
+            .and_then(|value: &Value| value.get("if"))
+            .and_then(Value::as_str),
+        Some("github.event_name == 'push' && github.ref == 'refs/heads/main'"),
+        "ci.yml push-tests must run the changed crates' tests on every push to main"
     );
     let test_matrix: &Value = jobs
         .get("test")
@@ -670,7 +776,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     let artifact_upload: &Value = test_steps
         .iter()
         .find(|step: &&Value| {
-            step.get("uses").and_then(Value::as_str) == Some("actions/upload-artifact@v7")
+            uses_action(step, "actions/upload-artifact")
                 && step
                     .get("with")
                     .and_then(|value: &Value| value.get("name"))
@@ -732,9 +838,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     }
     let java_setup_index: usize = test_steps
         .iter()
-        .position(|step: &Value| {
-            step.get("uses").and_then(Value::as_str) == Some("actions/setup-java@v4")
-        })
+        .position(|step: &Value| uses_action(step, "actions/setup-java"))
         .expect("ci.yml Java setup step");
     let jvm_requirement_index: usize = test_steps
         .iter()
@@ -767,9 +871,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     );
     let php_setup_index: usize = differential_steps
         .iter()
-        .position(|step: &Value| {
-            step.get("uses").and_then(Value::as_str) == Some("shivammathur/setup-php@v2")
-        })
+        .position(|step: &Value| uses_action(step, "shivammathur/setup-php"))
         .expect("ci.yml PHP setup step");
     let php_setup: &Value = &differential_steps[php_setup_index];
     assert_eq!(
@@ -876,19 +978,232 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         .and_then(|value: &Value| value.get("steps"))
         .and_then(Value::as_sequence)
         .expect("release.yml build steps");
-    let expected_toolchain: String = rust_toolchain_action();
+    let channel: String = rust_toolchain_channel();
     let toolchain: &Value = build_steps
         .iter()
         .find(|step: &&Value| {
-            step.get("uses").and_then(Value::as_str) == Some(expected_toolchain.as_str())
+            step.get("uses").and_then(Value::as_str) == Some(PINNED_TOOLCHAIN_ACTION)
         })
-        .unwrap_or_else(|| panic!("release.yml must install {expected_toolchain}"));
+        .unwrap_or_else(|| panic!("release.yml must install Rust with {PINNED_TOOLCHAIN_ACTION}"));
+    assert_eq!(
+        toolchain["with"]["toolchain"].as_str(),
+        Some(channel.as_str()),
+        "release.yml must build on the toolchain rust-toolchain.toml selects"
+    );
     assert_eq!(
         toolchain
             .get("with")
             .and_then(|value: &Value| value.get("targets"))
             .and_then(Value::as_str),
         Some("${{ matrix.target }}"),
-        "release.yml must install each build matrix target on Rust 1.96.1"
+        "release.yml must install each build matrix target on the pinned toolchain"
+    );
+}
+
+#[test]
+fn every_rust_toolchain_install_pins_one_commit_and_names_its_toolchain() {
+    let mut checked: usize = 0;
+    for path in github_automation_files() {
+        let document: Value = yaml_file(path.clone());
+        let jobs: Vec<&Value> = document
+            .get("jobs")
+            .and_then(Value::as_mapping)
+            .map(|jobs: &serde_yaml_ng::Mapping| jobs.values().collect())
+            .unwrap_or_default();
+        for step in jobs
+            .into_iter()
+            .filter_map(|job: &Value| job.get("steps").and_then(Value::as_sequence))
+            .flatten()
+            .filter(|step: &&Value| uses_action(step, "dtolnay/rust-toolchain"))
+        {
+            checked += 1;
+            assert_eq!(
+                step.get("uses").and_then(Value::as_str),
+                Some(PINNED_TOOLCHAIN_ACTION),
+                "{} must install Rust through the pinned master commit, because the version \
+                 branches are regenerated and orphan their commits",
+                path.display()
+            );
+            assert!(
+                step["with"]["toolchain"]
+                    .as_str()
+                    .is_some_and(|toolchain: &str| !toolchain.is_empty()),
+                "{} must name its toolchain, because the master action has no default",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        checked >= 20,
+        "only {checked} rust-toolchain installs were read, so the workflow reader broke"
+    );
+}
+
+#[test]
+fn patched_workflows_default_every_job_to_a_read_only_token() {
+    for name in ["ci.yml", "benchmark.yml", "evidence.yml", "fuzz.yml"] {
+        let document: Value = workflow(name);
+        assert_eq!(
+            document["permissions"]
+                .as_mapping()
+                .map(serde_yaml_ng::Mapping::len),
+            Some(1),
+            "{name} must declare one workflow-level permission, or its jobs inherit the \
+             repository default token"
+        );
+        assert_eq!(
+            document["permissions"]["contents"].as_str(),
+            Some("read"),
+            "{name} must default every job to contents: read"
+        );
+    }
+}
+
+#[test]
+fn every_action_is_local_or_pinned_to_a_commit() {
+    let mut checked: usize = 0;
+    for path in github_automation_files() {
+        for reference in action_references(&yaml_file(path.clone())) {
+            checked += 1;
+            assert!(
+                reference.starts_with("./")
+                    || reference
+                        .rsplit_once('@')
+                        .is_some_and(|(_, revision): (&str, &str)| is_full_commit_sha(revision)),
+                "{} uses {reference}; a third-party action must be pinned to a full commit SHA, \
+                 because a tag or branch can move under the workflow",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        checked >= 100,
+        "only {checked} action references were read from .github, so the reader broke and this \
+         check would pass without pinning anything"
+    );
+}
+
+#[test]
+fn push_tests_fail_a_changed_crate_whose_run_selects_no_test() {
+    let ci: Value = workflow("ci.yml");
+    let steps: &Vec<Value> = ci["jobs"]["push-tests"]["steps"]
+        .as_sequence()
+        .expect("ci.yml push-tests steps");
+    let script: &str = test_step_command(steps, PUSH_TESTS_STEP);
+    let listing: usize = script
+        .find("cargo nextest list --profile ci-push")
+        .expect("push-tests must list the tests it is about to run");
+    let guard: usize = script
+        .find("sys.exit(1 if unselected else 0)")
+        .expect("push-tests must fail when a changed crate declares tests its run does not select");
+    let run: usize = script
+        .find("cargo nextest run --profile ci-push")
+        .expect("push-tests must run the tests of the changed crates");
+    assert!(
+        listing < guard && guard < run,
+        "push-tests must list the selection, reject a changed crate with no selected test, and \
+         only then run"
+    );
+}
+
+#[test]
+fn push_tests_warn_instead_of_failing_a_crate_whose_library_disables_tests() {
+    let ci: Value = workflow("ci.yml");
+    let steps: &Vec<Value> = ci["jobs"]["push-tests"]["steps"]
+        .as_sequence()
+        .expect("ci.yml push-tests steps");
+    let scope: &str = test_step_command(steps, PUSH_SCOPE_STEP);
+    assert!(
+        scope.contains("any(not target[\"test\"] for target in libraries)")
+            && scope.contains("not any(target[\"test\"] for target in package[\"targets\"])"),
+        "push-tests must mark a crate untested only from the test flags cargo metadata reads out \
+         of its manifest: a library with test = false and no other test target"
+    );
+    let script: &str = test_step_command(steps, PUSH_TESTS_STEP);
+    let exemption: usize = script
+        .find("if declared and targets == \"untested\":")
+        .expect("push-tests must warn instead of failing a crate whose library sets test = false");
+    let failure: usize = script
+        .find("unselected.append(")
+        .expect("push-tests must still fail every other crate whose run selects no test");
+    assert!(
+        exemption < failure
+            && script.contains(
+                "sets test = false on its library and has no other test target, so no job runs its"
+            ),
+        "push-tests must name a crate whose library disables its tests and the count no job runs"
+    );
+}
+
+#[test]
+fn push_tests_run_under_the_ci_push_nextest_profile() {
+    let ci: Value = workflow("ci.yml");
+    let steps: &Vec<Value> = ci["jobs"]["push-tests"]["steps"]
+        .as_sequence()
+        .expect("ci.yml push-tests steps");
+    let nextest_commands: Vec<&str> = test_step_command(steps, PUSH_TESTS_STEP)
+        .lines()
+        .map(str::trim)
+        .filter(|line: &&str| line.starts_with("cargo nextest "))
+        .collect();
+    assert_eq!(
+        nextest_commands.len(),
+        2,
+        "push-tests must list and then run its tests: {nextest_commands:?}"
+    );
+    for command in nextest_commands {
+        assert!(
+            command.contains(" --profile ci-push "),
+            "push-tests must use the ci-push nextest profile: {command}"
+        );
+    }
+    let path: PathBuf = workspace_root().join(".config").join("nextest.toml");
+    let source: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+    let config: toml::Value = toml::from_str(&source)
+        .unwrap_or_else(|error: toml::de::Error| panic!("parse {}: {error}", path.display()));
+    let profile: &toml::Value = config
+        .get("profile")
+        .and_then(|profiles: &toml::Value| profiles.get("ci-push"))
+        .expect(".config/nextest.toml ci-push profile");
+    assert_eq!(
+        profile.get("fail-fast").and_then(toml::Value::as_bool),
+        Some(false),
+        "the ci-push profile must report every failing test instead of stopping at the first"
+    );
+    let filter: &str = profile
+        .get("default-filter")
+        .and_then(toml::Value::as_str)
+        .expect("ci-push default filter");
+    let mut excluded: Vec<&str> = filter
+        .trim()
+        .strip_prefix("not (")
+        .and_then(|rest: &str| rest.strip_suffix(')'))
+        .expect("the ci-push default filter must be one not (...) over excluded binaries")
+        .split('|')
+        .map(str::trim)
+        .collect();
+    excluded.sort_unstable();
+    let mut expected: Vec<String> = Vec::with_capacity(PUSH_TIER_EXCLUDED_BINARIES.len());
+    for (package, binary) in PUSH_TIER_EXCLUDED_BINARIES {
+        let crate_root: PathBuf = if package == "xtask" {
+            workspace_root().join(package)
+        } else {
+            workspace_root().join("crates").join(package)
+        };
+        assert!(
+            crate_root
+                .join("tests")
+                .join(format!("{binary}.rs"))
+                .is_file(),
+            "{package} no longer has the test binary {binary}, so the ci-push exclusion is stale"
+        );
+        expected.push(format!("binary_id(={package}::{binary})"));
+    }
+    expected.sort_unstable();
+    assert_eq!(
+        excluded, expected,
+        "the ci-push default filter must exclude exactly the binaries the scheduled test job \
+         alone runs, no more and no fewer"
     );
 }
