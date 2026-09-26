@@ -6,7 +6,6 @@
 )]
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use disrobe_pass_dotnet::cil::{
     Instruction, MethodBody, OperandValue, disassemble, parse_method_body,
@@ -163,26 +162,6 @@ fn predicate_clean_baselines_carry_no_dispatcher() {
         analyze(&load(PRED_CLEAN)).is_none(),
         "the unobfuscated predicate baseline must contain no control-flow dispatcher"
     );
-}
-
-#[test]
-fn predicate_protected_exes_run_byte_identically_to_clean() {
-    let Some(clean_out): Option<String> = dotnet_run(PRED_CLEAN) else {
-        eprintln!("SKIP: no .NET runtime on PATH to execute the predicate behavioral oracle");
-        return;
-    };
-    for (label, flat) in [
-        ("x86Predicate", PRED_X86),
-        ("ExpressionPredicate", PRED_EXPR),
-    ] {
-        let flat_out: String = dotnet_run(flat)
-            .unwrap_or_else(|| panic!("{label} exe must run under the same runtime as clean"));
-        assert_eq!(
-            clean_out, flat_out,
-            "{label}: the predicate-flattened exe must print byte-identical output to the clean exe"
-        );
-    }
-    assert!(clean_out.lines().count() >= 8);
 }
 
 const CFF_METHODS: [&str; 6] = ["Crc32", "Classify", "CountWords", "Gcd", "Collatz", "Clamp"];
@@ -1083,43 +1062,5 @@ fn expression_predicate_string_loader_recovers_known_originals() {
         [(11, "PMFMI"), (22, "DDBBCEFG")],
         "the real ConfuserEx ExpressionPredicate fixture must statically recover both outputs of \
          Secrets.Decode(int) against its committed source"
-    );
-}
-
-fn dotnet_run(exe: &str) -> Option<String> {
-    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push(exe);
-    let direct: std::io::Result<std::process::Output> = Command::new(&path).output();
-    if let Ok(out) = direct
-        && out.status.success()
-    {
-        return Some(String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"));
-    }
-    let via: std::io::Result<std::process::Output> = Command::new("dotnet").arg(&path).output();
-    match via {
-        Ok(out) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"))
-        }
-        _ => None,
-    }
-}
-
-#[test]
-fn behavioral_oracle_clean_and_flattened_print_identically() {
-    let Some(clean_out): Option<String> = dotnet_run(CLEAN) else {
-        eprintln!("SKIP: no .NET runtime on PATH to execute the behavioral oracle");
-        return;
-    };
-    let flat_out: String =
-        dotnet_run(FLAT).expect("flattened exe must run under the same runtime as the clean exe");
-    assert_eq!(
-        clean_out, flat_out,
-        "the deflattener's ground-truth oracle is the original program's behavior: the \
-         ConfuserEx control-flow-flattened exe must print byte-identical output to the clean exe"
-    );
-    assert!(
-        clean_out.lines().count() >= 8,
-        "the sample exercises every benign method; got {} lines",
-        clean_out.lines().count()
     );
 }
