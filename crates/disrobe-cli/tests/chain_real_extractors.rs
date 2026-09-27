@@ -373,10 +373,7 @@ fn real_extractor_ruby_yarv_binary() {
 
 #[test]
 fn real_extractor_shell_bash() {
-    let Some(bytes): Option<Vec<u8>> = read_fixture("shell/bash/bashfuscator/string/hello.sh")
-    else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("shell/bash/bashfuscator/string/hello.sh");
     let doc: ChainDocument = run_chain_auto(bytes, "corpus://shell/hello.sh");
     assert_pass_id(&doc, "shell.deob");
     assert_pass_completes(&doc, "shell.deob");
@@ -801,11 +798,7 @@ fn real_extractor_go_emits_symbol_listing_not_json() {
 
 #[test]
 fn real_pyinstaller_auto_surfaces_native_disasm_for_bundled_pyd() {
-    let Some(bytes): Option<Vec<u8>> =
-        read_fixture("python/freezers/pyinstaller/gauntlet/hello.exe")
-    else {
-        return;
-    };
+    let bytes: Vec<u8> = read_fixture("python/freezers/pyinstaller/gauntlet/hello.exe");
     let registry: PassRegistry = registry_full();
     let runner: RealPassRunner = RealPassRunner;
     let config: ChainConfig = ChainConfig {
