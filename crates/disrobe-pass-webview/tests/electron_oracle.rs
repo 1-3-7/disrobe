@@ -110,22 +110,32 @@ fn pickle_wrap(json: &[u8], data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn run_asar_pack(src: &Path, out: &Path) -> bool {
+const ASAR_PACKAGE: &str = "@electron/asar@3.4.1";
+
+fn run_asar_pack(src: &Path, out: &Path) {
     let mut command: Command = if cfg!(windows) {
         let mut c: Command = Command::new("cmd");
-        c.args(["/C", "npx", "--yes", "@electron/asar", "pack"]);
-        c.arg(src).arg(out);
+        c.args(["/C", "npx"]);
         c
     } else {
-        let mut c: Command = Command::new("npx");
-        c.args(["--yes", "@electron/asar", "pack"]);
-        c.arg(src).arg(out);
-        c
+        Command::new("npx")
     };
-    match command.output() {
-        Ok(output) => output.status.success() && out.exists(),
-        Err(_) => false,
-    }
+    command
+        .args(["--yes", ASAR_PACKAGE, "pack"])
+        .arg(src)
+        .arg(out);
+    let output: std::process::Output = command.output().unwrap_or_else(|error: std::io::Error| {
+        panic!("required tool missing: npx cannot be spawned to run {ASAR_PACKAGE}: {error}")
+    });
+    assert!(
+        output.status.success() && out.is_file(),
+        "required tool missing: `npx --yes {ASAR_PACKAGE} pack` exited with {} and wrote no \
+         archive at {}\nstdout: {}\nstderr: {}",
+        output.status,
+        out.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 fn tricky_tree() -> Vec<(&'static str, Vec<u8>)> {
@@ -206,27 +216,20 @@ fn carves_real_electron_asar_from_cli() {
     let dist: PathBuf = workdir.join("dist");
     write_tree(&dist, &sample_tree());
     let asar_path: PathBuf = workdir.join("app.asar");
-    if !run_asar_pack(&dist, &asar_path) {
-        eprintln!(
-            "CORPUS: @electron/asar CLI unavailable (node/npx not on PATH); skipping real-toolchain grade"
-        );
-        return;
-    }
+    run_asar_pack(&dist, &asar_path);
     let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
     assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
     let assets: Vec<RecoveredAsset> = carve(&bytes).unwrap();
     assert_matches_sample(&assets);
+    let unverified: Vec<(&str, IntegrityStatus)> = assets
+        .iter()
+        .filter(|asset: &&RecoveredAsset| asset.integrity != IntegrityStatus::Verified)
+        .map(|asset: &RecoveredAsset| (asset.path.as_str(), asset.integrity))
+        .collect();
     assert!(
-        assets
-            .iter()
-            .all(|asset: &RecoveredAsset| asset.integrity != IntegrityStatus::Mismatch),
-        "real @electron/asar integrity blocks must not report a false mismatch"
-    );
-    assert!(
-        assets
-            .iter()
-            .any(|asset: &RecoveredAsset| asset.integrity == IntegrityStatus::Verified),
-        "at least one real integrity block must verify against the recovered bytes"
+        unverified.is_empty(),
+        "{ASAR_PACKAGE} writes a sha256 integrity block for every file, so every recovered asset \
+         must verify against it: {unverified:?}"
     );
     let _ = fs::remove_dir_all(&workdir);
 }
@@ -365,15 +368,10 @@ fn recovers_non_ascii_names_and_binary_content_byte_identically() {
     let dist: PathBuf = workdir.join("dist");
     write_tree(&dist, &tree);
     let asar_path: PathBuf = workdir.join("app.asar");
-    if run_asar_pack(&dist, &asar_path) {
-        let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
-        assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
-        assert_round_trip(&bytes, &tree);
-    } else {
-        eprintln!(
-            "CORPUS: @electron/asar CLI unavailable (node/npx not on PATH); graded the hand-built asar only"
-        );
-    }
+    run_asar_pack(&dist, &asar_path);
+    let bytes: Vec<u8> = fs::read(&asar_path).unwrap();
+    assert_eq!(detect_family(&bytes), Some(WebviewFamily::Electron));
+    assert_round_trip(&bytes, &tree);
     let _ = fs::remove_dir_all(&workdir);
 }
 
