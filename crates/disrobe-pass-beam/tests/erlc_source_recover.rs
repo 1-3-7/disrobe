@@ -180,9 +180,7 @@ const RECOMPILE_FLOOR: usize = 4;
 
 #[test]
 fn stripped_core_lift_recompiles_to_matching_exports() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED_RECOMPILE) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED_RECOMPILE);
     let erlc: PathBuf = erlang.erlc;
     let mut ok: usize = 0;
     for (module, rel) in SOURCES {
@@ -283,9 +281,7 @@ fn battery(module: &str) -> &'static [&'static str] {
 
 #[test]
 fn stripped_core_lift_preserves_call_semantics() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED_SEMANTICS) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED_SEMANTICS);
     let (erlc, erl): (PathBuf, PathBuf) = (erlang.erlc, erlang.erl);
     let mut checked: usize = 0;
     for (module, rel) in SOURCES {

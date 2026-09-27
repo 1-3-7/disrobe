@@ -469,11 +469,7 @@ fn recovered_source_with_raising_test(source: &str) -> String {
 #[cfg(target_os = "linux")]
 #[test]
 fn real_erlang_runtime_rejects_a_recompiled_wrong_test_result() {
-    let erlang: Erlang = require_erlang(GRADED).unwrap_or_else(|| {
-        panic!(
-            "the Linux mutation control requires erlc and erl; CI provisions OTP {CI_OTP_VERSION} and must fail rather than report an unmeasured success"
-        )
-    });
+    let erlang: Erlang = require_erlang(GRADED);
     let source: PathBuf = corpus_dir().join("arith.erl");
     let result: Fidelity = measure(
         &erlang.erlc,
@@ -576,11 +572,7 @@ fn measure_corpus(erlang: Erlang) -> CorpusMeasurement {
 #[cfg(target_os = "linux")]
 #[test]
 fn stripped_core_lift_is_recompile_equivalent() {
-    let erlang: Erlang = require_erlang(GRADED).unwrap_or_else(|| {
-        panic!(
-            "the Linux claim-backing test requires erlc and erl; CI provisions OTP {CI_OTP_VERSION} and must fail rather than report an unmeasured success"
-        )
-    });
+    let erlang: Erlang = require_erlang(GRADED);
     let full_version: String = otp_version(&erlang.erl)
         .unwrap_or_else(|defect: String| panic!("the full OTP version probe failed: {defect}"));
     assert_eq!(
@@ -626,10 +618,8 @@ fn stripped_core_lift_is_recompile_equivalent() {
 
 #[cfg(not(target_os = "linux"))]
 #[test]
-fn stripped_core_lift_is_recompile_equivalent_when_erlang_is_available() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+fn stripped_core_lift_meets_the_recompile_equivalence_floor() {
+    let erlang: Erlang = require_erlang(GRADED);
     let measurement: CorpusMeasurement = measure_corpus(erlang);
     assert_eq!(measurement.total, PUBLISHED_DENOMINATOR);
     assert!(

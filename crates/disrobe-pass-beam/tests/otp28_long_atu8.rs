@@ -45,11 +45,7 @@ fn expected_atom() -> String {
 }
 
 fn require_otp28() -> Erlang {
-    let erlang: Erlang = require_erlang(GRADED).unwrap_or_else(|| {
-        panic!(
-            "the OTP 28 AtU8 integration gate requires erlc and erl; the dedicated CI job must provision OTP {OTP_VERSION}"
-        )
-    });
+    let erlang: Erlang = require_erlang(GRADED);
     assert_eq!(
         erlang.release, "28",
         "the OTP 28 AtU8 integration gate requires OTP release 28, but erl reports {}",

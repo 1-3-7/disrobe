@@ -20,7 +20,7 @@ use common::erlang_toolchain::{ERL, require, run_bounded};
 const GRADED: &str = "the ETF ATOM_EXT character-limit differential";
 
 fn require_oracle_erlang() -> PathBuf {
-    require(&ERL, GRADED).unwrap_or_else(|| panic!("{GRADED} requires erl"))
+    require(&ERL, GRADED)
 }
 
 fn atom_ext_latin1(length: u16) -> Vec<u8> {

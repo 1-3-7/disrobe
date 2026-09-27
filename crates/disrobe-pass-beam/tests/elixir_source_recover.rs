@@ -85,9 +85,7 @@ fn idents(src: &str) -> BTreeSet<String> {
 
 #[test]
 fn real_elixir_recovered_source_recompiles_with_elixirc() {
-    let Some(elixirc): Option<PathBuf> = require(&ELIXIRC, GRADED) else {
-        return;
-    };
+    let elixirc: PathBuf = require(&ELIXIRC, GRADED);
     let bytes: Vec<u8> = std::fs::read(corpus("elixir/Elixir.Hello.beam")).unwrap();
     let original: BeamFile = BeamFile::parse(&bytes).expect("typed parse");
     let surface: ErlangSurface = recover_erlang(&original).expect("recover");

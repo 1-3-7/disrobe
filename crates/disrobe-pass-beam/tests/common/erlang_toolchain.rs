@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -11,49 +11,29 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Toolchain {
     pub program: &'static str,
-    pub require_var: &'static str,
     pub install_hint: &'static str,
 }
 
 pub const ERLC: Toolchain = Toolchain {
     program: "erlc",
-    require_var: "DISROBE_REQUIRE_ERLANG",
-    install_hint: "install Erlang/OTP and put erlc on PATH",
+    install_hint: "install Erlang/OTP 27.3.4, the release CI pins, and put erlc on PATH",
 };
 
 pub const ERL: Toolchain = Toolchain {
     program: "erl",
-    require_var: "DISROBE_REQUIRE_ERLANG",
-    install_hint: "install Erlang/OTP and put erl on PATH",
+    install_hint: "install Erlang/OTP 27.3.4, the release CI pins, and put erl on PATH",
 };
 
 pub const ELIXIRC: Toolchain = Toolchain {
     program: "elixirc",
-    require_var: "DISROBE_REQUIRE_ELIXIR",
-    install_hint: "install Elixir and put elixirc on PATH",
+    install_hint: "install Elixir 1.18.4, the release CI pins, and put elixirc on PATH",
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Requirement {
-    Optional,
-    Mandatory,
-}
 
 #[derive(Debug, Clone)]
 pub struct Erlang {
     pub erlc: PathBuf,
     pub erl: PathBuf,
     pub release: String,
-}
-
-pub fn requirement(toolchain: &Toolchain) -> Requirement {
-    let Some(raw): Option<OsString> = std::env::var_os(toolchain.require_var) else {
-        return Requirement::Optional;
-    };
-    match raw.to_string_lossy().trim().to_ascii_lowercase().as_str() {
-        "" | "0" | "false" | "no" | "off" | "optional" => Requirement::Optional,
-        _ => Requirement::Mandatory,
-    }
 }
 
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -115,58 +95,36 @@ pub fn run_bounded(mut cmd: Command) -> Option<(bool, String, String)> {
     }
 }
 
-pub fn skip_or_fail(toolchain: &Toolchain, graded: &str, defect: &str) {
-    assert!(
-        requirement(toolchain) == Requirement::Optional,
-        "{var} makes the {program} toolchain mandatory for this run, so {graded} cannot be \
-         measured and this case must not report success: {defect}. To fix it, {hint}; to permit a \
-         run that measures nothing here, clear {var}.",
-        var = toolchain.require_var,
+#[allow(clippy::panic)]
+fn missing(toolchain: &Toolchain, graded: &str, defect: &str) -> ! {
+    panic!(
+        "{graded} is graded only by running {program}, and every CI job that runs these tests \
+         provisions it, so this case fails rather than report a success that measured nothing: \
+         {defect}. To fix it, {hint}.",
         program = toolchain.program,
         hint = toolchain.install_hint,
-    );
-    announce_unmeasured(toolchain, graded, defect);
+    )
 }
 
-fn announce_unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
-    let line: String = format!(
-        "\nNOT MEASURED: {graded} compared nothing and graded nothing, because {defect}. Set \
-         {var}=1 to fail instead of skipping when {program} cannot be run.\n",
-        var = toolchain.require_var,
-        program = toolchain.program,
-    );
-    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
-    drop(sink.write_all(line.as_bytes()));
-    drop(sink.flush());
+pub fn require(toolchain: &Toolchain, graded: &str) -> PathBuf {
+    find_on_path(toolchain.program).unwrap_or_else(|| {
+        missing(
+            toolchain,
+            graded,
+            &format!(
+                "`{}` is not on PATH, so the toolchain is not installed here",
+                toolchain.program
+            ),
+        )
+    })
 }
 
-pub fn require(toolchain: &Toolchain, graded: &str) -> Option<PathBuf> {
-    match find_on_path(toolchain.program) {
-        Some(path) => Some(path),
-        None => {
-            skip_or_fail(
-                toolchain,
-                graded,
-                &format!(
-                    "`{}` is not on PATH, so the toolchain is not installed here",
-                    toolchain.program
-                ),
-            );
-            None
-        }
-    }
-}
-
-pub fn require_erlang(graded: &str) -> Option<Erlang> {
-    let erlc: PathBuf = require(&ERLC, graded)?;
-    let erl: PathBuf = require(&ERL, graded)?;
-    match otp_release(&erl) {
-        Ok(release) => Some(Erlang { erlc, erl, release }),
-        Err(defect) => {
-            skip_or_fail(&ERL, graded, &defect);
-            None
-        }
-    }
+pub fn require_erlang(graded: &str) -> Erlang {
+    let erlc: PathBuf = require(&ERLC, graded);
+    let erl: PathBuf = require(&ERL, graded);
+    let release: String =
+        otp_release(&erl).unwrap_or_else(|defect: String| missing(&ERL, graded, &defect));
+    Erlang { erlc, erl, release }
 }
 
 fn otp_release(erl: &Path) -> Result<String, String> {

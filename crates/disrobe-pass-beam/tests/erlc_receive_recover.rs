@@ -285,9 +285,7 @@ fn grade_every_call(erlang: &Erlang, flags: &[&str]) -> (usize, usize) {
 
 #[test]
 fn stripped_core_lift_preserves_receive_semantics() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let (identical, total): (usize, usize) = grade_every_call(&erlang, &[]);
     println!(
         "BEAM receive recovery: {identical}/{total} calls output-identical under OTP {}",
@@ -299,9 +297,7 @@ fn stripped_core_lift_preserves_receive_semantics() {
 
 #[test]
 fn stripped_core_lift_preserves_receive_semantics_under_an_untyped_lowering() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let (identical, total): (usize, usize) = grade_every_call(&erlang, &["+no_type_opt"]);
     println!(
         "BEAM receive recovery without type optimization: {identical}/{total} calls \
@@ -321,9 +317,7 @@ fn function_block<'a>(source: &'a str, head: &str) -> &'a str {
 
 #[test]
 fn recovered_receive_carries_a_timeout_only_where_the_bytecode_waits_with_one() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let trip: Roundtrip = roundtrip(&erlang, "recv_timeouts", unchanged, &[]);
     let source: &str = &trip.surface.source;
 
@@ -394,9 +388,7 @@ fn drop_a_timeout_clause(source: &str) -> String {
 
 #[test]
 fn the_runtime_differential_rejects_a_recovered_receive_whose_timeout_was_dropped() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let trip: Roundtrip = roundtrip(&erlang, "recv_timeouts", drop_a_timeout_clause, &[]);
     let original: String = run_call(
         &erlang.erl,
@@ -444,9 +436,7 @@ fn weaken_a_receive_guard(source: &str) -> String {
 
 #[test]
 fn the_runtime_differential_rejects_a_recovered_receive_with_a_weakened_guard() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let trip: Roundtrip = roundtrip(&erlang, "recv_clauses", weaken_a_receive_guard, &[]);
     let original: String = run_call(&erlang.erl, &trip.orig_dir, "recv_clauses", "guarded(3)");
     assert_eq!(original, "{small,3}");

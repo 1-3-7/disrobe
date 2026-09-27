@@ -124,9 +124,7 @@ fn compile_module(erlc: &Path, src: &Path, out_dir: &Path) -> Result<(), String>
 
 #[test]
 fn core_lifted_corpus_bodies_bind_every_variable_they_read() {
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let mut modules: Vec<PathBuf> = std::fs::read_dir(corpus_dir())
         .expect("read corpus dir")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))

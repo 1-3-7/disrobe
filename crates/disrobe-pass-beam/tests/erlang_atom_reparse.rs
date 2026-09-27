@@ -60,9 +60,7 @@ fn atom_corpus() -> Vec<String> {
 fn emitted_atoms_reparse_to_intended_atom() {
     let names: Vec<String> = atom_corpus();
 
-    let Some(erlang): Option<Erlang> = require_erlang(GRADED) else {
-        return;
-    };
+    let erlang: Erlang = require_erlang(GRADED);
     let erl: PathBuf = erlang.erl;
 
     let comparisons: Vec<String> = names
