@@ -42,6 +42,7 @@ mod packer_roster;
 mod playground;
 mod plugins;
 mod prepush;
+mod prose_tells;
 mod push_graders;
 mod regen;
 mod roster_breadth;

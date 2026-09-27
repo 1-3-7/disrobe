@@ -113,6 +113,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_private_references(root, &mut report);
     check_host_paths(root, &mut report);
     check_pyarmor_serial_footprint(root, &mut report);
+    check_prose_tells(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -264,6 +265,44 @@ fn check_pyarmor_serial_footprint(root: &Path, report: &mut Report) {
                 found.files.len(),
                 found.files.len(),
                 found.set_sha256
+            ),
+        );
+    }
+}
+
+fn check_prose_tells(root: &Path, report: &mut Report) {
+    const CHECK: &str = "prose-tells";
+    let scan: crate::prose_tells::TellScan = match tracked_or_nonignored_files(root)
+        .and_then(|files: BTreeSet<String>| crate::prose_tells::scan(root, &files))
+    {
+        Ok(scan) => scan,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("could not scan public text for AI tells: {error:#}"),
+            );
+            return;
+        }
+    };
+    report.fact("prose_tells", json!(scan.prose_hits.len()));
+    report.fact("rust_source_tells", json!(scan.rust_hits));
+    if !scan.prose_hits.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} AI tell(s) or attribution line(s) in public prose; rewrite each in plain technical voice: {}",
+                scan.prose_hits.len(),
+                scan.prose_hits.join("; ")
+            ),
+        );
+    }
+    let ceiling: usize = crate::prose_tells::RUST_SOURCE_CEILING;
+    if scan.rust_hits > ceiling {
+        report.fail(
+            CHECK,
+            format!(
+                "{} AI-tell words in crate Rust sources, the ceiling is {ceiling}; rewrite the new ones, the ceiling in xtask/src/prose_tells.rs only goes down",
+                scan.rust_hits
             ),
         );
     }
