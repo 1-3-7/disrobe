@@ -31,7 +31,7 @@ fn detect_finds_synthesized_pace() {
     let det: ProtectorDetection = detect(SYNTHESIZED_PACE).expect("detection");
     assert_eq!(det.family, PACE_FAMILY);
     assert_eq!(det.legal_stance, LegalStance::AmberDetectOnly);
-    assert_eq!(det.stance_doc, "docs/legal/pace-js-stance.md");
+    assert_eq!(det.stance_doc, "docs/src/legal.md#pace");
     assert!(det.confidence >= 0.30, "confidence = {}", det.confidence);
     assert!(
         det.markers
@@ -60,7 +60,7 @@ fn authorized_strip_removes_static_guards_and_preserves_program() {
     let out: ProtectorOutput = deob(SYNTHESIZED_PACE, &opts).expect("pace strip");
     assert_eq!(out.family, PACE_FAMILY);
     assert_eq!(out.legal_stance, LegalStance::AmberDetectOnly);
-    assert_eq!(out.stance_doc, "docs/legal/pace-js-stance.md");
+    assert_eq!(out.stance_doc, "docs/src/legal.md#pace");
     assert!(out.source.contains("function realWork"));
     assert!(out.source.contains("unrelated business logic"));
     assert!(!out.source.contains("setInterval"));
@@ -75,7 +75,7 @@ fn detect_only_report_returns_unstripped_telemetry() {
     let out: ProtectorOutput = detect_only_report(SYNTHESIZED_PACE);
     assert_eq!(out.family, PACE_FAMILY);
     assert_eq!(out.legal_stance, LegalStance::AmberDetectOnly);
-    assert_eq!(out.stance_doc, "docs/legal/pace-js-stance.md");
+    assert_eq!(out.stance_doc, "docs/src/legal.md#pace");
     assert!(out.detection.is_some());
     assert_eq!(out.stats.reversed, 0);
     assert!(

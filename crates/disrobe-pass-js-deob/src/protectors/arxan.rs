@@ -299,7 +299,7 @@ mod tests {
     fn legal_stance_const_matches_family() {
         assert_eq!(LEGAL, FAMILY.legal_stance());
         assert!(LEGAL.allows_bypass_with_authorization());
-        assert_eq!(FAMILY.stance_doc(), "docs/legal/digital-ai-arxan-stance.md");
+        assert_eq!(FAMILY.stance_doc(), "docs/src/legal.md#arxan");
     }
 
     #[test]

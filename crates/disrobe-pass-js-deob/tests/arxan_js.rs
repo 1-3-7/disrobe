@@ -29,7 +29,7 @@ fn legal_stance_is_amber_detect_only() {
     assert!(ARXAN_LEGAL.allows_bypass_with_authorization());
     assert_eq!(
         ARXAN_FAMILY.stance_doc(),
-        "docs/legal/digital-ai-arxan-stance.md"
+        "docs/src/legal.md#arxan"
     );
 }
 
@@ -69,7 +69,7 @@ fn strip_removes_only_publicly_documented_patterns() {
     let out: ProtectorOutput = deob(SYNTHESIZED_ARXAN, &opts).expect("deob");
     assert_eq!(out.family, ARXAN_FAMILY);
     assert_eq!(out.legal_stance, LegalStance::AmberDetectOnly);
-    assert_eq!(out.stance_doc, "docs/legal/digital-ai-arxan-stance.md");
+    assert_eq!(out.stance_doc, "docs/src/legal.md#arxan");
     assert!(out.detection.is_some());
     assert!(!out.source.contains("Digital.ai"));
     assert!(!out.source.contains("__guard_"));

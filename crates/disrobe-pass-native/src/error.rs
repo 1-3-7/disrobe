@@ -58,7 +58,7 @@ pub enum Error {
     LicenseRequired(&'static str),
 
     #[error(
-        "DR-NATIVE-0015: grey-zone protector detected ({0}); detection-only per docs/legal/{0}-stance.md"
+        "DR-NATIVE-0015: grey-zone protector detected ({0}); detection-only per its stance in docs/src/legal.md"
     )]
     GreyZoneDetectOnly(&'static str),
 

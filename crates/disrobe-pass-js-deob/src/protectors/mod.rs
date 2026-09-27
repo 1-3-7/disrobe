@@ -38,9 +38,9 @@ impl ProtectorFamily {
     #[must_use]
     pub const fn stance_doc(self) -> &'static str {
         match self {
-            Self::JsDefender => "docs/legal/jsdefender-stance.md",
-            Self::Arxan => "docs/legal/digital-ai-arxan-stance.md",
-            Self::Pace => "docs/legal/pace-js-stance.md",
+            Self::JsDefender => "docs/src/legal.md#jsdefender",
+            Self::Arxan => "docs/src/legal.md#arxan",
+            Self::Pace => "docs/src/legal.md#pace",
         }
     }
 

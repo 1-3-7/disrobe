@@ -3,8 +3,8 @@
 All files in this tree are **synthesized recreations** generated from publicly available vendor documentation, security-research papers, & CVE disclosures. No file in this tree is the output of a real PreEmptive JSDefender, Digital.ai Arxan, or PACE Anti-Piracy build by a licensee.
 
 Educational/recreation-only per legal stance:
-- `jsdefender/` - docs/legal/jsdefender-stance.md (AMBER-leaning-GREEN)
-- `arxan/` - docs/legal/digital-ai-arxan-stance.md (AMBER, detect-default, strip behind --i-have-authorization for publicly-documented patterns only)
-- `pace/` - docs/legal/pace-js-stance.md (AMBER, detect-default, static-marker strip behind --i-have-authorization)
+- `jsdefender/` - docs/src/legal.md#jsdefender (AMBER-leaning-GREEN)
+- `arxan/` - docs/src/legal.md#arxan (AMBER, detect-default, strip behind --i-have-authorization for publicly-documented patterns only)
+- `pace/` - docs/src/legal.md#pace (AMBER, detect-default, static-marker strip behind --i-have-authorization)
 
 Regenerate via `scripts/bake/js_protectors.{ps1,sh}`.

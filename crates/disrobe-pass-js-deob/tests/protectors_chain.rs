@@ -69,7 +69,7 @@ fn detector_emits_pace_verdict_with_stance_metadata() {
     assert_eq!(v.family, FAMILY_OBFUSCATOR_WRAPPER);
     assert!(v.explain.contains("pace js"), "explain={}", v.explain);
     assert!(
-        v.explain.contains("docs/legal/pace-js-stance.md"),
+        v.explain.contains("docs/src/legal.md#pace"),
         "explain should cite legal stance, got {}",
         v.explain,
     );
@@ -85,7 +85,7 @@ fn detector_emits_jsdefender_verdict() {
     assert_eq!(v.family, FAMILY_OBFUSCATOR_WRAPPER);
     assert!(v.confidence > 0.0);
     assert!(
-        v.explain.contains("docs/legal/jsdefender-stance.md"),
+        v.explain.contains("docs/src/legal.md#jsdefender"),
         "explain should cite legal stance, got {}",
         v.explain,
     );
@@ -101,7 +101,7 @@ fn detector_emits_arxan_verdict() {
     assert_eq!(v.family, FAMILY_OBFUSCATOR_WRAPPER);
     assert!(v.confidence > 0.0);
     assert!(
-        v.explain.contains("docs/legal/digital-ai-arxan-stance.md"),
+        v.explain.contains("docs/src/legal.md#arxan"),
         "explain should cite legal stance, got {}",
         v.explain,
     );
@@ -176,7 +176,7 @@ fn pace_peel_is_withheld_without_the_operator_assertion() {
         "message={message}"
     );
     assert!(
-        message.contains("docs/legal/pace-js-stance.md"),
+        message.contains("docs/src/legal.md#pace"),
         "message={message}",
     );
 }
@@ -194,7 +194,7 @@ fn jsdefender_peel_is_withheld_without_the_operator_assertion() {
         "message={message}"
     );
     assert!(
-        message.contains("docs/legal/jsdefender-stance.md"),
+        message.contains("docs/src/legal.md#jsdefender"),
         "message={message}",
     );
 }
@@ -209,7 +209,7 @@ fn arxan_peel_is_withheld_without_the_operator_assertion() {
         "message={message}"
     );
     assert!(
-        message.contains("docs/legal/digital-ai-arxan-stance.md"),
+        message.contains("docs/src/legal.md#arxan"),
         "message={message}",
     );
 }

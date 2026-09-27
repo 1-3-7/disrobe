@@ -745,7 +745,7 @@ fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<PackerReco
         ))),
         UnpackerStatus::GreyZoneDetectOnly => Err(CoreError::PassFailure(format!(
             "DR-NAT-0908: native.packer-unpack: {label} is a grey-zone protector; detection-only \
-             per docs/legal stance (no unpack)",
+             per the stance in docs/src/legal.md (no unpack)",
             label = packer.label(),
         ))),
         UnpackerStatus::GreyZoneDetectAndCarve => Err(CoreError::PassFailure(format!(

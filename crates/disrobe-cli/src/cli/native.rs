@@ -1636,7 +1636,7 @@ fn recover_packed_image(input: &Path, bytes: &[u8]) -> miette::Result<RecoveredA
         }
         UnpackerStatus::GreyZoneDetectOnly => {
             return Err(miette::miette!(
-                "DR-NATIVE-0043: {} is a grey-zone protector; detection-only per docs/legal stance (no unpack)",
+                "DR-NATIVE-0043: {} is a grey-zone protector; detection-only per the stance in docs/src/legal.md (no unpack)",
                 packer.label()
             ));
         }

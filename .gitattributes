@@ -7,7 +7,6 @@ crates/disrobe-pass-js-deob/tests/fixtures/babel_system_named_param/fixture.min.
 crates/disrobe-pass-mobile/tests/fixtures/hermes/longtail.js -text
 docs/**/*.md text eol=lf
 docs/errors/*.md text eol=lf
-docs/legal/*.md text eol=lf
 docs/theme/*.hbs text eol=lf
 .github/**/*.yml text eol=lf
 *.jsc binary

@@ -61,4 +61,4 @@ The metadata bundle flags are also global. They are accepted everywhere, but onl
 
 ## The authorization gate
 
-`--i-have-authorization` is the explicit assertion used by legally sensitive paths that expose an authorization gate. The `decryption-keys` metadata category refuses without it (`DR-CLI-0420`); language-specific commercial-protector paths document their own gate behavior. Passing the flag is your assertion that you are authorized to analyze the input under the statutory framing in [LEGAL.md](https://github.com/1-3-7/disrobe/blob/main/LEGAL.md).
+`--i-have-authorization` is the explicit assertion used by legally sensitive paths that expose an authorization gate. The `decryption-keys` metadata category refuses without it (`DR-CLI-0420`); language-specific commercial-protector paths document their own gate behavior. Passing the flag is your assertion that you are authorized to analyze the input under the statutory framing in [Legal](../legal.md).

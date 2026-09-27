@@ -36,7 +36,7 @@ pub enum Error {
 
     #[error(
         "DR-JSDEOB-0010: transform `{transform}` requires `--i-have-authorization`; \
-        see LEGAL.md and docs/legal/jscrambler-stance.md before bypassing protector code locks or RASP guards"
+        see docs/src/legal.md#jscrambler before bypassing protector code locks or RASP guards"
     )]
     AuthorizationRequired { transform: &'static str },
 

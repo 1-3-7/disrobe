@@ -6,7 +6,7 @@ use crate::fileio::read_text_bounded;
 
 const MAX_DOCUMENT_BYTES: u64 = 4 * 1024 * 1024;
 
-const ROOT_DOCUMENTS: [&str; 3] = ["README.md", "LEGAL.md", "SECURITY.md"];
+const ROOT_DOCUMENTS: [&str; 2] = ["README.md", "SECURITY.md"];
 
 const EXCLUDED_DOCUMENTS: [(&str, &str); 6] = [
     (

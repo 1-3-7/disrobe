@@ -10,7 +10,7 @@ pre-commit:
       run: |
         bad=$(git diff --cached --diff-filter=A --name-only -- ':!*/*' | while read f; do
           case "$f" in
-            Cargo.toml|Cargo.lock|README.md|NOTICE|LICENSE|CONTRIBUTING.md|LEGAL.md|clippy.toml|deny.toml|rust-toolchain.toml|rustfmt.toml|typos.toml|committed.toml|justfile|lefthook.yml|.gitignore|.gitattributes) ;;
+            Cargo.toml|Cargo.lock|README.md|NOTICE|LICENSE|CONTRIBUTING.md|clippy.toml|deny.toml|rust-toolchain.toml|rustfmt.toml|typos.toml|committed.toml|justfile|lefthook.yml|.gitignore|.gitattributes) ;;
             *) echo "$f" ;;
           esac
         done)
