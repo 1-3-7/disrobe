@@ -634,7 +634,7 @@ fn method_body(source: &str, signature_fragment: &str) -> Option<String> {
     None
 }
 
-fn javap_code(javap: &PathBuf, class_dir: &PathBuf, class: &str) -> String {
+fn javap_code(javap: &PathBuf, class_dir: &Path, class: &str) -> String {
     let out: std::process::Output = Command::new(javap)
         .arg("-c")
         .arg("-p")
@@ -659,9 +659,11 @@ fn javap_code(javap: &PathBuf, class_dir: &PathBuf, class: &str) -> String {
 #[test]
 fn javap_code_fails_closed_when_the_tool_rejects_its_arguments() {
     let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
-    let class_dir: PathBuf = std::env::temp_dir();
+    let class_dir: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_tf_return_empty_classpath")
+            .expect("create scratch dir");
     let result: Result<String, Box<dyn std::any::Any + Send>> =
-        std::panic::catch_unwind(|| javap_code(&test_binary, &class_dir, "NoSuchClass"));
+        std::panic::catch_unwind(|| javap_code(&test_binary, class_dir.path(), "NoSuchClass"));
     assert!(
         result.is_err(),
         "a failing javap process returned an empty comparison input instead of failing the gate"

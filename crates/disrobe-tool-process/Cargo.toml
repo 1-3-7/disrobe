@@ -17,6 +17,9 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

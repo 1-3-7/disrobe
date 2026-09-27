@@ -153,20 +153,20 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_taken_over_a_different_input_is_refused() {
+    fn a_capture_taken_over_a_different_input_is_refused() -> Result<(), String> {
         let root: PathBuf = checked_workspace_root();
-        let decoy: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe_h2h_capture_decoy_{}.apk",
-            std::process::id()
-        ));
-        let written: std::io::Result<()> = std::fs::write(&decoy, b"not the planted apk");
-        assert!(written.is_ok(), "{:?}", written.as_ref().err());
-        let refused: Result<FrozenApkleaks, String> = load(&root, &decoy);
-        let _ = std::fs::remove_file(&decoy);
+        let (decoy, mut handle): (disrobe_core::scratch::ScratchFile, std::fs::File) =
+            disrobe_core::scratch::ScratchFile::create("disrobe_h2h_capture_decoy", "apk")
+                .map_err(|error| error.to_string())?;
+        std::io::Write::write_all(&mut handle, b"not the planted apk")
+            .map_err(|error| error.to_string())?;
+        drop(handle);
+        let refused: Result<FrozenApkleaks, String> = load(&root, decoy.path());
         let message: String = refused.err().unwrap_or_default();
         assert!(
             message.contains("describes a different file"),
             "a capture taken over another input must be refused rather than graded, got: {message}"
         );
+        Ok(())
     }
 }

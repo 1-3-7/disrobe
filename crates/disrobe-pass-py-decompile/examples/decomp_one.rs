@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFile, read_pyc};
 
@@ -34,7 +35,11 @@ fn main() {
         "../../corpus/python/decompile/construct/cases/{construct}.py"
     ));
     let interpreter: PathBuf = find_interpreter(alias).expect("interpreter");
-    let scratch: PathBuf = std::env::temp_dir().join(format!("decomp_one_{construct}_{alias}.pyc"));
+    let (pyc_file, pyc_handle): (ScratchFile, std::fs::File) =
+        ScratchFile::create(&format!("decomp_one_{construct}_{alias}"), "pyc")
+            .expect("scratch pyc");
+    drop(pyc_handle);
+    let scratch: PathBuf = pyc_file.path().to_path_buf();
     let script: &str =
         "import py_compile,sys;py_compile.compile(sys.argv[1],cfile=sys.argv[2],doraise=True)";
     let st: std::process::Output = Command::new(&interpreter)

@@ -385,38 +385,13 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs::symlink;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static TEST_DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-
-    struct TestDirectory(std::path::PathBuf);
-
-    impl TestDirectory {
-        fn create() -> io::Result<Self> {
-            let sequence: usize = TEST_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let path: std::path::PathBuf = std::env::temp_dir().join(format!(
-                "disrobe-tool-process-argv-zero-{}-{sequence}",
-                std::process::id()
-            ));
-            fs::create_dir(&path)?;
-            Ok(Self(path))
-        }
-
-        fn path(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _: io::Result<()> = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn canonical_execution_preserves_requested_program_name()
     -> Result<(), Box<dyn std::error::Error>> {
-        let scratch: TestDirectory = TestDirectory::create()?;
+        let scratch: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-tool-process-argv-zero-")
+            .tempdir()?;
         let target: std::path::PathBuf = scratch.path().join("dispatch-target");
         let source: std::path::PathBuf = scratch.path().join("dispatch.rs");
         fs::write(

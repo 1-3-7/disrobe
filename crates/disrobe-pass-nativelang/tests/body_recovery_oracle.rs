@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 use std::sync::OnceLock;
 
 use common::{CRYSTAL_PE, D_PE, NIM_ELF, ZIG_ELF, fixture_or_fail, tool_or_unmeasured};
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_nativelang::{
     BodyRecovery, BodySkip, BodyStatus, BoundaryConfidence, FunctionBody, MAX_BODY_CARVE_BYTES,
     NativeLangAnalysis, RustBody, analyze,
@@ -76,14 +77,9 @@ fn analyze_fixture(fixture: &'static Fixture) -> &'static NativeLangAnalysis {
     analysis
 }
 
-fn scratch_dir(tag: &str) -> PathBuf {
-    let dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe-nativelang-body-{tag}-{}",
-        std::process::id()
-    ));
-    drop(std::fs::remove_dir_all(&dir));
-    std::fs::create_dir_all(&dir).expect("create the scratch directory for the recompile grade");
-    dir
+fn scratch_dir(tag: &str) -> ScratchDir {
+    ScratchDir::create(&format!("disrobe-nativelang-body-{tag}"))
+        .expect("create the scratch directory for the recompile grade")
 }
 
 fn recovered_c_bodies(recovery: &BodyRecovery) -> Vec<(&FunctionBody, &str)> {
@@ -141,7 +137,8 @@ fn every_recovered_pseudo_c_body_compiles_under_a_real_c_compiler() {
             analysis.bodies.recovered,
             fixture.recovered_floor
         );
-        let dir: PathBuf = scratch_dir(&format!("{}-c", fixture.tag));
+        let scratch: ScratchDir = scratch_dir(&format!("{}-c", fixture.tag));
+        let dir: &Path = scratch.path();
         let mut inputs: Vec<PathBuf> = Vec::new();
         for (body, source) in bodies.iter().take(MAX_GRADED_C_BODIES) {
             let file: PathBuf = dir.join(format!("{:016x}.c", body.start));
@@ -169,7 +166,9 @@ fn every_recovered_pseudo_c_body_compiles_under_a_real_c_compiler() {
             String::from_utf8_lossy(&output.stderr)
         );
         graded_total = graded_total.saturating_add(graded);
-        drop(std::fs::remove_dir_all(&dir));
+        scratch
+            .close()
+            .expect("remove the scratch directory for the recompile grade");
     }
     assert!(
         graded_total >= 492,
@@ -202,7 +201,8 @@ fn every_recovered_pseudo_rust_body_compiles_under_rustc() {
             analysis.bodies.rust_bodies,
             fixture.rust_floor
         );
-        let dir: PathBuf = scratch_dir(&format!("{}-rust", fixture.tag));
+        let scratch: ScratchDir = scratch_dir(&format!("{}-rust", fixture.tag));
+        let dir: &Path = scratch.path();
         let mut crate_source: String = String::new();
         let mut graded: usize = 0;
         for (body, source) in bodies.iter().take(MAX_GRADED_RUST_BODIES) {
@@ -241,7 +241,9 @@ fn every_recovered_pseudo_rust_body_compiles_under_rustc() {
             fixture.tag, analysis.bodies.rust_bodies
         );
         graded_total = graded_total.saturating_add(graded);
-        drop(std::fs::remove_dir_all(&dir));
+        scratch
+            .close()
+            .expect("remove the scratch directory for the recompile grade");
     }
     assert!(
         graded_total >= 487,
@@ -514,8 +516,9 @@ fn assert_no_directory(path: &Path) {
 
 #[test]
 fn scratch_directories_do_not_survive_a_graded_run() {
-    let dir: PathBuf = scratch_dir("cleanup-probe");
+    let scratch: ScratchDir = scratch_dir("cleanup-probe");
+    let dir: PathBuf = scratch.path().to_path_buf();
     std::fs::write(dir.join("probe.c"), "int probe(void) { return 0; }\n").expect("write");
-    std::fs::remove_dir_all(&dir).expect("remove");
+    drop(scratch);
     assert_no_directory(&dir);
 }

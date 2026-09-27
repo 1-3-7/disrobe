@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use serde_json::Value as Json;
 
 const AOT_IMAGE: &str = "dotnet/HelloAppAot.exe";
@@ -54,9 +55,9 @@ fn recovered_json(image: &str, label: &str) -> (Json, String) {
         "{label} requires the tracked corpus image {}",
         input.display()
     );
-    let dir: PathBuf = std::env::temp_dir().join(format!("disrobe-native-aot-cli-{label}"));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let out: PathBuf = dir.join("report.json");
+    let dir: ScratchDir =
+        ScratchDir::create(&format!("disrobe-native-aot-cli-{label}")).expect("scratch dir");
+    let out: PathBuf = dir.path().join("report.json");
     let captured: disrobe_core::subprocess::CapturedOutput = run_native_aot(&input, &out);
     assert_eq!(
         captured.exit_code,
@@ -106,10 +107,8 @@ fn the_json_flag_writes_the_report_to_stdout_and_no_file() {
         "this gate requires the tracked corpus image {}",
         input.display()
     );
-    let dir: PathBuf = std::env::temp_dir().join("disrobe-native-aot-cli-json");
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let out: PathBuf = dir.join("must-not-appear.json");
-    let _ = std::fs::remove_file(&out);
+    let dir: ScratchDir = ScratchDir::create("disrobe-native-aot-cli-json").expect("scratch dir");
+    let out: PathBuf = dir.path().join("must-not-appear.json");
 
     let mut command: Command = Command::new(env!("CARGO_BIN_EXE_disrobe"));
     command

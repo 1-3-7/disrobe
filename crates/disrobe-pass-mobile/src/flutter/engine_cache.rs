@@ -152,6 +152,8 @@ fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
 mod tests {
     use std::fs;
 
+    use disrobe_core::scratch::ScratchDir;
+
     use super::*;
     use crate::flutter::{
         FlutterEngineIdentity, FlutterEngineSymbol, FlutterEngineSymbolMapIdentityKind,
@@ -171,33 +173,28 @@ mod tests {
         }]
     }
 
-    fn cache_dir(test: &str) -> std::path::PathBuf {
-        let sequence: u64 = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
-        let directory: std::path::PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-flutter-engine-cache-{test}-{}-{sequence}",
-            std::process::id(),
-        ));
-        fs::create_dir_all(&directory).expect("create test cache directory");
-        directory
+    fn cache_dir(test: &str) -> ScratchDir {
+        ScratchDir::create(&format!("disrobe-flutter-engine-cache-{test}"))
+            .expect("create test cache directory")
     }
 
     #[test]
     fn stores_and_loads_a_validated_elf_summary_by_identity() {
-        let directory: std::path::PathBuf = cache_dir("round-trip");
-        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(&directory);
+        let scratch: ScratchDir = cache_dir("round-trip");
+        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(scratch.path());
         let identity: FlutterEngineIdentity = identity();
 
         cache.store(&identity, &symbols()).expect("store summary");
         let loaded: Option<Vec<FlutterEngineSymbol>> = cache.load(&identity).expect("load summary");
 
         assert_eq!(loaded, Some(symbols()));
-        fs::remove_dir_all(directory).expect("remove test cache directory");
+        scratch.close().expect("remove test cache directory");
     }
 
     #[test]
     fn treats_corrupt_and_old_entries_as_cache_misses() {
-        let directory: std::path::PathBuf = cache_dir("invalid");
-        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(&directory);
+        let scratch: ScratchDir = cache_dir("invalid");
+        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(scratch.path());
         let identity: FlutterEngineIdentity = identity();
         let path: std::path::PathBuf = cache.entry_path(&identity).expect("entry path");
 
@@ -209,29 +206,29 @@ mod tests {
         )
         .expect("write old entry");
         assert_eq!(cache.load(&identity).expect("old miss"), None);
-        fs::remove_dir_all(directory).expect("remove test cache directory");
+        scratch.close().expect("remove test cache directory");
     }
 
     #[test]
     fn treats_an_oversized_entry_as_a_cache_miss() {
-        let directory: std::path::PathBuf = cache_dir("oversized");
-        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(&directory);
+        let scratch: ScratchDir = cache_dir("oversized");
+        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(scratch.path());
         let identity: FlutterEngineIdentity = identity();
         let path: std::path::PathBuf = cache.entry_path(&identity).expect("entry path");
 
         fs::write(&path, vec![b'x'; FLUTTER_ENGINE_SYMBOL_CACHE_MAX_BYTES + 1])
             .expect("write oversized entry");
         assert_eq!(cache.load(&identity).expect("oversized miss"), None);
-        fs::remove_dir_all(directory).expect("remove test cache directory");
+        scratch.close().expect("remove test cache directory");
     }
 
     #[test]
     fn concurrent_writers_leave_a_complete_valid_entry() {
-        let directory: std::path::PathBuf = cache_dir("concurrent");
+        let scratch: ScratchDir = cache_dir("concurrent");
         let identity: FlutterEngineIdentity = identity();
         let mut writers: Vec<std::thread::JoinHandle<()>> = Vec::new();
         for _ in 0..4 {
-            let directory: std::path::PathBuf = directory.clone();
+            let directory: std::path::PathBuf = scratch.path().to_path_buf();
             let identity: FlutterEngineIdentity = identity.clone();
             writers.push(std::thread::spawn(move || {
                 let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(directory);
@@ -246,11 +243,11 @@ mod tests {
             writer.join().expect("writer thread");
         }
 
-        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(&directory);
+        let cache: FlutterEngineSymbolCache = FlutterEngineSymbolCache::new(scratch.path());
         assert_eq!(
             cache.load(&identity).expect("load final entry"),
             Some(symbols())
         );
-        fs::remove_dir_all(directory).expect("remove test cache directory");
+        scratch.close().expect("remove test cache directory");
     }
 }

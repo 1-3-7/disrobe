@@ -721,13 +721,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn opened_file_identity_rejects_replacement_path() -> io::Result<()> {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-tool-process-identity-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root)?;
-        let path: PathBuf = root.join("source.java");
-        let replacement: PathBuf = root.join("replacement.java");
+        let root: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-tool-process-identity-")
+            .tempdir()?;
+        let path: PathBuf = root.path().join("source.java");
+        let replacement: PathBuf = root.path().join("replacement.java");
         std::fs::write(&path, b"class First {}")?;
         std::fs::write(&replacement, b"class Replacement {}")?;
         let opened: File = File::open(&path)?;
@@ -735,8 +733,8 @@ mod tests {
         std::fs::rename(&replacement, &path)?;
         assert_eq!(std::fs::read(&path)?, b"class Replacement {}");
         assert!(!opened_file_matches_path(&path, &opened)?);
-        let _: io::Result<()> = std::fs::remove_dir_all(&root);
-        Ok(())
+        drop(opened);
+        root.close()
     }
 
     #[test]
@@ -805,12 +803,10 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn current_dir_reaches_the_contained_child() -> Result<(), Box<dyn std::error::Error>> {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-tool-process-current-dir-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root)?;
-        let root: PathBuf = root.canonicalize()?;
+        let scratch: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-tool-process-current-dir-")
+            .tempdir()?;
+        let root: PathBuf = scratch.path().canonicalize()?;
         let execution: Execution = CommandSpec::new("/bin/pwd", Duration::from_secs(2))
             .current_dir(root.clone())
             .run()?;
@@ -822,18 +818,17 @@ mod tests {
             Path::new(std::str::from_utf8(&captured.bytes)?.trim()),
             root.as_path()
         );
-        std::fs::remove_dir_all(root)?;
+        scratch.close()?;
         Ok(())
     }
 
     #[test]
     #[cfg(windows)]
     fn current_dir_reaches_the_contained_child() -> Result<(), Box<dyn std::error::Error>> {
-        let root: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-tool-process-current-dir-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root)?;
+        let scratch: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-tool-process-current-dir-")
+            .tempdir()?;
+        let root: PathBuf = scratch.path().to_path_buf();
         let command: PathBuf = std::env::var_os("SystemRoot")
             .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
             .join("System32")
@@ -851,7 +846,7 @@ mod tests {
             Path::new(std::str::from_utf8(&captured.bytes)?.trim()),
             root.as_path()
         );
-        std::fs::remove_dir_all(root)?;
+        scratch.close()?;
         Ok(())
     }
 

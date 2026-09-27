@@ -872,9 +872,9 @@ mod tests {
         );
         let apk_bytes: Vec<u8> = read.unwrap_or_default();
 
-        let tree: PathBuf =
-            std::env::temp_dir().join(format!("disrobe_h2h_pinned_frisk_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tree);
+        let tree_root: ScratchDir =
+            ScratchDir::create("disrobe_h2h_pinned_frisk").map_err(|error| error.to_string())?;
+        let tree: PathBuf = tree_root.path().join("tree");
         let extracted: Result<()> = extract_apk(&apk_bytes, &tree);
         assert!(
             extracted.is_ok(),
@@ -892,7 +892,7 @@ mod tests {
             |_| Vec::new(),
             |report: ReconReport| recall_indices_disrobe(&report),
         );
-        let _ = std::fs::remove_dir_all(&tree);
+        drop(tree_root);
         let disrobe_found: BTreeSet<String> = planted_labels(&disrobe_hits);
 
         let artifacts: ScratchDir =
@@ -1355,19 +1355,15 @@ mod tests {
     #[test]
     fn extract_apk_rejects_entry_size_cap() -> core::result::Result<(), String> {
         let apk: Vec<u8> = apk_zip(&[("classes.dex", b"abcdef".as_slice())])?;
-        let root: PathBuf = temp_dir("entry-cap");
-        let _ = std::fs::remove_dir_all(&root);
+        let scratch: ScratchDir =
+            ScratchDir::create("disrobe_h2h_frisk_entry_cap").map_err(|e| e.to_string())?;
+        let root: PathBuf = scratch.path().join("tree");
         let result: Result<()> = extract_apk_with_limits(&apk, &root, 8, 5, 64);
-        let _ = std::fs::remove_dir_all(&root);
         assert!(
             result.is_err(),
             "six bytes must exceed a five-byte entry cap"
         );
         Ok(())
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("disrobe_h2h_frisk_{}_{}", std::process::id(), name))
     }
 
     fn apk_zip(entries: &[(&str, &[u8])]) -> core::result::Result<Vec<u8>, String> {

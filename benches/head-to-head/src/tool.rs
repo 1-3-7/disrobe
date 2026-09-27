@@ -426,16 +426,14 @@ pub fn read_bounded_string(path: &Path, limit: u64) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn temp_file(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("disrobe_h2h_tool_{}_{}", std::process::id(), name))
-    }
-
     #[test]
     fn bounded_file_rejects_oversized_input() -> core::result::Result<(), String> {
-        let path: PathBuf = temp_file("oversized.bin");
+        let root: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_h2h_tool_oversized")
+                .map_err(|e| e.to_string())?;
+        let path: PathBuf = root.path().join("oversized.bin");
         std::fs::write(&path, b"abcdef").map_err(|e| e.to_string())?;
         let result: Result<Vec<u8>> = read_bounded_file(&path, 5);
-        let _ = std::fs::remove_file(&path);
         assert!(result.is_err(), "six bytes must exceed a five-byte cap");
         Ok(())
     }

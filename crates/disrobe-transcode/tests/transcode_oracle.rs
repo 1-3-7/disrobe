@@ -350,11 +350,11 @@ fn every_canonical_reader_accepts_the_transcoded_version() {
 }
 
 #[test]
-#[ignore = "writes a real .dr fixture to a temp path for the bin smoke test"]
+#[ignore = "writes a real .dr fixture under the cargo target tmpdir for the bin smoke test"]
 fn emit_real_dr_fixture() {
     let (env, _payload): (Envelope, RawPayload) = raw_envelope_from_real_bytes();
     let input: Vec<u8> = env.encode().expect("encode");
-    let out: PathBuf = std::env::temp_dir().join("disrobe_transcode_smoke_in.dr");
+    let out: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("disrobe_transcode_smoke_in.dr");
     std::fs::write(&out, &input).expect("write fixture");
     println!("WROTE {}", out.display());
 }

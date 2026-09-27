@@ -239,9 +239,11 @@ mod tests {
     }
 
     fn temp_root_names() -> std::collections::BTreeSet<String> {
-        let Ok(entries): std::io::Result<std::fs::ReadDir> =
-            std::fs::read_dir(std::env::temp_dir())
-        else {
+        let root: PathBuf = scratch_root();
+        let temp_root: &Path = root
+            .parent()
+            .expect("the scratch root sits inside the temp root");
+        let Ok(entries): std::io::Result<std::fs::ReadDir> = std::fs::read_dir(temp_root) else {
             return std::collections::BTreeSet::new();
         };
         let pid: String = std::process::id().to_string();

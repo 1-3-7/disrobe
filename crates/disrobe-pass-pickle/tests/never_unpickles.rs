@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pickle::{
     Disassembly, PickleValue, SafetyReport, Severity, VmTrace, analyze_safety, disassemble, execute,
 };
@@ -438,7 +438,7 @@ fn symbolic_reduce(module: &str, name: &str, argument: &str) -> PickleValue {
 
 #[derive(Debug)]
 struct LoadedGunScene {
-    directory: PathBuf,
+    _directory: ScratchDir,
     victim: PathBuf,
     victim_bytes: Vec<u8>,
     markers: Vec<PathBuf>,
@@ -446,15 +446,9 @@ struct LoadedGunScene {
 
 impl LoadedGunScene {
     fn stage() -> Self {
-        static SCENE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let directory: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-never-unpickles-{}-{}",
-            std::process::id(),
-            SCENE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&directory).unwrap_or_else(|error: std::io::Error| {
-            panic!("staging {}: {error}", directory.display())
-        });
+        let scratch: ScratchDir = ScratchDir::create("disrobe-never-unpickles")
+            .unwrap_or_else(|error: std::io::Error| panic!("staging the scene: {error}"));
+        let directory: &Path = scratch.path();
         let victim: PathBuf = directory.join("victim.txt");
         let victim_bytes: Vec<u8> = b"a real file the payloads target".to_vec();
         std::fs::write(&victim, &victim_bytes).unwrap_or_else(|error: std::io::Error| {
@@ -462,7 +456,7 @@ impl LoadedGunScene {
         });
         let markers: Vec<PathBuf> = vec![directory.join("marker_a"), directory.join("marker_c")];
         Self {
-            directory,
+            _directory: scratch,
             victim,
             victim_bytes,
             markers,
@@ -518,12 +512,6 @@ impl LoadedGunScene {
             ));
         }
         defects
-    }
-}
-
-impl Drop for LoadedGunScene {
-    fn drop(&mut self) {
-        let _: std::io::Result<()> = std::fs::remove_dir_all(&self.directory);
     }
 }
 

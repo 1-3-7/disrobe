@@ -106,7 +106,7 @@ pub fn run_isolated(
     let executable: PathBuf = std::env::current_exe()
         .map_err(|error: std::io::Error| io_error("locating the running test binary", error))?;
     preflight(&executable, worker)?;
-    let mut workspace: Workspace = Workspace::create()?;
+    let workspace: Workspace = Workspace::create()?;
     let outcome: Result<usize, StressError> = run_batches(
         &workspace,
         &executable,
@@ -118,7 +118,7 @@ pub fn run_isolated(
     );
     if let Err(StressError::Batch(failure)) = &outcome {
         eprintln!("disrobe-testkit: {failure}");
-        workspace.retain();
+        let _retained: PathBuf = workspace.retain();
     }
     outcome
 }
@@ -151,8 +151,8 @@ fn run_batches(
         let batch_timeout: Duration = configured_timeout.min(remaining);
         let batch_end: usize = next_case.saturating_add(config.batch_size).min(total);
         let records: Vec<BatchRecord> = build_records(corpus, order, config, next_case, batch_end)?;
-        let batch_path: PathBuf = workspace.path.join(format!("batch-{batch_index}.bin"));
-        let stderr_path: PathBuf = workspace.path.join(format!("stderr-{batch_index}.log"));
+        let batch_path: PathBuf = workspace.path().join(format!("batch-{batch_index}.bin"));
+        let stderr_path: PathBuf = workspace.path().join(format!("stderr-{batch_index}.log"));
         write_batch(&batch_path, workspace.token, &records)?;
         let outcome: BatchOutcome =
             execute_batch(executable, worker, &batch_path, &stderr_path, batch_timeout)?;
@@ -172,7 +172,7 @@ fn run_batches(
             records: &records,
             batch_path: &batch_path,
             stderr_path: &stderr_path,
-            workspace_path: &workspace.path,
+            workspace_path: workspace.path(),
             batch_timeout,
         };
         sealed_total = sealed_total
@@ -582,9 +582,11 @@ mod tests {
 
     #[test]
     fn a_stderr_log_far_larger_than_the_tail_is_read_only_at_its_end() {
-        let dir: PathBuf = std::env::temp_dir().join("disrobe-testkit-stderr-tail-probe");
-        std::fs::create_dir_all(&dir).expect("create the probe directory");
-        let path: PathBuf = dir.join("worker-stderr.log");
+        let dir: tempfile::TempDir = tempfile::Builder::new()
+            .prefix("disrobe-testkit-stderr-tail-probe-")
+            .tempdir()
+            .expect("create the probe directory");
+        let path: PathBuf = dir.path().join("worker-stderr.log");
         let filler: String = "noise\n".repeat(STDERR_TAIL_BYTES * 8);
         let mut contents: String = filler;
         contents.push_str("the last line the parent must report\n");
@@ -608,6 +610,6 @@ mod tests {
             tail.ends_with("the last line the parent must report"),
             "the tail must be taken from the END of the log: {tail}"
         );
-        std::fs::remove_dir_all(&dir).expect("remove the probe directory");
+        dir.close().expect("remove the probe directory");
     }
 }

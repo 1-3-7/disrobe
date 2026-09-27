@@ -126,7 +126,8 @@ fn batch_workspace() -> PathBuf {
         .map(PathBuf::from)
         .as_deref()
         .and_then(Path::parent)
-        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+        .map(Path::to_path_buf)
+        .expect("the stress harness starts each worker with its batch file inside the workspace")
 }
 
 fn worker_scratch() -> &'static Scratch {

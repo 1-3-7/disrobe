@@ -13,9 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_nir::NirModule;
 use disrobe_taint::{TaintConfig, TaintReport};
@@ -25,7 +25,6 @@ mod juliet_corpus;
 #[path = "support/published.rs"]
 mod published;
 
-static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 static CLI_PATH: OnceLock<PathBuf> = OnceLock::new();
 static HOST_C_COMPILER: OnceLock<Option<&'static str>> = OnceLock::new();
 
@@ -66,31 +65,13 @@ int main(void) {
 }
 "#;
 
-struct FixtureDirectory {
-    path: PathBuf,
-}
-
 struct CompiledFixture {
-    _directory: FixtureDirectory,
+    _directory: ScratchDir,
     executable: PathBuf,
 }
 
-impl FixtureDirectory {
-    fn create(name: &str) -> Self {
-        let fixture_id: u64 = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-        let path: PathBuf = std::env::temp_dir().join(format!(
-            "disrobe-taint-{name}-{}-{fixture_id}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create fixture directory");
-        Self { path }
-    }
-}
-
-impl Drop for FixtureDirectory {
-    fn drop(&mut self) {
-        let _result: std::io::Result<()> = fs::remove_dir_all(&self.path);
-    }
+fn fixture_directory(name: &str) -> ScratchDir {
+    ScratchDir::create(&format!("disrobe-taint-{name}")).expect("create fixture directory")
 }
 
 fn tool_runs(tool: &str) -> bool {
@@ -125,9 +106,9 @@ fn host_executable_name(stem: &str) -> String {
 
 fn compile_program(name: &str, body: &str) -> CompiledFixture {
     let compiler: &'static str = host_c_compiler();
-    let fixture_dir: FixtureDirectory = FixtureDirectory::create(name);
-    let source_path: PathBuf = fixture_dir.path.join("fixture.c");
-    let executable_path: PathBuf = fixture_dir.path.join(host_executable_name("fixture"));
+    let fixture_dir: ScratchDir = fixture_directory(name);
+    let source_path: PathBuf = fixture_dir.path().join("fixture.c");
+    let executable_path: PathBuf = fixture_dir.path().join(host_executable_name("fixture"));
     let source: String = format!("{PORTABLE_PRELUDE}{body}");
     fs::write(&source_path, &source).expect("write fixture source");
     let output: Output = Command::new(compiler)
@@ -199,8 +180,8 @@ fn an_unset_cli_path_fails_without_starting_cargo() {
 
 #[test]
 fn an_explicit_missing_cli_fails_without_building_a_replacement() {
-    let directory: FixtureDirectory = FixtureDirectory::create("missing-cli");
-    let path: PathBuf = directory.path.join(host_executable_name("missing"));
+    let directory: ScratchDir = fixture_directory("missing-cli");
+    let path: PathBuf = directory.path().join(host_executable_name("missing"));
     let error: String =
         resolve_cli(Some(path.as_os_str())).expect_err("a missing explicit CLI must fail");
     assert!(error.contains("is not a CLI executable file"), "{error}");
@@ -208,8 +189,8 @@ fn an_explicit_missing_cli_fails_without_building_a_replacement() {
 
 #[test]
 fn an_explicit_invalid_cli_fails_without_building_a_replacement() {
-    let directory: FixtureDirectory = FixtureDirectory::create("invalid-cli");
-    let path: PathBuf = directory.path.join(host_executable_name("invalid"));
+    let directory: ScratchDir = fixture_directory("invalid-cli");
+    let path: PathBuf = directory.path().join(host_executable_name("invalid"));
     fs::write(&path, b"not an executable").expect("write invalid CLI file");
     let error: String =
         resolve_cli(Some(path.as_os_str())).expect_err("an invalid explicit CLI must fail");
@@ -354,9 +335,9 @@ int main(void) {
 
 fn compile_combined(name: &str, bodies: &[&str]) -> CompiledFixture {
     let compiler: &'static str = host_c_compiler();
-    let fixture_dir: FixtureDirectory = FixtureDirectory::create(name);
-    let source_path: PathBuf = fixture_dir.path.join("fixture.c");
-    let executable_path: PathBuf = fixture_dir.path.join(host_executable_name("fixture"));
+    let fixture_dir: ScratchDir = fixture_directory(name);
+    let source_path: PathBuf = fixture_dir.path().join("fixture.c");
+    let executable_path: PathBuf = fixture_dir.path().join(host_executable_name("fixture"));
     let mut source: String = PORTABLE_PRELUDE.to_owned();
     for body in bodies {
         source.push_str(body);

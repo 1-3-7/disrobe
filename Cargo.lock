@@ -1808,6 +1808,7 @@ dependencies = [
 name = "disrobe-bench-native-unpack"
 version = "0.10.6"
 dependencies = [
+ "disrobe-core",
  "disrobe-pass-native",
  "eyre",
  "iced-x86",
@@ -3046,12 +3047,16 @@ dependencies = [
 [[package]]
 name = "disrobe-testkit"
 version = "0.10.6"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "disrobe-tool-process"
 version = "0.10.6"
 dependencies = [
  "libc",
+ "tempfile",
  "thiserror 2.0.18",
  "windows-sys 0.61.2",
 ]

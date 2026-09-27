@@ -6,6 +6,7 @@ disallowed-types = [
 disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "non-deterministic; date an output with disrobe_core::time::source_date (SOURCE_DATE_EPOCH or no date), read a clock for run.json or a user note with disrobe_core::time::WallClock, and use disrobe_core::time::now / now_secs elsewhere" },
     { path = "rand::thread_rng", reason = "seed every RNG explicitly via disrobe_core::rng::seeded for determinism; use disrobe_core::rng::os only in tests and non-deterministic paths", allow-invalid = true },
+    { path = "std::env::temp_dir", reason = "use disrobe_core::scratch::ScratchDir or ScratchFile, or tempfile, which remove what they create" },
 ]
 cognitive-complexity-threshold = 30
 type-complexity-threshold = 250

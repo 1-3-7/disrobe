@@ -17,6 +17,10 @@ const WINDOWS_SHARING_VIOLATION: i32 = 32;
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the one place that resolves the temp root; every caller receives a guarded entry under it"
+)]
 pub fn scratch_root() -> PathBuf {
     std::env::temp_dir().join(SCRATCH_ROOT_NAME)
 }

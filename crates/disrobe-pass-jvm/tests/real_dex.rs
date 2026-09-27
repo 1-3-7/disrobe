@@ -2,8 +2,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{
     BackendPreference, DEX_ENDIAN_TAG, DexHeader, DexVersion, android_decompile_dex,
     parse_dex_header,
@@ -12,7 +12,6 @@ use disrobe_pass_jvm::{
 const HELLO_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/Hello.dex");
 const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
 const EDGECASES_KT_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCasesKt.dex");
-static NEXT_JAVAC_DIR: AtomicUsize = AtomicUsize::new(0);
 
 fn javac() -> PathBuf {
     let path_var = std::env::var_os("PATH").expect("PATH for javac");
@@ -26,21 +25,18 @@ fn javac() -> PathBuf {
 }
 
 fn assert_javac_compiles(name: &str, source: &str) {
-    let unique = NEXT_JAVAC_DIR.fetch_add(1, Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!(
-        "disrobe-real-dex-{name}-{}-{unique}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&directory).expect("create javac directory");
-    let source_path = directory.join("EdgeCases.java");
+    let scratch: ScratchDir =
+        ScratchDir::create(&format!("disrobe-real-dex-{name}")).expect("create javac directory");
+    let directory: &std::path::Path = scratch.path();
+    let source_path: PathBuf = directory.join("EdgeCases.java");
     fs::write(&source_path, source).expect("write recovered Java");
     let output = Command::new(javac())
-        .current_dir(&directory)
+        .current_dir(directory)
         .arg("-Xlint:none")
         .arg(&source_path)
         .output()
         .expect("run javac");
-    let _ = fs::remove_dir_all(&directory);
+    drop(scratch);
     assert!(
         output.status.success(),
         "javac must compile the recovered source:\n{}",

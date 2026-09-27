@@ -14,3 +14,6 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+tempfile = "3"

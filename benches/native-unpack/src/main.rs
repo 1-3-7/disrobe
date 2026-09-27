@@ -1814,17 +1814,15 @@ mod tests {
 
     #[test]
     fn bounded_file_reader_rejects_oversized_file() {
-        let base: PathBuf = std::env::temp_dir().join("disrobe_native_unpack_bound_test");
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        let path: PathBuf = base.join("large.bin");
+        let base: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe_native_unpack_bound_test").unwrap();
+        let path: PathBuf = base.path().join("large.bin");
         fs::write(&path, b"abcd").unwrap();
         let err: eyre::Report = read_bounded_file(&path, 3).unwrap_err();
         assert!(
             err.to_string().contains("exceeds 3 bytes"),
             "oversized read must report the cap, got {err:?}"
         );
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
