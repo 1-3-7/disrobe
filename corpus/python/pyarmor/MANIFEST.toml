@@ -28,8 +28,7 @@ byte_37           = "mode flags 1: bit 0x01 = obf-module on, bit 0x08 = obf-code
 byte_38           = "mode flags 2: bit 0x04 = wrap mode, bit 0x08 = outer runtime key"
 
 [license_id_serial]
-serial_status = "the registered serial is embedded by design in the runtime package names and headers of these fixtures; it identifies the licence and is not a credential. No new fixture is built under that licence, and xtask health fails if the set of tracked files carrying the serial changes."
-note = "a registered (non-default) license ships serial XXXNNN where XXX is the license id and NNN is part of the id, NOT the pyarmor format version; the same serial 015009 is emitted by both pyarmor 8.x and 9.x builds. the format version is resolved from the runtime descriptor word, not the serial"
+note = "a registered (non-default) license ships serial XXXNNN where XXX is the license id and NNN is part of the id, NOT the pyarmor format version; the same serial 015009 is emitted by both pyarmor 8.x and 9.x builds. the format version is resolved from the runtime descriptor word, not the serial The registered serial is embedded by design in the runtime package names and headers of these fixtures; it identifies the licence and is not a credential. No new fixture is built under that licence, and xtask health fails if the set of tracked files carrying the serial changes."
 sample_set = "corpus/python/pyarmor/v9_license_id_015009 (default, restrict, outer, obfmod0, mixstr), built from known_plaintext_original.py with pyarmor 9.2.5 pro"
 
 [[fixture]]
