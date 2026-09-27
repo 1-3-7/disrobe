@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Src = Join-Path $ScriptDir 'src'
 $Out = Join-Path $ScriptDir 'generated'
-$DevRoot = Join-Path (Split-Path -Parent $ScriptDir) '.developer'
+$FixtureBuildRoot = Join-Path (Split-Path -Parent $ScriptDir) '.fixture-build'
 
 function Write-Plan($msg) { Write-Host "[plan] $msg" }
 function Write-Run($msg)  { Write-Host "[run]  $msg" }
@@ -121,7 +121,7 @@ function Plan-Pyarmor {
 
 function Build-Pyarmor {
     if (-not (Has-Cmd pyarmor)) { Write-Skip 'pyarmor: pyarmor not on PATH'; return }
-    $buildRoot = Join-Path $DevRoot 'pyarmor-build'
+    $buildRoot = Join-Path $FixtureBuildRoot 'pyarmor-build'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
     foreach ($f in Get-PySources) {
         Write-Run "pyarmor: protecting $($f.BaseName)"
@@ -138,7 +138,7 @@ function Plan-Pyinstaller {
 
 function Build-Pyinstaller {
     if (-not (Has-Cmd pyinstaller)) { Write-Skip 'pyinstaller: pyinstaller not on PATH'; return }
-    $buildRoot = Join-Path $DevRoot 'pyinst-build'
+    $buildRoot = Join-Path $FixtureBuildRoot 'pyinst-build'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
     foreach ($f in Get-PySources) {
         Write-Run "pyinstaller: building $($f.BaseName)"
@@ -155,7 +155,7 @@ function Plan-Nuitka {
 
 function Build-Nuitka {
     if (-not (Has-Cmd nuitka)) { Write-Skip 'nuitka: nuitka not on PATH'; return }
-    $buildRoot = Join-Path $DevRoot 'nuitka-build'
+    $buildRoot = Join-Path $FixtureBuildRoot 'nuitka-build'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
     foreach ($f in Get-PySources) {
         Write-Run "nuitka: building $($f.BaseName)"
@@ -172,7 +172,7 @@ function Plan-Sourcedefender {
 
 function Build-Sourcedefender {
     if (-not (Has-Cmd sourcedefender)) { Write-Skip 'sourcedefender: sourcedefender not on PATH'; return }
-    $buildRoot = Join-Path $DevRoot 'sourcedefender-build'
+    $buildRoot = Join-Path $FixtureBuildRoot 'sourcedefender-build'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
     foreach ($f in Get-PySources) {
         Write-Run "sourcedefender: encrypting $($f.BaseName)"
