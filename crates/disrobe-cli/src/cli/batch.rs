@@ -345,8 +345,9 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
         entries,
     };
     let manifest_path: PathBuf = opts.out_root.join("manifest.json");
-    let manifest_bytes: Vec<u8> = chain_v1::serialized_report(&manifest, opts.redact)
-        .map_err(|e| miette::miette!("DR-CLI-0341: manifest.json serialize: {e}"))?;
+    let manifest_bytes: Vec<u8> =
+        chain_v1::serialized_report(&manifest, chain_v1::rescan_only(opts.redact))
+            .map_err(|e| miette::miette!("DR-CLI-0341: manifest.json serialize: {e}"))?;
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0342: cannot write manifest.json: {e}"))?;
     super::report::write_batch_forensic(&manifest, &opts.out_root, opts.redact)?;
@@ -362,17 +363,22 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
             clock,
             env!("CARGO_PKG_VERSION"),
         );
-        let _: PathBuf = chain_v1::write_run_record(&opts.out_root, &record, opts.redact)?;
+        let _: PathBuf = chain_v1::write_run_record(
+            &opts.out_root,
+            &record,
+            chain_v1::rescan_only(opts.redact),
+        )?;
     }
     Ok(manifest)
 }
 
 pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> miette::Result<()> {
     let manifest: BatchManifest = compute_manifest(&root, &opts)?;
-    let display_manifest: BatchManifest = chain_v1::redacted_copy(&manifest, opts.redact)?;
+    let display_manifest: BatchManifest =
+        chain_v1::redacted_copy(&manifest, chain_v1::rescan_only(opts.redact))?;
     let manifest_path_str: String = chain_v1::redacted_text(
         opts.out_root.join("manifest.json").display().to_string(),
-        opts.redact,
+        chain_v1::rescan_only(opts.redact),
     )?;
     let rendered = || {
         println!("disrobe auto (batch)");

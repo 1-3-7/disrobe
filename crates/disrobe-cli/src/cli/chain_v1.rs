@@ -19,7 +19,8 @@ use disrobe_core::chain::{
 use disrobe_core::pass::PassContext;
 use disrobe_core::time::WallClock;
 use disrobe_core::{
-    Artifact, RECON_SCHEMA, ReconConfig, ReconFinding, Redactor, Rung, recon_report_bytes,
+    Artifact, RECON_SCHEMA, ReconCategory, ReconConfig, Redactor, Rung, SCAN_SCHEMA,
+    recon_report_bytes,
 };
 use serde::Deserialize as _;
 
@@ -651,7 +652,7 @@ pub(crate) fn run_with_disk(
         stream_out_dir.as_deref().map(ExtractedWriter::new);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let mut sidecar_redaction: Option<SidecarRedaction> =
-        SidecarRedaction::for_input(&seed_for_scan, redact);
+        SidecarRedaction::for_run(&seed_for_scan, redact, write_to_disk);
     let mut stream_error: Option<miette::Report> = None;
     let plan: ChainPlan = {
         let mut sink = |art: &ExtractedArtifact, siblings: &[ChildHandle]| {
@@ -659,8 +660,9 @@ pub(crate) fn run_with_disk(
                 return;
             }
             if let Some(writer) = extracted_writer.as_mut() {
-                match write_extracted(writer, art, siblings, sidecar_redaction.as_mut()) {
-                    Ok(path) => streamed.push(path),
+                match write_streamed(writer, art, siblings, sidecar_redaction.as_mut()) {
+                    Ok(Some(path)) => streamed.push(path),
+                    Ok(None) => {}
                     Err(error) => stream_error = Some(error),
                 }
             }
@@ -673,6 +675,10 @@ pub(crate) fn run_with_disk(
     if let Some(writer) = extracted_writer {
         writer.finish()?;
     }
+    if let Some(redaction) = sidecar_redaction.as_mut() {
+        redaction.observe_all(&plan.extracted);
+    }
+    let known: Option<&BTreeSet<String>> = known_secrets(redact, sidecar_redaction.as_ref());
     let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
         let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
             &plan,
@@ -712,13 +718,13 @@ pub(crate) fn run_with_disk(
         Some(input.display().to_string()),
     );
     let py_guidance: Option<String> = maybe_py_deob_guidance(&spec_raw, &plan, &seed_for_scan);
-    let display_anti: AntiAnalysisReport = redacted_copy(&anti, redact)?;
+    let display_anti: AntiAnalysisReport = redacted_copy(&anti, known)?;
     let display_delphi: Option<disrobe_pass_native::delphi::DelphiReport> = delphi
         .as_ref()
-        .map(|report: &disrobe_pass_native::delphi::DelphiReport| redacted_copy(report, redact))
+        .map(|report: &disrobe_pass_native::delphi::DelphiReport| redacted_copy(report, known))
         .transpose()?;
     let display_guidance: Option<String> = py_guidance
-        .map(|guidance: String| redacted_text(guidance, redact))
+        .map(|guidance: String| redacted_text(guidance, known))
         .transpose()?;
     if !write_to_disk {
         let rendered = || {
@@ -730,20 +736,7 @@ pub(crate) fn run_with_disk(
                 eprint!("{guidance}");
             }
         };
-        if redact {
-            let value: serde_json::Value = serialized_value(&doc, true)?;
-            emit(fmt, &value, rendered)?;
-        } else {
-            emit(fmt, &doc, rendered)?;
-        }
-        if emit_recovery && fmt.is_machine() {
-            if redact {
-                let value: serde_json::Value = serialized_value(&report, true)?;
-                emit(fmt, &value, || {})?;
-            } else {
-                emit(fmt, &report, || {})?;
-            }
-        }
+        emit_document(fmt, &doc, &report, emit_recovery, known, rendered)?;
         return Ok(());
     }
     let out_dir: PathBuf = stream_out_dir.unwrap_or_else(|| {
@@ -756,52 +749,52 @@ pub(crate) fn run_with_disk(
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0293: cannot create chain out dir: {e}"))?;
     let chain_path: PathBuf = out_dir.join("chain.json");
-    let chain_bytes: Vec<u8> = serialized_report(&doc, redact)
+    let chain_bytes: Vec<u8> = serialized_report(&doc, known)
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(&chain_path, &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
     let recovery_path: PathBuf = out_dir.join("recovery.json");
-    let recovery_bytes: Vec<u8> = serialized_report(&report, redact)
+    let recovery_bytes: Vec<u8> = serialized_report(&report, known)
         .map_err(|e| miette::miette!("DR-CLI-0305: recovery.json serialize: {e}"))?;
     std::fs::write(&recovery_path, &recovery_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
-    let recovery_path_str: String = redacted_text(recovery_path.display().to_string(), redact)?;
+    let recovery_path_str: String = redacted_text(recovery_path.display().to_string(), known)?;
     let anti_path: PathBuf = out_dir.join("anti-analysis.json");
-    let anti_bytes: Vec<u8> = serialized_report(&anti, redact)
+    let anti_bytes: Vec<u8> = serialized_report(&anti, known)
         .map_err(|e| miette::miette!("DR-CLI-0307: anti-analysis.json serialize: {e}"))?;
     std::fs::write(&anti_path, &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
-    let anti_path_str: String = redacted_text(anti_path.display().to_string(), redact)?;
+    let anti_path_str: String = redacted_text(anti_path.display().to_string(), known)?;
     let delphi_path_str: Option<String> = match delphi.as_ref() {
         None => None,
         Some(report) => {
             let delphi_path: PathBuf = out_dir.join("delphi.json");
-            let delphi_bytes: Vec<u8> = serialized_report(report, redact)
+            let delphi_bytes: Vec<u8> = serialized_report(report, known)
                 .map_err(|e| miette::miette!("DR-CLI-0314: delphi.json serialize: {e}"))?;
             std::fs::write(&delphi_path, &delphi_bytes)
                 .map_err(|e| miette::miette!("DR-CLI-0315: cannot write delphi.json: {e}"))?;
-            Some(redacted_text(delphi_path.display().to_string(), redact)?)
+            Some(redacted_text(delphi_path.display().to_string(), known)?)
         }
     };
     let mut extracted_written: Vec<String> = streamed;
     extracted_written.extend(write_extracted_children(
         &out_dir,
         &plan,
-        sidecar_redaction.as_mut(),
+        sidecar_redaction.as_ref(),
     )?);
-    if redact {
+    if known.is_some() {
         extracted_written = extracted_written
             .into_iter()
-            .map(|path: String| redacted_text(path, true))
+            .map(|path: String| redacted_text(path, known))
             .collect::<miette::Result<Vec<String>>>()?;
     }
     let extracted_dir_str: String =
-        redacted_text(out_dir.join("extracted").display().to_string(), redact)?;
+        redacted_text(out_dir.join("extracted").display().to_string(), known)?;
     let recovered: bool = !extracted_written.is_empty() || recovered_anything(&plan);
     let advisory: Option<String> = if recovered {
         None
     } else {
-        Some(redacted_text(identify_advisory(&plan), redact)?)
+        Some(redacted_text(identify_advisory(&plan), known)?)
     };
     let stage_summary: Option<String> = if capture_stages {
         let mirror: StageMirror = write_stage_mirror(&out_dir, &plan)?;
@@ -813,12 +806,12 @@ pub(crate) fn run_with_disk(
                 mirror.finals.len(),
                 out_dir.join("final").display()
             ),
-            redact,
+            known,
         )?)
     } else {
         None
     };
-    super::report::write_single_forensic(&doc, &report, &out_dir, redact)?;
+    super::report::write_single_forensic(&doc, &report, &out_dir, known)?;
     let run_path_str: Option<String> = if options.timings {
         let clock: RunClock = RunClock {
             started,
@@ -830,20 +823,20 @@ pub(crate) fn run_with_disk(
                 miette::miette!("cannot write run.json: {error}")
             })?;
         Some(redacted_text(
-            write_run_record(&out_dir, &record, redact)?
+            write_run_record(&out_dir, &record, known)?
                 .display()
                 .to_string(),
-            redact,
+            known,
         )?)
     } else {
         None
     };
     let forensic_path: PathBuf = out_dir.join("report.json");
     let forensic_sarif_path: PathBuf = out_dir.join("report.sarif");
-    let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
+    let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), known)?;
     let forensic_sarif_path_str: String =
-        redacted_text(forensic_sarif_path.display().to_string(), redact)?;
-    let chain_path_str: String = redacted_text(chain_path.display().to_string(), redact)?;
+        redacted_text(forensic_sarif_path.display().to_string(), known)?;
+    let chain_path_str: String = redacted_text(chain_path.display().to_string(), known)?;
     let supplemental_label: Option<&str> =
         supplemental_output
             .as_ref()
@@ -858,7 +851,7 @@ pub(crate) fn run_with_disk(
         .as_ref()
         .map(|output: &SupplementalOutput| write_supplemental_output(&out_dir, output))
         .transpose()?
-        .map(|path: PathBuf| redacted_text(path.display().to_string(), redact))
+        .map(|path: PathBuf| redacted_text(path.display().to_string(), known))
         .transpose()?;
     let rendered = || {
         println!("chain.json written: {chain_path_str}");
@@ -901,18 +894,29 @@ pub(crate) fn run_with_disk(
             eprintln!("{note}");
         }
     };
-    if redact {
-        let value: serde_json::Value = serialized_value(&doc, true)?;
+    emit_document(fmt, &doc, &report, emit_recovery, known, rendered)
+}
+
+fn emit_document(
+    fmt: OutputFormat,
+    doc: &ChainDocument,
+    report: &ChainRecoveryReport,
+    emit_recovery: bool,
+    known: Option<&BTreeSet<String>>,
+    rendered: impl FnOnce(),
+) -> miette::Result<()> {
+    if known.is_some() {
+        let value: serde_json::Value = serialized_value(doc, known)?;
         emit(fmt, &value, rendered)?;
     } else {
-        emit(fmt, &doc, rendered)?;
+        emit(fmt, doc, rendered)?;
     }
     if emit_recovery && fmt.is_machine() {
-        if redact {
-            let value: serde_json::Value = serialized_value(&report, true)?;
+        if known.is_some() {
+            let value: serde_json::Value = serialized_value(report, known)?;
             emit(fmt, &value, || {})?;
         } else {
-            emit(fmt, &report, || {})?;
+            emit(fmt, report, || {})?;
         }
     }
     Ok(())
@@ -938,91 +942,259 @@ fn maybe_py_deob_guidance(spec_raw: &str, plan: &ChainPlan, bytes: &[u8]) -> Opt
     }
 }
 
-#[derive(Debug)]
+const MAX_SIDECAR_REDACTION_BYTES: usize = 64 << 20;
+
+static NO_KNOWN_SECRETS: BTreeSet<String> = BTreeSet::new();
+
+pub(crate) fn rescan_only(redact: bool) -> Option<&'static BTreeSet<String>> {
+    redact.then_some(&NO_KNOWN_SECRETS)
+}
+
+fn known_secrets(redact: bool, redaction: Option<&SidecarRedaction>) -> Option<&BTreeSet<String>> {
+    redact.then(|| {
+        redaction.map_or(&NO_KNOWN_SECRETS, |redaction: &SidecarRedaction| {
+            &redaction.known
+        })
+    })
+}
+
+#[derive(Debug, Default)]
 struct SidecarRedaction {
     known: BTreeSet<String>,
 }
 
+#[derive(Debug)]
+enum SidecarShape {
+    Opaque,
+    Json(serde_json::Value),
+    Text,
+    Oversized,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SidecarOutput {
+    Unchanged,
+    Replaced(Vec<u8>),
+    Withheld,
+}
+
 impl SidecarRedaction {
-    fn for_input(seed: &[u8], redact: bool) -> Option<Self> {
-        redact.then(|| Self {
-            known: Redactor::new().recon_secret_values(
-                &recon_report_bytes(seed, None, &ReconConfig::default()).findings,
-            ),
+    fn for_run(seed: &[u8], redact: bool, write_to_disk: bool) -> Option<Self> {
+        (redact && write_to_disk).then(|| {
+            let mut redaction: Self = Self::default();
+            redaction.scan(seed, None);
+            redaction
         })
     }
 
-    fn apply(&mut self, artifact: &ExtractedArtifact) -> miette::Result<Option<ExtractedArtifact>> {
-        if !matches!(
-            artifact.materialization,
-            ChildMaterialization::Regular { .. }
-        ) {
-            return Ok(None);
+    fn scan(&mut self, bytes: &[u8], uri: Option<&str>) {
+        let findings: Vec<disrobe_core::ReconFinding> =
+            recon_report_bytes(bytes, uri, &ReconConfig::default()).findings;
+        self.known
+            .extend(Redactor::new().recon_secret_values(&findings));
+    }
+
+    fn observe(&mut self, artifact: &ExtractedArtifact) -> SidecarShape {
+        self.scan(&artifact.bytes, Some(&artifact.relative_path));
+        let shape: SidecarShape = sidecar_shape(artifact);
+        if let SidecarShape::Json(value) = &shape {
+            self.harvest(value);
         }
-        let Ok(original): Result<serde_json::Value, serde_json::Error> =
-            serde_json::from_slice(&artifact.bytes)
-        else {
-            return Ok(None);
-        };
-        self.harvest(&original);
-        let mut redacted: serde_json::Value = original.clone();
-        Redactor::new()
-            .redact_json_value_with_known(&mut redacted, self.known.clone())
-            .map_err(|error| {
-                miette::miette!(
-                    "DR-CLI-0363: report redaction of extracted {}: {error}",
-                    artifact.relative_path
-                )
-            })?;
-        if redacted == original {
-            return Ok(None);
+        shape
+    }
+
+    fn observe_all(&mut self, artifacts: &[ExtractedArtifact]) {
+        for artifact in artifacts {
+            let _: SidecarShape = self.observe(artifact);
         }
-        let bytes: Vec<u8> =
-            serde_json::to_vec_pretty(&redacted).map_err(|error: serde_json::Error| {
-                miette::miette!(
-                    "DR-CLI-0362: report serialize of extracted {}: {error}",
-                    artifact.relative_path
-                )
+    }
+
+    fn redact(
+        &self,
+        artifact: &ExtractedArtifact,
+        shape: SidecarShape,
+    ) -> miette::Result<SidecarOutput> {
+        match shape {
+            SidecarShape::Opaque => Ok(SidecarOutput::Unchanged),
+            SidecarShape::Oversized => Ok(SidecarOutput::Withheld),
+            SidecarShape::Text => self.redact_text(artifact),
+            SidecarShape::Json(mut value) => {
+                match Redactor::new().redact_json_value_with_known(&mut value, &self.known) {
+                    Ok(false) => Ok(SidecarOutput::Unchanged),
+                    Ok(true) => serde_json::to_vec_pretty(&value)
+                        .map(SidecarOutput::Replaced)
+                        .map_err(|error: serde_json::Error| {
+                            self.extracted_error("DR-CLI-0362: report serialize", artifact, error)
+                        }),
+                    Err(_) => self.redact_text(artifact),
+                }
+            }
+        }
+    }
+
+    fn redact_text(&self, artifact: &ExtractedArtifact) -> miette::Result<SidecarOutput> {
+        let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&artifact.bytes);
+        let scrubbed: String = Redactor::new()
+            .redact_text_with_known(&text, &self.known)
+            .map_err(|error: disrobe_core::RedactionError| {
+                self.extracted_error("DR-CLI-0363: report redaction", artifact, error)
             })?;
-        Ok(Some(ExtractedArtifact {
-            node_id: artifact.node_id,
-            relative_path: artifact.relative_path.clone(),
-            materialization: artifact.materialization,
-            bytes,
-        }))
+        Ok(if scrubbed == text {
+            SidecarOutput::Unchanged
+        } else {
+            SidecarOutput::Replaced(scrubbed.into_bytes())
+        })
+    }
+
+    fn extracted_error(
+        &self,
+        context: &str,
+        artifact: &ExtractedArtifact,
+        error: impl std::fmt::Display,
+    ) -> miette::Report {
+        match redacted_text(artifact.relative_path.clone(), Some(&self.known)) {
+            Ok(path) => miette::miette!("{context} of extracted {path}: {error}"),
+            Err(report) => report,
+        }
     }
 
     fn harvest(&mut self, value: &serde_json::Value) {
-        if value.get("schema").and_then(serde_json::Value::as_str) != Some(RECON_SCHEMA) {
-            return;
+        match value.get("schema").and_then(serde_json::Value::as_str) {
+            Some(RECON_SCHEMA) => self.harvest_recon_findings(value.get("findings")),
+            Some(SCAN_SCHEMA) => self.harvest_values(value.get("findings")),
+            _ => {}
         }
-        let Some(findings): Option<&serde_json::Value> = value.get("findings") else {
-            return;
-        };
-        if let Ok(findings) = Vec::<ReconFinding>::deserialize(findings) {
-            self.known
-                .extend(Redactor::new().recon_secret_values(&findings));
+        self.harvest_values(value.get("secrets"));
+        self.harvest_values(
+            value
+                .get("apk_recon")
+                .and_then(|report: &serde_json::Value| report.get("secrets")),
+        );
+    }
+
+    fn harvest_recon_findings(&mut self, findings: Option<&serde_json::Value>) {
+        for finding in findings
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(category): Option<ReconCategory> = finding
+                .get("category")
+                .and_then(|category: &serde_json::Value| ReconCategory::deserialize(category).ok())
+            else {
+                continue;
+            };
+            let Some(value): Option<&str> =
+                finding.get("value").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let rule_id: &str = finding
+                .get("rule_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            self.known.extend(
+                Redactor::new()
+                    .recon_secret_parts(category, rule_id, value)
+                    .into_iter()
+                    .map(str::to_owned),
+            );
         }
+    }
+
+    fn harvest_values(&mut self, items: Option<&serde_json::Value>) {
+        self.known.extend(
+            items
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|item: &serde_json::Value| item.get("value"))
+                .filter_map(serde_json::Value::as_str)
+                .filter(|value: &&str| !value.is_empty())
+                .map(str::to_owned),
+        );
     }
 }
 
-fn write_extracted(
+fn sidecar_shape(artifact: &ExtractedArtifact) -> SidecarShape {
+    if !matches!(
+        artifact.materialization,
+        ChildMaterialization::Regular { .. }
+    ) || !looks_like_json(artifact)
+    {
+        return SidecarShape::Opaque;
+    }
+    if artifact.bytes.len() > MAX_SIDECAR_REDACTION_BYTES {
+        return SidecarShape::Oversized;
+    }
+    serde_json::from_slice(&artifact.bytes).map_or(SidecarShape::Text, SidecarShape::Json)
+}
+
+fn looks_like_json(artifact: &ExtractedArtifact) -> bool {
+    let json_extension: bool = Path::new(&artifact.relative_path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension: &str| extension.eq_ignore_ascii_case("json"));
+    let body: &[u8] = artifact
+        .bytes
+        .strip_prefix(b"\xEF\xBB\xBF")
+        .unwrap_or(&artifact.bytes);
+    json_extension
+        || matches!(
+            body.iter().find(|byte: &&u8| !byte.is_ascii_whitespace()),
+            Some(b'{' | b'[')
+        )
+}
+
+fn write_streamed(
     writer: &mut ExtractedWriter,
     artifact: &ExtractedArtifact,
     siblings: &[ChildHandle],
     redaction: Option<&mut SidecarRedaction>,
-) -> miette::Result<String> {
-    let redacted: Option<ExtractedArtifact> = match redaction {
-        Some(redaction) => redaction.apply(artifact)?,
-        None => None,
-    };
-    writer.write(redacted.as_ref().unwrap_or(artifact), siblings)
+) -> miette::Result<Option<String>> {
+    match redaction {
+        None => writer.write(artifact, siblings).map(Some),
+        Some(redaction) => {
+            let shape: SidecarShape = redaction.observe(artifact);
+            write_redacted(writer, artifact, siblings, redaction, shape)
+        }
+    }
+}
+
+fn write_redacted(
+    writer: &mut ExtractedWriter,
+    artifact: &ExtractedArtifact,
+    siblings: &[ChildHandle],
+    redaction: &SidecarRedaction,
+    shape: SidecarShape,
+) -> miette::Result<Option<String>> {
+    match redaction.redact(artifact, shape)? {
+        SidecarOutput::Unchanged => writer.write(artifact, siblings).map(Some),
+        SidecarOutput::Replaced(bytes) => {
+            let replaced: ExtractedArtifact = ExtractedArtifact {
+                node_id: artifact.node_id,
+                relative_path: artifact.relative_path.clone(),
+                materialization: artifact.materialization,
+                bytes,
+            };
+            writer.write(&replaced, siblings).map(Some)
+        }
+        SidecarOutput::Withheld => {
+            let path: String =
+                redacted_text(artifact.relative_path.clone(), Some(&redaction.known))?;
+            eprintln!(
+                "DR-CLI-0366: withheld extracted {path}: {} bytes exceed the {MAX_SIDECAR_REDACTION_BYTES}-byte redaction limit",
+                artifact.bytes.len()
+            );
+            Ok(None)
+        }
+    }
 }
 
 fn write_extracted_children(
     out_dir: &Path,
     plan: &ChainPlan,
-    mut redaction: Option<&mut SidecarRedaction>,
+    redaction: Option<&SidecarRedaction>,
 ) -> miette::Result<Vec<String>> {
     if plan.extracted.is_empty() {
         return Ok(Vec::new());
@@ -1041,12 +1213,13 @@ fn write_extracted_children(
             )
             | None => &[],
         };
-        written.push(write_extracted(
-            &mut writer,
-            art,
-            siblings,
-            redaction.as_deref_mut(),
-        )?);
+        let path: Option<String> = match redaction {
+            None => Some(writer.write(art, siblings)?),
+            Some(redaction) => {
+                write_redacted(&mut writer, art, siblings, redaction, sidecar_shape(art))?
+            }
+        };
+        written.extend(path);
     }
     writer.finish()?;
     Ok(written)
@@ -1110,10 +1283,10 @@ pub(crate) struct DirRun<'a> {
 pub(crate) fn write_run_record(
     out_dir: &Path,
     record: &RunRecord,
-    redact: bool,
+    known: Option<&BTreeSet<String>>,
 ) -> miette::Result<PathBuf> {
     let path: PathBuf = out_dir.join(RUN_FILE_NAME);
-    let bytes: Vec<u8> = serialized_report(record, redact)
+    let bytes: Vec<u8> = serialized_report(record, known)
         .map_err(|e| miette::miette!("DR-CLI-0316: run.json serialize: {e}"))?;
     std::fs::write(&path, &bytes)
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write run.json: {e}"))?;
@@ -1154,9 +1327,13 @@ pub(crate) fn run_chain_to_dir(
     .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
-    let mut sidecar_redaction: Option<SidecarRedaction> =
-        SidecarRedaction::for_input(&seed_for_scan, redact);
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
+    let mut sidecar_redaction: Option<SidecarRedaction> =
+        SidecarRedaction::for_run(&seed_for_scan, redact, true);
+    if let Some(redaction) = sidecar_redaction.as_mut() {
+        redaction.observe_all(&plan.extracted);
+    }
+    let known: Option<&BTreeSet<String>> = known_secrets(redact, sidecar_redaction.as_ref());
     let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
         &plan,
         &seed_for_scan,
@@ -1191,23 +1368,23 @@ pub(crate) fn run_chain_to_dir(
     );
     std::fs::create_dir_all(out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0293: cannot create chain out dir: {e}"))?;
-    let chain_bytes: Vec<u8> = serialized_report(&doc, redact)
+    let chain_bytes: Vec<u8> = serialized_report(&doc, known)
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(out_dir.join("chain.json"), &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
-    let recovery_bytes: Vec<u8> = serialized_report(&report, redact)
+    let recovery_bytes: Vec<u8> = serialized_report(&report, known)
         .map_err(|e| miette::miette!("DR-CLI-0305: recovery.json serialize: {e}"))?;
     std::fs::write(out_dir.join("recovery.json"), &recovery_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
-    let anti_bytes: Vec<u8> = serialized_report(&anti, redact)
+    let anti_bytes: Vec<u8> = serialized_report(&anti, known)
         .map_err(|e| miette::miette!("DR-CLI-0307: anti-analysis.json serialize: {e}"))?;
     std::fs::write(out_dir.join("anti-analysis.json"), &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
-    let _: Vec<String> = write_extracted_children(out_dir, &plan, sidecar_redaction.as_mut())?;
+    let _: Vec<String> = write_extracted_children(out_dir, &plan, sidecar_redaction.as_ref())?;
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
-    super::report::write_single_forensic(&doc, &report, out_dir, redact)?;
+    super::report::write_single_forensic(&doc, &report, out_dir, known)?;
     if let Some(jobs) = timings {
         let clock: RunClock = RunClock {
             started,
@@ -1218,7 +1395,7 @@ pub(crate) fn run_chain_to_dir(
             .map_err(|error: disrobe_core::chain::RunRecordError| {
                 miette::miette!("cannot write run.json: {error}")
             })?;
-        let _: PathBuf = write_run_record(out_dir, &record, redact)?;
+        let _: PathBuf = write_run_record(out_dir, &record, known)?;
     }
     let supplemental_outputs: Vec<String> = supplemental_output
         .as_ref()
@@ -1237,47 +1414,54 @@ pub(crate) fn run_chain_to_dir(
 
 pub(crate) fn serialized_value<T: serde::Serialize>(
     value: &T,
-    redact: bool,
+    known: Option<&BTreeSet<String>>,
 ) -> miette::Result<serde_json::Value> {
     let mut serialized: serde_json::Value =
         serde_json::to_value(value).map_err(|error: serde_json::Error| {
             miette::miette!("DR-CLI-0362: report serialize: {error}")
         })?;
-    if redact {
+    if let Some(known) = known {
         Redactor::new()
-            .redact_json_value(&mut serialized)
-            .map_err(|error| miette::miette!("DR-CLI-0363: report redaction: {error}"))?;
+            .redact_json_value_with_known(&mut serialized, known)
+            .map_err(|error: disrobe_core::RedactionError| {
+                miette::miette!("DR-CLI-0363: report redaction: {error}")
+            })?;
     }
     Ok(serialized)
 }
 
-pub(crate) fn redacted_copy<T>(value: &T, redact: bool) -> miette::Result<T>
+pub(crate) fn redacted_copy<T>(value: &T, known: Option<&BTreeSet<String>>) -> miette::Result<T>
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
-    serde_json::from_value(serialized_value(value, redact)?).map_err(|error: serde_json::Error| {
+    serde_json::from_value(serialized_value(value, known)?).map_err(|error: serde_json::Error| {
         miette::miette!("DR-CLI-0364: redacted report: {error}")
     })
 }
 
-pub(crate) fn redacted_text(value: String, redact: bool) -> miette::Result<String> {
-    if !redact {
+pub(crate) fn redacted_text(
+    value: String,
+    known: Option<&BTreeSet<String>>,
+) -> miette::Result<String> {
+    let Some(known) = known else {
         return Ok(value);
-    }
+    };
     Redactor::new()
-        .redact_text(&value)
-        .map_err(|error| miette::miette!("DR-CLI-0365: rendered text redaction: {error}"))
+        .redact_text_with_known(&value, known)
+        .map_err(|error: disrobe_core::RedactionError| {
+            miette::miette!("DR-CLI-0365: rendered text redaction: {error}")
+        })
 }
 
 pub(crate) fn serialized_report<T: serde::Serialize>(
     value: &T,
-    redact: bool,
+    known: Option<&BTreeSet<String>>,
 ) -> miette::Result<Vec<u8>> {
-    if !redact {
+    if known.is_none() {
         return serde_json::to_vec_pretty(value)
             .map_err(|error: serde_json::Error| miette::miette!("{error}"));
     }
-    serde_json::to_vec_pretty(&serialized_value(value, true)?)
+    serde_json::to_vec_pretty(&serialized_value(value, known)?)
         .map_err(|error: serde_json::Error| miette::miette!("{error}"))
 }
 
@@ -1380,7 +1564,7 @@ fn combine_chain_and_pin_owned(chain_arg: String, pin_arg: &str) -> miette::Resu
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use disrobe_core::chain::detection::{DetectContext, DetectVerdict};
@@ -2431,5 +2615,256 @@ mod tests {
                 "the advisory sends a user to `disrobe {group}`, which this binary does not have"
             );
         }
+    }
+
+    fn planted_context_value() -> String {
+        format!("{}{}", "q7x2m9k4", "w1z8p3v6")
+    }
+
+    fn extracted(path: &str, bytes: Vec<u8>) -> ExtractedArtifact {
+        ExtractedArtifact {
+            node_id: 1,
+            relative_path: path.to_owned(),
+            materialization: ChildMaterialization::default(),
+            bytes,
+        }
+    }
+
+    fn seeded(value: &str) -> SidecarRedaction {
+        SidecarRedaction {
+            known: BTreeSet::from([value.to_owned()]),
+        }
+    }
+
+    fn pass_through(
+        redaction: &mut SidecarRedaction,
+        artifact: &ExtractedArtifact,
+    ) -> SidecarOutput {
+        let shape: SidecarShape = redaction.observe(artifact);
+        redaction.redact(artifact, shape).expect("redact sidecar")
+    }
+
+    fn replaced_text(output: SidecarOutput) -> String {
+        match output {
+            SidecarOutput::Replaced(bytes) => String::from_utf8(bytes).expect("utf-8 sidecar"),
+            other => panic!("expected a rewritten sidecar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_value_learned_from_a_recon_sidecar_redacts_a_later_json_document() {
+        let bare: String = planted_context_value();
+        let recon: disrobe_core::ReconReport = recon_report_bytes(
+            format!("confluent_access_token = \"{bare}\"\n").as_bytes(),
+            Some("config.properties"),
+            &ReconConfig::default(),
+        );
+        assert!(
+            recon
+                .findings
+                .iter()
+                .all(|finding: &disrobe_core::ReconFinding| finding.value != bare
+                    && finding.value.contains(bare.as_str())),
+            "the fixture needs findings that carry the bare value only inside a whole match: {:?}",
+            recon.findings
+        );
+        let mut redaction: SidecarRedaction = SidecarRedaction::default();
+        let recon_sidecar: ExtractedArtifact = extracted(
+            "recon.json",
+            serde_json::to_vec_pretty(&recon).expect("recon"),
+        );
+        let recon_text: String = replaced_text(pass_through(&mut redaction, &recon_sidecar));
+        assert!(!recon_text.contains(bare.as_str()), "{recon_text}");
+
+        let later: ExtractedArtifact = extracted(
+            "strings.json",
+            serde_json::to_vec(&serde_json::json!({ "strings": [&bare] })).expect("later"),
+        );
+        let later_text: String = replaced_text(pass_through(&mut redaction, &later));
+        assert!(!later_text.contains(bare.as_str()), "{later_text}");
+        assert!(
+            later_text.contains(Redactor::new().token(&bare).as_str()),
+            "{later_text}"
+        );
+    }
+
+    #[test]
+    fn a_binary_scanned_before_its_sidecar_seeds_the_sidecar_redaction() {
+        let bare: String = planted_context_value();
+        let mut redaction: SidecarRedaction = SidecarRedaction::default();
+        let image: ExtractedArtifact = extracted(
+            "unpacked.exe",
+            format!("MZ\0\0confluent_access_token = \"{bare}\"\0").into_bytes(),
+        );
+        assert_eq!(
+            pass_through(&mut redaction, &image),
+            SidecarOutput::Unchanged,
+            "recovered binaries are written unaltered"
+        );
+        let sidecar: ExtractedArtifact = extracted(
+            "unpacked.strings.json",
+            serde_json::to_vec(&serde_json::json!({ "strings": [&bare] })).expect("json"),
+        );
+        let text: String = replaced_text(pass_through(&mut redaction, &sidecar));
+        assert!(!text.contains(bare.as_str()), "{text}");
+    }
+
+    #[test]
+    fn harvest_reads_each_value_from_the_raw_arrays() {
+        let values: Vec<String> = (0..5)
+            .map(|index: usize| format!("{}{index}", planted_context_value()))
+            .collect();
+        let assigned: String = format!("{}{}", "Zq7x2m9k4w1z8p3v", "6Rt5Yu8Io");
+        let assignment: String = format!("auth_token = \"{assigned}\"");
+        let mut redaction: SidecarRedaction = SidecarRedaction::default();
+        redaction.harvest(&serde_json::json!({
+            "schema": RECON_SCHEMA,
+            "findings": [
+                { "category": "secret", "rule_id": "DR-SEC-CONFLUENT", "value": values[0] },
+                { "category": "url", "rule_id": "DR-RECON-URL", "value": "https://example.test/" },
+                { "category": "secret", "rule_id": "DR-RECON-API-ASSIGNMENT", "value": assignment },
+                {
+                    "category": "secret", "rule_id": "DR-SEC-CONFLUENT", "value": values[1],
+                    "line": 1, "column": 1, "offset": 0, "severity": "error"
+                }
+            ]
+        }));
+        redaction.harvest(&serde_json::json!({
+            "schema": disrobe_core::SCAN_SCHEMA,
+            "findings": [{ "code": "DR-SEC-CONFLUENT", "value": values[2] }]
+        }));
+        redaction.harvest(&serde_json::json!({
+            "secrets": [{ "code": "DR-SEC-CONFLUENT", "value": values[3] }]
+        }));
+        redaction.harvest(&serde_json::json!({
+            "detected": "android-dex-apk",
+            "apk_recon": { "secrets": [{ "code": "DR-SEC-CONFLUENT", "value": values[4] }] }
+        }));
+        let mut expected: BTreeSet<String> = values.into_iter().collect();
+        expected.insert(assignment);
+        expected.insert(assigned);
+        assert_eq!(redaction.known, expected);
+    }
+
+    #[test]
+    fn json_looking_sidecars_that_do_not_parse_are_scrubbed_as_text() {
+        let bare: String = planted_context_value();
+        let redaction: SidecarRedaction = seeded(&bare);
+        let token: String = Redactor::new().token(&bare);
+        for (path, bytes) in [
+            (
+                "broken.json",
+                format!("{{\"key\": \"{bare}\", ").into_bytes(),
+            ),
+            (
+                "notes.txt",
+                format!("\u{feff}  [\"{bare}\" trailing").into_bytes(),
+            ),
+        ] {
+            let artifact: ExtractedArtifact = extracted(path, bytes);
+            assert!(matches!(sidecar_shape(&artifact), SidecarShape::Text));
+            let text: String = replaced_text(
+                redaction
+                    .redact(&artifact, sidecar_shape(&artifact))
+                    .expect("text redaction"),
+            );
+            assert!(!text.contains(bare.as_str()), "{path}: {text}");
+            assert!(text.contains(token.as_str()), "{path}: {text}");
+        }
+        let source: ExtractedArtifact =
+            extracted("main.js", format!("const k = \"{bare}\";").into_bytes());
+        assert_eq!(
+            redaction
+                .redact(&source, sidecar_shape(&source))
+                .expect("source"),
+            SidecarOutput::Unchanged,
+            "recovered source that does not look like JSON is written unaltered"
+        );
+    }
+
+    #[test]
+    fn a_sidecar_past_the_json_redaction_limits_is_scrubbed_as_text_instead_of_aborting() {
+        let bare: String = planted_context_value();
+        let redaction: SidecarRedaction = seeded(&bare);
+        let mut wide: String = format!("[\"{bare}\"");
+        for _ in 0..1_100_000 {
+            wide.push_str(",0");
+        }
+        wide.push(']');
+        let artifact: ExtractedArtifact = extracted("wide.json", wide.into_bytes());
+        assert!(matches!(sidecar_shape(&artifact), SidecarShape::Json(_)));
+        let text: String = replaced_text(
+            redaction
+                .redact(&artifact, sidecar_shape(&artifact))
+                .expect("a document past the node limit must not abort the run"),
+        );
+        assert!(!text.contains(bare.as_str()));
+        assert!(text.contains(Redactor::new().token(&bare).as_str()));
+    }
+
+    #[test]
+    fn a_json_sidecar_over_the_size_limit_is_withheld_before_parsing() {
+        let mut bytes: Vec<u8> = vec![b' '; MAX_SIDECAR_REDACTION_BYTES];
+        bytes[0] = b'{';
+        bytes.push(b'}');
+        let artifact: ExtractedArtifact = extracted("huge.json", bytes);
+        assert!(matches!(sidecar_shape(&artifact), SidecarShape::Oversized));
+        assert_eq!(
+            SidecarRedaction::default()
+                .redact(&artifact, SidecarShape::Oversized)
+                .expect("withhold"),
+            SidecarOutput::Withheld
+        );
+    }
+
+    #[test]
+    fn sidecar_errors_name_the_path_through_the_known_values() {
+        let bare: String = planted_context_value();
+        let redaction: SidecarRedaction = seeded(&bare);
+        let artifact: ExtractedArtifact = extracted(&format!("cfg/{bare}.json"), Vec::new());
+        let message: String = redaction
+            .extracted_error("DR-CLI-0363: report redaction", &artifact, "limit")
+            .to_string();
+        assert!(!message.contains(bare.as_str()), "{message}");
+        assert!(
+            message.contains(Redactor::new().token(&bare).as_str()),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_input_scan_runs_only_when_output_is_written() {
+        let bare: String = planted_context_value();
+        let seed: Vec<u8> = format!("confluent_access_token = \"{bare}\"\n").into_bytes();
+        assert!(SidecarRedaction::for_run(&seed, true, false).is_none());
+        assert!(SidecarRedaction::for_run(&seed, false, true).is_none());
+        let written: SidecarRedaction =
+            SidecarRedaction::for_run(&seed, true, true).expect("redacted write");
+        assert!(written.known.contains(&bare), "{:?}", written.known);
+        assert_eq!(known_secrets(true, None), Some(&BTreeSet::new()));
+        assert_eq!(known_secrets(false, Some(&written)), None);
+    }
+
+    #[test]
+    fn top_level_reports_are_redacted_with_the_final_known_set() {
+        let bare: String = planted_context_value();
+        let known: BTreeSet<String> = BTreeSet::from([bare.clone()]);
+        let doc: serde_json::Value = serde_json::json!({ "input": format!("in/{bare}/a.exe") });
+        let rescanned: String =
+            String::from_utf8(serialized_report(&doc, rescan_only(true)).expect("rescan"))
+                .expect("utf-8");
+        assert!(
+            rescanned.contains(bare.as_str()),
+            "the control needs a value the rescan alone cannot recognise"
+        );
+        let seeded_report: String =
+            String::from_utf8(serialized_report(&doc, Some(&known)).expect("seeded"))
+                .expect("utf-8");
+        assert!(!seeded_report.contains(bare.as_str()), "{seeded_report}");
+        let copy: serde_json::Value = redacted_copy(&doc, Some(&known)).expect("copy");
+        assert!(!copy.to_string().contains(bare.as_str()));
+        let line: String =
+            redacted_text(format!("wrote in/{bare}/chain.json"), Some(&known)).expect("text");
+        assert!(!line.contains(bare.as_str()), "{line}");
     }
 }

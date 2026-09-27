@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use disrobe_core::Redactor;
+use disrobe_core::{ReconConfig, Redactor, recon_report_bytes};
 
 use disrobe_pass_mobile::{
     ApkReconReport, DetectedKind, DisassemblyReport, FlutterApkLayout, HermesModule, JsLiftReport,
@@ -560,8 +560,22 @@ fn flutter(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
 fn recon(input: PathBuf, json: bool, redact: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0830: cannot read input: {e}"))?;
-    let mut report: ApkReconReport = analyze_apk_recon(&bytes)
-        .map_err(|e| miette::miette!("DR-CLI-0831: apk recon failed: {e}"))?;
+    let mut report: ApkReconReport = match analyze_apk_recon(&bytes) {
+        Ok(report) => report,
+        Err(error) => {
+            let message: String = format!("DR-CLI-0831: apk recon failed: {error}");
+            if !redact {
+                return Err(miette::miette!("{message}"));
+            }
+            let known: BTreeSet<String> = Redactor::new().recon_secret_values(
+                &recon_report_bytes(&bytes, None, &ReconConfig::default()).findings,
+            );
+            let redacted: String = Redactor::new()
+                .redact_text_with_known(&message, &known)
+                .map_err(|e| miette::miette!("DR-CLI-0828: recon redaction: {e}"))?;
+            return Err(miette::miette!("{redacted}"));
+        }
+    };
     if redact {
         report = redacted_recon(&report)?;
     }
@@ -586,7 +600,7 @@ fn redacted_recon(report: &ApkReconReport) -> miette::Result<ApkReconReport> {
     let mut value: serde_json::Value = serde_json::to_value(report)
         .map_err(|e| miette::miette!("DR-CLI-0832: recon serialize: {e}"))?;
     Redactor::new()
-        .redact_json_value_with_known(&mut value, known)
+        .redact_json_value_with_known(&mut value, &known)
         .map_err(|e| miette::miette!("DR-CLI-0828: recon redaction: {e}"))?;
     serde_json::from_value(value)
         .map_err(|e| miette::miette!("DR-CLI-0829: redacted recon report: {e}"))

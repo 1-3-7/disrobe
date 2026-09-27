@@ -296,7 +296,7 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
             "DR-RECON-ALGOLIA-ADMIN",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)algolia[a-z_ ]{0,20}(?:admin|api)[_-]?key["']?\s*[:=]\s*["'][0-9a-f]{32}["']"#,
+            r#"(?i)algolia[a-z_ ]{0,20}(?:admin|api)[_-]?key["']?\s*[:=]\s*["'](?P<secret>[0-9a-f]{32})["']"#,
         ),
         (
             "DR-RECON-CLOUDINARY-URL",
@@ -344,13 +344,13 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
             "DR-RECON-HEROKU",
             ReconCategory::Secret,
             Severity::Warning,
-            r"(?i)heroku[a-z0-9_ .\-,]{0,25}[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}",
+            r"(?i)heroku[a-z0-9_ .\-,]{0,25}(?P<secret>[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})",
         ),
         (
             "DR-RECON-AUTH-BEARER",
             ReconCategory::Secret,
             Severity::Warning,
-            r"(?i)\bbearer\s+[a-zA-Z0-9_\-.=]{16,}",
+            r"(?i)\bbearer\s+(?P<secret>[a-zA-Z0-9_\-.=]{16,})",
         ),
         (
             "DR-RECON-PASSWORD-IN-URL",
@@ -362,7 +362,7 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
             "DR-RECON-API-ASSIGNMENT",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)(?:api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'][0-9A-Za-z_\-./+]{16,64}["']"#,
+            r#"(?i)(?:api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token)["']?\s*[:=]\s*["'](?P<secret>[0-9A-Za-z_\-./+]{16,64})["']"#,
         ),
         (
             "DR-RECON-GITLAB-PAT",
@@ -416,13 +416,13 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
             "DR-RECON-POSTMARK",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)x-postmark-(?:server|account)-token["':\s]{1,8}[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#,
+            r#"(?i)x-postmark-(?:server|account)-token["':\s]{1,8}(?P<secret>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#,
         ),
         (
             "DR-RECON-DATADOG",
             ReconCategory::Secret,
             Severity::Warning,
-            r#"(?i)(?:dd[_-]?api[_-]?key|datadog[_-]?api[_-]?key)["':\s=]{1,8}[0-9a-f]{32}\b"#,
+            r#"(?i)(?:dd[_-]?api[_-]?key|datadog[_-]?api[_-]?key)["':\s=]{1,8}(?P<secret>[0-9a-f]{32})\b"#,
         ),
         (
             "DR-RECON-ASANA",
@@ -741,6 +741,19 @@ fn endpoint_rules(
             });
         }
     }
+}
+
+#[cfg(feature = "redact")]
+pub(crate) fn bare_credential<'v>(rule_id: &str, value: &'v str) -> Option<&'v str> {
+    let base: &str = rule_id
+        .strip_suffix(WIDE_ENCODING_SUFFIX)
+        .or_else(|| rule_id.strip_suffix(WIDE_BE_ENCODING_SUFFIX))
+        .unwrap_or(rule_id);
+    let rule: &EndpointRule = ENDPOINT_RULES
+        .iter()
+        .find(|rule: &&EndpointRule| rule.rule_id == base)?;
+    let secret: regex::Match<'v> = rule.pattern.captures(value)?.name("secret")?;
+    (!secret.is_empty() && secret.len() < value.len()).then_some(secret.as_str())
 }
 
 fn custom_rules(

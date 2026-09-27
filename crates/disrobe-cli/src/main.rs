@@ -2108,7 +2108,7 @@ fn main() -> miette::Result<()> {
             fmt,
             chain_v1::ChainRunOptions {
                 write_to_disk: true,
-                redact: false,
+                redact: eff.redact,
                 capture_stages,
                 emit_recovery: false,
                 backend_export: None,

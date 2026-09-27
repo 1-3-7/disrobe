@@ -6,6 +6,7 @@ use std::io::{Cursor, Write as _};
 use std::path::{Path, PathBuf};
 
 use common::{Run, run_disrobe, temp_dir};
+use disrobe_core::Redactor;
 use disrobe_core::scratch::ScratchDir;
 use serde_json::Value;
 
@@ -20,6 +21,20 @@ impl Planted {
             aws: format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB"),
             context: format!("{}{}", "q7x2m9k4", "w1z8p3v6"),
         }
+    }
+
+    fn reported_values(&self) -> [(&'static str, String); 3] {
+        [
+            ("DR-SEC-AWS-AKID", self.aws.clone()),
+            (
+                "DR-SEC-CONFLUENT",
+                format!("confluent_access_token = \"{}\"", self.context),
+            ),
+            (
+                "DR-RECON-API-ASSIGNMENT",
+                format!("access_token = \"{}\"", self.context),
+            ),
+        ]
     }
 
     fn config_text(&self) -> String {
@@ -96,8 +111,26 @@ fn write_apk(scratch: &ScratchDir, planted: &Planted) -> PathBuf {
     apk
 }
 
-fn recon(apk: &Path, extra: &[&str]) -> String {
-    let mut args: Vec<&str> = vec!["mobile", "recon", apk.to_str().expect("apk path")];
+fn write_config(scratch: &ScratchDir, redact: bool) -> PathBuf {
+    let name: &str = if redact { "redact.toml" } else { "plain.toml" };
+    let config: PathBuf = scratch.path().join(name);
+    let text: &str = if redact {
+        "[output]\nredact = true\n"
+    } else {
+        ""
+    };
+    std::fs::write(&config, text).expect("write config");
+    config
+}
+
+fn recon(apk: &Path, config: &Path, extra: &[&str]) -> String {
+    let mut args: Vec<&str> = vec![
+        "mobile",
+        "recon",
+        apk.to_str().expect("apk path"),
+        "--config",
+        config.to_str().expect("config path"),
+    ];
     args.extend_from_slice(extra);
     let run: Run = run_disrobe(&args);
     assert_eq!(
@@ -133,18 +166,21 @@ fn assert_redacted_recon(planted: &Planted, text: &str, json: &str) {
         count,
         "text and JSON surface the same secrets"
     );
-    let codes: Vec<&str> = secrets
-        .iter()
-        .map(|secret: &Value| secret["code"].as_str().expect("secret code"))
-        .collect();
-    assert!(codes.contains(&"DR-SEC-AWS-AKID"), "codes: {codes:?}");
-    assert!(codes.contains(&"DR-SEC-CONFLUENT"), "codes: {codes:?}");
-    for secret in secrets {
-        let value: &str = secret["value"].as_str().expect("secret value");
-        assert!(
-            value.starts_with("[REDACTED:") && value.ends_with(']'),
-            "secret value is not a redaction token: {secret}"
-        );
+    for (code, reported) in planted.reported_values().into_iter().take(2) {
+        let expected: String = Redactor::new().token(&reported);
+        let values: Vec<&str> = secrets
+            .iter()
+            .filter(|secret: &&Value| secret["code"].as_str() == Some(code))
+            .map(|secret: &Value| secret["value"].as_str().expect("secret value"))
+            .collect();
+        assert!(!values.is_empty(), "no {code} secret: {secrets:?}");
+        for value in values {
+            assert_eq!(value, expected, "{code} carries its planted value's token");
+            assert!(
+                text.contains(expected.as_str()),
+                "text output carries the {code} token:\n{text}"
+            );
+        }
     }
 }
 
@@ -153,9 +189,10 @@ fn mobile_recon_redact_flag_replaces_every_surfaced_secret() {
     let planted: Planted = Planted::new();
     let scratch: ScratchDir = temp_dir("mobile-recon-redact");
     let apk: PathBuf = write_apk(&scratch, &planted);
+    let plain: PathBuf = write_config(&scratch, false);
 
-    let text: String = recon(&apk, &["--redact"]);
-    let json: String = recon(&apk, &["--json", "--redact"]);
+    let text: String = recon(&apk, &plain, &["--redact"]);
+    let json: String = recon(&apk, &plain, &["--json", "--redact"]);
 
     assert_redacted_recon(&planted, &text, &json);
 }
@@ -165,16 +202,15 @@ fn mobile_recon_honours_output_redact_in_configuration() {
     let planted: Planted = Planted::new();
     let scratch: ScratchDir = temp_dir("mobile-recon-redact-config");
     let apk: PathBuf = write_apk(&scratch, &planted);
-    let config: PathBuf = scratch.path().join("disrobe.toml");
-    std::fs::write(&config, "[output]\nredact = true\n").expect("write config");
-    let config: &str = config.to_str().expect("config path");
+    let config: PathBuf = write_config(&scratch, true);
+    let plain: PathBuf = write_config(&scratch, false);
 
-    let text: String = recon(&apk, &["--config", config]);
-    let json: String = recon(&apk, &["--json", "--config", config]);
+    let text: String = recon(&apk, &config, &[]);
+    let json: String = recon(&apk, &config, &["--json"]);
 
     assert_redacted_recon(&planted, &text, &json);
-    assert_eq!(text, recon(&apk, &["--redact"]));
-    assert_eq!(json, recon(&apk, &["--json", "--redact"]));
+    assert_eq!(text, recon(&apk, &plain, &["--redact"]));
+    assert_eq!(json, recon(&apk, &plain, &["--json", "--redact"]));
 }
 
 #[test]
@@ -182,8 +218,9 @@ fn mobile_recon_without_redaction_still_shows_both_values() {
     let planted: Planted = Planted::new();
     let scratch: ScratchDir = temp_dir("mobile-recon-plain");
     let apk: PathBuf = write_apk(&scratch, &planted);
+    let plain: PathBuf = write_config(&scratch, false);
 
-    for output in [recon(&apk, &[]), recon(&apk, &["--json"])] {
+    for output in [recon(&apk, &plain, &[]), recon(&apk, &plain, &["--json"])] {
         assert!(output.contains(planted.aws.as_str()), "{output}");
         assert!(output.contains(planted.context.as_str()), "{output}");
         assert!(!output.contains("[REDACTED:"), "{output}");
@@ -207,52 +244,75 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn run_auto(input: &Path, out: &Path, redact: bool) -> Vec<PathBuf> {
+struct ChainOutput {
+    files: Vec<PathBuf>,
+    run: Run,
+}
+
+fn run_chain_command(command: &str, input: &Path, out: &Path, config: &Path) -> ChainOutput {
+    let args: Vec<&str> = vec![
+        command,
+        input.to_str().expect("input path"),
+        "--out",
+        out.to_str().expect("output path"),
+        "--config",
+        config.to_str().expect("config path"),
+    ];
+    let run: Run = run_disrobe(&args);
+    assert_eq!(run.code, 0, "{command} failed; stderr={}", run.stderr);
+    ChainOutput {
+        files: files_under(out),
+        run,
+    }
+}
+
+fn run_auto(input: &Path, out: &Path, config: &Path, redact: bool) -> ChainOutput {
     let mut args: Vec<&str> = vec![
         "auto",
         input.to_str().expect("input path"),
         "--out",
         out.to_str().expect("output path"),
+        "--config",
+        config.to_str().expect("config path"),
     ];
     if redact {
         args.push("--redact");
     }
     let run: Run = run_disrobe(&args);
     assert_eq!(run.code, 0, "auto failed; stderr={}", run.stderr);
-    files_under(out)
+    ChainOutput {
+        files: files_under(out),
+        run,
+    }
 }
 
-#[test]
-fn auto_redact_leaves_no_raw_secret_in_any_written_file() {
-    let planted: Planted = Planted::new();
-    let scratch: ScratchDir = temp_dir("auto-redact-sidecars");
-    let input: PathBuf = scratch.path().join("sample.exe");
-    std::fs::write(&input, build_pe(planted.config_text().as_bytes())).expect("write pe");
+fn extracted_recon(files: &[PathBuf]) -> &PathBuf {
+    files
+        .iter()
+        .find(|path: &&PathBuf| {
+            path.file_name()
+                .and_then(|name: &std::ffi::OsStr| name.to_str())
+                == Some("recon.json")
+                && path
+                    .components()
+                    .any(|part: std::path::Component<'_>| part.as_os_str() == "extracted")
+        })
+        .unwrap_or_else(|| panic!("the run wrote no extracted recon.json: {files:?}"))
+}
 
-    let plain_files: Vec<PathBuf> = run_auto(&input, &scratch.path().join("plain"), false);
-    let plain_recon: Option<&PathBuf> = plain_files.iter().find(|path: &&PathBuf| {
-        path.file_name()
-            .and_then(|name: &std::ffi::OsStr| name.to_str())
-            == Some("recon.json")
-            && path
-                .components()
-                .any(|part: std::path::Component<'_>| part.as_os_str() == "extracted")
-    });
-    let plain_recon: &PathBuf = plain_recon
-        .unwrap_or_else(|| panic!("auto wrote no extracted recon.json: {plain_files:?}"));
-    let plain_text: String = std::fs::read_to_string(plain_recon).expect("read plain recon");
-    assert!(plain_text.contains(planted.aws.as_str()), "{plain_text}");
-    assert!(
-        plain_text.contains(planted.context.as_str()),
-        "{plain_text}"
-    );
+fn recon_findings(path: &Path) -> Vec<Value> {
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(path).expect("read recon")).expect("recon JSON");
+    report["findings"]
+        .as_array()
+        .expect("findings array")
+        .clone()
+}
 
-    let redacted_files: Vec<PathBuf> = run_auto(&input, &scratch.path().join("redacted"), true);
-    assert!(
-        redacted_files.len() >= plain_files.len(),
-        "redaction must not drop output files: {redacted_files:?}"
-    );
-    for path in &redacted_files {
+fn assert_redacted_run(planted: &Planted, output: &ChainOutput, label: &str) {
+    planted.assert_absent(&output.run.stdout, &format!("{label} stdout"));
+    planted.assert_absent(&output.run.stderr, &format!("{label} stderr"));
+    for path in &output.files {
         let bytes: Vec<u8> = std::fs::read(path).expect("read output file");
         let text: String = String::from_utf8_lossy(&bytes).into_owned();
         planted.assert_absent(&text, &path.display().to_string());
@@ -266,12 +326,74 @@ fn auto_redact_leaves_no_raw_secret_in_any_written_file() {
             });
         }
     }
+    let findings: Vec<Value> = recon_findings(extracted_recon(&output.files));
+    for (rule_id, reported) in planted.reported_values() {
+        let token: String = Redactor::new().token(&reported);
+        assert!(
+            findings.iter().any(|finding: &Value| {
+                finding["rule_id"].as_str() == Some(rule_id)
+                    && finding["value"].as_str() == Some(token.as_str())
+            }),
+            "{label}: no {rule_id} recon finding carries the token {token}: {findings:?}"
+        );
+    }
+}
+
+fn write_pe(scratch: &ScratchDir, planted: &Planted) -> PathBuf {
+    let input: PathBuf = scratch.path().join("sample.exe");
+    std::fs::write(&input, build_pe(planted.config_text().as_bytes())).expect("write pe");
+    input
+}
+
+#[test]
+fn auto_redact_leaves_no_raw_secret_in_any_written_file() {
+    let planted: Planted = Planted::new();
+    let scratch: ScratchDir = temp_dir("auto-redact-sidecars");
+    let input: PathBuf = write_pe(&scratch, &planted);
+    let plain_config: PathBuf = write_config(&scratch, false);
+
+    let plain: ChainOutput = run_auto(&input, &scratch.path().join("plain"), &plain_config, false);
+    let plain_recon: &PathBuf = extracted_recon(&plain.files);
+    let plain_text: String = std::fs::read_to_string(plain_recon).expect("read plain recon");
+    assert!(plain_text.contains(planted.aws.as_str()), "{plain_text}");
+    assert!(
+        plain_text.contains(planted.context.as_str()),
+        "{plain_text}"
+    );
+
+    let redacted: ChainOutput = run_auto(
+        &input,
+        &scratch.path().join("redacted"),
+        &plain_config,
+        true,
+    );
+    assert!(
+        redacted.files.len() >= plain.files.len(),
+        "redaction must not drop output files: {:?}",
+        redacted.files
+    );
+    assert_redacted_run(&planted, &redacted, "auto --redact");
     let redacted_recon: PathBuf = scratch.path().join("redacted").join(
         plain_recon
             .strip_prefix(scratch.path().join("plain"))
             .expect("relative recon"),
     );
-    let redacted_text: String =
-        std::fs::read_to_string(&redacted_recon).expect("read redacted recon");
-    assert!(redacted_text.contains("[REDACTED:"), "{redacted_text}");
+    assert_eq!(
+        recon_findings(&redacted_recon).len(),
+        recon_findings(plain_recon).len(),
+        "redaction keeps every recon finding"
+    );
+}
+
+#[test]
+fn chain_honours_output_redact_in_configuration() {
+    let planted: Planted = Planted::new();
+    let scratch: ScratchDir = temp_dir("chain-redact-config");
+    let input: PathBuf = write_pe(&scratch, &planted);
+    let config: PathBuf = write_config(&scratch, true);
+
+    let redacted: ChainOutput =
+        run_chain_command("chain", &input, &scratch.path().join("chain"), &config);
+
+    assert_redacted_run(&planted, &redacted, "chain with output.redact");
 }

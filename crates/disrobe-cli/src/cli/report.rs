@@ -1,5 +1,6 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::needless_pass_by_value)]
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read as _;
@@ -879,12 +880,12 @@ pub(crate) fn write_single_forensic(
     doc: &ChainDocument,
     recovery: &ChainRecoveryReport,
     out_dir: &Path,
-    redact: bool,
+    known: Option<&BTreeSet<String>>,
 ) -> miette::Result<()> {
     let report: SingleReport = build_forensic(doc, recovery, out_dir);
-    let json: String = render_json_value(&report, redact)?;
+    let json: String = render_json_value(&report, known)?;
     let document: ReportDocument = ReportDocument::Single(Box::new(report));
-    let sarif: String = render_forensic_sarif(&document, redact)?;
+    let sarif: String = render_forensic_sarif(&document, known)?;
     write_forensic_bytes(out_dir, json, sarif)
 }
 
@@ -1035,23 +1036,19 @@ pub(crate) fn write_batch_forensic(
     redact: bool,
 ) -> miette::Result<()> {
     let document: ReportDocument = ReportDocument::Batch(Box::new(build_batch(manifest, out_dir)));
-    write_forensic_document(&document, out_dir, redact)
-}
-
-fn write_forensic_document(
-    document: &ReportDocument,
-    out_dir: &Path,
-    redact: bool,
-) -> miette::Result<()> {
-    let json: String = render_json_document(document, redact)?;
-    let sarif: String = render_forensic_sarif(document, redact)?;
+    let known: Option<&BTreeSet<String>> = chain_v1::rescan_only(redact);
+    let json: String = render_json_document(&document, known)?;
+    let sarif: String = render_forensic_sarif(&document, known)?;
     write_forensic_bytes(out_dir, json, sarif)
 }
 
-fn render_forensic_sarif(document: &ReportDocument, redact: bool) -> miette::Result<String> {
+fn render_forensic_sarif(
+    document: &ReportDocument,
+    known: Option<&BTreeSet<String>>,
+) -> miette::Result<String> {
     redact_json(
         super::report_forensic::render_sarif(document)?,
-        redact,
+        known,
         "DR-CLI-0361",
     )
 }
@@ -1675,14 +1672,14 @@ pub(crate) fn run(
         ReportFormat::Sarif => {
             let log: String = redact_json(
                 super::report_forensic::render_sarif(&document)?,
-                redact,
+                chain_v1::rescan_only(redact),
                 "DR-CLI-0361",
             )?;
             println!("{log}");
             Ok(())
         }
         ReportFormat::Json => {
-            let s: String = render_json_document(&document, redact)?;
+            let s: String = render_json_document(&document, chain_v1::rescan_only(redact))?;
             println!("{s}");
             Ok(())
         }
@@ -1717,16 +1714,22 @@ pub(crate) fn run(
     }
 }
 
-fn render_json_document(document: &ReportDocument, redact: bool) -> miette::Result<String> {
-    render_json_value(document, redact)
+fn render_json_document(
+    document: &ReportDocument,
+    known: Option<&BTreeSet<String>>,
+) -> miette::Result<String> {
+    render_json_value(document, known)
 }
 
-fn render_json_value<T: Serialize>(value: &T, redact: bool) -> miette::Result<String> {
-    if redact {
+fn render_json_value<T: Serialize>(
+    value: &T,
+    known: Option<&BTreeSet<String>>,
+) -> miette::Result<String> {
+    if let Some(known) = known {
         let mut value: serde_json::Value = serde_json::to_value(value)
             .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
         Redactor::new()
-            .redact_json_value(&mut value)
+            .redact_json_value_with_known(&mut value, known)
             .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))?;
         serde_json::to_string_pretty(&value)
             .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))
@@ -1745,14 +1748,18 @@ fn redact_rendered(rendered: String, redact: bool) -> miette::Result<String> {
         .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))
 }
 
-fn redact_json(rendered: String, redact: bool, code: &'static str) -> miette::Result<String> {
-    if !redact {
+fn redact_json(
+    rendered: String,
+    known: Option<&BTreeSet<String>>,
+    code: &'static str,
+) -> miette::Result<String> {
+    let Some(known) = known else {
         return Ok(rendered);
-    }
+    };
     let mut value: serde_json::Value = serde_json::from_str(&rendered)
         .map_err(|e| miette::miette!("{code}: report parse for redaction: {e}"))?;
     Redactor::new()
-        .redact_json_value(&mut value)
+        .redact_json_value_with_known(&mut value, known)
         .map_err(|e| miette::miette!("{code}: report redaction: {e}"))?;
     serde_json::to_string_pretty(&value)
         .map_err(|e| miette::miette!("{code}: report serialize after redaction: {e}"))

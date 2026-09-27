@@ -4,7 +4,7 @@ use std::fmt;
 use serde_json::{Map, Value};
 
 use super::secret_scan::{self, SecretScanReport, SecretScrubber, redaction_token};
-use super::{ReconCategory, ReconFinding, ReconReport};
+use super::{ReconCategory, ReconFinding, ReconReport, bare_credential};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::git_history::{GitFinding, GitHistoryReport};
@@ -68,6 +68,16 @@ impl Redactor {
         secret_values(findings)
     }
 
+    #[must_use]
+    pub fn recon_secret_parts<'v>(
+        self,
+        category: ReconCategory,
+        rule_id: &str,
+        value: &'v str,
+    ) -> Vec<&'v str> {
+        secret_parts(category, rule_id, value)
+    }
+
     pub fn redact_report(self, report: &mut ReconReport) {
         let scrubber: SecretScrubber = self.scrubber(secret_values(&report.findings));
         for finding in &mut report.findings {
@@ -83,30 +93,43 @@ impl Redactor {
     }
 
     pub fn redact_text(self, input: &str) -> Result<String, RedactionError> {
+        self.redact_text_with_known(input, &BTreeSet::new())
+    }
+
+    pub fn redact_text_with_known(
+        self,
+        input: &str,
+        known: &BTreeSet<String>,
+    ) -> Result<String, RedactionError> {
         if input.len() > MAX_SERIALIZED_STRING_BYTES {
             return Err(RedactionError::StringBytesLimit {
                 limit: MAX_SERIALIZED_STRING_BYTES,
             });
         }
-        let secrets: BTreeSet<String> = secret_scan::scan_bytes(input.as_bytes(), None)
+        let mut secrets: BTreeSet<String> = secret_scan::scan_bytes(input.as_bytes(), None)
             .into_iter()
             .map(|finding: secret_scan::Finding| finding.value)
             .filter(|value: &String| !value.is_empty())
             .collect();
+        secrets.extend(known.iter().cloned());
         Ok(self.scrubber(secrets).scrub(input))
     }
 
     pub fn redact_json_value(self, value: &mut Value) -> Result<(), RedactionError> {
-        self.redact_json_value_with_known(value, BTreeSet::new())
+        self.redact_json_value_with_known(value, &BTreeSet::new())
+            .map(|_changed: bool| ())
     }
 
     pub fn redact_json_value_with_known(
         self,
         value: &mut Value,
-        known: BTreeSet<String>,
-    ) -> Result<(), RedactionError> {
+        known: &BTreeSet<String>,
+    ) -> Result<bool, RedactionError> {
         let mut secrets: BTreeSet<String> = serialized_secrets(value)?;
-        secrets.extend(known);
+        secrets.extend(known.iter().cloned());
+        if secrets.is_empty() {
+            return Ok(false);
+        }
         let scrubber: SecretScrubber = self.scrubber(secrets);
         validate_json_keys(value, &scrubber)?;
         scrub_json_value(value, &scrubber, 0)
@@ -140,15 +163,20 @@ impl Redactor {
 fn secret_values(findings: &[ReconFinding]) -> BTreeSet<String> {
     findings
         .iter()
-        .filter(|finding: &&ReconFinding| {
-            matches!(
-                finding.category,
-                ReconCategory::Secret | ReconCategory::Custom
-            )
+        .flat_map(|finding: &ReconFinding| {
+            secret_parts(finding.category, &finding.rule_id, &finding.value)
         })
-        .map(|f: &ReconFinding| f.value.clone())
-        .filter(|v: &String| !v.is_empty())
+        .map(str::to_owned)
         .collect()
+}
+
+fn secret_parts<'v>(category: ReconCategory, rule_id: &str, value: &'v str) -> Vec<&'v str> {
+    if value.is_empty() || !matches!(category, ReconCategory::Secret | ReconCategory::Custom) {
+        return Vec::new();
+    }
+    let mut parts: Vec<&'v str> = vec![value];
+    parts.extend(bare_credential(rule_id, value));
+    parts
 }
 
 fn serialized_secrets(value: &Value) -> Result<BTreeSet<String>, RedactionError> {
@@ -237,23 +265,33 @@ fn scrub_json_value(
     value: &mut Value,
     scrubber: &SecretScrubber,
     depth: usize,
-) -> Result<(), RedactionError> {
+) -> Result<bool, RedactionError> {
     if depth > MAX_SERIALIZED_DEPTH {
         return Err(RedactionError::DepthLimit {
             limit: MAX_SERIALIZED_DEPTH,
         });
     }
+    let mut changed: bool = false;
     match value {
-        Value::String(text) => *text = scrubber.scrub(text),
+        Value::String(text) => changed = scrub_in_place(text, scrubber),
         Value::Array(values) => {
             for nested in values {
-                scrub_json_value(nested, scrubber, depth.saturating_add(1))?;
+                changed |= scrub_json_value(nested, scrubber, depth.saturating_add(1))?;
             }
         }
-        Value::Object(fields) => scrub_json_object(fields, scrubber, depth)?,
+        Value::Object(fields) => changed = scrub_json_object(fields, scrubber, depth)?,
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
-    Ok(())
+    Ok(changed)
+}
+
+fn scrub_in_place(text: &mut String, scrubber: &SecretScrubber) -> bool {
+    let scrubbed: String = scrubber.scrub(text);
+    if scrubbed == *text {
+        return false;
+    }
+    *text = scrubbed;
+    true
 }
 
 fn validate_json_keys(value: &Value, scrubber: &SecretScrubber) -> Result<(), RedactionError> {
@@ -281,7 +319,7 @@ fn scrub_json_object(
     fields: &mut Map<String, Value>,
     scrubber: &SecretScrubber,
     depth: usize,
-) -> Result<(), RedactionError> {
+) -> Result<bool, RedactionError> {
     let renamed: Vec<String> = fields
         .keys()
         .map(|key: &String| scrubber.scrub(key))
@@ -290,12 +328,14 @@ fn scrub_json_object(
     if unique.len() != renamed.len() {
         return Err(RedactionError::DuplicateObjectKey);
     }
+    let mut changed: bool = false;
     let original: Map<String, Value> = std::mem::take(fields);
-    for ((_, mut nested), key) in original.into_iter().zip(renamed) {
-        scrub_json_value(&mut nested, scrubber, depth.saturating_add(1))?;
+    for ((old_key, mut nested), key) in original.into_iter().zip(renamed) {
+        changed |= old_key != key;
+        changed |= scrub_json_value(&mut nested, scrubber, depth.saturating_add(1))?;
         fields.insert(key, nested);
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn redact_finding(finding: &mut ReconFinding, scrubber: &SecretScrubber) {
@@ -522,9 +562,10 @@ mod tests {
         assert!(!rescanned_text.contains(aws.as_str()));
 
         let mut seeded: serde_json::Value = original;
-        Redactor::new()
-            .redact_json_value_with_known(&mut seeded, BTreeSet::from([context_value.clone()]))
+        let changed: bool = Redactor::new()
+            .redact_json_value_with_known(&mut seeded, &BTreeSet::from([context_value.clone()]))
             .expect("seeded redaction");
+        assert!(changed, "a scrubbed document reports the change");
         let seeded_text: String = serde_json::to_string(&seeded).expect("serialize");
         assert!(!seeded_text.contains(context_value.as_str()));
         assert!(!seeded_text.contains(aws.as_str()));
@@ -533,6 +574,97 @@ mod tests {
             serde_json::Value::String(Redactor::new().token(&context_value))
         );
         assert_eq!(seeded_text.matches("[REDACTED:").count(), 3);
+    }
+
+    #[test]
+    fn a_clean_document_reports_no_change_and_a_secret_key_reports_one() {
+        let known: BTreeSet<String> = BTreeSet::from([format!("{}{}", "q7x2m9k4", "w1z8p3v6")]);
+        let mut clean: serde_json::Value = serde_json::json!({ "files": ["a.js", "b.js"] });
+        let before: serde_json::Value = clean.clone();
+        let changed: bool = Redactor::new()
+            .redact_json_value_with_known(&mut clean, &known)
+            .expect("clean redaction");
+        assert!(!changed);
+        assert_eq!(clean, before);
+
+        let secret: String = known.iter().next().cloned().expect("known value");
+        let mut keyed: serde_json::Value = serde_json::json!({ secret.clone(): 1 });
+        let changed: bool = Redactor::new()
+            .redact_json_value_with_known(&mut keyed, &known)
+            .expect("keyed redaction");
+        assert!(changed, "a renamed key alone is a change");
+        assert!(!keyed.to_string().contains(secret.as_str()));
+    }
+
+    fn context_rule_samples() -> Vec<(&'static str, String, String)> {
+        let token: String = format!("{}{}{}", "Zq7x2m9k4", "w1z8p3v6", "Rt5Yu8Io");
+        let hex: String = format!("{}{}", "9f8e7d6c5b4a3f2e", "1d0c9b8a7f6e5d4c");
+        let uuid: String = format!(
+            "{}-{}-{}-{}-{}",
+            "8f14e45f", "ceea", "467a", "9a3b", "c1d2e3f4a5b6"
+        );
+        vec![
+            (
+                "DR-RECON-API-ASSIGNMENT",
+                format!("const auth_token = \"{token}\";"),
+                token.clone(),
+            ),
+            (
+                "DR-RECON-ALGOLIA-ADMIN",
+                format!("algolia_admin_key = \"{hex}\""),
+                hex.clone(),
+            ),
+            ("DR-RECON-DATADOG", format!("dd_api_key={hex} "), hex),
+            (
+                "DR-RECON-POSTMARK",
+                format!("X-Postmark-Server-Token: {uuid}"),
+                uuid.clone(),
+            ),
+            ("DR-RECON-HEROKU", format!("heroku api key {uuid}"), uuid),
+            (
+                "DR-RECON-AUTH-BEARER",
+                format!("Authorization: Bearer {token}"),
+                token,
+            ),
+        ]
+    }
+
+    #[test]
+    fn context_rules_seed_the_bare_credential_and_keep_the_whole_match() {
+        for (rule_id, line, bare) in context_rule_samples() {
+            let input: String = format!("{line}\n");
+            let report: ReconReport =
+                report_bytes(input.as_bytes(), Some("a.js"), &ReconConfig::default());
+            let finding: &ReconFinding = report
+                .findings
+                .iter()
+                .find(|f: &&ReconFinding| f.rule_id == rule_id)
+                .unwrap_or_else(|| panic!("{rule_id} did not fire: {:?}", report.findings));
+            assert!(
+                finding.value.len() > bare.len() && finding.value.contains(bare.as_str()),
+                "{rule_id} reports the whole match: {finding:?}"
+            );
+            let known: BTreeSet<String> = Redactor::new().recon_secret_values(&report.findings);
+            assert!(
+                known.contains(&finding.value),
+                "{rule_id} whole match seeded"
+            );
+            assert!(
+                known.contains(&bare),
+                "{rule_id} bare credential seeded: {known:?}"
+            );
+
+            let mut elsewhere: serde_json::Value =
+                serde_json::json!({ "note": format!("reused {bare} here") });
+            Redactor::new()
+                .redact_json_value_with_known(&mut elsewhere, &known)
+                .expect("redact elsewhere");
+            assert_eq!(
+                elsewhere["note"],
+                serde_json::Value::String(format!("reused {} here", Redactor::new().token(&bare))),
+                "{rule_id}"
+            );
+        }
     }
 
     #[test]
