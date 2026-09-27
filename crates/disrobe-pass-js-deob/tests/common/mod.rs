@@ -289,8 +289,17 @@ fn terminal_signature(terminal: &Terminal) -> TerminalSignature {
 }
 
 pub(crate) fn outcomes_equivalent(expected: &EvalOutcome, actual: &EvalOutcome) -> bool {
-    expected.trace == actual.trace
+    !exhausted_a_limit(expected)
+        && !exhausted_a_limit(actual)
+        && expected.trace == actual.trace
         && terminal_signature(&expected.terminal) == terminal_signature(&actual.terminal)
+}
+
+const fn exhausted_a_limit(outcome: &EvalOutcome) -> bool {
+    matches!(
+        outcome.terminal,
+        Terminal::ExecutionLimitExceeded | Terminal::ObservationLimitExceeded(_)
+    )
 }
 
 #[derive(Default)]

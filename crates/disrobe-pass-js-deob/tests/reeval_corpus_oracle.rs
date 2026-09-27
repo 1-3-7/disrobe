@@ -619,6 +619,20 @@ static REGEX_REWRITERS: &[RegexRewriter] = &[
 
 const REGEX_CONSTRUCTORS: &[&str] = &["Regex::new(", "RegexBuilder::new("];
 
+#[test]
+fn two_runs_that_exhaust_a_limit_are_never_equivalent() {
+    let exhausted: common::EvalOutcome = common::EvalOutcome {
+        trace: Vec::new(),
+        terminal: common::Terminal::ExecutionLimitExceeded,
+    };
+    assert!(!common::outcomes_equivalent(&exhausted, &exhausted));
+    let observed: common::EvalOutcome = common::EvalOutcome {
+        trace: Vec::new(),
+        terminal: common::Terminal::ObservationLimitExceeded("trace bytes".to_owned()),
+    };
+    assert!(!common::outcomes_equivalent(&observed, &observed));
+}
+
 fn crate_source_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
 }
