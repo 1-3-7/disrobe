@@ -71,7 +71,7 @@ pub(crate) struct FigureBudget {
     pub(crate) digest: &'static str,
 }
 
-const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 38] = [
+const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     FigureBudget {
         path: "README.md",
         figures: 20,
@@ -121,31 +121,6 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 38] = [
         path: "crates/disrobe-sleigh/README.md",
         figures: 23,
         digest: "9c877d151fdaf624",
-    },
-    FigureBudget {
-        path: "docs/src/legal.md#arxan",
-        figures: 1,
-        digest: "86224fb7a4985054",
-    },
-    FigureBudget {
-        path: "docs/src/legal.md#jscrambler",
-        figures: 1,
-        digest: "86224fb7a4985054",
-    },
-    FigureBudget {
-        path: "docs/src/legal.md#jsdefender",
-        figures: 1,
-        digest: "86224fb7a4985054",
-    },
-    FigureBudget {
-        path: "docs/src/legal.md#pace",
-        figures: 1,
-        digest: "86224fb7a4985054",
-    },
-    FigureBudget {
-        path: "docs/src/legal.md#pyarmor",
-        figures: 1,
-        digest: "86224fb7a4985054",
     },
     FigureBudget {
         path: "docs/src/anti-analysis.md",
@@ -244,8 +219,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 38] = [
     },
     FigureBudget {
         path: "docs/src/legal.md",
-        figures: 0,
-        digest: "e3b0c44298fc1c14",
+        figures: 9,
+        digest: "c67a492bf98aaee1",
     },
     FigureBudget {
         path: "docs/src/python-bindings.md",
