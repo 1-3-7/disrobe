@@ -342,7 +342,15 @@ fn recompile_oracle_proves_at_least_one_construct_recompiles_equivalent() {
         .filter(|r| r.verdict.counts_in_denominator())
         .count();
     if evaluated == 0 {
-        eprintln!("SKIP: no version-matched interpreter on PATH for any recompile fixture");
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_PYTHON_RECOMPILE").is_none(),
+            "DISROBE_REQUIRE_PYTHON_RECOMPILE is set, so a version-matched interpreter must be on \
+             PATH for at least one recompile fixture"
+        );
+        eprintln!(
+            "UNGRADED: no version-matched interpreter is on PATH for any recompile fixture; set \
+             DISROBE_REQUIRE_PYTHON_RECOMPILE=1 to fail instead"
+        );
         return;
     }
     let recovered: usize = recompile
@@ -361,8 +369,7 @@ fn byte_identical_oracle_proves_a_cryptographically_verified_unpack() {
     let results: Vec<OracleResult> = run_sample(&sample);
     let upx: Option<&OracleResult> = results.iter().find(|r| r.fixture_id == "upx:hello");
     let Some(upx): Option<&OracleResult> = upx else {
-        eprintln!("SKIP: committed upx:hello fixture not present");
-        return;
+        panic!("the committed upx:hello fixture is missing; restore it from git");
     };
     assert!(
         matches!(upx.verdict, OracleVerdict::ByteIdentical),

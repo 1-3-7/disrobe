@@ -210,10 +210,7 @@ fn source_has_def_class_import_or_print(src: &str) -> bool {
 #[test]
 fn test_auto_full_python_chain_pyinstaller_pyc_decompile() {
     let Some(pyc_body): Option<Vec<u8>> = pyc_3_11_body() else {
-        eprintln!(
-            "SKIP: binary_ops.3.11.pyc fixture absent; cannot synthesize pyinstaller envelope"
-        );
-        return;
+        panic!("the committed binary_ops.3.11.pyc fixture is missing; restore it from git");
     };
 
     let archive: Vec<u8> = synthesize_pyinstaller_archive(&pyc_body, "binary_ops", 11);
@@ -276,10 +273,7 @@ fn test_auto_full_python_chain_pyinstaller_pyc_decompile() {
 #[test]
 fn test_auto_full_python_chain_pyinstaller_pyarmor_advances_to_pyarmor_stage() {
     let Some(child): Option<Vec<u8>> = pyarmor_v8_wrapper() else {
-        eprintln!(
-            "SKIP: pyarmor v8 fixture absent; cannot synthesize pyinstaller->pyarmor envelope"
-        );
-        return;
+        panic!("the committed pyarmor v8 wrapper fixture is missing; restore it from git");
     };
 
     let archive: Vec<u8> = synthesize_pyinstaller_archive(&child, "chunk_00", 11);
