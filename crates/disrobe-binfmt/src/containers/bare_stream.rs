@@ -733,21 +733,42 @@ fn has_known_artifact_header(out: &[u8]) -> bool {
         || has_marshal_pyc_header(out)
 }
 
+const PYC_MAGIC_3_3: u16 = 3230;
+const PYC_MAGIC_3_7: u16 = 3390;
+const MARSHAL_FLAG_REF: u8 = 0x80;
+
 fn has_marshal_pyc_header(out: &[u8]) -> bool {
-    if out.len() < 16 {
+    let Some(&[lo, hi, 0x0d, 0x0a]) = out.first_chunk::<4>() else {
+        return false;
+    };
+    let magic: u16 = u16::from_le_bytes([lo, hi]);
+    if !(0x0a00..=0x0fff).contains(&magic) {
         return false;
     }
-    if out[2] != 0x0d || out[3] != 0x0a {
-        return false;
-    }
-    let magic_lo: u16 = u16::from_le_bytes([out[0], out[1]]);
-    if !(0x0a00..=0x0fff).contains(&magic_lo) {
-        return false;
-    }
-    matches!(
-        out[16],
-        b'c' | b'd' | b's' | b'(' | b'{' | b'[' | b')' | b'N' | b'T' | b'F' | b'z' | b'Z' | b'i'
-    )
+    let header_len: usize = if magic >= PYC_MAGIC_3_7 {
+        16
+    } else if magic >= PYC_MAGIC_3_3 {
+        12
+    } else {
+        8
+    };
+    out.get(header_len).is_some_and(|type_byte: &u8| {
+        matches!(
+            type_byte & !MARSHAL_FLAG_REF,
+            b'c' | b'd'
+                | b's'
+                | b'('
+                | b'{'
+                | b'['
+                | b')'
+                | b'N'
+                | b'T'
+                | b'F'
+                | b'z'
+                | b'Z'
+                | b'i'
+        )
+    })
 }
 
 fn is_mostly_printable(out: &[u8]) -> bool {
@@ -985,6 +1006,21 @@ pub fn try_decompress_lznt1_oracle(bytes: &[u8], cap: u64) -> Option<Vec<u8>> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    #[test]
+    fn a_pyc_header_without_its_type_byte_is_refused_not_overrun() {
+        let header_only: [u8; 16] = [0xcb, 0x0d, 0x0d, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!super::has_marshal_pyc_header(&header_only));
+    }
+
+    #[test]
+    fn a_real_cpython_3_12_pyc_is_recognised() {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/python/decompile/legacy/compiled/simple_const.3.12.pyc");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        assert!(super::has_marshal_pyc_header(&bytes));
+    }
+
     use super::*;
 
     #[test]
