@@ -157,9 +157,9 @@ pub struct DartSnapshotStructure {
 
 const SIGNATURE_UNRECOVERABLE: &str = "(...) -> ? signature types are version-keyed in the Function object cluster, absent from the AOT artifact";
 
-const FIELDS_NOTE: &str = "Class and Field cluster tags identify where per-class field layouts live; object bodies are version-keyed and not decoded yet, so recovered fields stay empty rather than fabricated";
+const FIELDS_NOTE: &str = "Class and Field cluster tags identify where per-class field layouts live; object bodies are version-keyed and not decoded yet, so recovered fields stay empty";
 
-const SIGNATURE_NOTE: &str = "method parameter/return types are not statically recoverable; argument register count is the only honest arity proxy from the AOT machine code";
+const SIGNATURE_NOTE: &str = "method parameter/return types are not statically recoverable; argument register count from the AOT machine code is the only arity estimate";
 
 const FUNCTION_NAME_NOTE: &str = "function entry offsets come from ARM64 prologue scanning of the instruction section; exact Dart code-symbol offsets name those functions when present, and stripped images keep unresolved sub_<offset> labels rather than pairing boundaries with sorted string-pool names";
 

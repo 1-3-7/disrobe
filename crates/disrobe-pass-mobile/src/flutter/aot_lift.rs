@@ -321,11 +321,11 @@ pub struct AotLiftReport {
 
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
-const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; a slot the snapshot marks as reset at load carries the value the deserializer assigns it, which is zero for a set-to-zero entry and a named runtime stub entry for a bootstrap-native, switchable-call-miss or lazy native-link entry; a slot whose body shape this layout does not model stays unresolved with a named reason rather than fabricated";
+const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; a slot the snapshot marks as reset at load carries the value the deserializer assigns it, which is zero for a set-to-zero entry and a named runtime stub entry for a bootstrap-native, switchable-call-miss or lazy native-link entry; a slot whose body shape this layout does not model stays unresolved with a named reason";
 
 const INLINE_DOUBLE_NOTE: &str = "double literals that gen_snapshot materializes with an inline fmov 8-bit immediate never reach the ObjectPool; they are decoded byte-exact from the AArch64 fmov encoding and attributed to the function that loads them";
 
-const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes and are never fabricated. field access surfaces by offset only";
+const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes, so field access surfaces by offset only";
 
 const CLUSTER_NAME_NOTE: &str = "this image carries no dart function symbol table, so function boundaries and names come from the isolate snapshot instructions table joined through each code object's owning function";
 
@@ -339,9 +339,9 @@ const BLOCK_MERGE_NOTE: &str = "a block with more than one predecessor starts fr
 
 const DROPPED_CLASS_NAME_NOTE: &str = "the product AOT precompiler drops the class metadata object for classes it does not otherwise need, while types continue to reference the class id; such a class surfaces as cid@N, read from the artifact, and its declared name is absent rather than guessed";
 
-const TYPE_PARAMETER_NAME_NOTE: &str = "the product AOT precompiler drops type-parameter names, so an uninstantiated type argument surfaces by its position in the vector as typeParam@N rather than by the name the source declared; the position is read from the artifact and the name is never invented";
+const TYPE_PARAMETER_NAME_NOTE: &str = "the product AOT precompiler drops type-parameter names, so an uninstantiated type argument surfaces by its position in the vector as typeParam@N rather than by the name the source declared; the position is read from the artifact and the name is not reported";
 
-const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are honestly absent rather than reconstructed";
+const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are absent from the output and not reconstructed";
 
 pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
     dbg_section("dart.aot-lift");
