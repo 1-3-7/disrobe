@@ -9556,6 +9556,7 @@ fn structure_items(items: &[Item], entry_address: u64) -> Result<Structured> {
     else {
         return Err(Error::LlvmIr("missing terminal ret".to_owned()));
     };
+    let budget: RenderBudget = RenderBudget::new(STRUCTURE_RENDER_ATTEMPTS);
     if let Some(body) = structure_do_while(items, ret_pos)? {
         return Ok(Structured {
             body,
@@ -9577,7 +9578,7 @@ fn structure_items(items: &[Item], entry_address: u64) -> Result<Structured> {
             lifted_loop: false,
         });
     }
-    if let Some(structured) = structure_via_regions(items, entry_address, false) {
+    if let Some(structured) = structure_via_regions(items, entry_address, false, &budget) {
         return Ok(structured);
     }
     if ret_pos + 1 == items.len()
@@ -9602,7 +9603,7 @@ fn structure_items(items: &[Item], entry_address: u64) -> Result<Structured> {
             lifted_loop: true,
         });
     }
-    if let Some(structured) = structure_via_regions(items, entry_address, true) {
+    if let Some(structured) = structure_via_regions(items, entry_address, true, &budget) {
         return Ok(structured);
     }
     if let Some(body) = structure_reducible_cfg(
@@ -9616,6 +9617,11 @@ fn structure_items(items: &[Item], entry_address: u64) -> Result<Structured> {
             lifted_split_return: false,
             lifted_loop: true,
         });
+    }
+    if budget.exhausted() {
+        return Err(Error::LlvmIr(format!(
+            "control-flow structuring stopped after {STRUCTURE_RENDER_ATTEMPTS} render attempts without a structured form"
+        )));
     }
     Err(Error::LlvmIr(refusal.map_or_else(
         || "multiple/early returns not in forward-skip class".to_owned(),
@@ -9868,6 +9874,34 @@ fn split_tail_regions(
     }
 }
 
+const STRUCTURE_RENDER_ATTEMPTS: u32 = 512;
+
+#[derive(Debug)]
+struct RenderBudget {
+    remaining: std::cell::Cell<u32>,
+}
+
+impl RenderBudget {
+    fn new(attempts: u32) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(attempts),
+        }
+    }
+
+    fn exhausted(&self) -> bool {
+        self.remaining.get() == 0
+    }
+
+    fn spend(&self) -> bool {
+        let remaining: u32 = self.remaining.get();
+        if remaining == 0 {
+            return false;
+        }
+        self.remaining.set(remaining - 1);
+        true
+    }
+}
+
 struct RegionRenderer<'a> {
     blocks: &'a [CfgBlock],
     original_blocks: &'a [CfgBlock],
@@ -9877,6 +9911,7 @@ struct RegionRenderer<'a> {
     allow_loops: bool,
     label_targets: &'a std::collections::BTreeMap<usize, u32>,
     consumed: std::collections::BTreeSet<usize>,
+    budget: &'a RenderBudget,
 }
 
 impl RegionRenderer<'_> {
@@ -10182,10 +10217,15 @@ impl RegionRenderer<'_> {
             }
         }
         let loop_body: Option<Block> = match outer_resume {
-            Some((_, resume)) => {
-                render_cfg_blocks_nested(&sub_blocks, &sub_labels, true, &sub_targets, resume)
-            }
-            None => render_cfg_blocks(&sub_blocks, &sub_labels, true, &sub_targets),
+            Some((_, resume)) => render_cfg_blocks_nested(
+                &sub_blocks,
+                &sub_labels,
+                true,
+                &sub_targets,
+                resume,
+                self.budget,
+            ),
+            None => render_cfg_blocks(&sub_blocks, &sub_labels, true, &sub_targets, self.budget),
         };
         let Some(loop_body): Option<Block> = loop_body else {
             return false;
@@ -10419,8 +10459,9 @@ fn render_cfg_blocks_via_cns(
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
+    budget: &RenderBudget,
 ) -> Option<Block> {
-    if let Some(body) = render_cns_regions(blocks, labels, allow_loops, label_targets) {
+    if let Some(body) = render_cns_regions(blocks, labels, allow_loops, label_targets, budget) {
         return Some(body);
     }
     if !allow_loops
@@ -10450,7 +10491,7 @@ fn render_cfg_blocks_via_cns(
     if !structuring::multi_entry_irreducible_sccs(&specialized_cfg).is_empty() {
         return None;
     }
-    render_cfg_blocks(&specialized, labels, allow_loops, label_targets)
+    render_cfg_blocks(&specialized, labels, allow_loops, label_targets, budget)
 }
 
 fn render_cns_regions(
@@ -10458,6 +10499,7 @@ fn render_cns_regions(
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
+    render_budget: &RenderBudget,
 ) -> Option<Block> {
     let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
     let budget: structuring::CnsBudget = structuring::CnsBudget::tight_for(&original_cfg);
@@ -10481,6 +10523,7 @@ fn render_cns_regions(
         allow_loops,
         label_targets,
         consumed: std::collections::BTreeSet::new(),
+        budget: render_budget,
     };
     let mut body: Block = Vec::new();
     if !renderer.render(root, &mut body)
@@ -10679,7 +10722,11 @@ fn render_cfg_blocks_once(
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
     proof: ResumeProof<'_>,
+    budget: &RenderBudget,
 ) -> Option<Block> {
+    if !budget.spend() {
+        return None;
+    }
     let has_resume: bool = labels
         .values()
         .any(|label: &SinkLabel| matches!(label, SinkLabel::ResumeAt(_)));
@@ -10751,6 +10798,7 @@ fn render_cfg_blocks_once(
         allow_loops,
         label_targets,
         consumed: std::collections::BTreeSet::new(),
+        budget,
     };
     let mut body: Block = Vec::new();
     if !renderer.render(root, &mut body) {
@@ -10788,6 +10836,7 @@ fn render_cfg_blocks_nested(
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
     resume: OuterBodyResume,
+    budget: &RenderBudget,
 ) -> Option<Block> {
     let empty_residual: std::collections::BTreeMap<usize, usize> =
         std::collections::BTreeMap::new();
@@ -10801,6 +10850,7 @@ fn render_cfg_blocks_nested(
             residual: &empty_residual,
             resume,
         },
+        budget,
     ) {
         return Some(body);
     }
@@ -10822,6 +10872,7 @@ fn render_cfg_blocks_nested(
                 residual: &plan.residual,
                 resume,
             },
+            budget,
         ) {
             return Some(body);
         }
@@ -11040,6 +11091,7 @@ fn render_cfg_blocks(
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
+    budget: &RenderBudget,
 ) -> Option<Block> {
     if let Some(body) = render_cfg_blocks_once(
         blocks,
@@ -11047,6 +11099,7 @@ fn render_cfg_blocks(
         allow_loops,
         label_targets,
         ResumeProof::Absent { source: blocks },
+        budget,
     ) {
         return Some(body);
     }
@@ -11054,7 +11107,7 @@ fn render_cfg_blocks(
     let has_multi_entry_irreducible: bool =
         !structuring::multi_entry_irreducible_sccs(&original_cfg).is_empty();
     if has_multi_entry_irreducible {
-        return render_cfg_blocks_via_cns(blocks, labels, allow_loops, label_targets);
+        return render_cfg_blocks_via_cns(blocks, labels, allow_loops, label_targets, budget);
     }
     let expanded: Option<(Vec<CfgBlock>, std::collections::BTreeMap<usize, SinkLabel>)> =
         split_tail_regions(blocks.to_vec(), labels.clone()).filter(
@@ -11069,6 +11122,7 @@ fn render_cfg_blocks(
             allow_loops,
             label_targets,
             ResumeProof::Absent { source: eblocks },
+            budget,
         )
     {
         return Some(body);
@@ -11087,6 +11141,7 @@ fn render_cfg_blocks(
                 residual: &plan.residual,
                 resume: None,
             },
+            budget,
         ) {
             return Some(body);
         }
@@ -11114,6 +11169,7 @@ fn render_cfg_blocks(
                     residual: &plan.residual,
                     resume: None,
                 },
+                budget,
             ) {
                 return Some(body);
             }
@@ -11154,6 +11210,7 @@ fn render_cfg_blocks(
                 residual: &plan.residual,
                 resume: Some(plan.resume),
             },
+            budget,
         ) && node_resume_relowering_matches(&body, &plan.residual)
         {
             return Some(body);
@@ -12521,11 +12578,12 @@ fn structure_via_regions(
     items: &[Item],
     entry_address: u64,
     allow_loops: bool,
+    budget: &RenderBudget,
 ) -> Option<Structured> {
     let blocks: Vec<CfgBlock> = build_blocks(items, entry_address)?;
     let labels: std::collections::BTreeMap<usize, SinkLabel> = std::collections::BTreeMap::new();
     let targets: std::collections::BTreeMap<usize, u32> = std::collections::BTreeMap::new();
-    let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops, &targets)?;
+    let mut body: Block = render_cfg_blocks(&blocks, &labels, allow_loops, &targets, budget)?;
     if !gotos_have_unique_targets(&body) {
         return None;
     }
@@ -31755,8 +31813,14 @@ mod tests {
 
         let empty_labels: BTreeMap<usize, SinkLabel> = BTreeMap::new();
         let empty_targets: BTreeMap<usize, u32> = BTreeMap::new();
-        let body: Block = render_cfg_blocks(&blocks, &empty_labels, true, &empty_targets)
-            .expect("two-entry irreducible scc must structure through CNS");
+        let body: Block = render_cfg_blocks(
+            &blocks,
+            &empty_labels,
+            true,
+            &empty_targets,
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
+        )
+        .expect("two-entry irreducible scc must structure through CNS");
         assert!(
             body_has(&body, &|node: &Node| matches!(node, Node::While { .. })),
             "expected a while loop on the elected header: {body:?}"
@@ -37125,6 +37189,7 @@ mod structuring_corpus {
             allow_loops: true,
             label_targets: &std::collections::BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let outer_extended: std::collections::BTreeSet<usize> = boundary_renderer
             .loop_body_with_return_tails(plan.resume.outer.header, &outer_body)
@@ -37236,6 +37301,7 @@ mod structuring_corpus {
             allow_loops: true,
             label_targets: &std::collections::BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut nested_body: super::Block = Vec::new();
         assert!(!nested_renderer.render(nested_root, &mut nested_body));
@@ -37248,6 +37314,7 @@ mod structuring_corpus {
                 true,
                 &std::collections::BTreeMap::new(),
                 plan.resume,
+                &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
             )
         };
         let resume_local: usize = nested_labels
@@ -37589,6 +37656,7 @@ mod structuring_corpus {
             allow_loops: true,
             label_targets: &std::collections::BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut outer_rendered: super::Block = Vec::new();
         let outer_region_id: u32 = u32::try_from(
@@ -37615,6 +37683,7 @@ mod structuring_corpus {
             allow_loops: true,
             label_targets: &std::collections::BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut rendered: super::Block = Vec::new();
         assert!(
@@ -37628,8 +37697,14 @@ mod structuring_corpus {
         ));
         assert!(block_has_continue_at(&rendered));
         let targets: std::collections::BTreeMap<usize, u32> = std::collections::BTreeMap::new();
-        let body: super::Block = render_cfg_blocks(&blocks, &labels, true, &targets)
-            .expect("the generic router must recover the complete fixture");
+        let body: super::Block = render_cfg_blocks(
+            &blocks,
+            &labels,
+            true,
+            &targets,
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
+        )
+        .expect("the generic router must recover the complete fixture");
         assert!(super::gotos_have_unique_targets(&body));
         assert_eq!(super::tests::count_stmt(&body, &resume_effect), 1);
     }
@@ -37990,6 +38065,7 @@ mod forward_join_scope {
                 residual: &plan.residual,
                 resume: None,
             },
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         )
         .expect("the joined DAG must render through the existing proof checks");
         assert!(super::gotos_have_unique_targets(&body));
@@ -38081,6 +38157,7 @@ mod forward_join_scope {
                 allow_loops: true,
                 label_targets: targets,
                 consumed: std::collections::BTreeSet::new(),
+                budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
             };
             renderer.loop_body_with_return_tails(1, &std::collections::BTreeSet::from([1, 2]))
         }
@@ -38158,6 +38235,7 @@ mod forward_join_scope {
                     allow_loops: true,
                     label_targets: &targets,
                     consumed: std::collections::BTreeSet::new(),
+                    budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
                 };
                 assert_eq!(
                     renderer
@@ -38255,6 +38333,7 @@ mod forward_join_scope {
                 allow_loops: true,
                 label_targets: targets,
                 consumed: std::collections::BTreeSet::new(),
+                budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
             };
             renderer.closed_loop_body(&body.iter().copied().collect())
         }
@@ -38696,8 +38775,15 @@ mod forward_join_scope {
             "memory-bearing outer resume input must be rejected"
         );
         assert!(
-            super::render_cfg_blocks_nested(&raw_blocks, &labels, true, &BTreeMap::new(), resume,)
-                .is_none(),
+            super::render_cfg_blocks_nested(
+                &raw_blocks,
+                &labels,
+                true,
+                &BTreeMap::new(),
+                resume,
+                &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
+            )
+            .is_none(),
             "the public structuring path must reject the unnormalized topology"
         );
         let frame_shape: super::FrameShape = super::FrameShape {
@@ -38730,6 +38816,7 @@ mod forward_join_scope {
             true,
             &BTreeMap::new(),
             resume,
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         )
         .expect("normalized outer resume topology");
         let [super::Node::OuterResume(tree)] = body.as_slice() else {
@@ -38869,6 +38956,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut body: Vec<super::Node> = Vec::new();
         assert!(
@@ -38928,6 +39016,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let outer = forest
             .loops
@@ -39008,6 +39097,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut inner_body: Vec<super::Node> = Vec::new();
         let inner_region_id: u32 = u32::try_from(
@@ -39087,6 +39177,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut nested_direct_body: Vec<super::Node> = Vec::new();
         assert!(
@@ -39108,6 +39199,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut outer_sub_body: Vec<super::Node> = Vec::new();
         assert!(
@@ -39120,6 +39212,7 @@ mod forward_join_scope {
             true,
             &BTreeMap::new(),
             plan.resume,
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         )
         .expect("the nested proof must admit the remapped resume terminal");
         assert!(contains_node(
@@ -39143,6 +39236,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut outer_body: Vec<super::Node> = Vec::new();
         let outer_region_id: u32 = u32::try_from(
@@ -39168,6 +39262,7 @@ mod forward_join_scope {
             allow_loops: true,
             label_targets: &BTreeMap::new(),
             consumed: std::collections::BTreeSet::new(),
+            budget: &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         };
         let mut rendered_body: Vec<super::Node> = Vec::new();
         assert!(
@@ -39189,6 +39284,7 @@ mod forward_join_scope {
                 residual: &plan.residual,
                 resume: Some(plan.resume),
             },
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
         )
         .expect("the proven resume stub must render inside its inner loop");
         assert!(super::block_has_continue_at(&body));
@@ -39199,9 +39295,14 @@ mod forward_join_scope {
     fn the_lowering_only_runs_after_every_earlier_attempt_has_failed() {
         let already_structurable: Vec<CfgBlock> = vec![branch(2, 1), jump(3), jump(3), ret()];
         let targets: BTreeMap<usize, u32> = BTreeMap::new();
-        let body: Vec<super::Node> =
-            render_cfg_blocks(&already_structurable, &no_labels(), true, &targets)
-                .expect("a plain diamond structures without any lowering");
+        let body: Vec<super::Node> = render_cfg_blocks(
+            &already_structurable,
+            &no_labels(),
+            true,
+            &targets,
+            &super::RenderBudget::new(super::STRUCTURE_RENDER_ATTEMPTS),
+        )
+        .expect("a plain diamond structures without any lowering");
         assert!(
             !contains_goto(&body),
             "a shape the earlier passes already handle must not gain a goto: {body:#?}"

@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 
 use common::{ZIG_ELF, fixture_or_fail};
 use disrobe_pass_nativelang::{
-    BodyRecovery, BodySkip, BodyStatus, FunctionOrigin, MAX_BODY_CARVE_BYTES, MAX_BODY_CODE_BYTES,
-    MAX_BODY_FUNCTIONS, MAX_RETAINED_SOURCE_BYTES, NativeImage, NativeLang, RecoveredFunction,
-    RustBody, Section, recover_bodies,
+    BodyRecovery, BodyRejection, BodySkip, BodyStatus, DwarfReport, FunctionBody, FunctionOrigin,
+    FunctionRecovery, MAX_BODY_CARVE_BYTES, MAX_BODY_CODE_BYTES, MAX_BODY_FUNCTIONS,
+    MAX_RETAINED_SOURCE_BYTES, NativeImage, NativeLang, RecoveredFunction, RustBody, Section,
+    recover_bodies, recover_dwarf, recover_functions,
 };
 
 const OVERFLOW: usize = 512;
@@ -209,5 +210,37 @@ fn overlapping_oversized_carves_cannot_grow_the_copy_beyond_the_declared_ceiling
         "{declared} carves all covering the same {window}-byte window: {} attempted carve bytes, \
          {refused} refused by the aggregate budget, {} rejected, {:?} elapsed",
         attempted, recovery.rejected, elapsed
+    );
+}
+
+#[test]
+fn a_structuring_search_that_does_not_converge_stops_at_its_render_budget() {
+    let bytes: Vec<u8> = fixture_or_fail(ZIG_ELF);
+    let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("parse the zig fixture");
+    let dwarf: DwarfReport = recover_dwarf(&image);
+    let functions: FunctionRecovery = recover_functions(&image, NativeLang::Zig, &dwarf);
+    let adler: &RecoveredFunction = functions
+        .functions
+        .iter()
+        .find(|function: &&RecoveredFunction| function.name == "hash.adler.Adler32.update")
+        .expect("the zig fixture links std.hash.Adler32.update");
+    let recovery: BodyRecovery =
+        recover_bodies(&image, NativeLang::Zig, std::slice::from_ref(adler));
+    let body: &FunctionBody = recovery
+        .bodies
+        .first()
+        .expect("one function in gives one body out");
+    let BodyStatus::Rejected {
+        reason: BodyRejection::Decompiler(reason),
+    } = &body.status
+    else {
+        panic!(
+            "Adler32.update must be refused by the decompiler, got {:?}",
+            body.status
+        );
+    };
+    assert!(
+        reason.contains("control-flow structuring stopped after 512 render attempts"),
+        "the unconverging structuring search must stop at its render budget and say so: {reason}"
     );
 }
