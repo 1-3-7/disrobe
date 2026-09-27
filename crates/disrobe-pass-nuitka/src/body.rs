@@ -1326,7 +1326,14 @@ pub(crate) fn resolve_const_token(token: &str, pool: &ConstantsPool) -> PythonEx
     if t == "const_list_empty" {
         return PythonExpr::List(Vec::new());
     }
-    PythonExpr::Name(t.to_owned())
+    if !t.is_empty()
+        && t.chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || c == '_')
+    {
+        PythonExpr::Name(t.to_owned())
+    } else {
+        PythonExpr::Name("UNRESOLVED:c-expression".to_owned())
+    }
 }
 
 fn resolve_singleton_token(t: &str) -> Option<PythonExpr> {

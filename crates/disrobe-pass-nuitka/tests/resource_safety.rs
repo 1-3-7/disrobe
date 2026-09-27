@@ -1,10 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::time::{Duration, Instant};
-
 use disrobe_pass_nuitka::{
     BodyLift, CCodeObject, CFunctionWiring, CImplBody, CModuleStructure, ConstantsPool, PythonExpr,
     PythonStmt, SurfaceModule, build_surface, lift_body_detailed, parse_c_module,
 };
+
+const LIFT_DEPTH_LIMIT: usize = 256;
 
 fn contains_call(stmts: &[PythonStmt]) -> bool {
     stmts.iter().any(|s: &PythonStmt| match s {
@@ -49,31 +49,70 @@ goto frame_return_exit_1;
     );
 }
 
-#[test]
-fn deeply_nested_call_expression_is_bounded() {
+fn lift_nested_calls(levels: usize) -> (usize, PythonExpr) {
     let prefix: &str = "CALL_FUNCTION_WITH_POS_ARGS1(tstate, callee, ";
-    let mut rhs: String = String::with_capacity(prefix.len() * 50_000usize + 5usize + 50_000usize);
-    for _ in 0..50_000 {
+    let mut rhs: String = String::with_capacity((prefix.len() + 1) * levels + 5);
+    for _ in 0..levels {
         rhs.push_str(prefix);
     }
     rhs.push_str("par_x");
-    for _ in 0..50_000 {
+    for _ in 0..levels {
         rhs.push(')');
     }
     let body: String = format!(
         "{{\nPyObject *par_x = python_pars[0];\ntmp_return_value = {rhs};\ngoto frame_return_exit_1;\n}}"
     );
     let pool: ConstantsPool = ConstantsPool::default();
-    let start: Instant = Instant::now();
     let lift: BodyLift = lift_body_detailed(&body, &[], &pool);
-    let elapsed: Duration = start.elapsed();
+    let returned: &PythonExpr = lift
+        .stmts
+        .iter()
+        .find_map(|stmt: &PythonStmt| match stmt {
+            PythonStmt::Return(expr) => Some(expr),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the nested call must lift to a return, got {:?}",
+                lift.stmts
+            )
+        });
+    let mut innermost: &PythonExpr = returned;
+    let mut lifted_depth: usize = 0;
+    while let PythonExpr::Call { args, .. } = innermost
+        && let [argument] = args.as_slice()
+    {
+        lifted_depth += 1;
+        innermost = argument;
+    }
+    (lifted_depth, innermost.clone())
+}
+
+#[test]
+fn deeply_nested_call_expression_is_cut_at_the_depth_bound() {
+    let (depth, innermost): (usize, PythonExpr) = lift_nested_calls(1_000);
     assert!(
-        elapsed < Duration::from_secs(10),
-        "deeply nested expression lift took {elapsed:?}, expected bounded time"
+        depth <= LIFT_DEPTH_LIMIT,
+        "the lifter nested {depth} calls, past its {LIFT_DEPTH_LIMIT}-level bound"
     );
-    assert!(
-        !lift.stmts.is_empty(),
-        "lifter must produce a bounded statement rather than overflowing"
+    assert_eq!(
+        innermost,
+        PythonExpr::Name("UNRESOLVED:eval-depth-limit".to_owned()),
+        "a 1,000-level call must be cut at the evaluation depth bound"
+    );
+}
+
+#[test]
+fn oversized_call_expression_is_unresolved_not_emitted_as_a_name() {
+    let (depth, innermost): (usize, PythonExpr) = lift_nested_calls(50_000);
+    assert_eq!(
+        depth, 0,
+        "an argument past the size bound must not be parsed"
+    );
+    assert_eq!(
+        innermost,
+        PythonExpr::Name("UNRESOLVED:c-expression".to_owned()),
+        "C text the lifter declines must never become a Python name"
     );
 }
 
