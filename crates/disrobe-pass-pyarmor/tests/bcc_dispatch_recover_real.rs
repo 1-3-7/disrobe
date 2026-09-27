@@ -1,3 +1,4 @@
+#![cfg(target_arch = "x86_64")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -6,7 +7,7 @@
     clippy::print_stderr
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
@@ -16,25 +17,36 @@ use disrobe_pass_pyarmor::{
 };
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
 
-fn corpus_default_dir() -> Option<PathBuf> {
-    let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
+fn corpus_default_dir() -> PathBuf {
+    let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the crate sits two levels below the workspace root")
         .join("corpus/python/pyarmor/v9-bcc/default");
-    dir.is_dir().then_some(dir)
+    assert!(
+        dir.is_dir(),
+        "committed v9-bcc sample missing: {}",
+        dir.display()
+    );
+    dir
 }
 
-fn python() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
+const PYTHON_CANDIDATES: [&str; 3] = ["python", "python3", "py"];
+
+fn python() -> String {
+    for candidate in PYTHON_CANDIDATES {
         if Command::new(candidate)
             .arg("--version")
             .output()
             .is_ok_and(|o: std::process::Output| o.status.success())
         {
-            return Some(candidate.to_owned());
+            return candidate.to_owned();
         }
     }
-    None
+    panic!(
+        "a Python interpreter is required for the behavioral differential and none of \
+         {PYTHON_CANDIDATES:?} runs on PATH"
+    );
 }
 
 fn text_section(blob: &[u8]) -> Option<(u64, Vec<u8>)> {
@@ -139,30 +151,48 @@ struct Prepared {
     map: disrobe_pass_pyarmor::BccLinkOutput,
 }
 
-fn prepare() -> Option<Prepared> {
-    let dir: PathBuf = corpus_default_dir()?;
+fn prepare() -> Prepared {
+    let dir: PathBuf = corpus_default_dir();
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
-    let wrapper_text: String = std::fs::read_to_string(&wrapper_path).ok()?;
+    let wrapper_text: String = std::fs::read_to_string(&wrapper_path).unwrap_or_else(|error| {
+        panic!(
+            "committed v9-bcc wrapper unreadable: {}: {error}",
+            wrapper_path.display()
+        )
+    });
     let opts: UnpackOptions = UnpackOptions {
         allow_bcc: true,
         ..UnpackOptions::default()
     };
-    let out = unpack_wrapper_text_with_options(&wrapper_text, &wrapper_path, &opts).ok()?;
-    let map = link_bcc_from_unpack(&out, &wrapper_text, &wrapper_path).ok()?;
-    let blob: &Vec<u8> = &out.bcc_blobs.first()?.bytes;
-    let (text_addr, text): (u64, Vec<u8>) = text_section(blob)?;
-    let pyc: &Vec<u8> = out.pyc.as_ref()?;
+    let out = unpack_wrapper_text_with_options(&wrapper_text, &wrapper_path, &opts)
+        .expect("the committed v9-bcc wrapper decrypts with its sibling runtime");
+    let map = link_bcc_from_unpack(&out, &wrapper_text, &wrapper_path)
+        .expect("the committed v9-bcc wrapper links its residual module");
+    let blob: &Vec<u8> = &out
+        .bcc_blobs
+        .first()
+        .expect("the committed v9-bcc sample carves one BCC object")
+        .bytes;
+    let (text_addr, text): (u64, Vec<u8>) =
+        text_section(blob).expect("the carved BCC object carries an executable text section");
+    let pyc: &Vec<u8> = out
+        .pyc
+        .as_ref()
+        .expect("the committed v9-bcc sample recovers a residual pyc");
     let pv: PyVersion = out.py_version.unwrap_or_else(|| PyVersion::new(3, 12));
-    let object: Object = load(pyc.get(16..)?, pv).ok()?;
+    let body: &[u8] = pyc
+        .get(16..)
+        .expect("the residual pyc is longer than its 16-byte header");
+    let object: Object = load(body, pv).expect("the residual pyc body unmarshals");
     let Object::Code(module): Object = object else {
-        return None;
+        panic!("the residual pyc holds no module code object");
     };
-    Some(Prepared {
+    Prepared {
         module: *module,
         text_addr,
         text,
         map,
-    })
+    }
 }
 
 fn recover_named(prep: &Prepared, qualname: &str) -> Option<RecoveredBody> {
@@ -236,14 +266,7 @@ fn behavioral_check(py: &str, name: &str, arity: usize, reference_body: &str, re
 
 #[test]
 fn straight_line_bcc_bodies_recover_and_match_cpython() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!("skipping: BCC recovery targets x86-64");
-        return;
-    }
-    let Some(prep): Option<Prepared> = prepare() else {
-        eprintln!("v9-bcc corpus absent or undecryptable; skipping");
-        return;
-    };
+    let prep: Prepared = prepare();
 
     let mix_add: RecoveredBody = recover_named(&prep, "mix_add").expect("mix_add native record");
     println!(
@@ -356,12 +379,7 @@ fn straight_line_bcc_bodies_recover_and_match_cpython() {
         "main calls helpers and loops; it must degrade honestly"
     );
 
-    let Some(py): Option<String> = python() else {
-        eprintln!(
-            "recovery asserted structurally; no python interpreter to confirm behavior, skipping differential"
-        );
-        return;
-    };
+    let py: String = python();
     let mix_name: &str = mix_def
         .lines()
         .next()

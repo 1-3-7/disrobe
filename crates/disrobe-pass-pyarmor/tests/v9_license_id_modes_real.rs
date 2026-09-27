@@ -24,16 +24,31 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn sample_dir(mode: &str) -> Option<PathBuf> {
+fn sample_dir(mode: &str) -> PathBuf {
     let root: PathBuf = workspace_root().join(SAMPLE_ROOT).join(mode);
-    root.is_dir().then_some(root)
+    assert!(
+        root.is_dir(),
+        "committed PyArmor license-id sample missing: {}",
+        root.display()
+    );
+    root
 }
 
-fn load_wrapper_and_runtime(dir: &Path) -> Option<(String, Vec<u8>)> {
-    let wrapper: String = std::fs::read_to_string(dir.join("known_plaintext.py")).ok()?;
+fn read_committed_text(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("committed sample unreadable: {}: {error}", path.display()))
+}
+
+fn load_wrapper_and_runtime(dir: &Path) -> (String, Vec<u8>) {
+    let wrapper: String = read_committed_text(&dir.join("known_plaintext.py"));
     let runtime: PathBuf = dir.join(RUNTIME_DIR).join("pyarmor_runtime.pyd");
-    let runtime_bytes: Vec<u8> = std::fs::read(runtime).ok()?;
-    Some((wrapper, runtime_bytes))
+    let runtime_bytes: Vec<u8> = std::fs::read(&runtime).unwrap_or_else(|error| {
+        panic!(
+            "committed runtime unreadable: {}: {error}",
+            runtime.display()
+        )
+    });
+    (wrapper, runtime_bytes)
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
@@ -74,10 +89,9 @@ fn locate_real_code_object(plaintext: &[u8]) -> Option<Box<CodeObject>> {
     None
 }
 
-fn unpack_mode(mode: &str) -> Option<StaticUnpackOutput> {
-    let dir: PathBuf = sample_dir(mode)?;
-    let (wrapper, runtime_bytes): (String, Vec<u8>) =
-        load_wrapper_and_runtime(&dir).expect("license-id sample readable");
+fn unpack_mode(mode: &str) -> StaticUnpackOutput {
+    let dir: PathBuf = sample_dir(mode);
+    let (wrapper, runtime_bytes): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
     let (_detection, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&wrapper).expect("wrapper carries an extractable payload literal");
     let cfg: StaticUnpackConfig = StaticUnpackConfig {
@@ -85,20 +99,13 @@ fn unpack_mode(mode: &str) -> Option<StaticUnpackOutput> {
         strict: true,
         ..StaticUnpackConfig::default()
     };
-    Some(
-        unpack_static_with_config(&payload, &cfg)
-            .expect("in-house decrypt of the license-id runtime"),
-    )
+    unpack_static_with_config(&payload, &cfg).expect("in-house decrypt of the license-id runtime")
 }
 
 #[test]
 fn license_id_serial_resolves_v9_via_runtime_descriptor() {
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        eprintln!("license-id default sample absent; skipping");
-        return;
-    };
-    let wrapper: String =
-        std::fs::read_to_string(dir.join("known_plaintext.py")).expect("wrapper readable");
+    let dir: PathBuf = sample_dir("default");
+    let wrapper: String = read_committed_text(&dir.join("known_plaintext.py"));
     let (detection, _payload): (Detection, Vec<u8>) = detect_from_wrapper(&wrapper).unwrap();
     assert_eq!(
         detection.serial.as_deref(),
@@ -111,8 +118,7 @@ fn license_id_serial_resolves_v9_via_runtime_descriptor() {
         "from the wrapper header alone a license-id serial cannot prove the format version (the same 015009 ships from 8.x and 9.x), so the serial-only verdict is honestly Medium"
     );
 
-    let out: StaticUnpackOutput =
-        unpack_mode("default").expect("license-id default sample present");
+    let out: StaticUnpackOutput = unpack_mode("default");
     assert_eq!(
         out.pyarmor_version,
         PyarmorVersion::V9,
@@ -139,10 +145,7 @@ fn license_id_serial_classification_is_license_id_kind() {
 
 #[test]
 fn default_mode_recovers_known_plaintext() {
-    let Some(out): Option<StaticUnpackOutput> = unpack_mode("default") else {
-        eprintln!("license-id default sample absent; skipping");
-        return;
-    };
+    let out: StaticUnpackOutput = unpack_mode("default");
     assert_eq!(out.pyarmor_version, PyarmorVersion::V9);
     assert_eq!(out.status, StaticDecryptStatus::Functional);
     for ident in KNOWN_IDENTIFIERS {
@@ -170,9 +173,7 @@ fn default_mode_recovers_known_plaintext() {
 
 #[test]
 fn default_mode_key_classification_is_embedded() {
-    let Some(out): Option<StaticUnpackOutput> = unpack_mode("default") else {
-        return;
-    };
+    let out: StaticUnpackOutput = unpack_mode("default");
     let class: RuntimeKeyClassification = out
         .key_classification
         .expect("a v9 sample with a serial carries a key classification");
@@ -187,10 +188,7 @@ fn default_mode_key_classification_is_embedded() {
 
 #[test]
 fn restrict_mode_flag_is_decoded_and_still_recovers() {
-    let Some(out): Option<StaticUnpackOutput> = unpack_mode("restrict") else {
-        eprintln!("license-id restrict sample absent; skipping");
-        return;
-    };
+    let out: StaticUnpackOutput = unpack_mode("restrict");
     let class: RuntimeKeyClassification = out.key_classification.expect("classification");
     let flags: HeaderModeFlags = class.mode_flags.expect("flags");
     assert!(
@@ -212,10 +210,7 @@ fn restrict_mode_flag_is_decoded_and_still_recovers() {
 
 #[test]
 fn obf_module_disabled_flag_is_decoded() {
-    let Some(out): Option<StaticUnpackOutput> = unpack_mode("obfmod0") else {
-        eprintln!("license-id obfmod0 sample absent; skipping");
-        return;
-    };
+    let out: StaticUnpackOutput = unpack_mode("obfmod0");
     let class: RuntimeKeyClassification = out.key_classification.expect("classification");
     let flags: HeaderModeFlags = class.mode_flags.expect("flags");
     assert!(
@@ -227,11 +222,8 @@ fn obf_module_disabled_flag_is_decoded() {
 
 #[test]
 fn outer_runtime_key_flag_is_decoded() {
-    let Some(dir): Option<PathBuf> = sample_dir("outer") else {
-        eprintln!("license-id outer sample absent; skipping");
-        return;
-    };
-    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir).unwrap();
+    let dir: PathBuf = sample_dir("outer");
+    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
     let (detection, _payload): (Detection, Vec<u8>) = detect_from_wrapper(&wrapper).unwrap();
     let serial: &str = detection.serial.as_deref().expect("serial");
     let class: RuntimeKeyClassification = classify_runtime_key(serial, &detection.raw_header);
@@ -250,10 +242,7 @@ fn outer_runtime_key_flag_is_decoded() {
 
 #[test]
 fn mix_str_mode_recovers_module_structure() {
-    let Some(out): Option<StaticUnpackOutput> = unpack_mode("mixstr") else {
-        eprintln!("license-id mixstr sample absent; skipping");
-        return;
-    };
+    let out: StaticUnpackOutput = unpack_mode("mixstr");
     assert_eq!(out.status, StaticDecryptStatus::Functional);
     for ident in KNOWN_IDENTIFIERS {
         assert!(
@@ -268,10 +257,7 @@ fn clean_control_yields_nothing() {
     let clean: PathBuf = workspace_root()
         .join(SAMPLE_ROOT)
         .join("known_plaintext_original.py");
-    let Ok(src): std::io::Result<String> = std::fs::read_to_string(&clean) else {
-        eprintln!("clean control absent; skipping");
-        return;
-    };
+    let src: String = read_committed_text(&clean);
     assert!(
         detect_from_wrapper(&src).is_err(),
         "the original un-obfuscated source must not be detected as a pyarmor wrapper"

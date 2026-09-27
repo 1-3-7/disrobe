@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::print_stderr,
-    clippy::panic
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 
@@ -16,27 +11,23 @@ fn samples_root() -> PathBuf {
         .parent()
         .unwrap()
         .join("corpus")
-        .join("generated")
+        .join("python")
         .join("pyarmor")
 }
 
-fn try_read_wrapper(sample: &str) -> Option<(String, PathBuf)> {
-    let path: PathBuf = samples_root().join(sample).join("hello.py");
-    if !path.is_file() {
-        return None;
-    }
-    let text: String = std::fs::read_to_string(&path).ok()?;
-    Some((text, path))
+fn read_wrapper(relative: &str) -> String {
+    let path: PathBuf = samples_root().join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "committed PyArmor wrapper missing or unreadable: {}: {error}",
+            path.display()
+        )
+    })
 }
 
 #[test]
 fn detect_v9_default_sample() {
-    let Some((text, _)): Option<(String, PathBuf)> = try_read_wrapper("v9-default") else {
-        eprintln!(
-            "skipped: v9-default sample not present (corpus/generated/pyarmor/v9-default/hello.py)"
-        );
-        return;
-    };
+    let text: String = read_wrapper("v9_latest_925/default/known_plaintext.py");
     let (det, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&text).expect("must detect v9 wrapper");
     assert_eq!(det.version, PyarmorVersion::V9);
@@ -50,10 +41,9 @@ fn detect_v9_default_sample() {
 
 #[test]
 fn detect_v8_default_sample() {
-    let Some((text, _)): Option<(String, PathBuf)> = try_read_wrapper("v8-default") else {
-        eprintln!("skipped: v8-default sample not present");
-        return;
-    };
+    let text: String = read_wrapper(
+        "v8/basic/chunk_00_try_except_basic_try_except_else/chunk_00_try_except_basic_try_except_else.py",
+    );
     let (det, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&text).expect("must detect v8 wrapper");
     assert!(matches!(
@@ -65,42 +55,8 @@ fn detect_v8_default_sample() {
 }
 
 #[test]
-fn detect_v7_default_sample() {
-    let Some((text, _)): Option<(String, PathBuf)> = try_read_wrapper("v7-default") else {
-        eprintln!("skipped: v7-default sample not present");
-        return;
-    };
-    let (det, payload): (Detection, Vec<u8>) =
-        detect_from_wrapper(&text).expect("must detect v7 wrapper");
-    assert!(matches!(
-        det.version,
-        PyarmorVersion::V6 | PyarmorVersion::V7
-    ));
-    assert!(payload.starts_with(b"PYARMOR\0"));
-    assert!(payload.len() > 128);
-}
-
-#[test]
-fn detect_v6_default_sample() {
-    let Some((text, _)): Option<(String, PathBuf)> = try_read_wrapper("v6-default") else {
-        eprintln!("skipped: v6-default sample not present");
-        return;
-    };
-    let (det, payload): (Detection, Vec<u8>) =
-        detect_from_wrapper(&text).expect("must detect v6 wrapper");
-    assert!(matches!(
-        det.version,
-        PyarmorVersion::V6 | PyarmorVersion::V7
-    ));
-    assert!(payload.starts_with(b"PYARMOR\0"));
-}
-
-#[test]
 fn detect_v9_no_wrap_sample() {
-    let Some((text, _)): Option<(String, PathBuf)> = try_read_wrapper("v9-no-wrap") else {
-        eprintln!("skipped: v9-no-wrap sample not present");
-        return;
-    };
+    let text: String = read_wrapper("v9_latest_925/nowrap/known_plaintext.py");
     let (det, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&text).expect("must detect v9 no-wrap");
     assert_eq!(det.version, PyarmorVersion::V9);

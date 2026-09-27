@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stderr
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,16 +19,22 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn sample_dir(rel: &str) -> Option<PathBuf> {
+fn sample_dir(rel: &str) -> PathBuf {
     let dir: PathBuf = workspace_root().join("corpus/python/pyarmor").join(rel);
-    dir.join("known_plaintext.py").is_file().then_some(dir)
+    let wrapper: PathBuf = dir.join("known_plaintext.py");
+    assert!(
+        wrapper.is_file(),
+        "committed PyArmor wrapper missing: {}",
+        wrapper.display()
+    );
+    dir
 }
 
 fn make_scratch(name: &str) -> ScratchDir {
     ScratchDir::create(&format!("pyarmor-cpyexec-{name}")).expect("scratch dir")
 }
 
-fn python_for_minor(minor: u8) -> Option<String> {
+fn python_for_minor(minor: u8) -> String {
     let candidates: [Vec<String>; 3] = [
         vec!["py".to_owned(), format!("-3.{minor}")],
         vec![format!("python3.{minor}")],
@@ -51,11 +52,15 @@ fn python_for_minor(minor: u8) -> Option<String> {
         {
             let stdout: String = String::from_utf8_lossy(&o.stdout).trim().to_owned();
             if stdout.contains(&format!("3, {minor}")) {
-                return Some(argv.join(" "));
+                return argv.join(" ");
             }
         }
     }
-    None
+    panic!(
+        "CPython 3.{minor} is required as the execution oracle and none of `py -3.{minor}`, \
+         `python3.{minor}` or `python3.{minor}.exe` runs; install it (for example \
+         `uv python install 3.{minor}`)"
+    );
 }
 
 const PROBE_SRC: &str = r#"
@@ -106,8 +111,8 @@ print("CHECK_FAIL", checks)
 sys.exit(13)
 "#;
 
-fn recover_pyc(rel: &str) -> Option<(Vec<u8>, u8)> {
-    let dir: PathBuf = sample_dir(rel)?;
+fn recover_pyc(rel: &str) -> (Vec<u8>, u8) {
+    let dir: PathBuf = sample_dir(rel);
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
     let text: String = std::fs::read_to_string(&wrapper_path).expect("wrapper readable");
     let out: UnpackOutput =
@@ -119,7 +124,7 @@ fn recover_pyc(rel: &str) -> Option<(Vec<u8>, u8)> {
         .map(|v| v.minor)
         .or(out.detection.python_minor)
         .expect("recovered pyc carries a python version");
-    Some((pyc, minor))
+    (pyc, minor)
 }
 
 fn magic_ascii(pyc: &[u8]) -> String {
@@ -193,17 +198,9 @@ fn assert_no_pyarmor_runtime_reference(rel: &str, pyc: &[u8]) {
 }
 
 fn run_cpython_oracle(rel: &str) {
-    let Some((pyc, minor)): Option<(Vec<u8>, u8)> = recover_pyc(rel) else {
-        eprintln!("{rel}: sample absent; skipping");
-        return;
-    };
+    let (pyc, minor): (Vec<u8>, u8) = recover_pyc(rel);
     assert_no_pyarmor_runtime_reference(rel, &pyc);
-    let Some(python): Option<String> = python_for_minor(minor) else {
-        eprintln!(
-            "{rel}: no CPython 3.{minor} on PATH; skipping the execution oracle (env-robust skip)"
-        );
-        return;
-    };
+    let python: String = python_for_minor(minor);
 
     let scratch: ScratchDir = make_scratch(rel.replace(['/', '\\'], "_").as_str());
     let tmp: &Path = scratch.path();
@@ -269,18 +266,9 @@ fn recovered_license_id_restrict_executes_in_real_cpython() {
     run_cpython_oracle("v9_license_id_015009/restrict");
 }
 
-fn wrapper_path_for(rel: &str) -> Option<PathBuf> {
-    sample_dir(rel).map(|d: PathBuf| d.join("known_plaintext.py"))
-}
-
 #[test]
 fn magic_is_real_cpython_pyc_header() {
-    let Some(_wp): Option<PathBuf> = wrapper_path_for("v9_latest_925/default") else {
-        eprintln!("sample absent; skipping");
-        return;
-    };
-    let (pyc, _minor): (Vec<u8>, u8) =
-        recover_pyc("v9_latest_925/default").expect("sample present");
+    let (pyc, _minor): (Vec<u8>, u8) = recover_pyc("v9_latest_925/default");
     assert!(
         pyc.len() > 16 && pyc[2] == 0x0d && pyc[3] == 0x0a,
         "recovered pyc must carry a real CPython pyc header (0x0D 0x0A at [2..4]); head {:?}",

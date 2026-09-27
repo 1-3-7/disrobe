@@ -20,17 +20,22 @@ fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bcc_pkgtest")
 }
 
-fn python() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
+const PYTHON_CANDIDATES: [&str; 3] = ["python", "python3", "py"];
+
+fn python() -> String {
+    for candidate in PYTHON_CANDIDATES {
         let ok: bool = Command::new(candidate)
             .arg("--version")
             .output()
             .is_ok_and(|o: std::process::Output| o.status.success());
         if ok {
-            return Some(candidate.to_owned());
+            return candidate.to_owned();
         }
     }
-    None
+    panic!(
+        "a Python interpreter is required to compile the authored ground truth and none of \
+         {PYTHON_CANDIDATES:?} runs on PATH"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -218,10 +223,7 @@ fn assert_matches_authored(record: &FunctionRecord, fact: &AuthoredFact) {
 
 #[test]
 fn every_bcc_native_function_maps_to_authored_identity() {
-    let Some(py): Option<String> = python() else {
-        eprintln!("no python interpreter; skipping BCC link oracle");
-        return;
-    };
+    let py: String = python();
     let facts: Vec<AuthoredFact> = authored_facts(&py, &fixture_dir().join("authored/calc.py"));
     assert!(
         facts.len() >= 8,
@@ -373,24 +375,25 @@ fn renamed_symbols_track_through_the_map() {
     );
 }
 
-fn committed_corpus() -> Option<PathBuf> {
-    let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
+fn committed_corpus() -> PathBuf {
+    let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the crate sits two levels below the workspace root")
         .join("corpus/python/pyarmor/v9-bcc/default");
-    dir.join("known_plaintext.py").is_file().then_some(dir)
+    let wrapper: PathBuf = dir.join("known_plaintext.py");
+    assert!(
+        wrapper.is_file(),
+        "committed v9-bcc wrapper missing: {}",
+        wrapper.display()
+    );
+    dir
 }
 
 #[test]
 fn end_to_end_link_from_committed_bcc_sample() {
-    let Some(py): Option<String> = python() else {
-        eprintln!("no python interpreter; skipping end-to-end BCC link oracle");
-        return;
-    };
-    let Some(dir): Option<PathBuf> = committed_corpus() else {
-        eprintln!("v9-bcc corpus absent; skipping end-to-end BCC link oracle");
-        return;
-    };
+    let py: String = python();
+    let dir: PathBuf = committed_corpus();
     let ground_truth: PathBuf = dir
         .parent()
         .expect("corpus parent")

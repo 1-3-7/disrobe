@@ -44,9 +44,14 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn gauntlet_dir() -> Option<PathBuf> {
+fn gauntlet_dir() -> PathBuf {
     let root: PathBuf = workspace_root().join(GAUNTLET_ROOT);
-    root.is_dir().then_some(root)
+    assert!(
+        root.is_dir(),
+        "committed PyArmor 8.5.12 gauntlet sample missing: {}",
+        root.display()
+    );
+    root
 }
 
 fn load_wrapper_and_runtime(gauntlet: &Path) -> (String, Vec<u8>) {
@@ -108,10 +113,7 @@ fn collect_co_names_recursive(code: &CodeObject, out: &mut Vec<String>) {
 
 #[test]
 fn gauntlet_real_8512_wrapper_detection() {
-    let Some(gauntlet): Option<PathBuf> = gauntlet_dir() else {
-        eprintln!("gauntlet corpus absent; skipping");
-        return;
-    };
+    let gauntlet: PathBuf = gauntlet_dir();
 
     let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&gauntlet);
 
@@ -151,9 +153,7 @@ fn gauntlet_real_8512_wrapper_detection() {
 
 #[test]
 fn gauntlet_real_8512_mode_classified_normal_static_recoverable() {
-    let Some(gauntlet): Option<PathBuf> = gauntlet_dir() else {
-        return;
-    };
+    let gauntlet: PathBuf = gauntlet_dir();
 
     let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&gauntlet);
     let (_detection, payload): (Detection, Vec<u8>) =
@@ -187,10 +187,7 @@ fn gauntlet_real_8512_mode_classified_normal_static_recoverable() {
 
 #[test]
 fn gauntlet_real_8512_static_unpack_recovers_module_structure() {
-    let Some(gauntlet): Option<PathBuf> = gauntlet_dir() else {
-        eprintln!("gauntlet corpus absent; skipping");
-        return;
-    };
+    let gauntlet: PathBuf = gauntlet_dir();
 
     let (wrapper, runtime_bytes): (String, Vec<u8>) = load_wrapper_and_runtime(&gauntlet);
 
@@ -265,9 +262,7 @@ fn gauntlet_real_8512_static_unpack_recovers_module_structure() {
 
 #[test]
 fn gauntlet_real_8512_detect_only_without_runtime() {
-    let Some(gauntlet): Option<PathBuf> = gauntlet_dir() else {
-        return;
-    };
+    let gauntlet: PathBuf = gauntlet_dir();
 
     let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&gauntlet);
     let (_detection, payload): (Detection, Vec<u8>) =

@@ -23,18 +23,34 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn sample_dir(name: &str) -> Option<PathBuf> {
+fn sample_dir(name: &str) -> PathBuf {
     let root: PathBuf = workspace_root().join(SAMPLE_ROOT).join(name);
-    root.is_dir().then_some(root)
+    assert!(
+        root.is_dir(),
+        "committed PyArmor 9.2.5 sample missing: {}",
+        root.display()
+    );
+    root
 }
 
-fn load_wrapper_and_runtime(dir: &Path) -> Option<(String, Vec<u8>)> {
-    let wrapper: String = std::fs::read_to_string(dir.join("known_plaintext.py")).ok()?;
+fn load_wrapper_and_runtime(dir: &Path) -> (String, Vec<u8>) {
+    let wrapper_path: PathBuf = dir.join("known_plaintext.py");
+    let wrapper: String = std::fs::read_to_string(&wrapper_path).unwrap_or_else(|error| {
+        panic!(
+            "committed wrapper unreadable: {}: {error}",
+            wrapper_path.display()
+        )
+    });
     let runtime: PathBuf = dir
         .join("pyarmor_runtime_000000")
         .join("pyarmor_runtime.pyd");
-    let runtime_bytes: Vec<u8> = std::fs::read(runtime).ok()?;
-    Some((wrapper, runtime_bytes))
+    let runtime_bytes: Vec<u8> = std::fs::read(&runtime).unwrap_or_else(|error| {
+        panic!(
+            "committed runtime unreadable: {}: {error}",
+            runtime.display()
+        )
+    });
+    (wrapper, runtime_bytes)
 }
 
 fn co_names(code: &CodeObject) -> Vec<String> {
@@ -77,12 +93,8 @@ fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn recovers_known_plaintext_from_real_925_default_sample() {
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        eprintln!("real 9.2.5 default sample absent; skipping");
-        return;
-    };
-    let (wrapper, runtime_bytes): (String, Vec<u8>) =
-        load_wrapper_and_runtime(&dir).expect("default sample readable");
+    let dir: PathBuf = sample_dir("default");
+    let (wrapper, runtime_bytes): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
 
     let (detection, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&wrapper).expect("real wrapper carries an extractable payload literal");
@@ -137,12 +149,8 @@ fn recovers_known_plaintext_from_real_925_default_sample() {
 
 #[test]
 fn recovers_known_plaintext_from_real_925_nowrap_sample() {
-    let Some(dir): Option<PathBuf> = sample_dir("nowrap") else {
-        eprintln!("real 9.2.5 nowrap sample absent; skipping");
-        return;
-    };
-    let (wrapper, runtime_bytes): (String, Vec<u8>) =
-        load_wrapper_and_runtime(&dir).expect("nowrap sample readable");
+    let dir: PathBuf = sample_dir("nowrap");
+    let (wrapper, runtime_bytes): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
     let (_detection, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&wrapper).expect("nowrap wrapper payload literal");
 
@@ -164,10 +172,8 @@ fn recovers_known_plaintext_from_real_925_nowrap_sample() {
 
 #[test]
 fn real_925_default_classified_as_normal_static_recoverable() {
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        return;
-    };
-    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir).unwrap();
+    let dir: PathBuf = sample_dir("default");
+    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
     let (_detection, payload): (Detection, Vec<u8>) = detect_from_wrapper(&wrapper).unwrap();
     let class: ModeClassification = classify_modes(&wrapper, &payload);
     assert_eq!(class.script_type, ScriptType::Normal);
@@ -178,10 +184,8 @@ fn real_925_default_classified_as_normal_static_recoverable() {
 
 #[test]
 fn real_925_header_is_python_314_magic() {
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        return;
-    };
-    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir).unwrap();
+    let dir: PathBuf = sample_dir("default");
+    let (wrapper, _runtime): (String, Vec<u8>) = load_wrapper_and_runtime(&dir);
     let (detection, _payload): (Detection, Vec<u8>) = detect_from_wrapper(&wrapper).unwrap();
     assert_eq!(detection.python_major, Some(3));
     assert_eq!(detection.python_minor, Some(14));
@@ -198,10 +202,7 @@ fn chain_detect_paths_classify_925_serial_as_v9_not_v8_super() {
     use disrobe_core::chain::{DetectContext, Detector, DetectorOutput, ObfuscatorCatalog};
     use disrobe_pass_pyarmor::chain_detector::PyarmorDetector;
 
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        eprintln!("real 9.2.5 default sample absent; skipping");
-        return;
-    };
+    let dir: PathBuf = sample_dir("default");
     let wrapper: String =
         std::fs::read_to_string(dir.join("known_plaintext.py")).expect("wrapper readable");
     let ctx: DetectContext<'_> = DetectContext {
@@ -236,10 +237,7 @@ fn chain_run_with_path_recovers_real_pyc_via_sibling_runtime() {
     use disrobe_core::chain::Pass;
     use disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS;
 
-    let Some(dir): Option<PathBuf> = sample_dir("default") else {
-        eprintln!("real 9.2.5 default sample absent; skipping");
-        return;
-    };
+    let dir: PathBuf = sample_dir("default");
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
     let wrapper: Vec<u8> = std::fs::read(&wrapper_path).expect("wrapper readable");
     let artifact: Artifact = Artifact::new(Rung::Raw, wrapper, [0u8; 32]);

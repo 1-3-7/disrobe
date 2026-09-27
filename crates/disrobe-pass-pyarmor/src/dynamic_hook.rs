@@ -582,15 +582,14 @@ mod tests {
 
         let error: Error = run_dynamic_hook_with_target(&absent_wrapper, &out_dir, options, None)
             .expect_err("a wrapper that does not exist cannot be canonicalized");
-        if matches!(
-            error,
-            Error::DynamicHookNoPython { .. } | Error::DynamicHookPythonTooOld { .. }
-        ) {
-            eprintln!(
-                "[skip] no python 3.9.7 or newer on PATH, so the helper is never written here"
-            );
-            return;
-        }
+        assert!(
+            !matches!(
+                error,
+                Error::DynamicHookNoPython { .. } | Error::DynamicHookPythonTooOld { .. }
+            ),
+            "Python 3.9.7 or newer is required on PATH so the helper is written before the run \
+             fails: {error:?}"
+        );
         assert!(
             matches!(error, Error::Io(_)),
             "the missing wrapper must fail after the helper exists, got: {error:?}"

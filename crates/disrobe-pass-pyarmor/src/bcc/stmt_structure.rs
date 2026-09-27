@@ -1566,17 +1566,22 @@ mod tests {
         options
     }
 
-    fn interpreter() -> Option<String> {
-        for candidate in ["python", "python3", "py"] {
+    const PYTHON_CANDIDATES: [&str; 3] = ["python", "python3", "py"];
+
+    fn interpreter() -> String {
+        for candidate in PYTHON_CANDIDATES {
             if Command::new(candidate)
                 .arg("--version")
                 .output()
                 .is_ok_and(|o: std::process::Output| o.status.success())
             {
-                return Some(candidate.to_owned());
+                return candidate.to_owned();
             }
         }
-        None
+        panic!(
+            "a Python interpreter is required for the behavioral differential and none of \
+             {PYTHON_CANDIDATES:?} runs on PATH"
+        );
     }
 
     fn instr(address: u64, op: NirOp, operands: &[&str]) -> NirInstr {
@@ -1677,10 +1682,7 @@ mod tests {
         let mut notes: Vec<String> = Vec::new();
         let body: String = recover_structured(&function, &options, &mut notes)
             .expect("clean guarded-local body must structure");
-        let Some(python): Option<String> = interpreter() else {
-            eprintln!("no python interpreter present; skipping behavioral differential");
-            return;
-        };
+        let python: String = interpreter();
         let script: String = format!(
             "import itertools, sys\n\
              def reference(value, low, high):\n\

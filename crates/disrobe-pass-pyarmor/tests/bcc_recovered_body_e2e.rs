@@ -30,17 +30,22 @@ fn corpus_dir() -> PathBuf {
     dir
 }
 
-fn python() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
+const PYTHON_CANDIDATES: [&str; 3] = ["python", "python3", "py"];
+
+fn python() -> String {
+    for candidate in PYTHON_CANDIDATES {
         if Command::new(candidate)
             .arg("--version")
             .output()
             .is_ok_and(|o: std::process::Output| o.status.success())
         {
-            return Some(candidate.to_owned());
+            return candidate.to_owned();
         }
     }
-    None
+    panic!(
+        "a Python interpreter is required for the behavioral match and none of \
+         {PYTHON_CANDIDATES:?} runs on PATH"
+    );
 }
 
 fn link_corpus(dir: &Path) -> BccLinkOutput {
@@ -162,12 +167,7 @@ fn bcc_pass_output_carries_recovered_bodies() {
         );
     }
 
-    let Some(py): Option<String> = python() else {
-        eprintln!(
-            "no python interpreter; recovered bodies asserted structurally, skipping behavior"
-        );
-        return;
-    };
+    let py: String = python();
     behavioral_match(&py, &dir, mix_body, poly_body, clamp_body);
     println!("recovered mix_add, poly, and clamp match the original CPython semantics end-to-end");
 }

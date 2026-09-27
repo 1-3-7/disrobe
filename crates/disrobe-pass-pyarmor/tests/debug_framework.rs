@@ -8,7 +8,6 @@ use disrobe_pass_pyarmor::{
 };
 
 const HARNESS_ENV: &str = "DISROBE_PYARMOR_DEBUG_HARNESS";
-const SKIP_MARKER: &str = "DEBUG-HARNESS-SKIP: corpus fixture absent";
 
 fn corpus_wrapper() -> PathBuf {
     let here: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -64,10 +63,12 @@ fn harness_entrypoint() {
          did nothing"
     );
     let wrapper: PathBuf = corpus_wrapper();
-    let Ok(text): Result<String, _> = std::fs::read_to_string(&wrapper) else {
-        eprintln!("{SKIP_MARKER}: {}", wrapper.display());
-        return;
-    };
+    let text: String = std::fs::read_to_string(&wrapper).unwrap_or_else(|error| {
+        panic!(
+            "committed v8 wrapper missing or unreadable: {}: {error}",
+            wrapper.display()
+        )
+    });
     let (det, payload): (Detection, Vec<u8>) =
         detect_from_wrapper(&text).expect("real committed v8 wrapper detects");
     assert_eq!(&payload[..2], b"PY");
@@ -79,10 +80,6 @@ fn harness_entrypoint() {
         disrobe_pass_pyarmor::StaticDecryptStatus::DetectOnly
     );
     let _ = det;
-}
-
-fn skipped(stderr: &str) -> bool {
-    stderr.contains(SKIP_MARKER)
 }
 
 #[test]
@@ -112,9 +109,6 @@ fn set_emits_decision_points() {
     let out: Output = run_harness(Some("pyarmor"), false);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
-    if skipped(&stderr) {
-        return;
-    }
     assert!(
         stderr.contains("[debug:pyarmor] === pyarmor detect ==="),
         "expected the detect section header, got:\n{stderr}"
@@ -161,9 +155,6 @@ fn json_mode_is_one_object_per_line() {
     let out: Output = run_harness(Some("pyarmor"), true);
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
-    if skipped(&stderr) {
-        return;
-    }
     let events: Vec<&str> = stderr
         .lines()
         .filter(|line: &&str| line.trim_start().starts_with("{\"scope\":\"pyarmor\""))

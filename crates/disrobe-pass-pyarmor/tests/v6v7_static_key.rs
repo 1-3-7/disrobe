@@ -15,25 +15,17 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion, load};
 
 const KNOWN_MARKER: &[u8] = b"try_except_basic";
 const PY312: PyVersion = PyVersion::new(3, 12);
-const REQUIRE_V6V7_RUNTIMES: &str = "DISROBE_REQUIRE_PYARMOR_V6V7_RUNTIMES";
+const REQUIRE_LOCAL_CORPUS_VAR: &str = "DISROBE_REQUIRE_PYARMOR_LOCAL_CORPUS";
 
-fn unmeasured(graded: &str, absent: &str) {
-    let raw: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_V6V7_RUNTIMES);
-    let demanded: bool = raw.is_some_and(|value: std::ffi::OsString| {
-        !matches!(
-            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off" | "optional"
-        )
-    });
+fn local_input_absent(graded: &str, absent: &str) {
     assert!(
-        !demanded,
-        "{REQUIRE_V6V7_RUNTIMES} makes the v6/v7 runtimes mandatory for this run, so {graded} was \
-         measured against nothing and this case must not report success: {absent}"
+        std::env::var_os(REQUIRE_LOCAL_CORPUS_VAR).is_none(),
+        "{REQUIRE_LOCAL_CORPUS_VAR} is set, so the local-only input for {graded} must exist: {absent}"
     );
     eprintln!(
-        "\nNOT MEASURED: {graded} graded nothing, because {absent}. PyArmor 6 and 7 runtimes are \
-         not redistributable and no workflow can stage them. Set {REQUIRE_V6V7_RUNTIMES}=1 to fail \
-         instead of skipping.\n"
+        "UNGRADED: {graded} graded nothing, because {absent}; PyArmor 6 and 7 runtimes are not \
+         redistributable, so this input is local-only. Set {REQUIRE_LOCAL_CORPUS_VAR}=1 to fail \
+         instead"
     );
 }
 
@@ -169,32 +161,10 @@ fn cross_platform_elf_macho_runtime_keypath_recovers_real_source() {
 }
 
 #[test]
-fn no_v6_or_v7_real_corpus_is_sourcing_blocked() {
-    let root: PathBuf = corpus_root();
-    assert!(
-        root.is_dir(),
-        "the pyarmor corpus is tracked in git, so its absence is a damaged checkout rather than \
-         an optional dependency: {}",
-        root.display()
-    );
-    let v6: PathBuf = root.join("v6");
-    let v7: PathBuf = root.join("v7");
-    let v7_super: PathBuf = root.join("v7-super");
-    let baked_runtimes: PathBuf = root.join("_pytransform-runtimes");
-    if v6.is_dir() || v7.is_dir() || v7_super.is_dir() || baked_runtimes.is_dir() {
-        return;
-    }
-    eprintln!(
-        "honest ceiling: no v6/v7 real corpus present under {}; v6/v7 recovery is sourcing-blocked and unclaimed (only v8/v9 trial fixtures exist)",
-        root.display()
-    );
-}
-
-#[test]
 fn v6v7_static_key_real_pytransform_when_baked() {
     let runtimes_dir: PathBuf = corpus_root().join("_pytransform-runtimes");
     if !runtimes_dir.is_dir() {
-        unmeasured(
+        local_input_absent(
             "the static-key probe over real pytransform runtimes",
             &format!("{} is not in this checkout", runtimes_dir.display()),
         );
@@ -221,7 +191,7 @@ fn v6v7_static_key_real_pytransform_when_baked() {
         );
     }
     if probed == 0 {
-        unmeasured(
+        local_input_absent(
             "the static-key probe over real pytransform runtimes",
             &format!("{} carries no v6_ or v7_ runtime", runtimes_dir.display()),
         );
@@ -232,7 +202,7 @@ fn v6v7_static_key_real_pytransform_when_baked() {
 fn v7_wrapper_detect_when_baked_fixture_present() {
     let v7_dir: PathBuf = corpus_root().join("v7-super");
     if !v7_dir.is_dir() {
-        unmeasured(
+        local_input_absent(
             "the v7 super-mode wrapper detection",
             &format!("{} is not in this checkout", v7_dir.display()),
         );
@@ -252,10 +222,12 @@ fn v7_wrapper_detect_when_baked_fixture_present() {
             break;
         }
     }
-    let Some(text): Option<String> = wrapper_text else {
-        eprintln!("skipped: no pyarmor wrapper found in {}", v7_dir.display());
-        return;
-    };
+    let text: String = wrapper_text.unwrap_or_else(|| {
+        panic!(
+            "the local v7-super fixture is present but carries no pyarmor wrapper .py: {}",
+            v7_dir.display()
+        )
+    });
     let (det, _): (Detection, Vec<u8>) =
         detect_from_wrapper(&text).expect("must detect baked v7 wrapper");
     assert!(matches!(

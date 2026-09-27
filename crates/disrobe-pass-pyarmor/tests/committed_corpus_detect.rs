@@ -242,14 +242,6 @@ fn assert_runtime_prefix_layout_matches_sibling_default_layout(
         .join("basic")
         .join("chunk_00_try_except_basic_try_except_else")
         .join("chunk_00_try_except_basic_try_except_else.py");
-    if !(prefix_wrapper.is_file() && basic_wrapper.is_file()) {
-        eprintln!(
-            "skipped: runtime_prefix/basic pair absent under {} (gitignored large fixture)",
-            corpus_dir(version_subdir).display()
-        );
-        return;
-    }
-
     let prefix_text: String = std::fs::read_to_string(&prefix_wrapper).unwrap_or_else(|e| {
         panic!("read {}: {e}", prefix_wrapper.display());
     });

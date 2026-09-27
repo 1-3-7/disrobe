@@ -26,9 +26,14 @@ fn workspace_root() -> PathBuf {
     dir
 }
 
-fn gauntlet_wrapper_bytes() -> Option<Vec<u8>> {
+fn gauntlet_wrapper_bytes() -> Vec<u8> {
     let path: PathBuf = workspace_root().join(GAUNTLET_WRAPPER);
-    std::fs::read(&path).ok()
+    std::fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "committed gauntlet wrapper missing or unreadable: {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn bcc_wrapper_bytes() -> Vec<u8> {
@@ -47,10 +52,7 @@ fn chain_output_kind_is_mixed() {
 
 #[test]
 fn extract_children_surfaces_manifest_sidecar_for_real_v8_sample() {
-    let Some(bytes): Option<Vec<u8>> = gauntlet_wrapper_bytes() else {
-        eprintln!("SKIP: pyarmor gauntlet wrapper missing");
-        return;
-    };
+    let bytes: Vec<u8> = gauntlet_wrapper_bytes();
     let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
     let children: Vec<ChildArtifact> = PYARMOR_PASS
         .extract_children(&a)
@@ -181,23 +183,20 @@ fn extract_children_emits_legacy_rsa_capsule_wall() {
     payload[0] = 0x05;
     payload[1] = 0x01;
     let a: Artifact = Artifact::new(Rung::Raw, payload, [0u8; 32]);
-    let Ok(children): Result<Vec<ChildArtifact>, _> = PYARMOR_PASS.extract_children(&a) else {
-        eprintln!("SKIP: legacy payload not classified");
-        return;
-    };
-    let Some(manifest): Option<&ChildArtifact> = children
+    let children: Vec<ChildArtifact> = PYARMOR_PASS
+        .extract_children(&a)
+        .expect("a legacy 0x05 0x01 payload must be classified and yield chain children");
+    let manifest: &ChildArtifact = children
         .iter()
         .find(|c: &&ChildArtifact| c.handle.relative_path == "pyarmor-manifest.json")
-    else {
-        eprintln!("SKIP: no manifest for legacy payload");
-        return;
-    };
+        .expect("a legacy payload must surface pyarmor-manifest.json");
     let parsed: serde_json::Value =
         serde_json::from_slice(&manifest.bytes).expect("manifest must be valid json");
-    if !matches!(parsed["version"].as_str(), Some("v3" | "v4" | "v5")) {
-        eprintln!("SKIP: synthetic legacy payload not recognized as v3/v4/v5");
-        return;
-    }
+    assert!(
+        matches!(parsed["version"].as_str(), Some("v3" | "v4" | "v5")),
+        "the synthetic legacy payload must be recognized as v3/v4/v5, got {}",
+        parsed["version"]
+    );
     let limitations: &Vec<serde_json::Value> = parsed["limitations"]
         .as_array()
         .expect("legacy manifest must carry limitations");

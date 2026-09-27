@@ -7,108 +7,114 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_pyarmor::{
     BccArch, MapCallResolver, PyAbi, RecoverOptions, RecoveredBody, UnpackOptions,
     link_bcc_from_unpack, recover_from_code, unpack_wrapper_text_with_options,
 };
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
 
-fn cc() -> Option<String> {
-    for c in ["gcc", "clang"] {
-        if Command::new(c)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
-        {
-            return Some(c.to_owned());
+#[cfg(target_arch = "x86_64")]
+mod reference_compiler {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use disrobe_core::scratch::ScratchDir;
+    use disrobe_pass_pyarmor::{
+        MapCallResolver, PyAbi, RecoverOptions, RecoveredBody, recover_from_code,
+    };
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
+
+    const COMPILER_CANDIDATES: [&str; 3] = ["gcc", "clang", "cc"];
+    const PYTHON_CANDIDATES: [&str; 3] = ["python", "python3", "py"];
+
+    fn first_runnable(candidates: [&str; 3], role: &str) -> String {
+        for c in candidates {
+            if Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok_and(|o: std::process::Output| o.status.success())
+            {
+                return c.to_owned();
+            }
+        }
+        panic!("{role} is required for this oracle and none of {candidates:?} runs on PATH");
+    }
+
+    fn cc() -> String {
+        first_runnable(COMPILER_CANDIDATES, "a C compiler")
+    }
+
+    fn python() -> String {
+        first_runnable(PYTHON_CANDIDATES, "a Python interpreter")
+    }
+
+    fn scratch_dir() -> ScratchDir {
+        ScratchDir::create("pyarmor-bcc-recover").expect("scratch dir")
+    }
+
+    const fn host_abi() -> PyAbi {
+        if cfg!(windows) {
+            PyAbi::Win64
+        } else {
+            PyAbi::SysV
         }
     }
-    None
-}
 
-fn python() -> Option<String> {
-    for c in ["python", "python3", "py"] {
-        if Command::new(c)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
-        {
-            return Some(c.to_owned());
-        }
+    struct Case {
+        name: &'static str,
+        arity: usize,
+        c_expr: &'static str,
+        reference_python: &'static str,
+        expected_expr: &'static str,
     }
-    None
-}
 
-fn scratch_dir() -> ScratchDir {
-    ScratchDir::create("pyarmor-bcc-recover").expect("scratch dir")
-}
+    const BATTERY: &[Case] = &[
+        Case {
+            name: "add",
+            arity: 2,
+            c_expr: "PyNumber_Add(a, b)",
+            reference_python: "a + b",
+            expected_expr: "arg_0 + arg_1",
+        },
+        Case {
+            name: "madd",
+            arity: 3,
+            c_expr: "PyNumber_Add(a, PyNumber_Multiply(b, c))",
+            reference_python: "a + b * c",
+            expected_expr: "arg_0 + arg_1 * arg_2",
+        },
+        Case {
+            name: "mixed",
+            arity: 2,
+            c_expr: "PyNumber_Subtract(PyNumber_Add(a, b), PyNumber_Xor(a, b))",
+            reference_python: "(a + b) - (a ^ b)",
+            expected_expr: "arg_0 + arg_1 - (arg_0 ^ arg_1)",
+        },
+        Case {
+            name: "bitwise",
+            arity: 3,
+            c_expr: "PyNumber_Or(PyNumber_And(a, b), c)",
+            reference_python: "(a & b) | c",
+            expected_expr: "arg_0 & arg_1 | arg_2",
+        },
+        Case {
+            name: "cmp_lt",
+            arity: 2,
+            c_expr: "PyObject_RichCompare(a, b, 0)",
+            reference_python: "a < b",
+            expected_expr: "arg_0 < arg_1",
+        },
+    ];
 
-const fn host_abi() -> PyAbi {
-    if cfg!(windows) {
-        PyAbi::Win64
-    } else {
-        PyAbi::SysV
-    }
-}
-
-struct Case {
-    name: &'static str,
-    arity: usize,
-    c_expr: &'static str,
-    reference_python: &'static str,
-    expected_expr: &'static str,
-}
-
-const BATTERY: &[Case] = &[
-    Case {
-        name: "add",
-        arity: 2,
-        c_expr: "PyNumber_Add(a, b)",
-        reference_python: "a + b",
-        expected_expr: "arg_0 + arg_1",
-    },
-    Case {
-        name: "madd",
-        arity: 3,
-        c_expr: "PyNumber_Add(a, PyNumber_Multiply(b, c))",
-        reference_python: "a + b * c",
-        expected_expr: "arg_0 + arg_1 * arg_2",
-    },
-    Case {
-        name: "mixed",
-        arity: 2,
-        c_expr: "PyNumber_Subtract(PyNumber_Add(a, b), PyNumber_Xor(a, b))",
-        reference_python: "(a + b) - (a ^ b)",
-        expected_expr: "arg_0 + arg_1 - (arg_0 ^ arg_1)",
-    },
-    Case {
-        name: "bitwise",
-        arity: 3,
-        c_expr: "PyNumber_Or(PyNumber_And(a, b), c)",
-        reference_python: "(a & b) | c",
-        expected_expr: "arg_0 & arg_1 | arg_2",
-    },
-    Case {
-        name: "cmp_lt",
-        arity: 2,
-        c_expr: "PyObject_RichCompare(a, b, 0)",
-        reference_python: "a < b",
-        expected_expr: "arg_0 < arg_1",
-    },
-];
-
-fn c_source(case: &Case) -> String {
-    let params: Vec<&str> = ["a", "b", "c"][..case.arity].to_vec();
-    let signature: String = params
-        .iter()
-        .map(|p: &&str| format!("PyObject* {p}"))
-        .collect::<Vec<String>>()
-        .join(", ");
-    format!(
-        "typedef void PyObject;\n\
+    fn c_source(case: &Case) -> String {
+        let params: Vec<&str> = ["a", "b", "c"][..case.arity].to_vec();
+        let signature: String = params
+            .iter()
+            .map(|p: &&str| format!("PyObject* {p}"))
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!(
+            "typedef void PyObject;\n\
          extern PyObject* PyNumber_Add(PyObject*, PyObject*);\n\
          extern PyObject* PyNumber_Subtract(PyObject*, PyObject*);\n\
          extern PyObject* PyNumber_Multiply(PyObject*, PyObject*);\n\
@@ -117,95 +123,97 @@ fn c_source(case: &Case) -> String {
          extern PyObject* PyNumber_Xor(PyObject*, PyObject*);\n\
          extern PyObject* PyObject_RichCompare(PyObject*, PyObject*, int);\n\
          PyObject* {}({}) {{ return {}; }}\n",
-        case.name, signature, case.c_expr
-    )
-}
-
-fn compile_object(compiler: &str, dir: &Path, case: &Case) -> Vec<u8> {
-    let c_path: PathBuf = dir.join(format!("{}.c", case.name));
-    std::fs::write(&c_path, c_source(case)).expect("write c source");
-    let o_path: PathBuf = dir.join(format!("{}.o", case.name));
-    let out: std::process::Output = Command::new(compiler)
-        .args([
-            "-O1",
-            "-fno-stack-protector",
-            "-fcf-protection=none",
-            "-fno-asynchronous-unwind-tables",
-            "-c",
-            "-o",
-        ])
-        .arg(&o_path)
-        .arg(&c_path)
-        .output()
-        .expect("invoke cc");
-    assert!(
-        out.status.success(),
-        "compile of {} failed: {}",
-        case.name,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    std::fs::read(&o_path).expect("read object")
-}
-
-fn recover_case(object_bytes: &[u8], case: &Case) -> RecoveredBody {
-    let file: object::File<'_> = object::File::parse(object_bytes).expect("parse object");
-    let symbol: object::Symbol<'_, '_> = file
-        .symbols()
-        .find(|s: &object::Symbol<'_, '_>| {
-            s.name()
-                .is_ok_and(|n: &str| n == case.name || n == format!("_{}", case.name))
-        })
-        .expect("function symbol");
-    let section_index: object::SectionIndex = match symbol.section() {
-        object::SymbolSection::Section(index) => index,
-        _ => panic!("function is not in a section"),
-    };
-    let section: object::Section<'_, '_> = file.section_by_index(section_index).expect("section");
-    let section_addr: u64 = section.address();
-    let data: &[u8] = section.data().expect("section data");
-    let start: usize = usize::try_from(symbol.address().saturating_sub(section_addr)).unwrap();
-    let size: usize = usize::try_from(symbol.size()).unwrap();
-    let end: usize = if size == 0 {
-        data.len()
-    } else {
-        start.saturating_add(size).min(data.len())
-    };
-    let code: &[u8] = &data[start..end];
-
-    let mut resolver: MapCallResolver = MapCallResolver::new();
-    for (offset, reloc) in section.relocations() {
-        if (offset as usize) < start || (offset as usize) >= end {
-            continue;
-        }
-        if reloc.size() != 32 {
-            continue;
-        }
-        let RelocationTarget::Symbol(sym_index) = reloc.target() else {
-            continue;
-        };
-        let Ok(target): Result<object::Symbol<'_, '_>, _> = file.symbol_by_index(sym_index) else {
-            continue;
-        };
-        let Ok(name): Result<&str, _> = target.name() else {
-            continue;
-        };
-        let call_site: u64 = section_addr.wrapping_add(offset).wrapping_sub(1);
-        resolver.insert(call_site, name.trim_start_matches('_'));
+            case.name, signature, case.c_expr
+        )
     }
 
-    let mut options: RecoverOptions =
-        RecoverOptions::new(format!("rec_{}", case.name), host_abi(), case.arity);
-    options.param_names = Vec::new();
-    recover_from_code(code, symbol.address(), &options, &resolver)
-}
+    fn compile_object(compiler: &str, dir: &Path, case: &Case) -> Vec<u8> {
+        let c_path: PathBuf = dir.join(format!("{}.c", case.name));
+        std::fs::write(&c_path, c_source(case)).expect("write c source");
+        let o_path: PathBuf = dir.join(format!("{}.o", case.name));
+        let out: std::process::Output = Command::new(compiler)
+            .args([
+                "-O1",
+                "-fno-stack-protector",
+                "-fcf-protection=none",
+                "-fno-asynchronous-unwind-tables",
+                "-c",
+                "-o",
+            ])
+            .arg(&o_path)
+            .arg(&c_path)
+            .output()
+            .expect("invoke cc");
+        assert!(
+            out.status.success(),
+            "compile of {} failed: {}",
+            case.name,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read(&o_path).expect("read object")
+    }
 
-fn behavioral_check(py: &str, dir: &Path, case: &Case, recovered_def: &str) {
-    let call_args: String = (0..case.arity)
-        .map(|i: usize| format!("combo[{i}]"))
-        .collect::<Vec<String>>()
-        .join(", ");
-    let script: String = format!(
-        "import itertools, sys\n\
+    fn recover_case(object_bytes: &[u8], case: &Case) -> RecoveredBody {
+        let file: object::File<'_> = object::File::parse(object_bytes).expect("parse object");
+        let symbol: object::Symbol<'_, '_> = file
+            .symbols()
+            .find(|s: &object::Symbol<'_, '_>| {
+                s.name()
+                    .is_ok_and(|n: &str| n == case.name || n == format!("_{}", case.name))
+            })
+            .expect("function symbol");
+        let section_index: object::SectionIndex = match symbol.section() {
+            object::SymbolSection::Section(index) => index,
+            _ => panic!("function is not in a section"),
+        };
+        let section: object::Section<'_, '_> =
+            file.section_by_index(section_index).expect("section");
+        let section_addr: u64 = section.address();
+        let data: &[u8] = section.data().expect("section data");
+        let start: usize = usize::try_from(symbol.address().saturating_sub(section_addr)).unwrap();
+        let size: usize = usize::try_from(symbol.size()).unwrap();
+        let end: usize = if size == 0 {
+            data.len()
+        } else {
+            start.saturating_add(size).min(data.len())
+        };
+        let code: &[u8] = &data[start..end];
+
+        let mut resolver: MapCallResolver = MapCallResolver::new();
+        for (offset, reloc) in section.relocations() {
+            if (offset as usize) < start || (offset as usize) >= end {
+                continue;
+            }
+            if reloc.size() != 32 {
+                continue;
+            }
+            let RelocationTarget::Symbol(sym_index) = reloc.target() else {
+                continue;
+            };
+            let Ok(target): Result<object::Symbol<'_, '_>, _> = file.symbol_by_index(sym_index)
+            else {
+                continue;
+            };
+            let Ok(name): Result<&str, _> = target.name() else {
+                continue;
+            };
+            let call_site: u64 = section_addr.wrapping_add(offset).wrapping_sub(1);
+            resolver.insert(call_site, name.trim_start_matches('_'));
+        }
+
+        let mut options: RecoverOptions =
+            RecoverOptions::new(format!("rec_{}", case.name), host_abi(), case.arity);
+        options.param_names = Vec::new();
+        recover_from_code(code, symbol.address(), &options, &resolver)
+    }
+
+    fn behavioral_check(py: &str, dir: &Path, case: &Case, recovered_def: &str) {
+        let call_args: String = (0..case.arity)
+            .map(|i: usize| format!("combo[{i}]"))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let script: String = format!(
+            "import itertools, sys\n\
          def reference(a, b, c):\n    return {reference}\n\
          {recovered}\n\
          vals = [-7, -3, -1, 0, 1, 2, 5, 11, 123, -456]\n\
@@ -216,88 +224,85 @@ fn behavioral_check(py: &str, dir: &Path, case: &Case, recovered_def: &str) {
          \x20       print('MISMATCH', combo, want, got)\n\
          \x20       sys.exit(1)\n\
          print('OK')\n",
-        reference = case.reference_python,
-        recovered = recovered_def,
-        name = case.name,
-        call_args = call_args,
-    );
-    let script_path: PathBuf = dir.join(format!("check_{}.py", case.name));
-    std::fs::write(&script_path, script).expect("write check script");
-    let out: std::process::Output = Command::new(py)
-        .arg(&script_path)
-        .output()
-        .expect("run behavioral check");
-    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success() && stdout.contains("OK"),
-        "behavioral equivalence FAILED for {}: {}\nstderr: {}\nrecovered def:\n{}",
-        case.name,
-        stdout,
-        String::from_utf8_lossy(&out.stderr),
-        recovered_def
-    );
-}
-
-#[test]
-fn recovered_python_matches_ground_truth_over_fuzzed_inputs() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!("skipping: recovery targets x86-64 and the host is a different architecture");
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang) on PATH");
-        return;
-    };
-    let Some(py): Option<String> = python() else {
-        eprintln!("skipping: no python interpreter on PATH");
-        return;
-    };
-    let scratch: ScratchDir = scratch_dir();
-    let dir: &Path = scratch.path();
-    let mut recovered_count: usize = 0;
-    for case in BATTERY {
-        let object_bytes: Vec<u8> = compile_object(&compiler, dir, case);
-        let body: RecoveredBody = recover_case(&object_bytes, case);
-        let Some(recovered_def): Option<String> = body.recovered_python.clone() else {
-            eprintln!(
-                "skip {}: this compiler build did not lower it into the straight-line C-API expression shape (coverage {:.0}%)",
-                case.name,
-                body.coverage() * 100.0
-            );
-            continue;
-        };
-        assert!(
-            (body.coverage() - 1.0).abs() < f64::EPSILON,
-            "{} recovered python at less than full coverage",
-            case.name
+            reference = case.reference_python,
+            recovered = recovered_def,
+            name = case.name,
+            call_args = call_args,
         );
-        let expected_line: String = format!("return {}", case.expected_expr);
+        let script_path: PathBuf = dir.join(format!("check_{}.py", case.name));
+        std::fs::write(&script_path, script).expect("write check script");
+        let out: std::process::Output = Command::new(py)
+            .arg(&script_path)
+            .output()
+            .expect("run behavioral check");
+        let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
         assert!(
-            recovered_def.contains(&expected_line),
-            "{} recovered `{}` but expected `{}`",
+            out.status.success() && stdout.contains("OK"),
+            "behavioral equivalence FAILED for {}: {}\nstderr: {}\nrecovered def:\n{}",
             case.name,
-            recovered_def.trim(),
-            expected_line
+            stdout,
+            String::from_utf8_lossy(&out.stderr),
+            recovered_def
         );
-        behavioral_check(&py, dir, case, &recovered_def);
-        recovered_count += 1;
-        println!("{}: recovered `{}`", case.name, recovered_def.trim());
     }
-    assert!(
-        recovered_count >= 3,
-        "at least the add/madd/mixed straight-line C-API expressions must recover end to end; got {recovered_count}"
-    );
-    println!(
-        "{recovered_count} C-API expression bodies recovered and behaviorally verified via CPython"
-    );
+
+    #[test]
+    fn recovered_python_matches_ground_truth_over_fuzzed_inputs() {
+        let compiler: String = cc();
+        let py: String = python();
+        let scratch: ScratchDir = scratch_dir();
+        let dir: &Path = scratch.path();
+        let mut recovered_count: usize = 0;
+        for case in BATTERY {
+            let object_bytes: Vec<u8> = compile_object(&compiler, dir, case);
+            let body: RecoveredBody = recover_case(&object_bytes, case);
+            let Some(recovered_def): Option<String> = body.recovered_python.clone() else {
+                eprintln!(
+                    "skip {}: this compiler build did not lower it into the straight-line C-API expression shape (coverage {:.0}%)",
+                    case.name,
+                    body.coverage() * 100.0
+                );
+                continue;
+            };
+            assert!(
+                (body.coverage() - 1.0).abs() < f64::EPSILON,
+                "{} recovered python at less than full coverage",
+                case.name
+            );
+            let expected_line: String = format!("return {}", case.expected_expr);
+            assert!(
+                recovered_def.contains(&expected_line),
+                "{} recovered `{}` but expected `{}`",
+                case.name,
+                recovered_def.trim(),
+                expected_line
+            );
+            behavioral_check(&py, dir, case, &recovered_def);
+            recovered_count += 1;
+            println!("{}: recovered `{}`", case.name, recovered_def.trim());
+        }
+        assert!(
+            recovered_count >= 3,
+            "at least the add/madd/mixed straight-line C-API expressions must recover end to end; got {recovered_count}"
+        );
+        println!(
+            "{recovered_count} C-API expression bodies recovered and behaviorally verified via CPython"
+        );
+    }
 }
 
-fn corpus_default_dir() -> Option<PathBuf> {
-    let dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()?
-        .parent()?
+fn corpus_default_dir() -> PathBuf {
+    let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the crate sits two levels below the workspace root")
         .join("corpus/python/pyarmor/v9-bcc/default");
-    dir.is_dir().then_some(dir)
+    assert!(
+        dir.is_dir(),
+        "committed v9-bcc sample missing: {}",
+        dir.display()
+    );
+    dir
 }
 
 fn text_section(blob: &[u8]) -> Option<(u64, Vec<u8>)> {
@@ -348,10 +353,7 @@ fn text_section(blob: &[u8]) -> Option<(u64, Vec<u8>)> {
 
 #[test]
 fn real_pyarmor_bcc_body_degrades_honestly() {
-    let Some(dir): Option<PathBuf> = corpus_default_dir() else {
-        eprintln!("v9-bcc corpus absent; skipping honest-degrade check");
-        return;
-    };
+    let dir: PathBuf = corpus_default_dir();
     let wrapper_path: PathBuf = dir.join("known_plaintext.py");
     let wrapper_text: String = std::fs::read_to_string(&wrapper_path).expect("read wrapper");
     let opts: UnpackOptions = UnpackOptions {
