@@ -29,8 +29,9 @@ Push CI also runs the fixed grader allowlist in `xtask/data/push_graders.toml` o
 30-minute job limit. Its 11 targets each cite a reference test and a mutation control; the manifest
 names six ecosystems without an eligible grader and gives a reason for each. Run
 `cargo run --locked -p xtask --no-default-features -- push-graders check` to validate the manifest
-and citations. The `run` subcommand lists and executes every selected test, and fails if any test
-is skipped or the listed, run, and passed counts differ.
+and citations. Run
+`cargo run --locked -p xtask --no-default-features -- push-graders run` to list and execute every
+selected test locally. It fails if any test is skipped or the listed, run, and passed counts differ.
 
 ### Name the features a crate hides its tests behind
 
