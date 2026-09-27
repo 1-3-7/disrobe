@@ -217,8 +217,13 @@ fn read_blobs(root: &Path, rev: &str, paths: Vec<String>) -> Result<Vec<(String,
         .ok_or_else(|| eyre!("git cat-file has no stdout"))?;
     let requests: String = paths
         .iter()
-        .map(|path: &String| format!("{rev}:{path}\n"))
-        .collect();
+        .fold(String::new(), |mut acc: String, path: &String| {
+            acc.push_str(rev);
+            acc.push(':');
+            acc.push_str(path);
+            acc.push('\n');
+            acc
+        });
     let blobs: Result<Vec<(String, String)>> = std::thread::scope(|scope| {
         let writer = scope.spawn(move || -> std::io::Result<()> {
             stdin.write_all(requests.as_bytes())?;
@@ -494,6 +499,7 @@ fn comment(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

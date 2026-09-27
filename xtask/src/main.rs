@@ -186,7 +186,7 @@ fn main() -> ExitCode {
         Cmd::Prepush { full } => run_prepush(full),
         Cmd::PushGraders { mode } => run_push_graders(mode),
         Cmd::Health { json } => run_health(json),
-        Cmd::Comments { rev } => comments::run_at(&workspace_root()?, &rev),
+        Cmd::Comments { rev } => run_comments(&rev),
         Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
         #[cfg(feature = "playground")]
@@ -473,6 +473,11 @@ pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
         );
         Ok(())
     }
+}
+
+fn run_comments(rev: &str) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    comments::run_at(&root, rev)
 }
 
 fn run_skip_census() -> Result<()> {
