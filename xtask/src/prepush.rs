@@ -22,7 +22,7 @@ const REGEN_TRIGGER_PREFIXES: &[&str] = &[
 
 const SELF_CRATE: &str = "xtask";
 
-const REGEN_TRIGGER_FILES: &[&str] = &["README.md"];
+const REGEN_TRIGGER_FILES: &[&str] = &["README.md", "SECURITY.md"];
 
 #[derive(Debug)]
 enum Scope {
@@ -312,6 +312,7 @@ fn touches_regen(path: &Utf8PathBuf) -> bool {
         || REGEN_TRIGGER_PREFIXES
             .iter()
             .any(|prefix: &&str| text.starts_with(prefix))
+        || (text.starts_with("crates/") && text.contains("/src/"))
 }
 
 fn compute_scope(root: &Path, full: bool) -> Result<Scope> {
