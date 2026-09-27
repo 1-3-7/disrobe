@@ -91,8 +91,10 @@ pub fn edge_case_source(slot: &str) -> &'static str {
     EDGE_CASES
         .iter()
         .find(|(case, _): &&(&str, &str)| *case == name)
-        .map(|(_, source): &(&str, &str)| *source)
-        .unwrap_or_else(|| panic!("no EDGE_CASES original for slot {slot}"))
+        .map_or_else(
+            || panic!("no EDGE_CASES original for slot {slot}"),
+            |(_, source): &(&str, &str)| *source,
+        )
 }
 
 fn reports_version(program: &OsStr, probe: &str) -> bool {

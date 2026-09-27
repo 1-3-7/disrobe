@@ -16,7 +16,7 @@ const SLOTS: &[(&str, bool)] = &[
     ("edge_lambda_in_listcomp", true),
     ("edge_walrus_operator", true),
     ("edge_match_statement", false),
-    ("edge_structural_pattern", true),
+    ("edge_structural_pattern", false),
     ("edge_typing_generic", true),
 ];
 
