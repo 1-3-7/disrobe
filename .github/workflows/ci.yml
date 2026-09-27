@@ -669,6 +669,15 @@ jobs:
           ld.lld --version
           llvm-readobj --version
           echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
+          llvm-as --version
+          lli --version
+          echo "DISROBE_REQUIRE_LLVM_IR_TOOLS=1" >> "$GITHUB_ENV"
+          gcc --version
+          objcopy --version
+          objdump --version
+          echo "DISROBE_REQUIRE_X86_GNU_TOOLCHAIN=1" >> "$GITHUB_ENV"
+          dash -c 'exit 0'
+          echo "DISROBE_REQUIRE_DASH=1" >> "$GITHUB_ENV"
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
       - name: provision the Linux hosted PE comparison compilers
         if: matrix.os == 'ubuntu-latest' && matrix.shard == 'two'
