@@ -171,6 +171,51 @@ pub fn unpack_static(bytes: &[u8]) -> Result<UnpackOutput> {
     unpack_static_with_config(bytes, &UnpackConfig::default())
 }
 
+#[cfg(feature = "chain")]
+pub(crate) fn unpack_static_or_legacy_wall(bytes: &[u8]) -> Result<UnpackOutput> {
+    match unpack_static(bytes) {
+        Err(Error::LegacyDetectedOnly { .. }) => legacy_wall_output(bytes),
+        other => other,
+    }
+}
+
+#[cfg(feature = "chain")]
+fn legacy_wall_output(bytes: &[u8]) -> Result<UnpackOutput> {
+    let magic: WrapperMagic = sniff(bytes)?;
+    let detection: Detection = bcdetect::detect_payload(bytes)?;
+    let header_metadata: HeaderMetadata = parse_header(bytes, magic)?;
+    let mut diagnostics: Vec<String> = detection.diagnostics.clone();
+    match crate::v3v4v5::analyze_legacy(bytes, &detection) {
+        Ok(analysis) => {
+            diagnostics.extend(analysis.diagnostics);
+            diagnostics.push(analysis.wall_reason);
+        }
+        Err(error) => diagnostics.push(format!(
+            "{:?} detect-only; legacy format analysis failed: {error}",
+            detection.version
+        )),
+    }
+    Ok(UnpackOutput {
+        pyarmor_version: detection.version,
+        protection_kind: detection.protection,
+        python_version: zip_pyver(detection.python_major, detection.python_minor),
+        pyc_magic: detection.pyc_magic,
+        serial: detection.serial,
+        confidence: detection.confidence,
+        key_classification: None,
+        header_metadata,
+        runtime_info: None,
+        original_bytecode: None,
+        plaintext: Vec::new(),
+        bcc_blobs: Vec::new(),
+        inner_cipher_stats: InnerCipherStats::empty(),
+        encrypted_funcs_recovered: 0,
+        status: DecryptStatus::DetectOnly,
+        llm_metadata: None,
+        diagnostics,
+    })
+}
+
 pub fn unpack_static_with_config(bytes: &[u8], cfg: &UnpackConfig) -> Result<UnpackOutput> {
     crate::debug::dbg_section("pyarmor static-unpack");
     crate::debug::dbg_hex("input-magic", bytes, 16);

@@ -18,7 +18,7 @@ use crate::detect::{
 };
 use crate::static_unpack::{
     DecryptStatus, HeaderMetadata, UnpackOutput as StaticUnpackOutput, WrapperMagic, parse_header,
-    sniff, unpack_static,
+    sniff, unpack_static, unpack_static_or_legacy_wall,
 };
 use crate::unpack::{
     UnpackOptions, UnpackOutput as WrapperUnpackOutput, unpack_wrapper_text,
@@ -115,7 +115,7 @@ impl Pass for PyarmorPass {
             )
         })?;
 
-        let out: StaticUnpackOutput = unpack_static(&payload)
+        let out: StaticUnpackOutput = unpack_static_or_legacy_wall(&payload)
             .map_err(|e| CoreError::PassFailure(format!("DR-PYARM-0902: {e}")))?;
         if out.plaintext.is_empty() {
             let manifest: Vec<u8> = render_manifest(&out, &payload)?;
@@ -132,7 +132,7 @@ impl Pass for PyarmorPass {
                     .to_string(),
             )
         })?;
-        let out: StaticUnpackOutput = unpack_static(&payload)
+        let out: StaticUnpackOutput = unpack_static_or_legacy_wall(&payload)
             .map_err(|e| CoreError::PassFailure(format!("DR-PYARM-0905: {e}")))?;
 
         let mut children: Vec<ChildArtifact> = Vec::with_capacity(2);
