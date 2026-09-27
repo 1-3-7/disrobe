@@ -834,6 +834,16 @@ jobs:
         timeout-minutes: 160
         env:
           DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
+      - name: build the Python extension used by the bindings caller test
+        if: matrix.shard == 'three'
+        shell: pwsh
+        run: |
+          cargo build -p disrobe-python --all-features
+          if ($LASTEXITCODE -ne 0) { throw 'Python extension build failed' }
+          [string]$name = if ($env:RUNNER_OS -eq 'Windows') { 'disrobe.dll' } elseif ($env:RUNNER_OS -eq 'macOS') { 'libdisrobe.dylib' } else { 'libdisrobe.so' }
+          [string]$library = Join-Path $env:GITHUB_WORKSPACE "target/debug/$name"
+          if (-not (Test-Path -LiteralPath $library -PathType Leaf)) { throw "Missing built extension: $library" }
+          "DISROBE_PYTHON_EXTENSION=$library" >> $env:GITHUB_ENV
       - name: workspace shard three
         if: matrix.shard == 'three'
         run: >-

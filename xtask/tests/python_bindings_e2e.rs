@@ -28,56 +28,23 @@ fn python_program() -> Option<String> {
     None
 }
 
-fn build_extension_artifact() -> PathBuf {
-    let output: Output = Command::new(env!("CARGO"))
-        .arg("build")
-        .arg("-p")
-        .arg("disrobe-python")
-        .arg("--message-format=json-render-diagnostics")
-        .env("CARGO_INCREMENTAL", "0")
-        .current_dir(workspace_root())
-        .output()
-        .expect("spawning cargo build for disrobe-python");
-    assert!(
-        output.status.success(),
-        "cargo build -p disrobe-python failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+const EXTENSION_VARIABLE: &str = "DISROBE_PYTHON_EXTENSION";
 
-    let stdout: String = String::from_utf8(output.stdout).expect("cargo json stdout is utf-8");
-    let mut artifact: Option<PathBuf> = None;
-    for line in stdout.lines() {
-        let value: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if value.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
-            continue;
-        }
-        let is_target: bool = value
-            .get("target")
-            .and_then(|t: &serde_json::Value| t.get("name"))
-            .and_then(serde_json::Value::as_str)
-            == Some("disrobe");
-        if !is_target {
-            continue;
-        }
-        let Some(filenames): Option<&Vec<serde_json::Value>> =
-            value.get("filenames").and_then(serde_json::Value::as_array)
-        else {
-            continue;
-        };
-        for name in filenames {
-            let Some(path): Option<&str> = name.as_str() else {
-                continue;
-            };
-            let candidate: PathBuf = PathBuf::from(path);
-            if is_dynamic_library(&candidate) {
-                artifact = Some(candidate);
-            }
-        }
-    }
-    artifact.expect("cargo did not report a cdylib artifact for disrobe-python")
+fn extension_artifact() -> PathBuf {
+    let Some(value): Option<std::ffi::OsString> = std::env::var_os(EXTENSION_VARIABLE) else {
+        panic!(
+            "{EXTENSION_VARIABLE} is not set; build the module with `cargo build -p \
+             disrobe-python` and point {EXTENSION_VARIABLE} at the disrobe cdylib it writes, \
+             because this test never starts cargo"
+        );
+    };
+    let artifact: PathBuf = PathBuf::from(value);
+    assert!(
+        artifact.is_file() && is_dynamic_library(&artifact),
+        "{EXTENSION_VARIABLE}={} does not name a built disrobe cdylib",
+        artifact.display()
+    );
+    artifact
 }
 
 fn is_dynamic_library(path: &Path) -> bool {
@@ -117,7 +84,7 @@ fn python_module_imports_and_returns_correct_analysis() {
         return;
     };
 
-    let artifact: PathBuf = build_extension_artifact();
+    let artifact: PathBuf = extension_artifact();
     let module_dir: tempfile::TempDir = tempfile::tempdir().expect("tempdir");
     let dest: PathBuf = module_dir.path().join(import_name(&artifact));
     std::fs::copy(&artifact, &dest).unwrap_or_else(|e: std::io::Error| {
@@ -168,7 +135,7 @@ print("PYBIND_OK")
 }
 
 fn stage_module() -> (tempfile::TempDir, PathBuf) {
-    let artifact: PathBuf = build_extension_artifact();
+    let artifact: PathBuf = extension_artifact();
     let module_dir: tempfile::TempDir = tempfile::tempdir().expect("tempdir");
     let dest: PathBuf = module_dir.path().join(import_name(&artifact));
     std::fs::copy(&artifact, &dest).unwrap_or_else(|e: std::io::Error| {
