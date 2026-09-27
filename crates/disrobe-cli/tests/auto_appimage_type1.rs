@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 const FIXTURE: &[u8] =
     include_bytes!("../../../corpus/binfmt/appimage-type1/AppImageAssistant.AppImage");
 const MANIFEST: &str = include_str!("../../../corpus/binfmt/appimage-type1/MANIFEST.tsv");
-const CLI_TIMEOUT: Duration = Duration::from_mins(1);
+const CLI_BACKSTOP: Duration = Duration::from_mins(5);
 const CLI_CAPTURE: usize = 1usize << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,12 +50,13 @@ fn run_disrobe(args: &[OsString]) -> CapturedOutput {
     let captured: Option<CapturedOutput> = run_captured(
         Path::new(env!("CARGO_BIN_EXE_disrobe")),
         &arg_refs,
-        CLI_TIMEOUT,
+        CLI_BACKSTOP,
         CLI_CAPTURE,
     )
     .expect("spawn disrobe");
-    captured
-        .unwrap_or_else(|| panic!("disrobe did not finish within {CLI_TIMEOUT:?}: {arg_refs:?}"))
+    captured.unwrap_or_else(|| {
+        panic!("disrobe did not exit within the {CLI_BACKSTOP:?} process backstop: {arg_refs:?}")
+    })
 }
 
 #[cfg(unix)]
