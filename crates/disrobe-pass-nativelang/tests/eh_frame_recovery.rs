@@ -112,10 +112,7 @@ fn eh_frame_recovers_starts_from_stripped_nim_without_symbol_table() {
 
 #[test]
 fn eh_frame_starts_match_unstripped_stt_func_starts() {
-    let Some(unstripped): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        eprintln!("SKIP: corpus nim fixture missing");
-        return;
-    };
+    let unstripped: Vec<u8> = common::fixture_or_fail(common::NIM_ELF);
     let truth_image: NativeImage<'_> =
         NativeImage::parse(&unstripped).expect("parse unstripped nim");
     let truth: BTreeSet<u64> = truth_image
@@ -146,10 +143,7 @@ fn eh_frame_starts_match_unstripped_stt_func_starts() {
 
 #[test]
 fn eh_frame_does_not_double_count_symbol_table_functions() {
-    let Some(unstripped): Option<Vec<u8>> = common::fixture_or_skip(common::NIM_ELF) else {
-        eprintln!("SKIP: corpus nim fixture missing");
-        return;
-    };
+    let unstripped: Vec<u8> = common::fixture_or_fail(common::NIM_ELF);
     let rec: FunctionRecovery = recover(&unstripped);
     assert!(
         rec.from_symbol_table > 100,

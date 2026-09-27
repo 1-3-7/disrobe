@@ -1439,10 +1439,12 @@ mod tests {
     #[test]
     fn catalog_detects_real_confuserex2_sample() {
         let path: std::path::PathBuf = corpus("dotnet/HelloAppLegacy.confuserex2.dll");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: confuserex2 fixture missing at {}", path.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        });
         let out: DetectorOutput = ObfuscatorCatalog::detect(&DotnetDetector, &ctx(&bytes))
             .expect("real ConfuserEx2 assembly must be catalog-detected");
         assert_eq!(out.entry_id, "dotnet-confuserex2");
@@ -1464,10 +1466,12 @@ mod tests {
     #[test]
     fn extract_children_emits_dedicated_sidecars_for_real_confuserex2() {
         let path: std::path::PathBuf = corpus("dotnet/HelloAppLegacy.confuserex2.dll");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: confuserex2 fixture missing at {}", path.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        });
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = DOTNET_PASS
             .extract_children(&artifact)
@@ -1546,10 +1550,12 @@ mod tests {
     #[test]
     fn extract_children_analyze_sidecar_surfaces_koivm_devirtualization() {
         let path: std::path::PathBuf = corpus("dotnet/koivm/KoiSample.koivm.exe");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: koivm fixture missing at {}", path.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        });
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = DOTNET_PASS
             .extract_children(&artifact)
@@ -1579,10 +1585,12 @@ mod tests {
 
     fn analyze_sidecar_for(rel: &str) -> Option<serde_json::Value> {
         let path: std::path::PathBuf = corpus(rel);
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            eprintln!("SKIP: fixture missing at {}", path.display());
-            return None;
-        };
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        });
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = DOTNET_PASS
             .extract_children(&artifact)

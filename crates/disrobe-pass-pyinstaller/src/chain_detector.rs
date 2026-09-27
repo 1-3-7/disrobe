@@ -329,10 +329,9 @@ mod tests {
     fn gauntlet_children() -> Option<&'static [ChildArtifact]> {
         GAUNTLET_CHILDREN
             .get_or_init(|| {
-                let Some(bytes): Option<Vec<u8>> = gauntlet_fixture() else {
-                    eprintln!("SKIP: pyinstaller gauntlet fixture missing");
-                    return None;
-                };
+                let bytes: Vec<u8> = gauntlet_fixture().unwrap_or_else(|| {
+                    panic!("the committed pyinstaller gauntlet fixture is unreadable; restore it from git")
+                });
                 let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
                 Some(
                     PYINSTALLER_PASS
