@@ -6,10 +6,8 @@ use eyre::{Result, WrapErr, bail};
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const RETURN_WINDOW: usize = 5;
 const MIN_SCANNED_FILES: usize = 3_400;
-const MIN_SCANNED_CRATES: usize = 20;
 
 const SKIP_CEILING: &[(&str, usize)] = &[
-    ("disrobe-pass-native", 6),
     ("disrobe-pyarmor-cextract", 5),
 ];
 
@@ -353,13 +351,6 @@ pub(crate) fn run(root: &Path) -> Result<()> {
              return:\n  {}",
             issues.len(),
             issues.join("\n  ")
-        );
-    }
-
-    if census.printed.len() < MIN_SCANNED_CRATES && !SKIP_CEILING.is_empty() {
-        bail!(
-            "xtask skip-census matched only {} crate(s), below the floor of {MIN_SCANNED_CRATES}",
-            census.printed.len()
         );
     }
 

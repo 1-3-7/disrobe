@@ -19,7 +19,9 @@ fn sample_path() -> Option<PathBuf> {
 #[ignore = "reads a 582MB local Nuitka sample; run with --ignored when the artifact is present"]
 fn benign_nuitka_bundle_has_no_anti_debug_verdict() {
     let Some(path): Option<PathBuf> = sample_path() else {
-        eprintln!("UNGRADED: this measures a local Nuitka onefile named by DISROBE_NUITKA_SAMPLE, which is unset");
+        eprintln!(
+            "UNGRADED: this measures a local Nuitka onefile named by DISROBE_NUITKA_SAMPLE, which is unset"
+        );
         return;
     };
     let bytes: Vec<u8> = std::fs::read(&path).expect("read nuitka sample");
