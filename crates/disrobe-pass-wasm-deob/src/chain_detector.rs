@@ -504,15 +504,10 @@ mod tests {
             .expect("clean function-refs wasm must lift even when recovery parser cannot");
         assert_eq!(out.rung, Rung::Disasm);
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 wat");
-        assert!(
-            s.starts_with("(module\n  (type $t0 (func (param i32) (result i32)))\n"),
-            "the lifted module must open with the one function type: {s}"
-        );
-        assert!(
-            s.ends_with(
-                "  (elem declare func $f0)\n  (func $f0 (param $p0 i32) (result i32)\n    local.get $p0\n    local.get $p0\n    i32.mul\n  )\n  (func $f1 (param $p0 i32) (result i32)\n    local.get $p0\n    ref.func $f0\n    call_ref $t0\n  )\n  (export \"go\" (func $f1))\n)\n"
-            ),
-            "the lifted module must carry the square body, the call_ref caller and its export: {s}"
+        assert_eq!(
+            s,
+            "(module\n  (type $t0 (func (param i32) (result i32)))\n  (elem declare func $f0)\n  (func $f0 (param $p0 i32) (result i32)\n    local.get $p0\n    local.get $p0\n    i32.mul\n  )\n  (func $f1 (param $p0 i32) (result i32)\n    local.get $p0\n    ref.func $f0\n    call_ref $t0\n  )\n  (export \"go\" (func $f1))\n)\n",
+            "the lifted module must hold exactly the source's type, square body, call_ref caller and export, with no memory or table the source lacks"
         );
     }
 

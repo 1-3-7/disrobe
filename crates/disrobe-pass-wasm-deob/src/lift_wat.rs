@@ -136,13 +136,15 @@ fn emit_module_prelude(
         |r: &FeatureReqs, m: u32| if r.memory64.contains(&m) { "i64 " } else { "" };
     if reqs.shared_memory {
         push_line!(out, "  (memory $m0 {}1 16 shared)", idx64(reqs, 0));
-    } else {
+    } else if reqs.memory0 || !reqs.extra_memories.is_empty() {
         push_line!(out, "  (memory $m0 {}1 16)", idx64(reqs, 0));
     }
     for mem in &reqs.extra_memories {
         push_line!(out, "  (memory $m{mem} {}1 16)", idx64(reqs, *mem));
     }
-    push_text!(out, "  (table $dr_tbl_func 1 funcref)\n");
+    if reqs.funcref_table || reqs.externref_table {
+        push_text!(out, "  (table $dr_tbl_func 1 funcref)\n");
+    }
     if reqs.externref_table {
         push_text!(out, "  (table $dr_tbl_ext 1 externref)\n");
     }
@@ -284,6 +286,7 @@ pub(crate) struct WatFunc {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct FeatureReqs {
     shared_memory: bool,
+    memory0: bool,
     memory64: std::collections::BTreeSet<u32>,
     extra_memories: std::collections::BTreeSet<u32>,
     data_segments: std::collections::BTreeSet<u32>,
@@ -310,6 +313,7 @@ impl FeatureReqs {
 
     pub(crate) fn merge(&mut self, other: &Self) {
         self.shared_memory |= other.shared_memory;
+        self.memory0 |= other.memory0;
         self.memory64.extend(&other.memory64);
         self.extra_memories.extend(&other.extra_memories);
         self.funcref_table |= other.funcref_table;
@@ -359,7 +363,9 @@ impl FeatureReqs {
     }
 
     fn note_memory(&mut self, idx: u32) {
-        if idx != 0 {
+        if idx == 0 {
+            self.memory0 = true;
+        } else {
             self.extra_memories.insert(idx);
         }
     }
@@ -1220,6 +1226,7 @@ fn render_op(
         }
         Operator::CallIndirect { type_index, .. } => {
             *has_calls = true;
+            reqs.funcref_table = true;
             format!("call_indirect (type {type_index})")
         }
         Operator::ReturnCall { function_index } => {
@@ -1228,6 +1235,7 @@ fn render_op(
         }
         Operator::ReturnCallIndirect { type_index, .. } => {
             *has_calls = true;
+            reqs.funcref_table = true;
             format!("return_call_indirect (type {type_index})")
         }
         Operator::LocalGet { local_index } => {

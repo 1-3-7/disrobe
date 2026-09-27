@@ -778,6 +778,9 @@ fn expose_memory(wat_text: &str) -> String {
     let Some(rest): Option<&str> = wat_text.strip_prefix(HEADER) else {
         return wat_text.to_owned();
     };
+    if !rest.contains("\n  (memory $m0 ") {
+        return wat_text.to_owned();
+    }
     format!("{HEADER}  (export \"disrobe_diff_mem\" (memory 0))\n{rest}")
 }
 
