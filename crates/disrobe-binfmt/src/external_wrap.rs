@@ -660,29 +660,24 @@ mod tests {
 
     fn write_wrapper(dir: &Path, stem: &str, mode: &str) -> PathBuf {
         let mock: PathBuf = mock_bin_path();
+        if cfg!(windows) {
+            let path: PathBuf = dir.join(format!("mode-{mode}.exe"));
+            std::fs::copy(&mock, &path).expect("copy mock tool");
+            return path;
+        }
         let mock_s: String = mock.to_string_lossy().into_owned();
-        let body: String = if cfg!(windows) {
-            format!("@echo off\r\n\"{mock_s}\" {mode} %*\r\nexit /b %errorlevel%\r\n")
-        } else {
-            format!("#!/bin/sh\nexec \"{mock_s}\" {mode} \"$@\"\n")
-        };
-        let path: PathBuf = if cfg!(windows) {
-            dir.join(format!("{stem}.cmd"))
-        } else {
-            dir.join(stem)
-        };
+        let body: String = format!("#!/bin/sh\nexec \"{mock_s}\" {mode} \"$@\"\n");
+        let path: PathBuf = dir.join(stem);
         let mut f: std::fs::File = std::fs::File::create(&path).expect("create wrapper");
         f.write_all(body.as_bytes()).expect("write wrapper");
         drop(f);
-        if !cfg!(windows) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                let mut perms: std::fs::Permissions =
-                    std::fs::metadata(&path).expect("meta").permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&path, perms).expect("chmod");
-            }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms: std::fs::Permissions =
+                std::fs::metadata(&path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
         }
         path
     }

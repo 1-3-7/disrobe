@@ -11,18 +11,29 @@ use std::time::Duration;
     clippy::unwrap_used
 )]
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!("mock_tool: no mode given");
-        return ExitCode::from(2);
-    }
-    let mode: &str = args[0].as_str();
-    match mode {
-        "unrar" => mock_unrar(&args[1..]),
-        "unrar-fail" => mock_unrar_fail(&args[1..]),
-        "sevenz" => mock_sevenz(&args[1..]),
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let stem_mode: Option<String> = std::env::current_exe()
+        .ok()
+        .and_then(|exe: PathBuf| {
+            exe.file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_owned)
+        })
+        .and_then(|stem: String| stem.strip_prefix("mode-").map(str::to_owned));
+    let mode: String = match stem_mode {
+        Some(mode) => mode,
+        None if args.is_empty() => {
+            eprintln!("mock_tool: no mode given");
+            return ExitCode::from(2);
+        }
+        None => args.remove(0),
+    };
+    match mode.as_str() {
+        "unrar" => mock_unrar(&args),
+        "unrar-fail" => mock_unrar_fail(&args),
+        "sevenz" => mock_sevenz(&args),
         "flood" => mock_flood(),
-        "sleep" => mock_sleep(&args[1..]),
+        "sleep" => mock_sleep(&args),
         other => {
             eprintln!("mock_tool: unknown mode `{other}`");
             ExitCode::from(2)
