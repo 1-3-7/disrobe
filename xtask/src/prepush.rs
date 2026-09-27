@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 use std::process::Command;
@@ -178,12 +179,39 @@ fn is_shared_build_input(path: &Utf8PathBuf) -> bool {
 }
 
 fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
-    let crates: Vec<String> = match scope {
-        Scope::All => workspace_crates(root)?,
-        Scope::Changed(paths) => owning_crates(root, paths)?,
+    let members: Vec<CrateDir> = crate_dirs(root)?;
+    let plan: BTreeMap<String, TestTargets> = match scope {
+        Scope::All => members
+            .iter()
+            .map(|member: &CrateDir| (member.name.clone(), TestTargets::Crate))
+            .collect(),
+        Scope::Changed(paths) => test_targets(root, &members, paths)?,
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
     };
-    let commands: ScopedTestCommands = scoped_test_commands(&crates);
+    let chain: BTreeSet<String> = members
+        .iter()
+        .filter(|member: &&CrateDir| member.chain)
+        .map(|member: &CrateDir| member.name.clone())
+        .collect();
+    for (name, targets) in &plan {
+        let TestTargets::Binaries(binaries) = targets else {
+            continue;
+        };
+        if name == SELF_CRATE || binaries.is_empty() {
+            continue;
+        }
+        let args: Vec<String> = binary_test_command(name, binaries, chain.contains(name));
+        println!("    {name}: running only the changed test binaries {binaries:?}");
+        run_checked_owned(root, cargo_bin().as_str(), &args, || {
+            format!("a changed test binary of {name} failed; fix it, then re-run the push")
+        })?;
+    }
+    let crates: Vec<String> = plan
+        .iter()
+        .filter(|(_, targets): &(&String, &TestTargets)| **targets == TestTargets::Crate)
+        .map(|(name, _): (&String, &TestTargets)| name.clone())
+        .collect();
+    let commands: ScopedTestCommands = scoped_test_commands(&crates, &chain);
     if commands.self_excluded {
         println!(
             "    {SELF_CRATE}'s own tests are not run by this gate, because the gate executes as \
@@ -219,7 +247,20 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     Ok(GateOutcome::Ran)
 }
 
-fn scoped_test_commands(crates: &[String]) -> ScopedTestCommands {
+fn binary_test_command(name: &str, binaries: &BTreeSet<String>, chain: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["nextest", "run", "--profile", "pre-push", "-p", name]
+        .map(str::to_owned)
+        .to_vec();
+    if chain {
+        args.extend(["--features".to_owned(), format!("{name}/chain")]);
+    }
+    for binary in binaries {
+        args.extend(["--test".to_owned(), binary.clone()]);
+    }
+    args
+}
+
+fn scoped_test_commands(crates: &[String], chain: &BTreeSet<String>) -> ScopedTestCommands {
     let self_excluded: bool = crates.iter().any(|name: &String| name == SELF_CRATE);
     let mut selected: Vec<&str> = crates
         .iter()
@@ -239,6 +280,9 @@ fn scoped_test_commands(crates: &[String]) -> ScopedTestCommands {
     for name in selected {
         nextest.extend(["-p".to_owned(), name.to_owned()]);
         doctest.extend(["-p".to_owned(), name.to_owned()]);
+        if chain.contains(name) {
+            nextest.extend(["--features".to_owned(), format!("{name}/chain")]);
+        }
     }
     ScopedTestCommands {
         nextest,
@@ -346,16 +390,7 @@ fn owning_crates(root: &Path, paths: &[Utf8PathBuf]) -> Result<Vec<String>> {
         if path.extension() != Some("rs") {
             continue;
         }
-        let text: &str = path.as_str();
-        let mut best: Option<&CrateDir> = None;
-        for member in &members {
-            if owns(&member.dir, text)
-                && best.is_none_or(|current: &CrateDir| member.dir.len() > current.dir.len())
-            {
-                best = Some(member);
-            }
-        }
-        if let Some(member) = best
+        if let Some(member) = owning_member(&members, path.as_str())
             && !owners.contains(&member.name)
         {
             owners.push(member.name.clone());
@@ -363,6 +398,75 @@ fn owning_crates(root: &Path, paths: &[Utf8PathBuf]) -> Result<Vec<String>> {
     }
     owners.sort();
     Ok(owners)
+}
+
+fn owning_member<'a>(members: &'a [CrateDir], file: &str) -> Option<&'a CrateDir> {
+    members
+        .iter()
+        .filter(|member: &&CrateDir| owns(&member.dir, file))
+        .max_by_key(|member: &&CrateDir| member.dir.len())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TestTargets {
+    Crate,
+    Binaries(BTreeSet<String>),
+}
+
+fn test_targets(
+    root: &Path,
+    members: &[CrateDir],
+    paths: &[Utf8PathBuf],
+) -> Result<BTreeMap<String, TestTargets>> {
+    let mut plan: BTreeMap<String, TestTargets> = BTreeMap::new();
+    for path in paths {
+        if path.extension() != Some("rs") {
+            continue;
+        }
+        let Some(member) = owning_member(members, path.as_str()) else {
+            continue;
+        };
+        let relative: &str = path.as_str()[member.dir.len()..].trim_start_matches('/');
+        if !relative.starts_with("tests/") {
+            plan.insert(member.name.clone(), TestTargets::Crate);
+            continue;
+        }
+        let binaries: BTreeSet<String> = binaries_including(root, member, path.as_str(), relative)?;
+        let entry: &mut TestTargets = plan
+            .entry(member.name.clone())
+            .or_insert_with(|| TestTargets::Binaries(BTreeSet::new()));
+        if let TestTargets::Binaries(existing) = entry {
+            existing.extend(binaries);
+        }
+    }
+    Ok(plan)
+}
+
+fn binaries_including(
+    root: &Path,
+    member: &CrateDir,
+    file: &str,
+    relative: &str,
+) -> Result<BTreeSet<String>> {
+    if let Some((name, _)) = member
+        .test_targets
+        .iter()
+        .find(|(_, src): &&(String, String)| src == file)
+    {
+        return Ok(BTreeSet::from([name.clone()]));
+    }
+    let under_tests: &str = relative.trim_start_matches("tests/");
+    let module: &str = under_tests.split('/').next().unwrap_or(under_tests);
+    let module_decl: String = format!("mod {}", module.trim_end_matches(".rs"));
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for (name, src) in &member.test_targets {
+        let text: String = std::fs::read_to_string(root.join(src))
+            .wrap_err_with(|| format!("reading test target {src}"))?;
+        if text.contains(under_tests) || text.contains(&module_decl) {
+            found.insert(name.clone());
+        }
+    }
+    Ok(found)
 }
 
 fn owns(dir: &str, file: &str) -> bool {
@@ -385,6 +489,8 @@ fn workspace_crates(root: &Path) -> Result<Vec<String>> {
 struct CrateDir {
     name: String,
     dir: String,
+    chain: bool,
+    test_targets: Vec<(String, String)>,
 }
 
 fn crate_dirs(root: &Path) -> Result<Vec<CrateDir>> {
@@ -412,9 +518,27 @@ fn crate_dirs(root: &Path) -> Result<Vec<CrateDir>> {
         if normalized.is_empty() {
             continue;
         }
+        let test_targets: Vec<(String, String)> = package
+            .targets
+            .iter()
+            .filter(|target: &&MetaTarget| target.kind.iter().any(|kind: &String| kind == "test"))
+            .filter_map(|target: &MetaTarget| {
+                Path::new(&target.src_path)
+                    .strip_prefix(ws_root)
+                    .ok()
+                    .map(|path: &Path| {
+                        (
+                            target.name.clone(),
+                            path.to_string_lossy().replace('\\', "/"),
+                        )
+                    })
+            })
+            .collect();
         members.push(CrateDir {
+            chain: package.features.contains_key("chain"),
             name: package.name,
             dir: normalized,
+            test_targets,
         });
     }
     Ok(members)
@@ -430,6 +554,17 @@ struct Metadata {
 struct MetaPackage {
     name: String,
     manifest_path: String,
+    #[serde(default)]
+    features: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    targets: Vec<MetaTarget>,
+}
+
+#[derive(Deserialize, Debug)]
+struct MetaTarget {
+    name: String,
+    kind: Vec<String>,
+    src_path: String,
 }
 
 fn diff_names(root: &Path, range: &str) -> Result<Vec<Utf8PathBuf>> {
@@ -523,11 +658,76 @@ fn cargo_bin() -> Utf8PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use super::{
-        SELF_CRATE, Scope, ScopedTestCommands, is_shared_build_input, scoped_test_commands,
-        should_validate_nextest_config,
+        CrateDir, SELF_CRATE, Scope, ScopedTestCommands, TestTargets, binary_test_command,
+        is_shared_build_input, scoped_test_commands, should_validate_nextest_config, test_targets,
     };
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn a_test_only_change_runs_just_the_binaries_that_include_it() -> eyre::Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let tests_dir: std::path::PathBuf = root.path().join("crates/c/tests");
+        std::fs::create_dir_all(tests_dir.join("support"))?;
+        std::fs::write(
+            tests_dir.join("a.rs"),
+            "#[path = \"support/x.rs\"]\nmod x;\n",
+        )?;
+        std::fs::write(tests_dir.join("b.rs"), "fn main() {}\n")?;
+        std::fs::write(tests_dir.join("support/x.rs"), "pub fn f() {}\n")?;
+        let members: Vec<CrateDir> = vec![CrateDir {
+            name: "c".to_owned(),
+            dir: "crates/c".to_owned(),
+            chain: true,
+            test_targets: vec![
+                ("a".to_owned(), "crates/c/tests/a.rs".to_owned()),
+                ("b".to_owned(), "crates/c/tests/b.rs".to_owned()),
+            ],
+        }];
+        let support_only: BTreeMap<String, TestTargets> = test_targets(
+            root.path(),
+            &members,
+            &[Utf8PathBuf::from("crates/c/tests/support/x.rs")],
+        )?;
+        assert_eq!(
+            support_only.get("c"),
+            Some(&TestTargets::Binaries(BTreeSet::from(["a".to_owned()])))
+        );
+        let with_source: BTreeMap<String, TestTargets> = test_targets(
+            root.path(),
+            &members,
+            &[
+                Utf8PathBuf::from("crates/c/tests/b.rs"),
+                Utf8PathBuf::from("crates/c/src/lib.rs"),
+            ],
+        )?;
+        assert_eq!(with_source.get("c"), Some(&TestTargets::Crate));
+        Ok(())
+    }
+
+    #[test]
+    fn binary_commands_select_the_chain_feature_and_each_binary() {
+        let binaries: BTreeSet<String> = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
+        assert_eq!(
+            binary_test_command("c", &binaries, true),
+            [
+                "nextest",
+                "run",
+                "--profile",
+                "pre-push",
+                "-p",
+                "c",
+                "--features",
+                "c/chain",
+                "--test",
+                "a",
+                "--test",
+                "b"
+            ]
+        );
+    }
 
     #[test]
     fn shared_build_inputs_widen_clippy_to_the_workspace() {
@@ -570,7 +770,7 @@ mod tests {
             "disrobe-bytes".to_owned(),
             "disrobe-pass-jvm".to_owned(),
         ];
-        let actual: ScopedTestCommands = scoped_test_commands(&crates);
+        let actual: ScopedTestCommands = scoped_test_commands(&crates, &BTreeSet::new());
         assert_eq!(
             actual,
             ScopedTestCommands {
@@ -606,7 +806,8 @@ mod tests {
 
     #[test]
     fn scoped_test_commands_exclude_the_running_xtask() {
-        let actual: ScopedTestCommands = scoped_test_commands(&[SELF_CRATE.to_owned()]);
+        let actual: ScopedTestCommands =
+            scoped_test_commands(&[SELF_CRATE.to_owned()], &BTreeSet::new());
         assert_eq!(actual.nextest, ["nextest", "run", "--profile", "pre-push"]);
         assert_eq!(actual.doctest, ["test", "--doc"]);
         assert!(actual.self_excluded);
