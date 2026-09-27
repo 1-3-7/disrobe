@@ -267,6 +267,17 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         };
         return Ok(GateOutcome::Skipped(reason.to_owned()));
     }
+    let empty: Vec<String> = empty_test_binaries(root, &commands.nextest)?;
+    if !empty.is_empty() {
+        bail!(
+            "{} selected test binar(ies) compile zero tests under --all-features, so this gate \
+             would count them as passing while they measure nothing: {}\n  fix: remove the binary \
+             or the cfg that empties it; a binary built for one platform only says so with a \
+             crate-level #![cfg(...)]",
+            empty.len(),
+            empty.join(", ")
+        );
+    }
     run_checked_env(
         root,
         cargo_bin().as_str(),
@@ -280,6 +291,85 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         "a committed doctest fails on the state being pushed; fix the named doctest, then re-run the push".to_owned()
     })?;
     Ok(GateOutcome::Ran)
+}
+
+fn list_command(run_args: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = Vec::with_capacity(run_args.len() + 2);
+    for arg in run_args {
+        match arg.as_str() {
+            "run" => args.push("list".to_owned()),
+            "--no-fail-fast" => {}
+            _ => args.push(arg.clone()),
+        }
+    }
+    args.extend(["--message-format".to_owned(), "json".to_owned()]);
+    args
+}
+
+#[derive(Deserialize)]
+struct NextestListing {
+    #[serde(rename = "rust-suites")]
+    rust_suites: BTreeMap<String, NextestSuite>,
+}
+
+#[derive(Deserialize)]
+struct NextestSuite {
+    testcases: BTreeMap<String, serde_json::Value>,
+}
+
+fn empty_test_binaries(root: &Path, run_args: &[String]) -> Result<Vec<String>> {
+    let output: std::process::Output = Command::new(cargo_bin().as_str())
+        .args(list_command(run_args))
+        .current_dir(root)
+        .stderr(Stdio::inherit())
+        .output()
+        .wrap_err("spawning cargo nextest list")?;
+    if !output.status.success() {
+        bail!(
+            "`cargo nextest list` exited with {}\n  fix: resolve the build errors above, then \
+             re-run the push",
+            output.status
+        );
+    }
+    let listing: NextestListing =
+        serde_json::from_slice(&output.stdout).wrap_err("parsing cargo nextest list json")?;
+    let sources: BTreeMap<String, String> = crate_dirs(root)?
+        .into_iter()
+        .flat_map(|member: CrateDir| {
+            let package: String = member.name;
+            member
+                .test_targets
+                .into_iter()
+                .map(move |(name, src): (String, String)| (format!("{package}::{name}"), src))
+        })
+        .collect();
+    Ok(empty_suites(&listing, &sources, |src: &str| {
+        std::fs::read_to_string(root.join(src)).is_ok_and(|text: String| platform_gated(&text))
+    }))
+}
+
+fn platform_gated(source: &str) -> bool {
+    source
+        .lines()
+        .any(|line: &str| line.trim_start().starts_with("#![cfg("))
+}
+
+fn empty_suites<F: Fn(&str) -> bool>(
+    listing: &NextestListing,
+    sources: &BTreeMap<String, String>,
+    gated: F,
+) -> Vec<String> {
+    listing
+        .rust_suites
+        .iter()
+        .filter(|(_, suite): &(&String, &NextestSuite)| suite.testcases.is_empty())
+        .filter(|(id, _): &(&String, &NextestSuite)| {
+            sources
+                .get(id.as_str())
+                .is_some_and(|src: &String| !gated(src))
+        })
+        .map(|(id, _): (&String, &NextestSuite)| id.clone())
+        .collect()
 }
 
 fn binary_test_command(name: &str, binaries: &BTreeSet<String>) -> Vec<String> {
@@ -847,11 +937,68 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{
-        CrateDir, SELF_CRATE, Scope, ScopedTestCommands, TestTargets, binary_test_command,
-        cli_executable, is_shared_build_input, scoped_test_commands,
-        should_validate_nextest_config, test_targets,
+        CrateDir, NextestListing, SELF_CRATE, Scope, ScopedTestCommands, TestTargets,
+        binary_test_command, cli_executable, empty_suites, is_shared_build_input, list_command,
+        platform_gated, scoped_test_commands, should_validate_nextest_config, test_targets,
     };
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn list_command_lists_what_the_run_would_run() {
+        let run: Vec<String> = [
+            "nextest",
+            "run",
+            "--profile",
+            "pre-push",
+            "--all-features",
+            "--no-fail-fast",
+            "-p",
+            "a",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            list_command(&run),
+            [
+                "nextest",
+                "list",
+                "--profile",
+                "pre-push",
+                "--all-features",
+                "-p",
+                "a",
+                "--message-format",
+                "json"
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        );
+    }
+
+    #[test]
+    fn an_empty_binary_fails_unless_its_source_is_platform_gated() -> eyre::Result<()> {
+        let listing: NextestListing = serde_json::from_str(
+            r#"{"rust-suites":{
+                "a::empty":{"testcases":{}},
+                "a::gated":{"testcases":{}},
+                "a::full":{"testcases":{"t":{}}},
+                "a":{"testcases":{}}
+            }}"#,
+        )?;
+        let sources: BTreeMap<String, String> = [
+            ("a::empty".to_owned(), "tests/empty.rs".to_owned()),
+            ("a::gated".to_owned(), "tests/gated.rs".to_owned()),
+            ("a::full".to_owned(), "tests/full.rs".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let empty: Vec<String> =
+            empty_suites(&listing, &sources, |src: &str| src == "tests/gated.rs");
+        assert_eq!(empty, vec!["a::empty".to_owned()]);
+        assert!(platform_gated("#![allow(x)]\n#![cfg(unix)]\nfn f() {}"));
+        assert!(!platform_gated("#![allow(x)]\nfn f() {}"));
+        Ok(())
+    }
 
     #[test]
     fn a_test_only_change_runs_just_the_binaries_that_include_it() -> eyre::Result<()> {
