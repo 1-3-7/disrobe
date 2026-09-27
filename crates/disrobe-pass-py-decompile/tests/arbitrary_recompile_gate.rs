@@ -337,7 +337,7 @@ fn sibling_group_charges_counts_a_recovered_side_collision() {
 
     assert!(
         case(1, 2).0,
-        "one original against two recovered is the exact shape BUG-055 reported uncounted; the \
+        "one original against two recovered is the exact shape that once went uncounted; the \
          summary counter must flag it even though the original side never held a sibling"
     );
     assert!(

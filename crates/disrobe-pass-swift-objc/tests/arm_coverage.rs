@@ -15,8 +15,7 @@ use swift_toolchain::{
     resolve_swift_compiler,
 };
 
-const GRADED: &str =
-    "byte-exact agreement with swift-demangle on the FEAT-023 named-arm fixture corpus";
+const GRADED: &str = "byte-exact agreement with swift-demangle on the named-arm fixture corpus";
 
 const COMPILED: &str = "the pinned arm symbols being emitted by a real Swift compiler";
 const FREESTANDING_MACRO_SYMBOL: &str =
@@ -595,7 +594,7 @@ fn named_arm_coverage_is_measured_by_the_gate() {
     let total: usize = closed.len() + OPEN_ARMS.len();
     let ratio: f64 = closed.len() as f64 / total as f64;
     eprintln!(
-        "FEAT-023 named-arm coverage: {}/{} = {:.1}% closed with a real-compiler-graded fixture. \
+        "named-arm coverage: {}/{} = {:.1}% closed with a real-compiler-graded fixture. \
          still open: {OPEN_ARMS:?}",
         closed.len(),
         total,

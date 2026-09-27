@@ -829,14 +829,14 @@ fn corpus_grade_report() {
         .count();
     assert_eq!(
         increment_twenty_corpus_cases, INCREMENT_TWENTY_EXPECTED_CASES,
-        "the generated corpus must contain every NAT-001 extended-register row"
+        "the generated corpus must contain every extended-register row"
     );
     for required_name in INCREMENT_TWENTY_FUNCTIONS {
         assert!(
             CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
                 *opt == "NAT001" && name == required_name
             }),
-            "required NAT-001 case `{required_name}` is absent from the generated corpus"
+            "required extended-register case `{required_name}` is absent from the generated corpus"
         );
     }
 
@@ -1276,10 +1276,10 @@ fn corpus_grade_report() {
         .expect("fp driven count cannot exceed the total");
     let previous_integer_recovered: usize = integer_recovered
         .checked_sub(increment_twenty_recovered)
-        .expect("NAT-001 recovery count cannot exceed the integer total");
+        .expect("extended-register recovery count cannot exceed the integer total");
     let previous_integer_driven: usize = integer_driven
         .checked_sub(increment_twenty_driven)
-        .expect("NAT-001 driven count cannot exceed the integer total");
+        .expect("extended-register driven count cannot exceed the integer total");
     eprintln!("================ AARCH64 CORPUS GRADE ================");
     eprintln!("seed scheme          fnv1a64(opt || 0xff || name)");
     eprintln!("attempted            {attempted}");

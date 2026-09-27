@@ -1691,7 +1691,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
             arch: "aarch64",
             link_shape: "n/a",
             verdict: Verdict::NotGraded(
-                "aarch64 corpus rows belong to TEST-011; this matrix runs on x86-64 only"
+                "aarch64 corpus rows belong to the aarch64 recovery grade; this matrix runs on x86-64 only"
                     .to_owned(),
             ),
             seed: None,
@@ -1711,7 +1711,7 @@ fn whole_function_recompile_matrix_grades_every_shape() {
         arch: "x86_64",
         link_shape: "n/a",
         verdict: Verdict::NotGraded(
-            "the float and double scalar surface is graded by TEST-010, not this integer whole-function matrix"
+            "the float and double scalar surface is graded by the floating-point matrix, not this integer whole-function matrix"
                 .to_owned(),
         ),
         seed: None,

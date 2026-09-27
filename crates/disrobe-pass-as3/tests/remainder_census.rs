@@ -1918,7 +1918,7 @@ fn the_refusals_the_item_requires_are_separated_from_the_gaps() {
     assert_eq!(total, 1056);
     assert_eq!(
         required, 453,
-        "a body counted here is one FEAT-028 names as a required refusal: a merge whose incoming \
+        "a body counted here is one the merge rules name as a required refusal: a merge whose incoming \
          stacks disagree in depth, a dispatch entered backward or mid-region, an irreducible \
          dispatch region, an overlapping or backward handler merge, and a scope merge that would \
          collapse distinct allocations. Recovering one of these would be a defect, not an \

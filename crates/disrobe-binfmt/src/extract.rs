@@ -7375,10 +7375,10 @@ mod tests {
             NameOrigin::ArchiveSupplied,
             HostileCoverage::GuardOnly(
                 "the wired ContainerKind::Flatpak arm calls only extract_flatpak_bundle, \
-                 which returns files: Vec::new() by design (BUG-072); its sibling \
+                 which returns files: Vec::new() by design; its sibling \
                  extract_flatpak_repo does recover real file content but has no caller \
                  anywhere in the tree, so no in-crate builder can currently place a \
-                 hostile name into recovered file content until BUG-072 wires a real \
+                 hostile name into recovered file content until the Flatpak repo path gets a real \
                  consumer",
             ),
         ),
