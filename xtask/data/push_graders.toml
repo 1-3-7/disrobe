@@ -1,0 +1,113 @@
+version = 1
+
+[[grader]]
+ecosystem = "python"
+package = "disrobe-pass-sourcedefender"
+target = "real_modern_trial"
+features = []
+reference = { path = "crates/disrobe-pass-sourcedefender/tests/real_modern_trial.rs", test = "modern_aes_gcm_body_decrypts_statically_with_a_supplied_key" }
+mutation = { path = "crates/disrobe-pass-sourcedefender/tests/real_modern_trial.rs", test = "modern_body_with_wrong_key_does_not_falsely_recover" }
+
+[[grader]]
+ecosystem = "javascript"
+package = "disrobe-pass-js-deob"
+target = "reeval_oracle"
+features = []
+reference = { path = "crates/disrobe-pass-js-deob/tests/reeval_oracle.rs", test = "obfuscator_io_string_array_reeval_equivalent" }
+mutation = { path = "crates/disrobe-pass-js-deob/tests/reeval_oracle.rs", test = "obfuscator_io_wrong_rotation_is_not_silently_accepted" }
+
+[[grader]]
+ecosystem = "wasm"
+package = "disrobe-pass-wasm-deob"
+target = "linear_memory_local_offset"
+features = ["sandbox", "chain"]
+reference = { path = "crates/disrobe-pass-wasm-deob/tests/linear_memory_local_offset.rs", test = "immutable_local_plus_offset_reloops_through_public_callers_under_wasmtime" }
+mutation = { path = "crates/disrobe-pass-wasm-deob/tests/linear_memory_local_offset.rs", test = "wrong_successor_mutation_is_distinguished_under_wasmtime" }
+
+[[grader]]
+ecosystem = "jvm"
+package = "disrobe-pass-jvm"
+target = "apk_signature_verify"
+features = []
+reference = { path = "crates/disrobe-pass-jvm/tests/apk_signature_verify.rs", test = "v2v3_signed_apk_integrity_verifies" }
+mutation = { path = "crates/disrobe-pass-jvm/tests/apk_signature_verify.rs", test = "tampered_apk_integrity_fails" }
+
+[[grader]]
+ecosystem = "dotnet"
+package = "disrobe-pass-dotnet"
+target = "bitmono_string_recovery"
+features = []
+reference = { path = "crates/disrobe-pass-dotnet/tests/bitmono_string_recovery.rs", test = "recovered_plaintext_matches_the_clean_assembly_literal_set" }
+mutation = { path = "crates/disrobe-pass-dotnet/tests/bitmono_string_recovery.rs", test = "recovery_reads_every_carrier_and_not_a_baked_in_table" }
+
+[[grader]]
+ecosystem = "native"
+package = "disrobe-pass-native"
+target = "stub_pack_oracle_roundtrip"
+features = []
+reference = { path = "crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs", test = "committed_lz_pair_recovers_every_content_section_against_the_committed_original" }
+mutation = { path = "crates/disrobe-pass-native/tests/stub_pack_oracle_roundtrip.rs", test = "one_corrupted_byte_is_named_by_offset_and_drops_the_pinned_figure" }
+
+[[grader]]
+ecosystem = "as3"
+package = "disrobe-pass-as3"
+target = "compiler_short_circuit_fixture"
+features = []
+reference = { path = "crates/disrobe-pass-as3/tests/compiler_short_circuit_fixture.rs", test = "compiler_emitted_four_way_whitespace_predicate_keeps_every_operand" }
+mutation = { path = "crates/disrobe-pass-as3/tests/compiler_short_circuit_fixture.rs", test = "whitespace_predicate_grader_rejects_a_corrupted_carriage_return_operand" }
+
+[[grader]]
+ecosystem = "mobile"
+package = "disrobe-pass-mobile"
+target = "hermes_upstream_disassembly"
+features = []
+reference = { path = "crates/disrobe-pass-mobile/tests/hermes_upstream_disassembly.rs", test = "each_committed_bundle_decodes_to_the_instruction_sequence_its_own_release_prints" }
+mutation = { path = "crates/disrobe-pass-mobile/tests/hermes_upstream_disassembly.rs", test = "reading_one_release_through_another_release_table_names_different_instructions" }
+
+[[grader]]
+ecosystem = "swift"
+package = "disrobe-pass-swift-objc"
+target = "code_signature_real"
+features = []
+reference = { path = "crates/disrobe-pass-swift-objc/tests/code_signature_real.rs", test = "swift_hello_page_hashes_match_the_file_content" }
+mutation = { path = "crates/disrobe-pass-swift-objc/tests/code_signature_real.rs", test = "a_patched_code_byte_fails_the_page_hash_check" }
+
+[[grader]]
+ecosystem = "shell"
+package = "disrobe-pass-shell"
+target = "vba_pcodedmp_oracle"
+features = []
+reference = { path = "crates/disrobe-pass-shell/tests/vba_pcodedmp_oracle.rs", test = "hello_disasm_matches_pcodedmp_golden" }
+mutation = { path = "crates/disrobe-pass-shell/tests/vba_pcodedmp_oracle.rs", test = "parity_rejects_a_fabricated_disrobe_module" }
+
+[[grader]]
+ecosystem = "container"
+package = "disrobe-binfmt"
+target = "real_lzh_pmarc"
+features = []
+reference = { path = "crates/disrobe-binfmt/tests/real_lzh_pmarc.rs", test = "pmarc124_pm1_member_matches_the_reference_extraction" }
+mutation = { path = "crates/disrobe-binfmt/tests/real_lzh_pmarc.rs", test = "a_single_flipped_bit_in_a_pm1_or_pm2_body_fails_the_stored_crc16" }
+
+[[uncovered]]
+ecosystem = "go"
+reason = "No hermetic exact-equality grader has a mutation control without a tighter wall-clock guard."
+
+[[uncovered]]
+ecosystem = "lua"
+reason = "Every exact grader depends on Lua and can report an unavailable toolchain as a passing measurement."
+
+[[uncovered]]
+ecosystem = "php"
+reason = "The closest exact grader compiles toolchain-spawning support and has no landing-commit Linux run."
+
+[[uncovered]]
+ecosystem = "ruby"
+reason = "The closest exact grader has no mutation control; graders with controls spawn Ruby or mruby."
+
+[[uncovered]]
+ecosystem = "beam"
+reason = "The closest exact grader has no mutation control."
+
+[[uncovered]]
+ecosystem = "other"
+reason = "Pass registration rejects Other, so no recoverable pass can be represented by this variant."

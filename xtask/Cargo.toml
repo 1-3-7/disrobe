@@ -21,6 +21,8 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+disrobe-core = { workspace = true }
+disrobe-tool-process = { workspace = true }
 disrobe-playground = { workspace = true, features = ["chain"], optional = true }
 clap = { workspace = true, features = ["derive"] }
 eyre = { workspace = true }
@@ -37,6 +39,5 @@ tempfile = "3"
 roxmltree = { version = "0.21.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 serde_yaml_ng = "0.10"

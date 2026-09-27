@@ -10593,6 +10593,7 @@ dependencies = [
  "disrobe-core",
  "disrobe-ir",
  "disrobe-playground",
+ "disrobe-tool-process",
  "eyre",
  "roxmltree",
  "serde",

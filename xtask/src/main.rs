@@ -40,6 +40,7 @@ mod packer_roster;
 mod playground;
 mod plugins;
 mod prepush;
+mod push_graders;
 mod regen;
 mod roster_breadth;
 mod skip_census;
@@ -136,6 +137,10 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         full: bool,
     },
+    PushGraders {
+        #[command(subcommand)]
+        mode: PushGradersMode,
+    },
     Health {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         json: bool,
@@ -177,6 +182,7 @@ fn main() -> ExitCode {
         Cmd::Sync { check } => run_sync(check),
         Cmd::Evidence { check, list } => run_evidence(check, list),
         Cmd::Prepush { full } => run_prepush(full),
+        Cmd::PushGraders { mode } => run_push_graders(mode),
         Cmd::Health { json } => run_health(json),
         Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
@@ -192,6 +198,20 @@ fn main() -> ExitCode {
             eprintln!("xtask: {err:?}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum PushGradersMode {
+    Check,
+    Run,
+}
+
+fn run_push_graders(mode: PushGradersMode) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    match mode {
+        PushGradersMode::Check => push_graders::check(&root),
+        PushGradersMode::Run => push_graders::run(&root),
     }
 }
 

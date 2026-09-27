@@ -10,6 +10,13 @@ success-output = "never"
 status-level = "fail"
 final-status-level = "fail"
 
+[profile.push-graders]
+inherits = "pre-push"
+retries = 0
+
+[profile.push-graders.junit]
+path = "junit.xml"
+
 [test-groups]
 external-toolchain = { max-threads = 2 }
 process-global = { max-threads = 1 }

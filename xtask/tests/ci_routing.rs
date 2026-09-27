@@ -7,6 +7,8 @@ use serde_yaml_ng::Value;
 
 const PINNED_TOOLCHAIN_ACTION: &str =
     "dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0";
+const PINNED_NEXTEST_ACTION: &str =
+    "taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd";
 fn workspace_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
@@ -456,6 +458,52 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             .and_then(Value::as_str),
         Some("github.event_name != 'workflow_dispatch' || github.event.inputs.scope != 'tests'"),
         "ci.yml clippy must run for full and clippy scopes, and skip the manual tests scope"
+    );
+    let push_graders: &Value = jobs
+        .get("push-graders")
+        .expect("ci.yml push-graders required job");
+    assert_eq!(
+        push_graders.get("if").and_then(Value::as_str),
+        Some("github.event_name == 'push'"),
+        "the fixed grader allowlist must run on every push and nowhere else"
+    );
+    assert_eq!(
+        push_graders.get("runs-on").and_then(Value::as_str),
+        Some("ubuntu-latest"),
+        "the hermetic push grader receipt is measured on its declared Linux runner"
+    );
+    assert_eq!(
+        push_graders.get("timeout-minutes").and_then(Value::as_i64),
+        Some(30),
+        "the fixed grader allowlist must remain bounded to thirty minutes"
+    );
+    let push_grader_steps: &Vec<Value> = push_graders
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("ci.yml push-graders steps");
+    assert_eq!(push_grader_steps.len(), 6);
+    assert!(uses_action(&push_grader_steps[0], "actions/checkout"));
+    assert!(uses_action(&push_grader_steps[1], "dtolnay/rust-toolchain"));
+    assert!(uses_action(&push_grader_steps[2], "Swatinem/rust-cache"));
+    assert_eq!(
+        push_grader_steps[3].get("uses").and_then(Value::as_str),
+        Some(PINNED_NEXTEST_ACTION),
+        "the push grader must provision cargo-nextest from a pinned action"
+    );
+    assert_eq!(
+        push_grader_steps[3]["with"]["tool"].as_str(),
+        Some("nextest@0.9.115"),
+        "the push grader must install the repository's required nextest release"
+    );
+    assert_eq!(
+        test_step_command(push_grader_steps, "assert pinned cargo-nextest version"),
+        "cargo-nextest nextest --version | grep -Eq '^cargo-nextest 0[.]9[.]115([[:space:]]|$)'",
+        "the push grader must prove it is using the pinned cargo-nextest release"
+    );
+    assert_eq!(
+        test_step_command(push_grader_steps, "run fixed hermetic grader allowlist"),
+        "cargo run --locked -p xtask --no-default-features -- push-graders run",
+        "the push job must invoke the typed fixed allowlist runner"
     );
     let py_band: &Value = jobs.get("py-band-gate").expect("ci.yml py-band-gate job");
     let py_band_environment: &Value = py_band.get("env").expect("ci.yml py-band-gate environment");
