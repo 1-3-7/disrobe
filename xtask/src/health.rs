@@ -107,6 +107,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     );
     check_unused_workspace_deps(root, &root_doc, &member_manifests, &mut report);
     check_unwired_members(root, &member_manifests, &mut report);
+    check_layering(&member_manifests, &mut report);
     check_generator_disjointness(root, &mut report);
     check_feature_hidden_tests(root, &mut report);
     check_wasm_build_records(root, &mut report);
@@ -118,6 +119,21 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
     report.fact("workspace_version", json!(workspace_version));
+
+    if !as_json
+        && let Some(edges) = report
+            .facts
+            .get("layering_violations")
+            .and_then(Value::as_array)
+    {
+        println!(
+            "xtask health: layering, report only: {} dependency edge(s) point at the same or a higher level",
+            edges.len()
+        );
+        for edge in edges.iter().filter_map(Value::as_str) {
+            println!("  {edge}");
+        }
+    }
 
     if as_json {
         println!(
@@ -1124,6 +1140,115 @@ fn declared_dependency_names(doc: &toml::Value) -> BTreeSet<String> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CrateLevel {
+    Rank(i64),
+    Dev,
+}
+
+fn crate_level(doc: &toml::Value) -> Option<CrateLevel> {
+    let level: &toml::Value = doc
+        .get("package")?
+        .get("metadata")?
+        .get("disrobe")?
+        .get("level")?;
+    match level {
+        toml::Value::Integer(rank) => Some(CrateLevel::Rank(*rank)),
+        toml::Value::String(text) if text == "dev" => Some(CrateLevel::Dev),
+        _ => None,
+    }
+}
+
+fn crate_group(doc: &toml::Value) -> Option<String> {
+    doc.get("package")?
+        .get("metadata")?
+        .get("disrobe")?
+        .get("group")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn normal_dependency_names(doc: &toml::Value) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let visit = |section: Option<&toml::Value>, out: &mut BTreeSet<String>| {
+        if let Some(table) = section.and_then(toml::Value::as_table) {
+            out.extend(table.keys().cloned());
+        }
+    };
+    visit(doc.get("dependencies"), &mut out);
+    visit(doc.get("build-dependencies"), &mut out);
+    if let Some(targets) = doc.get("target").and_then(toml::Value::as_table) {
+        for spec in targets.values() {
+            visit(spec.get("dependencies"), &mut out);
+            visit(spec.get("build-dependencies"), &mut out);
+        }
+    }
+    out
+}
+
+fn check_layering(member_manifests: &BTreeMap<String, toml::Value>, report: &mut Report) {
+    const CHECK: &str = "layering";
+    let mut crates: BTreeMap<String, (Option<CrateLevel>, Option<String>, &toml::Value)> =
+        BTreeMap::new();
+    for (dir, doc) in member_manifests {
+        if !dir.starts_with("crates/") {
+            continue;
+        }
+        if let Some(name) = crate_name(doc) {
+            crates.insert(name, (crate_level(doc), crate_group(doc), doc));
+        }
+    }
+    let unlevelled: Vec<&str> = crates
+        .iter()
+        .filter(|(_, (level, _, _))| level.is_none())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if !unlevelled.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} crate(s) declare no `[package.metadata.disrobe] level`: {}",
+                unlevelled.len(),
+                unlevelled.join(", ")
+            ),
+        );
+    }
+    let mut violations: Vec<String> = Vec::new();
+    for (name, (level, group, doc)) in &crates {
+        let Some(level) = level else {
+            continue;
+        };
+        for dependency in normal_dependency_names(doc) {
+            let Some((Some(target), target_group, _)) = crates.get(&dependency) else {
+                continue;
+            };
+            if group.is_some() && group == target_group {
+                continue;
+            }
+            let violates: bool = match (level, target) {
+                (_, CrateLevel::Dev) => true,
+                (CrateLevel::Rank(own), CrateLevel::Rank(theirs)) => theirs >= own,
+                (CrateLevel::Dev, CrateLevel::Rank(_)) => false,
+            };
+            if violates {
+                violations.push(format!(
+                    "{name} ({}) -> {dependency} ({})",
+                    level_label(level),
+                    level_label(target)
+                ));
+            }
+        }
+    }
+    report.fact("layering_violations", json!(violations));
+}
+
+fn level_label(level: &CrateLevel) -> String {
+    match level {
+        CrateLevel::Rank(rank) => rank.to_string(),
+        CrateLevel::Dev => "dev".to_owned(),
+    }
+}
+
 fn check_unwired_members(
     root: &Path,
     member_manifests: &BTreeMap<String, toml::Value>,
@@ -1545,6 +1670,57 @@ origin.built.rebuilt_sha256 = "{rebuilt_sha256}"
             "{:?}",
             audit.problems
         );
+        Ok(())
+    }
+
+    #[test]
+    fn layering_reports_upward_edges_skips_groups_and_fails_unlevelled_crates() -> Result<()> {
+        let manifest = |name: &str, meta: &str, deps: &str| -> Result<toml::Value> {
+            Ok(toml::from_str(&format!(
+                "[package]\nname = \"{name}\"\n{meta}\n[dependencies]\n{deps}\n"
+            ))?)
+        };
+        let mut manifests: BTreeMap<String, toml::Value> = BTreeMap::new();
+        manifests.insert(
+            "crates/disrobe-low".to_owned(),
+            manifest(
+                "disrobe-low",
+                "[package.metadata.disrobe]\nlevel = 1\ngroup = \"g\"",
+                "disrobe-peer = { workspace = true }",
+            )?,
+        );
+        manifests.insert(
+            "crates/disrobe-peer".to_owned(),
+            manifest(
+                "disrobe-peer",
+                "[package.metadata.disrobe]\nlevel = 1\ngroup = \"g\"",
+                "",
+            )?,
+        );
+        manifests.insert(
+            "crates/disrobe-high".to_owned(),
+            manifest("disrobe-high", "[package.metadata.disrobe]\nlevel = 3", "")?,
+        );
+        manifests.insert(
+            "crates/disrobe-leaf".to_owned(),
+            manifest(
+                "disrobe-leaf",
+                "[package.metadata.disrobe]\nlevel = 2",
+                "disrobe-high = { workspace = true }\ndisrobe-low = { workspace = true }",
+            )?,
+        );
+        manifests.insert(
+            "crates/disrobe-bare".to_owned(),
+            manifest("disrobe-bare", "", "")?,
+        );
+        let mut report: Report = Report::default();
+        check_layering(&manifests, &mut report);
+        assert_eq!(
+            report.facts.get("layering_violations"),
+            Some(&json!(["disrobe-leaf (2) -> disrobe-high (3)"]))
+        );
+        assert_eq!(report.findings.len(), 1);
+        assert!(report.findings[0].detail.contains("disrobe-bare"));
         Ok(())
     }
 
