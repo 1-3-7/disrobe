@@ -27,7 +27,8 @@ fn main() -> miette::Result<()> {
         all_samples.extend(samples);
     }
 
-    let report: disrobe_validator::ValidationReport = build_report(all_samples);
+    let report: disrobe_validator::ValidationReport = build_report(all_samples)
+        .map_err(|e| miette::miette!("cannot date the report from SOURCE_DATE_EPOCH: {e}"))?;
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("cannot create out dir: {e}"))?;
