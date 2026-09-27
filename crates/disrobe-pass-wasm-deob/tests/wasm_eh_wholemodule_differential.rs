@@ -240,10 +240,12 @@ mod execution {
         let sigs: ModuleSignatures = extract_signatures(&original).expect("sigs");
 
         let eng: Engine = Engine::new(&rich()).expect("eng");
-        if Module::new(&eng, &original).is_err() {
-            eprintln!("wasmtime cannot execute EH on this build; skipping execution probe");
-            return;
-        }
+        let compiled: wasmtime::Result<Module> = Module::new(&eng, &original);
+        assert!(
+            compiled.is_ok(),
+            "the pinned wasmtime with the EH configuration must compile the original module: {:?}",
+            compiled.err()
+        );
 
         let mut checked: usize = 0;
         for s in sigs.defined() {

@@ -439,50 +439,46 @@ fn clang_present() -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
-fn compile_c(dir: &Path, name: &str, src: &str) -> Option<Vec<u8>> {
+fn compile_c(dir: &Path, name: &str, src: &str) -> Vec<u8> {
     let c_path: PathBuf = dir.join(format!("{name}.c"));
     let o_path: PathBuf = dir.join(format!("{name}.o"));
-    std::fs::write(&c_path, src).ok()?;
-    let out = Command::new("clang")
+    std::fs::write(&c_path, src).expect("write the fixture C source");
+    let out: std::process::Output = Command::new("clang")
         .args(["--target=wasm32", "-O1", "-c"])
         .arg(&c_path)
         .arg("-o")
         .arg(&o_path)
         .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    std::fs::read(&o_path).ok()
+        .expect("spawn clang");
+    assert!(
+        out.status.success(),
+        "{name}: clang --target=wasm32 failed; a clang with the WebAssembly target is required \
+         (CI provisions one on every leg):\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::read(&o_path).expect("read the clang object")
 }
 
 #[test]
 fn signedness_matches_clang_wasm() {
-    if !clang_present() {
-        eprintln!("clang unavailable; skipping compiled-C signedness grading");
-        return;
-    }
-    let Ok(scratch): Result<disrobe_core::scratch::ScratchDir, std::io::Error> =
+    assert!(
+        clang_present(),
+        "clang is required on PATH (probed `clang --version`) for the compiled-C signedness grading"
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wasm_sign")
-    else {
-        eprintln!("cannot create temp dir; skipping compiled-C signedness grading");
-        return;
-    };
+            .expect("create scratch directory");
     let dir: PathBuf = scratch.path().to_path_buf();
 
     let all: Vec<Fixture> = fixtures();
-    let Some(first) = all.first() else {
-        return;
-    };
-    if compile_c(&dir, first.name, first.c_src).is_none() {
-        eprintln!("clang wasm32 target unavailable; skipping compiled-C signedness grading");
-        return;
-    }
+    assert!(
+        !all.is_empty(),
+        "the signedness fixture list must not be empty"
+    );
 
     let mut graded: usize = 0;
     for fixture in &all {
-        let bytes: Vec<u8> = compile_c(&dir, fixture.name, fixture.c_src)
-            .unwrap_or_else(|| panic!("{}: clang compile", fixture.name));
+        let bytes: Vec<u8> = compile_c(&dir, fixture.name, fixture.c_src);
         let ssa: SsaFunction = ssa_from_bytes(&bytes, fixture.ssa_params)
             .unwrap_or_else(|| panic!("{}: ssa build from clang output", fixture.name));
         let report: SignednessReport = recover_signedness(&ssa);

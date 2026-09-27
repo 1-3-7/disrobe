@@ -4129,8 +4129,11 @@ mod merge_tests {
         (!first.is_empty()).then(|| std::path::PathBuf::from(first))
     }
 
-    fn run_recovered_sum_to(wat: &str, arg: i32, tag: &str) -> Option<i32> {
-        let rustc: std::path::PathBuf = rustc_path()?;
+    fn run_recovered_sum_to(wat: &str, arg: i32, tag: &str) -> i32 {
+        let rustc: std::path::PathBuf = rustc_path().expect(
+            "rustc is required on PATH (probed with `where rustc` or `which rustc`) to compile the \
+             recovered loop; every CI leg carries it beside cargo",
+        );
         let body: String = lift_only_function(wat, HighLang::Rust);
         let mut program: String = crate::lift::rust_runtime_prelude().to_owned();
         program.push('\n');
@@ -4140,35 +4143,36 @@ mod merge_tests {
         program.push_str(")); }\n");
         let purpose: String = format!("disrobe_merge_teeth_{tag}");
         let scratch: disrobe_core::scratch::ScratchDir =
-            disrobe_core::scratch::ScratchDir::create(&purpose).ok()?;
+            disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory");
         let dir: std::path::PathBuf = scratch.path().to_path_buf();
         let rs: std::path::PathBuf = dir.join("recovered.rs");
-        std::fs::write(&rs, &program).ok()?;
+        std::fs::write(&rs, &program).expect("write recovered source");
         let bin: std::path::PathBuf = dir.join(if cfg!(windows) { "rec.exe" } else { "rec" });
         let compiled: std::process::Output = std::process::Command::new(&rustc)
             .args(["--edition", "2021", "-O", "-o"])
             .arg(&bin)
             .arg(&rs)
             .output()
-            .ok()?;
+            .expect("spawn rustc");
         assert!(
             compiled.status.success(),
             "rustc rejected recovered source ({tag}):\n{}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        let run: std::process::Output = std::process::Command::new(&bin).output().ok()?;
-        String::from_utf8_lossy(&run.stdout)
-            .trim()
+        let run: std::process::Output = std::process::Command::new(&bin)
+            .output()
+            .expect("run the compiled recovered loop");
+        let stdout: String = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+        stdout
             .parse::<i32>()
-            .ok()
+            .unwrap_or_else(|error: std::num::ParseIntError| {
+                panic!("recovered loop ({tag}) printed {stdout:?}, not an i32: {error}")
+            })
     }
 
     #[test]
     fn collapsed_counted_loop_computes_the_right_sum_under_rustc() {
-        let Some(value): Option<i32> = run_recovered_sum_to(COUNTED_LOOP, 10, "ok") else {
-            eprintln!("SKIP: rustc unavailable for the collapsed-loop teeth check");
-            return;
-        };
+        let value: i32 = run_recovered_sum_to(COUNTED_LOOP, 10, "ok");
         assert_eq!(
             value, 45,
             "the collapsed single-loop counted form must still sum 0..10 to 45"
@@ -4182,10 +4186,7 @@ mod merge_tests {
             wrong_bound, COUNTED_LOOP,
             "the fault injection must actually change the exit test"
         );
-        let Some(value): Option<i32> = run_recovered_sum_to(&wrong_bound, 10, "wrong") else {
-            eprintln!("SKIP: rustc unavailable for the wrong-bound teeth check");
-            return;
-        };
+        let value: i32 = run_recovered_sum_to(&wrong_bound, 10, "wrong");
         assert_ne!(
             value, 45,
             "a deliberately wrong loop bound (>= becomes >) must produce a detectably different \

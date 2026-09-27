@@ -70,8 +70,7 @@ fn lifted_rust_compiles_with_rustc() {
     std::fs::write(&rs, &src).expect("write rs");
 
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
-        eprintln!("SKIP: rustc not on PATH for the compile-the-output gate");
-        return;
+        panic!("rustc is required on PATH for the compile-the-output gate");
     };
     let out: std::process::Output = Command::new(rustc)
         .args([
@@ -119,8 +118,7 @@ fn lifted_c_compiles_when_compiler_available() {
         .or_else(|| tool_on_path("clang"))
         .or_else(|| tool_on_path("gcc"));
     let Some(cc): Option<PathBuf> = compiler else {
-        eprintln!("SKIP: no C compiler (cc/clang/gcc) on PATH");
-        return;
+        panic!("a C compiler is required on PATH; tried cc, clang and gcc");
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wasm_lift_c").expect("mkdir");

@@ -389,8 +389,7 @@ struct Target {
 #[test]
 fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
-        eprintln!("SKIP: rustc not on PATH for the rust-execution differential");
-        return;
+        panic!("rustc is required on PATH for the rust-execution differential");
     };
 
     let eng: Engine = Engine::new(&rich_config()).expect("wasmtime engine");
@@ -626,8 +625,7 @@ fn lifted_div_rem_program(bytes: &[u8], sigs: &ModuleSignatures, driver: &str) -
 #[test]
 fn divide_and_remainder_helpers_execute_identically_on_non_trapping_inputs() {
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
-        eprintln!("SKIP: rustc not on PATH for the divide/remainder differential");
-        return;
+        panic!("rustc is required on PATH for the divide/remainder differential");
     };
     let bytes: Vec<u8> = wat::parse_str(DIV_REM_MODULE).expect("assemble the div/rem module");
     let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");

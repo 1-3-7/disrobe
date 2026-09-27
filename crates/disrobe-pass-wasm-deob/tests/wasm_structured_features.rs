@@ -1094,8 +1094,7 @@ fn feature_rich_lift_compiles_with_rustc() {
     let rs: PathBuf = dir.join("feat.rs");
     std::fs::write(&rs, &src).expect("write rs");
     let Some(rustc): Option<PathBuf> = tool_on_path("rustc") else {
-        eprintln!("SKIP: rustc not on PATH for the compile-the-feature-output gate");
-        return;
+        panic!("rustc is required on PATH for the compile-the-feature-output gate");
     };
     let out: std::process::Output = Command::new(rustc)
         .args([

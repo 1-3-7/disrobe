@@ -454,12 +454,12 @@ mod execution {
     fn check(name: &str) {
         let eng: Engine = Engine::new(&gc_config()).expect("engine");
         let (original, lifted, _): (Vec<u8>, Vec<u8>, String) = lift(name);
-        if Module::new(&eng, &original).is_err() {
-            eprintln!(
-                "wasmtime cannot execute GC on this build; skipping execution probe for {name}"
-            );
-            return;
-        }
+        let compiled: wasmtime::Result<Module> = Module::new(&eng, &original);
+        assert!(
+            compiled.is_ok(),
+            "the pinned wasmtime with the GC configuration must compile the original {name}: {:?}",
+            compiled.err()
+        );
         let mut checked: usize = 0;
         for (export, params, results) in export_sigs(&original) {
             if !params.iter().all(|t| numeric(*t)) || !results.iter().all(|t| numeric(*t)) {

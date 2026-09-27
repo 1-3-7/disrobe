@@ -99,12 +99,12 @@ fn faithful_lift_preserves_cont_types_and_block_signatures() {
 
 #[cfg(feature = "sandbox")]
 mod execution {
-    use super::{corpus, lift};
     use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
     const FUEL_BUDGET: u64 = 2_000_000;
     const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     fn stack_switching_config() -> Config {
         let mut c: Config = Config::new();
         c.wasm_gc(true)
@@ -185,42 +185,25 @@ mod execution {
         );
     }
 
+    #[cfg(all(target_arch = "x86_64", any(target_os = "linux", target_os = "macos")))]
     #[test]
-    fn execution_equivalence_when_the_runtime_supports_stack_switching() {
-        let Ok(eng): Result<Engine, _> = Engine::new(&stack_switching_config()) else {
-            eprintln!(
-                "wasmtime/cranelift on this build cannot execute stack-switching; \
-                 the spec validator + structural differential remain the oracle here"
-            );
-            return;
-        };
+    fn execution_equivalence_under_the_stack_switching_runtime() {
+        let eng: Engine = Engine::new(&stack_switching_config())
+            .expect("the pinned wasmtime supports stack switching on x86_64 Linux and macOS");
         let (original, lifted, _): (Vec<u8>, Vec<u8>, String) =
-            lift(&corpus("stack_switching.wat"));
-        let compiles: bool = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Module::new(&eng, &original).is_ok()
-        }))
-        .unwrap_or(false);
-        if !compiles {
-            eprintln!(
-                "wasmtime/cranelift on this build cannot codegen stack-switching; skipping execution probe (spec validator + structural differential remain the oracle)"
-            );
-            return;
-        }
-        let orig: Option<Vec<i64>> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(&eng, &original, "main")
-        }))
-        .ok()
-        .flatten();
-        let recovered: Option<Vec<i64>> =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&eng, &lifted, "main")))
-                .ok()
-                .flatten();
-        if orig.is_none() && recovered.is_none() {
-            eprintln!(
-                "wasmtime could not execute either module on this build; skipping execution probe"
-            );
-            return;
-        }
+            super::lift(&super::corpus("stack_switching.wat"));
+        let compiled: wasmtime::Result<Module> = Module::new(&eng, &original);
+        assert!(
+            compiled.is_ok(),
+            "the pinned wasmtime must compile the original stack-switching module: {:?}",
+            compiled.err()
+        );
+        let orig: Option<Vec<i64>> = run(&eng, &original, "main");
+        let recovered: Option<Vec<i64>> = run(&eng, &lifted, "main");
+        assert!(
+            orig.is_some(),
+            "the original stack-switching module must execute to a result under the pinned wasmtime"
+        );
         assert_eq!(
             orig, recovered,
             "recovered stack-switching module must execute equivalently to the original"

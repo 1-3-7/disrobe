@@ -15,17 +15,19 @@ fn fixture_path(name: &str) -> PathBuf {
     workspace_root.join("corpus/src/wasm/sources").join(name)
 }
 
-fn load_fixture(name: &str) -> Option<String> {
+fn load_fixture(name: &str) -> String {
     let path: PathBuf = fixture_path(name);
-    std::fs::read_to_string(&path).ok()
+    std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "committed fixture {} must be readable: {error}",
+            path.display()
+        )
+    })
 }
 
 #[test]
 fn recovers_struct_array_and_i31_from_corpus_fixture() {
-    let Some(wat_src): Option<String> = load_fixture("gc_types.wat") else {
-        eprintln!("skip: gc_types.wat fixture absent");
-        return;
-    };
+    let wat_src: String = load_fixture("gc_types.wat");
     let bytes: Vec<u8> = wat::parse_str(&wat_src).expect("parse wat");
     let graph: GcTypeGraph = recover_gc_types(&bytes).expect("recover");
 
