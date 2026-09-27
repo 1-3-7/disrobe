@@ -1,6 +1,6 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::needless_pass_by_value)]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -13,12 +13,15 @@ use disrobe_core::chain::spec::PassToken;
 use disrobe_core::chain::state_machine::{PassRunner, Verdict};
 use disrobe_core::chain::{
     ChainConfig, ChainDocument, ChainDriver, ChainPlan, ChainRecoveryReport, ChainSpec,
-    ChildArtifact, ChildHandle, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome,
-    RUN_FILE_NAME, RunClock, RunRecord,
+    ChildArtifact, ChildHandle, ChildMaterialization, DetectorPick, ExtractedArtifact, Node,
+    OutputKind, PassRegistry, PassRunOutcome, RUN_FILE_NAME, RunClock, RunRecord,
 };
 use disrobe_core::pass::PassContext;
 use disrobe_core::time::WallClock;
-use disrobe_core::{Artifact, Redactor, Rung};
+use disrobe_core::{
+    Artifact, RECON_SCHEMA, ReconConfig, ReconFinding, Redactor, Rung, recon_report_bytes,
+};
+use serde::Deserialize as _;
 
 use super::backend_export::{BackendExportTarget, SupplementalOutput, write_supplemental_output};
 use super::chain_materialization::ExtractedWriter;
@@ -647,14 +650,16 @@ pub(crate) fn run_with_disk(
     let mut extracted_writer: Option<ExtractedWriter> =
         stream_out_dir.as_deref().map(ExtractedWriter::new);
     let seed_for_scan: Vec<u8> = bytes.clone();
+    let mut sidecar_redaction: Option<SidecarRedaction> =
+        SidecarRedaction::for_input(&seed_for_scan, redact);
     let mut stream_error: Option<miette::Report> = None;
     let plan: ChainPlan = {
-        let mut sink = |art: &disrobe_core::chain::ExtractedArtifact, siblings: &[ChildHandle]| {
+        let mut sink = |art: &ExtractedArtifact, siblings: &[ChildHandle]| {
             if stream_error.is_some() {
                 return;
             }
             if let Some(writer) = extracted_writer.as_mut() {
-                match writer.write(art, siblings) {
+                match write_extracted(writer, art, siblings, sidecar_redaction.as_mut()) {
                     Ok(path) => streamed.push(path),
                     Err(error) => stream_error = Some(error),
                 }
@@ -779,7 +784,11 @@ pub(crate) fn run_with_disk(
         }
     };
     let mut extracted_written: Vec<String> = streamed;
-    extracted_written.extend(write_extracted_children(&out_dir, &plan)?);
+    extracted_written.extend(write_extracted_children(
+        &out_dir,
+        &plan,
+        sidecar_redaction.as_mut(),
+    )?);
     if redact {
         extracted_written = extracted_written
             .into_iter()
@@ -929,7 +938,92 @@ fn maybe_py_deob_guidance(spec_raw: &str, plan: &ChainPlan, bytes: &[u8]) -> Opt
     }
 }
 
-fn write_extracted_children(out_dir: &Path, plan: &ChainPlan) -> miette::Result<Vec<String>> {
+#[derive(Debug)]
+struct SidecarRedaction {
+    known: BTreeSet<String>,
+}
+
+impl SidecarRedaction {
+    fn for_input(seed: &[u8], redact: bool) -> Option<Self> {
+        redact.then(|| Self {
+            known: Redactor::new().recon_secret_values(
+                &recon_report_bytes(seed, None, &ReconConfig::default()).findings,
+            ),
+        })
+    }
+
+    fn apply(&mut self, artifact: &ExtractedArtifact) -> miette::Result<Option<ExtractedArtifact>> {
+        if !matches!(
+            artifact.materialization,
+            ChildMaterialization::Regular { .. }
+        ) {
+            return Ok(None);
+        }
+        let Ok(original): Result<serde_json::Value, serde_json::Error> =
+            serde_json::from_slice(&artifact.bytes)
+        else {
+            return Ok(None);
+        };
+        self.harvest(&original);
+        let mut redacted: serde_json::Value = original.clone();
+        Redactor::new()
+            .redact_json_value_with_known(&mut redacted, self.known.clone())
+            .map_err(|error| {
+                miette::miette!(
+                    "DR-CLI-0363: report redaction of extracted {}: {error}",
+                    artifact.relative_path
+                )
+            })?;
+        if redacted == original {
+            return Ok(None);
+        }
+        let bytes: Vec<u8> =
+            serde_json::to_vec_pretty(&redacted).map_err(|error: serde_json::Error| {
+                miette::miette!(
+                    "DR-CLI-0362: report serialize of extracted {}: {error}",
+                    artifact.relative_path
+                )
+            })?;
+        Ok(Some(ExtractedArtifact {
+            node_id: artifact.node_id,
+            relative_path: artifact.relative_path.clone(),
+            materialization: artifact.materialization,
+            bytes,
+        }))
+    }
+
+    fn harvest(&mut self, value: &serde_json::Value) {
+        if value.get("schema").and_then(serde_json::Value::as_str) != Some(RECON_SCHEMA) {
+            return;
+        }
+        let Some(findings): Option<&serde_json::Value> = value.get("findings") else {
+            return;
+        };
+        if let Ok(findings) = Vec::<ReconFinding>::deserialize(findings) {
+            self.known
+                .extend(Redactor::new().recon_secret_values(&findings));
+        }
+    }
+}
+
+fn write_extracted(
+    writer: &mut ExtractedWriter,
+    artifact: &ExtractedArtifact,
+    siblings: &[ChildHandle],
+    redaction: Option<&mut SidecarRedaction>,
+) -> miette::Result<String> {
+    let redacted: Option<ExtractedArtifact> = match redaction {
+        Some(redaction) => redaction.apply(artifact)?,
+        None => None,
+    };
+    writer.write(redacted.as_ref().unwrap_or(artifact), siblings)
+}
+
+fn write_extracted_children(
+    out_dir: &Path,
+    plan: &ChainPlan,
+    mut redaction: Option<&mut SidecarRedaction>,
+) -> miette::Result<Vec<String>> {
     if plan.extracted.is_empty() {
         return Ok(Vec::new());
     }
@@ -947,7 +1041,12 @@ fn write_extracted_children(out_dir: &Path, plan: &ChainPlan) -> miette::Result<
             )
             | None => &[],
         };
-        written.push(writer.write(art, siblings)?);
+        written.push(write_extracted(
+            &mut writer,
+            art,
+            siblings,
+            redaction.as_deref_mut(),
+        )?);
     }
     writer.finish()?;
     Ok(written)
@@ -1055,6 +1154,8 @@ pub(crate) fn run_chain_to_dir(
     .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
+    let mut sidecar_redaction: Option<SidecarRedaction> =
+        SidecarRedaction::for_input(&seed_for_scan, redact);
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
     let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
         &plan,
@@ -1102,7 +1203,7 @@ pub(crate) fn run_chain_to_dir(
         .map_err(|e| miette::miette!("DR-CLI-0307: anti-analysis.json serialize: {e}"))?;
     std::fs::write(out_dir.join("anti-analysis.json"), &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
-    let _: Vec<String> = write_extracted_children(out_dir, &plan)?;
+    let _: Vec<String> = write_extracted_children(out_dir, &plan, sidecar_redaction.as_mut())?;
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
@@ -1973,7 +2074,8 @@ mod tests {
         ];
         let dir_scratch: ScratchDir = mirror_tmp("extracted");
         let dir: PathBuf = dir_scratch.path().to_path_buf();
-        let written: Vec<String> = super::write_extracted_children(&dir, &plan).expect("write");
+        let written: Vec<String> =
+            super::write_extracted_children(&dir, &plan, None).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(
             std::fs::read(dir.join("extracted").join("main.dll")).expect("main.dll"),
@@ -2011,7 +2113,8 @@ mod tests {
         ];
         let dir_scratch: ScratchDir = mirror_tmp("collision");
         let dir: PathBuf = dir_scratch.path().to_path_buf();
-        let written: Vec<String> = super::write_extracted_children(&dir, &plan).expect("write");
+        let written: Vec<String> =
+            super::write_extracted_children(&dir, &plan, None).expect("write");
         assert_eq!(written.len(), 3);
         let root: PathBuf = dir.join("extracted");
         assert_eq!(

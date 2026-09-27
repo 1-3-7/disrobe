@@ -11,7 +11,7 @@ disrobe auto suspect.exe --out shareable/ --redact
 
 `disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. `disrobe passes` prints the auto-chain pass IDs compiled into the current binary, with each pass ecosystem and support tier. Use that output instead of a copied count. Direct commands such as `scan`, `frisk`, `taint`, and `webview` are separate surfaces and do not become auto-chain passes merely because the CLI can run them. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
 
-`--redact` replaces detected secret values in machine output and the generated JSON reports. It does not alter recovered source or extracted binary artifacts. Raw report values remain the default.
+`--redact` replaces detected secret values in machine output, the generated JSON reports, and every extracted JSON document that contains one (such as a `recon.json` sidecar). It does not alter recovered source, extracted binaries, or the raw stage copies that `--capture-stages` writes. Raw report values remain the default.
 
 Representative routes include `native.packer-unpack -> go.classify` for a UPX-packed Go executable and `pyinstaller.extract -> pyarmor.unpack -> py.decompile` when the extracted Python wrapper and available runtime/key material support those stages. APKs reach `jvm.classify`; Electron ASAR archives reach `webview.carve`, whose recognized JavaScript children can continue through `js.deob`. See the [quickstart route table](quickstart.md#auto-detect-and-chain) for their outputs and [registered passes](passes.md#commands-and-auto-chain-passes) for the complete list.
 

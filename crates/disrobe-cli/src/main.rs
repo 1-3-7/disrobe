@@ -1992,7 +1992,7 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "flutter")]
         Cmd::Flutter { action } => flutter::run(action),
         #[cfg(feature = "mobile")]
-        Cmd::Mobile { action } => mobile::run(action),
+        Cmd::Mobile { action } => mobile::run(action, eff.redact),
         Cmd::Envelope { action } => {
             let cache_settings: CacheSettings = CacheSettings {
                 enabled: !eff.no_cache,

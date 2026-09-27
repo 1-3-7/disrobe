@@ -63,6 +63,11 @@ impl Redactor {
         redaction_token(secret)
     }
 
+    #[must_use]
+    pub fn recon_secret_values(self, findings: &[ReconFinding]) -> BTreeSet<String> {
+        secret_values(findings)
+    }
+
     pub fn redact_report(self, report: &mut ReconReport) {
         let scrubber: SecretScrubber = self.scrubber(secret_values(&report.findings));
         for finding in &mut report.findings {
@@ -92,7 +97,16 @@ impl Redactor {
     }
 
     pub fn redact_json_value(self, value: &mut Value) -> Result<(), RedactionError> {
-        let secrets: BTreeSet<String> = serialized_secrets(value)?;
+        self.redact_json_value_with_known(value, BTreeSet::new())
+    }
+
+    pub fn redact_json_value_with_known(
+        self,
+        value: &mut Value,
+        known: BTreeSet<String>,
+    ) -> Result<(), RedactionError> {
+        let mut secrets: BTreeSet<String> = serialized_secrets(value)?;
+        secrets.extend(known);
         let scrubber: SecretScrubber = self.scrubber(secrets);
         validate_json_keys(value, &scrubber)?;
         scrub_json_value(value, &scrubber, 0)
@@ -483,6 +497,42 @@ mod tests {
             value["locations"][0]["physicalLocation"]["region"]["byteOffset"],
             17
         );
+    }
+
+    #[test]
+    fn known_values_redact_a_context_secret_the_rescan_cannot_see() {
+        let context_value: String = format!("{}{}", "q7x2m9k4", "w1z8p3v6");
+        let aws: String = aws_akid();
+        let original: serde_json::Value = serde_json::json!({
+            "secrets": [
+                { "value": context_value, "preview": format!("key {context_value} end") },
+                { "value": aws }
+            ]
+        });
+
+        let mut rescanned_only: serde_json::Value = original.clone();
+        Redactor::new()
+            .redact_json_value(&mut rescanned_only)
+            .expect("rescan-only redaction");
+        let rescanned_text: String = serde_json::to_string(&rescanned_only).expect("serialize");
+        assert!(
+            rescanned_text.contains(context_value.as_str()),
+            "the control needs a value the rescan alone cannot recognise"
+        );
+        assert!(!rescanned_text.contains(aws.as_str()));
+
+        let mut seeded: serde_json::Value = original;
+        Redactor::new()
+            .redact_json_value_with_known(&mut seeded, BTreeSet::from([context_value.clone()]))
+            .expect("seeded redaction");
+        let seeded_text: String = serde_json::to_string(&seeded).expect("serialize");
+        assert!(!seeded_text.contains(context_value.as_str()));
+        assert!(!seeded_text.contains(aws.as_str()));
+        assert_eq!(
+            seeded["secrets"][0]["value"],
+            serde_json::Value::String(Redactor::new().token(&context_value))
+        );
+        assert_eq!(seeded_text.matches("[REDACTED:").count(), 3);
     }
 
     #[test]

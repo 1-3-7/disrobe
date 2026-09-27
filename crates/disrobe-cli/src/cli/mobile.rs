@@ -1,8 +1,10 @@
 #![allow(clippy::needless_pass_by_value)]
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use disrobe_core::Redactor;
 
 use disrobe_pass_mobile::{
     ApkReconReport, DetectedKind, DisassemblyReport, FlutterApkLayout, HermesModule, JsLiftReport,
@@ -67,16 +69,25 @@ pub(crate) enum MobileCmd {
             help = "emit the full recon report as machine-clean JSON to stdout (no human-readable summary)"
         )]
         json: bool,
+        #[arg(
+            long,
+            help = "replace every surfaced secret value with a stable truncated SHA-256 token"
+        )]
+        redact: bool,
     },
 }
 
-pub(crate) fn run(action: MobileCmd) -> miette::Result<()> {
+pub(crate) fn run(action: MobileCmd, config_redact: bool) -> miette::Result<()> {
     match action {
         MobileCmd::Detect { input, out } => detect(input, out),
         MobileCmd::Extract { input, out } => extract(input, out),
         MobileCmd::Hermes { input, out } => hermes(input, out),
         MobileCmd::Flutter { input, out } => flutter(input, out),
-        MobileCmd::Recon { input, json } => recon(input, json),
+        MobileCmd::Recon {
+            input,
+            json,
+            redact,
+        } => recon(input, json, redact || config_redact),
     }
 }
 
@@ -546,11 +557,14 @@ fn flutter(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     Ok(())
 }
 
-fn recon(input: PathBuf, json: bool) -> miette::Result<()> {
+fn recon(input: PathBuf, json: bool, redact: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0830: cannot read input: {e}"))?;
-    let report: ApkReconReport = analyze_apk_recon(&bytes)
+    let mut report: ApkReconReport = analyze_apk_recon(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0831: apk recon failed: {e}"))?;
+    if redact {
+        report = redacted_recon(&report)?;
+    }
     if json {
         let value: serde_json::Value = serde_json::to_value(&report)
             .map_err(|e| miette::miette!("DR-CLI-0832: recon serialize: {e}"))?;
@@ -561,6 +575,21 @@ fn recon(input: PathBuf, json: bool) -> miette::Result<()> {
     }
     print_recon_summary(&input, &report);
     Ok(())
+}
+
+fn redacted_recon(report: &ApkReconReport) -> miette::Result<ApkReconReport> {
+    let known: BTreeSet<String> = report
+        .secrets
+        .iter()
+        .map(|secret: &SurfacedSecret| secret.value.clone())
+        .collect();
+    let mut value: serde_json::Value = serde_json::to_value(report)
+        .map_err(|e| miette::miette!("DR-CLI-0832: recon serialize: {e}"))?;
+    Redactor::new()
+        .redact_json_value_with_known(&mut value, known)
+        .map_err(|e| miette::miette!("DR-CLI-0828: recon redaction: {e}"))?;
+    serde_json::from_value(value)
+        .map_err(|e| miette::miette!("DR-CLI-0829: redacted recon report: {e}"))
 }
 
 fn print_recon_summary(input: &Path, report: &ApkReconReport) {
