@@ -32,8 +32,6 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-swift-objc", 1),
     ("disrobe-pass-wasm-deob", 13),
     ("disrobe-pyarmor-cextract", 5),
-    ("disrobe-semdiff", 2),
-    ("disrobe-typerec", 3),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
