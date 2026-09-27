@@ -2312,6 +2312,73 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "full")]
+    fn every_recommended_command_parses_against_the_clap_tree() {
+        let paths: std::collections::BTreeSet<String> = subcommand_paths();
+        let mut checked: usize = 0;
+        for route in disrobe_pass_native::SupportRoute::ALL {
+            let prose: &str = route.command();
+            assert_eq!(
+                prose.matches("disrobe ").count(),
+                route.invocations().len(),
+                "{route:?} recommends `{prose}`, which names a command its invocations do not list"
+            );
+            for invocation in route.invocations() {
+                assert!(
+                    paths.contains(*invocation),
+                    "{route:?} recommends `disrobe {invocation}`, which the command tree does not have"
+                );
+                assert!(
+                    prose.contains(&format!("disrobe {invocation}")),
+                    "{route:?} lists `{invocation}` but its text `{prose}` does not name it"
+                );
+                checked += 1;
+            }
+        }
+        let playground: &str = include_str!("../../disrobe-wasm/src/entry.rs");
+        for suggestion in playground.split("suggested_command: \"disrobe ").skip(1) {
+            let invocation: &str = suggestion
+                .split(['<', '"'])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            assert!(
+                paths.contains(invocation),
+                "the playground recommends `disrobe {invocation}`, which the command tree does not have"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 15,
+            "every recommendation identify and the playground emit is checked"
+        );
+    }
+
+    #[test]
+    fn every_support_route_is_listed_once() {
+        let index = |route: disrobe_pass_native::SupportRoute| -> usize {
+            use disrobe_pass_native::SupportRoute as Route;
+            match route {
+                Route::DotnetDecompile => 0,
+                Route::GoDecompile => 1,
+                Route::RustRecover => 2,
+                Route::NativeDecompile => 3,
+                Route::NativeLangDemangle => 4,
+                Route::PyDecompile => 5,
+                Route::NativeUnpack => 6,
+                Route::ContainerExtract => 7,
+                Route::DetectCarveOnly => 8,
+                Route::SignatureInspect => 9,
+            }
+        };
+        let seen: std::collections::BTreeSet<usize> = disrobe_pass_native::SupportRoute::ALL
+            .into_iter()
+            .map(index)
+            .collect();
+        assert_eq!(seen, (0..10).collect::<std::collections::BTreeSet<usize>>());
+    }
+
+    #[test]
     #[cfg(feature = "swift")]
     fn parse_u8_auto_accepts_decimal_and_hexadecimal_values() {
         assert_eq!(parse_u8_auto("85"), Ok(85));

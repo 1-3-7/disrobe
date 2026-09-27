@@ -41,6 +41,35 @@ pub enum SupportRoute {
 }
 
 impl SupportRoute {
+    pub const ALL: [Self; 10] = [
+        Self::DotnetDecompile,
+        Self::GoDecompile,
+        Self::RustRecover,
+        Self::NativeDecompile,
+        Self::NativeLangDemangle,
+        Self::PyDecompile,
+        Self::NativeUnpack,
+        Self::ContainerExtract,
+        Self::DetectCarveOnly,
+        Self::SignatureInspect,
+    ];
+
+    #[must_use]
+    pub const fn invocations(self) -> &'static [&'static str] {
+        match self {
+            Self::DotnetDecompile => &["dotnet decompile"],
+            Self::GoDecompile => &["go recover"],
+            Self::RustRecover | Self::NativeDecompile | Self::NativeLangDemangle => {
+                &["native decompile"]
+            }
+            Self::PyDecompile => &["py extract", "py decompile"],
+            Self::NativeUnpack => &["native unpack"],
+            Self::ContainerExtract => &["auto"],
+            Self::DetectCarveOnly => &["native devirt", "native unpack"],
+            Self::SignatureInspect => &[],
+        }
+    }
+
     #[must_use]
     pub const fn command(self) -> &'static str {
         match self {

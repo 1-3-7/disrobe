@@ -1601,7 +1601,7 @@ pub fn detect(bytes: &[u8]) -> DetectResult {
             ok: true,
             format: "wasm",
             detail: "WebAssembly binary (\\0asm magic)".to_string(),
-            suggested_command: "disrobe wasm <file.wasm>".to_string(),
+            suggested_command: "disrobe wasm decompile <file.wasm>".to_string(),
         };
     }
     if bytes.len() >= 4 {
@@ -1624,7 +1624,7 @@ pub fn detect(bytes: &[u8]) -> DetectResult {
             ok: true,
             format: "pickle",
             detail: "Python pickle opcode stream".to_string(),
-            suggested_command: "disrobe pickle <file.pkl>".to_string(),
+            suggested_command: "disrobe pickle decompile <file.pkl>".to_string(),
         };
     }
     DetectResult {
