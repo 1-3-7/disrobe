@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
@@ -14,7 +14,7 @@ use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space};
 const SWEEP_SEED: u64 = 0x5150_2024_0612_7a11;
 const RANDOM_WORDS_PER_GROUP: usize = 192;
 const MAX_SWEEP_WORDS: usize = 8192;
-const SWEEP_TIME_BUDGET: Duration = Duration::from_mins(5);
+const RESOURCE_LIMIT_MNEMONIC: &str = ".resource_limit";
 const REFERENCE_TOOL: &str = "llvm-objdump";
 const REFERENCE_VERSION: &str = "19.1.7";
 const REFERENCE_TRIPLE: &str = "aarch64-none-elf";
@@ -453,7 +453,6 @@ fn carries_target(mnemonic: &str) -> bool {
 }
 
 fn decode_sweep(words: &[u32]) -> Vec<PcodeInstr> {
-    let started: Instant = Instant::now();
     let mut decoded: Vec<PcodeInstr> = Vec::with_capacity(words.len());
     for (index, word) in words.iter().enumerate() {
         let address: u64 = (index as u64).saturating_mul(4);
@@ -463,14 +462,13 @@ fn decode_sweep(words: &[u32]) -> Vec<PcodeInstr> {
             1,
             "word 0x{word:08x} produced {instructions:#?}"
         );
-        decoded.push(instructions.remove(0));
+        let instruction: PcodeInstr = instructions.remove(0);
+        assert_ne!(
+            instruction.mnemonic, RESOURCE_LIMIT_MNEMONIC,
+            "word 0x{word:08x} exhausted the decoder's constructor-attempt budget at seed 0x{SWEEP_SEED:016x}"
+        );
+        decoded.push(instruction);
     }
-    let elapsed: Duration = started.elapsed();
-    assert!(
-        elapsed <= SWEEP_TIME_BUDGET,
-        "decoding {} words took {elapsed:?} against the {SWEEP_TIME_BUDGET:?} budget at seed 0x{SWEEP_SEED:016x}",
-        words.len()
-    );
     decoded
 }
 
