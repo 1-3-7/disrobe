@@ -31,15 +31,16 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::SystemServices::JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO;
 use windows_sys::Win32::System::Threading::{
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+    ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, environment, program,
+    canonical_program, current_dir, environment, program,
 };
 
 pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
@@ -123,8 +124,12 @@ struct InheritanceWindow<'a> {
 
 pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), LaunchError> {
     let executable: PathBuf = canonical_program(program(spec))?;
-    let prepared: PreparedCommand =
-        prepare_command(&executable, arguments(spec), environment(spec))?;
+    let prepared: PreparedCommand = prepare_command(
+        &executable,
+        arguments(spec),
+        environment(spec),
+        current_dir(spec),
+    )?;
     let job: OwnedHandle = create_job()?;
     let completion_port: OwnedHandle = create_completion_port()?;
     let completion_key: usize = job.as_raw_handle() as usize;
@@ -156,12 +161,18 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
                 null(),
                 null(),
                 1,
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                CREATE_NO_WINDOW
+                    | CREATE_SUSPENDED
+                    | EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_UNICODE_ENVIRONMENT,
                 prepared
                     .environment
                     .as_ref()
                     .map_or_else(null, |block: &Vec<u16>| block.as_ptr().cast()),
-                null(),
+                prepared
+                    .current_dir
+                    .as_ref()
+                    .map_or_else(null, |directory: &Vec<u16>| directory.as_ptr()),
                 &raw const startup.StartupInfo,
                 &raw mut process_info,
             )
@@ -480,12 +491,14 @@ struct PreparedCommand {
     application: Vec<u16>,
     command_line: Vec<u16>,
     environment: Option<Vec<u16>>,
+    current_dir: Option<Vec<u16>>,
 }
 
 fn prepare_command(
     executable: &Path,
     args: &[std::ffi::OsString],
     environment: &[(OsString, OsString)],
+    current_dir: Option<&Path>,
 ) -> Result<PreparedCommand, LaunchError> {
     let extension: Option<String> = executable
         .extension()
@@ -521,6 +534,9 @@ fn prepare_command(
         } else {
             Some(environment_block(environment)?)
         },
+        current_dir: current_dir
+            .map(|directory: &Path| nul_terminated(directory.as_os_str()))
+            .transpose()?,
     })
 }
 

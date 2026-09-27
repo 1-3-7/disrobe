@@ -37,6 +37,7 @@ const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
     program: PathBuf,
+    current_dir: Option<PathBuf>,
     args: Vec<OsString>,
     environment: Vec<(OsString, OsString)>,
     stdin: StdinSpec,
@@ -56,6 +57,7 @@ impl CommandSpec {
     pub fn new(program: impl Into<PathBuf>, timeout: Duration) -> Self {
         Self {
             program: program.into(),
+            current_dir: None,
             args: Vec::new(),
             environment: Vec::new(),
             stdin: StdinSpec::Closed,
@@ -78,6 +80,12 @@ impl CommandSpec {
         S: Into<OsString>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn current_dir(mut self, current_dir: PathBuf) -> Self {
+        self.current_dir = Some(current_dir);
         self
     }
 
@@ -395,6 +403,11 @@ pub(crate) struct PipeSet {
     stdin: Option<Box<dyn Write + Send>>,
     stdout: Option<Box<dyn Read + Send>>,
     stderr: Option<Box<dyn Read + Send>>,
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) fn current_dir(spec: &CommandSpec) -> Option<&Path> {
+    spec.current_dir.as_deref()
 }
 
 #[cfg(any(unix, windows))]
@@ -787,6 +800,58 @@ mod tests {
             join_capture_until(worker, started + Duration::from_millis(10));
         assert!(matches!(outcome, CaptureOutcome::WorkerUnresponsive));
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn current_dir_reaches_the_contained_child() -> Result<(), Box<dyn std::error::Error>> {
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-tool-process-current-dir-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let execution: Execution = CommandSpec::new("/bin/pwd", Duration::from_secs(2))
+            .current_dir(root.clone())
+            .run()?;
+        let captured: &CapturedStream = execution
+            .stdout
+            .captured()
+            .ok_or_else(|| io::Error::other("pwd did not produce stdout"))?;
+        assert_eq!(
+            Path::new(std::str::from_utf8(&captured.bytes)?.trim()),
+            root.as_path()
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn current_dir_reaches_the_contained_child() -> Result<(), Box<dyn std::error::Error>> {
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-tool-process-current-dir-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let command: PathBuf = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+            .join("System32")
+            .join("cmd.exe");
+        let execution: Execution = CommandSpec::new(command.clone(), Duration::from_secs(2))
+            .args(["/d", "/s", "/c", "cd"])
+            .env("COMSPEC", command.into_os_string())
+            .current_dir(root.clone())
+            .run()?;
+        let captured: &CapturedStream = execution
+            .stdout
+            .captured()
+            .ok_or_else(|| io::Error::other("cmd did not produce stdout"))?;
+        assert_eq!(
+            Path::new(std::str::from_utf8(&captured.bytes)?.trim()),
+            root.as_path()
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[cfg(unix)]

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, environment, program,
+    canonical_program, current_dir, environment, program,
 };
 
 pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
@@ -79,6 +79,9 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    if let Some(current_dir) = current_dir(spec) {
+        command.current_dir(current_dir);
+    }
     let mut child: Child = command
         .spawn()
         .map_err(|source: io::Error| LaunchError::Platform {
