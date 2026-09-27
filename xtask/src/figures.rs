@@ -169,8 +169,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 33] = [
     },
     FigureBudget {
         path: "docs/src/languages/javascript.md",
-        figures: 1,
-        digest: "55a2157e92feb36a",
+        figures: 3,
+        digest: "74f850270cb4f662",
     },
     FigureBudget {
         path: "docs/src/languages/jvm-android.md",
