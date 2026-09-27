@@ -83,24 +83,18 @@ const SEEDLESS_WALL: &str = "garble name-hashing is keyed (HMAC-SHA256 over the 
      binary, original package/symbol names are an information-theoretic wall and cannot be recovered. \
      pclntab-derived structure + literal decryption remain recoverable.";
 
-const LITERAL_RECOVERY_LIMIT: &str = "garble -literals string encryption is NOT a one-time pad: every per-literal key is derived \
-     inside an init-time decrypt thunk from material that is itself present in the binary, so the \
-     plaintext is statically recoverable by emulating that derivation. disrobe runs the decrypt \
-     thunk concretely: a scoped x86-64 interpreter executes the lambda the go compiler emitted for \
-     each obfuscated literal, reading the encrypted data/key/positions/fullData blobs from rodata, \
-     pulling the external-key arguments out of the exact call site (immediates plus the \
-     proxy-dispatcher struct-field pointer chases through .data, emulated statically), applying every \
-     byte op (xor/add/sub/neg), the swap and shuffle index math, and the split jump-table dispatch, \
-     modelling newobject/makeslice/growslice into a tracked heap buffer, following the indirect calls \
-     into the seed recursive decFunc closure chain and the proxy-dispatcher's hidden string-cast \
-     lambda, and harvesting the recovered plaintext from emulated memory (junk-byte padding \
-     stripped). this reverses all five obfuscators (simple, swap, shuffle, split, seed) whether the \
-     decrypt is a separate closure or inlined into the caller, plus the legacy single-byte \
-     XOR/ADD/SUB, repeating-key XOR, and standalone data/key blob cases. the seed obfuscator's \
-     immediate-fed byte chain and the proxy dispatcher's indirect dispatch are threaded by the \
-     interpreter rather than walled. the key material is in the file in every case, so the only \
-     residual is concrete tooling depth (e.g. a -tiny build that strips the function table the \
-     thunk scan keys on), never an information-theoretic boundary.";
+const LITERAL_RECOVERY_LIMIT: &str = "garble -literals string encryption is not a one-time pad: each literal's key is derived by \
+     an init-time decrypt thunk from material stored in the binary, so the plaintext is recovered \
+     statically by emulating that thunk. a scoped x86-64 interpreter runs the thunk the go compiler \
+     emitted for each literal, reading the encrypted data/key/positions/fullData arrays from rodata \
+     and the external-key arguments from the call site, including proxy-dispatcher field loads \
+     through .data. it covers the five obfuscators (simple, swap, shuffle, split, seed), with the \
+     decrypt as a separate closure or inlined into the caller, and the legacy single-byte \
+     XOR/ADD/SUB, repeating-key XOR, and standalone data/key blob cases. the interpreter follows the \
+     seed obfuscator's decFunc closure chain and the proxy dispatcher's indirect calls. the key \
+     material is in the file in every case, so a literal stays encrypted only when the tooling \
+     cannot reach its thunk (for example a -tiny build that strips the function table the thunk \
+     scan uses); this is not an information-theoretic boundary.";
 
 const STDLIB_FINGERPRINT_NAMES: &[&str] = &[
     "runtime.main",
