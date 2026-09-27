@@ -157,29 +157,8 @@ const BATTERY: &[Case] = &[
     },
 ];
 
-fn cc() -> Option<String> {
-    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
-}
-
-fn host_native_class_is_graded(case: &str) -> bool {
-    if cfg!(windows) {
-        eprintln!("GRADED {case}: the host-native recompile class ran on this windows host");
-        return true;
-    }
-    eprintln!(
-        "NOT GRADED {case}: the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv_* clang guards"
-    );
-    false
-}
-
-fn sysv_host_can_run() -> bool {
-    if cfg!(target_os = "macos") {
-        eprintln!(
-            "skipping x86-64 sysv recompile-differential on macos: the host gcc is an apple-clang alias that rejects the gcc-only codegen flags, and arm64 cannot execute an x86-64 sysv battery; ubuntu carries the cross-platform sysv floor"
-        );
-        return false;
-    }
-    true
+fn cc() -> String {
+    compiler_toolchain::require_any(&["gcc", "clang", "cc"])
 }
 
 fn scratch_dir() -> ScratchDir {
@@ -197,13 +176,16 @@ struct Lifted {
 
 fn process_case(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<Lifted> {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name) else {
-        eprintln!("skip {}: symbol not located", case.name);
+        eprintln!("not lifted {}: symbol not located", case.name);
         return None;
     };
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {} ({abi:?}): not in leaf class ({e})", case.name);
+            eprintln!(
+                "not lifted {} ({abi:?}): not in leaf class ({e})",
+                case.name
+            );
             return None;
         }
     };
@@ -287,10 +269,7 @@ fn sparse_ms_x64_c_invocation_uses_physical_slot_arity() {
         invocation_arity, 3,
         "a callable RCX, gap, R8 signature must receive all three physical slots"
     );
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping sparse MS x64 compile check: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let driver: String = format!(
         "{}\nint main(void) {{ return recovered(11, 0x12345678, 31) == 42 ? 0 : 1; }}\n",
         recovery.source
@@ -354,7 +333,7 @@ fn aapcs64_stack_parameter_locations_keep_the_existing_names_and_order() {
 }
 
 fn compile_ms_x64_artifact(source: &str, function_name: &str) -> (Vec<u8>, u64) {
-    let compiler: String = clang().expect("clang is required for Microsoft x64 artifact grades");
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("hidden_sret_gap.c");
     let object_path: PathBuf = scratch.path().join("hidden_sret_gap.obj");
@@ -382,7 +361,7 @@ fn compile_ms_x64_artifact(source: &str, function_name: &str) -> (Vec<u8>, u64) 
 }
 
 fn compile_and_run_recovered_c(source: &str) {
-    let compiler: String = clang().expect("clang is required for recovered C grades");
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("recovered_hidden_sret_gap.c");
     let executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
@@ -414,7 +393,7 @@ fn compile_and_run_recovered_c(source: &str) {
 
 #[test]
 fn ms_x64_hidden_struct_return_without_user_parameters_emits_void() {
-    let compiler: String = clang().expect("clang is required for the zero-parameter sret grade");
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("feat071_hidden_sret_zero.c");
     let object_path: PathBuf = scratch.path().join("feat071_hidden_sret_zero.obj");
@@ -528,10 +507,7 @@ fn ms_x64_hidden_struct_return_preserves_register_only_leading_gap() {
 
 #[test]
 fn ms_x64_hidden_struct_return_rebases_first_stack_argument_from_compiler_artifact() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping Microsoft x64 hidden-struct-return compiler grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("feat071_hidden_sret_stack.c");
     let object_path: PathBuf = scratch.path().join("feat071_hidden_sret_stack.obj");
@@ -748,10 +724,7 @@ fn ms_x64_parameter_origin_validation_is_compiler_independent() {
 
 #[test]
 fn x86_stack_arguments_recover_from_compiler_artifacts_and_recompile() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping x86 stack-argument compiler grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let source: &'static str = "#include <stdarg.h>\n__attribute__((noinline)) long long feat071_ms(long long a0, long long a1, long long a2, long long a3, long long a4){ return a0 + a4; }\n__attribute__((noinline)) long long feat071_ms_mixed(double a0, long long a1, long long a2, long long a3, long long a4){ return (long long)a0 + a4; }\n__attribute__((noinline)) long long feat071_ms_leading_integer_gap(long long a0, long long a1, long long a2, long long a3, long long a4){ return a1 + a4; }\n__attribute__((noinline)) long long feat071_ms_leading_fp_gap(double a0, double a1, long long a2, long long a3, long long a4){ return (long long)a1 + a4; }\n__attribute__((noinline)) long long feat071_sysv(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6, long long a7, long long a8){ return a0 + a8; }\n__attribute__((noinline)) long long feat071_var(long long count, ...){ va_list ap; va_start(ap, count); long long value = va_arg(ap, long long); va_end(ap); return value; }\n";
@@ -1085,10 +1058,7 @@ fn x86_stack_arguments_recover_through_scalar_memory_categories() {
 
 #[test]
 fn x86_stack_argument_floating_memory_outputs_compile_and_run() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping stack-argument floating-memory compile grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let cases: [(&str, &[u8], &str, &str); 2] = [
         (
             "fp_load",
@@ -1268,10 +1238,7 @@ fn a_branch_path_without_a_stack_slot_write_preserves_the_incoming_parameter() {
 
 #[test]
 fn x86_stack_parameter_typed_accesses_execute_under_strict_optimization() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping stack-parameter strict optimization grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let cases: [(&str, &[u8], &str); 3] = [
         (
             "narrow_read",
@@ -1357,7 +1324,7 @@ fn partial_stack_slot_writes_preserve_untouched_bytes_in_c_and_rust() {
         expected: u64,
     }
 
-    let compiler: String = clang().expect("clang is required for the partial stack-slot grade");
+    let compiler: String = clang();
     let cases: [PartialWriteCase; 5] = [
         PartialWriteCase {
             name: "byte_store",
@@ -1482,10 +1449,7 @@ fn partial_stack_slot_writes_preserve_untouched_bytes_in_c_and_rust() {
 
 #[test]
 fn resolved_call_with_a_real_outgoing_seventh_argument_refuses_by_name() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping resolved outgoing stack-call grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("resolved_stack_call.c");
     let object_path: PathBuf = scratch.path().join("resolved_stack_call.o");
@@ -1563,8 +1527,7 @@ fn resolved_call_with_a_real_outgoing_seventh_argument_refuses_by_name() {
 
 #[test]
 fn resolved_call_with_a_real_hidden_struct_return_refuses_by_name() {
-    let compiler: String =
-        clang().expect("clang is required for the resolved hidden-struct-return call grade");
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("resolved_hidden_sret_call.c");
     let object_path: PathBuf = scratch.path().join("resolved_hidden_sret_call.obj");
@@ -1658,10 +1621,7 @@ fn resolved_call_with_a_real_hidden_struct_return_refuses_by_name() {
 
 #[test]
 fn x86_stack_arguments_recover_through_dense_switch_entry_point() {
-    let Some(compiler): Option<String> = clang() else {
-        eprintln!("skipping stack-argument dense-switch grade: clang not on PATH");
-        return;
-    };
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("feat071_dense_switch.c");
     let object_path: PathBuf = scratch.path().join("feat071_dense_switch.o");
@@ -1718,7 +1678,7 @@ fn x86_stack_arguments_recover_through_dense_switch_entry_point() {
 
 #[test]
 fn compiler_nested_loop_recovers_incoming_stack_argument_through_public_object_path() {
-    let compiler: String = clang().expect("clang is required for the nested-loop stack grade");
+    let compiler: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let source_path: PathBuf = scratch.path().join("feat071_outer_resume.c");
     let object_path: PathBuf = scratch.path().join("feat071_outer_resume.o");
@@ -1761,14 +1721,12 @@ fn compiler_nested_loop_recovers_incoming_stack_argument_through_public_object_p
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("leaf_functions_recompile_to_behavioral_equivalence") {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -1844,8 +1802,8 @@ fn leaf_functions_recompile_to_behavioral_equivalence() {
     println!("behavioral differential PASSED for {lifted_count} leaf functions (MS x64 ABI)");
 }
 
-fn clang() -> Option<String> {
-    compiler_toolchain::probe_one("clang")
+fn clang() -> String {
+    compiler_toolchain::require_one("clang")
 }
 
 struct SysvCrossObjects {
@@ -1854,8 +1812,8 @@ struct SysvCrossObjects {
 }
 
 fn compile_sysv_cross(tag: &str, battery_src: &str) -> Option<SysvCrossObjects> {
-    let host_cc: String = cc()?;
-    let clang_cc: String = clang()?;
+    let host_cc: String = cc();
+    let clang_cc: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join(format!("{tag}_sysv_battery.c"));
@@ -1903,7 +1861,7 @@ fn compile_sysv_cross(tag: &str, battery_src: &str) -> Option<SysvCrossObjects> 
 }
 
 fn link_and_run_sysv(tag: &str, driver: &str, host_object: &[u8], watchdog_secs: u64) -> String {
-    let host_cc: String = cc().expect("host cc present when linking sysv harness");
+    let host_cc: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let host_o: PathBuf = dir.join(format!("{tag}_sysv_link_host.o"));
@@ -1941,18 +1899,13 @@ fn link_and_run_sysv(tag: &str, driver: &str, host_object: &[u8], watchdog_secs:
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
-    let Some(host_cc): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler on PATH");
-        return;
-    };
-    let Some(clang_cc): Option<String> = clang() else {
-        eprintln!("skipping sysv: clang (needed for SysV cross object) not on PATH");
-        return;
-    };
+    let host_cc: String = cc();
+    let clang_cc: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -2240,16 +2193,12 @@ fn build_mem_driver(recovered_decls: &str, driver_body: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "memory_access_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -2281,13 +2230,13 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
     for case in MEM_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
@@ -2321,7 +2270,7 @@ fn memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
             }
         }
         let Some(snippet): Option<String> = mem_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         let recovered_name: String = format!("rec_{}", case.name);
@@ -2588,11 +2537,11 @@ fn aggregate_fields_rust_driver(recovered: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "the aggregate compiler differential needs an x86-64 host"
+)]
 fn gcc_and_clang_aggregate_accesses_recompile_to_c_and_rust_equivalence() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!("skipping aggregate compiler differential on a non-x86-64 host");
-        return;
-    }
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = dir.join("aggregate_types.c");
@@ -2758,11 +2707,11 @@ fn gcc_and_clang_aggregate_accesses_recompile_to_c_and_rust_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "the union compiler differential needs an x86-64 host"
+)]
 fn gcc_and_clang_union_accesses_recompile_to_c_and_rust_equivalence() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!("skipping union compiler differential on a non-x86-64 host");
-        return;
-    }
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let source_path: PathBuf = dir.join("union_types.c");
@@ -2929,10 +2878,7 @@ fn clang_frame_spill_recovers_one_struct_across_reload_registers() {
     let source_path: PathBuf = dir.join("aggregate_frame_types.c");
     std::fs::write(&source_path, AGGREGATE_SOURCE.as_bytes())
         .expect("write frame aggregate source");
-    if clang().is_none() {
-        eprintln!("skipping frame aggregate cross-check: clang not on PATH");
-        return;
-    }
+    clang();
     let object_path: PathBuf = dir.join("aggregate_frame_clang.o");
     let compile: std::process::Output = Command::new("clang")
         .args([
@@ -3038,8 +2984,8 @@ fn clang_frame_spill_recovers_one_struct_across_reload_registers() {
     println!("frame aggregate C/Rust differential PASSED: 1 recovered, 0 rejected, 0 mismatches");
 }
 
-fn gcc() -> Option<String> {
-    compiler_toolchain::probe_one("gcc")
+fn gcc() -> String {
+    compiler_toolchain::require_one("gcc")
 }
 
 const CF_BATTERY: &[Case] = &[
@@ -3106,18 +3052,12 @@ const CF_BATTERY: &[Case] = &[
 ];
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "control_flow_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping control-flow oracle: gcc (needed to suppress if-conversion) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -3158,13 +3098,16 @@ fn control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
     for case in CF_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in control-flow leaf class ({e})", case.name);
+                eprintln!(
+                    "not lifted {}: not in control-flow leaf class ({e})",
+                    case.name
+                );
                 continue;
             }
         };
@@ -3269,18 +3212,12 @@ fn recovered_is_split_return(object_bytes: &[u8], name: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn split_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "split_return_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping split-return oracle: gcc (needed for the out-of-line return idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -3461,13 +3398,13 @@ const LOOP_BATTERY: &[LoopCase] = &[
 
 fn loop_lift(case: &LoopCase, object_bytes: &[u8]) -> Option<(LeafRecovery, String, String)> {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name) else {
-        eprintln!("skip {}: symbol not located", case.name);
+        eprintln!("not lifted {}: symbol not located", case.name);
         return None;
     };
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: not in loop leaf class ({e})", case.name);
+            eprintln!("not lifted {}: not in loop leaf class ({e})", case.name);
             return None;
         }
     };
@@ -3531,7 +3468,7 @@ fn build_loop_driver(recovered_decls: &str, driver_body: &str) -> String {
 
 #[test]
 fn overwritten_arithmetic_flags_preserve_branches_setcc_and_cmov() {
-    let compiler: String = clang().expect("clang is required for the arithmetic flags oracle");
+    let compiler: String = clang();
     let loop_code: &[u8] = &[
         0x48, 0x85, 0xc9, 0x7e, 0x33, 0x48, 0x8d, 0x04, 0x11, 0x83, 0xe1, 0x01, 0xb9, 0x00, 0x00,
         0x00, 0x00, 0x74, 0x0d, 0x48, 0x89, 0xd1, 0x48, 0x83, 0xc2, 0x01, 0x48, 0x39, 0xc2, 0x74,
@@ -3643,16 +3580,12 @@ fn overwritten_arithmetic_flags_preserve_branches_setcc_and_cmov() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "natural_loop_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping loop oracle: gcc (needed for the rotated do-while idiom) not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -3763,14 +3696,12 @@ fn natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn loop_oracle_has_teeth_a_wrong_bound_diverges() {
-    if !host_native_class_is_graded("loop_oracle_has_teeth_a_wrong_bound_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping loop teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -3806,29 +3737,24 @@ fn loop_oracle_has_teeth_a_wrong_bound_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         loop_lift(&probe, &object_bytes)
     else {
-        eprintln!(
-            "skipping loop teeth check: this compiler build did not lower the probe into the loop leaf class, so there is no reconstructed loop to corrupt"
+        panic!(
+            "loop teeth check: this compiler build did not lower the probe into the loop leaf class, so there is no reconstructed loop to corrupt"
         );
-        return;
     };
-    if !(recovery.lifted_loop && renamed.contains("} while (")) {
-        eprintln!(
-            "skipping loop teeth check: this compiler build did not reconstruct a do-while shape to corrupt"
-        );
-        return;
-    }
+    assert!(
+        recovery.lifted_loop && renamed.contains("} while ("),
+        "loop teeth check: this compiler build did not reconstruct a do-while shape to corrupt"
+    );
 
     let corrupted: String = renamed.replacen(
         "!= ((int64_t)(int64_t)(r_rcx))",
         "!= ((int64_t)(int64_t)(r_rax))",
         1,
     );
-    if corrupted == renamed {
-        eprintln!(
-            "skipping loop teeth check: this compiler build did not emit the r_rcx exit-bound comparison this teeth check corrupts"
-        );
-        return;
-    }
+    assert!(
+        corrupted != renamed,
+        "loop teeth check: this compiler build did not emit the r_rcx exit-bound comparison this teeth check corrupts"
+    );
 
     let mut decls: String = corrupted;
     decls.push('\n');
@@ -3959,16 +3885,12 @@ fn guarded_while_recovered(
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("top_guarded_while_loops_recompile_to_behavioral_equivalence") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping guarded-while oracle: gcc (needed for the rotated while idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4071,16 +3993,12 @@ fn top_guarded_while_loops_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip() {
-    if !host_native_class_is_graded(
-        "guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping guarded-while teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4116,27 +4034,23 @@ fn guarded_while_oracle_has_teeth_dropping_the_guard_diverges_on_zero_trip() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         guarded_while_recovered(&probe, &object_bytes)
     else {
-        eprintln!(
-            "skipping guarded-while teeth check: this compiler build did not reconstruct a top-guarded while to corrupt"
+        panic!(
+            "guarded-while teeth check: this compiler build did not reconstruct a top-guarded while to corrupt"
         );
-        return;
     };
     let Some(if_line): Option<&str> = renamed
         .lines()
         .find(|l: &&str| l.trim_start().starts_with("if ("))
     else {
-        eprintln!(
-            "skipping guarded-while teeth check: no reconstructed guard line to neutralize on this build"
+        panic!(
+            "guarded-while teeth check: no reconstructed guard line to neutralize on this build"
         );
-        return;
     };
     let stripped_guard: String = renamed.replacen(if_line, "    if (1) {", 1);
-    if stripped_guard == renamed {
-        eprintln!(
-            "skipping guarded-while teeth check: neutralizing the guard was a no-op on this build's reconstruction"
-        );
-        return;
-    }
+    assert!(
+        stripped_guard != renamed,
+        "guarded-while teeth check: neutralizing the guard was a no-op on this build's reconstruction"
+    );
 
     let mut decls: String = stripped_guard;
     decls.push('\n');
@@ -4242,18 +4156,12 @@ fn recovered_has_width_extension(object_bytes: &[u8], name: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "width_extension_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping width-extension oracle: gcc (needed for the movzx/movsx/cdqe idioms) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4349,16 +4257,12 @@ fn width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges() {
-    if !host_native_class_is_graded(
-        "width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping width-extension teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4392,17 +4296,14 @@ fn width_extension_oracle_has_teeth_flipping_sign_to_zero_extend_diverges() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read wx_teeth_battery.o");
 
     let Some(lifted): Option<Lifted> = process_case(&probe, &object_bytes, HOST_ABI) else {
-        eprintln!(
-            "skipping width-extension teeth check: this compiler build did not lower the probe into the leaf class"
+        panic!(
+            "width-extension teeth check: this compiler build did not lower the probe into the leaf class"
         );
-        return;
     };
-    if !lifted.decls.contains("(int64_t)(int8_t)") {
-        eprintln!(
-            "skipping width-extension teeth check: this compiler build did not reconstruct a signed byte extension to corrupt"
-        );
-        return;
-    }
+    assert!(
+        lifted.decls.contains("(int64_t)(int8_t)"),
+        "width-extension teeth check: this compiler build did not reconstruct a signed byte extension to corrupt"
+    );
 
     let corrupted: String = lifted
         .decls
@@ -4568,18 +4469,21 @@ fn build_call_driver(recovered_decls: &str, driver_body: &str) -> String {
 fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, String, usize)> {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.caller)
     else {
-        eprintln!("skip {}: caller symbol not located", case.caller);
+        eprintln!("not lifted {}: caller symbol not located", case.caller);
         return None;
     };
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: caller not in call leaf class ({e})", case.caller);
+            eprintln!(
+                "not lifted {}: caller not in call leaf class ({e})",
+                case.caller
+            );
             return None;
         }
     };
     if recovery.call_targets.is_empty() {
-        eprintln!("skip {}: no call lifted", case.caller);
+        eprintln!("not lifted {}: no call lifted", case.caller);
         return None;
     }
     let full_arity: usize = integer_invocation_arity(&recovery);
@@ -4593,14 +4497,17 @@ fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, Strin
         let Some((callee_code, callee_base, _)): Option<(Vec<u8>, u64, String)> =
             function_code_at(object_bytes, *target)
         else {
-            eprintln!("skip {}: callee at {target:#x} not located", case.caller);
+            eprintln!(
+                "not lifted {}: callee at {target:#x} not located",
+                case.caller
+            );
             return None;
         };
         let callee: LeafRecovery =
             match recover_leaf_function_abi(&callee_code, callee_base, HOST_ABI) {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("skip {}: callee not in leaf class ({e})", case.caller);
+                    eprintln!("not lifted {}: callee not in leaf class ({e})", case.caller);
                     return None;
                 }
             };
@@ -4643,16 +4550,12 @@ fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, Strin
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "same_object_call_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping call oracle: gcc (needed for the noinline call idiom) not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4744,14 +4647,12 @@ fn same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
-    if !host_native_class_is_graded("call_oracle_has_teeth_dropping_the_helper_call_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping call teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -4785,23 +4686,19 @@ fn call_oracle_has_teeth_dropping_the_helper_call_diverges() {
     let Some((decls, snippet, _)): Option<(String, String, usize)> =
         lift_call_case(&probe, &object_bytes)
     else {
-        eprintln!(
-            "skipping call teeth check: this compiler build did not reconstruct the caller/helper pair into the call leaf class"
+        panic!(
+            "call teeth check: this compiler build did not reconstruct the caller/helper pair into the call leaf class"
         );
-        return;
     };
-    if !decls.contains("sub_") {
-        eprintln!(
-            "skipping call teeth check: this compiler build did not reconstruct a helper call to neutralize"
-        );
-        return;
-    }
+    assert!(
+        decls.contains("sub_"),
+        "call teeth check: this compiler build did not reconstruct a helper call to neutralize"
+    );
 
     let Some(callee_open): Option<usize> = decls.find("r_rax = sub_") else {
-        eprintln!(
-            "skipping call teeth check: this compiler build did not lower the helper call into the r_rax = sub_ idiom this check corrupts"
+        panic!(
+            "call teeth check: this compiler build did not lower the helper call into the r_rax = sub_ idiom this check corrupts"
         );
-        return;
     };
     let semicolon: usize = decls[callee_open..]
         .find(';')
@@ -4895,12 +4792,15 @@ fn lift_precise_call_case(
     let base_rec: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: caller not in call leaf class ({e})", case.caller);
+            eprintln!(
+                "not lifted {}: caller not in call leaf class ({e})",
+                case.caller
+            );
             return None;
         }
     };
     if base_rec.call_targets.is_empty() {
-        eprintln!("skip {}: no call lifted", case.caller);
+        eprintln!("not lifted {}: no call lifted", case.caller);
         return None;
     }
     let resolved: Vec<ResolvedCall> =
@@ -4908,7 +4808,7 @@ fn lift_precise_call_case(
     let rec: LeafRecovery = recover_leaf_function_with_calls(&code, base, abi, &resolved).ok()?;
     if integer_invocation_arity(&rec) > 3 {
         eprintln!(
-            "skip {}: recovered arity beyond 3-input driver",
+            "not lifted {}: recovered arity beyond 3-input driver",
             case.caller
         );
         return None;
@@ -4947,14 +4847,12 @@ fn lift_precise_call_case(
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn precise_call_recovery_recompiles_against_real_helpers() {
-    if !host_native_class_is_graded("precise_call_recovery_recompiles_against_real_helpers") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping precise call oracle: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5118,17 +5016,12 @@ fn if_in_loop_recovered(
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("if_in_loop_leaf_functions_recompile_to_behavioral_equivalence")
-    {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping if-in-loop oracle: gcc (needed for the rotated loop idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5231,15 +5124,12 @@ fn if_in_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges() {
-    if !host_native_class_is_graded("if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges")
-    {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping if-in-loop teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5275,29 +5165,25 @@ fn if_in_loop_oracle_has_teeth_dropping_the_inner_guard_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         if_in_loop_recovered(&probe, &object_bytes)
     else {
-        eprintln!(
-            "skipping if-in-loop teeth check: this compiler build did not reconstruct a rotated if-in-loop to corrupt"
+        panic!(
+            "if-in-loop teeth check: this compiler build did not reconstruct a rotated if-in-loop to corrupt"
         );
-        return;
     };
     let Some(guard_line): Option<&str> = renamed
         .lines()
         .find(|l: &&str| l.trim_start().starts_with("if (") && l.contains("0x1ULL"))
     else {
-        eprintln!(
-            "skipping if-in-loop teeth check: this compiler build did not emit the inner even-mask guard this check corrupts"
+        panic!(
+            "if-in-loop teeth check: this compiler build did not emit the inner even-mask guard this check corrupts"
         );
-        return;
     };
     let indent: &str = &guard_line[..guard_line.len() - guard_line.trim_start().len()];
     let neutralized: String = format!("{indent}if (1) {{");
     let corrupted: String = renamed.replacen(guard_line, &neutralized, 1);
-    if corrupted == renamed {
-        eprintln!(
-            "skipping if-in-loop teeth check: neutralizing the inner even-mask guard was a no-op on this build"
-        );
-        return;
-    }
+    assert!(
+        corrupted != renamed,
+        "if-in-loop teeth check: neutralizing the inner even-mask guard was a no-op on this build"
+    );
 
     let mut decls: String = corrupted;
     decls.push('\n');
@@ -5377,15 +5263,12 @@ const PTR_LOOP_BATTERY: &[PtrLoopCase] = &[
 ];
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence")
-    {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping pointer-walk if-in-loop oracle: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5425,13 +5308,13 @@ fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
     for case in PTR_LOOP_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in pointer-loop class ({e})", case.name);
+                eprintln!("not lifted {}: not in pointer-loop class ({e})", case.name);
                 continue;
             }
         };
@@ -5441,7 +5324,7 @@ fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
         }
         let rec_arg_count: usize = integer_invocation_arity(&recovery);
         if rec_arg_count == 0 || rec_arg_count > 1 + case.n_scalars {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         }
         let recovered_name: String = format!("rec_{}", case.name);
@@ -5626,7 +5509,7 @@ fn nested_loop_lift(
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: not in nested-loop class ({e})", case.name);
+            eprintln!("not lifted {}: not in nested-loop class ({e})", case.name);
             return None;
         }
     };
@@ -5638,7 +5521,7 @@ fn nested_loop_lift(
         return None;
     }
     if integer_invocation_arity(&recovery) == 0 || integer_invocation_arity(&recovery) > 3 {
-        eprintln!("skip {}: arg mapping unsupported", case.name);
+        eprintln!("not lifted {}: arg mapping unsupported", case.name);
         return None;
     }
     let recovered_name: String = format!("rec_{}", case.name);
@@ -5713,18 +5596,12 @@ fn nested_loop_decl(case: &NestedLoopCase) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "nested_loop_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping nested-loop oracle: gcc (needed for the nested do-while idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5819,14 +5696,12 @@ fn nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges() {
-    if !host_native_class_is_graded("nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping nested-loop teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -5860,47 +5735,42 @@ fn nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         nested_loop_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!(
-            "skipping nested-loop teeth check: this compiler build did not reconstruct a nested inner+outer loop to corrupt"
+        panic!(
+            "nested-loop teeth check: this compiler build did not reconstruct a nested inner+outer loop to corrupt"
         );
-        return;
     };
     let Some(inner_open): Option<usize> = renamed.find("while (1) {").and_then(|o: usize| {
         renamed[o + "while (1) {".len()..]
             .find("while (1) {")
             .map(|p: usize| p + o + "while (1) {".len())
     }) else {
-        eprintln!(
-            "skipping nested-loop teeth check: this build did not reconstruct a distinct inner while to corrupt"
+        panic!(
+            "nested-loop teeth check: this build did not reconstruct a distinct inner while to corrupt"
         );
-        return;
     };
     let Some(inner_break): Option<usize> = renamed[inner_open..]
         .find("break;")
         .map(|p: usize| p + inner_open)
     else {
-        eprintln!(
-            "skipping nested-loop teeth check: this build's inner loop carries no break to bound the guard search"
+        panic!(
+            "nested-loop teeth check: this build's inner loop carries no break to bound the guard search"
         );
-        return;
     };
     let Some(guard_open): Option<usize> = renamed[inner_open..inner_break]
         .rfind("if (")
         .map(|p: usize| p + inner_open)
     else {
-        eprintln!(
-            "skipping nested-loop teeth check: this build did not emit an inner exit guard to neutralize"
+        panic!(
+            "nested-loop teeth check: this build did not emit an inner exit guard to neutralize"
         );
-        return;
     };
     let Some(guard_close): Option<usize> = renamed[guard_open..]
         .find(") {")
         .map(|p: usize| p + guard_open)
     else {
-        eprintln!(
-            "skipping nested-loop teeth check: this build's inner exit guard has no recognizable close this check corrupts"
+        panic!(
+            "nested-loop teeth check: this build's inner exit guard has no recognizable close this check corrupts"
         );
-        return;
     };
     let corrupted: String = format!("{}if (0{}", &renamed[..guard_open], &renamed[guard_close..]);
     assert_ne!(
@@ -5954,10 +5824,11 @@ fn nested_loop_oracle_has_teeth_a_wrong_inner_bound_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_nested_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross("nl", &nested_loop_source())
     else {
         return;
@@ -6058,18 +5929,12 @@ fn recovered_double_shift(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bo
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!(
-            "skipping closed-form oracle: clang (needed for the mul/shld/shrd closed-form lowering) not on PATH"
-        );
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -6154,16 +6019,12 @@ fn closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
-    if !host_native_class_is_graded(
-        "closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping closed-form teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -6189,17 +6050,14 @@ fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read cform_teeth_battery.o");
 
     let Some(lifted): Option<Lifted> = process_case(&probe, &object_bytes, HOST_ABI) else {
-        eprintln!(
-            "skipping closed-form teeth check: this compiler build did not lower the probe into the leaf class"
+        panic!(
+            "closed-form teeth check: this compiler build did not lower the probe into the leaf class"
         );
-        return;
     };
-    if !lifted.decls.contains("<< 5)") {
-        eprintln!(
-            "skipping closed-form teeth check: this compiler build did not reconstruct the double-precision left shift this check corrupts"
-        );
-        return;
-    }
+    assert!(
+        lifted.decls.contains("<< 5)"),
+        "closed-form teeth check: this compiler build did not reconstruct the double-precision left shift this check corrupts"
+    );
 
     let corrupted: String = lifted.decls.replacen("<< 5)", "<< 7)", 1);
     assert_ne!(
@@ -6245,10 +6103,11 @@ fn closed_form_oracle_has_teeth_flipping_the_shift_amount_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in MEM_BATTERY {
         battery_src.push_str(case.c_source);
@@ -6266,18 +6125,18 @@ fn sysv_memory_access_leaf_functions_recompile_to_behavioral_equivalence() {
         let Some((code, base)): Option<(Vec<u8>, u64)> =
             function_code(&objs.sysv_object, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, PseudoAbi::SysV) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
         let Some(snippet): Option<String> = mem_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         let recovered_name: String = format!("rec_{}", case.name);
@@ -6360,16 +6219,12 @@ fn recovered_has_imul_mem(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bo
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -6402,18 +6257,18 @@ fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
     for case in IMUL_MEM_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
         let Some(snippet): Option<String> = mem_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         if recovered_has_imul_mem(&object_bytes, case.name, HOST_ABI) {
@@ -6428,10 +6283,10 @@ fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
     }
 
     if !saw_imul_mem {
-        eprintln!(
-            "skipping imul-mem behavioral differential: this compiler build fused none of the {} battery cases into `imul reg, [mem], imm`",
+        compiler_toolchain::unmeasured(&format!(
+            "imul-mem behavioral differential: this compiler build fused none of the {} battery cases into `imul reg, [mem], imm`",
             IMUL_MEM_BATTERY.len()
-        );
+        ));
         return;
     }
 
@@ -6472,10 +6327,11 @@ fn imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in IMUL_MEM_BATTERY {
         battery_src.push_str(case.c_source);
@@ -6494,18 +6350,18 @@ fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
         let Some((code, base)): Option<(Vec<u8>, u64)> =
             function_code(&objs.sysv_object, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, PseudoAbi::SysV) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
         let Some(snippet): Option<String> = mem_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         if recovered_has_imul_mem(&objs.sysv_object, case.name, PseudoAbi::SysV) {
@@ -6520,10 +6376,10 @@ fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
     }
 
     if !saw_imul_mem {
-        eprintln!(
-            "skipping SysV imul-mem behavioral differential: clang fused none of the {} battery cases into `imul reg, [mem], imm`",
+        compiler_toolchain::unmeasured(&format!(
+            "SysV imul-mem behavioral differential: clang fused none of the {} battery cases into `imul reg, [mem], imm`",
             IMUL_MEM_BATTERY.len()
-        );
+        ));
         return;
     }
 
@@ -6539,14 +6395,12 @@ fn sysv_imul_mem_source_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges() {
-    if !host_native_class_is_graded("imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges") {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping imul-mem teeth check: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -6569,25 +6423,18 @@ fn imul_mem_oracle_has_teeth_perturbing_the_immediate_diverges() {
 
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, probe.name)
     else {
-        eprintln!("skipping imul-mem teeth check: probe symbol not located");
-        return;
+        panic!("imul-mem teeth check: probe symbol not located");
     };
-    let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping imul-mem teeth check: probe not in leaf class ({e})");
-            return;
-        }
-    };
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, HOST_ABI)
+        .unwrap_or_else(|e| panic!("imul-mem teeth check: probe not in leaf class ({e})"));
     if !recovered_has_imul_mem(&object_bytes, probe.name, HOST_ABI) {
-        eprintln!(
-            "skipping imul-mem teeth check: this compiler build did not fuse the probe into `imul reg, [mem], imm`"
+        compiler_toolchain::unmeasured(
+            "imul-mem teeth check: this compiler build did not fuse the probe into `imul reg, [mem], imm`",
         );
         return;
     }
     let Some(snippet): Option<String> = mem_driver_snippet(probe, &recovery) else {
-        eprintln!("skipping imul-mem teeth check: arg mapping unsupported");
-        return;
+        panic!("imul-mem teeth check: arg mapping unsupported");
     };
 
     let recovered_name: String = format!("rec_{}", probe.name);
@@ -6850,16 +6697,12 @@ fn rmw_driver_snippet(case: &RmwCase, recovery: &LeafRecovery) -> Option<String>
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -6888,25 +6731,25 @@ fn read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence()
     for case in RMW_BATTERY {
         if !function_has_mem_rmw(&object_bytes, case.name) {
             eprintln!(
-                "skip {}: this compiler build did not fuse it into a memory read-modify-write",
+                "not lifted {}: this compiler build did not fuse it into a memory read-modify-write",
                 case.name
             );
             continue;
         }
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
         let Some(snippet): Option<String> = rmw_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         let recovered_name: String = format!("rec_{}", case.name);
@@ -6961,10 +6804,11 @@ fn read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence()
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let battery_src: String = rmw_battery_source();
     let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross("rmw", &battery_src) else {
         return;
@@ -6977,7 +6821,7 @@ fn sysv_read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivale
     for case in RMW_BATTERY {
         if !function_has_mem_rmw(&objs.sysv_object, case.name) {
             eprintln!(
-                "skip {}: sysv build did not fuse it into a memory read-modify-write",
+                "not lifted {}: sysv build did not fuse it into a memory read-modify-write",
                 case.name
             );
             continue;
@@ -6985,18 +6829,18 @@ fn sysv_read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivale
         let Some((code, base)): Option<(Vec<u8>, u64)> =
             function_code(&objs.sysv_object, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, PseudoAbi::SysV) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", case.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", case.name);
                 continue;
             }
         };
         let Some(snippet): Option<String> = rmw_driver_snippet(case, &recovery) else {
-            eprintln!("skip {}: arg mapping unsupported", case.name);
+            eprintln!("not lifted {}: arg mapping unsupported", case.name);
             continue;
         };
         let recovered_name: String = format!("rec_{}", case.name);
@@ -7025,16 +6869,12 @@ fn sysv_read_modify_write_memory_leaf_functions_recompile_to_behavioral_equivale
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges() {
-    if !host_native_class_is_graded(
-        "read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping rmw teeth check: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -7059,24 +6899,19 @@ fn read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read rmw_teeth_battery.o");
 
     if !function_has_mem_rmw(&object_bytes, probe.name) {
-        eprintln!("skipping rmw teeth check: this compiler build did not fuse the probe");
+        compiler_toolchain::unmeasured(
+            "rmw teeth check: this compiler build did not fuse the probe",
+        );
         return;
     }
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, probe.name)
     else {
-        eprintln!("skipping rmw teeth check: probe symbol not located");
-        return;
+        panic!("rmw teeth check: probe symbol not located");
     };
-    let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skipping rmw teeth check: probe not in leaf class ({e})");
-            return;
-        }
-    };
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, HOST_ABI)
+        .unwrap_or_else(|e| panic!("rmw teeth check: probe not in leaf class ({e})"));
     let Some(snippet): Option<String> = rmw_driver_snippet(probe, &recovery) else {
-        eprintln!("skipping rmw teeth check: arg mapping unsupported");
-        return;
+        panic!("rmw teeth check: arg mapping unsupported");
     };
 
     let recovered_name: String = format!("rec_{}", probe.name);
@@ -7128,10 +6963,11 @@ fn read_modify_write_oracle_has_teeth_perturbing_the_or_mask_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("cf", &battery_source(CF_BATTERY))
     else {
@@ -7170,10 +7006,11 @@ fn sysv_control_flow_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_split_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("split", &battery_source(SPLIT_RETURN_BATTERY))
     else {
@@ -7216,7 +7053,7 @@ fn sysv_loop_lift(case: &LoopCase, object_bytes: &[u8]) -> Option<(LeafRecovery,
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, PseudoAbi::SysV) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: not in loop leaf class ({e})", case.name);
+            eprintln!("not lifted {}: not in loop leaf class ({e})", case.name);
             return None;
         }
     };
@@ -7290,26 +7127,29 @@ fn run_sysv_loop_class(
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_natural_loop_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     run_sysv_loop_class("loop", LOOP_BATTERY, &build_loop_driver, 8);
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_top_guarded_while_loops_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     run_sysv_loop_class("wg", GUARDED_WHILE_BATTERY, &build_zero_trip_driver, 6);
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_width_extension_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("wx", &battery_source(WIDTH_EXT_BATTERY))
     else {
@@ -7386,12 +7226,15 @@ fn sysv_lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, 
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, PseudoAbi::SysV) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: caller not in call leaf class ({e})", case.caller);
+            eprintln!(
+                "not lifted {}: caller not in call leaf class ({e})",
+                case.caller
+            );
             return None;
         }
     };
     if recovery.call_targets.is_empty() {
-        eprintln!("skip {}: no call lifted", case.caller);
+        eprintln!("not lifted {}: no call lifted", case.caller);
         return None;
     }
     let full_arity: usize = integer_invocation_arity(&recovery);
@@ -7410,14 +7253,17 @@ fn sysv_lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, 
                 function_code(object_bytes, &callee_name)
             });
         let Some((callee_code, callee_base)): Option<(Vec<u8>, u64)> = resolved else {
-            eprintln!("skip {}: callee at {target:#x} not located", case.caller);
+            eprintln!(
+                "not lifted {}: callee at {target:#x} not located",
+                case.caller
+            );
             return None;
         };
         let callee: LeafRecovery =
             match recover_leaf_function_abi(&callee_code, callee_base, PseudoAbi::SysV) {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("skip {}: callee not in leaf class ({e})", case.caller);
+                    eprintln!("not lifted {}: callee not in leaf class ({e})", case.caller);
                     return None;
                 }
             };
@@ -7460,10 +7306,11 @@ fn sysv_lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, 
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in CALL_BATTERY {
         battery_src.push_str(case.c_source);
@@ -7506,10 +7353,11 @@ fn sysv_same_object_call_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_precise_call_recovery_recompiles_against_real_helpers() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in CALL_BATTERY {
         battery_src.push_str(case.c_source);
@@ -7561,10 +7409,11 @@ fn sysv_precise_call_recovery_recompiles_against_real_helpers() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_closed_form_mul_shift_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("cform", &battery_source(CLOSED_FORM_BATTERY))
     else {
@@ -7667,14 +7516,14 @@ fn div_lift(
     abi: PseudoAbi,
 ) -> Option<(LeafRecovery, String, String)> {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name) else {
-        eprintln!("skip {}: symbol not located", case.name);
+        eprintln!("not lifted {}: symbol not located", case.name);
         return None;
     };
     let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "skip {} ({abi:?}): not in divide leaf class ({e})",
+                "not lifted {} ({abi:?}): not in divide leaf class ({e})",
                 case.name
             );
             return None;
@@ -7753,16 +7602,12 @@ fn div_recovered(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("divide_leaf_functions_recompile_to_behavioral_equivalence") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!(
-            "skipping divide oracle: clang (needed for a plain cqo/idiv, div lowering) not on PATH"
-        );
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -7852,14 +7697,12 @@ fn divide_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn divide_oracle_has_teeth_swapping_signedness_diverges() {
-    if !host_native_class_is_graded("divide_oracle_has_teeth_swapping_signedness_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping divide teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -7883,8 +7726,7 @@ fn divide_oracle_has_teeth_swapping_signedness_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         div_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping divide teeth check: probe did not lift into the divide class");
-        return;
+        panic!("divide teeth check: probe did not lift into the divide class");
     };
     let sabotaged: String = renamed
         .replace(
@@ -7946,10 +7788,11 @@ fn divide_oracle_has_teeth_swapping_signedness_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_divide_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("div", &battery_source(DIV_BATTERY))
     else {
@@ -8200,7 +8043,7 @@ fn fp_lift(
     abi: PseudoAbi,
 ) -> Option<(LeafRecovery, String, String)> {
     let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name) else {
-        eprintln!("skip {}: symbol not located", case.name);
+        eprintln!("not lifted {}: symbol not located", case.name);
         return None;
     };
     let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
@@ -8208,7 +8051,7 @@ fn fp_lift(
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "skip {} ({abi:?}): not in scalar float leaf class ({e})",
+                "not lifted {} ({abi:?}): not in scalar float leaf class ({e})",
                 case.name
             );
             return None;
@@ -8439,18 +8282,12 @@ fn resolve_fp_constants(object_bytes: &[u8], code: &[u8], base: u64) -> Vec<FpCo
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "scalar_float_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!(
-            "skipping scalar float oracle: clang (needed for a clean scalar SSE lowering) not on PATH"
-        );
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -8534,15 +8371,12 @@ fn scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
-    if !host_native_class_is_graded("scalar_float_oracle_has_teeth_swapping_op_and_width_diverges")
-    {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar float teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -8566,8 +8400,7 @@ fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
     let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fp_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping scalar float teeth check: probe did not lift into the scalar class");
-        return;
+        panic!("scalar float teeth check: probe did not lift into the scalar class");
     };
     let sabotaged: String = renamed.replacen(
         "fp_d_from_bits(x_xmm0) + fp_d_from_bits(x_xmm1)",
@@ -8621,29 +8454,23 @@ fn scalar_float_oracle_has_teeth_swapping_op_and_width_diverges() {
 #[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 fn ms_x64_four_double_parameters_recompile_with_mutation_control() {
-    let Ok(target): Result<std::process::Output, std::io::Error> =
-        Command::new("clang").arg("-print-target-triple").output()
-    else {
-        eprintln!(
-            "skipping the MS x64 four-double parameter oracle: clang not on PATH to probe a target triple"
-        );
-        return;
-    };
-    if !target.status.success() {
-        eprintln!(
-            "skipping the MS x64 four-double parameter oracle: clang target probe failed: {}",
-            String::from_utf8_lossy(&target.stderr)
-        );
-        return;
-    }
+    let target: std::process::Output = Command::new(compiler_toolchain::require_one("clang"))
+        .arg("-print-target-triple")
+        .output()
+        .expect("probe the clang target triple for the MS x64 four-double parameter oracle");
+    assert!(
+        target.status.success(),
+        "the clang target-triple probe for the MS x64 four-double parameter oracle failed: {}",
+        String::from_utf8_lossy(&target.stderr)
+    );
     let target_text: String = String::from_utf8_lossy(&target.stdout).trim().to_owned();
     if !(target_text.contains("x86_64")
         && target_text.contains("windows")
         && target_text.contains("msvc"))
     {
-        eprintln!(
-            "skipping the MS x64 four-double parameter oracle: this build of clang targets {target_text}, not an MS x64 msvc triple; record as not-graded, never a hard failure"
-        );
+        compiler_toolchain::unmeasured(&format!(
+            "the MS x64 four-double parameter oracle needs clang targeting an MS x64 msvc triple, but this clang targets {target_text}"
+        ));
         return;
     }
 
@@ -8766,29 +8593,23 @@ fn ms_x64_four_double_parameters_recompile_with_mutation_control() {
 #[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 fn ms_x64_shared_argument_index_places_a_leading_ints_double_in_xmm1_not_xmm0() {
-    let Ok(target): Result<std::process::Output, std::io::Error> =
-        Command::new("clang").arg("-print-target-triple").output()
-    else {
-        eprintln!(
-            "skipping the MS x64 shared-index oracle: clang not on PATH to probe a target triple"
-        );
-        return;
-    };
-    if !target.status.success() {
-        eprintln!(
-            "skipping the MS x64 shared-index oracle: clang target probe failed: {}",
-            String::from_utf8_lossy(&target.stderr)
-        );
-        return;
-    }
+    let target: std::process::Output = Command::new(compiler_toolchain::require_one("clang"))
+        .arg("-print-target-triple")
+        .output()
+        .expect("probe the clang target triple for the MS x64 shared-index oracle");
+    assert!(
+        target.status.success(),
+        "the clang target-triple probe for the MS x64 shared-index oracle failed: {}",
+        String::from_utf8_lossy(&target.stderr)
+    );
     let target_text: String = String::from_utf8_lossy(&target.stdout).trim().to_owned();
     if !(target_text.contains("x86_64")
         && target_text.contains("windows")
         && target_text.contains("msvc"))
     {
-        eprintln!(
-            "skipping the MS x64 shared-index oracle: this build of clang targets {target_text}, not an MS x64 msvc triple; record as not-graded, never a hard failure"
-        );
+        compiler_toolchain::unmeasured(&format!(
+            "the MS x64 shared-index oracle needs clang targeting an MS x64 msvc triple, but this clang targets {target_text}"
+        ));
         return;
     }
 
@@ -8877,10 +8698,11 @@ fn ms_x64_shared_argument_index_places_a_leading_ints_double_in_xmm1_not_xmm0() 
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("fp", &fp_battery_source(FP_BATTERY))
     else {
@@ -9067,18 +8889,12 @@ fn minmax_is_lifted(recovery: &LeafRecovery) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!(
-            "skipping scalar min/max oracle: clang (needed to lower the ternary into scalar min/max SSE) not on PATH"
-        );
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -9168,14 +8984,12 @@ fn scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges() {
-    if !host_native_class_is_graded("scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar min/max teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -9199,8 +9013,7 @@ fn scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges() {
     let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fp_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping scalar min/max teeth check: probe did not lift into the min/max class");
-        return;
+        panic!("scalar min/max teeth check: probe did not lift into the min/max class");
     };
     let sabotaged: String = renamed.replacen(
         "fp_d_from_bits(x_xmm0) < fp_d_from_bits(x_xmm1)",
@@ -9252,10 +9065,11 @@ fn scalar_minmax_oracle_has_teeth_flipping_min_to_max_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_scalar_minmax_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("minmax", &fp_battery_source(MINMAX_BATTERY))
     else {
@@ -9431,7 +9245,7 @@ fn fc_lift(
         Ok(r) => r,
         Err(e) => {
             eprintln!(
-                "skip {} ({abi:?}): not in scalar float leaf class ({e})",
+                "not lifted {} ({abi:?}): not in scalar float leaf class ({e})",
                 case.name
             );
             return None;
@@ -9439,7 +9253,7 @@ fn fc_lift(
     };
     if case.wants_const && !recovery.source.contains("from_bits(0x") {
         eprintln!(
-            "skip {}: this build did not lower a rip-relative constant",
+            "not lifted {}: this build did not lower a rip-relative constant",
             case.name
         );
         return None;
@@ -9453,7 +9267,7 @@ fn fc_lift(
                 .contains("((struct __attribute__((packed, may_alias)) { float value; }*)"))
     {
         eprintln!(
-            "skip {}: this build did not lower a float memory operand",
+            "not lifted {}: this build did not lower a float memory operand",
             case.name
         );
         return None;
@@ -9588,16 +9402,12 @@ struct FcOracleOutcome {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping fp const/mem oracle: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fc_battery.c");
@@ -9671,10 +9481,11 @@ fn fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("fc", &fc_battery_source(FP_CONST_BATTERY))
     else {
@@ -9713,14 +9524,12 @@ fn sysv_fp_const_and_memory_leaf_functions_recompile_to_behavioral_equivalence()
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn fp_const_oracle_has_teeth_perturbing_the_constant_diverges() {
-    if !host_native_class_is_graded("fp_const_oracle_has_teeth_perturbing_the_constant_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping fp const teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FcCase = &FP_CONST_BATTERY[0];
@@ -9743,8 +9552,7 @@ fn fp_const_oracle_has_teeth_perturbing_the_constant_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fc_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping fc teeth check: probe did not lift with a rip-relative constant");
-        return;
+        panic!("fc teeth check: probe did not lift with a rip-relative constant");
     };
     let one_five_bits: &str = "0x3ff8000000000000ULL";
     assert!(
@@ -9878,17 +9686,12 @@ fn strip_helper_lines(source: &str, from_name: &str, to_name: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "host-native double edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
+)]
 fn recovered_non_finite_double_constants_recompile_to_bit_exact_values() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native double edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping double edge-constant recompile: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let mut decls: String = String::new();
     let mut body: String = String::new();
     for &(name, bits) in FP_DOUBLE_EDGE_BITS {
@@ -9959,17 +9762,12 @@ fn recovered_non_finite_double_constants_recompile_to_bit_exact_values() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "host-native float edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
+)]
 fn recovered_non_finite_float_constants_recompile_to_bit_exact_values() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native float edge-constant recompile on non-windows: host cc/codegen differs; the sysv clang guards carry cross-platform x86-64 coverage"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping float edge-constant recompile: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let mut decls: String = String::new();
     let mut body: String = String::new();
     for &(name, bits) in FP_FLOAT_EDGE_BITS {
@@ -10108,8 +9906,8 @@ fn compile_sysv_cross_extra(
     battery_src: &str,
     extra: &[&str],
 ) -> Option<SysvCrossObjects> {
-    let host_cc: String = cc()?;
-    let clang_cc: String = clang()?;
+    let host_cc: String = cc();
+    let clang_cc: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join(format!("{tag}_sysv_battery.c"));
@@ -10349,16 +10147,12 @@ fn gcc_o0_frame_reload_compare_returns_integer() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar sqrt oracle: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -10402,13 +10196,11 @@ fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count < 2 {
-        eprintln!(
-            "skipping scalar sqrt behavioral differential: this compiler build lowered only {lifted_count} of {} cases into a bare scalar sqrt leaf",
-            SQRT_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count >= 2,
+        "scalar sqrt behavioral differential: this compiler build lowered only {lifted_count} of {} cases into a bare scalar sqrt leaf",
+        SQRT_BATTERY.len()
+    );
 
     let driver: String = build_fp_sqrt_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("sqrt_driver.c");
@@ -10445,14 +10237,12 @@ fn scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
-    if !host_native_class_is_graded("scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar sqrt teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &SQRT_BATTERY[0];
@@ -10475,8 +10265,7 @@ fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
     let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fp_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping sqrt teeth check: probe did not lift into a bare sqrt leaf");
-        return;
+        panic!("sqrt teeth check: probe did not lift into a bare sqrt leaf");
     };
     let sabotaged: String = renamed.replacen(
         "fpx_sqrt_x86_f64(fp_d_from_bits(x_xmm0))",
@@ -10526,10 +10315,11 @@ fn scalar_sqrt_oracle_has_teeth_dropping_the_sqrt_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_scalar_sqrt_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross_extra(
         "sqrt",
         &fp_battery_source(SQRT_BATTERY),
@@ -10756,16 +10546,12 @@ fn round_lift_rejects_mxcsr_deferred_rounding() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "scalar_round_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar round oracle: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -10801,7 +10587,7 @@ fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
         let (builtin, mnemonic): (&str, &str) = round_expectations(case.name);
         if !function_has_mnemonic(&object_bytes, case.name, mnemonic) {
             eprintln!(
-                "skip {}: this clang build did not emit a scalar {mnemonic} (SSE4.1 rounding unavailable)",
+                "not lifted {}: this clang build did not emit a scalar {mnemonic} (SSE4.1 rounding unavailable)",
                 case.name
             );
             continue;
@@ -10824,13 +10610,11 @@ fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
         lifted_count += 1;
     }
 
-    if lifted_count < 2 {
-        eprintln!(
-            "skipping scalar round behavioral differential: this compiler build lowered only {lifted_count} of {} cases into a bare scalar round leaf",
-            ROUND_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count >= 2,
+        "scalar round behavioral differential: this compiler build lowered only {lifted_count} of {} cases into a bare scalar round leaf",
+        ROUND_BATTERY.len()
+    );
 
     let driver: String = build_fp_sqrt_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("round_driver.c");
@@ -10867,14 +10651,12 @@ fn scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_round_oracle_has_teeth_dropping_the_round_diverges() {
-    if !host_native_class_is_graded("scalar_round_oracle_has_teeth_dropping_the_round_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar round teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &ROUND_BATTERY[0];
@@ -10903,14 +10685,15 @@ fn scalar_round_oracle_has_teeth_dropping_the_round_diverges() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read round_teeth_battery.o");
 
     if !function_has_mnemonic(&object_bytes, probe.name, mnemonic) {
-        eprintln!("skipping round teeth check: this clang build did not emit a scalar {mnemonic}");
+        compiler_toolchain::unmeasured(&format!(
+            "round teeth check: this clang build did not emit a scalar {mnemonic}"
+        ));
         return;
     }
     let Some((_, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fp_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping round teeth check: probe did not lift into a bare round leaf");
-        return;
+        panic!("round teeth check: probe did not lift into a bare round leaf");
     };
     let intact: String = format!("{builtin}(fp_d_from_bits(x_xmm0))");
     let sabotaged: String = renamed.replacen(&intact, "fp_d_from_bits(x_xmm0)", 1);
@@ -10962,7 +10745,7 @@ fn link_and_run_round_sysv(
     host_object: &[u8],
     watchdog_secs: u64,
 ) -> String {
-    let host_cc: String = cc().expect("host cc present when linking sysv round harness");
+    let host_cc: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let host_o: PathBuf = dir.join(format!("{tag}_sysv_round_link_host.o"));
@@ -10998,13 +10781,11 @@ fn link_and_run_round_sysv(
 }
 
 #[test]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    ignore = "sysv scalar round oracle: the roundsd ground-truth build and harness link need x86-only -msse4.1, which non-x86 hosts (macos arm64) reject; ubuntu and windows x86_64 hosts cover this class"
+)]
 fn sysv_scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipping sysv scalar round oracle: the roundsd ground-truth build and harness link need x86-only -msse4.1, which non-x86 hosts (macos arm64) reject; ubuntu and windows x86_64 hosts cover this class"
-        );
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross_extra(
         "round",
         &fp_battery_source(ROUND_BATTERY),
@@ -11021,7 +10802,7 @@ fn sysv_scalar_round_leaf_functions_recompile_to_behavioral_equivalence() {
         let (builtin, mnemonic): (&str, &str) = round_expectations(case.name);
         if !function_has_mnemonic(&objs.sysv_object, case.name, mnemonic) {
             eprintln!(
-                "skip {}: the SysV clang build did not emit a scalar {mnemonic}",
+                "not lifted {}: the SysV clang build did not emit a scalar {mnemonic}",
                 case.name
             );
             continue;
@@ -11103,16 +10884,12 @@ fn bitcast_is_lifted(recovery: &LeafRecovery) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar fp bitcast oracle: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -11151,13 +10928,11 @@ fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence
         lifted_count += 1;
     }
 
-    if lifted_count < 3 {
-        eprintln!(
-            "skipping scalar fp bitcast differential: this compiler build lowered only {lifted_count} of {} cases into the modeled zero/bitcast leaf class",
-            BITCAST_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        lifted_count >= 3,
+        "scalar fp bitcast differential: this compiler build lowered only {lifted_count} of {} cases into the modeled zero/bitcast leaf class",
+        BITCAST_BATTERY.len()
+    );
 
     let driver: String = build_fp_driver(&recovered_decls, &driver_body);
     let driver_c: PathBuf = dir.join("bitcast_driver.c");
@@ -11194,16 +10969,12 @@ fn scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges() {
-    if !host_native_class_is_graded(
-        "scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar fp bitcast teeth check: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let probe: &FpCase = &BITCAST_BATTERY[3];
@@ -11226,8 +10997,7 @@ fn scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges() {
     let Some((recovery, renamed, recovered_name)): Option<(LeafRecovery, String, String)> =
         fp_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping bitcast teeth check: probe did not lift as a movq bitcast");
-        return;
+        panic!("bitcast teeth check: probe did not lift as a movq bitcast");
     };
     assert!(
         bitcast_is_lifted(&recovery),
@@ -11278,10 +11048,11 @@ fn scalar_fp_bitcast_oracle_has_teeth_corrupting_the_bitcast_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_scalar_fp_bitcast_and_zero_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("bitcast", &fp_battery_source(BITCAST_BATTERY))
     else {
@@ -11430,16 +11201,12 @@ fn nested_switch_body_has_target_op(recovery: &LeafRecovery) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "nested_switch_division_and_setcc_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping nested-switch oracle: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("nested_switch_battery.c");
@@ -11538,16 +11305,12 @@ fn nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
-    if !host_native_class_is_graded(
-        "nested_switch_oracle_has_teeth_swapping_division_signedness_diverges",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping nested-switch teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("nested_switch_teeth_battery.c");
@@ -11575,17 +11338,14 @@ fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
     let Some((recovery, renamed)): Option<(LeafRecovery, String)> =
         switch_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!(
-            "skipping nested-switch teeth check: this gcc build did not reconstruct the signed-division switch to corrupt"
+        panic!(
+            "nested-switch teeth check: this gcc build did not reconstruct the signed-division switch to corrupt"
         );
-        return;
     };
-    if !renamed.contains("int64_t div_lhs = (int64_t)r_rax;") {
-        eprintln!(
-            "skipping nested-switch teeth check: this build did not reconstruct a signed nested division to flip"
-        );
-        return;
-    }
+    assert!(
+        renamed.contains("int64_t div_lhs = (int64_t)r_rax;"),
+        "nested-switch teeth check: this build did not reconstruct a signed nested division to flip"
+    );
     let corrupted: String = renamed
         .replace(
             "int64_t div_lhs = (int64_t)r_rax;",
@@ -11595,10 +11355,10 @@ fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
             "int64_t div_rhs = (int64_t)",
             "uint64_t div_rhs = (uint64_t)",
         );
-    if corrupted == renamed {
-        eprintln!("skipping nested-switch teeth check: signedness flip was a no-op");
-        return;
-    }
+    assert!(
+        corrupted != renamed,
+        "nested-switch teeth check: signedness flip was a no-op"
+    );
     let mut decls: String = corrupted;
     decls.push('\n');
     let _ = writeln!(
@@ -11642,10 +11402,11 @@ fn nested_switch_oracle_has_teeth_swapping_division_signedness_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_nested_switch_division_and_setcc_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("nested_switch", &battery_source(NESTED_SWITCH_BATTERY))
     else {
@@ -11801,13 +11562,16 @@ fn switch_lift(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<(Leaf
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
     if tables.is_empty() {
-        eprintln!("skip {}: no jump table resolved this build", case.name);
+        eprintln!(
+            "not lifted {}: no jump table resolved this build",
+            case.name
+        );
         return None;
     }
     let recovery: LeafRecovery = match recover_leaf_function_switch_abi(&code, base, abi, &tables) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("skip {}: not in dense-switch class ({e})", case.name);
+            eprintln!("not lifted {}: not in dense-switch class ({e})", case.name);
             return None;
         }
     };
@@ -11891,18 +11655,12 @@ fn compile_switch_host(builder: &str, dir: &std::path::Path) -> Vec<u8> {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let object_bytes: Vec<u8> = compile_switch_host(&builder, &dir);
@@ -11972,14 +11730,12 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() 
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn switch_oracle_has_teeth_a_wrong_case_value_diverges() {
-    if !host_native_class_is_graded("switch_oracle_has_teeth_a_wrong_case_value_diverges") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping switch teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let object_bytes: Vec<u8> = compile_switch_host(&builder, &dir);
@@ -11988,25 +11744,20 @@ fn switch_oracle_has_teeth_a_wrong_case_value_diverges() {
     let Some((recovery, renamed)): Option<(LeafRecovery, String)> =
         switch_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!(
-            "skipping switch teeth check: this compiler build did not reconstruct a dense switch to corrupt"
+        panic!(
+            "switch teeth check: this compiler build did not reconstruct a dense switch to corrupt"
         );
-        return;
     };
-    if !(renamed.contains("case 2:") && renamed.contains("case 3:")) {
-        eprintln!(
-            "skipping switch teeth check: this compiler build did not reconstruct the distinct cases this check relabels"
-        );
-        return;
-    }
+    assert!(
+        renamed.contains("case 2:") && renamed.contains("case 3:"),
+        "switch teeth check: this compiler build did not reconstruct the distinct cases this check relabels"
+    );
 
     let corrupted: String = renamed.replacen("case 2: {", "case 999: {", 1);
-    if corrupted == renamed {
-        eprintln!(
-            "skipping switch teeth check: relabeling case 2 was a no-op on this build's reconstruction"
-        );
-        return;
-    }
+    assert!(
+        corrupted != renamed,
+        "switch teeth check: relabeling case 2 was a no-op on this build's reconstruction"
+    );
 
     let mut decls: String = corrupted;
     decls.push('\n');
@@ -12053,10 +11804,11 @@ fn switch_oracle_has_teeth_a_wrong_case_value_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("switch", &battery_source(SWITCH_BATTERY))
     else {
@@ -12157,7 +11909,10 @@ fn fp_switch_lift(
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
     if tables.is_empty() {
-        eprintln!("skip {}: no jump table resolved this build", case.name);
+        eprintln!(
+            "not lifted {}: no jump table resolved this build",
+            case.name
+        );
         return None;
     }
     let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
@@ -12165,7 +11920,10 @@ fn fp_switch_lift(
         match recover_leaf_function_switch_const_abi(&code, base, abi, &tables, &consts) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in dense fp-switch class ({e})", case.name);
+                eprintln!(
+                    "not lifted {}: not in dense fp-switch class ({e})",
+                    case.name
+                );
                 return None;
             }
         };
@@ -12178,7 +11936,7 @@ fn fp_switch_lift(
     };
     if recovery.returns_fp != Some(expected) {
         eprintln!(
-            "skip {}: switch did not type as {expected:?} return (got {:?})",
+            "not lifted {}: switch did not type as {expected:?} return (got {:?})",
             case.name, recovery.returns_fp
         );
         return None;
@@ -12261,18 +12019,12 @@ fn build_fp_switch_driver(recovered_decls: &str, driver_body: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping fp-switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fp_switch_battery.c");
@@ -12358,15 +12110,12 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the fp-switch teeth check needs a windows host"
+)]
 fn fp_switch_oracle_has_teeth_relabeling_a_case_diverges() {
-    if !cfg!(windows) {
-        eprintln!("skipping fp-switch teeth check on non-windows host");
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping fp-switch teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("fp_switch_teeth_battery.c");
@@ -12394,14 +12143,13 @@ fn fp_switch_oracle_has_teeth_relabeling_a_case_diverges() {
     let Some((_recovery, renamed)): Option<(LeafRecovery, String)> =
         fp_switch_lift(probe, &object_bytes, HOST_ABI)
     else {
-        eprintln!("skipping fp-switch teeth check: probe not reconstructed as an fp switch");
-        return;
+        panic!("fp-switch teeth check: probe not reconstructed as an fp switch");
     };
     let corrupted: String = renamed.replacen("case 0:", "case 9:", 1);
-    if corrupted == renamed {
-        eprintln!("skipping fp-switch teeth check: relabeling case 0 was a no-op on this build");
-        return;
-    }
+    assert!(
+        corrupted != renamed,
+        "fp-switch teeth check: relabeling case 0 was a no-op on this build"
+    );
     let mut decls: String = corrupted;
     decls.push('\n');
     decls.push_str(&fp_switch_extern_decl(probe));
@@ -12440,10 +12188,11 @@ fn fp_switch_oracle_has_teeth_relabeling_a_case_diverges() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("fp_switch", &fp_switch_battery_source())
     else {
@@ -12570,7 +12319,7 @@ fn gcc_rep_object(
     tag: &str,
     battery_src: &str,
 ) -> Option<(Vec<u8>, PathBuf)> {
-    let builder: String = gcc()?;
+    let builder: String = gcc();
     let battery_c: PathBuf = dir.join(format!("{tag}_battery.c"));
     std::fs::write(&battery_c, battery_src.as_bytes()).expect("write block battery.c");
     let battery_o: PathBuf = dir.join(format!("{tag}_battery.o"));
@@ -12589,10 +12338,10 @@ fn gcc_rep_object(
         .output()
         .expect("invoke gcc for block battery");
     if !compile.status.success() {
-        eprintln!(
-            "skipping block-move oracle: gcc rejected the rep stringop strategy flags: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "the block-move oracle needs gcc to accept the rep stringop strategy flags, which it rejected: {}",
             String::from_utf8_lossy(&compile.stderr)
-        );
+        ));
         return None;
     }
     let bytes: Vec<u8> = std::fs::read(&battery_o).expect("read block battery.o");
@@ -12614,18 +12363,12 @@ fn code_uses_rep(object_bytes: &[u8], name: &str, rep_op: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "block_move_fill_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    if gcc().is_none() {
-        eprintln!(
-            "skipping block-move oracle: gcc (needed to force the rep movs/stos stringop idiom) not on PATH"
-        );
-        return;
-    }
+    gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -12651,7 +12394,7 @@ fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
     for case in BLOCK_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         if code_uses_rep(&object_bytes, case.name, case.rep_mnemonic) {
@@ -12665,7 +12408,10 @@ fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in block-move leaf class ({e})", case.name);
+                eprintln!(
+                    "not lifted {}: not in block-move leaf class ({e})",
+                    case.name
+                );
                 continue;
             }
         };
@@ -12701,7 +12447,7 @@ fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
     } else {
         "blockhost_harness"
     });
-    let builder: String = gcc().expect("gcc present");
+    let builder: String = gcc();
     let link: std::process::Output = Command::new(&builder)
         .args(["-O1", "-o"])
         .arg(&harness_exe)
@@ -12730,15 +12476,12 @@ fn block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the block-move teeth check needs a windows host"
+)]
 fn block_move_oracle_has_teeth_a_wrong_copy_length_diverges() {
-    if !cfg!(windows) {
-        eprintln!("skipping block-move teeth on non-windows host");
-        return;
-    }
-    if gcc().is_none() {
-        eprintln!("skipping block-move teeth: gcc not on PATH");
-        return;
-    }
+    gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let case: &BlockCase = &BLOCK_BATTERY[0];
@@ -12780,7 +12523,7 @@ fn block_move_oracle_has_teeth_a_wrong_copy_length_diverges() {
     } else {
         "blockteeth_harness"
     });
-    let builder: String = gcc().expect("gcc present");
+    let builder: String = gcc();
     let link: std::process::Output = Command::new(&builder)
         .args(["-O1", "-o"])
         .arg(&harness_exe)
@@ -12884,14 +12627,12 @@ fn sysv_block_battery() -> Vec<SysvBlockCase> {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
-    let Some(builder): Option<String> = cc() else {
-        eprintln!("skipping sysv block-move: no C compiler on PATH");
-        return;
-    };
+    let builder: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<SysvBlockCase> = sysv_block_battery();
@@ -12929,7 +12670,7 @@ fn sysv_block_move_fill_leaf_functions_recompile_to_behavioral_equivalence() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!(
-                        "skip sysv {}: not in block-move leaf class ({e})",
+                        "not lifted sysv {}: not in block-move leaf class ({e})",
                         case.name
                     );
                     continue;
@@ -13113,16 +12854,12 @@ fn recovered_has_setcc(object_bytes: &[u8], name: &str, abi: PseudoAbi) -> bool 
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping setcc oracle: gcc (needed for the branchless setcc idiom) not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -13220,15 +12957,9 @@ fn setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(not(windows), ignore = "the setcc teeth check needs a windows host")]
 fn setcc_oracle_has_teeth_negating_the_predicate_diverges() {
-    if !cfg!(windows) {
-        eprintln!("skipping setcc teeth on non-windows host");
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping setcc teeth check: gcc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -13262,17 +12993,14 @@ fn setcc_oracle_has_teeth_negating_the_predicate_diverges() {
     let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read setcc_teeth_battery.o");
 
     let Some(lifted): Option<Lifted> = process_case(&probe, &object_bytes, HOST_ABI) else {
-        eprintln!(
-            "skipping setcc teeth check: this compiler build did not lower the probe into the leaf class"
+        panic!(
+            "setcc teeth check: this compiler build did not lower the probe into the leaf class"
         );
-        return;
     };
-    if !lifted.decls.contains(") < (") {
-        eprintln!(
-            "skipping setcc teeth check: this compiler build did not reconstruct the `<` predicate to negate"
-        );
-        return;
-    }
+    assert!(
+        !lifted.decls.contains(") >= ("),
+        "setcc teeth check: this compiler build did not reconstruct the `<` predicate to negate"
+    );
 
     let corrupted: String = lifted.decls.replacen(") < (", ") >= (", 1);
     assert_ne!(
@@ -13420,14 +13148,12 @@ fn sysv_setcc_battery() -> Vec<SysvSetccCase> {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
-    let Some(builder): Option<String> = cc() else {
-        eprintln!("skipping sysv setcc: no C compiler on PATH");
-        return;
-    };
+    let builder: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<SysvSetccCase> = sysv_setcc_battery();
@@ -13462,7 +13188,10 @@ fn sysv_setcc_boolean_leaf_functions_recompile_to_behavioral_equivalence() {
             match recover_leaf_function_abi(&case.machine_code, 0x2000, PseudoAbi::SysV) {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("skip sysv {}: not in setcc leaf class ({e})", case.name);
+                    eprintln!(
+                        "not lifted sysv {}: not in setcc leaf class ({e})",
+                        case.name
+                    );
                     continue;
                 }
             };
@@ -13656,16 +13385,12 @@ const STACK_BATTERY: &[Case] = &[
 ];
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "stack_spill_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -13739,10 +13464,11 @@ fn stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross_extra("stk", &battery_source(STACK_BATTERY), &["-O0"])
     else {
@@ -13779,10 +13505,7 @@ fn sysv_stack_spill_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn stack_spill_oracle_has_teeth_corrupting_a_slot_offset_diverges() {
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping stack-spill teeth check: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let probe: [u8; 22] = [
         0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x8b, 0x45,
         0xf8, 0x48, 0x2b, 0x45, 0xf0, 0x5d, 0xc3,
@@ -13905,15 +13628,12 @@ const FP_STACK_BATTERY: &[FpCase] = &[
 ];
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded("scalar_float_stack_spill_recompile_to_behavioral_equivalence")
-    {
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!("skipping scalar float stack-spill oracle: clang not on PATH");
-        return;
-    };
+    let builder: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -13993,10 +13713,11 @@ fn scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_scalar_float_stack_spill_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross_extra("sf", &fp_battery_source(FP_STACK_BATTERY), &["-O0"])
     else {
@@ -14202,10 +13923,11 @@ fn build_red_zone_driver(recovered_decls: &str, driver_body: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_red_zone_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("rz", &battery_source(RED_ZONE_BATTERY))
     else {
@@ -14515,10 +14237,11 @@ fn build_indexed_frame_driver(recovered_decls: &str, driver_body: &str) -> Strin
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("ix", &battery_source(INDEXED_FRAME_BATTERY))
     else {
@@ -14602,9 +14325,7 @@ const MS_X64_INDEXED_REFUSALS: [&str; 2] = [
 
 #[test]
 fn the_microsoft_x64_lowering_of_the_indexed_frame_battery_is_refused_by_frame_class() {
-    let Some(clang_cc): Option<String> = clang() else {
-        return;
-    };
+    let clang_cc: String = clang();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery_c: PathBuf = dir.join("ix_ms_battery.c");
@@ -14699,10 +14420,11 @@ const FP_RED_ZONE_BATTERY: &[FpCase] = &[
 ];
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_red_zone_scalar_float_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> =
         compile_sysv_cross("rzf", &fp_battery_source(FP_RED_ZONE_BATTERY))
     else {
@@ -14891,19 +14613,22 @@ fn collect_sret_cases(object_bytes: &[u8], abi: PseudoAbi) -> SretLift {
     for case in SRET_BATTERY {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, case.name)
         else {
-            eprintln!("skip {}: symbol not located", case.name);
+            eprintln!("not lifted {}: symbol not located", case.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {} ({abi:?}): not in leaf class ({e})", case.name);
+                eprintln!(
+                    "not lifted {} ({abi:?}): not in leaf class ({e})",
+                    case.name
+                );
                 continue;
             }
         };
         let Some(snippet): Option<String> = sret_case_snippet(case, &recovery) else {
             eprintln!(
-                "skip {} ({abi:?}): not recovered as memory-class sret",
+                "not lifted {} ({abi:?}): not recovered as memory-class sret",
                 case.name
             );
             continue;
@@ -14929,16 +14654,12 @@ fn collect_sret_cases(object_bytes: &[u8], abi: PseudoAbi) -> SretLift {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "struct_return_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -15008,10 +14729,11 @@ fn struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let Some(objs): Option<SysvCrossObjects> = compile_sysv_cross("sret", &sret_battery_source())
     else {
         return;
@@ -15043,10 +14765,7 @@ fn sysv_struct_return_leaf_functions_recompile_to_behavioral_equivalence() {
 
 #[test]
 fn struct_return_oracle_has_teeth_corrupting_a_field_store_diverges() {
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping struct-return teeth check: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let probe: [u8; 29] = [
         0x48, 0x89, 0xf8, 0x48, 0x8d, 0x0c, 0x32, 0x48, 0x89, 0x0f, 0x48, 0x89, 0xf1, 0x48, 0x29,
         0xd1, 0x48, 0x89, 0x4f, 0x08, 0x48, 0x0f, 0xaf, 0xd6, 0x48, 0x89, 0x57, 0x10, 0xc3,
@@ -15179,18 +14898,12 @@ fn diamond_recovered_has_else(object_bytes: &[u8], name: &str, abi: PseudoAbi) -
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence() {
-    if !host_native_class_is_graded(
-        "if_else_diamond_leaf_functions_recompile_to_behavioral_equivalence",
-    ) {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping if-else diamond oracle: gcc (needed to suppress if-conversion) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -15658,18 +15371,13 @@ fn sel_driver(recovered_decls: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_cmov_select_idioms_recompile_to_behavioral_equivalence() {
-    if !sysv_host_can_run() {
-        return;
-    }
-    let Some(_host_cc): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler on PATH");
-        return;
-    };
-    let Some(_clang): Option<String> = clang() else {
-        eprintln!("skipping sysv cmov idioms: clang (needed for SysV cross object) not on PATH");
-        return;
-    };
+    let _host_cc: String = cc();
+    let _clang: String = clang();
     let mut battery_src: String = String::new();
     for case in SEL_BATTERY {
         battery_src.push_str(case.c_source);
@@ -15693,17 +15401,12 @@ fn sysv_cmov_select_idioms_recompile_to_behavioral_equivalence() {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "host-native cmov oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv clang cross guard is the cross-platform proof"
+)]
 fn cmov_select_idioms_recompile_to_behavioral_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native cmov oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv clang cross guard is the cross-platform proof"
-        );
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut battery_src: String = String::new();
@@ -15795,13 +15498,13 @@ fn object_switch_lift(
         match recover_leaf_function_in_object(object_bytes, &code, base, abi, &[]) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not recovered from object ({e})", case.name);
+                eprintln!("not lifted {}: not recovered from object ({e})", case.name);
                 return None;
             }
         };
     if !recovery.lifted_switch {
         eprintln!(
-            "skip {}: this build did not lower into a dense jump table",
+            "not lifted {}: this build did not lower into a dense jump table",
             case.name
         );
         return None;
@@ -15884,16 +15587,12 @@ fn object_switch_has_stacked_case(source: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(
+    not(windows),
+    ignore = "the host-native recompile class needs a windows host, because host cc is arm64 on macos and gcc codegen differs on linux; the sysv_* clang guards carry cross-platform x86-64 SysV coverage"
+)]
 fn object_dense_switch_recovers_bias_and_duplicates_hostabi() {
-    if !host_native_class_is_graded("object_dense_switch_recovers_bias_and_duplicates_hostabi") {
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping object-switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = gcc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut battery_src: String = String::new();
@@ -16003,10 +15702,11 @@ fn object_dense_switch_recovers_bias_and_duplicates_hostabi() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_object_dense_switch_recovers_bias_and_duplicates() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in OBJ_SWITCH_BATTERY {
         battery_src.push_str(case.c_source);
@@ -16049,10 +15749,11 @@ fn sysv_object_dense_switch_recovers_bias_and_duplicates() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the x86-64 SysV recompile differential needs GNU gcc codegen flags and an x86-64 host; macOS runners are arm64 with an apple-clang gcc alias"
+)]
 fn sysv_object_dense_switch_o0_relative_jump_table_recompiles() {
-    if !sysv_host_can_run() {
-        return;
-    }
     let mut battery_src: String = String::new();
     for case in OBJ_SWITCH_BATTERY {
         battery_src.push_str(case.c_source);
@@ -16080,10 +15781,10 @@ fn sysv_object_dense_switch_o0_relative_jump_table_recompiles() {
         lifted_count += 1;
     }
     if lifted_count == 0 {
-        eprintln!(
-            "sound-skip clang -O0 relative-jump-table oracle: this clang build emitted no lifter-supported dense-switch form across the {} case battery (every case soundly declined, no wrong output); the recovering path is exercised on toolchains that emit the supported range-check codegen",
+        compiler_toolchain::unmeasured(&format!(
+            "clang -O0 relative-jump-table oracle: this clang build emitted no lifter-supported dense-switch form across the {} case battery (every case soundly declined, no wrong output); the recovering path is exercised on toolchains that emit the supported range-check codegen",
             OBJ_SWITCH_BATTERY.len()
-        );
+        ));
         return;
     }
     let driver: String = build_object_switch_driver(&recovered_decls, &driver_body);
@@ -16175,17 +15876,12 @@ fn narrow_shift_driver(recovered_decls: &str, driver_body: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(
+    any(target_os = "macos", not(target_arch = "x86_64")),
+    ignore = "the narrow variable-count shift differential needs an x86-64 host to execute the assembled ground-truth stubs"
+)]
 fn narrow_variable_count_shift_matches_x86_masking() {
-    if cfg!(target_os = "macos") || !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipping narrow variable-count shift differential: needs an x86-64 host to execute the assembled ground-truth stubs"
-        );
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping narrow variable-count shift differential: no C compiler on PATH");
-        return;
-    };
+    let compiler: String = cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let asm_path: PathBuf = dir.join("narrow_shift_stub.s");
@@ -16198,10 +15894,10 @@ fn narrow_variable_count_shift_matches_x86_masking() {
         .output()
         .expect("invoke cc to assemble narrow shift stub");
     if !assemble.status.success() {
-        eprintln!(
-            "skipping narrow variable-count shift differential: this cc cannot assemble the intel-syntax stub: {}",
+        compiler_toolchain::unmeasured(&format!(
+            "narrow variable-count shift differential: this cc cannot assemble the intel-syntax stub: {}",
             String::from_utf8_lossy(&assemble.stderr)
-        );
+        ));
         return;
     }
     let object_bytes: Vec<u8> = std::fs::read(&object_path).expect("read narrow shift object");
@@ -16212,13 +15908,13 @@ fn narrow_variable_count_shift_matches_x86_masking() {
     for stub in NARROW_SHIFT_STUBS {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, stub.name)
         else {
-            eprintln!("skip {}: symbol not located", stub.name);
+            eprintln!("not lifted {}: symbol not located", stub.name);
             continue;
         };
         let recovery: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("skip {}: not in leaf class ({e})", stub.name);
+                eprintln!("not lifted {}: not in leaf class ({e})", stub.name);
                 continue;
             }
         };

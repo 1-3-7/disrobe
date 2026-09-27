@@ -6,6 +6,10 @@ use std::process::Command;
 use disrobe_pass_native::{EbpfRecovery, recover_ebpf_program};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
 fn clang_candidates() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = vec![PathBuf::from("clang")];
     if let Ok(program_files) = std::env::var("ProgramFiles") {
@@ -306,8 +310,9 @@ int main(void) {
 #[test]
 fn ebpf_oracle_battery() {
     let Some(clang) = find_bpf_clang() else {
-        eprintln!(
-            "skipping ebpf oracle: no clang with a bpf target backend was found on this machine"
+        prerequisite::toolchain_capability_absent(
+            "the ebpf oracle battery",
+            "no clang with a bpf target backend was found on this machine",
         );
         return;
     };
@@ -458,10 +463,8 @@ fn ebpf_oracle_battery() {
 
 #[test]
 fn ebpf_degraded_marker_functions_compile_on_host() {
-    let Some(clang) = find_host_clang() else {
-        eprintln!("skipping ebpf marker-compile check: no invocable host clang was found");
-        return;
-    };
+    let clang: PathBuf = find_host_clang()
+        .expect("an invocable host clang is required; every CI test runner provisions one");
     let dir = tempfile::tempdir().expect("scratch dir");
 
     let mut bytes: Vec<u8> = Vec::new();

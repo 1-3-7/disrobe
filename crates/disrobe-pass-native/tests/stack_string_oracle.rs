@@ -20,7 +20,6 @@ use iced_x86::code_asm::{CodeAssembler, byte_ptr, dword_ptr, rsp};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
 
 const STACK_STRING_C: &str = r"
-#include <stdio.h>
 __attribute__((noinline))
 int emit(volatile char *sink) {
     char buf[32];
@@ -38,13 +37,18 @@ int main(void) {
 }
 ";
 
-fn gcc_available() -> bool {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+#[cfg(target_arch = "x86_64")]
+fn require_gcc() {
+    assert!(
+        Command::new("gcc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success()),
+        "gcc is required on PATH to grade against a real compiler; every CI test runner provisions it"
+    );
 }
 
+#[cfg(target_arch = "x86_64")]
 fn extract_text_section(object: &[u8]) -> Option<Vec<u8>> {
     use object::{Object, ObjectSection};
     let parsed: object::File<'_> = object::File::parse(object).ok()?;
@@ -61,11 +65,9 @@ fn extract_text_section(object: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[test]
+#[cfg(target_arch = "x86_64")]
 fn recovers_inlined_stack_string_from_gcc_compiled_object() {
-    if !gcc_available() {
-        println!("SKIP: gcc not on PATH; cannot grade against a real compiler");
-        return;
-    }
+    require_gcc();
     let dir: tempfile::TempDir = tempfile::tempdir().expect("tempdir");
     let src: PathBuf = dir.path().join("stackstr.c");
     std::fs::write(&src, STACK_STRING_C).expect("write C");
@@ -101,12 +103,10 @@ fn recovers_inlined_stack_string_from_gcc_compiled_object() {
             recovered_any = true;
         }
     }
-    if !elf_text_seen {
-        println!(
-            "SKIP: gcc produced no ELF object with a .text section (e.g. a macos mach-o object)"
-        );
-        return;
-    }
+    assert!(
+        elf_text_seen,
+        "gcc produced no object with a non-empty .text section at -O1 or -O2"
+    );
     assert!(
         recovered_any,
         "at least one optimization level must lay the URL down as immediate stack stores that \
@@ -114,11 +114,14 @@ fn recovers_inlined_stack_string_from_gcc_compiled_object() {
     );
 }
 
-fn clang_available() -> bool {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_clang() {
+    assert!(
+        Command::new("clang")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success()),
+        "clang is required on PATH to grade the SSE lowering against a real compiler; every CI test runner provisions it"
+    );
 }
 
 fn compile_linux_elf_object(src: &std::path::Path, obj: &std::path::Path, opt: &str) -> bool {
@@ -171,10 +174,7 @@ fn text_with_resolved_rip_literals(object_bytes: &[u8]) -> Option<ResolvedText> 
 
 #[test]
 fn recovers_sse_block_store_from_real_clang_o1_object() {
-    if !clang_available() {
-        println!("SKIP: clang not on PATH; cannot grade the SSE lowering against a real compiler");
-        return;
-    }
+    require_clang();
     let dir: tempfile::TempDir = tempfile::tempdir().expect("tempdir");
     let src: PathBuf = dir.path().join("stackstr.c");
     std::fs::write(&src, STACK_STRING_C).expect("write C");
@@ -214,10 +214,10 @@ fn recovers_sse_block_store_from_real_clang_o1_object() {
             recovered_any = true;
         }
     }
-    if !graded_any {
-        println!("SKIP: clang produced no gradable linux ELF object");
-        return;
-    }
+    assert!(
+        graded_any,
+        "clang produced no gradable linux ELF object with a .text section at any level"
+    );
     assert!(
         recovered_any,
         "with the rip-relative const pool resolved from the object's own relocation table, the \

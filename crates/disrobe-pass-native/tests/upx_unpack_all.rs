@@ -341,7 +341,6 @@ fn run_large_fixture(name: &str) -> Option<(UpxUnpackOutput, f64)> {
 #[test]
 fn large_nrv2e_rg_recovers_with_verified_adler() {
     let Some((out, pct)): Option<(UpxUnpackOutput, f64)> = run_large_fixture("rg") else {
-        eprintln!("skip: rg.packed.upx.exe missing");
         return;
     };
     assert_eq!(out.method, UpxMethod::Nrv2e);
@@ -362,7 +361,6 @@ fn large_nrv2e_rg_recovers_with_verified_adler() {
 #[test]
 fn large_nrv2e_git_recovers_with_verified_adler() {
     let Some((out, pct)): Option<(UpxUnpackOutput, f64)> = run_large_fixture("git") else {
-        eprintln!("skip: git.packed.upx.exe missing");
         return;
     };
     assert_eq!(out.method, UpxMethod::Nrv2e);

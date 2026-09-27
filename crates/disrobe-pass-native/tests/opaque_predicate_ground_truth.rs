@@ -45,20 +45,22 @@ const GROUND_TRUTH: &[(&str, GroundTruth)] = &[
     ("check_data_xor_eq", GroundTruth::DataDependent),
 ];
 
-fn clang() -> Option<&'static str> {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|out: &std::process::Output| out.status.success())
-        .map(|_| "clang")
+fn clang() -> &'static str {
+    assert!(
+        Command::new("clang")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out: std::process::Output| out.status.success()),
+        "clang is required on PATH for the real non-circular oracle; every CI test runner provisions it"
+    );
+    "clang"
 }
 
 fn scratch_dir() -> ScratchDir {
     ScratchDir::create("disrobe-opaque-ground-truth").expect("create scratch directory")
 }
 
-fn compile_object(clang_bin: &str, opt_level: &str) -> Option<Vec<u8>> {
+fn compile_object(clang_bin: &str, opt_level: &str) -> Vec<u8> {
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join(format!("fixture_{opt_level}.c"));
@@ -77,14 +79,12 @@ fn compile_object(clang_bin: &str, opt_level: &str) -> Option<Vec<u8>> {
         .arg(&src_path)
         .output()
         .expect("invoke clang for the ground-truth object");
-    if !compile.status.success() {
-        eprintln!(
-            "skipping {opt_level}: clang cannot emit a linux/x86-64 object on this host: {}",
-            String::from_utf8_lossy(&compile.stderr)
-        );
-        return None;
-    }
-    Some(std::fs::read(&obj_path).expect("read compiled ground-truth object"))
+    assert!(
+        compile.status.success(),
+        "clang failed to emit the header-free linux/x86-64 ground-truth object at {opt_level}: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    std::fs::read(&obj_path).expect("read compiled ground-truth object")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -173,10 +173,9 @@ where
 {
     let mut confusion: Confusion = Confusion::default();
     for &(name, truth) in GROUND_TRUTH {
-        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object_bytes, name) else {
-            eprintln!("[{opt_level}/{pass_name}] {name}: symbol not located, skipping");
-            continue;
-        };
+        let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name).unwrap_or_else(|| {
+            panic!("[{opt_level}/{pass_name}] {name}: symbol not located in the compiled object")
+        });
         let branches: Vec<u64> = conditional_branch_addresses(&code, base);
         let Some(&branch_address): Option<&u64> = branches.first() else {
             confusion.resolved_by_compiler += 1;
@@ -203,15 +202,10 @@ where
 
 #[test]
 fn measures_precision_and_recall_against_real_clang_compiled_ground_truth() {
-    let Some(clang_bin): Option<&str> = clang() else {
-        eprintln!("skipping: clang not on PATH, no real non-circular oracle available");
-        return;
-    };
+    let clang_bin: &str = clang();
 
     for opt_level in ["-O0", "-O1"] {
-        let Some(object_bytes): Option<Vec<u8>> = compile_object(clang_bin, opt_level) else {
-            continue;
-        };
+        let object_bytes: Vec<u8> = compile_object(clang_bin, opt_level);
 
         let fast: Confusion = grade_pass(
             &object_bytes,

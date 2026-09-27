@@ -23,7 +23,7 @@ use disrobe_pass_native::packers::yodas_protector_phase2::{
     ForcedRc4Replay, HashInputSource, StubProgress, YodasProtectorPhase2,
     unpack_yodas_protector_phase2,
 };
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{PackerFixture, require_committed};
 
 struct PeakTrackingAlloc;
 
@@ -58,19 +58,19 @@ static ALLOC: PeakTrackingAlloc = PeakTrackingAlloc;
 const STUB_WALL_CLOCK_BUDGET: Duration = Duration::from_mins(2);
 const STUB_ALLOC_CEILING: usize = 16 * 1024 * 1024;
 
-fn corpus(name: &str) -> Option<Vec<u8>> {
-    load_fixture(PackerFixture {
+fn corpus(name: &str) -> Vec<u8> {
+    require_committed(PackerFixture {
         decoder: "Yoda's Protector",
         family: "yodas_protector",
         name,
     })
 }
 
-fn run(packed_n: &str, orig_n: &str) -> Option<(YodasProtectorPhase2, Vec<u8>)> {
-    let (packed, orig): (Vec<u8>, Vec<u8>) = (corpus(packed_n)?, corpus(orig_n)?);
+fn run(packed_n: &str, orig_n: &str) -> (YodasProtectorPhase2, Vec<u8>) {
+    let (packed, orig): (Vec<u8>, Vec<u8>) = (corpus(packed_n), corpus(orig_n));
     let out: YodasProtectorPhase2 =
         unpack_yodas_protector_phase2(&packed, Some(&orig)).expect("yp phase2 must run");
-    Some((out, orig))
+    (out, orig)
 }
 
 const CASES: &[(&str, &str, f64)] = &[
@@ -90,11 +90,7 @@ const CASES: &[(&str, &str, f64)] = &[
 fn yp_resource_directory_recovers_in_place_against_real_original() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, rsrc_floor) in CASES {
-        let Some((out, _orig)): Option<(YodasProtectorPhase2, Vec<u8>)> = run(packed_n, orig_n)
-        else {
-            eprintln!("skip {packed_n}: fixture missing");
-            continue;
-        };
+        let (out, _orig): (YodasProtectorPhase2, Vec<u8>) = run(packed_n, orig_n);
         println!(
             "YP {packed_n}: rsrc={:.2}% content={:?}% mutated={}",
             out.resource_recovery_pct, out.content_recovery_pct, out.content_bytes_mutated_by_stub
@@ -113,10 +109,7 @@ fn yp_resource_directory_recovers_in_place_against_real_original() {
 fn yp_int3_sled_is_bypassed_but_content_cipher_stays_walled() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, _f) in CASES {
-        let Some((out, _orig)): Option<(YodasProtectorPhase2, Vec<u8>)> = run(packed_n, orig_n)
-        else {
-            continue;
-        };
+        let (out, _orig): (YodasProtectorPhase2, Vec<u8>) = run(packed_n, orig_n);
         println!(
             "YP-WALL {packed_n}: {:?} mutated={}",
             out.stub_progress, out.content_bytes_mutated_by_stub
@@ -206,10 +199,7 @@ fn yp_int3_sled_is_bypassed_but_content_cipher_stays_walled() {
 fn yp_forced_rc4_replay_with_derived_key_yields_garbage_not_recovery() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, _f) in CASES {
-        let Some((out, _orig)): Option<(YodasProtectorPhase2, Vec<u8>)> = run(packed_n, orig_n)
-        else {
-            continue;
-        };
+        let (out, _orig): (YodasProtectorPhase2, Vec<u8>) = run(packed_n, orig_n);
         let replay: &ForcedRc4Replay = out
             .forced_rc4_replay
             .as_ref()
@@ -252,10 +242,7 @@ fn yp_forced_rc4_replay_with_derived_key_yields_garbage_not_recovery() {
 fn yp_encrypted_content_is_not_falsely_claimed_recovered() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, _f) in CASES {
-        let Some((out, _orig)): Option<(YodasProtectorPhase2, Vec<u8>)> = run(packed_n, orig_n)
-        else {
-            continue;
-        };
+        let (out, _orig): (YodasProtectorPhase2, Vec<u8>) = run(packed_n, orig_n);
         let report = out.section_report.as_ref().expect("section report present");
         let text: &GranuleRecovery = report
             .sections
@@ -288,11 +275,7 @@ fn yp_encrypted_content_is_not_falsely_claimed_recovered() {
 fn yp_stub_emulation_terminates_under_a_wall_clock_and_allocation_bound() {
     let mut tested: usize = 0;
     for (packed_n, orig_n, _f) in CASES {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus(packed_n), corpus(orig_n))
-        else {
-            continue;
-        };
+        let (packed, orig): (Vec<u8>, Vec<u8>) = (corpus(packed_n), corpus(orig_n));
         PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
         let (sender, receiver) = channel::<StubProgress>();
         let worker: thread::JoinHandle<()> = thread::spawn(move || {

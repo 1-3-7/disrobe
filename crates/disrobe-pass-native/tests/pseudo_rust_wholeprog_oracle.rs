@@ -8,28 +8,32 @@
     clippy::unreadable_literal
 )]
 
+#[cfg(not(target_os = "macos"))]
 use std::fmt::Write as _;
+#[cfg(not(target_os = "macos"))]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
 
+#[cfg(not(target_os = "macos"))]
 use disrobe_core::scratch::ScratchDir;
+#[cfg(not(target_os = "macos"))]
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, PseudoParameterBinding, PseudoReg,
-    RecoveredFunction as LibRecoveredFunction, RecoveredProgram as LibRecoveredProgram,
-    RecoveredSignature, recover_program as lib_recover_program,
+    ProgramFunction, RecoveredFunction as LibRecoveredFunction,
+    RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
 };
+use disrobe_pass_native::{PseudoAbi, PseudoParameterBinding, PseudoReg, RecoveredSignature};
+#[cfg(not(target_os = "macos"))]
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 #[path = "support/compiler_toolchain.rs"]
 #[allow(clippy::redundant_pub_crate)]
 mod compiler_toolchain;
 
-const HOST_ABI: PseudoAbi = if cfg!(windows) {
-    PseudoAbi::MsX64
-} else {
-    PseudoAbi::SysV
-};
+#[cfg(windows)]
+const HOST_ABI: PseudoAbi = PseudoAbi::MsX64;
 
+#[cfg(not(target_os = "macos"))]
 const WIDE_INPUTS: &[[i64; 3]] = &[
     [0, 0, 0],
     [1, 1, 1],
@@ -47,6 +51,7 @@ const WIDE_INPUTS: &[[i64; 3]] = &[
     [3735928559, 3405705229, 4660],
 ];
 
+#[cfg(not(target_os = "macos"))]
 const SMALL_INPUTS: &[[i64; 3]] = &[
     [0, 0, 0],
     [1, 2, 3],
@@ -64,6 +69,7 @@ const SMALL_INPUTS: &[[i64; 3]] = &[
     [9, 40, 4],
 ];
 
+#[cfg(not(target_os = "macos"))]
 const ENTRY_RETURN_WIDTH: u32 = 64;
 
 fn generated_invocation_arity(signature: &RecoveredSignature) -> usize {
@@ -90,6 +96,7 @@ fn sparse_signature_invocation_uses_every_ordered_binding() {
     assert_eq!(generated_invocation_arity(&signature), 3);
 }
 
+#[cfg(windows)]
 const CC_FLAGS: [&str; 6] = [
     "-fno-stack-protector",
     "-fno-optimize-sibling-calls",
@@ -250,6 +257,7 @@ wp_nested_loop_entry:
     .quad 1
 "#;
 
+#[cfg(not(target_os = "macos"))]
 struct WholeProgram {
     name: &'static str,
     entry: &'static str,
@@ -259,6 +267,7 @@ struct WholeProgram {
     c_source: &'static str,
 }
 
+#[cfg(not(target_os = "macos"))]
 const PROGRAMS: &[WholeProgram] = &[
     WholeProgram {
         name: "wp_addone",
@@ -368,6 +377,7 @@ const PROGRAMS: &[WholeProgram] = &[
     },
 ];
 
+#[cfg(not(target_os = "macos"))]
 const SHAPE_PROGRAMS: &[WholeProgram] = &[
     WholeProgram {
         name: "wp_ifelse_chain",
@@ -461,30 +471,37 @@ const SHAPE_PROGRAMS: &[WholeProgram] = &[
     },
 ];
 
+#[cfg(not(target_os = "macos"))]
 fn full_battery() -> Vec<&'static WholeProgram> {
     PROGRAMS.iter().chain(SHAPE_PROGRAMS).collect()
 }
 
-fn cc() -> Option<String> {
-    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
+#[cfg(not(target_os = "macos"))]
+fn cc() -> String {
+    compiler_toolchain::require_any(&["gcc", "clang", "cc"])
 }
 
-fn gcc() -> Option<String> {
-    compiler_toolchain::probe_one("gcc")
+#[cfg(windows)]
+fn gcc() -> String {
+    compiler_toolchain::require_one("gcc")
 }
 
-fn clang() -> Option<String> {
-    compiler_toolchain::probe_one("clang")
+#[cfg(not(target_os = "macos"))]
+fn clang() -> String {
+    compiler_toolchain::require_one("clang")
 }
 
-fn rustc() -> Option<String> {
-    compiler_toolchain::probe_one("rustc")
+#[cfg(not(target_os = "macos"))]
+fn rustc() -> String {
+    compiler_toolchain::require_one("rustc")
 }
 
+#[cfg(not(target_os = "macos"))]
 fn scratch_dir() -> ScratchDir {
     ScratchDir::create("disrobe-pseudo-rustwp").expect("create scratch directory")
 }
 
+#[cfg(not(target_os = "macos"))]
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
     let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
@@ -523,6 +540,7 @@ fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     Some((slice.to_vec(), sym_addr))
 }
 
+#[cfg(not(target_os = "macos"))]
 struct RecoveredProgram {
     module: String,
     entry_params: usize,
@@ -530,6 +548,7 @@ struct RecoveredProgram {
     used_frame: bool,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn recover_program(
     object: &[u8],
     program: &WholeProgram,
@@ -538,8 +557,10 @@ fn recover_program(
     let mut functions: Vec<ProgramFunction> = Vec::with_capacity(program.functions.len());
     for &fname in program.functions {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, fname) else {
-            eprintln!("skip {}: {fname} symbol not located", program.name);
-            return None;
+            panic!(
+                "{}: {fname} is absent from the object compiled from its own source",
+                program.name
+            );
         };
         functions.push(ProgramFunction {
             name: format!("rec_{fname}"),
@@ -593,6 +614,7 @@ fn recover_program(
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mask_c(bits: u32) -> String {
     if bits >= 64 {
         "0xFFFFFFFFFFFFFFFFULL".to_owned()
@@ -601,6 +623,7 @@ fn mask_c(bits: u32) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn mask_rs(bits: u32) -> String {
     if bits >= 64 {
         "0xFFFFFFFFFFFFFFFFu64".to_owned()
@@ -609,6 +632,7 @@ fn mask_rs(bits: u32) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 const fn inputs_for(program: &WholeProgram) -> &'static [[i64; 3]] {
     if program.loopy {
         SMALL_INPUTS
@@ -617,6 +641,7 @@ const fn inputs_for(program: &WholeProgram) -> &'static [[i64; 3]] {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn build_c_ground(program: &WholeProgram) -> String {
     let inputs: &[[i64; 3]] = inputs_for(program);
     let mut arr: String = String::new();
@@ -645,6 +670,7 @@ fn build_c_ground(program: &WholeProgram) -> String {
     )
 }
 
+#[cfg(not(target_os = "macos"))]
 fn build_rust_program(program: &WholeProgram, recovered: &RecoveredProgram) -> String {
     let inputs: &[[i64; 3]] = inputs_for(program);
     let mut arr: String = String::new();
@@ -673,11 +699,13 @@ fn build_rust_program(program: &WholeProgram, recovered: &RecoveredProgram) -> S
     )
 }
 
+#[cfg(not(target_os = "macos"))]
 enum BoundedRun {
     Exited(std::process::Output),
     TimedOut,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn run_bounded(exe: &Path, secs: u64) -> BoundedRun {
     use std::process::Stdio;
     use wait_timeout::ChildExt as _;
@@ -700,6 +728,7 @@ fn run_bounded(exe: &Path, secs: u64) -> BoundedRun {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn parse_values(stdout: &str) -> Vec<u64> {
     stdout
         .lines()
@@ -707,6 +736,7 @@ fn parse_values(stdout: &str) -> Vec<u64> {
         .collect()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn compile_object_opt(
     compiler: &str,
     opt: &str,
@@ -739,6 +769,7 @@ fn compile_object_opt(
     std::fs::read(out).ok()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn c_ground_values(
     host_cc: &str,
     program: &WholeProgram,
@@ -777,6 +808,7 @@ fn c_ground_values(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn rust_recovered_values(
     rustc_bin: &str,
     program: &WholeProgram,
@@ -819,6 +851,7 @@ fn rust_recovered_values(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Outcome {
     Equivalent,
@@ -829,6 +862,7 @@ enum Outcome {
 
 const OPT_LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 
+#[cfg(not(target_os = "macos"))]
 fn opt_tag(opt: &str) -> &str {
     opt.trim_start_matches('-')
 }
@@ -839,11 +873,13 @@ fn optimization_matrix_includes_aggressive_and_size_modes() {
     assert!(OPT_LEVELS.contains(&"-Os"));
 }
 
+#[cfg(not(target_os = "macos"))]
 struct Env {
     host_cc: String,
     rustc_bin: String,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn measure(
     env: &Env,
     object: &[u8],
@@ -886,13 +922,11 @@ fn measure(
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn host_o3_nested_loop_recompiles_to_rust_equivalence() {
-    if !cfg!(windows) {
-        return;
-    }
-    let host_cc: String = gcc().expect("host gcc");
-    let rustc_bin: String = rustc().expect("host rustc");
+    let host_cc: String = gcc();
+    let rustc_bin: String = rustc();
     let program: &WholeProgram = SHAPE_PROGRAMS
         .iter()
         .find(|program: &&WholeProgram| program.name == "wp_nested_loop")
@@ -923,8 +957,8 @@ fn host_o3_nested_loop_recompiles_to_rust_equivalence() {
 #[cfg(windows)]
 #[test]
 fn gcc15_nested_loop_recompiles_to_rust_equivalence() {
-    let host_cc: String = gcc().expect("host gcc");
-    let rustc_bin: String = rustc().expect("host rustc");
+    let host_cc: String = gcc();
+    let rustc_bin: String = rustc();
     let program: &WholeProgram = SHAPE_PROGRAMS
         .iter()
         .find(|program: &&WholeProgram| program.name == "wp_nested_loop")
@@ -956,22 +990,11 @@ fn gcc15_nested_loop_recompiles_to_rust_equivalence() {
     ));
 }
 
+#[cfg(windows)]
 #[test]
 fn whole_programs_recompile_to_rust_equivalence_hostabi() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust whole-program oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv class is the cross-platform x86-64 guard"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping host rust whole-program oracle: gcc not on PATH");
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping host rust whole-program oracle: rustc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
     let env: Env = Env {
         host_cc: builder.clone(),
         rustc_bin,
@@ -1055,28 +1078,12 @@ fn whole_programs_recompile_to_rust_equivalence_hostabi() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn whole_programs_recompile_to_rust_equivalence_sysv() {
-    if cfg!(target_os = "macos") {
-        eprintln!(
-            "skipping sysv rust whole-program oracle on macos: the host gcc is an apple-clang alias and arm64 cannot faithfully run the x86-64 sysv differential, so the ground-truth vs recovered-rust comparison diverges; ubuntu carries the cross-platform sysv floor"
-        );
-        return;
-    }
-    let Some(host_cc): Option<String> = cc() else {
-        eprintln!("skipping sysv rust whole-program oracle: no host C compiler on PATH");
-        return;
-    };
-    let Some(clang_cc): Option<String> = clang() else {
-        eprintln!(
-            "skipping sysv rust whole-program oracle: clang (needed for the SysV object) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping sysv rust whole-program oracle: rustc not on PATH");
-        return;
-    };
+    let host_cc: String = cc();
+    let clang_cc: String = clang();
+    let rustc_bin: String = rustc();
     let env: Env = Env { host_cc, rustc_bin };
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();

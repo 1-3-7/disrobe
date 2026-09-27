@@ -170,14 +170,17 @@ fn grade_call_evidence(artifact: &Artifact) -> CallEvidenceGrade {
 
 #[test]
 fn real_stripped_x86_64_images_measure_function_start_discovery() {
-    let Some(toolchain): Option<Toolchain> = Toolchain::discover() else {
-        eprintln!("skipping: the corpus fixture directory is absent");
-        return;
-    };
-    if !toolchain.has_clang() || !toolchain.can_strip() {
-        eprintln!("skipping: clang and a native object stripper are required");
-        return;
-    }
+    let toolchain: Toolchain = Toolchain::discover().expect(
+        "the committed tests/fixtures/similarity_corpus directory and a writable scratch directory are required",
+    );
+    assert!(
+        toolchain.has_clang(),
+        "clang is required on PATH; every CI test runner provisions it"
+    );
+    assert!(
+        toolchain.can_strip(),
+        "a native object stripper (llvm-strip or strip) is required on PATH"
+    );
     let programs: Vec<String> = toolchain.programs();
     let levels: [&str; 3] = ["O0", "O2", "Os"];
     let hosted_available: bool = programs.first().is_some_and(|program: &String| {
@@ -190,7 +193,9 @@ fn real_stripped_x86_64_images_measure_function_start_discovery() {
         toolchain.build(&key).is_some()
     });
     if !hosted_available {
-        eprintln!("skipping hosted PE64 measurement: the MinGW target is unavailable");
+        eprintln!(
+            "UNGRADED: the hosted PE64 measurement needs the MinGW target, which is unavailable"
+        );
     }
     let flavors: Vec<Flavor> = if hosted_available {
         vec![Flavor::FreestandingElf64, Flavor::Hosted]
@@ -209,11 +214,12 @@ fn real_stripped_x86_64_images_measure_function_start_discovery() {
                 };
                 let built: Option<Artifact> = toolchain.build(&key);
                 let artifact: Artifact = if matches!(flavor, Flavor::Hosted) {
-                    let Some(artifact): Option<Artifact> = built else {
-                        eprintln!("skipping hosted PE64 measurement for {}", key.describe());
-                        continue;
-                    };
-                    artifact
+                    built.unwrap_or_else(|| {
+                        panic!(
+                            "the MinGW target built the first program but not {}",
+                            key.describe()
+                        )
+                    })
                 } else {
                     built.expect("compile real stripped image")
                 };

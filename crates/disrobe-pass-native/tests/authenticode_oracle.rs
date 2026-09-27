@@ -7,6 +7,10 @@ use std::process::Command;
 
 use disrobe_pass_native::{AuthenticodeReport, AuthenticodeVerdict, verify_authenticode};
 
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
 const NOW_SECS: u64 = 1_798_761_600;
 
 fn fixture_dir() -> PathBuf {
@@ -106,6 +110,7 @@ fn injected_timestamp_cannot_unexpire_a_signature() {
 }
 
 #[test]
+#[cfg(windows)]
 fn real_binary_rfc3161_timestamp_is_extracted() {
     let candidates: &[&str] = &[
         "advapi32.dll",
@@ -120,10 +125,11 @@ fn real_binary_rfc3161_timestamp_is_extracted() {
     ];
     let system_root: String = env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
     let system32: PathBuf = Path::new(&system_root).join("System32");
-    if !system32.exists() {
-        eprintln!("SKIP rfc3161_timestamp: no Windows System32 on this host");
-        return;
-    }
+    assert!(
+        system32.is_dir(),
+        "a Windows host carries {}",
+        system32.display()
+    );
     for name in candidates {
         let Ok(bytes): Result<Vec<u8>, _> = fs::read(system32.join(name)) else {
             continue;
@@ -215,8 +221,10 @@ fn ossl_calculated_digest(tool: &Path, sample: &Path) -> Option<(String, bool, b
 #[test]
 fn osslsigncode_cross_check_of_hash_and_verdict() {
     let Some(tool): Option<PathBuf> = find_osslsigncode() else {
-        eprintln!(
-            "SKIP osslsigncode_cross_check: osslsigncode not found on PATH, in %LOCALAPPDATA%\\Microsoft\\WinGet\\Packages, or via DISROBE_OSSLSIGNCODE"
+        prerequisite::tool_unavailable(
+            "DISROBE_REQUIRE_OSSLSIGNCODE",
+            "the osslsigncode Authenticode cross-check",
+            "osslsigncode is not on PATH, in %LOCALAPPDATA%\\Microsoft\\WinGet\\Packages, or named by DISROBE_OSSLSIGNCODE",
         );
         return;
     };
@@ -263,6 +271,7 @@ fn osslsigncode_cross_check_of_hash_and_verdict() {
 }
 
 #[test]
+#[cfg(windows)]
 fn real_trusted_binary_reaches_valid() {
     let candidates: &[&str] = &[
         "advapi32.dll",
@@ -274,10 +283,11 @@ fn real_trusted_binary_reaches_valid() {
     ];
     let system_root: String = env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
     let system32: PathBuf = Path::new(&system_root).join("System32");
-    if !system32.exists() {
-        eprintln!("SKIP real_trusted_binary: no Windows System32 directory on this host");
-        return;
-    }
+    assert!(
+        system32.is_dir(),
+        "a Windows host carries {}",
+        system32.display()
+    );
     for name in candidates {
         let Ok(bytes): Result<Vec<u8>, _> = fs::read(system32.join(name)) else {
             continue;

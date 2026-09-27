@@ -10,16 +10,19 @@ fn corpus_root() -> PathBuf {
         .join("corpus")
 }
 
-fn read_corpus(rel: &str) -> Option<Vec<u8>> {
-    std::fs::read(corpus_root().join(rel)).ok()
+fn read_corpus(rel: &str) -> Vec<u8> {
+    let path: PathBuf = corpus_root().join(rel);
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the committed fixture corpus/{rel} is required at {}: {error}",
+            path.display()
+        )
+    })
 }
 
 #[test]
 fn dynamic_fixture_matches_readelf_d_ground_truth() {
-    let Some(bytes): Option<Vec<u8>> = read_corpus("binfmt/elf-dynamic/sample.elf") else {
-        eprintln!("skip: corpus/binfmt/elf-dynamic/sample.elf absent");
-        return;
-    };
+    let bytes: Vec<u8> = read_corpus("binfmt/elf-dynamic/sample.elf");
     let report: ElfDynamicReport = analyze(&bytes).expect("parse dynamic elf");
 
     assert_eq!(report.class, ElfClass::Elf64);
@@ -59,12 +62,8 @@ fn dynamic_fixture_matches_readelf_d_ground_truth() {
 
 #[test]
 fn pyarmor_runtime_so_recovers_needed_symbols_and_relocs_like_readelf() {
-    let Some(bytes): Option<Vec<u8>> =
-        read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so")
-    else {
-        eprintln!("skip: pyarmor_runtime.so absent");
-        return;
-    };
+    let bytes: Vec<u8> =
+        read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so");
     let report: ElfDynamicReport = analyze(&bytes).expect("parse pyarmor runtime so");
 
     assert_eq!(report.class, ElfClass::Elf64);
@@ -244,12 +243,8 @@ fn extended_section_name_index_uses_section_zero_link() {
 
 #[test]
 fn fuzz_truncations_never_panic() {
-    let Some(full): Option<Vec<u8>> =
-        read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so")
-    else {
-        eprintln!("skip: pyarmor_runtime.so absent");
-        return;
-    };
+    let full: Vec<u8> =
+        read_corpus("python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so");
     for cut in (0..full.len()).step_by(4099) {
         let _ = analyze(&full[..cut]);
     }

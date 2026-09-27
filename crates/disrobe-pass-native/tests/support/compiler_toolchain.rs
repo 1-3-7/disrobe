@@ -49,8 +49,8 @@ fn announce_unmeasured(defect: &str) {
         return;
     }
     let line: String = format!(
-        "\nNOT MEASURED: a recompile-equivalence check was skipped because {defect}. Set \
-         {REQUIRE_VAR}=1 to fail instead of skipping when a native toolchain is absent. To fix \
+        "\nUNGRADED: a recompile-equivalence check measured nothing because {defect}. Set \
+         {REQUIRE_VAR}=1 to fail instead when a native toolchain capability is absent. To fix \
          it, {INSTALL_HINT}.\n"
     );
     let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
@@ -81,6 +81,31 @@ fn tool_runs(tool: &str) -> bool {
         .is_ok_and(|output: Output| output.status.success())
 }
 
+#[allow(dead_code)]
+pub(crate) fn require_one(tool: &'static str) -> String {
+    assert!(
+        tool_runs(tool),
+        "`{tool}` is not callable on PATH, and every CI test runner provisions it, so this oracle \
+         requires it. To fix it, {INSTALL_HINT}."
+    );
+    tool.to_owned()
+}
+
+#[allow(dead_code)]
+pub(crate) fn require_any(candidates: &[&'static str]) -> String {
+    let found: Option<&&'static str> = candidates
+        .iter()
+        .find(|candidate: &&&'static str| tool_runs(candidate));
+    let Some(tool): Option<&&'static str> = found else {
+        panic!(
+            "none of {candidates:?} is callable on PATH, and every CI test runner provisions a C \
+             compiler, so this oracle requires one. To fix it, {INSTALL_HINT}."
+        );
+    };
+    (*tool).to_owned()
+}
+
+#[allow(dead_code)]
 pub(crate) fn probe_one(tool: &'static str) -> Option<String> {
     if tool_runs(tool) {
         return Some(tool.to_owned());
@@ -89,6 +114,7 @@ pub(crate) fn probe_one(tool: &'static str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 pub(crate) fn probe_any(candidates: &[&'static str]) -> Option<String> {
     for candidate in candidates {
         if tool_runs(candidate) {

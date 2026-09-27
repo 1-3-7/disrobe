@@ -147,16 +147,14 @@ fn real_ollvm_sub_block_is_not_corrupted_by_copyprop() {
     p.push("native");
     p.push("ollvm");
     p.push("sub_mixer_O0.bin");
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&p) else {
-        eprintln!("skip: real OLLVM sub_mixer_O0.bin absent");
-        return;
-    };
-    let Some(outcome): Option<CopyPropOutcome> =
-        clean_register_copies(DeobfBits::Bits64, 0x1000, &bytes)
-    else {
-        eprintln!("skip: sub_mixer block is not a single straight-line region for copy-prop");
-        return;
-    };
+    let bytes: Vec<u8> = std::fs::read(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the committed fixture corpus/native/ollvm/sub_mixer_O0.bin is required at {}: {error}",
+            p.display()
+        )
+    });
+    let outcome: CopyPropOutcome = clean_register_copies(DeobfBits::Bits64, 0x1000, &bytes)
+        .expect("copy-prop must accept the real OLLVM sub_mixer block as one straight-line region");
     assert!(
         outcome.report.cleaned_insns <= outcome.report.original_insns,
         "copy-prop must never grow a real OLLVM block: {:?}",

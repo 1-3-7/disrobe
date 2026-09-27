@@ -230,10 +230,7 @@ fn every_finding_has_evidence_and_route() {
         "mobile/macho-mac/SwiftHello.original",
     ];
     for rel in samples {
-        let Some(bytes): Option<Vec<u8>> = corpus(rel) else {
-            eprintln!("skip {rel}: sample missing");
-            continue;
-        };
+        let bytes: Vec<u8> = require(rel);
         let report: FileIdReport = identify_file(&bytes, NOW_SECS);
         for finding in &report.findings {
             assert!(

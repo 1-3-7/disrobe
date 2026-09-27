@@ -17,7 +17,7 @@ use disrobe_pass_native::packers::section_recovery::build_loaded_image;
 use disrobe_pass_native::packers::{
     Detection, Packer, RecoveredImage, RecoveryOracle, detect, recover_detected,
 };
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{PackerFixture, require_committed};
 
 fn decoder_for(family: &str) -> &'static str {
     if family == "aspack" {
@@ -27,8 +27,8 @@ fn decoder_for(family: &str) -> &'static str {
     }
 }
 
-fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    load_fixture(PackerFixture {
+fn corpus(family: &str, name: &str) -> Vec<u8> {
+    require_committed(PackerFixture {
         decoder: decoder_for(family),
         family,
         name,
@@ -64,14 +64,8 @@ fn assert_auto_surface(
     orig_n: &str,
     text_floor_pct: u64,
 ) {
-    let Some(packed): Option<Vec<u8>> = corpus(family, packed_n) else {
-        eprintln!("skip {family} {packed_n}: missing");
-        return;
-    };
-    let Some(orig): Option<Vec<u8>> = corpus(family, orig_n) else {
-        eprintln!("skip {family} {orig_n}: missing");
-        return;
-    };
+    let packed: Vec<u8> = corpus(family, packed_n);
+    let orig: Vec<u8> = corpus(family, orig_n);
 
     let detections: Vec<Detection> = detect(&packed);
     assert!(

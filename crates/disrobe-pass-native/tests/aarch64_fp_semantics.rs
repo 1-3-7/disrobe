@@ -1122,7 +1122,10 @@ fn helpers_agree_with_the_integer_model_on_directed_vectors() {
 #[ignore = "cost: an exhaustive sweep over all 2^32 f32 bit patterns, minutes of compute on any runner; the directed-vector case above grades the same helpers in seconds"]
 fn helpers_agree_with_the_integer_model_on_every_f32_pattern() {
     let Some(compiler): Option<String> = cc() else {
-        eprintln!("SKIP exhaustive f32 sweep: no host C compiler on PATH");
+        oracle_demand::unmeasured(
+            "the exhaustive f32 floating-point helper sweep",
+            "no host C compiler is on PATH",
+        );
         return;
     };
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");

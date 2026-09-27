@@ -19,11 +19,16 @@ use disrobe_pass_native::{
     ResolvedCall, disassemble, recover_leaf_function_abi, recover_leaf_function_in_object,
     recover_leaf_function_with_calls, recover_program as lib_recover_program,
 };
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+use object::Object as _;
+#[cfg(any(windows, target_arch = "x86_64"))]
+use object::{ObjectSection as _, ObjectSymbol as _};
 
+#[cfg(windows)]
+use common::require_gcc;
 use common::{
     HOST_ABI, cc, clang, compile_object, compile_object_opt, compile_x86_object, function_code,
-    gcc, link_and_run, scratch_dir, strip_includes,
+    gcc, link_and_run, require_cc, require_clang, scratch_dir, strip_includes,
+    toolchain_unmeasured,
 };
 
 const WIDE_INPUTS: &str = "{0,0,0},{1,1,1},{-1,-1,-1},{7,3,5},{-7,3,-5},\
@@ -163,6 +168,7 @@ const PROGRAMS: &[WholeProgram] = &[
     },
 ];
 
+#[cfg(not(target_os = "macos"))]
 const NEAR_BRANCH_PROGRAM: WholeProgram = WholeProgram {
     name: "wp_near_branch",
     entry: "wp_near_branch_entry",
@@ -173,6 +179,7 @@ const NEAR_BRANCH_PROGRAM: WholeProgram = WholeProgram {
                long long wp_near_branch_entry(long long a){ return wp_near_branch_h(a) + 1; }",
 };
 
+#[cfg(not(target_os = "macos"))]
 const SHAPE_PROGRAMS: &[WholeProgram] = &[
     WholeProgram {
         name: "wp_ifelse_chain",
@@ -300,8 +307,10 @@ fn recover_program(
     let mut functions: Vec<ProgramFunction> = Vec::with_capacity(program.functions.len());
     for &fname in program.functions {
         let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, fname) else {
-            eprintln!("skip {}: {fname} symbol not located", program.name);
-            return None;
+            panic!(
+                "{}: {fname} is absent from the object compiled from its own source",
+                program.name
+            );
         };
         functions.push(ProgramFunction {
             name: format!("rec_{fname}"),
@@ -392,20 +401,10 @@ fn build_program_driver(program: &WholeProgram, recovered: &RecoveredProgram) ->
     )
 }
 
+#[cfg(windows)]
 #[test]
 fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native oracle class on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; cross-platform x86-64 sysv coverage is the sysv guard"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping whole-program host oracle: gcc (needed for the call idiom) not on PATH"
-        );
-        return;
-    };
+    let builder: String = require_gcc();
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut recovered_count: usize = 0;
@@ -414,12 +413,8 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
 
     for program in PROGRAMS {
         let obj_path: PathBuf = dir.join(format!("{}_host.o", program.name));
-        let Some(object): Option<Vec<u8>> =
-            compile_object(&builder, &CC_FLAGS, program.c_source, &obj_path)
-        else {
-            eprintln!("skip {}: host compile failed", program.name);
-            continue;
-        };
+        let object: Vec<u8> = compile_object(&builder, &CC_FLAGS, program.c_source, &obj_path)
+            .unwrap_or_else(|| panic!("the host gcc failed to compile {}", program.name));
         let Some(recovered): Option<RecoveredProgram> = recover_program(&object, program, HOST_ABI)
         else {
             rejected_count += 1;
@@ -454,7 +449,7 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
 }
 
 fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
-    let host_cc: String = cc()?;
+    let host_cc: String = require_cc();
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let host_path: PathBuf = dir.join(format!("{}_gt.o", program.name));
@@ -464,7 +459,7 @@ fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
 }
 
 fn compile_sysv_object(program: &WholeProgram, dir: &Path) -> Option<Vec<u8>> {
-    let clang_cc: String = clang()?;
+    let clang_cc: String = require_clang();
     let sysv_path: PathBuf = dir.join(format!("{}_sysv.o", program.name));
     let sysv_flags: [&str; 5] = [
         "--target=x86_64-unknown-linux-gnu",
@@ -476,17 +471,17 @@ fn compile_sysv_object(program: &WholeProgram, dir: &Path) -> Option<Vec<u8>> {
     let Some(sysv_obj): Option<Vec<u8>> =
         compile_object(&clang_cc, &sysv_flags, program.c_source, &sysv_path)
     else {
-        eprintln!(
-            "skipping {}: clang cannot emit a linux/SysV object on this host",
+        toolchain_unmeasured(&format!(
+            "clang cannot emit a linux/SysV object for {} on this host",
             program.name
-        );
+        ));
         return None;
     };
     Some(sysv_obj)
 }
 
 fn compile_x86_host_object(program: &WholeProgram, dir: &Path) -> Option<Vec<u8>> {
-    let clang_cc: String = clang()?;
+    let clang_cc: String = require_clang();
     let host_path: PathBuf = dir.join(format!("{}_x86_host.o", program.name));
     let host_flags: [&str; 5] = [
         "--target=x86_64-unknown-linux-gnu",
@@ -657,14 +652,9 @@ wp_vswitch_entry:
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping object_backed_size_optimized_value_switches_never_use_generic_rip_lea: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let host_cc: String = gcc().expect("host gcc");
     let clang_cc: String = clang().expect("sysv clang");
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
@@ -710,14 +700,9 @@ fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn object_backed_size_optimized_host_value_switches_recover_relocated_tables() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping object_backed_size_optimized_host_value_switches_recover_relocated_tables: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let host_cc: String = gcc().expect("host gcc");
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -746,14 +731,9 @@ fn object_backed_size_optimized_host_value_switches_recover_relocated_tables() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn object_backed_value_switch_normalizes_nonzero_section_addresses() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping object_backed_value_switch_normalizes_nonzero_section_addresses: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let host_cc: String = gcc().expect("host gcc");
     let program: &WholeProgram = PROGRAMS
         .iter()
@@ -860,14 +840,9 @@ fn object_backed_value_switch_normalizes_nonzero_section_addresses() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping object_backed_relocated_leaf_lea_never_uses_the_raw_displacement: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let host_cc: String = gcc().expect("host gcc");
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-rip-reloc");
     let object_path: PathBuf = scratch.path().join("relocated_leaf.o");
@@ -979,14 +954,9 @@ fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn direct_instruction_trap_arm_recovers_as_a_guard() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipping direct_instruction_trap_arm_recovers_as_a_guard: this case reads a host-native object and only applies on an x86-64 target architecture, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let compiler: String = clang().expect("clang");
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-direct-trap-guard");
     let object_path: PathBuf = scratch.path().join("direct_trap_guard.o");
@@ -1083,14 +1053,9 @@ fn windows_x64_fastfail_guard_recovers_from_a_compiler_artifact() {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn imported_stack_failure_guard_recovers_through_the_whole_program_consumer() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipping imported_stack_failure_guard_recovers_through_the_whole_program_consumer: this case requires x86-64 object recovery"
-        );
-        return;
-    }
     let compilers: Vec<String> = [gcc(), clang()].into_iter().flatten().collect();
     assert!(
         !compilers.is_empty(),
@@ -1160,14 +1125,9 @@ fn imported_stack_failure_guard_recovers_through_the_whole_program_consumer() {
     );
 }
 
+#[cfg(target_arch = "x86_64")]
 #[test]
 fn imported_stack_guard_recompiles_without_leaking_guard_state_into_the_entry() {
-    if !cfg!(target_arch = "x86_64") {
-        eprintln!(
-            "skipping imported_stack_guard_recompiles_without_leaking_guard_state_into_the_entry: this case requires x86-64 object recovery"
-        );
-        return;
-    }
     let compiler: String = gcc().expect("gcc is required for the imported stack-guard grade");
     let program: WholeProgram = WholeProgram {
         name: "stack_guard_state",
@@ -1396,14 +1356,9 @@ fn punpcklqdq_assigned_high_qword_is_observable_after_a_lane_shuffle() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn host_o3_nested_loop_recovers_after_vector_lane_reduction() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host_o3_nested_loop_recovers_after_vector_lane_reduction: this case reads a host-native object and only applies where cfg!(windows) holds, so it grades nothing here and must not be cited as coverage on this platform"
-        );
-        return;
-    }
     let host_cc: String = gcc().expect("host gcc");
     let program: &WholeProgram = SHAPE_PROGRAMS
         .iter()
@@ -1476,22 +1431,9 @@ fn host_o3_nested_loop_recovers_after_vector_lane_reduction() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn whole_programs_recompile_to_behavioral_equivalence_sysv() {
-    if cfg!(target_os = "macos") {
-        eprintln!(
-            "skipping sysv whole-program oracle on macos: the host gcc is an apple-clang alias that rejects the gcc-only if-conversion flags in CC_FLAGS, and arm64 cannot execute the x86-64 sysv battery; ubuntu carries the cross-platform sysv floor"
-        );
-        return;
-    }
-    let Some(_host): Option<String> = cc() else {
-        eprintln!("skipping: no host C compiler on PATH");
-        return;
-    };
-    let Some(_clang): Option<String> = clang() else {
-        eprintln!("skipping sysv whole-program: clang (needed for SysV object) not on PATH");
-        return;
-    };
     let mut recovered_count: usize = 0;
     let mut rejected_count: usize = 0;
     let mut chain_recovered: bool = false;
@@ -1572,15 +1514,13 @@ fn swap_helper_call_args(tu: &str, helper_rec_name: &str) -> Option<String> {
 
 fn teeth_baseline(program: &WholeProgram) -> Option<(String, Vec<u8>, RecoveredProgram)> {
     let (host_cc, host_obj, sysv_obj): (String, Vec<u8>, Vec<u8>) = compile_dual(program)?;
-    let Some(recovered): Option<RecoveredProgram> =
-        recover_program(&sysv_obj, program, PseudoAbi::SysV)
-    else {
-        eprintln!(
-            "skipping teeth for {}: this compiler build did not stitch the entry chain",
-            program.name
-        );
-        return None;
-    };
+    let recovered: RecoveredProgram = recover_program(&sysv_obj, program, PseudoAbi::SysV)
+        .unwrap_or_else(|| {
+            panic!(
+                "the teeth baseline {} did not stitch its entry chain",
+                program.name
+            )
+        });
     let driver: String = build_program_driver(program, &recovered);
     let stdout: String = link_and_run(
         &host_cc,
@@ -1598,24 +1538,18 @@ fn teeth_baseline(program: &WholeProgram) -> Option<(String, Vec<u8>, RecoveredP
 
 #[test]
 fn teeth_dropping_a_helper_call_diverges() {
-    let Some(_host): Option<String> = cc() else {
-        eprintln!("skipping: no host C compiler on PATH");
-        return;
-    };
-    let Some(_clang): Option<String> = clang() else {
-        eprintln!("skipping teeth: clang not on PATH");
-        return;
-    };
     let Some((host_cc, host_obj, recovered)): Option<(String, Vec<u8>, RecoveredProgram)> =
         teeth_baseline(&TEETH_SQ)
     else {
         return;
     };
-    let Some(mutated): Option<String> = neutralize_helper_call(&recovered.tu, "rec_teeth_sq_h")
-    else {
-        eprintln!("skipping teeth: no helper call statement to neutralize");
-        return;
-    };
+    let mutated: String = neutralize_helper_call(&recovered.tu, "rec_teeth_sq_h")
+        .unwrap_or_else(|| {
+            panic!(
+                "the recovered teeth_sq translation unit carries no rec_teeth_sq_h call statement to neutralize: {}",
+                recovered.tu
+            )
+        });
     assert_ne!(
         mutated, recovered.tu,
         "neutralizing the helper call must change the recovered translation unit"
@@ -1636,24 +1570,18 @@ fn teeth_dropping_a_helper_call_diverges() {
 
 #[test]
 fn teeth_swapping_a_call_argument_diverges() {
-    let Some(_host): Option<String> = cc() else {
-        eprintln!("skipping: no host C compiler on PATH");
-        return;
-    };
-    let Some(_clang): Option<String> = clang() else {
-        eprintln!("skipping teeth: clang not on PATH");
-        return;
-    };
     let Some((host_cc, host_obj, recovered)): Option<(String, Vec<u8>, RecoveredProgram)> =
         teeth_baseline(&TEETH_SUB)
     else {
         return;
     };
-    let Some(mutated): Option<String> = swap_helper_call_args(&recovered.tu, "rec_teeth_sub_h")
-    else {
-        eprintln!("skipping teeth: helper call did not carry two distinct arguments to swap");
-        return;
-    };
+    let mutated: String = swap_helper_call_args(&recovered.tu, "rec_teeth_sub_h")
+        .unwrap_or_else(|| {
+            panic!(
+                "the recovered rec_teeth_sub_h call does not carry two distinct arguments to swap: {}",
+                recovered.tu
+            )
+        });
     assert_ne!(
         mutated, recovered.tu,
         "swapping the call arguments must change the recovered translation unit"
@@ -1674,6 +1602,7 @@ fn teeth_swapping_a_call_argument_diverges() {
 
 const OPT_LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Og"];
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeOutcome {
     Equivalent,
@@ -1682,6 +1611,7 @@ enum ShapeOutcome {
     Skipped,
 }
 
+#[cfg(not(target_os = "macos"))]
 fn opt_tag(opt: &str) -> &str {
     opt.trim_start_matches('-')
 }
@@ -1693,20 +1623,9 @@ fn optimization_matrix_includes_aggressive_and_size_modes() {
     assert!(OPT_LEVELS.contains(&"-Og"));
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn near_conditional_branch_recompiles_to_behavioral_equivalence() {
-    if cfg!(target_os = "macos") {
-        eprintln!("skipping near-branch comparison on macos: x86-64 execution is unavailable");
-        return;
-    }
-    let Some(_host): Option<String> = cc() else {
-        eprintln!("skipping near-branch comparison: no host C compiler on PATH");
-        return;
-    };
-    let Some(_clang): Option<String> = clang() else {
-        eprintln!("skipping near-branch comparison: clang not on PATH");
-        return;
-    };
     let program: &WholeProgram = &NEAR_BRANCH_PROGRAM;
     let (host_cc, host_obj, sysv_obj): (String, Vec<u8>, Vec<u8>) =
         compile_dual(program).expect("compile near-branch program");
@@ -1732,10 +1651,12 @@ fn near_conditional_branch_recompiles_to_behavioral_equivalence() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 fn full_battery() -> Vec<&'static WholeProgram> {
     PROGRAMS.iter().chain(SHAPE_PROGRAMS).collect()
 }
 
+#[cfg(windows)]
 fn measure_host_program(
     builder: &str,
     program: &WholeProgram,
@@ -1764,6 +1685,7 @@ fn measure_host_program(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn measure_sysv_program(
     host_cc: &str,
     clang_cc: &str,
@@ -1807,18 +1729,10 @@ fn measure_sysv_program(
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native shape oracle on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the sysv class is the cross-platform x86-64 guard"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!("skipping host shape oracle: gcc not on PATH");
-        return;
-    };
+    let builder: String = require_gcc();
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
@@ -1868,22 +1782,11 @@ fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
-    if cfg!(target_os = "macos") {
-        eprintln!(
-            "skipping sysv shape oracle on macos: the host gcc is an apple-clang alias that rejects the gcc-only if-conversion flags in CC_FLAGS, and arm64 cannot execute the x86-64 sysv battery; ubuntu carries the cross-platform sysv floor"
-        );
-        return;
-    }
-    let Some(host_cc): Option<String> = cc() else {
-        eprintln!("skipping sysv shape oracle: no host C compiler on PATH");
-        return;
-    };
-    let Some(clang_cc): Option<String> = clang() else {
-        eprintln!("skipping sysv shape oracle: clang (needed for the SysV object) not on PATH");
-        return;
-    };
+    let host_cc: String = require_cc();
+    let clang_cc: String = require_clang();
     let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();

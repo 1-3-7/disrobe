@@ -8,36 +8,39 @@
     clippy::unreadable_literal
 )]
 
+#[cfg(windows)]
 use std::collections::BTreeMap;
+#[cfg(windows)]
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
+#[cfg(windows)]
 use disrobe_pass_native::{
-    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType, RecoveredSignature,
-    ResolvedCall, callee_int_arity, disassemble, recover_leaf_function_abi,
+    Arch, FpConstant, JumpTable, PseudoScalarType, ResolvedCall, callee_int_arity, disassemble,
     recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
     recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
 };
+use disrobe_pass_native::{LeafRecovery, PseudoAbi, RecoveredSignature, recover_leaf_function_abi};
+#[cfg(windows)]
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
 #[path = "support/compiler_toolchain.rs"]
 #[allow(clippy::redundant_pub_crate)]
 mod compiler_toolchain;
 
-const HOST_ABI: PseudoAbi = if cfg!(windows) {
-    PseudoAbi::MsX64
-} else {
-    PseudoAbi::SysV
-};
+#[cfg(windows)]
+const HOST_ABI: PseudoAbi = PseudoAbi::MsX64;
 
+#[cfg(windows)]
 struct Case {
     name: &'static str,
     arity: usize,
     c_source: &'static str,
 }
 
+#[cfg(windows)]
 const ARITH_BATTERY: &[Case] = &[
     Case {
         name: "r_add",
@@ -126,6 +129,7 @@ const ARITH_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const DIV_BATTERY: &[Case] = &[
     Case {
         name: "d_sdiv",
@@ -154,6 +158,7 @@ const DIV_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const ARITH_INPUTS: &[[i64; 3]] = &[
     [0, 0, 0],
     [1, 1, 1],
@@ -170,6 +175,7 @@ const ARITH_INPUTS: &[[i64; 3]] = &[
     [42, 42, 42],
 ];
 
+#[cfg(windows)]
 const DIV_INPUTS: &[[i64; 3]] = &[
     [1, 1, 0],
     [7, 3, 0],
@@ -187,12 +193,13 @@ const DIV_INPUTS: &[[i64; 3]] = &[
     [1, -1, 0],
 ];
 
-fn cc() -> Option<String> {
-    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
+#[cfg(windows)]
+fn cc() -> String {
+    compiler_toolchain::require_any(&["gcc", "clang", "cc"])
 }
 
-fn rustc() -> Option<String> {
-    compiler_toolchain::probe_one("rustc")
+fn rustc() -> String {
+    compiler_toolchain::require_one("rustc")
 }
 
 fn scratch_dir() -> ScratchDir {
@@ -213,10 +220,7 @@ fn sparse_ms_x64_rust_invocation_uses_physical_slot_arity() {
         invocation_arity, 3,
         "a callable RCX, gap, R8 Rust signature must receive all three physical slots"
     );
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping sparse MS x64 Rust compile check: rustc not on PATH");
-        return;
-    };
+    let rustc_bin: String = rustc();
     let recovered: String = recovery.rust_source.expect("sparse MS x64 Rust source");
     let driver: String =
         format!("{recovered}\nfn main() {{ assert_eq!(recovered(11, 0x12345678, 31), 42); }}\n");
@@ -250,6 +254,7 @@ fn sparse_ms_x64_rust_invocation_uses_physical_slot_arity() {
     );
 }
 
+#[cfg(windows)]
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
     let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
@@ -288,6 +293,7 @@ fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     Some((slice.to_vec(), sym_addr))
 }
 
+#[cfg(windows)]
 struct Prepared {
     name: String,
     arity: usize,
@@ -296,27 +302,27 @@ struct Prepared {
     rust: String,
 }
 
+#[cfg(windows)]
 fn prepare(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<Prepared> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
-    let rec: LeafRecovery = match recover_leaf_function_abi(&code, base, abi) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skip {} ({abi:?}): not in leaf class ({e})", case.name);
-            return None;
-        }
-    };
+    let rec: LeafRecovery = recover_leaf_function_abi(&code, base, abi).unwrap_or_else(|e| {
+        panic!(
+            "{} ({abi:?}) did not recover in the leaf class: {e}",
+            case.name
+        )
+    });
     let rw_bits: u32 = rec.return_width_bits;
     let params: usize = integer_invocation_arity(&rec.signature);
-    if params > 3 {
-        eprintln!("skip {}: arity {params} beyond driver support", case.name);
-        return None;
-    }
+    assert!(
+        params <= 3,
+        "{} recovered arity {params}, beyond the three-input driver",
+        case.name
+    );
     let Some(rust): Option<String> = rec.rust_source else {
-        eprintln!(
-            "skip {}: in leaf class but not pure-safe rust-emittable",
+        panic!(
+            "{} recovered in the leaf class but not as pure-safe rust",
             case.name
         );
-        return None;
     };
     let renamed: String = rust.replacen(
         "pub fn recovered(",
@@ -332,6 +338,7 @@ fn prepare(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<Prepared>
     })
 }
 
+#[cfg(windows)]
 fn mask_c(bits: u32) -> String {
     if bits >= 64 {
         "0xFFFFFFFFFFFFFFFFULL".to_owned()
@@ -340,6 +347,7 @@ fn mask_c(bits: u32) -> String {
     }
 }
 
+#[cfg(windows)]
 fn mask_rs(bits: u32) -> String {
     if bits >= 64 {
         "0xFFFFFFFFFFFFFFFFu64".to_owned()
@@ -348,6 +356,7 @@ fn mask_rs(bits: u32) -> String {
     }
 }
 
+#[cfg(windows)]
 fn build_c_driver(prepared: &[Prepared], inputs: &[[i64; 3]]) -> String {
     let mut decls: String = String::new();
     for p in prepared {
@@ -388,6 +397,7 @@ fn build_c_driver(prepared: &[Prepared], inputs: &[[i64; 3]]) -> String {
     )
 }
 
+#[cfg(windows)]
 fn build_rust_driver(prepared: &[Prepared], inputs: &[[i64; 3]]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     for p in prepared {
@@ -430,6 +440,7 @@ fn build_rust_driver(prepared: &[Prepared], inputs: &[[i64; 3]]) -> String {
     out
 }
 
+#[cfg(windows)]
 fn parse_results(stdout: &str) -> BTreeMap<(String, u64), u64> {
     let mut map: BTreeMap<(String, u64), u64> = BTreeMap::new();
     for line in stdout.lines() {
@@ -443,21 +454,10 @@ fn parse_results(stdout: &str) -> BTreeMap<(String, u64), u64> {
     map
 }
 
+#[cfg(windows)]
 fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]], rust_token: Option<&str>) {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust oracle class ({tag}) on non-windows: host cc is arm64 on macos and gcc codegen differs on linux; the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping {tag}: no C compiler (gcc/clang/cc) on PATH");
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping {tag}: rustc not on PATH");
-        return;
-    };
+    let compiler: String = cc();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -486,13 +486,11 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]], rust_token: Opt
         .iter()
         .filter_map(|case: &Case| prepare(case, &object_bytes, HOST_ABI))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping {tag} rust differential: this compiler build lowered none of the {} cases into the pure-safe rust class",
-            battery.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "{tag}: none of the {} cases recovered into the pure-safe rust class",
+        battery.len()
+    );
 
     if let Some(token) = rust_token {
         let carriers: usize = prepared
@@ -510,6 +508,7 @@ fn run_battery(tag: &str, battery: &[Case], inputs: &[[i64; 3]], rust_token: Opt
     );
 }
 
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 fn run_differential(
     tag: &str,
@@ -591,16 +590,19 @@ fn run_differential(
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn arith_leaf_functions_recompile_to_rust_equivalence() {
     run_battery("arith", ARITH_BATTERY, ARITH_INPUTS, None);
 }
 
+#[cfg(windows)]
 #[test]
 fn division_leaf_functions_recompile_to_rust_equivalence() {
     run_battery("div", DIV_BATTERY, DIV_INPUTS, None);
 }
 
+#[cfg(windows)]
 const WIDTH_EXT_BATTERY: &[Case] = &[
     Case {
         name: "x_zext16",
@@ -639,6 +641,7 @@ const WIDTH_EXT_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const SETCC_BATTERY: &[Case] = &[
     Case {
         name: "sc_lt",
@@ -667,6 +670,7 @@ const SETCC_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const MINMAX_BATTERY: &[Case] = &[
     Case {
         name: "mm_max",
@@ -700,11 +704,13 @@ const MINMAX_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 #[test]
 fn width_extension_leaf_functions_recompile_to_rust_equivalence() {
     run_battery("wx", WIDTH_EXT_BATTERY, ARITH_INPUTS, Some(" as u8"));
 }
 
+#[cfg(windows)]
 #[test]
 fn width_extension_rust_oracle_also_grades_signed_casts() {
     run_battery(
@@ -715,6 +721,7 @@ fn width_extension_rust_oracle_also_grades_signed_casts() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn setcc_boolean_leaf_functions_recompile_to_rust_equivalence() {
     run_battery(
@@ -725,15 +732,18 @@ fn setcc_boolean_leaf_functions_recompile_to_rust_equivalence() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn branchless_minmax_leaf_functions_recompile_to_rust_equivalence() {
     run_battery("minmax", MINMAX_BATTERY, ARITH_INPUTS, Some("= if "));
 }
 
-fn gcc() -> Option<String> {
-    compiler_toolchain::probe_one("gcc")
+#[cfg(windows)]
+fn gcc() -> String {
+    compiler_toolchain::require_one("gcc")
 }
 
+#[cfg(windows)]
 fn function_code_at(object_bytes: &[u8], addr: u64) -> Option<(Vec<u8>, u64, String)> {
     let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
     let sym: object::Symbol<'_, '_> = file.symbols().find(|s: &object::Symbol<'_, '_>| {
@@ -745,12 +755,14 @@ fn function_code_at(object_bytes: &[u8], addr: u64) -> Option<(Vec<u8>, u64, Str
     Some((code, base, bare.to_owned()))
 }
 
+#[cfg(windows)]
 struct RustCallCase {
     caller: &'static str,
     arity: usize,
     c_source: &'static str,
 }
 
+#[cfg(windows)]
 const RUST_CALL_BATTERY: &[RustCallCase] = &[
     RustCallCase {
         caller: "kr_sq",
@@ -778,6 +790,7 @@ const RUST_CALL_BATTERY: &[RustCallCase] = &[
     },
 ];
 
+#[cfg(windows)]
 const CALL_INPUTS: &[[i64; 2]] = &[
     [0, 0],
     [1, 1],
@@ -792,6 +805,7 @@ const CALL_INPUTS: &[[i64; 2]] = &[
     [42, 42],
 ];
 
+#[cfg(windows)]
 struct PreparedCall {
     caller: String,
     arity: usize,
@@ -801,15 +815,16 @@ struct PreparedCall {
     callee_defs: Vec<String>,
 }
 
+#[cfg(windows)]
 fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.caller)?;
-    let base_rec: LeafRecovery = match recover_leaf_function_abi(&code, base, HOST_ABI) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skip {}: caller not in call leaf class ({e})", case.caller);
-            return None;
-        }
-    };
+    let base_rec: LeafRecovery =
+        recover_leaf_function_abi(&code, base, HOST_ABI).unwrap_or_else(|e| {
+            panic!(
+                "caller {} did not recover in the call leaf class: {e}",
+                case.caller
+            )
+        });
     if base_rec.call_targets.is_empty() {
         return None;
     }
@@ -844,13 +859,11 @@ fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall
     }
     let rec: LeafRecovery =
         recover_leaf_function_with_calls(&code, base, HOST_ABI, &resolved).ok()?;
-    if integer_invocation_arity(&rec.signature) > 2 {
-        eprintln!(
-            "skip {}: recovered arity beyond 2-input driver",
-            case.caller
-        );
-        return None;
-    }
+    assert!(
+        integer_invocation_arity(&rec.signature) <= 2,
+        "caller {} recovered an arity beyond the two-input driver",
+        case.caller
+    );
     let caller_rust: String = rec.rust_source?;
     let renamed: String = caller_rust.replacen(
         "pub fn recovered(",
@@ -867,6 +880,7 @@ fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall
     })
 }
 
+#[cfg(windows)]
 fn build_c_call_golden(prepared: &[PreparedCall], inputs: &[[i64; 2]]) -> String {
     let mut decls: String = String::new();
     for p in prepared {
@@ -907,6 +921,7 @@ fn build_c_call_golden(prepared: &[PreparedCall], inputs: &[[i64; 2]]) -> String
     )
 }
 
+#[cfg(windows)]
 fn build_rust_call_driver(prepared: &[PreparedCall], inputs: &[[i64; 2]]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     out.push_str("mod recovered_helpers {\n");
@@ -956,24 +971,11 @@ fn build_rust_call_driver(prepared: &[PreparedCall], inputs: &[[i64; 2]]) -> Str
     out
 }
 
+#[cfg(windows)]
 #[test]
 fn call_leaf_functions_recompile_to_rust_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust call oracle on non-windows: the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping rust call oracle: gcc (needed for the noinline call idiom) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping rust call oracle: rustc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -1008,13 +1010,11 @@ fn call_leaf_functions_recompile_to_rust_equivalence() {
         .iter()
         .filter_map(|case: &RustCallCase| prepare_call(case, &object_bytes))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping rust call differential: this build lowered none of the {} caller/helper pairs into the pure-safe rust call class",
-            RUST_CALL_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "none of the {} caller/helper pairs recovered into the pure-safe rust call class",
+        RUST_CALL_BATTERY.len()
+    );
 
     let c_driver: String = build_c_call_golden(&prepared, CALL_INPUTS);
     let c_driver_path: PathBuf = dir.join("rustcall_ground.c");
@@ -1093,6 +1093,7 @@ fn call_leaf_functions_recompile_to_rust_equivalence() {
     );
 }
 
+#[cfg(windows)]
 const CF_MB_BATTERY: &[Case] = &[
     Case {
         name: "rc_cap",
@@ -1121,6 +1122,7 @@ const CF_MB_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const LOOP_MB_BATTERY: &[Case] = &[
     Case {
         name: "rl_sum",
@@ -1164,6 +1166,7 @@ const LOOP_MB_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const LOOP_MB_INPUTS: &[[i64; 3]] = &[
     [1, 1, 0],
     [2, 2, 0],
@@ -1179,6 +1182,7 @@ const LOOP_MB_INPUTS: &[[i64; 3]] = &[
     [20, 7, 0],
 ];
 
+#[cfg(windows)]
 fn recovered_c_source(object_bytes: &[u8], name: &str) -> Option<String> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
     recover_leaf_function_abi(&code, base, HOST_ABI)
@@ -1186,6 +1190,7 @@ fn recovered_c_source(object_bytes: &[u8], name: &str) -> Option<String> {
         .map(|r: LeafRecovery| r.source)
 }
 
+#[cfg(windows)]
 fn run_bounded_output(exe: &std::path::Path, secs: u64) -> Option<std::process::Output> {
     use std::process::Stdio;
     use wait_timeout::ChildExt as _;
@@ -1208,6 +1213,7 @@ fn run_bounded_output(exe: &std::path::Path, secs: u64) -> Option<std::process::
     }
 }
 
+#[cfg(windows)]
 fn run_multiblock_battery(
     tag: &str,
     battery: &[Case],
@@ -1215,22 +1221,8 @@ fn run_multiblock_battery(
     c_structure_token: &str,
     rust_structure_token: Option<&str>,
 ) {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust multi-block oracle ({tag}) on non-windows: the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping {tag}: gcc (needed to suppress if-conversion into a real branch CFG) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping {tag}: rustc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -1267,13 +1259,11 @@ fn run_multiblock_battery(
         .iter()
         .filter_map(|case: &Case| prepare(case, &object_bytes, HOST_ABI))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping {tag} rust multi-block differential: this build lowered none of the {} cases into the pure-safe rust class",
-            battery.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "{tag}: none of the {} multi-block cases recovered into the pure-safe rust class",
+        battery.len()
+    );
 
     let structured_ir: usize = battery
         .iter()
@@ -1371,11 +1361,13 @@ fn run_multiblock_battery(
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn control_flow_leaf_functions_recompile_to_rust_equivalence() {
     run_multiblock_battery("cf", CF_MB_BATTERY, ARITH_INPUTS, "if (", None);
 }
 
+#[cfg(windows)]
 #[test]
 fn natural_loop_leaf_functions_recompile_to_rust_equivalence() {
     run_multiblock_battery(
@@ -1387,6 +1379,7 @@ fn natural_loop_leaf_functions_recompile_to_rust_equivalence() {
     );
 }
 
+#[cfg(windows)]
 const SWITCH_BATTERY: &[Case] = &[
     Case {
         name: "sw_ops",
@@ -1420,6 +1413,7 @@ const SWITCH_BATTERY: &[Case] = &[
     },
 ];
 
+#[cfg(windows)]
 const SWITCH_AB_PAIRS: &[[i64; 2]] = &[
     [0, 0],
     [1, 1],
@@ -1435,6 +1429,7 @@ const SWITCH_AB_PAIRS: &[[i64; 2]] = &[
     [100, 200],
 ];
 
+#[cfg(windows)]
 fn switch_cmp_bound(insns: &[disrobe_pass_native::DisasmInsn], lea_addr: u64) -> Option<u64> {
     let mut bound: Option<u64> = None;
     for insn in insns {
@@ -1454,6 +1449,7 @@ fn switch_cmp_bound(insns: &[disrobe_pass_native::DisasmInsn], lea_addr: u64) ->
     bound
 }
 
+#[cfg(windows)]
 fn resolve_switch_tables(object_bytes: &[u8], code: &[u8], base: u64) -> Option<Vec<JumpTable>> {
     let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
     let insns: Vec<disrobe_pass_native::DisasmInsn> = disassemble(Arch::X86_64, base, code).ok()?;
@@ -1534,34 +1530,38 @@ fn resolve_switch_tables(object_bytes: &[u8], code: &[u8], base: u64) -> Option<
     Some(out)
 }
 
+#[cfg(windows)]
 fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
     if tables.is_empty() {
-        eprintln!("skip {}: no jump table resolved this build", case.name);
+        compiler_toolchain::unmeasured(&format!(
+            "the compiler lowered {} without a dense jump table",
+            case.name
+        ));
         return None;
     }
-    let rec: LeafRecovery = match recover_leaf_function_switch_abi(&code, base, HOST_ABI, &tables) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("skip {}: not in dense-switch class ({e})", case.name);
-            return None;
-        }
-    };
+    let rec: LeafRecovery = recover_leaf_function_switch_abi(&code, base, HOST_ABI, &tables)
+        .unwrap_or_else(|e| {
+            panic!(
+                "{} did not recover in the dense-switch class: {e}",
+                case.name
+            )
+        });
     if !rec.lifted_switch {
         return None;
     }
     let params: usize = integer_invocation_arity(&rec.signature);
-    if params > 3 {
-        eprintln!("skip {}: arity {params} beyond driver support", case.name);
-        return None;
-    }
+    assert!(
+        params <= 3,
+        "{} recovered arity {params}, beyond the three-input driver",
+        case.name
+    );
     let Some(rust): Option<String> = rec.rust_source else {
-        eprintln!(
-            "skip {}: dense switch but not pure-safe rust-emittable (frame/mem/fp)",
+        panic!(
+            "{} recovered as a dense switch but not as pure-safe rust",
             case.name
         );
-        return None;
     };
     let renamed: String = rust.replacen(
         "pub fn recovered(",
@@ -1577,24 +1577,11 @@ fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
     })
 }
 
+#[cfg(windows)]
 #[test]
 fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust switch oracle on non-windows: the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping rust switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping rust switch oracle: rustc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -1631,13 +1618,11 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         .iter()
         .filter_map(|case: &Case| prepare_switch(case, &object_bytes))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping rust switch differential: this gcc build reconstructed none of the {} cases into a dense-switch pure-safe rust function",
-            SWITCH_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "none of the {} switch cases recovered into a dense-switch pure-safe rust function",
+        SWITCH_BATTERY.len()
+    );
 
     let match_carriers: usize = prepared
         .iter()
@@ -1672,10 +1657,12 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
     );
 }
 
-fn clang() -> Option<String> {
-    compiler_toolchain::probe_one("clang")
+#[cfg(windows)]
+fn clang() -> String {
+    compiler_toolchain::require_one("clang")
 }
 
+#[cfg(windows)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FpArg {
     Double,
@@ -1684,6 +1671,7 @@ enum FpArg {
     Int,
 }
 
+#[cfg(windows)]
 impl FpArg {
     const fn c_type(self) -> &'static str {
         match self {
@@ -1695,6 +1683,7 @@ impl FpArg {
     }
 }
 
+#[cfg(windows)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FpRet {
     Double,
@@ -1702,6 +1691,7 @@ enum FpRet {
     LongLong,
 }
 
+#[cfg(windows)]
 struct FpCase {
     name: &'static str,
     args: &'static [FpArg],
@@ -1709,6 +1699,7 @@ struct FpCase {
     c_source: &'static str,
 }
 
+#[cfg(windows)]
 const FP_BATTERY: &[FpCase] = &[
     FpCase {
         name: "fv_addd",
@@ -1856,6 +1847,7 @@ const FP_BATTERY: &[FpCase] = &[
     },
 ];
 
+#[cfg(windows)]
 const FP_PAIRS: &[[f64; 2]] = &[
     [0.0, 1.0],
     [1.0, 1.0],
@@ -1879,6 +1871,7 @@ const FP_PAIRS: &[[f64; 2]] = &[
     [-0.0, 4.0],
 ];
 
+#[cfg(windows)]
 fn fp_width_bytes(mnemonic: &str) -> Option<usize> {
     match mnemonic {
         "movsd" | "addsd" | "subsd" | "mulsd" | "divsd" | "ucomisd" | "comisd" | "minsd"
@@ -1889,6 +1882,7 @@ fn fp_width_bytes(mnemonic: &str) -> Option<usize> {
     }
 }
 
+#[cfg(windows)]
 fn resolve_fp_constants(object_bytes: &[u8], code: &[u8], base: u64) -> Vec<FpConstant> {
     let Ok(file): Result<object::File<'_>, _> = object::File::parse(object_bytes) else {
         return Vec::new();
@@ -1974,6 +1968,7 @@ fn resolve_fp_constants(object_bytes: &[u8], code: &[u8], base: u64) -> Vec<FpCo
     out
 }
 
+#[cfg(windows)]
 struct PreparedFp {
     name: String,
     args: &'static [FpArg],
@@ -1981,35 +1976,31 @@ struct PreparedFp {
     rust: String,
 }
 
+#[cfg(windows)]
 fn prepare_fp(case: &FpCase, object_bytes: &[u8], abi: PseudoAbi) -> Option<PreparedFp> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
-    let rec: LeafRecovery = match recover_leaf_function_const_abi(&code, base, abi, &consts) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!(
-                "skip {} ({abi:?}): not in scalar float leaf class ({e})",
+    let rec: LeafRecovery = recover_leaf_function_const_abi(&code, base, abi, &consts)
+        .unwrap_or_else(|e| {
+            panic!(
+                "{} ({abi:?}) did not recover in the scalar float leaf class: {e}",
                 case.name
-            );
-            return None;
-        }
-    };
+            )
+        });
     let Some(rust): Option<String> = rec.rust_source else {
-        eprintln!(
-            "skip {}: scalar float leaf but not pure-safe rust-emittable",
+        panic!(
+            "{} recovered as a scalar float leaf but not as pure-safe rust",
             case.name
         );
-        return None;
     };
     let total_params: usize = rec.signature.parameter_types().len();
-    if total_params != case.args.len() {
-        eprintln!(
-            "skip {}: recovered {total_params} params but source declares {}",
-            case.name,
-            case.args.len()
-        );
-        return None;
-    }
+    assert_eq!(
+        total_params,
+        case.args.len(),
+        "{} recovered {total_params} parameters but the source declares {}",
+        case.name,
+        case.args.len()
+    );
     let renamed: String = rust.replacen(
         "pub fn recovered(",
         &format!("pub fn rec_{}(", case.name),
@@ -2023,6 +2014,7 @@ fn prepare_fp(case: &FpCase, object_bytes: &[u8], abi: PseudoAbi) -> Option<Prep
     })
 }
 
+#[cfg(windows)]
 fn fp_arg_expr_c(arg: FpArg, slot: usize) -> String {
     match arg {
         FpArg::Double => format!("pairs[k][{slot}]"),
@@ -2032,6 +2024,7 @@ fn fp_arg_expr_c(arg: FpArg, slot: usize) -> String {
     }
 }
 
+#[cfg(windows)]
 fn fp_arg_expr_rs(arg: FpArg, slot: usize) -> String {
     match arg {
         FpArg::Double => format!("pairs[k][{slot}]"),
@@ -2041,6 +2034,7 @@ fn fp_arg_expr_rs(arg: FpArg, slot: usize) -> String {
     }
 }
 
+#[cfg(windows)]
 const fn fp_c_ret(ret: FpRet) -> &'static str {
     match ret {
         FpRet::Double => "double",
@@ -2049,6 +2043,7 @@ const fn fp_c_ret(ret: FpRet) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 const fn fp_c_bits_fn(ret: FpRet) -> &'static str {
     match ret {
         FpRet::Double => "d_bits",
@@ -2057,6 +2052,7 @@ const fn fp_c_bits_fn(ret: FpRet) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 fn build_fp_c_golden(prepared: &[PreparedFp]) -> String {
     let mut decls: String = String::new();
     for p in prepared {
@@ -2106,6 +2102,7 @@ fn build_fp_c_golden(prepared: &[PreparedFp]) -> String {
     )
 }
 
+#[cfg(windows)]
 fn build_fp_rust_driver(prepared: &[PreparedFp]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     for p in prepared {
@@ -2151,24 +2148,11 @@ fn build_fp_rust_driver(prepared: &[PreparedFp]) -> String {
     out
 }
 
+#[cfg(windows)]
 #[test]
 fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust scalar-float oracle on non-windows: the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = clang() else {
-        eprintln!(
-            "skipping rust scalar-float oracle: clang (needed for a clean scalar SSE lowering) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping rust scalar-float oracle: rustc not on PATH");
-        return;
-    };
+    let builder: String = clang();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -2204,13 +2188,11 @@ fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
         .iter()
         .filter_map(|case: &FpCase| prepare_fp(case, &object_bytes, HOST_ABI))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping rust scalar-float differential: this clang build lowered none of the {} cases into the pure-safe rust float class",
-            FP_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "none of the {} scalar float cases recovered into the pure-safe rust float class",
+        FP_BATTERY.len()
+    );
 
     let carriers: usize = prepared
         .iter()
@@ -2294,12 +2276,14 @@ fn scalar_float_leaf_functions_recompile_to_rust_equivalence() {
     );
 }
 
+#[cfg(windows)]
 struct FpSwitchCase {
     name: &'static str,
     ret: FpRet,
     c_source: &'static str,
 }
 
+#[cfg(windows)]
 const FP_SWITCH_BATTERY: &[FpSwitchCase] = &[
     FpSwitchCase {
         name: "swf_d",
@@ -2318,6 +2302,7 @@ const FP_SWITCH_BATTERY: &[FpSwitchCase] = &[
     },
 ];
 
+#[cfg(windows)]
 const FP_SWITCH_PAIRS: &[[f64; 2]] = &[
     [0.0, 1.0],
     [1.0, 1.0],
@@ -2338,12 +2323,14 @@ const FP_SWITCH_PAIRS: &[[f64; 2]] = &[
     [-0.0, 4.0],
 ];
 
+#[cfg(windows)]
 struct PreparedFpSwitch {
     name: String,
     ret: FpRet,
     rust: String,
 }
 
+#[cfg(windows)]
 fn prepare_fp_switch(
     case: &FpSwitchCase,
     object_bytes: &[u8],
@@ -2352,18 +2339,22 @@ fn prepare_fp_switch(
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
     let tables: Vec<JumpTable> = resolve_switch_tables(object_bytes, &code, base)?;
     if tables.is_empty() {
-        eprintln!("skip {}: no jump table resolved this build", case.name);
+        compiler_toolchain::unmeasured(&format!(
+            "the compiler lowered {} without a dense jump table",
+            case.name
+        ));
         return None;
     }
     let consts: Vec<FpConstant> = resolve_fp_constants(object_bytes, &code, base);
-    let rec: LeafRecovery =
-        match recover_leaf_function_switch_const_abi(&code, base, abi, &tables, &consts) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("skip {}: not in dense fp-switch class ({e})", case.name);
-                return None;
-            }
-        };
+    let rec: LeafRecovery = recover_leaf_function_switch_const_abi(
+        &code, base, abi, &tables, &consts,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "{} did not recover in the dense fp-switch class: {e}",
+            case.name
+        )
+    });
     if !rec.lifted_switch {
         return None;
     }
@@ -2372,19 +2363,17 @@ fn prepare_fp_switch(
         FpRet::Float => PseudoScalarType::Float,
         FpRet::LongLong => return None,
     };
-    if rec.returns_fp != Some(expected) {
-        eprintln!(
-            "skip {}: switch did not type as {expected:?} fp return (got {:?})",
-            case.name, rec.returns_fp
-        );
-        return None;
-    }
+    assert_eq!(
+        rec.returns_fp,
+        Some(expected),
+        "{} did not type as a {expected:?} fp-returning switch",
+        case.name
+    );
     let Some(rust): Option<String> = rec.rust_source else {
-        eprintln!(
-            "skip {}: dense fp switch but not pure-safe rust-emittable",
+        panic!(
+            "{} recovered as a dense fp switch but not as pure-safe rust",
             case.name
         );
-        return None;
     };
     let renamed: String = rust.replacen(
         "pub fn recovered(",
@@ -2398,6 +2387,7 @@ fn prepare_fp_switch(
     })
 }
 
+#[cfg(windows)]
 fn build_fp_switch_c_golden(prepared: &[PreparedFpSwitch]) -> String {
     let mut decls: String = String::new();
     for p in prepared {
@@ -2438,6 +2428,7 @@ fn build_fp_switch_c_golden(prepared: &[PreparedFpSwitch]) -> String {
     )
 }
 
+#[cfg(windows)]
 fn build_fp_switch_rust_driver(prepared: &[PreparedFpSwitch]) -> String {
     let mut out: String = String::from("#![allow(unused, unused_parens, dead_code)]\n");
     for p in prepared {
@@ -2484,24 +2475,11 @@ fn build_fp_switch_rust_driver(prepared: &[PreparedFpSwitch]) -> String {
     out
 }
 
+#[cfg(windows)]
 #[test]
 fn fp_switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host-native rust fp-switch oracle on non-windows: the x86-64 ground-truth object requires the windows host"
-        );
-        return;
-    }
-    let Some(builder): Option<String> = gcc() else {
-        eprintln!(
-            "skipping rust fp-switch oracle: gcc (needed for the dense jump-table idiom) not on PATH"
-        );
-        return;
-    };
-    let Some(rustc_bin): Option<String> = rustc() else {
-        eprintln!("skipping rust fp-switch oracle: rustc not on PATH");
-        return;
-    };
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
 
@@ -2538,13 +2516,11 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
         .iter()
         .filter_map(|case: &FpSwitchCase| prepare_fp_switch(case, &object_bytes, HOST_ABI))
         .collect();
-    if prepared.is_empty() {
-        eprintln!(
-            "skipping rust fp-switch differential: this gcc build reconstructed none of the {} cases into a dense fp-returning jump-table switch",
-            FP_SWITCH_BATTERY.len()
-        );
-        return;
-    }
+    assert!(
+        !prepared.is_empty(),
+        "none of the {} fp switch cases recovered into a dense fp-returning jump-table switch",
+        FP_SWITCH_BATTERY.len()
+    );
 
     let match_carriers: usize = prepared
         .iter()

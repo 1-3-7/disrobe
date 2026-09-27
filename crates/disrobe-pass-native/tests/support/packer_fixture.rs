@@ -373,6 +373,18 @@ pub(crate) fn load_fixture(fixture: PackerFixture<'_>) -> Option<Vec<u8>> {
     load_fixture_with_requirement(fixture, fixture_requirement())
 }
 
+pub(crate) fn require_committed(fixture: PackerFixture<'_>) -> Vec<u8> {
+    assert!(
+        is_committed(fixture.family, fixture.name),
+        "corpus/native/packers/{}/{} is not a committed fixture, so it cannot be required; load it \
+         with load_fixture",
+        fixture.family,
+        fixture.name
+    );
+    load_fixture_with_requirement(fixture, FixtureRequirement::Committed)
+        .expect("an absent committed fixture fails the committed requirement before returning")
+}
+
 pub(crate) fn enforce_something_was_graded(decoder: &str, graded: usize, family: &str) {
     if graded > 0 {
         return;

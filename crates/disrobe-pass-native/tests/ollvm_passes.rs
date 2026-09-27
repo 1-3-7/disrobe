@@ -186,6 +186,16 @@ fn ollvm_substitution_folds_through_assembled_movzx_sub_register_operands() {
     );
 }
 
+fn committed_corpus(name: &str) -> Vec<u8> {
+    let path: std::path::PathBuf = corpus(name);
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the committed fixture corpus/native/ollvm/{name} is required at {}: {error}",
+            path.display()
+        )
+    })
+}
+
 fn corpus(name: &str) -> std::path::PathBuf {
     let mut p: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop();
@@ -199,10 +209,7 @@ fn corpus(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn real_ollvm_cff_covers_every_dispatcher_state_of_classify() {
-    let Ok(flattened): std::io::Result<Vec<u8>> = std::fs::read(corpus("classify_fla.bin")) else {
-        eprintln!("skip: real OLLVM classify_fla.bin absent");
-        return;
-    };
+    let flattened: Vec<u8> = committed_corpus("classify_fla.bin");
     let detected = detect_obfuscators(&flattened);
     assert!(
         detected
@@ -255,10 +262,7 @@ fn real_ollvm_cff_covers_every_dispatcher_state_of_classify() {
 
 #[test]
 fn real_ollvm_cff_recovers_a_flattened_loop() {
-    let Ok(flattened): std::io::Result<Vec<u8>> = std::fs::read(corpus("sumto_fla.bin")) else {
-        eprintln!("skip: real OLLVM sumto_fla.bin absent");
-        return;
-    };
+    let flattened: Vec<u8> = committed_corpus("sumto_fla.bin");
     let base: u64 = 0x1000;
     let report: CffUnflattenReport = unflatten_ollvm(DeobfBits::Bits64, base, &flattened, base);
     assert_eq!(
@@ -286,10 +290,7 @@ fn real_ollvm_cff_recovers_a_flattened_loop() {
 
 #[test]
 fn real_ollvm_sub_lifts_through_stack_slots() {
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus("sub_mixer_O0.bin")) else {
-        eprintln!("skip: real OLLVM sub_mixer_O0.bin absent");
-        return;
-    };
+    let bytes: Vec<u8> = committed_corpus("sub_mixer_O0.bin");
     let Some(result): Option<SubstitutionResult> =
         undo_ollvm_substitution(DeobfBits::Bits64, 0x1000, &bytes)
     else {
@@ -310,10 +311,7 @@ fn real_ollvm_sub_lifts_through_stack_slots() {
 
 #[test]
 fn real_ollvm_bcf_folds_opaque_predicate_or_real_condition() {
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus("bcf_classify_O0.bin")) else {
-        eprintln!("skip: real OLLVM bcf_classify_O0.bin absent");
-        return;
-    };
+    let bytes: Vec<u8> = committed_corpus("bcf_classify_O0.bin");
     let block: &[u8] = first_predicate_block(&bytes);
     let Some(branch): Option<BogusBranch> = strip_ollvm_bcf(DeobfBits::Bits64, BASE, block) else {
         panic!(

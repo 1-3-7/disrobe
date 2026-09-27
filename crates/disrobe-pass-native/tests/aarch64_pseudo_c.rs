@@ -1681,12 +1681,11 @@ fn clang_d_register_post_index_copy_loop_lifts() {
         recovered.source
     );
 
-    let Some(compiler): Option<PathBuf> =
-        find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
-    else {
-        eprintln!("skipping d-register behavioral check: no host C compiler");
-        return;
-    };
+    let compiler: PathBuf = find_program("cc")
+        .or_else(|| find_program("gcc").or_else(|| find_program("clang")))
+        .expect(
+            "a host C compiler (cc, gcc or clang) is required for the d-register behavioral check",
+        );
     let scratch: tempfile::TempDir =
         tempfile::tempdir().expect("create d-register scratch directory");
     let source_path: PathBuf = scratch.path().join("dreg_recovered.c");
@@ -1779,12 +1778,9 @@ fn scalar_d_register_post_index_load_and_store_keep_fp_state() {
         recovered_put.source
     );
 
-    let Some(compiler): Option<PathBuf> =
+    let compiler: PathBuf =
         find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
-    else {
-        eprintln!("skipping scalar d-register behavioral check: no host C compiler");
-        return;
-    };
+            .expect("a host C compiler (cc, gcc or clang) is required for the scalar d-register behavioral check");
     let scratch: tempfile::TempDir =
         tempfile::tempdir().expect("create scalar d-register scratch directory");
     let take_path: PathBuf = scratch.path().join("scalar_take.c");
@@ -1849,10 +1845,8 @@ fn scalar_d_register_post_index_load_and_store_keep_fp_state() {
             .expect("scalar d-register driver timeout");
     assert_eq!(outcome.exit_code, Some(0));
 
-    let Some(rustup): Option<PathBuf> = find_program("rustup") else {
-        eprintln!("skipping scalar d-register Rust check: no Rust compiler");
-        return;
-    };
+    let rustup: PathBuf =
+        find_program("rustup").expect("rustup is required for the scalar d-register Rust check");
     let rustc_output: CapturedOutput = run_tool(&rustup, vec!["which".into(), "rustc".into()]);
     let rustc: PathBuf = PathBuf::from(
         String::from_utf8_lossy(&rustc_output.stdout)
@@ -1932,12 +1926,9 @@ fn post_indexed_d_value_consumed_by_vector_stays_vector() {
     assert!(recovered.source.contains("v0"), "{}", recovered.source);
     assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
 
-    let Some(compiler): Option<PathBuf> =
+    let compiler: PathBuf =
         find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
-    else {
-        eprintln!("skipping vector d-register behavioral check: no host C compiler");
-        return;
-    };
+            .expect("a host C compiler (cc, gcc or clang) is required for the vector d-register behavioral check");
     let scratch: tempfile::TempDir =
         tempfile::tempdir().expect("create vector d-register scratch directory");
     let recovered_path: PathBuf = scratch.path().join("vector_transfer.c");
@@ -2555,14 +2546,10 @@ fn neon_recovered_sources_recompile_to_matching_words() {
 
 #[test]
 fn clang_and_llvm_cross_check_committed_words_and_recompiled_add() {
-    let Some(clang): Option<PathBuf> = find_program("clang") else {
-        eprintln!("skipping aarch64 compiler cross-check: clang is unavailable");
-        return;
-    };
-    let Some(objdump): Option<PathBuf> = find_program("llvm-objdump") else {
-        eprintln!("skipping aarch64 compiler cross-check: llvm-objdump is unavailable");
-        return;
-    };
+    let clang: PathBuf =
+        find_program("clang").expect("clang is required for the aarch64 compiler cross-check");
+    let objdump: PathBuf = find_program("llvm-objdump")
+        .expect("llvm-objdump is required for the aarch64 compiler cross-check");
     let scratch: tempfile::TempDir = tempfile::tempdir().expect("create aarch64 scratch directory");
     let original_c: PathBuf = scratch.path().join("original.c");
     let original_o: PathBuf = scratch.path().join("original.o");

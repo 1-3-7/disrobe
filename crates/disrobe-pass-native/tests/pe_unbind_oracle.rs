@@ -17,15 +17,17 @@ use disrobe_pass_native::{
     SectionRecoveryReport, UnbindReport, build_loaded_image, section_recovery_report, unbind_pe,
 };
 
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
+const REQUIRE_LIEF_VAR: &str = "DISROBE_REQUIRE_LIEF";
+
 fn corpus_pe(name: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    p.push("unbind");
-    p.push(name);
-    fs::read(&p).ok()
+    prerequisite::local_only(
+        &format!("corpus/native/unbind/{name}"),
+        &format!("the {name} unbind parity oracle"),
+    )
 }
 
 fn read_u16(image: &[u8], off: usize) -> u16 {
@@ -216,7 +218,6 @@ fn run_unbind(original: &[u8], load_base: u64) -> UnbindOutcome {
 #[test]
 fn unbind_notepad_pe64_restores_whole_image_parity() {
     let Some(original): Option<Vec<u8>> = corpus_pe("notepad.pe64.exe") else {
-        eprintln!("skip: corpus/native/unbind/notepad.pe64.exe missing");
         return;
     };
     let load_base: u64 = 0x0007_3210_0000;
@@ -263,7 +264,6 @@ fn unbind_notepad_pe64_restores_whole_image_parity() {
 #[test]
 fn unbind_kernel32_pe32_restores_whole_image_parity() {
     let Some(original): Option<Vec<u8>> = corpus_pe("kernel32.pe32.dll") else {
-        eprintln!("skip: corpus/native/unbind/kernel32.pe32.dll missing");
         return;
     };
     let load_base: u64 = 0x6F00_0000;
@@ -377,19 +377,11 @@ if __name__ == "__main__":
     sys.exit(main())
 "#;
 
-fn corpus_native(rel: &str) -> Option<Vec<u8>> {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("..");
-    p.push("..");
-    p.push("corpus");
-    p.push("native");
-    for part in rel.split('/') {
-        p.push(part);
-    }
-    fs::read(&p).ok()
+fn corpus_native(rel: &str) -> Vec<u8> {
+    prerequisite::committed(&format!("corpus/native/{rel}"))
 }
 
-fn python_with_lief() -> Option<PathBuf> {
+fn python_with_lief(graded: &str) -> Option<PathBuf> {
     for candidate in ["python", "python3", "py"] {
         let ready: bool = Command::new(candidate)
             .args(["-c", "import lief"])
@@ -399,6 +391,11 @@ fn python_with_lief() -> Option<PathBuf> {
             return Some(PathBuf::from(candidate));
         }
     }
+    prerequisite::tool_unavailable(
+        REQUIRE_LIEF_VAR,
+        graded,
+        "no python, python3 or py on PATH can import lief",
+    );
     None
 }
 
@@ -631,15 +628,12 @@ fn assert_recovered_tree_matches_clean(tag: &str, python: &Path, rec: &Recovered
 
 #[test]
 fn unbind_restores_rsrc_tree_graded_by_lief_accessenum() {
-    let Some(python): Option<PathBuf> = python_with_lief() else {
-        eprintln!("skip: python with lief unavailable");
-        return;
-    };
-    let Some(original): Option<Vec<u8>> = corpus_native("packers/mew/AccessEnum.original.exe")
+    let Some(python): Option<PathBuf> =
+        python_with_lief("the lief resource-tree grade of packers/mew/AccessEnum.original.exe")
     else {
-        eprintln!("skip: corpus/native/packers/mew/AccessEnum.original.exe missing");
         return;
     };
+    let original: Vec<u8> = corpus_native("packers/mew/AccessEnum.original.exe");
     let load_base: u64 = 0x0040_0000;
     let rec: RecoveredPe = bind_then_unbind(&original, load_base);
     assert!(
@@ -661,15 +655,12 @@ fn unbind_restores_rsrc_tree_graded_by_lief_accessenum() {
 
 #[test]
 fn unbind_restores_rsrc_tree_graded_by_lief_autologon() {
-    let Some(python): Option<PathBuf> = python_with_lief() else {
-        eprintln!("skip: python with lief unavailable");
-        return;
-    };
-    let Some(original): Option<Vec<u8>> = corpus_native("packers/mew/Autologon.original.exe")
+    let Some(python): Option<PathBuf> =
+        python_with_lief("the lief resource-tree grade of packers/mew/Autologon.original.exe")
     else {
-        eprintln!("skip: corpus/native/packers/mew/Autologon.original.exe missing");
         return;
     };
+    let original: Vec<u8> = corpus_native("packers/mew/Autologon.original.exe");
     let load_base: u64 = 0x1000_0000;
     let rec: RecoveredPe = bind_then_unbind(&original, load_base);
     assert!(
@@ -691,15 +682,12 @@ fn unbind_restores_rsrc_tree_graded_by_lief_autologon() {
 
 #[test]
 fn corrupted_rsrc_rva_diverges_from_lief_tree() {
-    let Some(python): Option<PathBuf> = python_with_lief() else {
-        eprintln!("skip: python with lief unavailable");
-        return;
-    };
-    let Some(original): Option<Vec<u8>> = corpus_native("packers/mew/AccessEnum.original.exe")
+    let Some(python): Option<PathBuf> =
+        python_with_lief("the lief resource-tree grade of packers/mew/AccessEnum.original.exe")
     else {
-        eprintln!("skip: corpus/native/packers/mew/AccessEnum.original.exe missing");
         return;
     };
+    let original: Vec<u8> = corpus_native("packers/mew/AccessEnum.original.exe");
     let layout: PeLayout = read_layout(&original);
     let cap: usize = original.len().max(1 << 22);
     let mut mapped: Vec<u8> = build_loaded_image(&original, cap).expect("map");

@@ -36393,17 +36393,19 @@ mod structuring_corpus {
         },
     ];
 
-    pub(super) fn gcc() -> Option<String> {
+    pub(super) fn gcc() -> String {
         for compiler in ["gcc", "cc", "clang"] {
             if Command::new(compiler)
                 .arg("--version")
                 .output()
                 .is_ok_and(|o: std::process::Output| o.status.success())
             {
-                return Some(compiler.to_owned());
+                return compiler.to_owned();
             }
         }
-        None
+        panic!(
+            "none of gcc, cc or clang is callable on PATH; every CI test runner provisions a C compiler, so these structuring oracles require one"
+        );
     }
 
     fn scratch_dir() -> disrobe_core::scratch::ScratchDir {
@@ -36412,7 +36414,7 @@ mod structuring_corpus {
     }
 
     fn compile_assembly(name: &str, source: &str) -> Vec<u8> {
-        let compiler: String = gcc().expect("object-test compiler");
+        let compiler: String = gcc();
         let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
         let src: PathBuf = scratch.path().join(format!("{name}.s"));
         let obj: PathBuf = scratch.path().join(format!("{name}.o"));
@@ -36951,7 +36953,7 @@ mod structuring_corpus {
         );
     }
 
-    pub(super) fn compile_corpus(compiler: &str) -> Option<Vec<u8>> {
+    pub(super) fn compile_corpus(compiler: &str) -> Vec<u8> {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut source: String = String::from("#include <stdint.h>\n");
         for shape in CF_CORPUS {
@@ -36979,14 +36981,12 @@ mod structuring_corpus {
             .arg(&src)
             .output()
             .expect("invoke compiler for cf corpus");
-        if !compiled.status.success() {
-            eprintln!(
-                "cf corpus compile failed: {}",
-                String::from_utf8_lossy(&compiled.stderr)
-            );
-            return None;
-        }
-        std::fs::read(&obj).ok()
+        assert!(
+            compiled.status.success(),
+            "{compiler} failed to compile the cf corpus: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        std::fs::read(&obj).expect("read the compiled cf corpus object")
     }
 
     pub(super) fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -37123,7 +37123,7 @@ mod structuring_corpus {
     #[cfg(windows)]
     #[test]
     fn host_o3_nested_loop_preserves_packed_parameter_flow() {
-        let compiler: String = gcc().expect("host gcc");
+        let compiler: String = gcc();
         let source: &str = "__attribute__((noinline,noclone)) long long wp_nested_loop_h(long long n, long long m){ long long s = 0; for (long long i = 0; i < n; i++) { for (long long j = 0; j < m; j++) { s += i + j; } } return s; }\nlong long wp_nested_loop_entry(long long n, long long m){ return wp_nested_loop_h(n, m) + 1; }";
         let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
         let src: PathBuf = scratch.path().join("wp_nested_loop_o3.c");
@@ -37891,14 +37891,8 @@ mod structuring_corpus {
 
     #[test]
     fn region_engine_subsumes_golden_ladder() {
-        let Some(compiler): Option<String> = gcc() else {
-            eprintln!("skipping region subsumption: no C compiler on PATH");
-            return;
-        };
-        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
-            eprintln!("skipping region subsumption: cf corpus did not compile");
-            return;
-        };
+        let compiler: String = gcc();
+        let object: Vec<u8> = compile_corpus(&compiler);
         let mut ladder_total: usize = 0;
         let mut region_covers: usize = 0;
         let mut missed: Vec<&'static str> = Vec::new();
@@ -37939,14 +37933,8 @@ mod structuring_corpus {
 
     #[test]
     fn golden_control_flow_ladder_is_locked() {
-        let Some(compiler): Option<String> = gcc() else {
-            eprintln!("skipping golden lock: no C compiler on PATH");
-            return;
-        };
-        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
-            eprintln!("skipping golden lock: cf corpus did not compile");
-            return;
-        };
+        let compiler: String = gcc();
+        let object: Vec<u8> = compile_corpus(&compiler);
         let golden: BTreeSet<&'static str> = golden_set(&object);
         eprintln!(
             "current ladder golden control-flow set ({}): {golden:?}",
@@ -37987,18 +37975,10 @@ mod structuring_corpus {
 
     #[test]
     fn region_engine_emits_fused_short_circuit_conditions() {
-        let Some(compiler): Option<String> = gcc() else {
-            eprintln!("skipping short-circuit fusion evidence: no C compiler on PATH");
-            return;
-        };
-        let Some(object): Option<Vec<u8>> = compile_corpus(&compiler) else {
-            eprintln!("skipping short-circuit fusion evidence: cf corpus did not compile");
-            return;
-        };
-        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object, "cf_sc_and") else {
-            eprintln!("skipping short-circuit fusion evidence: cf_sc_and symbol not located");
-            return;
-        };
+        let compiler: String = gcc();
+        let object: Vec<u8> = compile_corpus(&compiler);
+        let (code, base): (Vec<u8>, u64) = function_code(&object, "cf_sc_and")
+            .expect("the compiled cf corpus must define cf_sc_and");
         let rec: super::LeafRecovery =
             super::recover_leaf_function_abi(&code, base, HOST_ABI).expect("short-circuit leaf");
         assert!(

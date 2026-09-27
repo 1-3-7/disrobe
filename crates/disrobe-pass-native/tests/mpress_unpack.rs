@@ -42,7 +42,6 @@ fn looks_like_pe(bytes: &[u8]) -> bool {
 #[test]
 fn test_mpress_hello_structural_recovery() {
     let Some(packed): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skip: corpus hello.exe missing");
         return;
     };
     let out: MpressUnpackOutput = match unpack_mpress(&packed) {
@@ -97,7 +96,6 @@ fn test_mpress_hello_structural_recovery() {
 #[test]
 fn test_mpress_taskmgr_structural_recovery() {
     let Some(packed): Option<Vec<u8>> = read_corpus("taskmgr.packed.mpress.exe") else {
-        eprintln!("skip: corpus taskmgr.packed.mpress.exe missing");
         return;
     };
     let out: MpressUnpackOutput = match unpack_mpress(&packed) {
@@ -137,7 +135,6 @@ fn test_mpress_taskmgr_structural_recovery() {
 #[test]
 fn test_mpress_layout_is_two_sections() {
     let Some(packed): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skip: corpus hello.exe missing");
         return;
     };
     let out: MpressUnpackOutput = unpack_mpress(&packed).expect("hello must structurally unpack");
@@ -155,7 +152,6 @@ fn test_mpress_layout_is_two_sections() {
 #[test]
 fn test_mpress_payload_matches_lzmat_stream_start() {
     let Some(packed): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skip: corpus hello.exe missing");
         return;
     };
     let out: MpressUnpackOutput = unpack_mpress(&packed).expect("unpack hello");
@@ -232,11 +228,9 @@ fn compute_primary_byte_recovery(
 #[test]
 fn test_mpress_hello_byte_recovery() {
     let Some(packed): Option<Vec<u8>> = read_corpus("hello.exe") else {
-        eprintln!("skip: corpus hello.exe missing");
         return;
     };
     let Some(original): Option<Vec<u8>> = read_corpus("hello.original.exe") else {
-        eprintln!("skip: corpus hello.original.exe missing");
         return;
     };
     let out: MpressUnpackOutput =
@@ -255,11 +249,9 @@ fn test_mpress_hello_byte_recovery() {
 #[test]
 fn test_mpress_taskmgr_byte_recovery() {
     let Some(packed): Option<Vec<u8>> = read_corpus("taskmgr.packed.mpress.exe") else {
-        eprintln!("skip: corpus taskmgr.packed.mpress.exe missing");
         return;
     };
     let Some(original): Option<Vec<u8>> = read_corpus("taskmgr.original.exe") else {
-        eprintln!("skip: corpus taskmgr.original.exe missing");
         return;
     };
     let out: MpressUnpackOutput =

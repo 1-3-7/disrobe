@@ -182,7 +182,7 @@ fn expected_max3(a: i64, b: i64, c: i64) -> i64 {
     a.max(b).max(c)
 }
 
-fn clang_path() -> Option<PathBuf> {
+fn clang_path() -> PathBuf {
     let candidates: [&str; 3] = [
         "clang",
         "C:\\Program Files\\LLVM\\bin\\clang.exe",
@@ -194,10 +194,12 @@ fn clang_path() -> Option<PathBuf> {
             .output()
             .is_ok_and(|o: std::process::Output| o.status.success());
         if ok {
-            return Some(PathBuf::from(cand));
+            return PathBuf::from(cand);
         }
     }
-    None
+    panic!(
+        "clang is required to build the real VM oracle binary; every CI test runner provisions it"
+    );
 }
 
 fn fixtures_dir() -> PathBuf {
@@ -212,20 +214,21 @@ struct CompiledVm {
     _tmp: PathBuf,
 }
 
-fn compile_vm(clang: &Path, name: &str, bytecode: &[u8]) -> Option<CompiledVm> {
+fn compile_vm(clang: &Path, name: &str, bytecode: &[u8]) -> CompiledVm {
     let out_dir: PathBuf = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("vm_oracle");
-    std::fs::create_dir_all(&out_dir).ok()?;
+    std::fs::create_dir_all(&out_dir).expect("create the VM oracle output directory");
     let inc_path: PathBuf = out_dir.join(format!("{name}_bytecode.inc"));
     let inc_body: String = render_inc(bytecode);
-    std::fs::write(&inc_path, inc_body).ok()?;
+    std::fs::write(&inc_path, inc_body).expect("write the VM oracle bytecode include");
 
-    let src_template: String = std::fs::read_to_string(fixtures_dir().join("vm_oracle.c")).ok()?;
+    let src_template: String = std::fs::read_to_string(fixtures_dir().join("vm_oracle.c"))
+        .expect("the committed fixture tests/fixtures/vm_oracle.c is required");
     let src_path: PathBuf = out_dir.join(format!("{name}.c"));
     let patched: String = src_template.replace(
         "#include \"vm_oracle_bytecode.inc\"",
         &format!("#include \"{name}_bytecode.inc\""),
     );
-    std::fs::write(&src_path, patched).ok()?;
+    std::fs::write(&src_path, patched).expect("write the VM oracle source");
 
     let exe_ext: &str = if cfg!(windows) { ".exe" } else { "" };
     let bin_path: PathBuf = out_dir.join(format!("{name}{exe_ext}"));
@@ -236,16 +239,17 @@ fn compile_vm(clang: &Path, name: &str, bytecode: &[u8]) -> Option<CompiledVm> {
         .arg("-o")
         .arg(&bin_path)
         .output()
-        .ok()?;
-    if !status.status.success() {
-        eprintln!("clang failed: {}", String::from_utf8_lossy(&status.stderr));
-        return None;
-    }
-    Some(CompiledVm {
+        .expect("invoke clang for the VM oracle binary");
+    assert!(
+        status.status.success(),
+        "clang failed to build the {name} VM oracle binary: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    CompiledVm {
         binary: bin_path,
         bytecode: bytecode.to_vec(),
         _tmp: out_dir,
-    })
+    }
 }
 
 fn render_inc(bytecode: &[u8]) -> String {
@@ -303,15 +307,9 @@ fn straight_line_run(program: &LiftedProgram) -> Vec<&VmInsn> {
 
 #[test]
 fn oracle_poly_devirtualizes_and_matches_binary() {
-    let Some(clang): Option<PathBuf> = clang_path() else {
-        eprintln!("SKIP: clang not available, cannot build the real VM oracle binary");
-        return;
-    };
+    let clang: PathBuf = clang_path();
     let bytecode: Vec<u8> = program_poly();
-    let Some(vm): Option<CompiledVm> = compile_vm(&clang, "poly", &bytecode) else {
-        eprintln!("SKIP: failed to compile the VM oracle binary");
-        return;
-    };
+    let vm: CompiledVm = compile_vm(&clang, "poly", &bytecode);
 
     let inputs: [(i64, i64); 5] = [(3, 4), (10, 7), (-5, 9), (100, 100), (0, 0)];
     for (x, y) in inputs {
@@ -403,15 +401,9 @@ fn oracle_poly_devirtualizes_and_matches_binary() {
 
 #[test]
 fn oracle_sum_to_loop_devirtualizes_and_matches_binary() {
-    let Some(clang): Option<PathBuf> = clang_path() else {
-        eprintln!("SKIP: clang not available");
-        return;
-    };
+    let clang: PathBuf = clang_path();
     let bytecode: Vec<u8> = program_sum_to();
-    let Some(vm): Option<CompiledVm> = compile_vm(&clang, "sum_to", &bytecode) else {
-        eprintln!("SKIP: failed to compile VM oracle");
-        return;
-    };
+    let vm: CompiledVm = compile_vm(&clang, "sum_to", &bytecode);
 
     let inputs: [i64; 6] = [0, 1, 5, 10, 50, 100];
     for n in inputs {
@@ -457,15 +449,9 @@ fn oracle_sum_to_loop_devirtualizes_and_matches_binary() {
 
 #[test]
 fn oracle_max3_branches_devirtualize_and_match_binary() {
-    let Some(clang): Option<PathBuf> = clang_path() else {
-        eprintln!("SKIP: clang not available");
-        return;
-    };
+    let clang: PathBuf = clang_path();
     let bytecode: Vec<u8> = program_max3();
-    let Some(vm): Option<CompiledVm> = compile_vm(&clang, "max3", &bytecode) else {
-        eprintln!("SKIP: failed to compile VM oracle");
-        return;
-    };
+    let vm: CompiledVm = compile_vm(&clang, "max3", &bytecode);
 
     let inputs: [(i64, i64, i64); 6] = [
         (1, 2, 3),
@@ -505,15 +491,9 @@ fn oracle_max3_branches_devirtualize_and_match_binary() {
 
 #[test]
 fn codescan_recovers_without_export_symbols() {
-    let Some(clang): Option<PathBuf> = clang_path() else {
-        eprintln!("SKIP: clang not available");
-        return;
-    };
+    let clang: PathBuf = clang_path();
     let bytecode: Vec<u8> = program_poly();
-    let Some(vm): Option<CompiledVm> = compile_vm(&clang, "codescan", &bytecode) else {
-        eprintln!("SKIP: failed to compile VM oracle");
-        return;
-    };
+    let vm: CompiledVm = compile_vm(&clang, "codescan", &bytecode);
     let image: Vec<u8> = std::fs::read(&vm.binary).unwrap();
     let bitness: Bitness = detect_bitness(&vm.binary);
 
@@ -565,15 +545,9 @@ fn codescan_recovers_without_export_symbols() {
 
 #[test]
 fn detection_reports_structure_on_real_binary() {
-    let Some(clang): Option<PathBuf> = clang_path() else {
-        eprintln!("SKIP: clang not available");
-        return;
-    };
+    let clang: PathBuf = clang_path();
     let bytecode: Vec<u8> = program_poly();
-    let Some(vm): Option<CompiledVm> = compile_vm(&clang, "detect_probe", &bytecode) else {
-        eprintln!("SKIP: failed to compile VM oracle");
-        return;
-    };
+    let vm: CompiledVm = compile_vm(&clang, "detect_probe", &bytecode);
     let image: Vec<u8> = std::fs::read(&vm.binary).unwrap();
     let bitness: Bitness = detect_bitness(&vm.binary);
     let detection: VmDetection =

@@ -7,6 +7,7 @@
     clippy::print_stderr
 )]
 
+#[cfg(windows)]
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -15,6 +16,10 @@ use std::process::Command;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{EmulatedString, emulate_string_decoders};
 
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
 const KEY: u8 = 0x5A;
 const PLAINTEXT_DEC: &str = "recovered0from0emulated0scratch0AAAA";
 const BLOCK1: &str = "transient0temp0block0one0";
@@ -22,6 +27,7 @@ const BLOCK2: &str = "surviving0final0block0two";
 const COPY_SRC: &str = "benign0static0copysource0CCCC";
 const GEN_FILL: &str = "01234567890123456789012345678901";
 const WIDE_PLAINTEXT: &str = "wide0secret0url0payload0token0DDDD";
+#[cfg(windows)]
 const TEST_GCC_ENV: &str = "DISROBE_TEST_GCC";
 
 fn has_tool(cmd: &str) -> bool {
@@ -180,19 +186,13 @@ fn assert_recovery(image: &[u8], tag: &str) {
 }
 
 #[test]
+#[cfg(windows)]
 fn gcc_dll_decoders_recovered_from_written_memory() {
-    if !cfg!(windows) {
-        eprintln!(
-            "skipping host gcc oracle on non-windows: MinGW gcc emits x86-64 only on windows here; \
-             SysV/x86-64 coverage is the clang cross guard below"
-        );
-        return;
-    }
     let gcc_override: Option<OsString> = std::env::var_os(TEST_GCC_ENV);
-    if gcc_override.is_none() && !has_tool("gcc") {
-        eprintln!("skipping: gcc not on PATH");
-        return;
-    }
+    assert!(
+        gcc_override.is_some() || has_tool("gcc"),
+        "gcc is required on PATH (or named by {TEST_GCC_ENV}); every Windows CI runner provisions MinGW gcc"
+    );
     let gcc: OsString = gcc_override.unwrap_or_else(|| OsString::from("gcc"));
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -231,10 +231,8 @@ fn gcc_dll_decoders_recovered_from_written_memory() {
 }
 
 #[test]
+#[cfg(windows)]
 fn gcc_failure_is_identified_as_host_toolchain_error() {
-    if !cfg!(windows) {
-        return;
-    }
     let current_exe: PathBuf = std::env::current_exe().expect("resolve current test executable");
     let child: std::process::Output = Command::new(&current_exe)
         .args([
@@ -263,10 +261,10 @@ fn gcc_failure_is_identified_as_host_toolchain_error() {
 
 #[test]
 fn sysv_clang_decoders_recovered_from_written_memory() {
-    if !has_tool("clang") {
-        eprintln!("skipping sysv: clang not on PATH");
-        return;
-    }
+    assert!(
+        has_tool("clang"),
+        "clang is required on PATH; every CI test runner provisions it"
+    );
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src_path: PathBuf = dir.join("corpus_sysv.c");
@@ -289,9 +287,12 @@ fn sysv_clang_decoders_recovered_from_written_memory() {
         .output()
         .expect("invoke clang");
     if !build.status.success() {
-        eprintln!(
-            "skipping sysv: clang cannot emit a linux/SysV shared object on this host (needs lld): {}",
-            String::from_utf8_lossy(&build.stderr)
+        prerequisite::toolchain_capability_absent(
+            "the SysV clang string-decoder oracle",
+            &format!(
+                "clang cannot link a linux/SysV shared object with lld on this host: {}",
+                String::from_utf8_lossy(&build.stderr)
+            ),
         );
         return;
     }

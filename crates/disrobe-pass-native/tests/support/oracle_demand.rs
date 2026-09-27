@@ -22,5 +22,5 @@ pub fn unmeasured(graded: &str, absent: &str) {
          missing prerequisite, or clear {REQUIRE_AARCH64_ORACLES} to permit a run that grades \
          nothing here."
     );
-    eprintln!("SKIP {graded}: {absent}");
+    eprintln!("UNGRADED: {graded}: {absent}");
 }

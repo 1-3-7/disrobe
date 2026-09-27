@@ -6,18 +6,15 @@
     clippy::print_stdout
 )]
 
-use std::path::PathBuf;
-
 use disrobe_pass_native::{
     CryptoConstConfidence, CryptoConstHit, CryptoPrimitive, detect_crypto_constants,
 };
 use rand::rngs::StdRng;
 use rand::{Rng as _, SeedableRng};
 
-fn corpus(rel: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read(&path).ok()
-}
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
 
 #[test]
 fn chacha20_sigma_detected_in_constructed_buffer() {
@@ -37,12 +34,9 @@ fn chacha20_sigma_detected_in_constructed_buffer() {
 
 #[test]
 fn pyarmor_runtime_embeds_aes_ttables() {
-    let Some(bytes): Option<Vec<u8>> = corpus(
-        "../../corpus/python/pyarmor/v8/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so",
-    ) else {
-        eprintln!("skip: pyarmor_runtime.so corpus fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = prerequisite::committed(
+        "corpus/python/pyarmor/v8/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so",
+    );
     let hits: Vec<CryptoConstHit> = detect_crypto_constants(&bytes);
     let enc: &CryptoConstHit = hits
         .iter()
@@ -60,9 +54,10 @@ fn pyarmor_runtime_embeds_aes_ttables() {
 
 #[test]
 fn rustdesk_libflutter_embeds_chacha20_sigma() {
-    let Some(bytes): Option<Vec<u8>> = corpus("../../corpus/mobile/flutter/rustdesk/libflutter.so")
-    else {
-        eprintln!("skip: libflutter.so corpus fixture absent");
+    let Some(bytes): Option<Vec<u8>> = prerequisite::local_only(
+        "corpus/mobile/flutter/rustdesk/libflutter.so",
+        "the rustdesk libflutter chacha20 sigma check",
+    ) else {
         return;
     };
     let hits: Vec<CryptoConstHit> = detect_crypto_constants(&bytes);

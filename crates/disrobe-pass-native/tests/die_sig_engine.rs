@@ -9,13 +9,18 @@ use disrobe_pass_native::{
 
 const NOW_SECS: u64 = 1_798_761_600;
 
-fn corpus_bytes(rel: &str) -> Option<Vec<u8>> {
+fn corpus_bytes(rel: &str) -> Vec<u8> {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("corpus")
         .join(rel);
-    std::fs::read(path).ok()
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the committed fixture corpus/{rel} is required at {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn struct_hit(findings: &[StructFinding], family: StructFamily) -> Option<&StructFinding> {
@@ -30,12 +35,8 @@ fn aspack_real_sample_ep_anchored_version_matches_ground_truth() {
         "native/packers/aspack/AccessEnum.packed.aspack.exe",
         "native/packers/aspack/Clockres.packed.aspack.exe",
     ];
-    let mut present: usize = 0;
     for rel in cases {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes(rel) else {
-            continue;
-        };
-        present += 1;
+        let bytes: Vec<u8> = corpus_bytes(rel);
         let findings: Vec<StructFinding> = native_struct_findings(&bytes);
         let hit: &StructFinding = struct_hit(&findings, StructFamily::Aspack)
             .unwrap_or_else(|| panic!("aspack EP stub not matched in {rel}: {findings:?}"));
@@ -46,9 +47,6 @@ fn aspack_real_sample_ep_anchored_version_matches_ground_truth() {
             "real ASPack EP stub must pin the 2.12-2.42 variant, got {version} in {rel}"
         );
     }
-    if present == 0 {
-        eprintln!("skip: aspack corpus absent");
-    }
 }
 
 #[test]
@@ -57,12 +55,8 @@ fn pecompact_real_sample_reloc_field_pins_family() {
         "native/packers/pecompact/AccessEnum.packed.pecompact.exe",
         "native/packers/pecompact/Clockres.packed.pecompact.exe",
     ];
-    let mut present: usize = 0;
     for rel in cases {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes(rel) else {
-            continue;
-        };
-        present += 1;
+        let bytes: Vec<u8> = corpus_bytes(rel);
         let findings: Vec<StructFinding> = native_struct_findings(&bytes);
         let hit: &StructFinding =
             struct_hit(&findings, StructFamily::Pecompact).unwrap_or_else(|| {
@@ -75,17 +69,11 @@ fn pecompact_real_sample_reloc_field_pins_family() {
             hit.locus
         );
     }
-    if present == 0 {
-        eprintln!("skip: pecompact corpus absent");
-    }
 }
 
 #[test]
 fn msvc_rich_header_yields_exact_toolset_build() {
-    let Some(bytes): Option<Vec<u8>> = corpus_bytes("native/packers/upx/hello.original.exe") else {
-        eprintln!("skip: rust/msvc original absent");
-        return;
-    };
+    let bytes: Vec<u8> = corpus_bytes("native/packers/upx/hello.original.exe");
     let findings: Vec<StructFinding> = native_struct_findings(&bytes);
     let hit: &StructFinding = struct_hit(&findings, StructFamily::Msvc)
         .unwrap_or_else(|| panic!("rich header not decoded: {findings:?}"));
@@ -98,10 +86,7 @@ fn msvc_rich_header_yields_exact_toolset_build() {
 
 #[test]
 fn go_real_binary_buildinfo_version_matches_toolchain() {
-    let Some(bytes): Option<Vec<u8>> = corpus_bytes("native/compilers/go/hello.go.exe") else {
-        eprintln!("skip: go compiler sample absent");
-        return;
-    };
+    let bytes: Vec<u8> = corpus_bytes("native/compilers/go/hello.go.exe");
     let findings: Vec<StructFinding> = native_struct_findings(&bytes);
     let hit: &StructFinding = struct_hit(&findings, StructFamily::Go)
         .unwrap_or_else(|| panic!("go buildinfo not decoded: {findings:?}"));
@@ -120,12 +105,8 @@ fn clean_originals_carry_no_false_ep_or_struct_packer_flag() {
         "native/packers/pecompact/AccessEnum.original.exe",
         "native/packers/upx/hello.original.exe",
     ];
-    let mut checked: usize = 0;
     for rel in originals {
-        let Some(bytes): Option<Vec<u8>> = corpus_bytes(rel) else {
-            continue;
-        };
-        checked += 1;
+        let bytes: Vec<u8> = corpus_bytes(rel);
         let findings: Vec<StructFinding> = native_struct_findings(&bytes);
         let false_packer: bool = findings.iter().any(|f: &StructFinding| {
             matches!(f.class, StructClass::Packer | StructClass::Protector)
@@ -135,19 +116,11 @@ fn clean_originals_carry_no_false_ep_or_struct_packer_flag() {
             "clean original {rel} falsely flagged by EP/struct matcher: {findings:?}"
         );
     }
-    if checked == 0 {
-        eprintln!("skip: clean originals absent");
-    }
 }
 
 #[test]
 fn identify_file_surfaces_aspack_version_through_cli_report() {
-    let Some(bytes): Option<Vec<u8>> =
-        corpus_bytes("native/packers/aspack/AccessEnum.packed.aspack.exe")
-    else {
-        eprintln!("skip: aspack sample absent");
-        return;
-    };
+    let bytes: Vec<u8> = corpus_bytes("native/packers/aspack/AccessEnum.packed.aspack.exe");
     let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let aspack: &Finding = report
         .of_kind(IdentityKind::Packer)
@@ -158,10 +131,7 @@ fn identify_file_surfaces_aspack_version_through_cli_report() {
 
 #[test]
 fn identify_file_surfaces_msvc_exact_build_through_cli_report() {
-    let Some(bytes): Option<Vec<u8>> = corpus_bytes("native/packers/upx/hello.original.exe") else {
-        eprintln!("skip: msvc original absent");
-        return;
-    };
+    let bytes: Vec<u8> = corpus_bytes("native/packers/upx/hello.original.exe");
     let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let msvc: &Finding = report
         .of_kind(IdentityKind::Compiler)
@@ -176,10 +146,7 @@ fn identify_file_surfaces_msvc_exact_build_through_cli_report() {
 
 #[test]
 fn identify_file_surfaces_go_version_through_cli_report() {
-    let Some(bytes): Option<Vec<u8>> = corpus_bytes("native/compilers/go/hello.go.exe") else {
-        eprintln!("skip: go sample absent");
-        return;
-    };
+    let bytes: Vec<u8> = corpus_bytes("native/compilers/go/hello.go.exe");
     let report: FileIdReport = identify_file(&bytes, NOW_SECS);
     let go: &Finding = report
         .of_kind(IdentityKind::Compiler)

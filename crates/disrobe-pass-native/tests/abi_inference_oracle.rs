@@ -116,8 +116,7 @@ fn grade(funcs: &BTreeMap<String, Vec<u8>>, bitness: u32, name: &str, expect: Ex
         .keys()
         .find(|k: &&String| k.as_str() == name || normalize(k) == name);
     let Some(key): Option<&String> = key else {
-        println!("  MISSING fn {name} in object, skipping");
-        return true;
+        panic!("fn {name} is missing from the compiled {bitness}-bit object");
     };
     let bytes: &[u8] = &funcs[key];
     let Some(got): Option<AbiInference> = infer_function_abi(bitness, BASE, bytes, BASE) else {
@@ -202,14 +201,9 @@ float __attribute__((vectorcall)) v_if5(int a, float b, float c, float d, float 
 
 #[test]
 fn abi_inference_matches_compiler_lowering() {
-    let Some(clang): Option<PathBuf> = clang() else {
-        println!("clang not on PATH: skipping the entire ABI oracle (no leg graded)");
-        return;
-    };
-    let Some(objdump): Option<PathBuf> = objdump() else {
-        println!("objdump not on PATH: skipping ABI oracle");
-        return;
-    };
+    let clang: PathBuf = clang().expect("clang is required on PATH for the ABI oracle");
+    let objdump: PathBuf =
+        objdump().expect("llvm-objdump or objdump is required on PATH for the ABI oracle");
     let scratch: ScratchDir =
         ScratchDir::create("disrobe_abi_oracle").expect("create scratch directory");
     let dir: &Path = scratch.path();

@@ -19,7 +19,7 @@ use disrobe_pass_native::{
     DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackerStatus, UpxMethod,
     UpxUnpackOutput, detect_format, detect_packers, unpack_upx,
 };
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{PackerFixture, load_fixture, require_committed};
 
 fn corpus_root() -> PathBuf {
     let crate_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -39,15 +39,23 @@ fn decoder_for(family: &str) -> &'static str {
     }
 }
 
-fn read_corpus(rel: &str) -> Option<Vec<u8>> {
+fn fixture(rel: &str) -> PackerFixture<'_> {
     let (family, name): (&str, &str) = rel
         .split_once('/')
         .unwrap_or_else(|| panic!("corpus path {rel} must be <family>/<fixture name>"));
-    load_fixture(PackerFixture {
+    PackerFixture {
         decoder: decoder_for(family),
         family,
         name,
-    })
+    }
+}
+
+fn read_corpus(rel: &str) -> Option<Vec<u8>> {
+    load_fixture(fixture(rel))
+}
+
+fn require_corpus(rel: &str) -> Vec<u8> {
+    require_committed(fixture(rel))
 }
 
 fn has_packer(hits: &[PackerDetection], packer: Packer) -> bool {
@@ -61,7 +69,6 @@ fn distinct_packers(hits: &[PackerDetection]) -> BTreeSet<Packer> {
 #[test]
 fn upx_detects_hello_x64_real_binary() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("upx/hello.exe") else {
-        eprintln!("skipping: upx/hello.exe corpus fixture absent");
         return;
     };
     let hits: Vec<PackerDetection> = detect_packers(&bytes);
@@ -75,7 +82,6 @@ fn upx_detects_hello_x64_real_binary() {
 #[test]
 fn upx_detects_ripgrep_megafile() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("upx/rg.packed.upx.exe") else {
-        eprintln!("skipping: upx/rg.packed.upx.exe corpus fixture absent");
         return;
     };
     assert!(
@@ -95,10 +101,7 @@ fn upx_detects_ripgrep_megafile() {
 
 #[test]
 fn in_house_nrv2b_unpacks_hello_to_original_image() {
-    let Some(packed): Option<Vec<u8>> = read_corpus("upx/hello.packed.nrv2b.exe") else {
-        eprintln!("skipping: upx/hello.packed.nrv2b.exe corpus fixture absent");
-        return;
-    };
+    let packed: Vec<u8> = require_corpus("upx/hello.packed.nrv2b.exe");
     let out: UpxUnpackOutput =
         unpack_upx(&packed).expect("in-house NRV2B unpacker must succeed on real fixture");
     assert_eq!(out.method, UpxMethod::Nrv2b);
@@ -112,7 +115,6 @@ fn in_house_nrv2b_unpacks_hello_to_original_image() {
 #[test]
 fn mpress_detects_hello_x64_real_binary() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("mpress/hello.exe") else {
-        eprintln!("skipping: mpress/hello.exe corpus fixture absent");
         return;
     };
     let hits: Vec<PackerDetection> = detect_packers(&bytes);
@@ -128,7 +130,6 @@ fn mpress_detects_hello_x64_real_binary() {
 #[test]
 fn mpress_detects_taskmgr_megafile_and_format_probe_still_works() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("mpress/taskmgr.packed.mpress.exe") else {
-        eprintln!("skipping: mpress/taskmgr.packed.mpress.exe corpus fixture absent");
         return;
     };
     assert!(
@@ -154,10 +155,7 @@ fn mpress_detects_taskmgr_megafile_and_format_probe_still_works() {
 
 #[test]
 fn petite_detects_hello_x86_real_binary() {
-    let Some(bytes): Option<Vec<u8>> = read_corpus("petite/hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
-        return;
-    };
+    let bytes: Vec<u8> = require_corpus("petite/hello.exe");
     let hits: Vec<PackerDetection> = detect_packers(&bytes);
     assert!(
         has_packer(&hits, Packer::Petite),
@@ -187,17 +185,12 @@ fn petite_megafile_skip_is_documented_in_manifest() {
 #[test]
 fn detection_distinct_packers_per_real_fixture() {
     let Some(upx_bytes): Option<Vec<u8>> = read_corpus("upx/hello.exe") else {
-        eprintln!("skipping: upx/hello.exe corpus fixture absent");
         return;
     };
     let Some(mpress_bytes): Option<Vec<u8>> = read_corpus("mpress/hello.exe") else {
-        eprintln!("skipping: mpress/hello.exe corpus fixture absent");
         return;
     };
-    let Some(petite_bytes): Option<Vec<u8>> = read_corpus("petite/hello.exe") else {
-        eprintln!("skipping: petite/hello.exe corpus fixture absent");
-        return;
-    };
+    let petite_bytes: Vec<u8> = require_corpus("petite/hello.exe");
     let upx_hello: BTreeSet<Packer> = distinct_packers(&detect_packers(&upx_bytes));
     let mpress_hello: BTreeSet<Packer> = distinct_packers(&detect_packers(&mpress_bytes));
     let petite_hello: BTreeSet<Packer> = distinct_packers(&detect_packers(&petite_bytes));

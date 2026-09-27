@@ -2050,7 +2050,7 @@ mod tests {
         }
     }
 
-    fn upx_packed_fixture() -> Option<Vec<u8>> {
+    fn upx_packed_fixture() -> Vec<u8> {
         let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -2059,15 +2059,17 @@ mod tests {
             .join("packers")
             .join("upx")
             .join("hello.packed.nrv2b.exe");
-        std::fs::read(&path).ok()
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is required: {error}",
+                path.display()
+            )
+        })
     }
 
     #[test]
     fn extract_children_emits_dedicated_sidecars_for_real_upx_sample() {
-        let Some(bytes): Option<Vec<u8>> = upx_packed_fixture() else {
-            eprintln!("SKIP: upx packed fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = upx_packed_fixture();
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = PACKER_PASS
             .extract_children(&a)

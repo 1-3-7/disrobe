@@ -6,6 +6,7 @@
     clippy::print_stdout,
     clippy::print_stderr
 )]
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -113,15 +114,13 @@ fn available_compilers() -> Vec<Compiler> {
     out
 }
 
-fn compilers_or_skip(context: &str) -> Option<Vec<Compiler>> {
+fn msvc_compilers(context: &str) -> Vec<Compiler> {
     let compilers: Vec<Compiler> = available_compilers();
-    if compilers.is_empty() {
-        eprintln!(
-            "[skip] {context}: no msvc-compatible compiler (cl.exe or clang-cl) reachable; install VS Build Tools or LLVM to exercise this layout oracle"
-        );
-        return None;
-    }
-    Some(compilers)
+    assert!(
+        !compilers.is_empty(),
+        "{context}: no msvc-compatible compiler (cl.exe or clang-cl) is reachable; every Windows CI runner provisions both, and locally VS Build Tools or LLVM provides one"
+    );
+    compilers
 }
 
 struct CompileOutcome {
@@ -515,11 +514,9 @@ fn recovers_free_function_signatures_from_the_module_symbol_streams() {
 }
 
 #[test]
+#[cfg(windows)]
 fn real_compiler_confirms_size_and_offset_of_every_recovered_udt() {
-    let Some(compilers): Option<Vec<Compiler>> = compilers_or_skip("recovered-udt layout oracle")
-    else {
-        return;
-    };
+    let compilers: Vec<Compiler> = msvc_compilers("recovered-udt layout oracle");
     eprintln!(
         "[evidence] compiler oracle set: {:?}",
         compilers
@@ -574,11 +571,9 @@ fn real_compiler_confirms_size_and_offset_of_every_recovered_udt() {
 }
 
 #[test]
+#[cfg(windows)]
 fn perturbing_one_recovered_offset_makes_the_real_compiler_reject_it() {
-    let Some(compilers): Option<Vec<Compiler>> = compilers_or_skip("offset-perturbation oracle")
-    else {
-        return;
-    };
+    let compilers: Vec<Compiler> = msvc_compilers("offset-perturbation oracle");
 
     let bytes: Vec<u8> = fixture_pdb_bytes();
     let rec: PdbCxxReconstruction =

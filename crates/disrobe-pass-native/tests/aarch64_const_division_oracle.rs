@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{Arch, DisasmInsn, LeafRecovery, disassemble, recover_aarch64_function};
 
-use common::{clang, compile_object_opt, function_code, scratch_dir};
+use common::{compile_object_opt, function_code, require_clang, scratch_dir, toolchain_unmeasured};
 
 const OPT_LEVELS: [&str; 3] = ["-O1", "-O2", "-Os"];
 
@@ -47,17 +47,21 @@ const SAMPLED_DIVISORS: [u64; 18] = [
 ];
 
 fn cross_compiler() -> Option<String> {
-    let bin: String = clang()?;
+    let bin: String = require_clang();
     let scratch: ScratchDir = scratch_dir("disrobe-aarch64-div-probe");
     let out: PathBuf = scratch.path().join("probe.o");
-    compile_object_opt(
+    let probe: Option<Vec<u8>> = compile_object_opt(
         &bin,
         "-O2",
         &CROSS_FLAGS,
         "unsigned probe(unsigned a){ return a + 1u; }\n",
         &out,
-    )
-    .map(|_: Vec<u8>| bin)
+    );
+    if probe.is_none() {
+        toolchain_unmeasured(&format!("`{bin}` cannot emit an aarch64-linux-gnu object"));
+        return None;
+    }
+    Some(bin)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,7 +415,6 @@ fn grade_battery(
 #[test]
 fn aarch64_magic_lowered_division_recovers_the_compiler_divisor() {
     let Some(compiler): Option<String> = cross_compiler() else {
-        eprintln!("skipping aarch64 constant-division battery: no clang that targets aarch64");
         return;
     };
     let divisors: Vec<u64> = (1u64..=192)
@@ -478,7 +481,6 @@ fn aarch64_magic_lowered_division_recovers_the_compiler_divisor() {
 #[test]
 fn aarch64_fixed_point_scale_is_never_rewritten_as_a_division() {
     let Some(compiler): Option<String> = cross_compiler() else {
-        eprintln!("skipping aarch64 fixed-point near-miss: no clang that targets aarch64");
         return;
     };
     let program: &str = "unsigned near_a(unsigned a){ return (unsigned)(((unsigned long long)a * \

@@ -7,6 +7,7 @@
     clippy::print_stderr,
     clippy::format_push_string
 )]
+#![cfg(not(target_os = "macos"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -98,20 +99,22 @@ fn scratch_dir() -> ScratchDir {
     ScratchDir::create("disrobe-simd-devirt").expect("create scratch directory")
 }
 
-fn host_cc() -> Option<String> {
+fn host_cc() -> String {
     for cc in ["clang", "gcc", "cc"] {
         if Command::new(cc)
             .arg("--version")
             .output()
             .is_ok_and(|o: std::process::Output| o.status.success())
         {
-            return Some(cc.to_owned());
+            return cc.to_owned();
         }
     }
-    None
+    panic!(
+        "none of clang, gcc or cc is callable on PATH; every CI test runner provisions a C compiler"
+    );
 }
 
-fn compile_object(cc: &str, dir: &Path, opt: &str) -> Option<Vec<u8>> {
+fn compile_object(cc: &str, dir: &Path, opt: &str) -> Vec<u8> {
     let src: PathBuf = dir.join("kern.c");
     std::fs::write(&src, KERN_C.as_bytes()).expect("write kern.c");
     let obj: PathBuf = dir.join(format!("kern_{}.o", opt.trim_start_matches('-')));
@@ -128,15 +131,13 @@ fn compile_object(cc: &str, dir: &Path, opt: &str) -> Option<Vec<u8>> {
             .arg(&src)
             .output()
             .expect("invoke cc retry");
-        if !retry.status.success() {
-            eprintln!(
-                "skip: cc cannot compile kernels: {}",
-                String::from_utf8_lossy(&retry.stderr)
-            );
-            return None;
-        }
+        assert!(
+            retry.status.success(),
+            "{cc} cannot compile the integer kernels at {opt}: {}",
+            String::from_utf8_lossy(&retry.stderr)
+        );
     }
-    Some((std::fs::read(&obj).expect("read object"), obj).0)
+    std::fs::read(&obj).expect("read object")
 }
 
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
@@ -198,9 +199,7 @@ fn run_differential(cc: &str, opt: &str) -> bool {
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().join(cc.replace(['/', '\\', '.', ':'], "_"));
     std::fs::create_dir_all(&dir).expect("per-compiler scratch dir");
-    let Some(obj): Option<Vec<u8>> = compile_object(cc, &dir, opt) else {
-        return false;
-    };
+    let obj: Vec<u8> = compile_object(cc, &dir, opt);
 
     let mut decls: String = String::new();
     let mut checks: String = String::new();
@@ -270,7 +269,7 @@ fn run_differential(cc: &str, opt: &str) -> bool {
     }
 
     if recovered == 0 {
-        eprintln!("{opt}: no kernel recovered; skipping differential");
+        eprintln!("{opt}: no kernel recovered, so no differential ran at this level");
         return false;
     }
 
@@ -324,42 +323,31 @@ fn run_differential(cc: &str, opt: &str) -> bool {
 
 #[test]
 fn vectorized_integer_reductions_recompile_execute_equivalent() {
-    if cfg!(target_os = "macos") {
-        eprintln!("skipping: host is arm64 apple-clang, x86-64 codegen/execution unavailable");
-        return;
-    }
-    let Some(cc): Option<String> = host_cc() else {
-        eprintln!("skipping: no C compiler on PATH");
-        return;
-    };
+    let cc: String = host_cc();
     let mut any: bool = false;
     for opt in ["-O2", "-O3"] {
         any |= run_differential(&cc, opt);
     }
-    if !any {
-        eprintln!("no optimization level produced a recoverable vectorized kernel; nothing proven");
-    }
+    assert!(
+        any,
+        "{cc}: no optimization level produced a recoverable vectorized kernel, so nothing was proven"
+    );
 }
 
-fn find_gcc() -> Option<String> {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o: &std::process::Output| o.status.success())
-        .map(|_| "gcc".to_owned())
+fn find_gcc() -> String {
+    assert!(
+        Command::new("gcc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success()),
+        "gcc is required on PATH; every CI test runner provisions it"
+    );
+    "gcc".to_owned()
 }
 
 #[test]
 fn gcc_vectorized_integer_reductions_recompile_execute_equivalent() {
-    if cfg!(target_os = "macos") {
-        eprintln!("skipping: host is arm64 apple-clang, x86-64 codegen/execution unavailable");
-        return;
-    }
-    let Some(cc): Option<String> = find_gcc() else {
-        eprintln!("skipping: gcc not on PATH");
-        return;
-    };
+    let cc: String = find_gcc();
     let o2: bool = run_differential(&cc, "-O2");
     let o3: bool = run_differential(&cc, "-O3");
     if cfg!(target_os = "linux") {
@@ -384,14 +372,7 @@ const FP_KERN_C: &str = "float fsum(const float *a, long long n){ float s=0; for
 
 #[test]
 fn floating_point_vectorized_loops_sound_reject() {
-    if cfg!(target_os = "macos") {
-        eprintln!("skipping: host is arm64 apple-clang, x86-64 codegen unavailable");
-        return;
-    }
-    let Some(cc): Option<String> = host_cc() else {
-        eprintln!("skipping: no C compiler on PATH");
-        return;
-    };
+    let cc: String = host_cc();
     let scratch: ScratchDir = scratch_dir();
     let dir: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = dir.join("fpkern.c");
@@ -403,13 +384,11 @@ fn floating_point_vectorized_loops_sound_reject() {
         .arg(&src)
         .output()
         .expect("invoke cc for fp kernels");
-    if !out.status.success() {
-        eprintln!(
-            "skip: cc cannot compile fp kernels: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return;
-    }
+    assert!(
+        out.status.success(),
+        "{cc} cannot compile the fp kernels: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let obj_bytes: Vec<u8> = std::fs::read(&obj).expect("read fp object");
     let mut checked: usize = 0;
     for name in ["fsum", "fscale"] {

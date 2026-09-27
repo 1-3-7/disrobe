@@ -24,7 +24,7 @@ use disrobe_pass_native::{
 };
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic};
 use object::{Object, ObjectSection, SectionFlags};
-use packer_fixture::{PackerFixture, load_fixture};
+use packer_fixture::{PackerFixture, require_committed};
 
 const IMAGE_SCN_MEM_EXECUTE: u64 = 0x2000_0000;
 
@@ -38,8 +38,8 @@ fn decoder_for(family: &str) -> &'static str {
     }
 }
 
-fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    load_fixture(PackerFixture {
+fn corpus(family: &str, name: &str) -> Vec<u8> {
+    require_committed(PackerFixture {
         decoder: decoder_for(family),
         family,
         name,
@@ -143,10 +143,7 @@ fn aspack_rebuilt_section_is_decompressed_code() {
     ];
     let mut exercised: usize = 0;
     for (label, packed_name) in cases {
-        let Some(packed): Option<Vec<u8>> = corpus("aspack", packed_name) else {
-            eprintln!("skip aspack {label}: {packed_name} missing");
-            continue;
-        };
+        let packed: Vec<u8> = corpus("aspack", packed_name);
         let out = unpack_aspack_phase2_emulated(&packed, None).expect("aspack phase2");
         let rebuilt: RebuiltImage =
             rebuild_unpacked_pe(&packed, &out.recovered_memory_image, out.oep_estimate)
@@ -171,10 +168,7 @@ fn pecompact_rebuilt_section_is_decompressed_code() {
     ];
     let mut exercised: usize = 0;
     for (label, packed_name) in cases {
-        let Some(packed): Option<Vec<u8>> = corpus("pecompact", packed_name) else {
-            eprintln!("skip pecompact {label}: {packed_name} missing");
-            continue;
-        };
+        let packed: Vec<u8> = corpus("pecompact", packed_name);
         let out = unpack_pecompact_phase2_emulated(&packed, None).expect("pecompact phase2");
         let rebuilt: RebuiltImage =
             rebuild_unpacked_pe(&packed, &out.recovered_memory_image, out.oep_estimate)
@@ -234,10 +228,7 @@ fn mew_rebuilt_section_is_decompressed_code() {
     ];
     let mut exercised: usize = 0;
     for (label, packed_name) in cases {
-        let Some(packed): Option<Vec<u8>> = corpus("mew", packed_name) else {
-            eprintln!("skip mew {label}: {packed_name} missing");
-            continue;
-        };
+        let packed: Vec<u8> = corpus("mew", packed_name);
         let rebuilt = unpack_mew_rebuilt(&packed).expect("mew rebuild");
         let image: RebuiltImage =
             rebuild_passthrough(&rebuilt.file_image).expect("mew passthrough");
@@ -283,11 +274,7 @@ fn mew_rebuilt_section_is_decompressed_code() {
 
 #[test]
 fn kkrunchy_classic_rebuilt_is_decompressed_program() {
-    let Some(packed): Option<Vec<u8>> = corpus("kkrunchy", "hello.packed.kkrunchy_classic.exe")
-    else {
-        eprintln!("skip kkrunchy classic: fixture missing");
-        return;
-    };
+    let packed: Vec<u8> = corpus("kkrunchy", "hello.packed.kkrunchy_classic.exe");
     let out = unpack_kkrunchy_phase2_emulated(&packed).expect("kkrunchy phase2");
     assert!(
         out.recovered_file_image.starts_with(b"MZ"),

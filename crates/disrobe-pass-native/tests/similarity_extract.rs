@@ -22,6 +22,10 @@ use disrobe_similarity::{
 use object::{Object as _, ObjectSymbol as _};
 use tempfile::TempDir;
 
+#[path = "support/prerequisite.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod prerequisite;
+
 const PROBE_SOURCE: &str = r#"
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,12 +326,8 @@ int main(int argc, char **argv) {
 }
 ";
 
-fn fixture(name: &str) -> Option<Vec<u8>> {
-    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(name);
-    std::fs::read(path).ok()
+fn fixture(name: &str) -> Vec<u8> {
+    prerequisite::committed(&format!("crates/disrobe-pass-native/tests/fixtures/{name}"))
 }
 
 fn tool(name: &str) -> Option<PathBuf> {
@@ -339,10 +339,15 @@ fn tool(name: &str) -> Option<PathBuf> {
         .map(|_| PathBuf::from(name))
 }
 
-fn host_c_compiler() -> Option<PathBuf> {
+fn host_c_compiler() -> PathBuf {
     ["gcc", "clang", "cc"]
         .into_iter()
         .find_map(|candidate: &str| tool(candidate))
+        .expect("a host C compiler (gcc, clang or cc) is required on PATH; every CI test runner provisions one")
+}
+
+fn clang() -> PathBuf {
+    tool("clang").expect("clang is required on PATH; every CI test runner provisions it")
 }
 
 fn run(command: &mut Command) -> bool {
@@ -630,10 +635,7 @@ fn report_stage(label: &str, stage: &str, pairs: usize, verification: &Verificat
 
 #[test]
 fn a_real_shared_object_yields_only_references_that_exist_in_its_bytes() {
-    let Some(image): Option<Vec<u8>> = fixture("cxx_hierarchy_itanium.so") else {
-        eprintln!("skipping: cxx_hierarchy_itanium.so fixture absent");
-        return;
-    };
+    let image: Vec<u8> = fixture("cxx_hierarchy_itanium.so");
     let features: Vec<FunctionFeatures> = extract_function_features(&image).expect("real ELF");
     describe("cxx_hierarchy_itanium.so", &features);
     assert!(
@@ -673,10 +675,7 @@ fn a_real_shared_object_yields_only_references_that_exist_in_its_bytes() {
 
 #[test]
 fn extraction_is_deterministic_and_a_binary_matches_itself() {
-    let Some(image): Option<Vec<u8>> = fixture("cxx_hierarchy_itanium.so") else {
-        eprintln!("skipping: cxx_hierarchy_itanium.so fixture absent");
-        return;
-    };
+    let image: Vec<u8> = fixture("cxx_hierarchy_itanium.so");
     let first: Vec<FunctionFeatures> = extract_function_features(&image).expect("first pass");
     let second: Vec<FunctionFeatures> = extract_function_features(&image).expect("second pass");
     assert_eq!(first, second, "extraction must be deterministic");
@@ -689,10 +688,7 @@ fn extraction_is_deterministic_and_a_binary_matches_itself() {
 
 #[test]
 fn a_truncated_real_binary_is_refused_without_panicking() {
-    let Some(image): Option<Vec<u8>> = fixture("cxx_hierarchy_itanium.so") else {
-        eprintln!("skipping: cxx_hierarchy_itanium.so fixture absent");
-        return;
-    };
+    let image: Vec<u8> = fixture("cxx_hierarchy_itanium.so");
     let mut refused: usize = 0;
     let mut accepted: usize = 0;
     for keep in (0..image.len()).step_by(97) {
@@ -707,15 +703,7 @@ fn a_truncated_real_binary_is_refused_without_panicking() {
 
 #[test]
 fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
-    let compiler: Option<PathBuf> = host_c_compiler();
-    assert!(
-        compiler.is_some() || !cfg!(target_os = "linux"),
-        "Linux similarity extraction requires a host C compiler"
-    );
-    let Some(compiler): Option<PathBuf> = compiler else {
-        eprintln!("skipping: no host C compiler on PATH");
-        return;
-    };
+    let compiler: PathBuf = host_c_compiler();
     let scratch: TempDir = TempDir::new().expect("scratch directory");
     let source: PathBuf = scratch.path().join("probe.c");
     std::fs::write(&source, PROBE_SOURCE).expect("write probe source");
@@ -736,7 +724,10 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
             &["-O2", "-fno-builtin-fputs"],
         ),
     ) else {
-        eprintln!("skipping: host C compiler cannot link a hosted executable");
+        prerequisite::toolchain_capability_absent(
+            "the similarity pair grade",
+            &format!("{} cannot link a hosted executable", compiler.display()),
+        );
         return;
     };
 
@@ -814,10 +805,7 @@ fn a_two_optimization_level_pair_matches_functions_across_stripped_images() {
 
 #[test]
 fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() {
-    let Some(compiler): Option<PathBuf> = host_c_compiler() else {
-        eprintln!("skipping: no host C compiler on PATH");
-        return;
-    };
+    let compiler: PathBuf = host_c_compiler();
     let scratch: TempDir = TempDir::new().expect("scratch directory");
     let one_source: PathBuf = scratch.path().join("version_one.c");
     let two_source: PathBuf = scratch.path().join("version_two.c");
@@ -838,7 +826,10 @@ fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() 
         compile(&compiler, &one_source, &one_path, &["-O2"]),
         compile(&compiler, &two_source, &two_path, &["-O2"]),
     ) else {
-        eprintln!("skipping: host C compiler cannot link a hosted executable");
+        prerequisite::toolchain_capability_absent(
+            "the similarity pair grade",
+            &format!("{} cannot link a hosted executable", compiler.display()),
+        );
         return;
     };
 
@@ -907,10 +898,7 @@ fn two_adjacent_versions_at_one_optimization_level_grade_the_structural_stage() 
 
 #[test]
 fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
-    let Some(compiler): Option<PathBuf> = tool("clang") else {
-        eprintln!("skipping: clang absent, no aarch64 cross build");
-        return;
-    };
+    let compiler: PathBuf = clang();
     let scratch: TempDir = TempDir::new().expect("scratch directory");
     let source: PathBuf = scratch.path().join("free.c");
     std::fs::write(&source, FREESTANDING_SOURCE).expect("write freestanding source");
@@ -941,7 +929,10 @@ fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
             &high_flags,
         ),
     ) else {
-        eprintln!("skipping: clang cannot cross link an aarch64 image here");
+        prerequisite::toolchain_capability_absent(
+            "the aarch64 similarity pair grade",
+            "clang cannot cross link a freestanding aarch64 image with lld here",
+        );
         return;
     };
 
@@ -973,10 +964,7 @@ fn an_aarch64_pair_matches_functions_through_adrp_pairs_and_wide_moves() {
 
 #[test]
 fn a_stripped_aarch64_dynamic_export_does_not_suppress_internal_call_targets() {
-    let Some(compiler): Option<PathBuf> = tool("clang") else {
-        eprintln!("skipping: clang absent, no aarch64 dynamic-export build");
-        return;
-    };
+    let compiler: PathBuf = clang();
     let scratch: TempDir = TempDir::new().expect("scratch directory");
     let source: PathBuf = scratch.path().join("dynamic_export.c");
     let unstripped_path: PathBuf = scratch.path().join("dynamic_export.elf");
@@ -993,7 +981,10 @@ fn a_stripped_aarch64_dynamic_export_does_not_suppress_internal_call_targets() {
     ];
     let Some(unstripped): Option<Vec<u8>> = compile(&compiler, &source, &unstripped_path, &flags)
     else {
-        eprintln!("skipping: clang cannot cross link an aarch64 dynamic-export image");
+        prerequisite::toolchain_capability_absent(
+            "the aarch64 dynamic-export discovery check",
+            "clang cannot cross link a freestanding aarch64 dynamic-export image with lld here",
+        );
         return;
     };
     let unstripped_payload: DisasmPayload =
@@ -1005,7 +996,10 @@ fn a_stripped_aarch64_dynamic_export_does_not_suppress_internal_call_targets() {
         .map(|symbol: &DisasmSymbol| symbol.address)
         .expect("unstripped internal_mix symbol");
     let Some(stripped): Option<Vec<u8>> = stripped_copy(&unstripped_path, &stripped_path) else {
-        eprintln!("skipping: strip cannot process the aarch64 dynamic-export image");
+        prerequisite::toolchain_capability_absent(
+            "the aarch64 dynamic-export discovery check",
+            "neither llvm-strip nor strip can process the aarch64 dynamic-export image",
+        );
         return;
     };
     let payload: DisasmPayload = build_disasm_payload(&stripped).expect("build stripped payload");

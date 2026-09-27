@@ -20,7 +20,7 @@ use disrobe_pass_native::packers::aspack_phase2::{
 use disrobe_pass_native::packers::pecompact_phase2::{
     PecompactPhaseTwoOutput, unpack_pecompact_phase2_emulated,
 };
-use packer_fixture::{PackerFixture, enforce_something_was_graded, load_fixture};
+use packer_fixture::{PackerFixture, enforce_something_was_graded, require_committed};
 
 fn decoder_for(family: &str) -> &'static str {
     if family == "aspack" {
@@ -30,8 +30,8 @@ fn decoder_for(family: &str) -> &'static str {
     }
 }
 
-fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
-    load_fixture(PackerFixture {
+fn corpus(family: &str, name: &str) -> Vec<u8> {
+    require_committed(PackerFixture {
         decoder: decoder_for(family),
         family,
         name,
@@ -39,14 +39,8 @@ fn corpus(family: &str, name: &str) -> Option<Vec<u8>> {
 }
 
 fn assert_aspack(label: &str, packed_n: &str, orig_n: &str, content_floor: f64, whole_floor: f64) {
-    let Some(packed): Option<Vec<u8>> = corpus("aspack", packed_n) else {
-        eprintln!("skip aspack {label}: {packed_n} missing");
-        return;
-    };
-    let Some(orig): Option<Vec<u8>> = corpus("aspack", orig_n) else {
-        eprintln!("skip aspack {label}: {orig_n} missing");
-        return;
-    };
+    let packed: Vec<u8> = corpus("aspack", packed_n);
+    let orig: Vec<u8> = corpus("aspack", orig_n);
     let out: AspackPhaseTwoOutput =
         unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack phase2 must succeed");
     let content: f64 = out.content_recovery_pct.unwrap_or(0.0);
@@ -81,14 +75,8 @@ fn assert_pecompact(
     content_floor: f64,
     whole_floor: f64,
 ) {
-    let Some(packed): Option<Vec<u8>> = corpus("pecompact", packed_n) else {
-        eprintln!("skip pecompact {label}: {packed_n} missing");
-        return;
-    };
-    let Some(orig): Option<Vec<u8>> = corpus("pecompact", orig_n) else {
-        eprintln!("skip pecompact {label}: {orig_n} missing");
-        return;
-    };
+    let packed: Vec<u8> = corpus("pecompact", packed_n);
+    let orig: Vec<u8> = corpus("pecompact", orig_n);
     let out: PecompactPhaseTwoOutput = unpack_pecompact_phase2_emulated(&packed, Some(&orig))
         .expect("pecompact phase2 must succeed");
     let content: f64 = out.content_recovery_pct.unwrap_or(0.0);
@@ -193,11 +181,8 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
     ];
     let mut aspack_tested: usize = 0;
     for (label, p, o) in aspack {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus("aspack", p), corpus("aspack", o))
-        else {
-            continue;
-        };
+        let packed: Vec<u8> = corpus("aspack", p);
+        let orig: Vec<u8> = corpus("aspack", o);
         let out: AspackPhaseTwoOutput =
             unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack");
         aspack_tested += 1;
@@ -208,11 +193,8 @@ fn emulated_beats_structural_zero_on_all_fixtures() {
     }
     let mut pecompact_tested: usize = 0;
     for (label, p, o) in pecompact {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus("pecompact", p), corpus("pecompact", o))
-        else {
-            continue;
-        };
+        let packed: Vec<u8> = corpus("pecompact", p);
+        let orig: Vec<u8> = corpus("pecompact", o);
         let out: PecompactPhaseTwoOutput =
             unpack_pecompact_phase2_emulated(&packed, Some(&orig)).expect("pecompact");
         pecompact_tested += 1;
@@ -277,11 +259,8 @@ fn aspack_iat_reconstructed_byte_identical() {
     ];
     let mut tested: usize = 0;
     for (packed_n, orig_n) in cases {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus("aspack", packed_n), corpus("aspack", orig_n))
-        else {
-            continue;
-        };
+        let packed: Vec<u8> = corpus("aspack", packed_n);
+        let orig: Vec<u8> = corpus("aspack", orig_n);
         let out: AspackPhaseTwoOutput =
             unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack");
         let (matched, total): (usize, usize) =
@@ -318,8 +297,8 @@ fn aspack_import_descriptors_match_original_bytes() {
         ),
     ];
     for (packed_name, original_name, content_floor, whole_floor) in cases {
-        let packed: Vec<u8> = corpus("aspack", packed_name).expect("packed ASPack fixture");
-        let original: Vec<u8> = corpus("aspack", original_name).expect("original ASPack fixture");
+        let packed: Vec<u8> = corpus("aspack", packed_name);
+        let original: Vec<u8> = corpus("aspack", original_name);
         let output: AspackPhaseTwoOutput =
             unpack_aspack_phase2_emulated(&packed, Some(&original)).expect("ASPack phase two");
         let content: f64 = output.content_recovery_pct.expect("content recovery score");
@@ -381,11 +360,8 @@ fn pecompact_iat_reconstructed_byte_identical() {
     ];
     let mut tested: usize = 0;
     for (packed_n, orig_n) in cases {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus("pecompact", packed_n), corpus("pecompact", orig_n))
-        else {
-            continue;
-        };
+        let packed: Vec<u8> = corpus("pecompact", packed_n);
+        let orig: Vec<u8> = corpus("pecompact", orig_n);
         let out: PecompactPhaseTwoOutput =
             unpack_pecompact_phase2_emulated(&packed, Some(&orig)).expect("pecompact");
         let (matched, total): (usize, usize) =
@@ -412,11 +388,8 @@ fn aspack_section_report_isolates_residual_to_non_text() {
     ];
     let mut tested: usize = 0;
     for (packed_n, orig_n) in cases {
-        let (Some(packed), Some(orig)): (Option<Vec<u8>>, Option<Vec<u8>>) =
-            (corpus("aspack", packed_n), corpus("aspack", orig_n))
-        else {
-            continue;
-        };
+        let packed: Vec<u8> = corpus("aspack", packed_n);
+        let orig: Vec<u8> = corpus("aspack", orig_n);
         let out: AspackPhaseTwoOutput =
             unpack_aspack_phase2_emulated(&packed, Some(&orig)).expect("aspack");
         let report = out.section_report.as_ref().expect("section report present");

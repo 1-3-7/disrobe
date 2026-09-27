@@ -6,6 +6,7 @@
     clippy::print_stdout,
     clippy::print_stderr
 )]
+#![cfg(windows)]
 
 mod common;
 
@@ -19,7 +20,8 @@ use disrobe_pass_native::{
 };
 
 use common::{
-    HOST_ABI, cc, compile_object_opt, function_code, link_and_run, scratch_dir, strip_includes,
+    HOST_ABI, compile_object_opt, function_code, link_and_run, require_cc, scratch_dir,
+    strip_includes,
 };
 
 const CC_FLAGS: [&str; 6] = [
@@ -119,10 +121,12 @@ fn recover_effect_program(
 ) -> Option<RecoveredEffectProgram> {
     let mut functions: Vec<ProgramFunction> = Vec::with_capacity(program.functions.len());
     for &fname in program.functions {
-        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(object, fname) else {
-            eprintln!("skip {}: {fname} symbol not located", program.name);
-            return None;
-        };
+        let (code, base): (Vec<u8>, u64) = function_code(object, fname).unwrap_or_else(|| {
+            panic!(
+                "{}: {fname} is not located in the object compiled from its own source",
+                program.name
+            )
+        });
         functions.push(ProgramFunction {
             name: format!("rec_{fname}"),
             address: base,
@@ -207,7 +211,7 @@ fn effect_baseline(program: &EffectProgram) -> Option<EffectBaseline> {
 }
 
 fn effect_baseline_at(program: &EffectProgram, opt: &str) -> Option<EffectBaseline> {
-    let builder: String = cc()?;
+    let builder: String = require_cc();
     let scratch: ScratchDir = scratch_dir("disrobe-effect-spill");
     let dir: PathBuf = scratch.path().to_path_buf();
     let obj_path: PathBuf = dir.join(format!("{}_{}_host.o", program.name, opt_tag(opt)));
@@ -225,25 +229,9 @@ fn opt_tag(opt: &str) -> &str {
     opt.trim_start_matches('-')
 }
 
-fn require_windows_host(check: &str) -> bool {
-    if cfg!(windows) {
-        return true;
-    }
-    eprintln!(
-        "skipping {check}: the host recompile class is pinned to the windows ms-x64 toolchain in this crate"
-    );
-    false
-}
-
 #[test]
 fn recovered_effects_keep_their_original_count_and_order() {
-    if !require_windows_host("effect spill differential") {
-        return;
-    }
-    let Some(_builder): Option<String> = cc() else {
-        eprintln!("skipping effect spill differential: no host cc on PATH");
-        return;
-    };
+    let _builder: String = require_cc();
     let mut graded: Vec<&str> = Vec::new();
     let mut rejected: Vec<&str> = Vec::new();
     for program in EFFECT_PROGRAMS {
@@ -312,9 +300,6 @@ fn temporary_statements(tu: &str) -> usize {
 
 #[test]
 fn recovered_effect_programs_report_their_temporary_counts() {
-    if !require_windows_host("temporary census") {
-        return;
-    }
     let mut total: usize = 0;
     let mut measured: usize = 0;
     let mut expected: usize = 0;
@@ -343,9 +328,6 @@ fn recovered_effect_programs_report_their_temporary_counts() {
 
 #[test]
 fn recovering_the_same_object_twice_produces_identical_source() {
-    if !require_windows_host("recovery determinism") {
-        return;
-    }
     for program in EFFECT_PROGRAMS {
         for opt in program.levels {
             let Some(first): Option<EffectBaseline> = effect_baseline_at(program, opt) else {
@@ -371,9 +353,6 @@ fn recovering_the_same_object_twice_produces_identical_source() {
 
 #[test]
 fn recovered_effects_survive_the_unoptimized_build() {
-    if !require_windows_host("unoptimized effect differential") {
-        return;
-    }
     let mut graded: Vec<&str> = Vec::new();
     let unoptimized: Vec<&EffectProgram> = EFFECT_PROGRAMS
         .iter()
@@ -408,9 +387,6 @@ fn recovered_effects_survive_the_unoptimized_build() {
 
 #[test]
 fn the_recorded_unoptimized_exclusion_is_still_a_lifter_gap() {
-    if !require_windows_host("unoptimized exclusion audit") {
-        return;
-    }
     for program in EFFECT_PROGRAMS {
         if program.levels.contains(&"-O0") {
             continue;
@@ -429,9 +405,6 @@ fn the_recorded_unoptimized_exclusion_is_still_a_lifter_gap() {
 
 #[test]
 fn teeth_duplicating_a_recovered_call_diverges() {
-    if !require_windows_host("duplicated effect teeth") {
-        return;
-    }
     let program: &EffectProgram = EFFECT_PROGRAMS
         .iter()
         .find(|p: &&EffectProgram| p.name == "ef_call_once")
@@ -473,9 +446,6 @@ fn teeth_duplicating_a_recovered_call_diverges() {
 
 #[test]
 fn teeth_sinking_a_recovered_load_past_a_store_diverges() {
-    if !require_windows_host("reordered effect teeth") {
-        return;
-    }
     let program: &EffectProgram = EFFECT_PROGRAMS
         .iter()
         .find(|p: &&EffectProgram| p.name == "ef_order")

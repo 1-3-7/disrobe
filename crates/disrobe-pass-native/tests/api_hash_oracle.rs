@@ -80,19 +80,19 @@ int main(void) {
 }
 "#;
 
-fn gcc_available() -> bool {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_gcc() {
+    assert!(
+        Command::new("gcc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o: std::process::Output| o.status.success()),
+        "gcc is required on PATH to grade against an independent C reference; every CI test runner provisions it"
+    );
 }
 
 #[test]
 fn rust_hashes_match_an_independent_c_reference_compiled_by_gcc() {
-    if !gcc_available() {
-        println!("SKIP: gcc not on PATH; cannot grade against an independent C reference");
-        return;
-    }
+    require_gcc();
     let dir: tempfile::TempDir = tempfile::tempdir().expect("tempdir");
     let src: PathBuf = dir.path().join("ref.c");
     let exe: PathBuf = dir.path().join("ref.exe");
@@ -152,10 +152,7 @@ fn rust_hashes_match_an_independent_c_reference_compiled_by_gcc() {
 
 #[test]
 fn resolver_recovers_names_from_a_gcc_compiled_peb_walk_resolver() {
-    if !gcc_available() {
-        println!("SKIP: gcc not on PATH");
-        return;
-    }
+    require_gcc();
     let target: u32 = HashFamily::Ror13Add.hash(b"LoadLibraryA", false);
     let resolver_c: String = format!(
         r#"
@@ -192,13 +189,8 @@ int main(void) {{ return resolve_one("x"); }}
     );
 
     let object_bytes: Vec<u8> = std::fs::read(&obj).expect("read resolver object");
-    let Some(text): Option<Vec<u8>> = extract_text_section(&object_bytes) else {
-        eprintln!(
-            "skipping resolver_recovers_names_from_a_gcc_compiled_peb_walk_resolver: \
-             object is not an ELF with a .text section (e.g. a macos Mach-O object)"
-        );
-        return;
-    };
+    let text: Vec<u8> = extract_text_section(&object_bytes)
+        .expect("the gcc resolver object must carry a non-empty text section");
 
     let hits: Vec<ApiHashHit> = resolve_imports_by_hash(64, 0, &text);
     assert!(
@@ -217,7 +209,7 @@ fn extract_text_section(object: &[u8]) -> Option<Vec<u8>> {
     let parsed: object::File<'_> = object::File::parse(object).ok()?;
     for section in parsed.sections() {
         let name: &str = section.name().unwrap_or("");
-        if (name == ".text" || name == "text")
+        if matches!(name, ".text" | "text" | "__text")
             && let Ok(data) = section.data()
             && !data.is_empty()
         {

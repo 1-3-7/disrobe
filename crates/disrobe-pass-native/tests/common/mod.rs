@@ -216,6 +216,27 @@ pub fn gcc() -> Option<String> {
     compiler_toolchain::probe_one("gcc")
 }
 
+#[must_use]
+pub fn require_cc() -> String {
+    compiler_toolchain::require_any(&["gcc", "clang", "cc"])
+}
+
+#[must_use]
+pub fn require_gcc() -> String {
+    compiler_toolchain::require_one("gcc")
+}
+
+#[must_use]
+pub fn require_clang() -> String {
+    clang().unwrap_or_else(|| {
+        panic!("clang is not callable on PATH, and every CI test runner provisions it, so this oracle requires it")
+    })
+}
+
+pub fn toolchain_unmeasured(defect: &str) {
+    compiler_toolchain::unmeasured(defect);
+}
+
 const CALIBRATED_CLANG_MAJORS: std::ops::RangeInclusive<u32> = 18..=21;
 
 #[must_use]

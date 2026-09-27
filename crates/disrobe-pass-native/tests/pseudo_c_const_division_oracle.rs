@@ -211,10 +211,10 @@ fn grade_battery(
 #[test]
 fn magic_lowered_division_recovers_the_compiler_divisor() {
     let compilers: Vec<CompilerId> = available_x86_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping constant-division battery: no C compiler on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the constant-division battery needs a C compiler on PATH; every CI test runner provisions one"
+    );
     let divisors: Vec<u64> = (1u64..=1024)
         .chain(SAMPLED_DIVISORS)
         .collect::<std::collections::BTreeSet<u64>>()
@@ -370,10 +370,10 @@ const DIFFERENTIAL_INPUTS: &str = "0, 1, 2, 3, 6, 7, 8, 13, 14, 41, 100, 1000, 6
 #[test]
 fn recovered_constant_division_matches_the_compiled_function() {
     let compilers: Vec<CompilerId> = available_x86_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping constant-division differential: no C compiler on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the constant-division differential needs a C compiler on PATH; every CI test runner provisions one"
+    );
     let cases: Vec<DifferentialCase> = differential_cases();
     let mut program: String = String::new();
     for case in &cases {
@@ -511,10 +511,10 @@ fn recovered_constant_division_matches_the_compiled_function() {
 #[test]
 fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
     let compilers: Vec<CompilerId> = available_x86_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping fixed-point near-miss: no C compiler on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the fixed-point near-miss needs a C compiler on PATH; every CI test runner provisions one"
+    );
     let program: &str = "unsigned near_a(unsigned a){ return (unsigned)(((unsigned long long)a * 3435973837ull) >> 33); }\n\
          unsigned near_b(unsigned a){ return (unsigned)(((unsigned long long)a * 2454267027ull) >> 35); }\n\
          unsigned near_c(unsigned a){ return (unsigned)(((unsigned long long)a * 613566757ull) >> 30); }\n";
@@ -567,10 +567,10 @@ fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
 #[test]
 fn division_inside_a_loop_never_names_the_wrong_divisor() {
     let compilers: Vec<CompilerId> = available_x86_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping loop-context constant division: no C compiler on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the loop-context constant division needs a C compiler on PATH; every CI test runner provisions one"
+    );
     let program: &str = "unsigned lp_div(unsigned n){ unsigned s = 0u; for (unsigned i = 0u; i < (n & 0xffu); i++) { s += i / 7u; } return s; }\n";
     let scratch: ScratchDir = scratch_dir("disrobe-const-division-loop");
     let mut measured: usize = 0;
@@ -623,10 +623,10 @@ fn division_inside_a_loop_never_names_the_wrong_divisor() {
 #[test]
 fn whole_program_recovery_reaches_constant_division() {
     let compilers: Vec<CompilerId> = available_x86_compilers();
-    if compilers.is_empty() {
-        eprintln!("skipping whole-program constant division: no C compiler on PATH");
-        return;
-    }
+    assert!(
+        !compilers.is_empty(),
+        "the whole-program constant division needs a C compiler on PATH; every CI test runner provisions one"
+    );
     let program: &str = "unsigned wp_div(unsigned a){ return a / 7u; }\n\
          unsigned wp_entry(unsigned a){ return wp_div(a) + wp_div(a + 1u); }\n";
     let scratch: ScratchDir = scratch_dir("disrobe-const-division-wholeprog");

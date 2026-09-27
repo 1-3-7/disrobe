@@ -78,12 +78,8 @@ fn pe_section_raw(image: &[u8], name: &[u8]) -> Option<(usize, usize)> {
 #[test]
 fn chain_recovered_text_is_byte_identical_to_original() {
     let out: UpxGoChainOutput = unpack_upx_go_chain(HELLO_NRV2B).expect("unpack hello");
-    let Some((text_raw, text_vsize)): Option<(usize, usize)> =
-        pe_section_raw(HELLO_ORIGINAL, b".text")
-    else {
-        eprintln!("skip: original .text not located");
-        return;
-    };
+    let (text_raw, text_vsize): (usize, usize) = pe_section_raw(HELLO_ORIGINAL, b".text")
+        .expect("the committed upx/hello.original.exe carries a .text section");
     assert!(
         out.unpacked_image.len() >= text_vsize,
         "recovered image must hold the full .text"
