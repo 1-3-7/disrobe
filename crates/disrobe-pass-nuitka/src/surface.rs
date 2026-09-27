@@ -70,8 +70,17 @@ pub struct SurfaceFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceAssignment {
+    pub name: String,
+    pub value: String,
+    pub next_function_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceModule {
     pub module_name: String,
+    #[serde(default)]
+    pub assignments: Vec<SurfaceAssignment>,
     pub functions: Vec<SurfaceFunction>,
     pub has_main_guard: bool,
     pub python_source: String,
@@ -1448,9 +1457,11 @@ fn build_surface_with_c_source_mask(
     }
 
     let functions: Vec<SurfaceFunction> = nest_functions(functions);
+    let assignments: Vec<SurfaceAssignment> = module_assignments(c_module, pool, &mut notes);
 
     let mut module: SurfaceModule = SurfaceModule {
         module_name: c_module.module_name.clone(),
+        assignments,
         functions,
         has_main_guard: c_module.has_main_guard,
         python_source: String::new(),
@@ -1464,6 +1475,39 @@ fn build_surface_with_c_source_mask(
         ));
     }
     Ok(module)
+}
+
+fn module_assignments(
+    c_module: &CModuleStructure,
+    pool: &ConstantsPool,
+    notes: &mut Vec<String>,
+) -> Vec<SurfaceAssignment> {
+    let mut assignments: Vec<SurfaceAssignment> =
+        Vec::with_capacity(c_module.module_assignments.len());
+    for assignment in &c_module.module_assignments {
+        if !is_python_parameter_name(&assignment.name) {
+            notes.push(format!(
+                "skipped module global '{}' because its name is not a Python identifier",
+                assignment.name
+            ));
+            continue;
+        }
+        let Some(value): Option<String> =
+            render_default_expression(&resolve_const_token(&assignment.value_const, pool), pool)
+        else {
+            notes.push(format!(
+                "module global '{}' const '{}' present but not value-resolved",
+                assignment.name, assignment.value_const
+            ));
+            continue;
+        };
+        assignments.push(SurfaceAssignment {
+            name: assignment.name.clone(),
+            value,
+            next_function_index: assignment.next_function_index,
+        });
+    }
+    assignments
 }
 
 fn attach_nested(
@@ -1600,6 +1644,7 @@ pub fn build_surface_names_only_with_skeleton(
     };
     let mut module: SurfaceModule = SurfaceModule {
         module_name,
+        assignments: Vec::new(),
         functions,
         has_main_guard: has_main,
         python_source: String::new(),
@@ -1849,11 +1894,40 @@ pub fn emit_python(module: &SurfaceModule) -> String {
         out.push_str("# Recovered by disrobe (surface skeleton; bodies not lifted).\n");
     }
     out.push_str("from __future__ import annotations\n\n");
-    for (i, function) in module.functions.iter().enumerate() {
-        if i > 0 {
+    let mut assignments = module.assignments.iter().peekable();
+    let mut emitted_any: bool = false;
+    for function in &module.functions {
+        let mut group: String = String::new();
+        while let Some(assignment) = assignments.next_if(|assignment: &&SurfaceAssignment| {
+            function.parent_names.is_empty()
+                && assignment
+                    .next_function_index
+                    .is_some_and(|index: u32| index <= function.source_index)
+        }) {
+            emit_assignment(assignment, &mut group);
+        }
+        if !group.is_empty() {
+            if emitted_any {
+                out.push('\n');
+            }
+            out.push_str(&group);
+            emitted_any = true;
+        }
+        if emitted_any {
             out.push('\n');
         }
         emit_function(function, 0, &mut out);
+        emitted_any = true;
+    }
+    let mut trailing: String = String::new();
+    for assignment in assignments {
+        emit_assignment(assignment, &mut trailing);
+    }
+    if !trailing.is_empty() {
+        if emitted_any {
+            out.push('\n');
+        }
+        out.push_str(&trailing);
     }
 
     let has_main_fn: bool = module
@@ -1869,6 +1943,13 @@ pub fn emit_python(module: &SurfaceModule) -> String {
     }
 
     out
+}
+
+fn emit_assignment(assignment: &SurfaceAssignment, out: &mut String) {
+    out.push_str(&assignment.name);
+    out.push_str(" = ");
+    out.push_str(&assignment.value);
+    out.push('\n');
 }
 
 fn py_docstring(doc: &str) -> String {
@@ -2366,6 +2447,7 @@ mod tests {
             }],
             const_returns: Vec::new(),
             wirings: Vec::new(),
+            module_assignments: Vec::new(),
             has_main_guard: false,
             notes: Vec::new(),
         };
@@ -2391,6 +2473,7 @@ mod tests {
             }],
             const_returns: Vec::new(),
             wirings: Vec::new(),
+            module_assignments: Vec::new(),
             has_main_guard: false,
             notes: Vec::new(),
         };
@@ -2543,5 +2626,87 @@ static PyObject *impl_m$$$function__1_f(PyThreadState *tstate, PyObject *const *
             Some("int")
         );
         assert!(s.python_source.contains("    def inner(x: int) -> int:"));
+    }
+
+    const MODULE_BODY_GLOBALS_C: &str = r"
+PyObject *module_m;
+PyDictObject *moduledict_m;
+
+static PyObject *impl_m$$$function__1_f(PyThreadState *tstate, struct Nuitka_FunctionObject const *self, PyObject **python_pars) {
+    tmp_return_value = const_true;
+    goto frame_return_exit_1;
+}
+
+static PyObject *MAKE_FUNCTION_m$$$function__1_f(PyThreadState *tstate) {
+    struct Nuitka_FunctionObject *result = Nuitka_Function_New(
+        impl_m$$$function__1_f,
+        mod_consts.const_str_plain_f,
+        NULL,
+        code_objects_f,
+        NULL,
+        NULL,
+        NULL,
+        module_m,
+        NULL,
+        NULL,
+        0
+    );
+    return (PyObject *)result;
+}
+
+PyObject *module_code_m(PyThreadState *tstate, PyObject *module, struct Nuitka_MetaPathBasedLoaderEntry const *loader_entry) {
+    moduledict_m = MODULE_DICT(module_m);
+{
+PyObject *tmp_assign_source_1;
+tmp_assign_source_1 = Py_None;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)const_str_plain___doc__, tmp_assign_source_1);
+}
+{
+PyObject *tmp_assign_source_2;
+tmp_assign_source_2 = mod_consts.const_int_pos_7;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_FIRST, tmp_assign_source_2);
+}
+{
+PyObject *tmp_assign_source_3;
+tmp_assign_source_3 = MAKE_FUNCTION_m$$$function__1_f(tstate);
+UPDATE_STRING_DICT1(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_f, tmp_assign_source_3);
+}
+{
+PyObject *tmp_assign_source_4;
+tmp_assign_source_4 = mod_consts.const_str_plain_two;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_SECOND, tmp_assign_source_4);
+}
+    return module_m;
+}
+";
+
+    #[test]
+    fn module_body_constant_globals_are_emitted_around_defs_in_source_order() {
+        let cmod: CModuleStructure =
+            parse_c_module_with_python_abi(MODULE_BODY_GLOBALS_C, (3u8, 14u8)).expect("parse");
+        let surface: SurfaceModule = build_surface_with_python_abi(
+            &cmod,
+            &ConstantsPool::default(),
+            Some(MODULE_BODY_GLOBALS_C),
+            (3u8, 14u8),
+        )
+        .expect("surface");
+        let lines: Vec<&str> = surface.python_source.lines().collect();
+        let position = |wanted: &str| -> usize {
+            lines
+                .iter()
+                .position(|line: &&str| *line == wanted)
+                .unwrap_or_else(|| panic!("missing `{wanted}` in:\n{}", surface.python_source))
+        };
+        let first: usize = position("FIRST = 7");
+        let def: usize = position("def f():");
+        let second: usize = position("SECOND = 'two'");
+        assert!(
+            first < def && def < second,
+            "module body order lost:\n{}",
+            surface.python_source
+        );
+        assert!(!surface.python_source.contains("__doc__"));
+        assert!(!surface.python_source.contains("f = "));
     }
 }

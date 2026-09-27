@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,13 @@ pub struct CConstReturn {
     pub code_object_symbol: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CModuleAssignment {
+    pub name: String,
+    pub value_const: String,
+    pub next_function_index: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CModuleStructure {
     pub module_name: String,
@@ -68,6 +75,8 @@ pub struct CModuleStructure {
     #[serde(default)]
     pub const_returns: Vec<CConstReturn>,
     pub wirings: Vec<CFunctionWiring>,
+    #[serde(default)]
+    pub module_assignments: Vec<CModuleAssignment>,
     pub has_main_guard: bool,
     pub notes: Vec<String>,
 }
@@ -1995,6 +2004,192 @@ fn detect_main_guard(lines: &[&str]) -> bool {
     false
 }
 
+const NUITKA_MANAGED_MODULE_ATTRIBUTES: &[&str] = &[
+    "__annotations__",
+    "__builtins__",
+    "__cached__",
+    "__compiled__",
+    "__doc__",
+    "__file__",
+    "__loader__",
+    "__name__",
+    "__package__",
+    "__path__",
+    "__spec__",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModuleBodyEvent<'a> {
+    Store {
+        name: &'a str,
+        value_const: Option<&'a str>,
+    },
+    TopLevelFunction(u32),
+}
+
+fn module_code_body<'a>(masked_source: &'a str, code: &[u8], module_name: &str) -> Option<&'a str> {
+    let needle: String = format!("PyObject *module_code_{module_name}(");
+    let mut search: usize = 0usize;
+    while let Some(start) = find_code_marker(code, needle.as_bytes(), search) {
+        if let Some(range) = extract_c_function_body_range_at_with_mask(masked_source, code, start)
+        {
+            return masked_source.get(range);
+        }
+        search = start.saturating_add(needle.len());
+    }
+    None
+}
+
+fn c_label(line: &str) -> Option<&str> {
+    let label: &str = line.strip_suffix(":;").or_else(|| line.strip_suffix(':'))?;
+    let mut characters = label.chars();
+    (characters
+        .next()
+        .is_some_and(|character: char| character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character: char| character.is_ascii_alphanumeric() || character == '_'))
+    .then_some(label)
+}
+
+fn is_frame_bookkeeping_label(label: &str) -> bool {
+    label == "module_exception_exit"
+        || label.starts_with("frame_exception_exit_")
+        || label.starts_with("frame_no_exception_")
+}
+
+fn module_constant_token(rhs: &str) -> Option<&str> {
+    match rhs {
+        "Py_None" => return Some("const_none"),
+        "Py_True" => return Some("const_true"),
+        "Py_False" => return Some("const_false"),
+        _ => {}
+    }
+    let token: &str = strip_mod_consts(rhs);
+    (token.starts_with("const_")
+        && token
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_'))
+    .then_some(rhs)
+}
+
+fn module_dict_store<'a>(line: &'a str, dict_prefix: &str) -> Option<(&'a str, &'a str)> {
+    let arguments: &str = line
+        .strip_prefix("UPDATE_STRING_DICT0(")
+        .or_else(|| line.strip_prefix("UPDATE_STRING_DICT1("))?
+        .strip_prefix(dict_prefix)?
+        .strip_suffix(");")?;
+    let (name_token, temporary): (&str, &str) = arguments.split_once(", ")?;
+    let name: &str = strip_mod_consts(name_token).strip_prefix(STR_PLAIN_PREFIX)?;
+    Some((name, temporary.trim()))
+}
+
+fn module_body_events<'a>(body: &'a str, module_name: &str) -> Result<Vec<ModuleBodyEvent<'a>>> {
+    let dict_prefix: String = format!("moduledict_{module_name}, (Nuitka_StringObject *)");
+    let mut constant_temporaries: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut straight_line: bool = true;
+    let mut events: Vec<ModuleBodyEvent<'a>> = Vec::new();
+    for line in body.lines() {
+        let t: &str = line.trim();
+        if let Some(label) = c_label(t) {
+            straight_line &= is_frame_bookkeeping_label(label);
+            continue;
+        }
+        if let Some(target) = t
+            .strip_prefix("goto ")
+            .and_then(|rest: &str| rest.strip_suffix(';'))
+        {
+            straight_line &= is_frame_bookkeeping_label(target.trim());
+            continue;
+        }
+        let event: Option<ModuleBodyEvent<'a>> =
+            if let Some((name, temporary)) = module_dict_store(t, &dict_prefix) {
+                Some(ModuleBodyEvent::Store {
+                    name,
+                    value_const: constant_temporaries
+                        .get(temporary)
+                        .copied()
+                        .filter(|_: &&str| straight_line),
+                })
+            } else {
+                parse_make_function_call(t)
+                    .filter(|demangled: &DemangledFunction| {
+                        demangled.kind == NuitkaSymbolKind::Function
+                            && demangled.parent_names.is_empty()
+                    })
+                    .map(|demangled: DemangledFunction| {
+                        ModuleBodyEvent::TopLevelFunction(demangled.source_index)
+                    })
+            };
+        if let Some(event) = event {
+            if events.len() == MAX_C_MODULE_RECORDS {
+                return Err(Error::CSourceComplexityExceeded {
+                    resource: "module body statement",
+                    count: events.len().saturating_add(1usize),
+                    max_count: MAX_C_MODULE_RECORDS,
+                });
+            }
+            events.push(event);
+        }
+        if let Some((lhs, rhs)) = t
+            .strip_suffix(';')
+            .and_then(|statement: &str| statement.split_once(" = "))
+            && lhs
+                .bytes()
+                .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            match module_constant_token(rhs.trim()) {
+                Some(token) => {
+                    constant_temporaries.insert(lhs, token);
+                }
+                None => {
+                    constant_temporaries.remove(lhs);
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn parse_module_assignments(
+    masked_source: &str,
+    code: &[u8],
+    module_name: &str,
+) -> Result<Vec<CModuleAssignment>> {
+    let Some(body): Option<&str> = module_code_body(masked_source, code, module_name) else {
+        return Ok(Vec::new());
+    };
+    let events: Vec<ModuleBodyEvent<'_>> = module_body_events(body, module_name)?;
+    let rebound: BTreeSet<&str> = events
+        .iter()
+        .filter_map(|event: &ModuleBodyEvent<'_>| match event {
+            ModuleBodyEvent::Store {
+                name,
+                value_const: None,
+            } => Some(*name),
+            _ => None,
+        })
+        .collect();
+    let mut next_function_index: Option<u32> = None;
+    let mut assignments: Vec<CModuleAssignment> = Vec::new();
+    for event in events.iter().rev() {
+        match event {
+            ModuleBodyEvent::TopLevelFunction(index) => next_function_index = Some(*index),
+            ModuleBodyEvent::Store {
+                name,
+                value_const: Some(value_const),
+            } if !rebound.contains(name) && !NUITKA_MANAGED_MODULE_ATTRIBUTES.contains(name) => {
+                assignments.push(CModuleAssignment {
+                    name: (*name).to_owned(),
+                    value_const: (*value_const).to_owned(),
+                    next_function_index,
+                });
+            }
+            ModuleBodyEvent::Store { .. } => {}
+        }
+    }
+    assignments.reverse();
+    Ok(assignments)
+}
+
 pub fn parse_c_module(source: &str) -> Result<CModuleStructure> {
     parse_c_module_with_optional_python_abi(source, None)
 }
@@ -2074,6 +2269,8 @@ fn parse_c_module_with_mask(
     }
 
     let has_main_guard: bool = detect_main_guard(&lines);
+    let module_assignments: Vec<CModuleAssignment> =
+        parse_module_assignments(masked_source, &code, &module_name)?;
 
     let mut notes: Vec<String> = Vec::new();
     let n_recovered: usize = impl_bodies.len() + const_returns.len();
@@ -2091,6 +2288,7 @@ fn parse_c_module_with_mask(
         impl_bodies,
         const_returns,
         wirings,
+        module_assignments,
         has_main_guard,
         notes,
     })
@@ -3076,5 +3274,77 @@ static void modulecode_m(PyThreadState *tstate) {
         }"#;
         let parsed: CModuleStructure = serde_json::from_str(prior).expect("deserialize");
         assert!(parsed.const_returns.is_empty());
+        assert!(parsed.module_assignments.is_empty());
+    }
+
+    #[test]
+    fn gauntlet_module_body_recovers_annotated_constant_globals_before_first_def() {
+        let source: &str =
+            include_str!("../../../corpus/python/nuitka/module/gauntlet.build/module.gauntlet.c");
+        let parsed: CModuleStructure =
+            parse_c_module_with_python_abi(source, (3u8, 12u8)).expect("parse gauntlet");
+        let recovered: Vec<(&str, &str, Option<u32>)> = parsed
+            .module_assignments
+            .iter()
+            .map(|assignment: &CModuleAssignment| {
+                (
+                    assignment.name.as_str(),
+                    assignment.value_const.as_str(),
+                    assignment.next_function_index,
+                )
+            })
+            .collect();
+        assert_eq!(
+            recovered,
+            [
+                (
+                    "BANNER",
+                    "mod_consts.const_str_digest_17758251adb19c3d0df3013b5efd0f18",
+                    Some(1u32)
+                ),
+                ("SEED", "mod_consts.const_int_pos_1337", Some(1u32)),
+            ]
+        );
+    }
+
+    #[test]
+    fn module_body_drops_conditional_and_rebound_globals() {
+        let source: &str = r"
+PyObject *module_m;
+PyObject *module_code_m(PyThreadState *tstate, PyObject *module, struct Nuitka_MetaPathBasedLoaderEntry const *loader_entry) {
+{
+PyObject *tmp_assign_source_1;
+tmp_assign_source_1 = mod_consts.const_int_pos_1;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_KEPT, tmp_assign_source_1);
+}
+{
+PyObject *tmp_assign_source_2;
+tmp_assign_source_2 = mod_consts.const_int_pos_2;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_REBOUND, tmp_assign_source_2);
+}
+{
+PyObject *tmp_assign_source_3;
+tmp_assign_source_3 = CALL_FUNCTION_NO_ARGS(tstate, tmp_called_value_1);
+UPDATE_STRING_DICT1(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_REBOUND, tmp_assign_source_3);
+}
+    goto branch_yes_1;
+branch_yes_1:;
+{
+PyObject *tmp_assign_source_4;
+tmp_assign_source_4 = mod_consts.const_int_pos_4;
+UPDATE_STRING_DICT0(moduledict_m, (Nuitka_StringObject *)mod_consts.const_str_plain_CONDITIONAL, tmp_assign_source_4);
+}
+    return module_m;
+}
+";
+        let parsed: CModuleStructure = parse_c_module(source).expect("parse");
+        assert_eq!(
+            parsed.module_assignments,
+            [CModuleAssignment {
+                name: "KEPT".to_owned(),
+                value_const: "mod_consts.const_int_pos_1".to_owned(),
+                next_function_index: None,
+            }]
+        );
     }
 }

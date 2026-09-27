@@ -153,6 +153,7 @@ fn surface_arg_count_overflow_does_not_panic() {
         impl_bodies: vec![impl_body],
         const_returns: Vec::new(),
         wirings: vec![wiring],
+        module_assignments: Vec::new(),
         has_main_guard: false,
         notes: Vec::new(),
     };
@@ -190,6 +191,7 @@ fn valid_module_still_builds_surface() {
         impl_bodies: vec![impl_body],
         const_returns: Vec::new(),
         wirings: Vec::new(),
+        module_assignments: Vec::new(),
         has_main_guard: false,
         notes: Vec::new(),
     };
@@ -448,6 +450,7 @@ fn ambiguous_legacy_wiring_is_not_assigned_to_redefinitions() {
             doc_const: None,
             parent_names: Vec::new(),
         }],
+        module_assignments: Vec::new(),
         has_main_guard: false,
         notes: Vec::new(),
     };
@@ -666,6 +669,7 @@ fn conflicting_exact_wirings_are_not_assigned() {
                 parent_names: Vec::new(),
             },
         ],
+        module_assignments: Vec::new(),
         has_main_guard: false,
         notes: Vec::new(),
     };
@@ -714,6 +718,7 @@ fn duplicate_exact_wirings_are_not_assigned() {
         }],
         const_returns: Vec::new(),
         wirings: vec![wiring.clone(), wiring],
+        module_assignments: Vec::new(),
         has_main_guard: false,
         notes: Vec::new(),
     };

@@ -48,8 +48,8 @@ pub use body::{
 pub use buildinfo::{BuildInfo, BuildInfoFlag, scan_build_info};
 pub use bytecode_table::{BytecodeModule, BytecodeTable, decode_bytecode_table};
 pub use c_module::{
-    CCodeObject, CConstReturn, CFunctionWiring, CImplBody, CModuleStructure, parse_c_module,
-    parse_c_module_with_python_abi,
+    CCodeObject, CConstReturn, CFunctionWiring, CImplBody, CModuleAssignment, CModuleStructure,
+    parse_c_module, parse_c_module_with_python_abi,
 };
 pub use const_blob::{
     CodeKind, CodeObjectMeta, ConstItem, ModuleConstants, NuitkaConstants, constants_unparsable,
@@ -111,8 +111,8 @@ pub use skeleton::{
     reconstruct as reconstruct_skeleton,
 };
 pub use surface::{
-    SurfaceFidelity, SurfaceFunction, SurfaceModule, SurfaceParam, build_surface,
-    build_surface_names_only, build_surface_names_only_with_skeleton,
+    SurfaceAssignment, SurfaceFidelity, SurfaceFunction, SurfaceModule, SurfaceParam,
+    build_surface, build_surface_names_only, build_surface_names_only_with_skeleton,
     build_surface_with_python_abi, emit_python,
 };
 pub use symbols::{ImpFunction, ModuleInit, SymbolGraph, scan_symbols};
