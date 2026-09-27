@@ -53,13 +53,13 @@
       "input_blake3": "37bc216af5989f40fe93f5a988093b6b69989d5ecffaea668d59d4a68f6435d5",
       "input_size": 74,
       "metadata": {},
-      "output_blake3": "87f4333cb4b21823b8e235f4acafed07dc7d69d2235f92a2dbb464254c6937b1",
+      "output_blake3": "baa57bf541a1d1f5fbdde87f1ad20442b531ea9676aaecc32621c7dbe98a7fb2",
       "output_kind": {
         "formatted": true,
         "kind": "source",
         "language": "WebAssembly"
       },
-      "output_size": 351,
+      "output_size": 298,
       "parent_id": 0,
       "pass": "wasm.deob",
       "rule_pack_id": null,
