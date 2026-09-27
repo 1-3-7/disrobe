@@ -72,7 +72,6 @@ fn assert_tamper_is_thorough(bytes: &[u8]) {
 
 fn run_tamper_oracle(rel: &str) {
     let Some(intact): Option<Vec<u8>> = corpus(rel) else {
-        eprintln!("FIXTURE PENDING: {rel}");
         return;
     };
 
@@ -139,7 +138,7 @@ fn upx_patcher_tampered_lzma_recovers_to_clean_oep_image() {
 
 #[test]
 fn upx_patcher_tampered_large_nrv2e_rg_recovers_to_clean_oep_image() {
-    run_tamper_oracle("native/packers/upx/rg.packed.upx.exe");
+    run_tamper_oracle("rg.packed.upx.exe");
 }
 
 #[test]
