@@ -37,6 +37,7 @@ pub struct EmbedScanStats {
     pub anchors_matched: u64,
     pub anchors_rejected_by_shape: u64,
     pub anchors_rejected_by_records: u64,
+    pub records_parsed: u64,
     pub maps_capped: bool,
     pub duplicate_names_dropped: u64,
 }
@@ -254,6 +255,7 @@ fn read_map(
     for index in 0..length {
         let start: usize = usize::try_from(index.checked_mul(stride)?).ok()?;
         let record: &[u8] = body.get(start..start.checked_add(usize::try_from(stride).ok()?)?)?;
+        scan.records_parsed = scan.records_parsed.saturating_add(1);
         let Some(parsed): Option<EmbedRecord> =
             parse_record(image, record, pointer_size, image.endian())
         else {

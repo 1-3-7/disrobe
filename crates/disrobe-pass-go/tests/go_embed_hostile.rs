@@ -1,14 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use disrobe_pass_go::{
+    EmbedDigestFamily, EmbedFile, EmbedMap, EmbedScanStats, GoAnalysis, analyze,
+};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-use disrobe_pass_go::{EmbedDigestFamily, EmbedFile, EmbedMap, GoAnalysis, analyze};
 
 const HEADER_WORDS: usize = 3;
 const POINTER_SIZE: usize = 8;
 const RECORD_STRIDE: usize = 4 * POINTER_SIZE + 16;
-const SCAN_BUDGET: Duration = Duration::from_secs(45);
 
 fn repository_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -78,13 +77,24 @@ fn locate() -> Located {
     }
 }
 
-fn analyze_within_budget(bytes: &[u8], label: &str) -> GoAnalysis {
-    let started: Instant = Instant::now();
+fn analyze_bounded(bytes: &[u8], label: &str) -> GoAnalysis {
+    let baseline: EmbedScanStats = analyze(&tracked_image())
+        .expect("analyze the tracked image")
+        .embed
+        .scan;
     let analysis: GoAnalysis = analyze(bytes).expect("analyze the mutated image");
-    let elapsed: Duration = started.elapsed();
+    let scan: EmbedScanStats = analysis.embed.scan;
     assert!(
-        elapsed < SCAN_BUDGET,
-        "{label} took {elapsed:?}, over the {SCAN_BUDGET:?} scan budget"
+        scan.sections_scanned <= baseline.sections_scanned,
+        "{label} scanned {} sections, more than the {} of the unmutated image",
+        scan.sections_scanned,
+        baseline.sections_scanned
+    );
+    assert!(
+        scan.records_parsed <= baseline.records_parsed,
+        "{label} parsed {} embed records, more than the {} of the unmutated image",
+        scan.records_parsed,
+        baseline.records_parsed
     );
     analysis
 }
@@ -106,7 +116,16 @@ fn a_declared_entry_count_beyond_the_section_yields_no_map() {
         located.header_offset + 2 * POINTER_SIZE,
         u64::MAX,
     );
-    let analysis: GoAnalysis = analyze_within_budget(&located.bytes, "saturated entry count");
+    let analysis: GoAnalysis = analyze_bounded(&located.bytes, "saturated entry count");
+    let baseline: EmbedScanStats = analyze(&tracked_image())
+        .expect("analyze the tracked image")
+        .embed
+        .scan;
+    assert_eq!(
+        analysis.embed.scan.anchors_rejected_by_shape,
+        baseline.anchors_rejected_by_shape + 1,
+        "the saturated header must be rejected by its shape before any record is read"
+    );
     assert!(
         analysis.embed.maps.is_empty(),
         "an entry count of u64::MAX must not produce a map; got {:?}",
@@ -127,7 +146,7 @@ fn a_length_that_disagrees_with_capacity_yields_no_map() {
         located.header_offset + POINTER_SIZE,
         inflated,
     );
-    let analysis: GoAnalysis = analyze_within_budget(&located.bytes, "length above capacity");
+    let analysis: GoAnalysis = analyze_bounded(&located.bytes, "length above capacity");
     assert!(
         analysis.embed.maps.is_empty(),
         "a slice header whose length exceeds its capacity is not a compiler-emitted map; got {:?}",
@@ -148,7 +167,7 @@ fn a_length_below_capacity_yields_no_map() {
         located.header_offset + POINTER_SIZE,
         short,
     );
-    let analysis: GoAnalysis = analyze_within_budget(&located.bytes, "length below capacity");
+    let analysis: GoAnalysis = analyze_bounded(&located.bytes, "length below capacity");
     assert!(
         analysis.embed.maps.is_empty(),
         "a length below capacity would read a prefix of the records and report it as the whole \
@@ -175,7 +194,7 @@ fn a_file_record_carrying_the_directory_digest_sentinel_rejects_the_whole_map() 
         "record {file_index} must be a file record carrying a real digest before mutation"
     );
     bytes[digest_offset..digest_offset + 16].copy_from_slice(&[0u8; 16]);
-    let analysis: GoAnalysis = analyze_within_budget(&bytes, "file record with zero digest");
+    let analysis: GoAnalysis = analyze_bounded(&bytes, "file record with zero digest");
     assert!(
         analysis.embed.maps.is_empty(),
         "an all-zero digest is the compiler's directory sentinel, so a file record carrying it is \
@@ -188,8 +207,7 @@ fn a_file_record_carrying_the_directory_digest_sentinel_rejects_the_whole_map() 
 fn a_records_pointer_outside_every_section_yields_no_map() {
     let mut located: Located = locate();
     write_word(&mut located.bytes, located.header_offset, 0xdead_0000_0000);
-    let analysis: GoAnalysis =
-        analyze_within_budget(&located.bytes, "records pointer out of range");
+    let analysis: GoAnalysis = analyze_bounded(&located.bytes, "records pointer out of range");
     assert!(
         analysis.embed.maps.is_empty(),
         "the anchor requires the records pointer to sit three words past the header; got {:?}",
@@ -204,7 +222,7 @@ fn a_traversal_component_in_an_embedded_path_rejects_the_whole_map() {
     let target: &[u8] = b"assets/note.txt";
     let name_offset: usize = find_unique(&bytes, target);
     bytes[name_offset..name_offset + target.len()].copy_from_slice(b"assets/../etc.x");
-    let analysis: GoAnalysis = analyze_within_budget(&bytes, "traversal path");
+    let analysis: GoAnalysis = analyze_bounded(&bytes, "traversal path");
     assert!(
         analysis.embed.maps.is_empty(),
         "a record naming a parent-directory component must reject the map; got {:?}",
@@ -224,7 +242,7 @@ fn an_absolute_embedded_path_rejects_the_whole_map() {
     let target: &[u8] = b"assets/note.txt";
     let name_offset: usize = find_unique(&bytes, target);
     bytes[name_offset..name_offset + target.len()].copy_from_slice(b"/etc/shadow.txt");
-    let analysis: GoAnalysis = analyze_within_budget(&bytes, "absolute path");
+    let analysis: GoAnalysis = analyze_bounded(&bytes, "absolute path");
     assert!(
         analysis.embed.maps.is_empty(),
         "a record naming an absolute path must reject the map; got {:?}",
@@ -250,7 +268,7 @@ fn a_nonzero_directory_digest_rejects_the_whole_map() {
         "record {directory_index} must be the directory record with an all-zero digest"
     );
     bytes[digest_offset] = 0x01;
-    let analysis: GoAnalysis = analyze_within_budget(&bytes, "nonzero directory digest");
+    let analysis: GoAnalysis = analyze_bounded(&bytes, "nonzero directory digest");
     assert!(
         analysis.embed.maps.is_empty(),
         "a directory record carrying a nonzero digest is not compiler output; got {:?}",
@@ -266,7 +284,7 @@ fn corrupting_one_embedded_byte_fails_only_that_file_s_digest() {
     let data_offset: usize = find_unique(&bytes, target);
     bytes[data_offset] ^= 0x01;
 
-    let analysis: GoAnalysis = analyze_within_budget(&bytes, "corrupted member byte");
+    let analysis: GoAnalysis = analyze_bounded(&bytes, "corrupted member byte");
     assert_eq!(
         analysis.embed.maps.len(),
         1,
