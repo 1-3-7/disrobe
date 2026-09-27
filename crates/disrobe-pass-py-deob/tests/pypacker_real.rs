@@ -7,11 +7,8 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome, Q
 
 const OBF: &str = "pypacker";
 
-fn assert_marshal_handoff(slot: &str, test_name: &str, expected_compressor: &str) {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, slot) else {
-        common::skip_absent_corpus(test_name, OBF);
-        return;
-    };
+fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, slot);
     let text: &str = std::str::from_utf8(&fixture).expect("utf8");
     assert!(
         text.contains("marshal.loads(")
@@ -58,24 +55,20 @@ fn assert_marshal_handoff(slot: &str, test_name: &str, expected_compressor: &str
 
 #[test]
 fn pypacker_real_hello_zlib_marshal_handoff() {
-    assert_marshal_handoff("hello", "pypacker_real_hello_zlib_marshal_handoff", "zlib");
+    assert_marshal_handoff("hello", "zlib");
 }
 
 #[test]
 fn pypacker_real_sample_lzma_marshal_handoff() {
-    assert_marshal_handoff(
-        "sample",
-        "pypacker_real_sample_lzma_marshal_handoff",
-        "lzma",
-    );
+    assert_marshal_handoff("sample", "lzma");
 }
 
 #[test]
 fn pypacker_real_bz2_marshal_handoff() {
-    assert_marshal_handoff("bz2", "pypacker_real_bz2_marshal_handoff", "bz2");
+    assert_marshal_handoff("bz2", "bz2");
 }
 
 #[test]
 fn pypacker_real_gzip_marshal_handoff() {
-    assert_marshal_handoff("gzip", "pypacker_real_gzip_marshal_handoff", "gzip");
+    assert_marshal_handoff("gzip", "gzip");
 }

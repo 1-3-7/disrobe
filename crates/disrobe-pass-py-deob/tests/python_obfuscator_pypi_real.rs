@@ -7,15 +7,22 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome, Q
 
 const OBF: &str = "python_obfuscator_pypi";
 
+fn assert_parses(slot: &str, source: &str) {
+    assert!(
+        ruff_python_parser::parse(
+            source,
+            ruff_python_parser::ParseOptions::from(ruff_python_parser::Mode::Module)
+        )
+        .is_ok(),
+        "python_obfuscator_pypi {slot}: the unwrapped inner program must parse as Python; first \
+         200: {:?}",
+        source.chars().take(200).collect::<String>()
+    );
+}
+
 #[test]
 fn python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "hello") else {
-        common::skip_absent_corpus(
-            "python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source",
-            OBF,
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "hello");
     let text: &str = std::str::from_utf8(&fixture).expect("utf8");
     assert!(
         text.contains("68656c6c6f20776f726c64"),
@@ -50,17 +57,12 @@ fn python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source() {
         !peel.recovered_source.trim_start().starts_with("exec("),
         "recovered source must be the inner program, not the exec() wrapper"
     );
+    assert_parses("hello", &peel.recovered_source);
 }
 
 #[test]
 fn python_obfuscator_pypi_real_sample_unwraps_inner_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "sample") else {
-        common::skip_absent_corpus(
-            "python_obfuscator_pypi_real_sample_unwraps_inner_source",
-            OBF,
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "sample");
     let detect: DetectReport = PythonObfuscatorPypiPass.detect(&fixture);
     assert!(detect.matched);
     let peel: PeelOutcome = PythonObfuscatorPypiPass
@@ -79,17 +81,12 @@ fn python_obfuscator_pypi_real_sample_unwraps_inner_source() {
             && !peel.recovered_source.trim_start().starts_with("exec("),
         "sample recovery must unwrap the exec wrapper"
     );
+    assert_parses("sample", &peel.recovered_source);
 }
 
 #[test]
 fn python_obfuscator_pypi_real_application_unwraps_inner_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "application") else {
-        common::skip_absent_corpus(
-            "python_obfuscator_pypi_real_application_unwraps_inner_source",
-            OBF,
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "application");
     let detect: DetectReport = PythonObfuscatorPypiPass.detect(&fixture);
     assert!(detect.matched);
     let peel: PeelOutcome = PythonObfuscatorPypiPass
@@ -100,14 +97,12 @@ fn python_obfuscator_pypi_real_application_unwraps_inner_source() {
             && !peel.recovered_source.trim_start().starts_with("exec("),
         "application recovery must unwrap to substantial inner source"
     );
+    assert_eq!(peel.quality, Quality::Partial);
 }
 
 #[test]
 fn python_obfuscator_pypi_real_detector_matches() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "hello") else {
-        common::skip_absent_corpus("python_obfuscator_pypi_real_detector_matches", OBF);
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "hello");
     let detect: DetectReport = PythonObfuscatorPypiPass.detect(&fixture);
     assert!(detect.matched);
 }

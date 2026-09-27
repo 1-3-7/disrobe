@@ -1,4 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -12,31 +14,18 @@ fn script_path() -> PathBuf {
         .join("make_loaders.py")
 }
 
-fn python_exe() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
-        let probe: std::io::Result<std::process::Output> =
-            Command::new(candidate).arg("--version").output();
-        if let Ok(out) = probe
-            && out.status.success()
-        {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
-}
-
 struct Gate {
     _scratch: disrobe_core::scratch::ScratchDir,
-    python: String,
+    python: PathBuf,
     dir: PathBuf,
     artifacts: serde_json::Value,
 }
 
-fn build_gate(slot: &str) -> Option<Gate> {
-    let python: String = python_exe()?;
+fn build_gate(slot: &str) -> Gate {
+    let python: PathBuf = common::require_python();
     let purpose: String = format!("disrobe_layered_gate_{slot}");
     let scratch: disrobe_core::scratch::ScratchDir =
-        disrobe_core::scratch::ScratchDir::create(&purpose).ok()?;
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create gate directory");
     let dir: PathBuf = scratch.path().to_path_buf();
     let output: std::process::Output = Command::new(&python)
         .arg(script_path())
@@ -51,12 +40,12 @@ fn build_gate(slot: &str) -> Option<Gate> {
     );
     let artifacts: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("generator emitted json");
-    Some(Gate {
+    Gate {
         _scratch: scratch,
         python,
         dir,
         artifacts,
-    })
+    }
 }
 
 fn artifact(gate: &Gate, name: &str) -> Vec<u8> {
@@ -109,10 +98,7 @@ const RECOMPILE_EQUIVALENT_CASES: [&str; 9] = [
 
 #[test]
 fn layered_chains_recover_to_recompile_equivalent_source() {
-    let Some(gate): Option<Gate> = build_gate("chains") else {
-        eprintln!("skip: layered gate (python not on PATH)");
-        return;
-    };
+    let gate: Gate = build_gate("chains");
     let mut checked: usize = 0;
     for name in RECOMPILE_EQUIVALENT_CASES {
         let result: PeelResult = peel_artifact(&gate, name);
@@ -132,10 +118,7 @@ fn layered_chains_recover_to_recompile_equivalent_source() {
 
 #[test]
 fn keyed_loaders_recover_keys_and_source() {
-    let Some(gate): Option<Gate> = build_gate("keyed") else {
-        eprintln!("skip: keyed gate (python not on PATH)");
-        return;
-    };
+    let gate: Gate = build_gate("keyed");
     let multi: PeelResult = peel_artifact(&gate, "xor_multi_lzma_marshal_loader");
     assert!(
         multi.recovered,
@@ -172,10 +155,7 @@ fn keyed_loaders_recover_keys_and_source() {
 
 #[test]
 fn single_byte_xor_recovered_key_is_load_bearing() {
-    let Some(gate): Option<Gate> = build_gate("single") else {
-        eprintln!("skip: single-byte gate (python not on PATH)");
-        return;
-    };
+    let gate: Gate = build_gate("single");
     let result: PeelResult = peel_artifact(&gate, "xor1_base64_zlib_marshal");
     assert!(
         result.recovered,
@@ -199,10 +179,7 @@ const CODEC_SCHEME_CASES: [&str; 5] = [
 
 #[test]
 fn core_codec_schemes_recover_to_recompile_equivalent_source() {
-    let Some(gate): Option<Gate> = build_gate("codec") else {
-        eprintln!("skip: codec gate (python not on PATH)");
-        return;
-    };
+    let gate: Gate = build_gate("codec");
     let mut checked: usize = 0;
     for name in CODEC_SCHEME_CASES {
         let result: PeelResult = peel_artifact(&gate, name);
@@ -261,10 +238,7 @@ const CIPHER_CASES: [CipherCase; 5] = [
 
 #[test]
 fn new_cipher_loaders_recover_keys_and_recompile_equivalent_source() {
-    let Some(gate): Option<Gate> = build_gate("ciphers") else {
-        eprintln!("skip: cipher gate (python not on PATH)");
-        return;
-    };
+    let gate: Gate = build_gate("ciphers");
     let mut checked: usize = 0;
     for case in CIPHER_CASES {
         let result: PeelResult = peel_artifact(&gate, case.artifact);

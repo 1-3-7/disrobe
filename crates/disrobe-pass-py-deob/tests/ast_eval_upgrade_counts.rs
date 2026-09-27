@@ -78,25 +78,28 @@ fn report_upgrade_counts() {
     println!("blankobf full/total = {}/{}", blankobf.0, blankobf.1);
     println!("manglify full/total = {}/{}", manglify.0, manglify.1);
     println!("pyminifier full/total = {}/{}", pyminifier.0, pyminifier.1);
-    if blankobf.1 == 0 && manglify.1 == 0 && pyminifier.1 == 0 {
-        common::skip_absent_corpus(
-            "report_upgrade_counts",
-            "ast-eval (blankobf/manglify/pyminifier)",
-        );
-        return;
-    }
-    assert!(blankobf.0 >= 1, "expected >=1 blankobf upgrade");
-    assert!(manglify.0 >= 1, "expected >=1 manglify upgrade");
-    assert!(pyminifier.0 >= 1, "expected >=1 pyminifier upgrade");
+    assert_eq!(
+        blankobf,
+        (BLANKOBF_SLOTS.len(), BLANKOBF_SLOTS.len()),
+        "every committed blankobf fixture upgrades to Full through AST eval"
+    );
+    assert_eq!(
+        manglify,
+        (MANGLIFY_SLOTS.len() - 1, MANGLIFY_SLOTS.len()),
+        "every committed manglify fixture except edge_cases_3_8 (still Partial) upgrades to Full"
+    );
+    assert_eq!(
+        pyminifier,
+        (PYMINIFIER_SLOTS.len(), PYMINIFIER_SLOTS.len()),
+        "every committed pyminifier fixture upgrades to Full"
+    );
 }
 
 fn count<F: Fn(&[u8]) -> PeelOutcome>(name: &str, slots: &[&str], peel: F) -> (usize, usize) {
     let mut full: usize = 0;
     let mut total: usize = 0;
     for slot in slots {
-        let Some(bytes): Option<Vec<u8>> = common::load_real_fixture(name, slot) else {
-            continue;
-        };
+        let bytes: Vec<u8> = common::require_real_fixture(name, slot);
         total += 1;
         let outcome: PeelOutcome = peel(&bytes);
         if matches!(outcome.quality, Quality::Full) {

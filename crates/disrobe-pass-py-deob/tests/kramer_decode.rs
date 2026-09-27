@@ -7,11 +7,7 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 
 #[test]
 fn kramer_real_hello_world_decodes_to_exact_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("kramer", "edge_hello_world")
-    else {
-        common::skip_absent_corpus("kramer_real_hello_world_decodes_to_exact_source", "kramer");
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("kramer", "edge_hello_world");
     let det: DetectReport = KramerPass.detect(&fixture);
     assert!(det.matched, "real kramer hello_world not detected: {det:?}");
     let peel: PeelOutcome = KramerPass
@@ -35,26 +31,25 @@ fn kramer_real_hello_world_decodes_to_exact_source() {
     );
 }
 
-const REAL_SLOTS: &[(&str, &str)] = &[
-    ("edge_recursive", "def fact(n):"),
-    ("edge_class_decorator", "class Box:"),
-    ("edge_async_fn", "async def fetch():"),
-    ("edge_generator", "def gen():"),
-    ("edge_lambda_in_listcomp", "lambda y: y + 1"),
-    ("edge_walrus_operator", "while (n :="),
-    ("edge_match_statement", "match s:"),
-    ("edge_structural_pattern", "case {'type': t"),
-    ("edge_typing_generic", "from typing import Generic, TypeVar"),
+const REAL_SLOTS: &[(&str, Option<&str>)] = &[
+    ("edge_recursive", None),
+    ("edge_class_decorator", None),
+    ("edge_async_fn", None),
+    ("edge_generator", None),
+    ("edge_lambda_in_listcomp", None),
+    ("edge_walrus_operator", Some("while (n :=")),
+    ("edge_match_statement", None),
+    ("edge_structural_pattern", None),
+    (
+        "edge_typing_generic",
+        Some("from typing import Generic, TypeVar"),
+    ),
 ];
 
 #[test]
 fn kramer_real_sparkle_recovers_recognizable_source() {
-    let mut tested: usize = 0;
-    for (slot, needle) in REAL_SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("kramer", slot) else {
-            continue;
-        };
-        tested += 1;
+    for (slot, unrecorded_needle) in REAL_SLOTS {
+        let fixture: Vec<u8> = common::require_real_fixture("kramer", slot);
         let peel: PeelOutcome = KramerPass
             .peel(&fixture)
             .unwrap_or_else(|e| panic!("real kramer slot {slot} peel: {e:?}"));
@@ -64,18 +59,17 @@ fn kramer_real_sparkle_recovers_recognizable_source() {
             "real kramer slot {slot} must reach Full; diagnostics={:?}",
             peel.diagnostics
         );
-        assert!(
-            peel.recovered_source.contains(needle),
-            "real kramer slot {slot}: recovered source missing {needle:?}; got first 160 bytes: {:?}",
-            &peel.recovered_source.chars().take(160).collect::<String>()
-        );
+        match unrecorded_needle {
+            None => assert_eq!(
+                peel.recovered_source,
+                common::edge_case_source(slot),
+                "real kramer slot {slot} must decode byte-exact to the original"
+            ),
+            Some(needle) => assert!(
+                peel.recovered_source.contains(needle),
+                "real kramer slot {slot}: recovered source missing {needle:?}; got first 160 bytes: {:?}",
+                &peel.recovered_source.chars().take(160).collect::<String>()
+            ),
+        }
     }
-    if tested == 0 {
-        common::skip_absent_corpus("kramer_real_sparkle_recovers_recognizable_source", "kramer");
-        return;
-    }
-    assert!(
-        tested >= 5,
-        "expected 5+ real kramer fixtures, got {tested}"
-    );
 }

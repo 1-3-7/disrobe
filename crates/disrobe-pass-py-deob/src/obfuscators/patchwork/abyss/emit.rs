@@ -401,7 +401,7 @@ mod tests {
         "\u{feff}\u{200b}\u{2028}\u{2029}\u{85}\u{a0}",
     ];
 
-    fn python3() -> Option<String> {
+    fn python3() -> String {
         for candidate in ["py", "python", "python3"] {
             let ok: bool = Command::new(candidate)
                 .args(["-c", "import sys;print(sys.version_info[0]==3)"])
@@ -410,10 +410,13 @@ mod tests {
                 .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
                 .is_some_and(|s: String| s.trim() == "True");
             if ok {
-                return Some(candidate.to_owned());
+                return candidate.to_owned();
             }
         }
-        None
+        panic!(
+            "no CPython 3 interpreter answers as py, python or python3; CI installs one with \
+             actions/setup-python, so install CPython 3 and put it on PATH"
+        )
     }
 
     fn eval_codepoints(python: &str, literal: &str) -> Vec<u32> {
@@ -444,10 +447,7 @@ mod tests {
 
     #[test]
     fn render_string_literal_round_trips_through_cpython() {
-        let Some(python): Option<String> = python3() else {
-            eprintln!("skip: abyss string re-emit round-trip (python 3 absent)");
-            return;
-        };
+        let python: String = python3();
         for original in BATTERY {
             let want: Vec<u32> = original.chars().map(|c: char| c as u32).collect();
             let got: Vec<u32> = eval_codepoints(&python, &render_string_literal(original));
@@ -460,10 +460,7 @@ mod tests {
 
     #[test]
     fn render_fstring_literal_round_trips_through_cpython() {
-        let Some(python): Option<String> = python3() else {
-            eprintln!("skip: abyss f-string re-emit round-trip (python 3 absent)");
-            return;
-        };
+        let python: String = python3();
         for original in BATTERY {
             let want: Vec<u32> = original.chars().map(|c: char| c as u32).collect();
             let part: PyExpr = PyExpr::ConstLit(Const::Str((*original).to_owned()));

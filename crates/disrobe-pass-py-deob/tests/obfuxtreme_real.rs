@@ -19,12 +19,8 @@ const SLOTS: &[(&str, &str)] = &[
 
 #[test]
 fn obfuxtreme_real_v4_fixtures_recover_source() {
-    let mut tested: usize = 0;
     for (slot, needle) in SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("obfuxtreme", slot) else {
-            continue;
-        };
-        tested += 1;
+        let fixture: Vec<u8> = common::require_real_fixture("obfuxtreme", slot);
         let det: DetectReport = ObfuXtremePass.detect(&fixture);
         assert!(det.matched, "obfuxtreme slot {slot} not detected: {det:?}");
         let peel: PeelOutcome = ObfuXtremePass
@@ -68,24 +64,11 @@ fn obfuxtreme_real_v4_fixtures_recover_source() {
             &peel.recovered_source.chars().take(300).collect::<String>()
         );
     }
-    if tested == 0 {
-        common::skip_absent_corpus("obfuxtreme_real_v4_fixtures_recover_source", "obfuxtreme");
-        return;
-    }
-    assert!(
-        tested >= 8,
-        "expected 8+ obfuxtreme real fixtures, got {tested}"
-    );
 }
 
 #[test]
 fn obfuxtreme_real_strings_decrypt_to_literals() {
-    let Some(fixture): Option<Vec<u8>> =
-        common::load_real_fixture("obfuxtreme", "edge_hello_world")
-    else {
-        common::skip_absent_corpus("obfuxtreme_real_strings_decrypt_to_literals", "obfuxtreme");
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("obfuxtreme", "edge_hello_world");
     let peel: PeelOutcome = ObfuXtremePass
         .peel(&fixture)
         .unwrap_or_else(|e| panic!("obfuxtreme hello_world peel: {e:?}"));
@@ -98,9 +81,9 @@ fn obfuxtreme_real_strings_decrypt_to_literals() {
         "obfuxtreme hello_world: at least one AES string constant must be statically decrypted; diagnostics={:?}",
         peel.diagnostics
     );
-    assert!(
-        peel.recovered_source.contains("'hello world'"),
-        "obfuxtreme hello_world: decrypted string literal must appear in source; got: {:?}",
-        peel.recovered_source
+    assert_eq!(
+        peel.recovered_source,
+        common::edge_case_source("hello_world"),
+        "obfuxtreme hello_world: decrypting the string constant must reproduce the original source"
     );
 }

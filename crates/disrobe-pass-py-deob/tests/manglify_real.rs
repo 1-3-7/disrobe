@@ -5,31 +5,30 @@ use disrobe_pass_py_deob::ObfuscatorPass;
 use disrobe_pass_py_deob::obfuscators::manglify::ManglifyPass;
 use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 
-const SLOTS: &[&str] = &[
-    "edge_cases_3_8",
-    "edge_hello_world",
-    "edge_async_fn",
-    "edge_lambda_in_listcomp",
-    "edge_typing_generic",
-    "edge_walrus_operator",
+const SLOTS: &[(&str, Quality)] = &[
+    ("edge_cases_3_8", Quality::Partial),
+    ("edge_hello_world", Quality::Full),
+    ("edge_async_fn", Quality::Full),
+    ("edge_lambda_in_listcomp", Quality::Full),
+    ("edge_typing_generic", Quality::Full),
+    ("edge_walrus_operator", Quality::Full),
 ];
 
 #[test]
 fn manglify_real_fixtures_detect_and_peel() {
-    let mut tested: usize = 0;
-    let mut full_count: usize = 0;
-    for slot in SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("manglify", slot) else {
-            continue;
-        };
-        tested += 1;
+    for (slot, expected_quality) in SLOTS {
+        let fixture: Vec<u8> = common::require_real_fixture("manglify", slot);
         let det: DetectReport = ManglifyPass.detect(&fixture);
         assert!(det.matched, "manglify slot {slot} not detected: {det:?}");
         let peel: PeelOutcome = ManglifyPass
             .peel(&fixture)
             .unwrap_or_else(|e| panic!("manglify slot {slot} peel: {e:?}"));
+        assert_eq!(
+            peel.quality, *expected_quality,
+            "manglify slot {slot}: quality moved; diagnostics={:?}",
+            peel.diagnostics
+        );
         if matches!(peel.quality, Quality::Full) {
-            full_count += 1;
             let original: String = String::from_utf8_lossy(&fixture).into_owned();
             assert!(
                 original.contains("class Engine") && original.contains("def Combustion"),
@@ -52,12 +51,4 @@ fn manglify_real_fixtures_detect_and_peel() {
             );
         }
     }
-    if tested == 0 {
-        common::skip_absent_corpus("manglify_real_fixtures_detect_and_peel", "manglify");
-        return;
-    }
-    assert!(
-        full_count >= 1,
-        "expected at least one manglify fixture to upgrade to Quality::Full via AST eval, got {full_count}"
-    );
 }

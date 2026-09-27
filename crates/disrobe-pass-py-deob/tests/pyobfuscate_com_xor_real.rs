@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_py_deob::obfuscators::pyobfuscate_com_xor::PyobfuscateComXorPass;
@@ -30,19 +30,6 @@ const SAMPLE: PinnedCapture = PinnedCapture {
     exit_code: 0,
     stdout: "240\n",
 };
-
-fn python_exe() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
-        let probe: std::io::Result<std::process::Output> =
-            Command::new(candidate).arg("--version").output();
-        if let Ok(out) = probe
-            && out.status.success()
-        {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
-}
 
 fn oracle_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -92,7 +79,7 @@ fn a_recovery_that_hands_back_its_input_is_refused_before_python_runs() {
     );
 }
 
-fn reparses(python: &str, source: &str, slot: &str) -> bool {
+fn reparses(python: &Path, source: &str, slot: &str) -> bool {
     let scratch: disrobe_core::scratch::ScratchDir = gate_dir(slot);
     let dir: PathBuf = scratch.path().to_path_buf();
     let path: PathBuf = dir.join(format!("recovered_{slot}.py"));
@@ -106,7 +93,7 @@ fn reparses(python: &str, source: &str, slot: &str) -> bool {
     String::from_utf8_lossy(&output.stdout).trim() == "OK"
 }
 
-fn behaves_as_pinned(python: &str, recovered: &str, pinned: &PinnedCapture) -> (bool, String) {
+fn behaves_as_pinned(python: &Path, recovered: &str, pinned: &PinnedCapture) -> (bool, String) {
     let scratch: disrobe_core::scratch::ScratchDir = gate_dir(pinned.slot);
     let dir: PathBuf = scratch.path().to_path_buf();
     let recovered_path: PathBuf = dir.join(format!("recovered_{}.py", pinned.slot));
@@ -131,14 +118,7 @@ fn behaves_as_pinned(python: &str, recovered: &str, pinned: &PinnedCapture) -> (
 
 #[test]
 fn real_hello_detects_and_recovers_exec_equivalent() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("pyobfuscate_com", HELLO.slot)
-    else {
-        common::skip_absent_corpus(
-            "real_hello_detects_and_recovers_exec_equivalent",
-            "pyobfuscate_com",
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("pyobfuscate_com", HELLO.slot);
     assert_is_the_pinned_capture(&fixture, &HELLO);
     let detect: DetectReport = PyobfuscateComXorPass.detect(&fixture);
     assert!(
@@ -166,13 +146,7 @@ fn real_hello_detects_and_recovers_exec_equivalent() {
         "auto route must select the dedicated XOR/lambda pass"
     );
 
-    let Some(python): Option<String> = python_exe() else {
-        eprintln!(
-            "skip: python interpreter absent; recovery produced:\n{}",
-            outcome.recovered_source
-        );
-        return;
-    };
+    let python: PathBuf = common::require_python();
     assert!(
         reparses(&python, &outcome.recovered_source, HELLO.slot),
         "recovered source must re-parse as Python:\n{}",
@@ -198,14 +172,7 @@ fn real_hello_detects_and_recovers_exec_equivalent() {
 
 #[test]
 fn real_sample_detects_and_recovers_reparseable() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("pyobfuscate_com", SAMPLE.slot)
-    else {
-        common::skip_absent_corpus(
-            "real_sample_detects_and_recovers_reparseable",
-            "pyobfuscate_com",
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("pyobfuscate_com", SAMPLE.slot);
     assert_is_the_pinned_capture(&fixture, &SAMPLE);
     let detect: DetectReport = PyobfuscateComXorPass.detect(&fixture);
     assert!(
@@ -217,13 +184,7 @@ fn real_sample_detects_and_recovers_reparseable() {
     assert_ne!(outcome.recovered_source.as_bytes(), fixture.as_slice());
     assert_obfuscation_gone(SAMPLE.slot, outcome.quality, &outcome.recovered_source);
 
-    let Some(python): Option<String> = python_exe() else {
-        eprintln!(
-            "skip: python interpreter absent; recovery produced:\n{}",
-            outcome.recovered_source
-        );
-        return;
-    };
+    let python: PathBuf = common::require_python();
     assert!(
         reparses(&python, &outcome.recovered_source, SAMPLE.slot),
         "recovered sample must re-parse as Python:\n{}",

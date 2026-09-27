@@ -7,13 +7,7 @@ use disrobe_pass_py_deob::obfuscators::online_family::OnlineFamilyPass;
 
 #[test]
 fn online_family_real_hello_detector_matches_banner() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("online_family", "hello") else {
-        common::skip_absent_corpus(
-            "online_family_real_hello_detector_matches_banner",
-            "online_family",
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("online_family", "hello");
     assert!(!fixture.is_empty());
     let detect: DetectReport = OnlineFamilyPass.detect(&fixture);
     assert!(
@@ -31,14 +25,7 @@ fn online_family_real_hello_detector_matches_banner() {
 
 #[test]
 fn online_family_real_sample_detector_matches_banner() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("online_family", "sample")
-    else {
-        common::skip_absent_corpus(
-            "online_family_real_sample_detector_matches_banner",
-            "online_family",
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("online_family", "sample");
     assert!(fixture.len() > 200);
     let detect: DetectReport = OnlineFamilyPass.detect(&fixture);
     assert!(

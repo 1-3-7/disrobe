@@ -1,4 +1,5 @@
-#![allow(dead_code, unreachable_pub)]
+#![allow(dead_code, unreachable_pub, clippy::panic)]
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -72,10 +73,76 @@ pub fn load_real_fixture(obf: &str, slot: &str) -> Option<Vec<u8>> {
     None
 }
 
-pub fn skip_absent_corpus(test_name: &str, obf: &str) {
-    eprintln!(
-        "skip: {test_name} ({obf} real corpus absent; dev-local fixture, regen via corpus/generate.sh)"
-    );
+pub fn require_real_fixture(obf: &str, slot: &str) -> Vec<u8> {
+    load_real_fixture(obf, slot).unwrap_or_else(|| {
+        let (dir, file_stem): (PathBuf, String) = resolve_slot(&corpus_root(), obf, slot);
+        panic!(
+            "the tracked {obf} fixture {slot} is missing: none of {stem}.py, {stem}.pyc, \
+             {stem}.py.b64, {stem}.py.fixture or {stem}_pre_compile.py loads from {dir}; restore \
+             it with git checkout, because this test never regenerates fixtures",
+            stem = file_stem,
+            dir = dir.display()
+        )
+    })
+}
+
+pub fn edge_case_source(slot: &str) -> &'static str {
+    let name: &str = slot.strip_prefix("edge_").unwrap_or(slot);
+    EDGE_CASES
+        .iter()
+        .find(|(case, _): &&(&str, &str)| *case == name)
+        .map(|(_, source): &(&str, &str)| *source)
+        .unwrap_or_else(|| panic!("no EDGE_CASES original for slot {slot}"))
+}
+
+fn reports_version(program: &OsStr, probe: &str) -> bool {
+    std::process::Command::new(program)
+        .args(["-c", probe])
+        .output()
+        .ok()
+        .filter(|out: &std::process::Output| out.status.success())
+        .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
+        .is_some_and(|text: String| text.trim() == "True")
+}
+
+pub fn require_python() -> PathBuf {
+    for candidate in ["python", "python3", "py"] {
+        if reports_version(
+            OsStr::new(candidate),
+            "import sys;print(sys.version_info[0]==3)",
+        ) {
+            return PathBuf::from(candidate);
+        }
+    }
+    panic!(
+        "no CPython 3 interpreter answers as python, python3 or py; CI installs one with \
+         actions/setup-python, so install CPython 3 and put it on PATH"
+    )
+}
+
+pub fn require_python_314() -> PathBuf {
+    let probe: &str = "import sys;print(sys.version_info[:2]==(3,14))";
+    let from_uv: Option<PathBuf> = std::process::Command::new("uv")
+        .args(["python", "find", "3.14"])
+        .output()
+        .ok()
+        .filter(|out: &std::process::Output| out.status.success())
+        .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
+        .map(|text: String| PathBuf::from(text.trim()))
+        .filter(|path: &PathBuf| reports_version(path.as_os_str(), probe));
+    if let Some(path) = from_uv {
+        return path;
+    }
+    for candidate in ["python", "python3"] {
+        if reports_version(OsStr::new(candidate), probe) {
+            return PathBuf::from(candidate);
+        }
+    }
+    panic!(
+        "CPython 3.14 is required and neither `uv python find 3.14` nor python/python3 on PATH \
+         resolves it; CI installs it with `uv python install 3.14.5`, so run `uv python install \
+         3.14`"
+    )
 }
 
 pub const EDGE_CASES: &[(&str, &str)] = &[

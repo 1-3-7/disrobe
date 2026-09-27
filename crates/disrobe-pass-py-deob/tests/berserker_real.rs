@@ -7,27 +7,30 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome, Q
 
 const OBF: &str = "berserker";
 
-const SLOTS: &[(&str, &str)] = &[
-    ("hello", "print('hello world')"),
-    ("edge_recursive", "def fact(n):"),
-    ("edge_class_decorator", "class Box:"),
-    ("edge_async_fn", "async def fetch():"),
-    ("edge_generator", "def gen():"),
-    ("edge_lambda_in_listcomp", "lambda y: y + 1"),
-    ("edge_walrus_operator", "while (n :="),
-    ("edge_match_statement", "match s:"),
-    ("edge_structural_pattern", "case {'type': t"),
-    ("edge_typing_generic", "from typing import Generic, TypeVar"),
+const SLOTS: &[&str] = &[
+    "hello",
+    "edge_recursive",
+    "edge_class_decorator",
+    "edge_async_fn",
+    "edge_generator",
+    "edge_lambda_in_listcomp",
+    "edge_walrus_operator",
+    "edge_match_statement",
+    "edge_structural_pattern",
+    "edge_typing_generic",
 ];
+
+fn original_source(slot: &str) -> &'static str {
+    if slot == "hello" {
+        return common::edge_case_source("hello_world");
+    }
+    common::edge_case_source(slot)
+}
 
 #[test]
 fn berserker_real_sparkle_fixtures_recover_full_source() {
-    let mut tested: usize = 0;
-    for (slot, needle) in SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, slot) else {
-            continue;
-        };
-        tested += 1;
+    for slot in SLOTS {
+        let fixture: Vec<u8> = common::require_real_fixture(OBF, slot);
         let detect: DetectReport = BerserkerPass.detect(&fixture);
         assert_eq!(detect.obfuscator, Obfuscator::Berserker);
         assert!(
@@ -44,28 +47,17 @@ fn berserker_real_sparkle_fixtures_recover_full_source() {
             peel.quality,
             peel.diagnostics
         );
-        assert!(
-            peel.recovered_source.contains(needle),
-            "berserker slot {slot}: recovered source missing {needle:?}; got first 120: {:?}",
-            &peel.recovered_source.chars().take(120).collect::<String>()
+        assert_eq!(
+            peel.recovered_source,
+            original_source(slot),
+            "berserker slot {slot}: the sparkle payload must decode byte-exact to the original"
         );
     }
-    if tested == 0 {
-        common::skip_absent_corpus("berserker_real_sparkle_fixtures_recover_full_source", OBF);
-        return;
-    }
-    assert!(
-        tested >= 10,
-        "expected 10+ berserker real fixtures, got {tested}"
-    );
 }
 
 #[test]
 fn berserker_real_large_application_fixture_recovers() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "application") else {
-        common::skip_absent_corpus("berserker_real_large_application_fixture_recovers", OBF);
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "application");
     let peel: PeelOutcome = BerserkerPass
         .peel(&fixture)
         .unwrap_or_else(|e| panic!("berserker application peel: {e:?}"));
@@ -74,5 +66,20 @@ fn berserker_real_large_application_fixture_recovers() {
         peel.recovered_source.len() > 1000,
         "application fixture should recover a substantial program, got {} bytes",
         peel.recovered_source.len()
+    );
+    assert!(
+        ruff_python_parser::parse(
+            &peel.recovered_source,
+            ruff_python_parser::ParseOptions::from(ruff_python_parser::Mode::Module)
+        )
+        .is_ok(),
+        "the recovered application must parse as Python; first 300 chars: {:?}",
+        peel.recovered_source.chars().take(300).collect::<String>()
+    );
+    assert!(
+        !BerserkerPass
+            .detect(peel.recovered_source.as_bytes())
+            .matched,
+        "the recovered application still carries the berserker wrapper"
     );
 }

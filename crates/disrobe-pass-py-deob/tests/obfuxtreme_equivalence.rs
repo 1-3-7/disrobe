@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_py_deob::ObfuscatorPass;
@@ -42,21 +42,6 @@ const CASES: &[(&str, &str)] = &[
 
 const OBFUXTREME_EQUIVALENCE_FLOOR: usize = 3;
 
-fn python_314() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
-        let ok: bool = Command::new(candidate)
-            .args(["-c", "import sys;print(sys.version_info[:2]==(3,14))"])
-            .output()
-            .ok()
-            .and_then(|out: std::process::Output| String::from_utf8(out.stdout).ok())
-            .is_some_and(|s: String| s.trim() == "True");
-        if ok {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
-}
-
 fn oracle_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -65,7 +50,7 @@ fn oracle_script() -> PathBuf {
 }
 
 fn structurally_equivalent(
-    python: &str,
+    python: &Path,
     dir: &std::path::Path,
     slot: &str,
     original: &str,
@@ -83,15 +68,18 @@ fn structurally_equivalent(
         .expect("run normalize oracle");
     let verdict: serde_json::Value =
         serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
-    verdict["equivalent"].as_bool().unwrap_or(false)
+    verdict["equivalent"].as_bool().unwrap_or_else(|| {
+        panic!(
+            "the normalize oracle returned no verdict for {slot}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
 }
 
 #[test]
 fn obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source() {
-    let Some(python): Option<String> = python_314() else {
-        eprintln!("skip: obfuxtreme equivalence oracle (python 3.14 absent)");
-        return;
-    };
+    let python: PathBuf = common::require_python_314();
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_obfux_equiv").expect("scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -100,9 +88,7 @@ fn obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source() {
     let mut equivalent: usize = 0;
     let mut mismatches: Vec<String> = Vec::new();
     for (slot, original) in CASES {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("obfuxtreme", slot) else {
-            continue;
-        };
+        let fixture: Vec<u8> = common::require_real_fixture("obfuxtreme", slot);
         tested += 1;
         let peel: PeelOutcome = ObfuXtremePass
             .peel(&fixture)
@@ -112,14 +98,6 @@ fn obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source() {
         } else {
             mismatches.push((*slot).to_owned());
         }
-    }
-
-    if tested == 0 {
-        common::skip_absent_corpus(
-            "obfuxtreme_recovery_is_cpython_structurally_equivalent_to_original_source",
-            "obfuxtreme",
-        );
-        return;
     }
 
     println!("obfuxtreme structural-equivalence (real CPython 3.14) = {equivalent}/{tested}");

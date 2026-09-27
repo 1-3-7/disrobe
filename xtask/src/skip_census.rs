@@ -24,7 +24,6 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-pass-nuitka", 43),
     ("disrobe-pass-php", 3),
     ("disrobe-pass-py-decompile", 7),
-    ("disrobe-pass-py-deob", 14),
     ("disrobe-pass-py-disasm", 1),
     ("disrobe-pass-pyarmor", 38),
     ("disrobe-pass-pyfreeze", 18),

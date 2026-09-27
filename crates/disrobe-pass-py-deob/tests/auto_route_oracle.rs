@@ -11,11 +11,8 @@ const RECOVERABLE: &[(&str, &str)] = &[
 
 #[test]
 fn real_obfuscated_fixture_auto_deobfuscates_to_recognizable_source() {
-    let mut proved: usize = 0;
     for (obf, slot) in RECOVERABLE {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(obf, slot) else {
-            continue;
-        };
+        let fixture: Vec<u8> = common::require_real_fixture(obf, slot);
         let outcome: AutoDeobOutcome = auto_deobfuscate(&fixture, None);
         assert_eq!(
             outcome.kind,
@@ -52,12 +49,7 @@ fn real_obfuscated_fixture_auto_deobfuscates_to_recognizable_source() {
             "{obf}/{slot} chain must record the deobfuscation step: {:?}",
             outcome.chain
         );
-        proved += 1;
     }
-    assert!(
-        proved > 0,
-        "no recoverable obfuscated fixture was present; expected at least one of {RECOVERABLE:?}"
-    );
 }
 
 #[test]

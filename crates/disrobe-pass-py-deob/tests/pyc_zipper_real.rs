@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome};
@@ -17,30 +18,14 @@ fn corpus_dir() -> PathBuf {
         .join("pyc_zipper")
 }
 
-fn read_fixture(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(corpus_dir().join(name)).ok()
-}
-
-fn find_python() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
-        let ok: bool = Command::new(candidate)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success());
-        if ok {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
-}
-
-fn python_is_314(python: &str) -> bool {
-    Command::new(python)
-        .args(["-c", "import sys;print(sys.version_info[:2]==(3,14))"])
-        .output()
-        .ok()
-        .and_then(|o: std::process::Output| String::from_utf8(o.stdout).ok())
-        .is_some_and(|s: String| s.trim() == "True")
+fn read_fixture(name: &str) -> Vec<u8> {
+    let path: PathBuf = corpus_dir().join(name);
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "the tracked pyc-zipper fixture {} is unreadable ({e}); restore it with git checkout",
+            path.display()
+        )
+    })
 }
 
 const DIS_ORACLE: &str = r"
@@ -66,7 +51,7 @@ else:
     print('MISMATCH')
 ";
 
-fn assert_bytecode_equivalent(python: &str, recovered_pyc: &[u8], original_name: &str) {
+fn assert_bytecode_equivalent(python: &Path, recovered_pyc: &[u8], original_name: &str) {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_pycz").expect("scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
@@ -94,8 +79,8 @@ fn assert_bytecode_equivalent(python: &str, recovered_pyc: &[u8], original_name:
     );
 }
 
-fn detect_and_peel(slot: &str, expected: &str) -> Option<PeelOutcome> {
-    let fixture: Vec<u8> = read_fixture(slot)?;
+fn detect_and_peel(slot: &str, expected: &str) -> PeelOutcome {
+    let fixture: Vec<u8> = read_fixture(slot);
     let detect: DetectReport = PycZipperPass.detect(&fixture);
     assert_eq!(detect.obfuscator, Obfuscator::PycZipper);
     assert!(detect.matched, "pyc-zipper {slot} not detected: {detect:?}");
@@ -114,21 +99,18 @@ fn detect_and_peel(slot: &str, expected: &str) -> Option<PeelOutcome> {
         Some(expected),
         "compressor diagnostic mismatch for {slot}"
     );
-    Some(outcome)
+    outcome
 }
 
 #[test]
 fn detects_and_peels_zlib_bz2_lzma() {
-    let mut saw_any: bool = false;
+    let mut recovered: Vec<(&str, String)> = Vec::new();
     for (slot, comp) in [
         ("sample_zlib.pyc", "zlib"),
         ("sample_bz2.pyc", "bz2"),
         ("sample_lzma.pyc", "lzma"),
     ] {
-        let Some(outcome): Option<PeelOutcome> = detect_and_peel(slot, comp) else {
-            continue;
-        };
-        saw_any = true;
+        let outcome: PeelOutcome = detect_and_peel(slot, comp);
         assert_eq!(
             outcome.stages_applied,
             vec![
@@ -144,18 +126,20 @@ fn detects_and_peels_zlib_bz2_lzma() {
             !outcome.recovered_source.trim().is_empty(),
             "empty recovery for {slot}"
         );
+        recovered.push((slot, outcome.recovered_source));
     }
-    if !saw_any {
-        eprintln!("skip: pyc_zipper corpus fixtures absent");
+    let (first_slot, first_source): &(&str, String) = &recovered[0];
+    for (slot, source) in &recovered[1..] {
+        assert_eq!(
+            source, first_source,
+            "{slot} and {first_slot} wrap one compiled module, so they must decompile identically"
+        );
     }
 }
 
 #[test]
 fn recovered_source_contains_original_symbols() {
-    let Some(outcome): Option<PeelOutcome> = detect_and_peel("sample_zlib.pyc", "zlib") else {
-        eprintln!("skip: pyc_zipper zlib fixture absent");
-        return;
-    };
+    let outcome: PeelOutcome = detect_and_peel("sample_zlib.pyc", "zlib");
     let src: &str = &outcome.recovered_source;
     for needle in ["greet", "main", "hello, ", "total chars:"] {
         assert!(
@@ -167,17 +151,15 @@ fn recovered_source_contains_original_symbols() {
 
 #[test]
 fn clean_pyc_and_garbage_are_not_claimed() {
-    if let Some(clean) = read_fixture("sample_orig.pyc") {
-        let clean: Vec<u8> = clean;
-        assert!(
-            !PycZipperPass.detect(&clean).matched,
-            "an unpacked pyc must not be flagged as pyc-zipper"
-        );
-        assert!(
-            PycZipperPass.peel(&clean).is_err(),
-            "clean pyc must not peel"
-        );
-    }
+    let clean: Vec<u8> = read_fixture("sample_orig.pyc");
+    assert!(
+        !PycZipperPass.detect(&clean).matched,
+        "an unpacked pyc must not be flagged as pyc-zipper"
+    );
+    assert!(
+        PycZipperPass.peel(&clean).is_err(),
+        "clean pyc must not peel"
+    );
     let garbage: &[u8] = &[0u8, 1, 2, 3, 0xff, 0xfe, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
     assert!(!PycZipperPass.detect(garbage).matched);
     assert!(PycZipperPass.peel(garbage).is_err());
@@ -192,10 +174,7 @@ fn clean_pyc_and_garbage_are_not_claimed() {
 
 #[test]
 fn auto_route_recognizes_pyc_zipper() {
-    let Some(fixture): Option<Vec<u8>> = read_fixture("sample_zlib.pyc") else {
-        eprintln!("skip: pyc_zipper auto-route fixture absent");
-        return;
-    };
+    let fixture: Vec<u8> = read_fixture("sample_zlib.pyc");
     let route = auto_deobfuscate(&fixture, None);
     assert_eq!(
         route.kind,
@@ -211,25 +190,11 @@ fn auto_route_recognizes_pyc_zipper() {
 
 #[test]
 fn recovered_bytecode_is_equivalent_to_original_under_cpython_314() {
-    let Some(python): Option<String> = find_python() else {
-        eprintln!("skip: pyc_zipper bytecode oracle (no python on PATH)");
-        return;
-    };
-    if !python_is_314(&python) {
-        eprintln!("skip: pyc_zipper bytecode oracle (python is not 3.14)");
-        return;
-    }
-    let mut saw_any: bool = false;
+    let python: PathBuf = common::require_python_314();
     for slot in ["sample_zlib.pyc", "sample_bz2.pyc", "sample_lzma.pyc"] {
-        let Some(fixture): Option<Vec<u8>> = read_fixture(slot) else {
-            continue;
-        };
-        saw_any = true;
+        let fixture: Vec<u8> = read_fixture(slot);
         let recovered_pyc: Vec<u8> = recover_pyc_zipper(&fixture)
             .unwrap_or_else(|e| panic!("recover_pyc for {slot} failed: {e:?}"));
         assert_bytecode_equivalent(&python, &recovered_pyc, "sample_orig.pyc");
-    }
-    if !saw_any {
-        eprintln!("skip: pyc_zipper corpus fixtures absent");
     }
 }

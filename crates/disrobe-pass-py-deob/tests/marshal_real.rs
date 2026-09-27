@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use disrobe_pass_py_deob::{PeelResult, peel};
 
@@ -48,23 +48,25 @@ fn boxcls_markers(source: &str) -> bool {
         && source.contains("return self.value")
 }
 
-fn recover_or_skip(path: &PathBuf, test: &str) -> Option<PeelResult> {
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(path) else {
-        eprintln!("skip: {test} (fixture absent: {})", path.display());
-        return None;
-    };
-    Some(peel(&bytes).unwrap_or_else(|e| panic!("peel {}: {e:?}", path.display())))
+fn read_tracked(path: &Path) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|e| {
+        panic!(
+            "the tracked marshal fixture {} is unreadable ({e}); restore it with git checkout",
+            path.display()
+        )
+    })
 }
 
-fn assert_recovers(name: &str, marker: fn(&str) -> bool) -> usize {
+fn recover(path: &Path) -> PeelResult {
+    peel(&read_tracked(path)).unwrap_or_else(|e| panic!("peel {}: {e:?}", path.display()))
+}
+
+fn assert_recovers(name: &str, marker: fn(&str) -> bool) {
     let dir: PathBuf = variants_dir();
-    let mut checked: usize = 0;
     for version in VERSIONS {
         for wrapper in WRAPPERS {
             let path: PathBuf = dir.join(format!("{name}.{version}.{wrapper}.py"));
-            let Some(result): Option<PeelResult> = recover_or_skip(&path, name) else {
-                continue;
-            };
+            let result: PeelResult = recover(&path);
             assert!(
                 result.recovered,
                 "{name}.{version}.{wrapper}: must recover, steps={:?}",
@@ -82,45 +84,31 @@ fn assert_recovers(name: &str, marker: fn(&str) -> bool) -> usize {
                 "{name}.{version}.{wrapper}: recovered source missing markers:\n{}",
                 result.final_source
             );
-            checked += 1;
         }
     }
-    checked
 }
 
 #[test]
 fn greeter_all_wrappers_all_versions_recover() {
-    assert!(
-        assert_recovers("greeter", greeter_markers) > 0,
-        "no greeter fixtures present"
-    );
+    assert_recovers("greeter", greeter_markers);
 }
 
 #[test]
 fn loopcalc_all_wrappers_all_versions_recover() {
-    assert!(
-        assert_recovers("loopcalc", loopcalc_markers) > 0,
-        "no loopcalc fixtures present"
-    );
+    assert_recovers("loopcalc", loopcalc_markers);
 }
 
 #[test]
 fn boxcls_all_wrappers_all_versions_recover() {
-    assert!(
-        assert_recovers("boxcls", boxcls_markers) > 0,
-        "no boxcls fixtures present"
-    );
+    assert_recovers("boxcls", boxcls_markers);
 }
 
 #[test]
 fn bare_headerless_marshal_blob_recovers() {
     let dir: PathBuf = variants_dir();
-    let mut checked: usize = 0;
     for version in VERSIONS {
         let path: PathBuf = dir.join(format!("greeter.{version}.bare.marshal"));
-        let Some(result): Option<PeelResult> = recover_or_skip(&path, "bare_marshal") else {
-            continue;
-        };
+        let result: PeelResult = recover(&path);
         assert!(
             result.recovered,
             "greeter.{version}.bare: headerless marshal blob must recover"
@@ -136,9 +124,7 @@ fn bare_headerless_marshal_blob_recovers() {
             "greeter.{version}.bare: recovered source missing markers:\n{}",
             result.final_source
         );
-        checked += 1;
     }
-    assert!(checked > 0, "no bare marshal fixtures present");
 }
 
 #[test]
@@ -150,14 +136,10 @@ fn version_inference_picks_correct_minor_when_decidable() {
         ("py314", 3, 14),
         ("py315", 3, 15),
     ];
-    let mut checked: usize = 0;
     for (version, major, minor) in cases {
         for original in ["greeter", "loopcalc", "boxcls"] {
             let path: PathBuf = dir.join(format!("{original}.{version}.bare.marshal"));
-            let Some(result): Option<PeelResult> = recover_or_skip(&path, "version_inference")
-            else {
-                continue;
-            };
+            let result: PeelResult = recover(&path);
             let marshal = result.marshal.as_ref().expect("marshal recovery");
             assert!(
                 marshal.version_inferred,
@@ -169,10 +151,8 @@ fn version_inference_picks_correct_minor_when_decidable() {
                 "{original}.{version}.bare: 3.11+ inline-cache layout is version-distinct, \
                  inference must land the exact minor"
             );
-            checked += 1;
         }
     }
-    assert!(checked > 0, "no fixtures for version inference");
 }
 
 #[test]
@@ -180,10 +160,7 @@ fn version_hint_overrides_inference() {
     use disrobe_py_marshal::PyVersion;
     let dir: PathBuf = variants_dir();
     let path: PathBuf = dir.join("loopcalc.py39.bare.marshal");
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-        eprintln!("skip: version_hint (fixture absent)");
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked(&path);
     let result: PeelResult =
         disrobe_pass_py_deob::peel_with_pyver(&bytes, Some(PyVersion::PY39)).expect("peel");
     let marshal = result.marshal.as_ref().expect("marshal recovery");

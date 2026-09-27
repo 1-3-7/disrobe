@@ -5,47 +5,53 @@ use disrobe_pass_py_deob::ObfuscatorPass;
 use disrobe_pass_py_deob::obfuscators::plusobf::PlusObfPass;
 use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 
-const SLOTS: &[(&str, &str)] = &[
-    ("edge_cases_3_8_plus", "Python 3.8+ edge cases"),
-    ("edge_cases_3_8_hash", "Python 3.8+ edge cases"),
-    ("edge_hello_world", "print('hello world')"),
-    ("edge_recursive", "def fact(n):"),
-    ("edge_class_decorator", "class Box:"),
-    ("edge_async_fn", "async def fetch():"),
-    ("edge_generator", "def gen():"),
-    ("edge_lambda_in_listcomp", "lambda y: y + 1"),
-    ("edge_walrus_operator", "while (n :="),
-    ("edge_match_statement", "match s:"),
-    ("edge_structural_pattern", "case {'type': t"),
-    ("edge_typing_generic", "from typing import Generic, TypeVar"),
+const EDGE_SLOTS: &[&str] = &[
+    "edge_hello_world",
+    "edge_recursive",
+    "edge_class_decorator",
+    "edge_async_fn",
+    "edge_generator",
+    "edge_lambda_in_listcomp",
+    "edge_walrus_operator",
+    "edge_match_statement",
+    "edge_structural_pattern",
+    "edge_typing_generic",
 ];
+
+fn peel_full(slot: &str) -> PeelOutcome {
+    let fixture: Vec<u8> = common::require_real_fixture("plusobf", slot);
+    let det: DetectReport = PlusObfPass.detect(&fixture);
+    assert!(det.matched, "plusobf slot {slot} not detected: {det:?}");
+    let peel: PeelOutcome = PlusObfPass
+        .peel(&fixture)
+        .unwrap_or_else(|e| panic!("plusobf slot {slot} peel: {e:?}"));
+    assert_eq!(
+        peel.quality,
+        Quality::Full,
+        "plusobf slot {slot} should fully recover: {:?}",
+        peel.quality
+    );
+    peel
+}
 
 #[test]
 fn plusobf_real_fixtures_detect_and_peel() {
-    let mut tested: usize = 0;
-    for (slot, needle) in SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("plusobf", slot) else {
-            continue;
-        };
-        tested += 1;
-        let det: DetectReport = PlusObfPass.detect(&fixture);
-        assert!(det.matched, "plusobf slot {slot} not detected: {det:?}");
-        let peel: PeelOutcome = PlusObfPass
-            .peel(&fixture)
-            .unwrap_or_else(|e| panic!("plusobf slot {slot} peel: {e:?}"));
+    for slot in EDGE_SLOTS {
         assert_eq!(
-            peel.quality,
-            Quality::Full,
-            "plusobf slot {slot} should fully recover: {:?}",
-            peel.quality
-        );
-        assert!(
-            peel.recovered_source.contains(needle),
-            "plusobf slot {slot}: recovered source missing {needle:?}; got first 160: {:?}",
-            &peel.recovered_source.chars().take(160).collect::<String>()
+            peel_full(slot).recovered_source,
+            common::edge_case_source(slot),
+            "plusobf slot {slot}: chr(len) decoding must reproduce the original byte-exact"
         );
     }
-    if tested == 0 {
-        common::skip_absent_corpus("plusobf_real_fixtures_detect_and_peel", "plusobf");
-    }
+    let plus: PeelOutcome = peel_full("edge_cases_3_8_plus");
+    let hash: PeelOutcome = peel_full("edge_cases_3_8_hash");
+    assert!(
+        plus.recovered_source.contains("Python 3.8+ edge cases"),
+        "plusobf edge_cases_3_8_plus: recovered source missing its docstring; got first 160: {:?}",
+        &plus.recovered_source.chars().take(160).collect::<String>()
+    );
+    assert_eq!(
+        plus.recovered_source, hash.recovered_source,
+        "the + and # plusobf encodings of one module must decode to the same source"
+    );
 }

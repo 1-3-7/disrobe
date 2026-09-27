@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod common;
 
+use std::path::{Path, PathBuf};
+
 use disrobe_pass_py_deob::obfuscators::patchwork::PatchworkPass;
 use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 use disrobe_pass_py_deob::{ObfuscatorPass, RouteKind, auto_deobfuscate};
@@ -35,8 +37,8 @@ fn ruff_parses(source: &str) -> bool {
     parse(source, ParseOptions::from(Mode::Module)).is_ok()
 }
 
-fn peel_slot(slot: &str) -> Option<(Vec<u8>, PeelOutcome)> {
-    let fixture: Vec<u8> = common::load_real_fixture("patchwork", slot)?;
+fn peel_slot(slot: &str) -> PeelOutcome {
+    let fixture: Vec<u8> = common::require_real_fixture("patchwork", slot);
     let detect: DetectReport = PatchworkPass.detect(&fixture);
     assert!(
         detect.matched,
@@ -54,15 +56,12 @@ fn peel_slot(slot: &str) -> Option<(Vec<u8>, PeelOutcome)> {
         Quality::Full,
         "patchwork slot {slot} did not reach full recovery"
     );
-    Some((fixture, outcome))
+    outcome
 }
 
 #[test]
 fn patchwork_hello_world_py_recovers_to_equivalent_source() {
-    let Some((_, outcome)): Option<(Vec<u8>, PeelOutcome)> = peel_slot("hello_world") else {
-        common::skip_absent_corpus("patchwork_hello_world_py", "patchwork");
-        return;
-    };
+    let outcome: PeelOutcome = peel_slot("hello_world");
     let src: &str = &outcome.recovered_source;
     assert_clean(src, "hello_world");
     assert!(
@@ -87,10 +86,7 @@ fn patchwork_hello_world_py_recovers_to_equivalent_source() {
 
 #[test]
 fn patchwork_pyc_chain_recovers() {
-    let Some(bytes): Option<Vec<u8>> = read_pyc_fixture() else {
-        common::skip_absent_corpus("patchwork_pyc_chain", "patchwork");
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked_fixture("real_hello_world.pyc");
     let detect: DetectReport = PatchworkPass.detect(&bytes);
     assert!(detect.matched, "patchwork .pyc not detected: {detect:?}");
     assert!(
@@ -110,26 +106,19 @@ fn patchwork_pyc_chain_recovers() {
     );
 }
 
-fn read_pyc_fixture() -> Option<Vec<u8>> {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    let mut p: std::path::PathBuf = std::path::PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("python");
-    p.push("obfuscators");
-    p.push("patchwork");
-    p.push("real_hello_world.pyc");
-    std::fs::read(&p).ok()
+fn read_tracked_fixture(name: &str) -> Vec<u8> {
+    let path: PathBuf = common::corpus_root().join("patchwork").join(name);
+    std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "the tracked patchwork fixture {} is unreadable ({e}); restore it with git checkout",
+            path.display()
+        )
+    })
 }
 
 #[test]
 fn patchwork_norename_preserves_original_identifiers() {
-    let Some((_, outcome)): Option<(Vec<u8>, PeelOutcome)> = peel_slot("hello_world_norename")
-    else {
-        common::skip_absent_corpus("patchwork_norename", "patchwork");
-        return;
-    };
+    let outcome: PeelOutcome = peel_slot("hello_world_norename");
     let src: &str = &outcome.recovered_source;
     assert_clean(src, "hello_world_norename");
     assert!(
@@ -148,10 +137,7 @@ fn patchwork_norename_preserves_original_identifiers() {
 
 #[test]
 fn patchwork_features_module_recovers_structure() {
-    let Some((_, outcome)): Option<(Vec<u8>, PeelOutcome)> = peel_slot("features") else {
-        common::skip_absent_corpus("patchwork_features", "patchwork");
-        return;
-    };
+    let outcome: PeelOutcome = peel_slot("features");
     let src: &str = &outcome.recovered_source;
     assert_clean(src, "features");
     assert!(src.contains("import math"), "lost import:\n{src}");
@@ -173,11 +159,7 @@ fn patchwork_features_module_recovers_structure() {
 
 #[test]
 fn patchwork_auto_route_recognizes_samples() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("patchwork", "hello_world")
-    else {
-        common::skip_absent_corpus("patchwork_auto_route", "patchwork");
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture("patchwork", "hello_world");
     let route = auto_deobfuscate(&fixture, None);
     assert_eq!(
         route.kind,
@@ -193,23 +175,15 @@ fn patchwork_auto_route_recognizes_samples() {
 
 #[test]
 fn patchwork_recovered_source_is_behaviorally_equivalent() {
-    let Some(python): Option<String> = find_python() else {
-        eprintln!("skip: patchwork behavioral equivalence (no python interpreter on PATH)");
-        return;
-    };
+    let python: PathBuf = common::require_python();
     let cases: &[(&str, &str)] = &[
         ("hello_world", "orig_hello.py"),
         ("hello_world_norename", "orig_hello.py"),
         ("features", "orig_features.py"),
     ];
     for (slot, original) in cases {
-        let Some((_, outcome)): Option<(Vec<u8>, PeelOutcome)> = peel_slot(slot) else {
-            continue;
-        };
-        let Some(expected): Option<String> = run_python_source(&python, &read_original(original))
-        else {
-            continue;
-        };
+        let outcome: PeelOutcome = peel_slot(slot);
+        let expected: String = expected_stdout(&python, original);
         let actual: Option<String> = run_python_source(&python, &outcome.recovered_source);
         assert_eq!(
             actual.as_deref(),
@@ -220,32 +194,17 @@ fn patchwork_recovered_source_is_behaviorally_equivalent() {
 }
 
 fn read_original(name: &str) -> String {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    let mut p: std::path::PathBuf = std::path::PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("python");
-    p.push("obfuscators");
-    p.push("patchwork");
-    p.push(name);
-    std::fs::read_to_string(&p).unwrap_or_default()
+    String::from_utf8(read_tracked_fixture(name))
+        .unwrap_or_else(|e| panic!("the tracked patchwork original {name} is not UTF-8: {e}"))
 }
 
-fn find_python() -> Option<String> {
-    for candidate in ["python", "python3", "py"] {
-        let ok: bool = std::process::Command::new(candidate)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success());
-        if ok {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
+fn expected_stdout(python: &Path, original: &str) -> String {
+    run_python_source(python, &read_original(original)).unwrap_or_else(|| {
+        panic!("the repository-authored original {original} must run cleanly under {python:?}")
+    })
 }
 
-fn run_python_source(python: &str, source: &str) -> Option<String> {
+fn run_python_source(python: &Path, source: &str) -> Option<String> {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_pw_oracle").ok()?;
     let dir: std::path::PathBuf = scratch.path().to_path_buf();
@@ -300,15 +259,9 @@ const ABYSS_CASES: &[(&str, &str)] = &[
 
 #[test]
 fn patchwork_abyss_devirtualizes_every_opcode_family() {
-    let Some(python): Option<String> = find_python() else {
-        eprintln!("skip: patchwork abyss devirt equivalence (no python on PATH)");
-        return;
-    };
-    let mut exercised: usize = 0;
+    let python: PathBuf = common::require_python();
     for (slot, original) in ABYSS_CASES {
-        let Some((_, outcome)): Option<(Vec<u8>, PeelOutcome)> = peel_slot(slot) else {
-            continue;
-        };
+        let outcome: PeelOutcome = peel_slot(slot);
         let src: &str = &outcome.recovered_source;
         assert_clean(src, slot);
         assert!(
@@ -327,30 +280,19 @@ fn patchwork_abyss_devirtualizes_every_opcode_family() {
             Some("0"),
             "{slot} refused an abyss body it should have lifted"
         );
-        let original_src: String = read_original(original);
-        let Some(expected): Option<String> = run_python_source(&python, &original_src) else {
-            continue;
-        };
+        let expected: String = expected_stdout(&python, original);
         let actual: Option<String> = run_python_source(&python, src);
         assert_eq!(
             actual.as_deref(),
             Some(expected.as_str()),
             "abyss-devirt {slot} does not reproduce original stdout\nrecovered:\n{src}"
         );
-        exercised += 1;
     }
-    assert!(
-        exercised >= 1,
-        "no abyss corpus slots present; regenerate via patchwork --abyss --seed 424242"
-    );
 }
 
 #[test]
 fn patchwork_abyss_auto_chain_recovers_pyc_bodies() {
-    let Some(bytes): Option<Vec<u8>> = read_abyss_pyc_fixture() else {
-        common::skip_absent_corpus("patchwork_abyss_pyc_chain", "patchwork");
-        return;
-    };
+    let bytes: Vec<u8> = read_tracked_fixture("real_arith_abyss.pyc");
     let route = auto_deobfuscate(&bytes, None);
     assert_eq!(
         route.kind,
@@ -374,28 +316,12 @@ fn patchwork_abyss_auto_chain_recovers_pyc_bodies() {
         "abyss auto-chain lost the protected function body:\n{recovered}"
     );
 
-    if let Some(python) = find_python() {
-        let expected: Option<String> = run_python_source(&python, &read_original("orig_arith.py"));
-        let actual: Option<String> = run_python_source(&python, recovered);
-        if let Some(expected) = expected {
-            assert_eq!(
-                actual.as_deref(),
-                Some(expected.as_str()),
-                "abyss auto-chain recovery not behaviorally equivalent"
-            );
-        }
-    }
-}
-
-fn read_abyss_pyc_fixture() -> Option<Vec<u8>> {
-    let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
-    let mut p: std::path::PathBuf = std::path::PathBuf::from(manifest_dir);
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("python");
-    p.push("obfuscators");
-    p.push("patchwork");
-    p.push("real_arith_abyss.pyc");
-    std::fs::read(&p).ok()
+    let python: PathBuf = common::require_python();
+    let expected: String = expected_stdout(&python, "orig_arith.py");
+    let actual: Option<String> = run_python_source(&python, recovered);
+    assert_eq!(
+        actual.as_deref(),
+        Some(expected.as_str()),
+        "abyss auto-chain recovery not behaviorally equivalent"
+    );
 }

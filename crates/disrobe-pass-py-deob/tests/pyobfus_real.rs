@@ -12,13 +12,7 @@ const SAMPLE_SOURCE: &str = "import os\n\ndef greet(name):\n    return f'hello, 
 
 #[test]
 fn pyobfus_real_hello_base64_reversed_recovers_exact_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "hello") else {
-        common::skip_absent_corpus(
-            "pyobfus_real_hello_base64_reversed_recovers_exact_source",
-            OBF,
-        );
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "hello");
     let text: &str = std::str::from_utf8(&fixture).expect("utf8");
     assert!(
         text.contains("lambda __ :") && text.contains("b64decode(__[::-1])"),
@@ -41,10 +35,7 @@ fn pyobfus_real_hello_base64_reversed_recovers_exact_source() {
 
 #[test]
 fn pyobfus_real_sample_zlib_base64_recovers_exact_source() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "sample") else {
-        common::skip_absent_corpus("pyobfus_real_sample_zlib_base64_recovers_exact_source", OBF);
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "sample");
     let detect: DetectReport = PyobfusPass.detect(&fixture);
     assert!(detect.matched);
 
@@ -61,10 +52,7 @@ fn pyobfus_real_sample_zlib_base64_recovers_exact_source() {
 
 #[test]
 fn pyobfus_real_marshal_chain_reaches_bytecode_handoff() {
-    let Some(fixture): Option<Vec<u8>> = common::load_real_fixture(OBF, "marshal") else {
-        common::skip_absent_corpus("pyobfus_real_marshal_chain_reaches_bytecode_handoff", OBF);
-        return;
-    };
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "marshal");
     let detect: DetectReport = PyobfusPass.detect(&fixture);
     assert!(detect.matched);
     assert!(

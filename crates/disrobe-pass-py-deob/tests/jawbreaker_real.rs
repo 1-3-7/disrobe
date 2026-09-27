@@ -21,12 +21,8 @@ const SLOTS: &[&str] = &[
 
 #[test]
 fn jawbreaker_real_fixtures_are_honest_detect_only_remote_loader() {
-    let mut tested: usize = 0;
     for slot in SLOTS {
-        let Some(fixture): Option<Vec<u8>> = common::load_real_fixture("jawbreaker", slot) else {
-            continue;
-        };
-        tested += 1;
+        let fixture: Vec<u8> = common::require_real_fixture("jawbreaker", slot);
         let det: DetectReport = JawbreakerPass.detect(&fixture);
         assert!(det.matched, "jawbreaker slot {slot} not detected: {det:?}");
         let peel: PeelOutcome = JawbreakerPass
@@ -56,15 +52,4 @@ fn jawbreaker_real_fixtures_are_honest_detect_only_remote_loader() {
             peel.stages_applied
         );
     }
-    if tested == 0 {
-        common::skip_absent_corpus(
-            "jawbreaker_real_fixtures_are_honest_detect_only_remote_loader",
-            "jawbreaker",
-        );
-        return;
-    }
-    assert!(
-        tested >= 10,
-        "expected 10+ jawbreaker real fixtures, got {tested}"
-    );
 }
