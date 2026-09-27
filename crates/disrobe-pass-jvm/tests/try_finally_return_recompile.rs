@@ -6,7 +6,7 @@
     clippy::case_sensitive_file_extension_comparisons
 )]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -201,9 +201,13 @@ const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
 }\n";
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
+    let path_var: OsString = std::env::var_os("PATH")?;
+    find_on_path_in(name, &path_var)
+}
+
+fn find_on_path_in(name: &str, path_var: &OsStr) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
-    for dir in std::env::split_paths(&path_var) {
+    for dir in std::env::split_paths(path_var) {
         for ext in exts {
             let candidate: PathBuf = dir.join(format!("{name}{ext}"));
             if candidate.is_file() {
@@ -215,9 +219,14 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 }
 
 fn require_jdk_tools() -> (PathBuf, PathBuf) {
-    let javac: PathBuf = find_on_path("javac")
+    let path_var: OsString = std::env::var_os("PATH").unwrap_or_default();
+    require_jdk_tools_in_path(&path_var)
+}
+
+fn require_jdk_tools_in_path(path_var: &OsStr) -> (PathBuf, PathBuf) {
+    let javac: PathBuf = find_on_path_in("javac", path_var)
         .unwrap_or_else(|| panic!("try-finally return gate requires javac and javap on PATH"));
-    let javap: PathBuf = find_on_path("javap")
+    let javap: PathBuf = find_on_path_in("javap", path_var)
         .unwrap_or_else(|| panic!("try-finally return gate requires javac and javap on PATH"));
     (javac, javap)
 }
@@ -1844,7 +1853,7 @@ fn finally_with_a_nested_try_recompiles_to_equivalent_bytecode() {
 }
 
 #[test]
-fn kotlin_fallthrough_finally_with_nested_try_matches_the_compiled_runtime() {
+fn kotlin_fallthrough_finally_with_nested_try_matches_pinned_runtime_cases() {
     let digest: sha2::digest::Output<sha2::Sha256> =
         <sha2::Sha256 as sha2::Digest>::digest(KOTLIN_FINALLY_NESTED_CLASS);
     assert_eq!(
@@ -1900,8 +1909,7 @@ fn kotlin_fallthrough_finally_with_nested_try_matches_the_compiled_runtime() {
         let regenerated: String = run_kotlin_finally_runtime(&java, &recovered_dir, value, divisor);
         assert_eq!(
             regenerated, expected,
-            "recovered Kotlin finally changed runtime behavior for ({value}, {divisor}); the \
-             expected results are what the pinned kotlinc 2.4.10 class printed"
+            "recovered Kotlin finally changed pinned runtime behavior for ({value}, {divisor})"
         );
     }
 
@@ -2642,23 +2650,16 @@ fn an_author_written_throwable_catch_still_renders_as_a_catch() {
 
 #[test]
 fn try_finally_return_gate_fails_when_jdk_tools_are_unavailable() {
-    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
-    let output: std::process::Output = Command::new(test_binary)
-        .arg("--exact")
-        .arg("try_finally_with_return_recompiles_to_equivalent_bytecode")
-        .arg("--test-threads=1")
-        .env("PATH", "")
-        .output()
-        .expect("run try-finally return gate without JDK tools");
-    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    let failure: Box<dyn std::any::Any + Send> =
+        std::panic::catch_unwind(|| require_jdk_tools_in_path(OsStr::new("")))
+            .expect_err("JDK discovery must fail with an empty PATH");
+    let message: &str = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .expect("JDK discovery panic carries a message");
     assert!(
-        !output.status.success(),
-        "the try-finally return gate passed without JDK tools; stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        format!("{stdout}\n{stderr}")
-            .contains("try-finally return gate requires javac and javap on PATH"),
-        "the try-finally return gate failed for an unrelated reason; stdout:\n{stdout}\nstderr:\n{stderr}"
+        message.contains("try-finally return gate requires javac and javap on PATH"),
+        "JDK discovery failed for an unrelated reason: {message}"
     );
 }

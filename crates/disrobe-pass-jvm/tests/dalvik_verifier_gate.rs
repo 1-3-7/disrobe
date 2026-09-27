@@ -9,11 +9,13 @@
 pub mod common;
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use common::{
-    JvmVerifier, VERIFIER_SRC, VerifyScope, assert_permille, assert_verifier_never_initialises,
-    lines_with_prefix, parse_metric, unlisted_verifier_calls,
+    JvmVerifier, VERIFIER_SRC, VerifyScope, assert_compiled_verifier_never_initialises,
+    assert_permille, find_on_path, lines_with_prefix, parse_metric,
 };
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::assemble_jar;
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 
@@ -230,71 +232,51 @@ fn link_skipped_metric_counter_mutation_is_rejected() {
     );
 }
 
-const VERIFIER_LINK: &str = "Class<?> c = l.resolveTop(cn);";
-const VERIFIER_REFLECT: &str = "c.getDeclaredMethods();";
-
 #[test]
-fn the_verifier_helper_makes_only_reviewed_calls() {
-    assert_eq!(
-        unlisted_verifier_calls(VERIFIER_SRC),
-        Vec::<String>::new(),
-        "tests/common/V.java must define and link translations through reviewed calls only"
-    );
+fn the_compiled_verifier_helper_has_no_initialising_member_reference() {
+    let verifier: JvmVerifier = JvmVerifier::prepare(&format!(
+        "compiled_verifier_semantics_{}",
+        std::process::id()
+    ))
+    .expect("compile and validate the authored verifier helper");
     assert!(
-        VERIFIER_SRC.contains(VERIFIER_LINK) && VERIFIER_SRC.contains(VERIFIER_REFLECT),
-        "the seeded calls below must land in V.java, or this control checks nothing"
+        verifier.dir().join("V.class").is_file() && verifier.dir().join("V$L.class").is_file(),
+        "the semantic verifier must inspect both compiled authored classes"
     );
-    let seeded: [(&str, &str, &str); 6] = [
-        (
-            VERIFIER_LINK,
-            "Class<?> c = Class.forName(cn, true, l);",
-            "Class.forName",
-        ),
-        (
-            VERIFIER_REFLECT,
-            "c.getDeclaredConstructor().newInstance();",
-            ").newInstance",
-        ),
-        (
-            VERIFIER_REFLECT,
-            "c.getDeclaredMethods()[0].invoke(null);",
-            "].invoke",
-        ),
-        (
-            VERIFIER_REFLECT,
-            "c.getDeclaredField(\"VALUE\").get(null);",
-            "c.getDeclaredField",
-        ),
-        (
-            VERIFIER_REFLECT,
-            "c.getEnumConstants();",
-            "c.getEnumConstants",
-        ),
-        (
-            VERIFIER_REFLECT,
-            "UNSAFE.allocateInstance(c);",
-            "UNSAFE.allocateInstance",
-        ),
-    ];
-    for (anchor, call_site, call) in seeded {
-        let source: String = VERIFIER_SRC.replacen(anchor, call_site, 1);
-        assert!(
-            unlisted_verifier_calls(&source).contains(&call.to_owned()),
-            "a V.java that adds `{call_site}` must be caught before java starts"
-        );
-    }
 }
 
 #[test]
-#[should_panic(
-    expected = "the jvm verifier helper makes calls outside its reviewed list [\"Class.forName\"]"
-)]
-fn a_verifier_helper_that_initialises_a_translation_is_refused_before_java_starts() {
-    assert_verifier_never_initialises(&VERIFIER_SRC.replacen(
-        VERIFIER_LINK,
+fn initialising_member_reference_mutation_is_rejected() {
+    let source: String = VERIFIER_SRC.replacen(
+        "Class<?> c = l.resolveTop(cn);",
         "Class<?> c = Class.forName(cn, true, l);",
         1,
-    ));
+    );
+    let scratch: ScratchDir = ScratchDir::create(&format!(
+        "compiled_verifier_forbidden_member_{}",
+        std::process::id()
+    ))
+    .expect("create scratch directory for forged verifier");
+    let source_path: PathBuf = scratch.path().join("V.java");
+    std::fs::write(&source_path, source).expect("write forged verifier source");
+    let javac: PathBuf = find_on_path("javac").expect("JDK 24+ javac is required");
+    let compiled = Command::new(javac)
+        .arg("-d")
+        .arg(scratch.path())
+        .arg(&source_path)
+        .output()
+        .expect("compile forged verifier source");
+    assert!(
+        compiled.status.success(),
+        "compile forged verifier source: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let rejected =
+        std::panic::catch_unwind(|| assert_compiled_verifier_never_initialises(scratch.path()));
+    assert!(
+        rejected.is_err(),
+        "the compiled-class verifier must reject a Class.forName reference even when source spelling, imports, or whitespace conceal it"
+    );
 }
 
 #[test]

@@ -6,7 +6,6 @@
     clippy::print_stderr
 )]
 
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,163 +16,374 @@ use sha2::{Digest, Sha256};
 
 pub const VERIFIER_SRC: &str = include_str!("V.java");
 
-const REVIEWED_VERIFIER_CALLS: [&str; 83] = [
-    ").asSymbol",
-    ").build",
-    ").endsWith",
-    ").equals",
-    ").flagsMask",
-    ").get",
-    ").getName",
-    ").ifPresent",
-    ").isEmpty",
-    ").isPresent",
-    ").length",
-    ").parse",
-    ").replace",
-    ").stringValue",
-    ").substring",
-    ").withSuperclass",
-    "ClassDesc.of",
-    "ClassFile.of",
-    "Collections.sort",
-    "Integer.parseInt",
-    "Math.min",
-    "MethodTypeDesc.of",
-    "String.valueOf",
-    "System.exit",
-    "attested.add",
-    "b.withFlags",
-    "bodyErrs.add",
-    "bodyErrs.size",
-    "bos.toByteArray",
-    "bos.write",
-    "c.getDeclaredConstructors",
-    "c.getDeclaredMethods",
-    "cb.withFlags",
-    "cb.withMethod",
-    "cb.withSuperclass",
-    "ce.asInternalName",
-    "class.getClassLoader",
-    "cm.constantPool",
-    "cm.methods",
-    "cm.thisClass",
-    "e.getName",
-    "err.println",
-    "errs.add",
-    "ii.opcode",
-    "key.hashCode",
-    "l.defineRaw",
-    "l.isStubbed",
-    "l.link",
-    "l.resolveTop",
-    "le.getClass",
-    "le.getMessage",
-    "m.code",
-    "m.length",
-    "m.replace",
-    "mb.withCode",
-    "mm.code",
-    "mm.flags",
-    "mm.methodName",
-    "mm.methodType",
-    "mm.methodTypeSymbol",
-    "mname.equals",
-    "mode.equals",
-    "nm.startsWith",
-    "origType.parameterList",
-    "origType.returnType",
-    "out.println",
-    "pc.getDeclaredMethods",
-    "pool.get",
-    "pool.keySet",
-    "pool.put",
-    "ps.add",
-    "ps.addAll",
-    "stubbed.add",
-    "stubbed.contains",
-    "stubbed.size",
-    "super.findClass",
-    "t.getClass",
-    "t.getMessage",
-    "ve.getMessage",
-    "verdicts.add",
-    "xb.with",
-    "z.getNextEntry",
-    "z.read",
+const REVIEWED_VERIFIER_MEMBER_REFERENCES: &[&str] = &[
+    "V$L.<init>:(Ljava/util/Map;Z)V",
+    "V$L.defineClass:(Ljava/lang/String;[BII)Ljava/lang/Class;",
+    "V$L.defineRaw:(Ljava/lang/String;[B)Ljava/lang/Class;",
+    "V$L.defineStub:(Ljava/lang/String;)Ljava/lang/Class;",
+    "V$L.findClass:(Ljava/lang/String;)Ljava/lang/Class;",
+    "V$L.findLoadedClass:(Ljava/lang/String;)Ljava/lang/Class;",
+    "V$L.isStubbed:(Ljava/lang/String;)Z",
+    "V$L.lambda$defineStub$0:(Ljava/lang/classfile/ClassBuilder;)V",
+    "V$L.link:(Ljava/lang/Class;)V",
+    "V$L.resolveClass:(Ljava/lang/Class;)V",
+    "V$L.resolveTop:(Ljava/lang/String;)Ljava/lang/Class;",
+    "V.carrier:(Ljava/lang/classfile/ClassModel;Ljava/lang/classfile/MethodModel;)[B",
+    "V.isStub:(Ljava/lang/classfile/CodeModel;)Z",
+    "V.lambda$carrier$0:(Ljava/lang/String;Ljava/lang/constant/MethodTypeDesc;Ljava/lang/classfile/MethodModel;Ljava/lang/classfile/ClassBuilder;)V",
+    "V.lambda$carrier$1:(Ljava/lang/classfile/MethodModel;Ljava/lang/classfile/MethodBuilder;)V",
+    "V.lambda$carrier$2:(Ljava/lang/classfile/MethodBuilder;Ljava/lang/classfile/CodeModel;)V",
+    "V.lambda$carrier$3:(Ljava/lang/classfile/CodeModel;Ljava/lang/classfile/CodeBuilder;)V",
+    "V.methodsWithCode:([B)I",
+    "V.readJar:(Ljava/lang/String;)Ljava/util/Map;",
+    "V.refsStub:(LV$L;Ljava/lang/classfile/ClassModel;Ljava/lang/classfile/MethodModel;)Z",
+    "V.runBodies:(Ljava/lang/String;I)V",
+    "V.runClasses:(Ljava/lang/String;I)V",
+    "V.sampled:(Ljava/lang/String;I)Z",
+    "V.usesInvokeSpecial:(Ljava/lang/classfile/MethodModel;)Z",
+    "java/io/ByteArrayOutputStream.<init>:()V",
+    "java/io/ByteArrayOutputStream.toByteArray:()[B",
+    "java/io/ByteArrayOutputStream.write:([BII)V",
+    "java/io/FileInputStream.<init>:(Ljava/lang/String;)V",
+    "java/io/PrintStream.println:(Ljava/lang/String;)V",
+    "java/lang/Class.getClassLoader:()Ljava/lang/ClassLoader;",
+    "java/lang/Class.getDeclaredConstructors:()[Ljava/lang/reflect/Constructor;",
+    "java/lang/Class.getDeclaredMethods:()[Ljava/lang/reflect/Method;",
+    "java/lang/Class.getName:()Ljava/lang/String;",
+    "java/lang/ClassLoader.<init>:(Ljava/lang/ClassLoader;)V",
+    "java/lang/ClassLoader.findClass:(Ljava/lang/String;)Ljava/lang/Class;",
+    "java/lang/Integer.parseInt:(Ljava/lang/String;)I",
+    "java/lang/LinkageError.getMessage:()Ljava/lang/String;",
+    "java/lang/Math.min:(II)I",
+    "java/lang/Object.<init>:()V",
+    "java/lang/Object.getClass:()Ljava/lang/Class;",
+    "java/lang/String.endsWith:(Ljava/lang/String;)Z",
+    "java/lang/String.equals:(Ljava/lang/Object;)Z",
+    "java/lang/String.hashCode:()I",
+    "java/lang/String.length:()I",
+    "java/lang/String.replace:(CC)Ljava/lang/String;",
+    "java/lang/String.startsWith:(Ljava/lang/String;)Z",
+    "java/lang/String.substring:(II)Ljava/lang/String;",
+    "java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;",
+    "java/lang/System.exit:(I)V",
+    "java/lang/Throwable.addSuppressed:(Ljava/lang/Throwable;)V",
+    "java/lang/Throwable.getMessage:()Ljava/lang/String;",
+    "java/lang/VerifyError.getMessage:()Ljava/lang/String;",
+    "java/lang/classfile/AccessFlags.flagsMask:()I",
+    "java/lang/classfile/ClassBuilder.withFlags:(I)Ljava/lang/classfile/ClassBuilder;",
+    "java/lang/classfile/ClassBuilder.withMethod:(Ljava/lang/String;Ljava/lang/constant/MethodTypeDesc;ILjava/util/function/Consumer;)Ljava/lang/classfile/ClassBuilder;",
+    "java/lang/classfile/ClassBuilder.withSuperclass:(Ljava/lang/constant/ClassDesc;)Ljava/lang/classfile/ClassBuilder;",
+    "java/lang/classfile/ClassFile.build:(Ljava/lang/constant/ClassDesc;Ljava/util/function/Consumer;)[B",
+    "java/lang/classfile/ClassFile.of:()Ljava/lang/classfile/ClassFile;",
+    "java/lang/classfile/ClassFile.parse:([B)Ljava/lang/classfile/ClassModel;",
+    "java/lang/classfile/ClassModel.constantPool:()Ljava/lang/classfile/constantpool/ConstantPool;",
+    "java/lang/classfile/ClassModel.methods:()Ljava/util/List;",
+    "java/lang/classfile/ClassModel.thisClass:()Ljava/lang/classfile/constantpool/ClassEntry;",
+    "java/lang/classfile/CodeBuilder.with:(Ljava/lang/classfile/ClassFileElement;)Ljava/lang/classfile/ClassFileBuilder;",
+    "java/lang/classfile/CodeModel.iterator:()Ljava/util/Iterator;",
+    "java/lang/classfile/MethodBuilder.withCode:(Ljava/util/function/Consumer;)Ljava/lang/classfile/MethodBuilder;",
+    "java/lang/classfile/MethodModel.code:()Ljava/util/Optional;",
+    "java/lang/classfile/MethodModel.flags:()Ljava/lang/classfile/AccessFlags;",
+    "java/lang/classfile/MethodModel.methodName:()Ljava/lang/classfile/constantpool/Utf8Entry;",
+    "java/lang/classfile/MethodModel.methodType:()Ljava/lang/classfile/constantpool/Utf8Entry;",
+    "java/lang/classfile/MethodModel.methodTypeSymbol:()Ljava/lang/constant/MethodTypeDesc;",
+    "java/lang/classfile/constantpool/ClassEntry.asInternalName:()Ljava/lang/String;",
+    "java/lang/classfile/constantpool/ClassEntry.asSymbol:()Ljava/lang/constant/ClassDesc;",
+    "java/lang/classfile/constantpool/ConstantPool.iterator:()Ljava/util/Iterator;",
+    "java/lang/classfile/constantpool/Utf8Entry.stringValue:()Ljava/lang/String;",
+    "java/lang/classfile/instruction/InvokeInstruction.opcode:()Ljava/lang/classfile/Opcode;",
+    "java/lang/constant/ClassDesc.of:(Ljava/lang/String;)Ljava/lang/constant/ClassDesc;",
+    "java/lang/constant/MethodTypeDesc.of:(Ljava/lang/constant/ClassDesc;Ljava/util/List;)Ljava/lang/constant/MethodTypeDesc;",
+    "java/lang/constant/MethodTypeDesc.parameterList:()Ljava/util/List;",
+    "java/lang/constant/MethodTypeDesc.returnType:()Ljava/lang/constant/ClassDesc;",
+    "java/lang/invoke/LambdaMetafactory.metafactory:(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;",
+    "java/lang/invoke/StringConcatFactory.makeConcatWithConstants:(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;",
+    "java/util/ArrayList.<init>:()V",
+    "java/util/ArrayList.<init>:(Ljava/util/Collection;)V",
+    "java/util/Collections.sort:(Ljava/util/List;)V",
+    "java/util/HashMap.<init>:()V",
+    "java/util/HashSet.<init>:()V",
+    "java/util/Iterator.hasNext:()Z",
+    "java/util/Iterator.next:()Ljava/lang/Object;",
+    "java/util/List.add:(Ljava/lang/Object;)Z",
+    "java/util/List.addAll:(Ljava/util/Collection;)Z",
+    "java/util/List.iterator:()Ljava/util/Iterator;",
+    "java/util/List.size:()I",
+    "java/util/Map.get:(Ljava/lang/Object;)Ljava/lang/Object;",
+    "java/util/Map.keySet:()Ljava/util/Set;",
+    "java/util/Map.put:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    "java/util/Optional.get:()Ljava/lang/Object;",
+    "java/util/Optional.ifPresent:(Ljava/util/function/Consumer;)V",
+    "java/util/Optional.isEmpty:()Z",
+    "java/util/Optional.isPresent:()Z",
+    "java/util/Set.add:(Ljava/lang/Object;)Z",
+    "java/util/Set.contains:(Ljava/lang/Object;)Z",
+    "java/util/Set.size:()I",
+    "java/util/zip/ZipEntry.getName:()Ljava/lang/String;",
+    "java/util/zip/ZipInputStream.<init>:(Ljava/io/InputStream;)V",
+    "java/util/zip/ZipInputStream.close:()V",
+    "java/util/zip/ZipInputStream.getNextEntry:()Ljava/util/zip/ZipEntry;",
+    "java/util/zip/ZipInputStream.read:([B)I",
 ];
 
-const fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConstantPoolEntry {
+    Empty,
+    Utf8(String),
+    Class(u16),
+    NameAndType { name: u16, descriptor: u16 },
+    MemberRef { owner: u16, name_and_type: u16 },
+    MethodHandle { reference: u16 },
 }
 
-pub fn verifier_calls(java_source: &str) -> BTreeSet<String> {
-    let bytes: &[u8] = java_source.as_bytes();
-    let mut calls: BTreeSet<String> = BTreeSet::new();
-    let mut index: usize = 0;
-    while index < bytes.len() {
-        let separator: &str = if bytes[index..].starts_with(b"::") {
-            "::"
-        } else if bytes[index] == b'.' {
-            "."
-        } else {
-            index += 1;
+struct ClassReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ClassReader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn u8(&mut self) -> Result<u8, String> {
+        let value: u8 = *self
+            .bytes
+            .get(self.offset)
+            .ok_or_else(|| "truncated class file".to_string())?;
+        self.offset += 1;
+        Ok(value)
+    }
+
+    fn u16(&mut self) -> Result<u16, String> {
+        let hi: u16 = u16::from(self.u8()?);
+        let lo: u16 = u16::from(self.u8()?);
+        Ok((hi << 8) | lo)
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        let high: u32 = u32::from(self.u16()?);
+        let low: u32 = u32::from(self.u16()?);
+        Ok((high << 16) | low)
+    }
+
+    fn skip(&mut self, count: usize) -> Result<(), String> {
+        self.offset = self
+            .offset
+            .checked_add(count)
+            .filter(|end: &usize| *end <= self.bytes.len())
+            .ok_or_else(|| "truncated class file".to_string())?;
+        Ok(())
+    }
+
+    fn bytes(&mut self, count: usize) -> Result<&'a [u8], String> {
+        let start: usize = self.offset;
+        self.skip(count)?;
+        Ok(&self.bytes[start..self.offset])
+    }
+}
+
+fn class_member_references(class_bytes: &[u8]) -> Result<Vec<String>, String> {
+    const CLASS_MAGIC: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBE];
+    const MAX_CLASS_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_CONSTANT_POOL_ENTRIES: u16 = 16_384;
+
+    if class_bytes.len() > MAX_CLASS_BYTES {
+        return Err(format!(
+            "compiled verifier class exceeds {MAX_CLASS_BYTES} bytes"
+        ));
+    }
+    let mut reader: ClassReader<'_> = ClassReader::new(class_bytes);
+    if reader.bytes(4)? != CLASS_MAGIC {
+        return Err("compiled verifier class has no class-file magic".to_string());
+    }
+    reader.skip(4)?;
+    let constant_pool_count: u16 = reader.u16()?;
+    if constant_pool_count > MAX_CONSTANT_POOL_ENTRIES {
+        return Err(format!(
+            "compiled verifier class has {constant_pool_count} constant-pool entries, above {MAX_CONSTANT_POOL_ENTRIES}"
+        ));
+    }
+    let mut entries: Vec<ConstantPoolEntry> = vec![ConstantPoolEntry::Empty];
+    let mut index: u16 = 1;
+    while index < constant_pool_count {
+        let entry: ConstantPoolEntry = match reader.u8()? {
+            1 => {
+                let length: usize = usize::from(reader.u16()?);
+                let raw: &[u8] = reader.bytes(length)?;
+                let text: String = std::str::from_utf8(raw)
+                    .map_err(|_| {
+                        "compiled verifier class has non-UTF-8 constant-pool text".to_string()
+                    })?
+                    .to_owned();
+                ConstantPoolEntry::Utf8(text)
+            }
+            7 => ConstantPoolEntry::Class(reader.u16()?),
+            3 | 4 | 9 | 17 | 18 => {
+                reader.skip(4)?;
+                ConstantPoolEntry::Empty
+            }
+            10 | 11 => ConstantPoolEntry::MemberRef {
+                owner: reader.u16()?,
+                name_and_type: reader.u16()?,
+            },
+            12 => ConstantPoolEntry::NameAndType {
+                name: reader.u16()?,
+                descriptor: reader.u16()?,
+            },
+            5 | 6 => {
+                reader.skip(8)?;
+                entries.push(ConstantPoolEntry::Empty);
+                index = index
+                    .checked_add(1)
+                    .ok_or_else(|| "constant-pool index overflow".to_string())?;
+                ConstantPoolEntry::Empty
+            }
+            8 | 16 | 19 | 20 => {
+                reader.skip(2)?;
+                ConstantPoolEntry::Empty
+            }
+            15 => {
+                reader.skip(1)?;
+                ConstantPoolEntry::MethodHandle {
+                    reference: reader.u16()?,
+                }
+            }
+            tag => {
+                return Err(format!(
+                    "compiled verifier class has unknown constant-pool tag {tag}"
+                ));
+            }
+        };
+        entries.push(entry);
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| "constant-pool index overflow".to_string())?;
+    }
+
+    let get = |at: u16| -> Result<&ConstantPoolEntry, String> {
+        entries
+            .get(usize::from(at))
+            .ok_or_else(|| format!("constant-pool index {at} is outside the pool"))
+    };
+    let utf8 = |at: u16| -> Result<&str, String> {
+        match get(at)? {
+            ConstantPoolEntry::Utf8(value) => Ok(value),
+            _ => Err(format!("constant-pool index {at} is not UTF-8 text")),
+        }
+    };
+    let class_name = |at: u16| -> Result<&str, String> {
+        match get(at)? {
+            ConstantPoolEntry::Class(name) => utf8(*name),
+            _ => Err(format!("constant-pool index {at} is not a class")),
+        }
+    };
+    let member_reference = |at: u16| -> Result<String, String> {
+        let ConstantPoolEntry::MemberRef {
+            owner,
+            name_and_type,
+        } = get(at)?
+        else {
+            return Err(format!(
+                "constant-pool index {at} is not a member reference"
+            ));
+        };
+        let ConstantPoolEntry::NameAndType { name, descriptor } = get(*name_and_type)? else {
+            return Err(format!(
+                "constant-pool index {name_and_type} is not a member name and type"
+            ));
+        };
+        Ok(format!(
+            "{}.{}:{}",
+            class_name(*owner)?,
+            utf8(*name)?,
+            utf8(*descriptor)?
+        ))
+    };
+    let mut references: Vec<String> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Ok(index): Result<u16, _> = u16::try_from(index) else {
             continue;
         };
-        let name_start: usize = index + separator.len();
-        let mut name_end: usize = name_start;
-        while name_end < bytes.len() && is_identifier_byte(bytes[name_end]) {
-            name_end += 1;
+        if matches!(entry, ConstantPoolEntry::MemberRef { .. }) {
+            references.push(member_reference(index)?);
         }
-        if name_end == name_start || bytes[name_start].is_ascii_digit() {
-            index = name_start;
+    }
+
+    reader.skip(6)?;
+    let interface_count: usize = usize::from(reader.u16()?);
+    reader.skip(
+        interface_count
+            .checked_mul(2)
+            .ok_or_else(|| "interface count overflow".to_string())?,
+    )?;
+    for section in ["field", "method"] {
+        let count: usize = usize::from(reader.u16()?);
+        for _ in 0..count {
+            reader.skip(6)?;
+            let attributes: usize = usize::from(reader.u16()?);
+            for _ in 0..attributes {
+                reader.skip(2)?;
+                let length: usize = usize::try_from(reader.u32()?)
+                    .map_err(|_| format!("{section} attribute length exceeds usize"))?;
+                reader.skip(length)?;
+            }
+        }
+    }
+    let attributes: usize = usize::from(reader.u16()?);
+    for _ in 0..attributes {
+        let name_index: u16 = reader.u16()?;
+        let length: usize = usize::try_from(reader.u32()?)
+            .map_err(|_| "class attribute length exceeds usize".to_string())?;
+        if utf8(name_index)? != "BootstrapMethods" {
+            reader.skip(length)?;
             continue;
         }
-        let mut after: usize = name_end;
-        while after < bytes.len() && matches!(bytes[after], b' ' | b'\t') {
-            after += 1;
-        }
-        if separator == "::" || bytes.get(after) == Some(&b'(') {
-            let mut receiver_start: usize = index;
-            while receiver_start > 0 && is_identifier_byte(bytes[receiver_start - 1]) {
-                receiver_start -= 1;
-            }
-            let receiver: &str = if receiver_start < index {
-                &java_source[receiver_start..index]
-            } else {
-                java_source[..index]
-                    .trim_end()
-                    .char_indices()
-                    .next_back()
-                    .map_or("", |(at, found): (usize, char)| {
-                        &java_source[at..at + found.len_utf8()]
-                    })
+        let attribute: &[u8] = reader.bytes(length)?;
+        let mut bootstrap: ClassReader<'_> = ClassReader::new(attribute);
+        let count: usize = usize::from(bootstrap.u16()?);
+        for _ in 0..count {
+            let handle_index: u16 = bootstrap.u16()?;
+            let ConstantPoolEntry::MethodHandle { reference } = get(handle_index)? else {
+                return Err(format!(
+                    "bootstrap method {handle_index} is not a method handle"
+                ));
             };
-            calls.insert(format!(
-                "{receiver}{separator}{}",
-                &java_source[name_start..name_end]
-            ));
+            references.push(member_reference(*reference)?);
+            let argument_count: usize = usize::from(bootstrap.u16()?);
+            bootstrap.skip(
+                argument_count
+                    .checked_mul(2)
+                    .ok_or_else(|| "bootstrap argument count overflow".to_string())?,
+            )?;
         }
-        index = name_end;
+        if bootstrap.offset != attribute.len() {
+            return Err("BootstrapMethods attribute has trailing bytes".to_string());
+        }
     }
-    calls
+    references.sort();
+    references.dedup();
+    Ok(references)
 }
 
-pub fn unlisted_verifier_calls(java_source: &str) -> Vec<String> {
-    verifier_calls(java_source)
-        .into_iter()
-        .filter(|call: &String| !REVIEWED_VERIFIER_CALLS.contains(&call.as_str()))
-        .collect()
-}
-
-pub fn assert_verifier_never_initialises(java_source: &str) {
-    let unlisted: Vec<String> = unlisted_verifier_calls(java_source);
-    assert!(
-        unlisted.is_empty(),
-        "the jvm verifier helper makes calls outside its reviewed list {unlisted:?}; it defines \
-         and links translations of third-party and protector bytecode, so a call joins \
-         REVIEWED_VERIFIER_CALLS only once it is known not to run their static initialisers or \
-         methods"
+pub fn assert_compiled_verifier_never_initialises(directory: &Path) {
+    let mut references: Vec<String> = Vec::new();
+    for name in ["V.class", "V$L.class"] {
+        let path: PathBuf = directory.join(name);
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        references.extend(
+            class_member_references(&bytes)
+                .unwrap_or_else(|error: String| panic!("parse {}: {error}", path.display())),
+        );
+    }
+    references.sort();
+    references.dedup();
+    assert_eq!(
+        references, REVIEWED_VERIFIER_MEMBER_REFERENCES,
+        "the compiled jvm verifier helper's member references changed; it defines and links \
+         translations of third-party and protector bytecode, so each exact owner.name:descriptor \
+         requires review before it can enter the verifier"
     );
 }
 
@@ -355,7 +565,6 @@ pub struct JvmVerifier {
 
 impl JvmVerifier {
     pub fn prepare(purpose: &str) -> Result<Self, String> {
-        assert_verifier_never_initialises(VERIFIER_SRC);
         let java: PathBuf =
             find_on_path("java").ok_or_else(|| "java (JDK 24+) not on PATH".to_string())?;
         let javac: PathBuf =
@@ -376,6 +585,7 @@ impl JvmVerifier {
                 String::from_utf8_lossy(&compiled.stderr)
             ));
         }
+        assert_compiled_verifier_never_initialises(dir);
         Ok(Self { java, scratch })
     }
 
