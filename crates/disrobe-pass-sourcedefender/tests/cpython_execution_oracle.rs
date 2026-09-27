@@ -4,17 +4,19 @@
     clippy::panic,
     clippy::print_stderr
 )]
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::ExitStatus;
+use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_core::subprocess::{CaptureOutcome, CommandSpec, Completion, Execution};
 use disrobe_pass_sourcedefender::{
     ContainerVariant, LayeredRecovery, SourceRecoverOpts, SourceRecoverOutput,
     decrypt_pye_to_source, recover_from_marshal_bytes, recover_layered,
     recover_layered_with_modern_key,
 };
 use disrobe_py_marshal::PyVersion;
+use regex::Regex;
 
 const REAL_HELLO_PYE: &[u8] = include_bytes!("../../../corpus/python/sourcedefender/hello.pye");
 const REAL_HELLO_PLAINTEXT: &str = include_str!("../../../corpus/python/sourcedefender/hello.py");
@@ -22,11 +24,19 @@ const CRAFTED_MODERN_KNOWN_KEY: &[u8] =
     include_bytes!("../../../corpus/python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
 const REAL_LEGACY_BYTECODE_PYE: &[u8] =
     include_bytes!("../../../corpus/python/sourcedefender/legacy_bytecode.pye");
+const PYTHON_TIMEOUT: Duration = Duration::from_secs(30);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const CAPTURE_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone)]
 struct CpythonInvocation {
     program: PathBuf,
-    prefix_args: Vec<OsString>,
+}
+
+struct PythonRun {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 fn workspace_root() -> PathBuf {
@@ -53,33 +63,71 @@ fn make_tmp(name: &str) -> (ScratchDir, PathBuf) {
 }
 
 fn probe_cpython_314(invocation: &CpythonInvocation) -> bool {
-    let output: std::io::Result<Output> = Command::new(&invocation.program)
-        .args(&invocation.prefix_args)
+    let Ok(execution): Result<Execution, _> = CommandSpec::new(&invocation.program, PROBE_TIMEOUT)
         .args([
             "-c",
             "import platform,sys;print(platform.python_implementation(),f'{sys.version_info.major}.{sys.version_info.minor}',sys.version_info.releaselevel,sep='|')",
         ])
-        .stdin(Stdio::null())
-        .output();
-    output.is_ok_and(|found: Output| {
-        found.status.success()
-            && String::from_utf8_lossy(&found.stdout).trim() == "CPython|3.14|final"
-    })
+        .capture_limits(CAPTURE_LIMIT, CAPTURE_LIMIT)
+        .run()
+    else {
+        return false;
+    };
+    let Completion::Exited(status) = execution.completion else {
+        return false;
+    };
+    let (CaptureOutcome::Complete(stdout), CaptureOutcome::Complete(stderr)) =
+        (execution.stdout, execution.stderr)
+    else {
+        return false;
+    };
+    status.success()
+        && !stdout.truncated
+        && !stderr.truncated
+        && String::from_utf8_lossy(&stdout.bytes).trim() == "CPython|3.14|final"
 }
 
 fn uv_python_314() -> Option<PathBuf> {
-    let output: Output = Command::new("uv")
+    let execution: Execution = CommandSpec::new("uv", PROBE_TIMEOUT)
         .args(["python", "find", "3.14"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
+        .capture_limits(CAPTURE_LIMIT, CAPTURE_LIMIT)
+        .run()
         .ok()?;
-    if !output.status.success() {
+    let Completion::Exited(status) = execution.completion else {
+        return None;
+    };
+    let (CaptureOutcome::Complete(stdout), CaptureOutcome::Complete(stderr)) =
+        (execution.stdout, execution.stderr)
+    else {
+        return None;
+    };
+    if !status.success() || stdout.truncated || stderr.truncated {
         return None;
     }
-    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let raw: String = String::from_utf8_lossy(&stdout.bytes).trim().to_owned();
     let path: PathBuf = PathBuf::from(raw);
+    path.is_file().then_some(path)
+}
+
+#[cfg(windows)]
+fn windows_python_314() -> Option<PathBuf> {
+    let execution: Execution = CommandSpec::new("py", PROBE_TIMEOUT)
+        .args(["-3.14", "-c", "import sys;print(sys.executable)"])
+        .capture_limits(CAPTURE_LIMIT, CAPTURE_LIMIT)
+        .run()
+        .ok()?;
+    let Completion::Exited(status) = execution.completion else {
+        return None;
+    };
+    let (CaptureOutcome::Complete(stdout), CaptureOutcome::Complete(stderr)) =
+        (execution.stdout, execution.stderr)
+    else {
+        return None;
+    };
+    if !status.success() || stdout.truncated || stderr.truncated {
+        return None;
+    }
+    let path: PathBuf = PathBuf::from(String::from_utf8_lossy(&stdout.bytes).trim().to_owned());
     path.is_file().then_some(path)
 }
 
@@ -88,25 +136,18 @@ fn find_cpython_314() -> Option<CpythonInvocation> {
     if let Some(program) = std::env::var_os("DISROBE_PYTHON") {
         candidates.push(CpythonInvocation {
             program: PathBuf::from(program),
-            prefix_args: Vec::new(),
         });
     }
     if let Some(program) = uv_python_314() {
-        candidates.push(CpythonInvocation {
-            program,
-            prefix_args: Vec::new(),
-        });
+        candidates.push(CpythonInvocation { program });
     }
-    if cfg!(windows) {
-        candidates.push(CpythonInvocation {
-            program: PathBuf::from("py"),
-            prefix_args: vec![OsString::from("-3.14")],
-        });
+    #[cfg(windows)]
+    if let Some(program) = windows_python_314() {
+        candidates.push(CpythonInvocation { program });
     }
     for program in ["python3.14", "python"] {
         candidates.push(CpythonInvocation {
             program: PathBuf::from(program),
-            prefix_args: Vec::new(),
         });
     }
     candidates
@@ -122,13 +163,38 @@ fn require_cpython_314() -> CpythonInvocation {
     })
 }
 
-fn run_python_capture(python: &CpythonInvocation, script: &Path) -> Result<Output, std::io::Error> {
-    Command::new(&python.program)
-        .args(&python.prefix_args)
-        .arg(script)
+fn complete_capture(outcome: CaptureOutcome, stream: &str) -> Result<Vec<u8>, String> {
+    match outcome {
+        CaptureOutcome::Complete(captured) if !captured.truncated => Ok(captured.bytes),
+        CaptureOutcome::Complete(_) => {
+            Err(format!("Python {stream} exceeded {CAPTURE_LIMIT} bytes"))
+        }
+        CaptureOutcome::Failed { source, .. } => {
+            Err(format!("Python {stream} capture failed: {source}"))
+        }
+        CaptureOutcome::NotStarted => Err(format!("Python {stream} capture did not start")),
+        CaptureOutcome::WorkerPanicked => Err(format!("Python {stream} capture worker panicked")),
+        CaptureOutcome::WorkerUnresponsive => {
+            Err(format!("Python {stream} capture worker did not finish"))
+        }
+    }
+}
+
+fn run_python_capture(python: &CpythonInvocation, script: &Path) -> Result<PythonRun, String> {
+    let execution: Execution = CommandSpec::new(python.program.clone(), PYTHON_TIMEOUT)
+        .arg(script.as_os_str().to_owned())
         .env("PYTHONHASHSEED", "0")
-        .stdin(Stdio::null())
-        .output()
+        .current_dir(workspace_root())
+        .run()
+        .map_err(|error| format!("interpreter did not run: {error}"))?;
+    let Completion::Exited(status) = execution.completion else {
+        return Err(format!("interpreter exceeded {PYTHON_TIMEOUT:?}"));
+    };
+    Ok(PythonRun {
+        status,
+        stdout: complete_capture(execution.stdout, "stdout")?,
+        stderr: complete_capture(execution.stderr, "stderr")?,
+    })
 }
 
 fn compare_recovered_behavior(
@@ -137,6 +203,13 @@ fn compare_recovered_behavior(
     recovered_source: &str,
     ground_truth_rel: &str,
 ) -> Result<(), String> {
+    let loader: Regex = Regex::new(r"(?m)\b(?:sourcedefender|marshal)\b|\bexec\s*\(")
+        .expect("loader residue pattern");
+    if loader.is_match(recovered_source) {
+        return Err(format!(
+            "{label}: loader residue remains in recovered source; refuse it before starting Python"
+        ));
+    }
     let ground_truth_path: PathBuf = ground_truth_source(ground_truth_rel);
     if !ground_truth_path.is_file() {
         return Err(format!(
@@ -149,10 +222,10 @@ fn compare_recovered_behavior(
     std::fs::write(&recovered_path, recovered_source)
         .map_err(|error: std::io::Error| format!("{label}: write recovered source: {error}"))?;
 
-    let recovered_run: Output = run_python_capture(python, &recovered_path)
-        .map_err(|error: std::io::Error| format!("{label}: spawn recovered source: {error}"))?;
-    let truth_run: Output = run_python_capture(python, &ground_truth_path)
-        .map_err(|error: std::io::Error| format!("{label}: spawn ground truth: {error}"))?;
+    let recovered_run: PythonRun = run_python_capture(python, &recovered_path)
+        .map_err(|error| format!("{label}: execute recovered source: {error}"))?;
+    let truth_run: PythonRun = run_python_capture(python, &ground_truth_path)
+        .map_err(|error| format!("{label}: execute ground truth: {error}"))?;
 
     if !recovered_run.status.success() {
         let recovered_stderr: String = String::from_utf8_lossy(&recovered_run.stderr).into_owned();
@@ -266,6 +339,22 @@ fn legacy_bytecode_marshal_decompiles_to_source_that_executes_like_original() {
 }
 
 #[test]
+fn loader_residue_is_refused_before_starting_python() {
+    let python: CpythonInvocation = CpythonInvocation {
+        program: PathBuf::from("disrobe-deliberately-unavailable-python"),
+    };
+    for source in ["import sourcedefender", "import marshal", "exec('pass')"] {
+        let fault: String =
+            compare_recovered_behavior("residue", &python, source, "legacy_bytecode.py")
+                .expect_err("loader residue must be rejected before interpreter discovery");
+        assert!(
+            fault.contains("loader residue"),
+            "unexpected refusal: {fault}"
+        );
+    }
+}
+
+#[test]
 fn legacy_bytecode_stdout_oracle_rejects_observable_mutation() {
     let python: CpythonInvocation = require_cpython_314();
     let recovered: String = recover_legacy_bytecode_source();
@@ -292,8 +381,7 @@ fn legacy_bytecode_stdout_oracle_rejects_observable_mutation() {
 }
 
 #[test]
-fn modern_gcm_recovered_source_executes_like_original_in_real_cpython() {
-    let python: CpythonInvocation = require_cpython_314();
+fn modern_gcm_recovered_source_matches_authored_bytes() {
     let mut key: [u8; 32] = [0u8; 32];
     for (i, b) in key.iter_mut().enumerate() {
         *b = u8::try_from(i).unwrap_or(0);
@@ -308,10 +396,9 @@ fn modern_gcm_recovered_source_executes_like_original_in_real_cpython() {
         unreachable!("modern free/source body must recover its original source string")
     };
 
-    assert_recovered_behaves_like_ground_truth(
-        "modern_gcm",
-        &python,
-        &recovered,
-        "crafted_modern_aesgcm_known_key.py",
+    assert_eq!(
+        recovered,
+        include_str!("../../../corpus/python/sourcedefender/crafted_modern_aesgcm_known_key.py"),
+        "known-key AES-GCM fixture must recover the authored source byte for byte",
     );
 }

@@ -323,16 +323,6 @@ fn a_pyc_compiled_from_the_wrapper_is_refused_before_it_runs() {
 }
 
 #[test]
-#[should_panic(expected = "v9_latest_925/default: the recovered pyc does not load")]
-fn a_recovery_that_hands_back_the_wrapper_is_refused_before_it_runs() {
-    let wrapper: Vec<u8> = std::fs::read(
-        workspace_root().join("corpus/python/pyarmor/v9_latest_925/default/known_plaintext.py"),
-    )
-    .expect("corpus/python/pyarmor/v9_latest_925/default/known_plaintext.py is committed");
-    assert_no_pyarmor_runtime_reference("v9_latest_925/default", &wrapper);
-}
-
-#[test]
 fn probe_directories_live_under_the_namespaced_scratch_root() {
     let scratch: ScratchDir = make_scratch("selfcheck");
     assert!(

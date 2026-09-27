@@ -2719,6 +2719,7 @@ dependencies = [
  "disrobe-testkit",
  "flate2",
  "miette",
+ "regex",
  "rmpv",
  "serde",
  "serde_json",

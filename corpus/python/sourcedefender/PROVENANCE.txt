@@ -21,6 +21,12 @@ legacy_bytecode.pye - real SOURCEdefender v15.0.22 output, produced on-box (tria
    legacy_bytecode.py (never by a marshal round-trip). This de-circularises the legacy
    marshalled-bytecode path: ground truth is the real interpreter, not disrobe's own marshal.
 legacy_bytecode.py  - the plaintext oracle for the marshalled-bytecode sample.
+Build record for the local legacy fixture: source `legacy_bytecode.py` SHA-256
+   b22a65f02c43cb5d042cdc77c6a6f46a1f8b4bf115dc6e0e62a9e47cff07e45f;
+   SOURCEdefender 15.0.22 with final CPython 3.14;
+   `sourcedefender encrypt --no-bytecode legacy_bytecode.py`;
+   output `legacy_bytecode.pye` SHA-256
+   d785fe88e7066624be377c37272a2871facd92d36698077da51d9f2ce8121862.
 
 Modern v16 format (the runtime-license-key wall)
 ------------------------------------------------
@@ -52,6 +58,13 @@ map, sealed with the fixed key 000102..1f. It is NOT genuine SOURCEdefender outp
 that needs an activated licence we will not forge); it is a non-circular AES-256-GCM oracle
 that proves disrobe's modern GCTR decrypt is byte-correct against real AES-GCM and recovers
 the original source the instant a correct key is supplied.
+Build record for the local crafted fixture: source
+   `crafted_modern_aesgcm_known_key.py` SHA-256
+   2ca413d83ee491f5bcf6d9b5495d5c7adc8343418f78fe8f792eaf040054a093;
+   `build_crafted_modern.mjs` with Node 24.16.0 built-in crypto;
+   `node build_crafted_modern.mjs` (or `node build_crafted_modern.mjs --check`);
+   output `crafted_modern_aesgcm_known_key.pye` SHA-256
+   4626e9ab8179be66136b0c4314115b0fef7860f2a29cfe6c53dbe65a0c821322.
 
 Source / provenance
 -------------------

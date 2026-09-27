@@ -32,7 +32,7 @@ generated = "2026-05-25"
 "sample" = { path = "corpus/python/obfuscators/pyobfuscate_com/real_sample.py", sha256 = "920e7edbb66bdceb974dd2828b2713ef2ce8cab77d5d21ccd6b3be6af857217b", bytes = 3358 }
 
 [obfuscators.pyobfuscate_com.behaviour]
-source = "the plain programs pasted into pyobfuscate.com were not kept; each program's exit code and stdout were derived by decoding its XOR-obfuscated literals by hand, without running it, and pyobfuscate_com_xor_real.rs pins them"
+source = "the plain programs are not committed. pyobfuscate_com_xor_real.rs pins the expected exit codes and stdout; the original derivation of those expectations was not recorded"
 "hello" = { exit_code = 0, stdout = "hello world\n" }
 "sample" = { exit_code = 0, stdout = "240\n" }
 
