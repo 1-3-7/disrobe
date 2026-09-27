@@ -496,17 +496,7 @@ mod tests {
 
     #[test]
     fn pass_run_lifts_clean_function_refs_when_recovery_parser_cannot() {
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("wasm")
-            .join("wat")
-            .join("function_refs.wat");
-        let Ok(text): std::io::Result<String> = std::fs::read_to_string(path) else {
-            eprintln!("SKIP: function_refs.wat fixture missing");
-            return;
-        };
+        let text: String = corpus_text(&["wat", "function_refs.wat"]);
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble function-references wat");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = WASM_DEOB_PASS
@@ -514,37 +504,58 @@ mod tests {
             .expect("clean function-refs wasm must lift even when recovery parser cannot");
         assert_eq!(out.rung, Rung::Disasm);
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 wat");
-        assert!(s.contains("(module"));
+        assert!(
+            s.starts_with("(module\n  (type $t0 (func (param i32) (result i32)))\n"),
+            "the lifted module must open with the one function type: {s}"
+        );
+        assert!(
+            s.ends_with(
+                "  (elem declare func $f0)\n  (func $f0 (param $p0 i32) (result i32)\n    local.get $p0\n    local.get $p0\n    i32.mul\n  )\n  (func $f1 (param $p0 i32) (result i32)\n    local.get $p0\n    ref.func $f0\n    call_ref $t0\n  )\n  (export \"go\" (func $f1))\n)\n"
+            ),
+            "the lifted module must carry the square body, the call_ref caller and its export: {s}"
+        );
     }
 
-    fn corpus_obf(name: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("wasm")
-            .join("obf")
-            .join("real")
-            .join(name)
+    const MBA_FOLDED: usize = 2;
+    const MBA_NODES: usize = 12;
+
+    fn corpus_text(components: &[&str]) -> String {
+        let path: std::path::PathBuf = components.iter().fold(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("corpus")
+                .join("wasm"),
+            |path: std::path::PathBuf, component: &&str| path.join(component),
+        );
+        std::fs::read_to_string(&path).unwrap_or_else(|e: std::io::Error| {
+            panic!(
+                "required tracked fixture {} is unreadable: {e}",
+                path.display()
+            )
+        })
+    }
+
+    fn corpus_obf(name: &str) -> String {
+        corpus_text(&["obf", "real", name])
     }
 
     #[test]
     fn pass_run_recovers_real_mba_obfuscated_module_to_surface_wat() {
-        let Ok(text): std::io::Result<String> =
-            std::fs::read_to_string(corpus_obf("mba_checksum.obf.wat"))
-        else {
-            eprintln!("SKIP: mba_checksum.obf.wat fixture missing");
-            return;
-        };
+        let text: String = corpus_obf("mba_checksum.obf.wat");
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble real obfuscated wat");
 
         let recovered: crate::recover::RecoveredModule =
             recover_module(&bytes).expect("recover must run on the real obfuscated module");
-        assert!(
-            recovered.report.any_change(),
-            "fixture must drive a real recovery transform, report={:?}",
+        assert_eq!(
             recovered.report,
+            crate::recover::RecoveryReport {
+                mba_expressions_folded: MBA_FOLDED,
+                mba_nodes_removed: MBA_NODES,
+                ..crate::recover::RecoveryReport::default()
+            },
         );
+        let recovered_lift: String = lift_to_wat(&recovered.bytes).expect("lift recovered bytes");
         let obf_wat: String = lift_to_wat(&bytes).expect("lift obfuscated bytes");
 
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
@@ -555,11 +566,11 @@ mod tests {
             "real recovery must surface, not stop at disasm",
         );
         let recovered_wat: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered wat");
-        assert!(recovered_wat.contains("(module"));
-        assert_ne!(
-            recovered_wat, obf_wat,
-            "chain output must be the recovered module, not the obfuscated input lifted verbatim",
+        assert_eq!(
+            recovered_wat, recovered_lift,
+            "chain output must be the recovered module lifted, not the obfuscated input",
         );
+        assert_ne!(recovered_wat, obf_wat);
         match WASM_DEOB_PASS.output_kind(&out) {
             OutputKind::Source { language, .. } => assert_eq!(language, Language::Wat),
             other => panic!("expected Source, got {other:?}"),
@@ -576,20 +587,18 @@ mod tests {
 
     #[test]
     fn pass_run_recovers_real_cyclic_cff_loop_to_surface_wat() {
-        let Ok(text): std::io::Result<String> =
-            std::fs::read_to_string(corpus_obf("cff_loop.obf.wat"))
-        else {
-            eprintln!("SKIP: cff_loop.obf.wat fixture missing");
-            return;
-        };
+        let text: String = corpus_obf("cff_loop.obf.wat");
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble cyclic cff obfuscated wat");
         let recovered: crate::recover::RecoveredModule =
             recover_module(&bytes).expect("recover must run on cyclic cff");
-        assert!(
-            recovered.report.flattened_functions_restructured >= 1,
-            "cyclic cff fixture must drive a real CFF recovery transform, report={:?}",
+        assert_eq!(
             recovered.report,
+            crate::recover::RecoveryReport {
+                flattened_functions_restructured: 1,
+                ..crate::recover::RecoveryReport::default()
+            },
         );
+        let recovered_lift: String = lift_to_wat(&recovered.bytes).expect("lift recovered bytes");
 
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = WASM_DEOB_PASS
@@ -601,10 +610,10 @@ mod tests {
             "cyclic cff recovery must surface instead of hitting the named-obfuscator wall",
         );
         let recovered_wat: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered wat");
+        assert_eq!(recovered_wat, recovered_lift);
         assert!(
-            recovered_wat.contains("(module"),
-            "recovered cyclic cff output must be valid WAT text; got {:?}",
-            recovered_wat.chars().take(200).collect::<String>(),
+            !recovered_wat.contains("br_table"),
+            "the flattening dispatcher must be gone from the surfaced module: {recovered_wat}"
         );
     }
 
@@ -844,12 +853,7 @@ mod tests {
 
     #[test]
     fn extract_children_surfaces_recovered_wasm_for_real_obfuscated_module() {
-        let Ok(text): std::io::Result<String> =
-            std::fs::read_to_string(corpus_obf("mba_checksum.obf.wat"))
-        else {
-            eprintln!("SKIP: mba_checksum.obf.wat fixture missing");
-            return;
-        };
+        let text: String = corpus_obf("mba_checksum.obf.wat");
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble real obfuscated wat");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = WASM_DEOB_PASS
@@ -873,17 +877,15 @@ mod tests {
             .expect("recovery report present");
         let parsed: serde_json::Value =
             serde_json::from_slice(&report.bytes).expect("recovery json deserializes");
-        let folded: u64 = parsed
-            .get("mba_expressions_folded")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let opaque: u64 = parsed
-            .get("opaque_predicates_removed")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        assert!(
-            folded > 0 || opaque > 0,
-            "the chain recovery report must credit the defeated obfuscation, got {parsed:?}",
+        assert_eq!(
+            parsed.get("mba_expressions_folded"),
+            Some(&serde_json::Value::from(MBA_FOLDED)),
+            "the chain recovery report must credit every folded expression: {parsed}",
+        );
+        assert_eq!(
+            parsed.get("opaque_predicates_removed"),
+            Some(&serde_json::Value::from(0u64)),
+            "{parsed}",
         );
     }
 }
