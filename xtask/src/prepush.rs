@@ -454,7 +454,9 @@ fn test_targets(
 ) -> Result<BTreeMap<String, TestTargets>> {
     let mut plan: BTreeMap<String, TestTargets> = BTreeMap::new();
     for path in paths {
-        if let Some(needles) = corpus_needles(path.as_str()) {
+        if let Some(needles) =
+            corpus_needles(path.as_str()).or_else(|| github_needles(path.as_str()))
+        {
             for member in members {
                 let binaries: BTreeSet<String> = binaries_mentioning(root, member, &needles)?;
                 add_binaries(&mut plan, &member.name, binaries);
@@ -487,6 +489,11 @@ fn add_binaries(plan: &mut BTreeMap<String, TestTargets>, name: &str, binaries: 
     if let TestTargets::Binaries(existing) = entry {
         existing.extend(binaries);
     }
+}
+
+fn github_needles(path: &str) -> Option<Vec<String>> {
+    path.starts_with(".github/")
+        .then(|| vec!["\".github\"".to_owned()])
 }
 
 fn corpus_needles(path: &str) -> Option<Vec<String>> {
@@ -875,6 +882,41 @@ mod tests {
             ],
         )?;
         assert_eq!(with_source.get("c"), Some(&TestTargets::Crate));
+        Ok(())
+    }
+
+    #[test]
+    fn a_workflow_change_selects_the_binaries_that_read_github() -> eyre::Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let tests_dir: std::path::PathBuf = root.path().join("crates/c/tests");
+        std::fs::create_dir_all(&tests_dir)?;
+        std::fs::write(
+            tests_dir.join("meta.rs"),
+            "fn dir() { root.join(\".github\"); }
+",
+        )?;
+        std::fs::write(
+            tests_dir.join("other.rs"),
+            "fn f() {}
+",
+        )?;
+        let members: Vec<CrateDir> = vec![CrateDir {
+            name: "c".to_owned(),
+            dir: "crates/c".to_owned(),
+            test_targets: vec![
+                ("meta".to_owned(), "crates/c/tests/meta.rs".to_owned()),
+                ("other".to_owned(), "crates/c/tests/other.rs".to_owned()),
+            ],
+        }];
+        let plan: BTreeMap<String, TestTargets> = test_targets(
+            root.path(),
+            &members,
+            &[Utf8PathBuf::from(".github/workflows/codeql.yml")],
+        )?;
+        assert_eq!(
+            plan.get("c"),
+            Some(&TestTargets::Binaries(BTreeSet::from(["meta".to_owned()])))
+        );
         Ok(())
     }
 
