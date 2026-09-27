@@ -118,13 +118,13 @@ fn withheld_of(stdout: &str) -> u64 {
         })
 }
 
-fn fixture(relative: &str) -> Option<PathBuf> {
+fn fixture(relative: &str) -> PathBuf {
     let path: PathBuf = workspace_root().join(relative);
-    if path.is_file() {
-        return Some(path);
-    }
-    eprintln!("skipping: the committed fixture {relative} is absent from this checkout");
-    None
+    assert!(
+        path.is_file(),
+        "the committed fixture {relative} is missing; restore it from git"
+    );
+    path
 }
 
 fn report_of(a: &Path, b: &Path) -> Value {
@@ -193,9 +193,7 @@ fn scratch() -> ScratchDir {
 
 #[test]
 fn an_image_pairs_every_function_it_can_key_with_itself() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let report: Value = report_of(&clean, &clean);
     let pairs: u64 = report["pairs"].as_u64().expect("pairs");
     assert!(pairs > 0, "an image must pair with itself: {report}");
@@ -217,11 +215,7 @@ fn an_image_pairs_every_function_it_can_key_with_itself() {
 
 #[test]
 fn every_pair_carries_the_evidence_of_the_stage_that_produced_it() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     let mut seen: Vec<&str> = Vec::new();
     for verdict in verdicts_of(&report, "a_verdicts") {
@@ -267,11 +261,7 @@ fn every_pair_carries_the_evidence_of_the_stage_that_produced_it() {
 
 #[test]
 fn a_refusal_is_reported_with_its_candidates_rather_than_dropped() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     let ambiguous: u64 = report["a_side"]["ambiguous"].as_u64().expect("ambiguous");
     assert!(ambiguous > 0, "this pair must produce a refusal: {report}");
@@ -314,11 +304,7 @@ fn a_refusal_is_reported_with_its_candidates_rather_than_dropped() {
 
 #[test]
 fn text_listing_controls_bound_rows_and_select_verdicts() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     let default_run: Run = run_match(&[
         clean.to_str().expect("utf-8"),
@@ -468,11 +454,7 @@ fn text_listing_controls_bound_rows_and_select_verdicts() {
 
 #[test]
 fn the_default_machine_report_carries_every_verdict_and_says_so() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     assert_eq!(report["schema"], "disrobe.native.match/v2");
     assert!(
@@ -510,11 +492,7 @@ fn the_default_machine_report_carries_every_verdict_and_says_so() {
 
 #[test]
 fn the_withheld_count_accounts_for_every_row_the_listing_omits() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     let total: u64 = listing_rows_of(&report);
     assert!(total > 3, "the fixture pair must fill a listing: {total}");
@@ -555,9 +533,7 @@ fn the_withheld_count_accounts_for_every_row_the_listing_omits() {
 
 #[test]
 fn a_function_query_names_the_side_of_every_correspondence_it_returns() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let report: Value = report_of(&clean, &clean);
     let paired: &Value = verdicts_of(&report, "a_verdicts")
         .iter()
@@ -617,11 +593,7 @@ fn a_function_query_names_the_side_of_every_correspondence_it_returns() {
 
 #[test]
 fn a_function_absent_from_both_inputs_is_refused_in_the_machine_path_too() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     for format in ["--json", "--ndjson"] {
         let run: Run = run_match(&[
             format,
@@ -637,11 +609,7 @@ fn a_function_absent_from_both_inputs_is_refused_in_the_machine_path_too() {
 
 #[test]
 fn a_bounded_report_file_says_what_it_left_out() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let dir: ScratchDir = scratch();
     let out: PathBuf = dir.path().join("bounded.json");
     let run: Run = run_match(&[
@@ -690,11 +658,7 @@ fn a_bounded_report_file_says_what_it_left_out() {
 
 #[test]
 fn a_dry_run_names_the_report_it_would_write_without_writing_it() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let dir: ScratchDir = scratch();
     let out: PathBuf = dir.path().join("skipped").join("match.json");
     let run: Run = run_match(&[
@@ -712,11 +676,7 @@ fn a_dry_run_names_the_report_it_would_write_without_writing_it() {
 
 #[test]
 fn malformed_listing_selectors_are_diagnostics_not_panics() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let function_run: Run = run_match(&[
         clean.to_str().expect("utf-8"),
         variant.to_str().expect("utf-8"),
@@ -789,11 +749,7 @@ fn malformed_listing_selectors_are_diagnostics_not_panics() {
 
 #[test]
 fn the_counts_account_for_every_function_on_both_sides() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let report: Value = report_of(&clean, &variant);
     let pairs: u64 = report["pairs"].as_u64().expect("pairs");
     let staged: u64 = STAGES
@@ -824,11 +780,7 @@ fn the_counts_account_for_every_function_on_both_sides() {
 
 #[test]
 fn the_report_is_written_when_an_out_path_is_given() {
-    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
-        (fixture(CLEAN), fixture(VARIANT))
-    else {
-        return;
-    };
+    let (clean, variant): (PathBuf, PathBuf) = (fixture(CLEAN), fixture(VARIANT));
     let dir: ScratchDir = scratch();
     let out: PathBuf = dir.path().join("nested").join("match.json");
     let run: Run = run_match(&[
@@ -846,9 +798,7 @@ fn the_report_is_written_when_an_out_path_is_given() {
 
 #[test]
 fn a_file_that_is_not_an_object_file_is_refused_with_a_diagnostic() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let dir: ScratchDir = scratch();
     let plain: PathBuf = dir.path().join("plain.txt");
     std::fs::write(&plain, b"this is not an object file, just plain text\n").expect("write");
@@ -862,9 +812,7 @@ fn a_file_that_is_not_an_object_file_is_refused_with_a_diagnostic() {
 
 #[test]
 fn a_truncated_image_is_refused_with_a_diagnostic() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let dir: ScratchDir = scratch();
     let whole: Vec<u8> = std::fs::read(&clean).expect("read the fixture");
     let cut: PathBuf = dir.path().join("truncated.exe");
@@ -876,9 +824,7 @@ fn a_truncated_image_is_refused_with_a_diagnostic() {
 
 #[test]
 fn an_image_that_parses_but_carries_no_function_is_refused_with_a_diagnostic() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let dir: ScratchDir = scratch();
     let bare: PathBuf = dir.path().join("no-code.elf");
     std::fs::write(&bare, elf64_without_code()).expect("write");
@@ -897,9 +843,7 @@ fn an_image_that_parses_but_carries_no_function_is_refused_with_a_diagnostic() {
 
 #[test]
 fn a_missing_input_is_refused_with_a_diagnostic() {
-    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
-        return;
-    };
+    let clean: PathBuf = fixture(CLEAN);
     let dir: ScratchDir = scratch();
     let absent: PathBuf = dir.path().join("absent.exe");
     let run: Run = run_match(&[
