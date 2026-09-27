@@ -322,12 +322,14 @@ public class Probe {
 #[test]
 fn recovered_class_verifies_and_wrong_offset_is_rejected() {
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP -Xverify:all gate: java not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests, and the -Xverify:all check needs it: java not on PATH"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP -Xverify:all gate: javac not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests, and the -Xverify:all check needs it: javac not on PATH"
+        );
     };
 
     let result: Dex2JarResult = translate();
@@ -622,12 +624,14 @@ public class Probe {
 #[test]
 fn aliased_uninitialized_ref_verifies_and_partial_init_is_rejected() {
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP alias -Xverify:all gate: java not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: alias -Xverify:all gate: java not on PATH"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP alias -Xverify:all gate: javac not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: alias -Xverify:all gate: javac not on PATH"
+        );
     };
 
     let result: Dex2JarResult = translate_alias();

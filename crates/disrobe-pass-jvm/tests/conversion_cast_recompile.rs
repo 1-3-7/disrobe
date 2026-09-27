@@ -159,11 +159,7 @@ fn javac(javac: &PathBuf, dir: &PathBuf, file: &PathBuf) -> (bool, String) {
 #[test]
 fn conversion_casts_recompile_to_equivalent_bytecode() {
     let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; conversion-cast byte-equivalence gate NOT enforced. \
-             CORPUS-BLOCKED for i2b/i2c/i2s/i2l/f2l/d2i and the other numeric conversions."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let purpose: String = format!("disrobe_conv_cast_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =

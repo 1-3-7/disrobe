@@ -192,8 +192,9 @@ fn in_house_is_the_default_android_engine_not_jadx() {
 #[test]
 fn in_house_construct_recovery_meets_floor_via_real_javac() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; correctness floor not enforced on this machine");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; correctness floor not enforced on this machine"
+        );
     };
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let source: String = edgecases_top_level_source();
@@ -236,14 +237,19 @@ fn disrobe_decompiles_the_whole_jar_fast_in_process() {
 #[test]
 fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; head-to-head needs the javac oracle");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; head-to-head needs the javac oracle"
+        );
     };
     let Some(_jadx): Option<PathBuf> = find_on_path("jadx") else {
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_JADX").is_none(),
+            "DISROBE_REQUIRE_JADX is set, so jadx must be on PATH for the head-to-head leg"
+        );
         eprintln!(
-            "SKIP-H2H: jadx not on PATH. disrobe in-house is the default engine and is measured \
-             standalone by in_house_construct_recovery_meets_floor_via_real_javac (>= {RECOMPILE_FLOOR}/{METHOD_TOTAL}); \
-             the comparative leg runs where jadx is installed (CI/dev with jadx, CFR, Procyon)."
+            "UNGRADED: jadx is not on PATH, so the head-to-head leg is not measured. The in-house \
+             engine is measured standalone by in_house_construct_recovery_meets_floor_via_real_javac \
+             (>= {RECOMPILE_FLOOR}/{METHOD_TOTAL})"
         );
         return;
     };
@@ -257,14 +263,14 @@ fn disrobe_meets_or_beats_jadx_on_recompile_when_jadx_present() {
         methods_error_free(&disrobe_src, &disrobe_errs);
 
     let Ok(dex_bytes): Result<Vec<u8>, _> = std::fs::read(&dex) else {
-        eprintln!("SKIP-H2H: EdgeCases.dex absent for the jadx leg");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases.dex absent for the jadx leg"
+        );
     };
     let Ok(jadx_out): Result<AndroidDecompileOutput, _> =
         run_jadx_on_bytes(&dex_bytes, "EdgeCases.dex")
     else {
-        eprintln!("SKIP-H2H: jadx run failed on EdgeCases.dex");
-        return;
+        panic!("jadx failed on the committed EdgeCases.dex");
     };
     let jadx_src: String = jadx_out
         .sources

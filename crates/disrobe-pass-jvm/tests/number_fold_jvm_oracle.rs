@@ -218,8 +218,9 @@ fn long_number_obfuscation_folds_and_recompiles_to_same_jvm_output() {
     let (Some(java), Some(javac)): (Option<PathBuf>, Option<PathBuf>) =
         (which("java"), which("javac"))
     else {
-        eprintln!("skip: no JDK on PATH/JAVA_HOME; cannot run the real-JVM oracle");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: no JDK on PATH/JAVA_HOME"
+        );
     };
 
     let (obf_bytes, expected): (Vec<u8>, i64) = build_obfuscated_class();

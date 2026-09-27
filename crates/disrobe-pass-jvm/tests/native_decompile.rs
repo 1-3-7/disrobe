@@ -51,11 +51,10 @@ fn classes_from_jar(jar_path: &PathBuf) -> Option<Vec<(String, Vec<u8>)>> {
 fn decompiles_real_hello_baseline_classfile() {
     let path: PathBuf = corpus(&["proguard", "Hello-baseline.class"]);
     let Some(bytes): Option<Vec<u8>> = load_fixture(&path) else {
-        eprintln!(
-            "skip: Hello-baseline.class fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: Hello-baseline.class fixture absent at {}",
             path.display()
         );
-        return;
     };
     let d: DecompiledClass = decompile_classfile_bytes(&bytes).expect("decompile");
     assert!(d.source.contains("class "), "no class decl:\n{}", d.source);
@@ -82,11 +81,10 @@ fn decompiles_real_hello_baseline_classfile() {
 fn disassembles_every_method_in_baseline_jar() {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!(
-            "skip: EdgeCases-baseline.jar fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases-baseline.jar fixture absent at {}",
             jar.display()
         );
-        return;
     };
     assert!(!classes.is_empty(), "no classes in jar");
     let mut total_methods: usize = 0;
@@ -114,11 +112,10 @@ fn disassembles_every_method_in_baseline_jar() {
 fn native_decompile_recovers_signatures_across_baseline_jar() {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!(
-            "skip: EdgeCases-baseline.jar fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases-baseline.jar fixture absent at {}",
             jar.display()
         );
-        return;
     };
     let mut lifted_total: usize = 0;
     let mut method_total: usize = 0;
@@ -140,11 +137,10 @@ fn native_decompile_recovers_signatures_across_baseline_jar() {
 fn recovers_records_and_sealed_types_from_real_jar() {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!(
-            "skip: EdgeCases-baseline.jar fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases-baseline.jar fixture absent at {}",
             jar.display()
         );
-        return;
     };
     let mut record_classes: usize = 0;
     let mut sealed_classes: usize = 0;
@@ -181,11 +177,10 @@ fn recovers_records_and_sealed_types_from_real_jar() {
 fn native_decompile_works_without_external_tools() {
     let path: PathBuf = corpus(&["proguard", "Hello-baseline.class"]);
     let Some(bytes): Option<Vec<u8>> = load_fixture(&path) else {
-        eprintln!(
-            "skip: Hello-baseline.class fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: Hello-baseline.class fixture absent at {}",
             path.display()
         );
-        return;
     };
     let d: DecompiledClass = decompile_classfile_bytes(&bytes).expect("decompile");
     assert!(

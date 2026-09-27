@@ -62,7 +62,7 @@ fn dump_stub_methods_committed_corpus() {
 #[test]
 fn cluster_stub_reasons_across_real_apks() {
     if std::env::var_os("DISROBE_RUN_REAL_APK_TESTS").is_none() {
-        eprintln!("skip real apk diagnostics: set DISROBE_RUN_REAL_APK_TESTS=1");
+        eprintln!("UNGRADED: the real apk diagnostics run only with DISROBE_RUN_REAL_APK_TESTS=1");
         return;
     }
     let apks: &[&str] = &[
@@ -73,10 +73,11 @@ fn cluster_stub_reasons_across_real_apks() {
     let mut total: BTreeMap<String, usize> = BTreeMap::new();
     for apk in apks {
         let path: PathBuf = corpus(&["mobile", "apk", "inbox", apk]);
-        if !path.is_file() {
-            eprintln!("skip {apk}: not present");
-            continue;
-        }
+        assert!(
+            path.is_file(),
+            "DISROBE_RUN_REAL_APK_TESTS=1 demands the local real apk {}",
+            path.display()
+        );
         let bytes: Vec<u8> = std::fs::read(&path).expect("read apk");
         let extract: ApkExtract = extract_apk(&bytes).expect("extract");
         let mut per: BTreeMap<String, usize> = BTreeMap::new();

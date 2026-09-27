@@ -34,16 +34,10 @@ const SOURCE: &str = "public class NanConst {\n\
 #[test]
 fn noncanonical_nan_literal_round_trips_while_named_constant_does_not() {
     let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; non-canonical NaN constant recompile fidelity NOT enforced."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let Some(java_path): Option<PathBuf> = find_on_path("java") else {
-        eprintln!(
-            "SKIP: java not on PATH; non-canonical NaN constant recompile fidelity NOT enforced."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
     };
 
     let purpose: String = format!("disrobe_nan_const_{}", std::process::id());

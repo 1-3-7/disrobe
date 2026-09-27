@@ -244,8 +244,7 @@ fn classes_from_jar(jar_path: &PathBuf) -> Option<Vec<(String, Vec<u8>)>> {
 fn report_in_house_method_lift_rate() {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!("skip: baseline jar absent");
-        return;
+        panic!("the committed input is required, restore it from git: baseline jar absent");
     };
     let mut method_total: usize = 0;
     let mut fully_lifted: usize = 0;
@@ -327,10 +326,10 @@ fn method_fragments(source: &str) -> Vec<String> {
 #[test]
 fn report_per_method_clean_recovery() {
     let classes: Vec<(String, Vec<u8>)> = all_corpus_classes();
-    if classes.is_empty() {
-        eprintln!("skip: no corpus classes");
-        return;
-    }
+    assert!(
+        !classes.is_empty(),
+        "the committed input is required, restore it from git: no corpus classes"
+    );
     let mut total: usize = 0;
     let mut clean: usize = 0;
     for (_name, bytes) in &classes {
@@ -359,13 +358,11 @@ fn report_per_method_clean_recovery() {
 #[test]
 fn report_decompiled_recompile_acceptance() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!("skip: baseline jar absent");
-        return;
+        panic!("the committed input is required, restore it from git: baseline jar absent");
     };
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_decompile_recompile")
@@ -470,13 +467,11 @@ fn javac_error_files(stderr: &str) -> BTreeSet<String> {
 #[test]
 fn report_multi_class_javac_recompile() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let jar: PathBuf = corpus(&["proguard", "Hello-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!("skip: baseline jar absent");
-        return;
+        panic!("the committed input is required, restore it from git: baseline jar absent");
     };
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
     for (name, bytes) in &classes {
@@ -684,8 +679,7 @@ fn report_per_method_javac_recompile() {
     let javac: PathBuf = require_javac();
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
-        eprintln!("skip: EdgeCases baseline absent");
-        return;
+        panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
     };
 
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -748,8 +742,7 @@ fn a_seeded_defect_in_the_real_recovered_unit_drops_the_figure_to_zero_not_to_on
     let javac: PathBuf = require_javac();
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
-        eprintln!("skip: EdgeCases baseline absent");
-        return;
+        panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
     };
     let seeded: String = format!("{SEEDED_DEFECT_IN_RECOVERED_SOURCE}{source}");
 
@@ -1029,20 +1022,19 @@ public class Load {\n\
 #[test]
 fn recompiled_class_links_under_jvm_verifier() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP whole-unit -Xverify:all gate: javac not on PATH; the recompiled EdgeCases \
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: whole-unit -Xverify:all gate: javac not on PATH; the recompiled EdgeCases \
              classfile is NOT attested to load under the real JVM verifier on this machine"
         );
-        return;
     };
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP whole-unit -Xverify:all gate: java not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: whole-unit -Xverify:all gate: java not on PATH"
+        );
     };
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(source): Option<String> = decompile_edgecases() else {
-        eprintln!("skip: EdgeCases baseline absent");
-        return;
+        panic!("the committed input is required, restore it from git: EdgeCases baseline absent");
     };
 
     let purpose: String = format!("disrobe_verify_gate_{}", std::process::id());
@@ -1126,8 +1118,9 @@ fn decompile_gapcases() -> Option<String> {
 #[test]
 fn report_gapcases_family_recovery() {
     let Some(src): Option<String> = decompile_gapcases() else {
-        eprintln!("skip: GapCases-baseline.jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: GapCases-baseline.jar absent"
+        );
     };
 
     let present: &[&str] = &[
@@ -1173,14 +1166,13 @@ fn report_gapcases_family_recovery() {
     }
 
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "\n========================================================================\n\
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: \n========================================================================\n\
              SKIPPED javac recompile of GapCases: javac not on PATH. Token fidelity was\n\
              checked, but the per-method recompile floor (>= {GAP_METHOD_OK_FLOOR} of\n\
              {GAP_METHOD_TOTAL}) did NOT run and is NOT enforced on this machine.\n\
              ========================================================================\n"
         );
-        return;
     };
     let jar: PathBuf = corpus(&["megafile", "GapCases-baseline.jar"]);
     let purpose: String = format!("disrobe_gapcases_recompile_{}", std::process::id());
@@ -1251,12 +1243,10 @@ fn run_annotation_probe(java: &PathBuf, classpath: std::ffi::OsString) -> String
 #[test]
 fn repeatable_class_annotations_recompile_with_reflection_equivalence() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; annotation recovery gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP: java not on PATH; annotation reflection gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
     };
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let classes: Vec<(String, Vec<u8>)> =
@@ -1397,12 +1387,10 @@ fn javap_verbose(javap: &PathBuf, classpath: &PathBuf, class_name: &str) -> Stri
 #[test]
 fn runtime_invisible_class_annotation_recompiles_to_the_same_bucket() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; invisible annotation gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let Some(javap): Option<PathBuf> = find_on_path("javap") else {
-        eprintln!("SKIP: javap not on PATH; invisible annotation gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javap not on PATH");
     };
     let purpose: String = format!("disrobe_invisible_annotation_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -1715,16 +1703,13 @@ fn hidden_mark_values(javap_output: &str) -> Vec<i32> {
 #[test]
 fn member_annotations_recompile_with_retention_and_runtime_equivalence() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; member annotation gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP: java not on PATH; member annotation gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
     };
     let Some(javap): Option<PathBuf> = find_on_path("javap") else {
-        eprintln!("SKIP: javap not on PATH; member annotation gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javap not on PATH");
     };
     let purpose: String = format!("disrobe_member_annotation_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =

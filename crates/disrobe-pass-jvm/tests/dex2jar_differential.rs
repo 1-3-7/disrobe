@@ -84,8 +84,7 @@ fn real_jvm_javap_accepts_translated_classes() {
     use disrobe_pass_jvm::assemble_jar;
 
     let Some(javap): Option<PathBuf> = find_on_path("javap") else {
-        eprintln!("SKIP: javap (JDK) not on PATH - dex2jar bytecode validity unverified by JVM");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javap (JDK) not on PATH");
     };
     let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "EdgeCases.dex"])).expect("dex");
     let result: Dex2JarResult = translate_dex_bytes(&dex_bytes).expect("translate");

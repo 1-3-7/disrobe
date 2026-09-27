@@ -265,12 +265,14 @@ fn inferred_conversion_frame_has_the_result_types_and_widths() {
 #[test]
 fn inferred_conversion_frame_passes_the_real_jvm_verifier() {
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP conversion-frame verifier gate: java not on PATH (CORPUS-BLOCKED)");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: conversion-frame verifier gate: java not on PATH (CORPUS-BLOCKED)"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP conversion-frame verifier gate: javac not on PATH (CORPUS-BLOCKED)");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: conversion-frame verifier gate: javac not on PATH (CORPUS-BLOCKED)"
+        );
     };
 
     let (frame, l_off): (FrameState, u16) = inferred_join_frame();

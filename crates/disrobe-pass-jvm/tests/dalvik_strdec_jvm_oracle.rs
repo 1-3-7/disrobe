@@ -173,8 +173,9 @@ fn interpreter_output_byte_matches_real_jvm_execution_for_every_modeled_scheme()
     let (Some(java), Some(javac)): (Option<PathBuf>, Option<PathBuf>) =
         (which("java"), which("javac"))
     else {
-        eprintln!("skip: no JDK on PATH/JAVA_HOME; the real-JVM differential cannot run");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: no JDK on PATH/JAVA_HOME"
+        );
     };
 
     let ground: [Vec<u8>; 3] = jvm_ground_truth(&java, &javac);
@@ -220,10 +221,9 @@ fn recovered_plaintext_reencrypts_to_the_embedded_ciphertext_operand() {
     let (Some(java), Some(javac)): (Option<PathBuf>, Option<PathBuf>) =
         (which("java"), which("javac"))
     else {
-        eprintln!(
-            "skip: no JDK on PATH/JAVA_HOME; the round-trip check needs the JVM ground truth"
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: no JDK on PATH/JAVA_HOME; the round-trip check needs the JVM ground truth"
         );
-        return;
     };
 
     let ground: [Vec<u8>; 3] = jvm_ground_truth(&java, &javac);

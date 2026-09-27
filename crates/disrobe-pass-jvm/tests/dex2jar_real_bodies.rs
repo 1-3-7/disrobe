@@ -495,12 +495,14 @@ fn run_jvm_verifier(
 #[test]
 fn translated_classes_pass_jvm_verifier() {
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP: java (JDK) not on PATH - JVM verifier check unavailable");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: java (JDK) not on PATH - JVM verifier check unavailable"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac (JDK) not on PATH - cannot build verifier helper");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac (JDK) not on PATH - cannot build verifier helper"
+        );
     };
 
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -516,13 +518,11 @@ fn translated_classes_pass_jvm_verifier() {
         .arg(&src_path)
         .output()
         .expect("run javac");
-    if !compiled.status.success() {
-        eprintln!(
-            "SKIP translated_classes_pass_jvm_verifier: the verifier helper needs a JDK exposing the java.lang.classfile API (JDK 24+); this toolchain could not compile it: {}",
-            String::from_utf8_lossy(&compiled.stderr)
-        );
-        return;
-    }
+    assert!(
+        compiled.status.success(),
+        "the JDK is on PATH in every CI job that runs these tests: translated_classes_pass_jvm_verifier: the verifier helper needs a JDK exposing the java.lang.classfile API (JDK 24+); this toolchain could not compile it: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
 
     let java_out: VerifierOutcome = run_jvm_verifier(&java, &dir, "EdgeCases.dex", "java");
     assert_eq!(

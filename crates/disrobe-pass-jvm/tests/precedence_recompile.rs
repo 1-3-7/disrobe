@@ -109,11 +109,7 @@ fn precedence_parenthesization_recompiles_to_same_jvm_output() {
     let (Some(javac_p), Some(java_p)): (Option<PathBuf>, Option<PathBuf>) =
         (find_on_path("javac"), find_on_path("java"))
     else {
-        eprintln!(
-            "SKIP: no JDK on PATH; the recompile-and-eval precedence gate is NOT enforced on \
-             this machine."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: no JDK on PATH");
     };
 
     let purpose: String = format!("disrobe_prec_recompile_{}", std::process::id());

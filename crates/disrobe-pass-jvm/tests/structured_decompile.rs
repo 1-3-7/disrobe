@@ -49,11 +49,10 @@ fn classes_from_jar(jar_path: &PathBuf) -> Option<Vec<(String, Vec<u8>)>> {
 fn hello_class_is_structured_not_goto_labels() {
     let path: PathBuf = corpus(&["proguard", "Hello-baseline.class"]);
     let Some(bytes): Option<Vec<u8>> = load_fixture(&path) else {
-        eprintln!(
-            "skip: Hello-baseline.class fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: Hello-baseline.class fixture absent at {}",
             path.display()
         );
-        return;
     };
     let d: DecompiledClass = decompile_classfile_bytes(&bytes).expect("decompile");
     let src: &str = &d.source;
@@ -75,11 +74,10 @@ fn hello_class_is_structured_not_goto_labels() {
 fn baseline_jar_recovers_real_control_flow_keywords() {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!(
-            "skip: EdgeCases-baseline.jar fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases-baseline.jar fixture absent at {}",
             jar.display()
         );
-        return;
     };
     let mut whole: String = String::new();
     for (_name, bytes) in &classes {
@@ -113,11 +111,10 @@ fn baseline_jar_recovers_real_control_flow_keywords() {
 fn mutation_proof_if_else_keyword_required() {
     let path: PathBuf = corpus(&["proguard", "Hello-baseline.class"]);
     let Some(bytes): Option<Vec<u8>> = load_fixture(&path) else {
-        eprintln!(
-            "skip: Hello-baseline.class fixture absent at {}",
+        panic!(
+            "the committed input is required, restore it from git: Hello-baseline.class fixture absent at {}",
             path.display()
         );
-        return;
     };
     let d: DecompiledClass = decompile_classfile_bytes(&bytes).expect("decompile");
     let needle: &str = "} else {";

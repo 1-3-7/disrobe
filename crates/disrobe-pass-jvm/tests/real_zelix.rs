@@ -91,8 +91,10 @@ fn unobfuscated_class_peels_detect_only_without_fabricating() {
 fn real_r8_jar_classes_are_not_flagged_flattened_and_structure_cleanly() {
     let jar: PathBuf = corpus_jar(&["r8", "EdgeCases-r8.jar"]);
     let Ok(f): Result<fs::File, _> = fs::File::open(&jar) else {
-        eprintln!("skip: r8 fixture absent at {}", jar.display());
-        return;
+        panic!(
+            "the committed input is required, restore it from git: r8 fixture absent at {}",
+            jar.display()
+        );
     };
     let mut z: zip::ZipArchive<fs::File> = zip::ZipArchive::new(f).expect("zip");
     let mut classes_checked: usize = 0;

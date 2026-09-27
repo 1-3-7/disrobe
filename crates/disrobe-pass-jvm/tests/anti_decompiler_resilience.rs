@@ -196,8 +196,7 @@ fn recovered_jsr_finally_recompiles_and_reruns_matching_the_oracle() {
     let Some(stdout): Option<String> =
         recompile_and_run("JsrFinally", &d.source, "disrobe_anti_jsr")
     else {
-        eprintln!("SKIP: javac/java not on PATH; real-JVM oracle not enforced on this machine");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac/java not on PATH");
     };
     assert_eq!(
         stdout, JSR_EXPECTED_STDOUT,
@@ -212,8 +211,7 @@ fn recovered_bad_frames_recompiles_and_reruns_matching_the_oracle() {
     let Some(stdout): Option<String> =
         recompile_and_run("BadFrames", &d.source, "disrobe_anti_frames")
     else {
-        eprintln!("SKIP: javac/java not on PATH; real-JVM oracle not enforced on this machine");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac/java not on PATH");
     };
     assert_eq!(
         stdout, BAD_FRAMES_EXPECTED_STDOUT,

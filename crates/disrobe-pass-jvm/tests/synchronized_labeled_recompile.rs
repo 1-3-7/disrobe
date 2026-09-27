@@ -107,8 +107,7 @@ public class SmDrv {
 #[test]
 fn synchronized_block_reconstructs_and_recompiles_behaviorally() {
     let Some(tools): Option<Tools> = tools() else {
-        eprintln!("SKIP: javac/java not on PATH; synchronized recompile gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac/java not on PATH");
     };
     let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("sync_orig");
     let orig: PathBuf = orig_scratch.path().to_path_buf();
@@ -201,8 +200,7 @@ const LAB_DRV: &str = r"public class LabDrv {
 #[test]
 fn labeled_break_continue_reconstructs_and_recompiles_behaviorally() {
     let Some(tools): Option<Tools> = tools() else {
-        eprintln!("SKIP: javac/java not on PATH; labeled-break recompile gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac/java not on PATH");
     };
     let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("lab_orig");
     let orig: PathBuf = orig_scratch.path().to_path_buf();
@@ -270,8 +268,7 @@ public class ArrDrv {
 #[test]
 fn anewarray_of_array_preserves_sized_dimension() {
     let Some(tools): Option<Tools> = tools() else {
-        eprintln!("SKIP: javac/java not on PATH; anewarray dimension gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac/java not on PATH");
     };
     let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("arr_orig");
     let orig: PathBuf = orig_scratch.path().to_path_buf();
@@ -318,8 +315,7 @@ const RAW: &str = r"public class Raw<T> {
 #[test]
 fn raw_generic_field_null_check_stays_reference_comparison() {
     let Some(tools): Option<Tools> = tools() else {
-        eprintln!("SKIP: javac not on PATH; raw-generic null gate NOT enforced");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let orig_scratch: disrobe_core::scratch::ScratchDir = workdir("raw_orig");
     let orig: PathBuf = orig_scratch.path().to_path_buf();

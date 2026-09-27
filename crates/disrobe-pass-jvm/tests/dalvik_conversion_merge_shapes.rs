@@ -1652,7 +1652,7 @@ fn run_probe(
             "{REQUIRE_JVM} is set, so the conversion-shape frames must be graded by a real jvm \
              rather than skipped; java and javac have to be on PATH"
         );
-        eprintln!("SKIP conversion-shape {label} gate: java or javac not on PATH");
+        eprintln!("UNGRADED: the conversion-shape {label} check needs java and javac on PATH");
         return None;
     };
 

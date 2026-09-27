@@ -136,7 +136,7 @@ fn attest_apk(verifier: &JvmVerifier, apk: &RealApk) -> BodyAttest {
 fn realworld_dalvik_body_lowering_is_verifier_attested() {
     if std::env::var_os("DISROBE_RUN_REAL_APK_TESTS").is_none() {
         eprintln!(
-            "SKIP {PUBLISHED_BAR_LABEL}: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the local \
+            "UNGRADED {PUBLISHED_BAR_LABEL}: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the local \
              real-apk corpus. The apks are gitignored, so CI cannot re-derive either figure; what \
              runs there is dalvik_body_attest_bar_matches_the_pins_this_gate_enforces, which holds \
              the published ratios to the counts pinned in this file."
@@ -602,8 +602,7 @@ fn body_attest_rejects_a_corrupted_recovered_body() {
     )) {
         Ok(v) => v,
         Err(why) => {
-            eprintln!("SKIP body-attest mutation control: {why}");
-            return;
+            panic!("the body-attest mutation control could not create its scratch directory: {why}")
         }
     };
     let result: Dex2JarResult = translate_dex_bytes(MUTATION_DEX).expect("translate dex");

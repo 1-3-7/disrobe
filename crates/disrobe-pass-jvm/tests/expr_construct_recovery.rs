@@ -106,8 +106,9 @@ fn method_line_ranges(src: &str) -> Vec<(String, usize, usize)> {
 #[test]
 fn expr_constructs_recovered_no_holes() {
     let Some(src): Option<String> = decompile_battery() else {
-        eprintln!("skip: ExprCases-baseline.jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: ExprCases-baseline.jar absent"
+        );
     };
 
     assert!(
@@ -141,18 +142,18 @@ fn expr_constructs_recovered_no_holes() {
 #[test]
 fn expr_constructs_recompile_and_verify() {
     let Some(src): Option<String> = decompile_battery() else {
-        eprintln!("skip: ExprCases-baseline.jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: ExprCases-baseline.jar absent"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "\n========================================================================\n\
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: \n========================================================================\n\
              SKIPPED javac recompile of ExprCases: javac not on PATH. Token fidelity was\n\
              checked, but the per-method recompile floor (>= {METHOD_OK_FLOOR} of\n\
              {METHOD_TOTAL}) did NOT run and is NOT enforced on this machine.\n\
              ========================================================================\n"
         );
-        return;
     };
 
     let purpose: String = format!("disrobe_expr_construct_{}", std::process::id());
@@ -211,8 +212,9 @@ fn expr_constructs_recompile_and_verify() {
     );
 
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP -Xverify:all gate: java not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests, and the -Xverify:all check needs it: java not on PATH"
+        );
     };
 
     let loader: PathBuf = dir.join("Load.java");

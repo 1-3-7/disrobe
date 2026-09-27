@@ -309,14 +309,13 @@ fn char_short_fill_round_trips_runtime_values() {
     let result: Dex2JarResult = translate_dex_bytes(&dex).expect("translate");
 
     let Some(java): Option<PathBuf> = find_java() else {
-        eprintln!("skip jvm verify: no java");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: no java");
     };
     let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
-    if !javac.is_file() {
-        eprintln!("skip jvm verify: no javac");
-        return;
-    }
+    assert!(
+        javac.is_file(),
+        "the JDK is on PATH in every CI job that runs these tests: no javac"
+    );
 
     let jar: Vec<u8> = assemble_jar(&result).expect("jar");
     let purpose: String = format!("disrobe_fill_cs_{}", std::process::id());
@@ -392,14 +391,13 @@ fn fill_array_data_survives_parameter_register_reuse_after_branch() {
     );
 
     let Some(java): Option<PathBuf> = find_java() else {
-        eprintln!("skip jvm verify: no java");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: no java");
     };
     let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
-    if !javac.is_file() {
-        eprintln!("skip jvm verify: no javac");
-        return;
-    }
+    assert!(
+        javac.is_file(),
+        "the JDK is on PATH in every CI job that runs these tests: no javac"
+    );
     let jar: Vec<u8> = assemble_jar(&result).expect("jar");
     let purpose: String = format!("disrobe_fill_branch_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -472,8 +470,7 @@ fn find_java() -> Option<PathBuf> {
 
 fn verify_with_jvm(result: &Dex2JarResult) {
     let Some(java): Option<PathBuf> = find_java() else {
-        eprintln!("skip jvm verify: no java");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: no java");
     };
     let jar: Vec<u8> = assemble_jar(result).expect("jar");
     let purpose: String = format!("disrobe_fill_{}", std::process::id());
@@ -493,10 +490,10 @@ fn verify_with_jvm(result: &Dex2JarResult) {
     std::fs::write(&src, driver).expect("write driver");
 
     let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
-    if !javac.is_file() {
-        eprintln!("skip jvm verify: no javac");
-        return;
-    }
+    assert!(
+        javac.is_file(),
+        "the JDK is on PATH in every CI job that runs these tests: no javac"
+    );
     let compile: std::process::Output = Command::new(&javac)
         .arg("-d")
         .arg(&dir)

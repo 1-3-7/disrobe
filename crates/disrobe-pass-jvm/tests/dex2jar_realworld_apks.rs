@@ -248,7 +248,7 @@ const fn permille(numerator: usize, denominator: usize) -> usize {
 fn realworld_apk_bodies_recovered_match_their_pinned_counts() {
     if std::env::var_os("DISROBE_RUN_REAL_APK_TESTS").is_none() {
         eprintln!(
-            "SKIP: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the local real apk corpus. This \
+            "UNGRADED: set DISROBE_RUN_REAL_APK_TESTS=1 to re-measure the local real apk corpus. This \
              counts methods the lifter lowered a body for rather than a throw-stub, which is the \
              lifter counting its own output; the verifier-attested figure is \
              dalvik_realworld_body_attest.rs"
@@ -333,7 +333,7 @@ fn realworld_apk_bodies_recovered_match_their_pinned_counts() {
 fn realworld_apk_translated_classes_verify() {
     if std::env::var_os("DISROBE_RUN_REAL_APK_TESTS").is_none() {
         eprintln!(
-            "SKIP: set DISROBE_RUN_REAL_APK_TESTS=1 to link the recovered classes of a real apk \
+            "UNGRADED: set DISROBE_RUN_REAL_APK_TESTS=1 to link the recovered classes of a real apk \
              under the real jvm verifier"
         );
         return;

@@ -50,7 +50,7 @@ fn in_house_is_the_default_engine() {
 #[test]
 fn prefer_jadx_falls_back_to_in_house_when_absent() {
     if jadx_on_path() {
-        eprintln!("SKIP-fallback: jadx IS on PATH; fallback path not exercised here");
+        eprintln!("UNGRADED: jadx is on PATH, so the fallback path is not exercised here");
         return;
     }
     let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "Hello.dex"])).expect("dex");
@@ -67,7 +67,7 @@ fn prefer_jadx_falls_back_to_in_house_when_absent() {
 #[test]
 fn force_jadx_reports_missing_tool_when_absent() {
     if jadx_on_path() {
-        eprintln!("SKIP-missing: jadx IS on PATH; cannot assert MissingTool");
+        eprintln!("UNGRADED: jadx is on PATH, so MissingTool cannot be asserted here");
         return;
     }
     let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "Hello.dex"])).expect("dex");
@@ -82,7 +82,11 @@ fn force_jadx_reports_missing_tool_when_absent() {
 #[test]
 fn jadx_backend_decompiles_real_dex_when_available() {
     if !jadx_on_path() {
-        eprintln!("SKIP: jadx not on PATH - external backend wrap unverified (honest MissingTool)");
+        assert!(
+            std::env::var_os("DISROBE_REQUIRE_JADX").is_none(),
+            "DISROBE_REQUIRE_JADX is set, so jadx must be on PATH"
+        );
+        eprintln!("UNGRADED: jadx is not on PATH, so the external backend wrap is not measured");
         return;
     }
     let dex_bytes: Vec<u8> = std::fs::read(corpus(&["jvm", "dex", "Hello.dex"])).expect("dex");

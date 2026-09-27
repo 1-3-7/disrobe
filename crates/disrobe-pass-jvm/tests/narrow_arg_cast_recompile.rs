@@ -79,15 +79,10 @@ fn run_class(java_path: &PathBuf, dir: &PathBuf, class: &str) -> (bool, String) 
 #[test]
 fn narrow_typed_constant_arguments_keep_their_cast_and_recompile() {
     let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; narrow-argument cast recompile-and-eval gate NOT enforced. \
-             CORPUS-BLOCKED for byte/char/short constant arguments to invoked methods."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: javac not on PATH");
     };
     let Some(java_path): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP: java not on PATH; narrow-argument cast eval gate NOT enforced.");
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
     };
     let purpose: String = format!("disrobe_narrow_arg_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =

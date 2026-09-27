@@ -99,8 +99,9 @@ fn compile_and_decompile(javac: &PathBuf) -> String {
 #[test]
 fn multi_catch_union_and_distinct_catches_recover() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; multi-catch recovery not enforced");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; multi-catch recovery not enforced"
+        );
     };
     let source: String = compile_and_decompile(&javac);
 
@@ -141,8 +142,9 @@ fn multi_catch_union_and_distinct_catches_recover() {
 #[test]
 fn enhanced_for_lowerings_recover_or_degrade() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; enhanced-for recovery not enforced");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; enhanced-for recovery not enforced"
+        );
     };
     let source: String = compile_and_decompile(&javac);
 
@@ -177,8 +179,9 @@ fn enhanced_for_lowerings_recover_or_degrade() {
 #[test]
 fn recovered_foreach_multicatch_recompiles_clean() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP: javac not on PATH; recompile gate not enforced");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; recompile gate not enforced"
+        );
     };
     let source: String = compile_and_decompile(&javac);
     let purpose: String = format!(

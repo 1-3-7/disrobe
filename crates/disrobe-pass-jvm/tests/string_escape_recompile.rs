@@ -84,17 +84,13 @@ fn emit_source(inputs: &[String]) -> String {
 #[test]
 fn escaped_string_literals_recompile_and_round_trip_under_real_jvm() {
     let Some(javac_path): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "SKIP: javac not on PATH; Java-source string escaping recompile round-trip NOT \
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: javac not on PATH; Java-source string escaping recompile round-trip NOT \
              enforced."
         );
-        return;
     };
     let Some(java_path): Option<PathBuf> = find_on_path("java") else {
-        eprintln!(
-            "SKIP: java not on PATH; Java-source string escaping recompile round-trip NOT enforced."
-        );
-        return;
+        panic!("the JDK is on PATH in every CI job that runs these tests: java not on PATH");
     };
 
     let inputs: Vec<String> = trap_battery();

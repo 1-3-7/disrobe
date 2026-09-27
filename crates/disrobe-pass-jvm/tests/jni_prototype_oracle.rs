@@ -64,8 +64,9 @@ const fn platform_include_dir() -> &'static str {
 #[test]
 fn emitted_prototypes_match_javac_h_and_compile_against_jni_h() {
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP jni prototype oracle: javac (JDK) not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: jni prototype oracle: javac (JDK) not on PATH"
+        );
     };
 
     let purpose: String = format!("disrobe_jni_proto_{}", std::process::id());
@@ -126,14 +127,14 @@ fn emitted_prototypes_match_javac_h_and_compile_against_jni_h() {
     );
 
     let Some(cc): Option<PathBuf> = find_on_path("clang").or_else(|| find_on_path("gcc")) else {
-        eprintln!(
-            "SKIP jni.h syntax check: no clang/gcc on PATH; javac -h equality already attested"
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: jni.h syntax check: no clang/gcc on PATH; javac -h equality already attested"
         );
-        return;
     };
     let Some(java_home): Option<std::ffi::OsString> = std::env::var_os("JAVA_HOME") else {
-        eprintln!("SKIP jni.h syntax check: JAVA_HOME unset; javac -h equality already attested");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: jni.h syntax check: JAVA_HOME unset; javac -h equality already attested"
+        );
     };
     let include: PathBuf = PathBuf::from(&java_home).join("include");
     let include_platform: PathBuf = include.join(platform_include_dir());

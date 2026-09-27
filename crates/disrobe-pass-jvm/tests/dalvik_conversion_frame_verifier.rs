@@ -272,12 +272,14 @@ fn class_names() -> String {
 #[test]
 fn every_numeric_conversion_class_passes_xverify_all() {
     let Some(java): Option<PathBuf> = find_on_path("java") else {
-        eprintln!("SKIP conversion -Xverify:all gate: java not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: conversion -Xverify:all gate: java not on PATH"
+        );
     };
     let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!("SKIP conversion -Xverify:all gate: javac not on PATH");
-        return;
+        panic!(
+            "the JDK is on PATH in every CI job that runs these tests: conversion -Xverify:all gate: javac not on PATH"
+        );
     };
 
     let result: Dex2JarResult =

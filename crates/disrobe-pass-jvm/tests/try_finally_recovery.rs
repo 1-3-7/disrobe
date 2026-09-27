@@ -64,8 +64,9 @@ fn method_body(source: &str, signature_fragment: &str) -> Option<String> {
 #[test]
 fn try_catch_finally_renders_a_real_finally_block() {
     let Some(source): Option<String> = edgecases_source() else {
-        eprintln!("skip: EdgeCases baseline jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases baseline jar absent"
+        );
     };
     let body: String = method_body(&source, "divSafe(")
         .expect("divSafe method must be present in decompiled output");
@@ -82,8 +83,9 @@ fn try_catch_finally_renders_a_real_finally_block() {
 #[test]
 fn try_finally_renders_a_real_finally_block() {
     let Some(source): Option<String> = edgecases_source() else {
-        eprintln!("skip: EdgeCases baseline jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases baseline jar absent"
+        );
     };
     let body: String =
         method_body(&source, " main(").expect("main method must be present in decompiled output");
@@ -100,8 +102,9 @@ fn try_finally_renders_a_real_finally_block() {
 #[test]
 fn no_handler_less_try_is_emitted_for_finally_constructs() {
     let Some(source): Option<String> = edgecases_source() else {
-        eprintln!("skip: EdgeCases baseline jar absent");
-        return;
+        panic!(
+            "the committed input is required, restore it from git: EdgeCases baseline jar absent"
+        );
     };
     for sig in ["divSafe(", " main("] {
         let Some(body): Option<String> = method_body(&source, sig) else {

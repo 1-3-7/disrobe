@@ -28,8 +28,10 @@ fn r8_jar() -> PathBuf {
 #[test]
 fn real_r8_jar_unflattens_without_leaving_a_dispatcher_switch() {
     let Ok(f): Result<fs::File, _> = fs::File::open(r8_jar()) else {
-        eprintln!("skip: r8 fixture absent at {}", r8_jar().display());
-        return;
+        panic!(
+            "the committed input is required, restore it from git: r8 fixture absent at {}",
+            r8_jar().display()
+        );
     };
     let mut z: zip::ZipArchive<fs::File> = zip::ZipArchive::new(f).expect("zip");
     let mut methods_scanned: u32 = 0;
