@@ -62,7 +62,7 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
     let mut total: Duration = Duration::ZERO;
     total += gate("fmt", || gate_fmt(root, &scope))?;
     total += gate("regen", || gate_regen(root, &scope))?;
-    total += gate("clippy", || gate_clippy(root))?;
+    total += gate("clippy", || gate_clippy(root, &scope))?;
     total += gate("test", || gate_test(root, &scope))?;
     println!(
         "xtask prepush: all gates passed in {:.1}s",
@@ -144,21 +144,37 @@ fn gate_regen(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     Ok(GateOutcome::Ran)
 }
 
-fn gate_clippy(root: &Path) -> Result<GateOutcome> {
-    run_checked(
-        root,
-        cargo_bin().as_str(),
-        &[
-            "clippy",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-        || "resolve the clippy findings above, then re-run the push".to_owned(),
-    )?;
+fn gate_clippy(root: &Path, scope: &Scope) -> Result<GateOutcome> {
+    let mut args: Vec<String> = vec!["clippy".to_owned()];
+    match scope {
+        Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
+        Scope::Changed(paths)
+            if !paths
+                .iter()
+                .any(|path: &Utf8PathBuf| is_shared_build_input(path)) =>
+        {
+            let crates: Vec<String> = owning_crates(root, paths)?;
+            if crates.is_empty() {
+                return Ok(GateOutcome::Skipped("no changed rust crates".to_owned()));
+            }
+            for name in crates {
+                args.extend(["-p".to_owned(), name]);
+            }
+        }
+        Scope::All | Scope::Changed(_) => args.push("--workspace".to_owned()),
+    }
+    args.extend(["--all-targets", "--", "-D", "warnings"].map(str::to_owned));
+    run_checked_owned(root, cargo_bin().as_str(), &args, || {
+        "resolve the clippy findings above, then re-run the push".to_owned()
+    })?;
     Ok(GateOutcome::Ran)
+}
+
+fn is_shared_build_input(path: &Utf8PathBuf) -> bool {
+    matches!(
+        path.file_name(),
+        Some("Cargo.toml" | "Cargo.lock" | "clippy.toml" | "rust-toolchain.toml" | "build.rs")
+    ) || path.starts_with(".cargo")
 }
 
 fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
@@ -508,9 +524,32 @@ fn cargo_bin() -> Utf8PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        SELF_CRATE, Scope, ScopedTestCommands, scoped_test_commands, should_validate_nextest_config,
+        SELF_CRATE, Scope, ScopedTestCommands, is_shared_build_input, scoped_test_commands,
+        should_validate_nextest_config,
     };
     use camino::Utf8PathBuf;
+
+    #[test]
+    fn shared_build_inputs_widen_clippy_to_the_workspace() {
+        for shared in [
+            "Cargo.lock",
+            "crates/disrobe-core/Cargo.toml",
+            ".cargo/config.toml",
+            "clippy.toml",
+        ] {
+            assert!(
+                is_shared_build_input(&Utf8PathBuf::from(shared)),
+                "{shared}"
+            );
+        }
+        for local in [
+            "crates/disrobe-core/src/lib.rs",
+            "docs/src/SUMMARY.md",
+            "lefthook.yml",
+        ] {
+            assert!(!is_shared_build_input(&Utf8PathBuf::from(local)), "{local}");
+        }
+    }
 
     #[test]
     fn nextest_config_validation_is_reserved_for_config_only_scope() {
