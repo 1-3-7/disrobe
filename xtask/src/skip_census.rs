@@ -7,9 +7,7 @@ const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const RETURN_WINDOW: usize = 5;
 const MIN_SCANNED_FILES: usize = 3_400;
 
-const SKIP_CEILING: &[(&str, usize)] = &[
-    ("disrobe-pyarmor-cextract", 5),
-];
+const SKIP_CEILING: &[(&str, usize)] = &[("disrobe-pyarmor-cextract", 5)];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SkipSite {
