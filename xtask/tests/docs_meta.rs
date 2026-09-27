@@ -75,11 +75,15 @@ fn threat_model_exists_and_is_linked() {
 #[test]
 fn pyarmor_stance_exists_with_legal_headings() {
     let root: PathBuf = workspace_root();
-    let stance: PathBuf = root.join("docs").join("legal").join("pyarmor-stance.md");
-    assert!(stance.is_file(), "missing {}", stance.display());
-    assert_lf_only(&stance);
+    let legal: PathBuf = root.join("docs").join("src").join("legal.md");
+    assert!(legal.is_file(), "missing {}", legal.display());
+    assert_lf_only(&legal);
 
-    let body: String = read(&stance);
+    let page: String = read(&legal);
+    let body: &str = page
+        .split("\n### ")
+        .find(|section: &&str| section.starts_with("PyArmor\n"))
+        .expect("legal.md has a PyArmor stance section");
     for needle in [
         "1201(f)",
         "Directive 2009/24/EC",
@@ -90,7 +94,7 @@ fn pyarmor_stance_exists_with_legal_headings() {
     ] {
         assert!(
             body.contains(needle),
-            "pyarmor-stance.md missing expected legal anchor `{needle}`"
+            "the PyArmor stance in legal.md is missing the legal anchor `{needle}`"
         );
     }
 }
