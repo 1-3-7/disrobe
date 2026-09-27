@@ -9,7 +9,7 @@ megafile_strategy = "Per-shell megafile (corpus/shell/<lang>/megafile/edge_cases
 [powershell.invoke_obfuscation]
 source = "github:danielbohannon/Invoke-Obfuscation@main"
 status = "FROM-SPEC-GENERATOR"
-reason = "Defender AMSI signature on the upstream module blocks `. .\\Out-ObfuscatedTokenCommand.ps1`. Generator: tools/gen-invoke-obf-fixtures (rerun from C:\\Users\\-\\AppData\\Local\\Temp\\shell-tools\\gen-invoke-obf-fixtures.ps1). Outputs exercise the same reverse passes."
+reason = "Defender AMSI signature on the upstream module blocks `. .\\Out-ObfuscatedTokenCommand.ps1`. Generator: a local gen-invoke-obf-fixtures.ps1 script, not kept in the repository. Outputs exercise the same reverse passes."
 fixtures = [
   "powershell/invoke-obfuscation/token/hello.ps1",
   "powershell/invoke-obfuscation/ast/hello.ps1",
@@ -113,7 +113,7 @@ path = "batch/megafile/edge_cases.bat"
 [vba.docm]
 source = "Word 16.0 COM automation (AccessVBOM enabled in HKCU registry)"
 status = "REAL-FIXTURE"
-generator = "C:\\Users\\-\\AppData\\Local\\Temp\\shell-tools\\build_docm_via_word.ps1"
+generator = "build_docm_via_word.ps1, a local script not kept in the repository"
 fixtures = [
   "vba/hello.docm",
   "vba/vbaProject.bin",

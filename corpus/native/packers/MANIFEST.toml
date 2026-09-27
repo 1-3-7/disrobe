@@ -74,7 +74,7 @@ provenance = "git.exe staged locally, untracked, without dependent DLLs (file-on
 name = "UPX"
 version = "5.1.1"
 install_method = "winget UPX.UPX"
-install_path = "C:\\Users\\-\\AppData\\Local\\Microsoft\\WinGet\\Packages\\UPX.UPX_Microsoft.Winget.Source_8wekyb3d8bbwe\\upx-5.1.1-win64\\upx.exe"
+install_path = "%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\UPX.UPX_Microsoft.Winget.Source_8wekyb3d8bbwe\\upx-5.1.1-win64\\upx.exe"
 status = "ok-megafile-verified"
 local_fixture_recipe = """
 hello.unpacked.exe is rebuilt from committed bytes with UPX 5.1.1:
