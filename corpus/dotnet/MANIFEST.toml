@@ -9,7 +9,7 @@ path = "HelloApp.dll"
 kind = "managed-pe"
 target_framework = "net9.0"
 provenance = "real"
-source = ".developer/dotnet-samples/HelloApp/Program.cs"
+source = "authored HelloApp/Program.cs, not kept in the repository"
 build = "dotnet build -c Release"
 description = "minimal net9.0 console-app DLL; baseline smoke fixture"
 
@@ -144,7 +144,7 @@ kind = "nativeaot-pe-exe"
 target_framework = "net9.0"
 runtime_id = "win-x64"
 provenance = "real"
-source = ".developer/dotnet-samples/EdgeCasesAot/Program.cs"
+source = "authored EdgeCasesAot/Program.cs, not kept in the repository"
 build = "dotnet publish EdgeCasesAot.csproj -c Release -r win-x64 (PublishAot=true)"
 description = "fully linked NativeAOT executable; a separate top-level project exercises AOT compatibility; the megafile EdgeCases library itself is not AOT-trim-safe (reflection + expression trees) so the AOT exe is a sibling demo of NativeAOT itself"
 
@@ -224,7 +224,7 @@ description = "boolean-coerced brtrue/brfalse branch conditions the generic CIL-
 
 [paid-protectors]
 status = "tier-1-attribute-strip-shipped; tier-2-algorithm-specs-shipped; tier-3-detect-only"
-reason = "v0.8 Wave 3A shipped in-house peel_* infrastructure for all 13+2 protectors. Tier-1 (Reactor/Eaz/SmartAssembly/Babel/Agile/Crypto) emits ReportOnlyEncryptedResource; Tier-2 (DeepSea/Spices/Skater/Dotfuscator/Goliath) emits AttributeStripAndReport; Tier-3 (ArmDot/Themida/ILProtector/MaxToCode) emits DetectOnlyNativeOrVm. Algorithm specs at .developer/v0.8-w3a-protector-specs/."
+reason = "v0.8 Wave 3A shipped in-house peel_* infrastructure for all 13+2 protectors. Tier-1 (Reactor/Eaz/SmartAssembly/Babel/Agile/Crypto) emits ReportOnlyEncryptedResource; Tier-2 (DeepSea/Spices/Skater/Dotfuscator/Goliath) emits AttributeStripAndReport; Tier-3 (ArmDot/Themida/ILProtector/MaxToCode) emits DetectOnlyNativeOrVm. Algorithm specs at the protector specs (not kept in the repository)"
 
 [[paid-protectors.entry]]
 name = ".NET Reactor"

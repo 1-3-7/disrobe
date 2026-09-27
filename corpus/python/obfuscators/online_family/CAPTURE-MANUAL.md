@@ -5,13 +5,13 @@ Last verified: 2026-05-25. Tools in this family (pyobfuscator.com, pyobfuscate.c
 ## procedure (per service)
 
 1. Open https://pyobfuscator.com (or https://pyobfuscate.com).
-2. Paste the contents of `.developer/wave2-py-tools/inputs_band/band_3_8.py` into the input editor.
+2. Paste the contents of the band 3.8 input program (not kept in the repository) into the input editor.
 3. Solve the captcha when prompted.
 4. Click "Obfuscate".
 5. Copy the result text into `real_sample.py` in this directory.
 6. Repeat with `band_3_12.py` to populate `real_application.py`.
 7. Repeat with each `inputs/<edge>.py` to populate `edge-cases/real_<edge>.py`.
-8. After every capture: regenerate this corpus's MANIFEST.toml entry by running `.developer/wave2-py-tools/runner.py --record-manual online_family` (the runner sha256s the just-written files).
+8. After every capture: regenerate this corpus's MANIFEST.toml entry by hand (the recording runner was not kept in the repository) (the runner sha256s the just-written files).
 
 ## why automation is blocked
 

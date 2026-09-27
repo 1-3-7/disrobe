@@ -90,6 +90,6 @@ Refresh SHA256s in `corpus/python/freezers/MANIFEST.toml` after regen:
 
 ## prerequisites
 
-- Python 3.12 venv with `briefcase` installed (`uv pip install briefcase` into `.developer/pyfreeze-build/venv-base`).
+- Python 3.12 venv with `briefcase` installed (`uv pip install briefcase` into `.fixture-build/pyfreeze-build/venv-base`).
 - WiX toolset is auto-downloaded on first `briefcase package windows` invocation; cached under `%LOCALAPPDATA%\BeeWare`.
 - The first `briefcase create windows` clones `https://github.com/beeware/briefcase-template` into the briefcase data cache (~50 MB).

@@ -1,6 +1,6 @@
 # PyArmor wrappers
 
-PyArmor target sources live in `../python/`; PyArmor itself runs out-of-tree in `.developer/pyarmor-build/` so that licensed runtime artifacts & pyarmor-runtime shared objects do not pollute `corpus/`.
+PyArmor target sources live in `../python/`; PyArmor itself runs out-of-tree in `.fixture-build/pyarmor-build/` so that licensed runtime artifacts & pyarmor-runtime shared objects do not pollute `corpus/`.
 
 ## Supported versions & expected wrapper magic
 
@@ -21,12 +21,12 @@ PyArmor target sources live in `../python/`; PyArmor itself runs out-of-tree in 
 
 | target source | invocation | output |
 |--------------|------------|--------|
-| `../python/hello.py` | `pyarmor gen --output .developer/pyarmor-build/hello ../python/hello.py` | `.developer/pyarmor-build/hello/dist/hello.py` (PyArmor v9 default) |
-| `../python/playground-small.py` | `pyarmor gen --output .developer/pyarmor-build/small ../python/playground-small.py` | `.developer/pyarmor-build/small/dist/playground-small.py` |
-| `../python/playground-mid.py` | `pyarmor gen --output .developer/pyarmor-build/mid ../python/playground-mid.py` | `.developer/pyarmor-build/mid/dist/playground-mid.py` |
-| `../python/playground.py` | `pyarmor gen --output .developer/pyarmor-build/full ../python/playground.py` | `.developer/pyarmor-build/full/dist/playground.py` |
+| `../python/hello.py` | `pyarmor gen --output .fixture-build/pyarmor-build/hello ../python/hello.py` | `.fixture-build/pyarmor-build/hello/dist/hello.py` (PyArmor v9 default) |
+| `../python/playground-small.py` | `pyarmor gen --output .fixture-build/pyarmor-build/small ../python/playground-small.py` | `.fixture-build/pyarmor-build/small/dist/playground-small.py` |
+| `../python/playground-mid.py` | `pyarmor gen --output .fixture-build/pyarmor-build/mid ../python/playground-mid.py` | `.fixture-build/pyarmor-build/mid/dist/playground-mid.py` |
+| `../python/playground.py` | `pyarmor gen --output .fixture-build/pyarmor-build/full ../python/playground.py` | `.fixture-build/pyarmor-build/full/dist/playground.py` |
 
-Feed into disrobe via `disrobe pyarmor unpack .developer/pyarmor-build/<name>/dist/<file>.py`. `corpus/generate.{sh,ps1}` skips this stage if `pyarmor` is not on PATH.
+Feed into disrobe via `disrobe pyarmor unpack .fixture-build/pyarmor-build/<name>/dist/<file>.py`. `corpus/generate.{sh,ps1}` skips this stage if `pyarmor` is not on PATH.
 
 ## Validator integration
 

@@ -5,7 +5,7 @@ Last verified: 2026-05-25. https://pyobfuscate.com is a free web obfuscator with
 ## procedure
 
 1. Open https://pyobfuscate.com .
-2. Paste `.developer/wave2-py-tools/inputs_band/band_3_8.py` into the input area.
+2. Paste the band 3.8 input program (not kept in the repository) into the input area.
 3. Solve the captcha when challenged.
 4. Click "Obfuscate" & copy the output into `real_sample.py`.
 5. Repeat for `band_3_12.py` -> `real_application.py`.

@@ -182,10 +182,10 @@ runtime = "python 3.7.9 via a per-user cpython install at %LOCALAPPDATA%/Program
 "typing_generic" = { path = "corpus/python/obfuscators/pyminifier/edge-cases/real_typing_generic.py", sha256 = "c81d43da030177cddc14f3428aec30cb56fd34a24e6d992a7666b1a532cbd6d0", bytes = 175 }
 
 [obfuscators.playground.metadata]
-tool_version = "billythegoat356/Berserker (.developer/wave2-py-tools/berserker)"
+tool_version = "billythegoat356/Berserker (local clone; commit not recorded)"
 runtime = "python 3.14"
 oracle = "differential-vs-source"
-note = "Minimal git-tracked differential fixture committed so the playground gate's differential-vs-source oracle evaluates a NON-EMPTY sample in a clean CI checkout (the broader .pyc/.beam obfuscator corpus is gitignored). The independent oracle is clean_greeting.py (never emitted by any pass); clean_greeting.berserker.py is its real Berserker-obfuscated form. Regenerate via .developer/gen_playground_differential.py."
+note = "Minimal git-tracked differential fixture committed so the playground gate's differential-vs-source oracle evaluates a NON-EMPTY sample in a clean CI checkout (the broader .pyc/.beam obfuscator corpus is gitignored). The independent oracle is clean_greeting.py (never emitted by any pass); clean_greeting.berserker.py is its real Berserker-obfuscated form. The generator script was not kept in the repository."
 
 [obfuscators.playground.fixtures]
 "berserker_greeting" = { path = "corpus/python/obfuscators/playground/clean_greeting.berserker.py", sha256 = "89027b86cbe6d750b0bd6f5ee3d47b2da787cff514910886db918e5929f82b57", bytes = 7541, clean_source = "corpus/python/obfuscators/playground/clean_greeting.py", clean_sha256 = "35e41ea960ff24ec961d608415c85670c004f5af06a50636d36c7468a3d40c25" }
@@ -213,7 +213,7 @@ note = "Minimal git-tracked differential fixture committed so the playground gat
 [obfuscators.pyobfus.metadata]
 tool_version = "htr-tech/PyObfuscate lambda-indirection wrappers, reproduced from the documented transform"
 runtime = "python 3.14.5"
-note = "Reversed-payload lambda wrappers: _ = lambda __ : <chain>;exec((_)(b'...')). Each fixture is a runnable program; the b64 and zlib+b64 forms decode back to the exact original source, the marshal+zlib+b64 form terminates in a code object (bytecode handoff). Regenerate via .developer/gen_pyobfus_pypacker_corpus.py."
+note = "Reversed-payload lambda wrappers: _ = lambda __ : <chain>;exec((_)(b'...')). Each fixture is a runnable program; the b64 and zlib+b64 forms decode back to the exact original source, the marshal+zlib+b64 form terminates in a code object (bytecode handoff). The generator script was not kept in the repository."
 
 [obfuscators.pyobfus.fixtures]
 "hello" = { path = "corpus/python/obfuscators/pyobfus/real_hello.py", sha256 = "028169b1123b75197a5e9d5f2492ebc197a3fc9921e2baee68944b5f214f9af1", bytes = 100, transform = "base64 + reverse" }
@@ -223,7 +223,7 @@ note = "Reversed-payload lambda wrappers: _ = lambda __ : <chain>;exec((_)(b'...
 [obfuscators.pypacker.metadata]
 tool_version = "python-obfuscation-framework marshal packer wrappers, reproduced from the documented transform"
 runtime = "python 3.14.5"
-note = "exec(marshal.loads(<bz2|gzip|zlib|lzma>.decompress(b'...'))). The payload is a marshalled module-level code object, so the static peel strips compression + marshal to exact bytecode (named <module>); source-level recovery is a bytecode-decompilation problem for the py-decompile pass. Each fixture is a runnable program. Regenerate via .developer/gen_pyobfus_pypacker_corpus.py."
+note = "exec(marshal.loads(<bz2|gzip|zlib|lzma>.decompress(b'...'))). The payload is a marshalled module-level code object, so the static peel strips compression + marshal to exact bytecode (named <module>); source-level recovery is a bytecode-decompilation problem for the py-decompile pass. Each fixture is a runnable program. The generator script was not kept in the repository."
 
 [obfuscators.pypacker.fixtures]
 "hello" = { path = "corpus/python/obfuscators/pypacker/real_hello.py", sha256 = "ee132f643760c2ebc904b974e30d81615bd69a92177c7a5877c4540613335212", bytes = 383, transform = "marshal + zlib" }

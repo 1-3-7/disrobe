@@ -115,7 +115,7 @@ function Build-Wasm {
 
 function Plan-Pyarmor {
     $files = Get-PySources
-    foreach ($f in $files) { Write-Plan "pyarmor: $($f.FullName) -> .developer/pyarmor-build/$($f.BaseName)/dist/$($f.BaseName).py" }
+    foreach ($f in $files) { Write-Plan "pyarmor: $($f.FullName) -> .fixture-build/pyarmor-build/$($f.BaseName)/dist/$($f.BaseName).py" }
     Write-Host "[summary] pyarmor: $($files.Count) sources"
 }
 
@@ -132,7 +132,7 @@ function Build-Pyarmor {
 
 function Plan-Pyinstaller {
     $files = Get-PySources
-    foreach ($f in $files) { Write-Plan "pyinstaller: $($f.FullName) -> .developer/pyinst-build/dist/$($f.BaseName).exe" }
+    foreach ($f in $files) { Write-Plan "pyinstaller: $($f.FullName) -> .fixture-build/pyinst-build/dist/$($f.BaseName).exe" }
     Write-Host "[summary] pyinstaller: $($files.Count) sources"
 }
 
@@ -149,7 +149,7 @@ function Build-Pyinstaller {
 
 function Plan-Nuitka {
     $files = Get-PySources
-    foreach ($f in $files) { Write-Plan "nuitka: $($f.FullName) -> .developer/nuitka-build/$($f.BaseName).dist/$($f.BaseName).exe" }
+    foreach ($f in $files) { Write-Plan "nuitka: $($f.FullName) -> .fixture-build/nuitka-build/$($f.BaseName).dist/$($f.BaseName).exe" }
     Write-Host "[summary] nuitka: $($files.Count) sources"
 }
 
@@ -166,7 +166,7 @@ function Build-Nuitka {
 
 function Plan-Sourcedefender {
     $files = Get-PySources
-    foreach ($f in $files) { Write-Plan "sourcedefender: $($f.FullName) -> .developer/sourcedefender-build/$($f.BaseName).pye" }
+    foreach ($f in $files) { Write-Plan "sourcedefender: $($f.FullName) -> .fixture-build/sourcedefender-build/$($f.BaseName).pye" }
     Write-Host "[summary] sourcedefender: $($files.Count) sources"
 }
 

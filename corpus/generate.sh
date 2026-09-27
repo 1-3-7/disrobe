@@ -177,7 +177,7 @@ plan_pyarmor() {
     while IFS= read -r -d '' f; do
         local name
         name="$(basename "$f" .py)"
-        log_plan "pyarmor: ${f} -> .developer/pyarmor-build/${name}/dist/${name}.py"
+        log_plan "pyarmor: ${f} -> .fixture-build/pyarmor-build/${name}/dist/${name}.py"
         count=$((count + 1))
     done < <(find "${SRC}/python" -maxdepth 1 -name '*.py' -print0 2>/dev/null || true)
     echo "[summary] pyarmor: ${count} sources"
@@ -188,7 +188,7 @@ build_pyarmor() {
         log_skip "pyarmor: pyarmor not on PATH"
         return 0
     fi
-    local build_root="${SCRIPT_DIR}/../.developer/pyarmor-build"
+    local build_root="${SCRIPT_DIR}/../.fixture-build/pyarmor-build"
     mkdir -p "$build_root"
     while IFS= read -r -d '' f; do
         local name
@@ -203,7 +203,7 @@ plan_pyinstaller() {
     while IFS= read -r -d '' f; do
         local name
         name="$(basename "$f" .py)"
-        log_plan "pyinstaller: ${f} -> .developer/pyinst-build/dist/${name}.exe"
+        log_plan "pyinstaller: ${f} -> .fixture-build/pyinst-build/dist/${name}.exe"
         count=$((count + 1))
     done < <(find "${SRC}/python" -maxdepth 1 -name '*.py' -print0 2>/dev/null || true)
     echo "[summary] pyinstaller: ${count} sources"
@@ -214,7 +214,7 @@ build_pyinstaller() {
         log_skip "pyinstaller: pyinstaller not on PATH"
         return 0
     fi
-    local build_root="${SCRIPT_DIR}/../.developer/pyinst-build"
+    local build_root="${SCRIPT_DIR}/../.fixture-build/pyinst-build"
     mkdir -p "$build_root"
     while IFS= read -r -d '' f; do
         local name
@@ -229,7 +229,7 @@ plan_nuitka() {
     while IFS= read -r -d '' f; do
         local name
         name="$(basename "$f" .py)"
-        log_plan "nuitka: ${f} -> .developer/nuitka-build/${name}.dist/${name}.exe"
+        log_plan "nuitka: ${f} -> .fixture-build/nuitka-build/${name}.dist/${name}.exe"
         count=$((count + 1))
     done < <(find "${SRC}/python" -maxdepth 1 -name '*.py' -print0 2>/dev/null || true)
     echo "[summary] nuitka: ${count} sources"
@@ -240,7 +240,7 @@ build_nuitka() {
         log_skip "nuitka: nuitka not on PATH"
         return 0
     fi
-    local build_root="${SCRIPT_DIR}/../.developer/nuitka-build"
+    local build_root="${SCRIPT_DIR}/../.fixture-build/nuitka-build"
     mkdir -p "$build_root"
     while IFS= read -r -d '' f; do
         local name
@@ -255,7 +255,7 @@ plan_sourcedefender() {
     while IFS= read -r -d '' f; do
         local name
         name="$(basename "$f" .py)"
-        log_plan "sourcedefender: ${f} -> .developer/sourcedefender-build/${name}.pye"
+        log_plan "sourcedefender: ${f} -> .fixture-build/sourcedefender-build/${name}.pye"
         count=$((count + 1))
     done < <(find "${SRC}/python" -maxdepth 1 -name '*.py' -print0 2>/dev/null || true)
     echo "[summary] sourcedefender: ${count} sources"
@@ -266,7 +266,7 @@ build_sourcedefender() {
         log_skip "sourcedefender: sourcedefender not on PATH"
         return 0
     fi
-    local build_root="${SCRIPT_DIR}/../.developer/sourcedefender-build"
+    local build_root="${SCRIPT_DIR}/../.fixture-build/sourcedefender-build"
     mkdir -p "$build_root"
     while IFS= read -r -d '' f; do
         local name

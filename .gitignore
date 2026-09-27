@@ -384,6 +384,7 @@ scratch/
 playground/test-results/
 playground/playwright-report/
 .developer/
+/.fixture-build/
 .scratch/
 /playground/node_modules/
 /playground/dist/

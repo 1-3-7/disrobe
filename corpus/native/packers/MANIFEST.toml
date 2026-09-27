@@ -59,7 +59,7 @@ size_bytes = 5621104
 sha256 = "67012F45B7AD6EA6243AB3A9C8BF3ADAD32CEC432994840A2968BCA54944E379"
 runtime_output = "n/a (requires SYSTEM)"
 role = "megafile-mpress-substitute - Microsoft-compiled PE without TLS callbacks; only practical 5+ MB fixture MPRESS accepts. Authenticode-signed so UPX requires --force (not used for UPX)."
-provenance = "C:\\Windows\\System32\\Taskmgr.exe staged at .developer/big-binaries/taskmgr.exe"
+provenance = "C:\\Windows\\System32\\Taskmgr.exe staged locally, untracked"
 
 [source.git]
 arch = "x86_64"
@@ -68,7 +68,7 @@ size_bytes = 4422544
 sha256 = "CAB4C4EEA1D869CF9F7BE73868DC9A90AD2DF1B1B673E5F8C8714A576C25EA96"
 runtime_output = "n/a (DLL_NOT_FOUND when run in isolation - needs msys2 sibling DLLs)"
 role = "megafile-additional - second real-world MSVC PE for UPX coverage. Runtime cannot be verified standalone; packed/unpacked SHA + byte-diff still provides round-trip evidence."
-provenance = ".developer/big-binaries/git.exe (staged without dependent DLLs - file-only smoke)"
+provenance = "git.exe staged locally, untracked, without dependent DLLs (file-only smoke)"
 
 [[packers]]
 name = "UPX"
@@ -87,7 +87,7 @@ rg.packed.upx.exe and rg.unpacked.upx.exe are built from the ripgrep 15.1.0 win6
 release; the two 4 MB artifacts stay out of the tree on size.
 
 git.packed.upx.exe and git.unpacked.upx.exe are built the same way from the git.exe of a Git for
-Windows MSVC install (sha256 CAB4C4EE..., 4422544 B) staged at .developer/big-binaries/git.exe.
+Windows MSVC install (sha256 CAB4C4EE..., 4422544 B) staged locally, untracked.
 This manifest never recorded WHICH Git for Windows release shipped that git.exe, so this recipe
 stops short of reproducing them: both are local-unobtainable and carry their own reason.
 """
@@ -159,7 +159,7 @@ notes = "Second megafile round-trip witness. Pack 4422544 -> 1812368 B (40.98%),
 name = "MPRESS"
 version = "2.19"
 install_method = "wayback https://web.archive.org/web/2020if_/https://www.matcode.com/mpress.219.zip"
-install_path = ".developer/packers/mpress/mpress.exe"
+install_path = "local install, outside the repository"
 status = "ok-trivial-only"
 limitation = "rejects PE binaries with TLS callbacks - applies to nearly all modern Rust/MSVC release builds"
 local_fixture_recipe = """
@@ -216,7 +216,7 @@ notes = "Real Windows System32 5.36MB binary, packed to 1.01MB, decompressed to 
 name = "Petite"
 version = "2.4"
 install_method = "https://www.un4seen.com/files/petite24.zip"
-install_path = ".developer/packers/petite/petite.exe"
+install_path = "local install, outside the repository"
 status = "ok-x86-only"
 limitation = "x86 only - rejects PE32+ with 'Not an x86 executable'"
 local_fixture_recipe = """
@@ -277,7 +277,7 @@ notes = "Real-world Petite 2.x megafile sample from github.com/chesvectain/Packi
 name = "kkrunchy"
 version = "0.23 alpha 2 (k7) + 0.23 alpha (classic)"
 install_method = "https://www.farbrausch.de/~fg/kkrunchy/kkrunchy_023a2.zip + kkrunchy_023a.zip"
-install_path = ".developer/packers/kkrunchy/kkrunchy_k7.exe"
+install_path = "local install, outside the repository"
 status = "unpacker-implemented-partial"
 fixture_source = "Hand-rolled NASM PE32 hello.exe (1024 bytes), packed with both kkrunchy_k7 and the classic kkrunchy 0.23a binary."
 limitation = """
@@ -317,7 +317,7 @@ packed_size_bytes = 5632
 unpacker_status = "structural-recovery"
 byte_recovery_pct_v0_8_w4c = 6.44
 byte_recovery_target_pct = 90.00
-byte_recovery_method = "compute_byte_recovery(original_1024B, unpack_kkrunchy().packed_payload). Provider-backed unpack_kkrunchy_emulated() returns Error::EmulatorNotConfigured until a KkrunchyEmulator impl (unicorn-engine/libmwemu/icicle) is wired behind the `stub-emulation` Cargo feature. See .developer/v0.8-w4c-kkrunchy-bytes.md for the gap analysis."
+byte_recovery_method = "compute_byte_recovery(original_1024B, unpack_kkrunchy().packed_payload). Provider-backed unpack_kkrunchy_emulated() returns Error::EmulatorNotConfigured until a KkrunchyEmulator impl (unicorn-engine/libmwemu/icicle) is wired behind the `stub-emulation` Cargo feature."
 notes = "k7 variant. parse_kkrunchy_header succeeds; variant fingerprint = K7Variant023A2; section 'kkrunchy' isolated and exposed. Compression-backend extraction beyond stub-boundary not implemented (see limitation field). v0.8-w4c added KkrunchyEmulator trait + KkrunchyEmulationSnapshot + unpack_kkrunchy_emulated + compute_byte_recovery; honest structural baseline is 6.44% byte-identical against the 1024 B original."
 
 [[packers.runs]]
@@ -334,7 +334,7 @@ byte_recovery_floor_bp = 1700
 content_alignment_pct = 60.4
 unpacker_status_detail = """
 Classic 0.23a variant, packed from the same 1024 B NASM hello.exe with the real kkrunchy 0.23a
-binary (.developer/wave-a3-kkrunchy/research/kk_a/kkrunchy.exe, sha256 70b8af13...). This fixture
+binary (a local kkrunchy.exe, sha256 70b8af13...). This fixture
 is REAL and on-disk (the prior packed_sha256=A2FB9DCBB3B6 / unverified placeholder for a then-absent
 file is now replaced by the true hash A2FB9DCB82F6...; input_sha256 likewise corrected to the full
 64-hex digest).
@@ -380,7 +380,7 @@ near-byte-exact transparency pattern."""
 name = "FSG"
 version = "2.0 (bart/xt 2004)"
 install_method = "wayback https://web.archive.org/web/20030324043555if_/https://www.exetools.com/files/compressors/win/fsg.zip + 7z extract fsg.rar (packer GUI-only, not used: fixtures sourced from PackingData corpus instead)"
-install_path = ".developer/packers/fsg/fsg.exe"
+install_path = "local install, outside the repository"
 status = "unpacker-implemented"
 fixture_source = "github.com/chesvectain/PackingData (FSG/ subset of MIT-licensed pre-packed corpus, originals from Notpacked/)"
 limitation = "FSG 2.0 EP-stub layout only (BB <import_meta_va> BF <unpack_dst_va> BE <packed_stream_va> 53 E8 0A...). FSG 1.x variants not exercised by current fixtures. Original section table is destroyed by FSG (packed PE has 3 sections - bss target + payload + entry stub) so disrobe reports the decompressed image as a flat blob at unpack_dest_va, not a reconstructed multi-section PE."
@@ -443,7 +443,7 @@ notes = "Microsoft ftp.exe, non-default ImageBase 0x01000000. Decoder recovers 3
 name = "NSPack"
 version = "3.7 (North Star)"
 install_method = "wayback https://web.archive.org/web/2008if_/http://www.nsdsn.com/english/nspack.zip"
-install_path = ".developer/packers/nspack/nspack/nSpack.exe"
+install_path = "local install, outside the repository"
 status = "byte-recovery-implemented"
 fixture_source = "github.com/chesvectain/PackingData (cloned 2026-05-25, MIT-licensed test corpus of pre-packed real binaries; original counterparts in PackingData/Notpacked/)"
 local_fixture_recipe = """
