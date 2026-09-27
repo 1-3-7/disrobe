@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use camino::Utf8PathBuf;
@@ -208,6 +209,11 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         Scope::Changed(paths) => test_targets(root, &members, paths)?,
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
     };
+    let caller_env: Vec<(&str, OsString)> = if plan.keys().any(|name: &String| name != SELF_CRATE) {
+        caller_binary_env(root)?
+    } else {
+        Vec::new()
+    };
     for (name, targets) in &plan {
         let TestTargets::Binaries(binaries) = targets else {
             continue;
@@ -217,7 +223,7 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         }
         let args: Vec<String> = binary_test_command(name, binaries);
         println!("    {name}: running only the changed test binaries {binaries:?}");
-        run_checked_owned(root, cargo_bin().as_str(), &args, || {
+        run_checked_env(root, cargo_bin().as_str(), &args, &caller_env, || {
             format!("a changed test binary of {name} failed; fix it, then re-run the push")
         })?;
     }
@@ -253,9 +259,15 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         };
         return Ok(GateOutcome::Skipped(reason.to_owned()));
     }
-    run_checked_owned(root, cargo_bin().as_str(), &commands.nextest, || {
-        "a selected pre-push test failed, timed out, or leaked a child output handle; fix the named test, or install or update cargo-nextest with `cargo install cargo-nextest --locked` if the command is missing or older than 0.9.115, then re-run the push".to_owned()
-    })?;
+    run_checked_env(
+        root,
+        cargo_bin().as_str(),
+        &commands.nextest,
+        &caller_env,
+        || {
+            "a selected pre-push test failed, timed out, or leaked a child output handle; fix the named test, or install or update cargo-nextest with `cargo install cargo-nextest --locked` if the command is missing or older than 0.9.115, then re-run the push".to_owned()
+        },
+    )?;
     run_checked_owned(root, cargo_bin().as_str(), &commands.doctest, || {
         "a committed doctest fails on the state being pushed; fix the named doctest, then re-run the push".to_owned()
     })?;
@@ -695,6 +707,100 @@ fn run_checked<F: FnOnce() -> String>(
     Ok(())
 }
 
+const CALLER_BINARY_VARIABLES: [&str; 2] = ["DISROBE_BIN", "DISROBE_MEASUREMENT_EXECUTABLE"];
+
+fn caller_binary_env(root: &Path) -> Result<Vec<(&'static str, OsString)>> {
+    if CALLER_BINARY_VARIABLES
+        .iter()
+        .all(|name: &&str| std::env::var_os(name).is_some())
+    {
+        return Ok(Vec::new());
+    }
+    println!("xtask prepush: building the disrobe CLI that caller tests run");
+    let output: std::process::Output = Command::new(cargo_bin().as_str())
+        .args([
+            "build",
+            "-p",
+            "disrobe-cli",
+            "--bin",
+            "disrobe",
+            "--message-format=json-render-diagnostics",
+        ])
+        .current_dir(root)
+        .stderr(Stdio::inherit())
+        .output()
+        .wrap_err("spawning cargo build for the disrobe CLI")?;
+    if !output.status.success() {
+        bail!(
+            "`cargo build -p disrobe-cli --bin disrobe` exited with {}\n  fix: resolve the build \
+             errors above, then re-run the push",
+            output.status
+        );
+    }
+    let executable: OsString = cli_executable(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| eyre::eyre!("cargo build reported no executable for the disrobe CLI"))?;
+    Ok(CALLER_BINARY_VARIABLES
+        .iter()
+        .filter(|name: &&&str| std::env::var_os(name).is_none())
+        .map(|name: &&str| (*name, executable.clone()))
+        .collect())
+}
+
+fn cli_executable(messages: &str) -> Option<OsString> {
+    messages
+        .lines()
+        .filter_map(|line: &str| serde_json::from_str::<BuildMessage>(line).ok())
+        .filter(|message: &BuildMessage| {
+            message.reason == "compiler-artifact"
+                && message
+                    .target
+                    .as_ref()
+                    .is_some_and(|target: &BuildTarget| target.name == "disrobe")
+        })
+        .find_map(|message: BuildMessage| message.executable)
+        .map(OsString::from)
+}
+
+#[derive(Deserialize)]
+struct BuildMessage {
+    reason: String,
+    #[serde(default)]
+    target: Option<BuildTarget>,
+    #[serde(default)]
+    executable: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BuildTarget {
+    name: String,
+}
+
+fn run_checked_env<F: FnOnce() -> String>(
+    root: &Path,
+    program: &str,
+    args: &[String],
+    env: &[(&str, OsString)],
+    remediation: F,
+) -> Result<()> {
+    let status: std::process::ExitStatus = Command::new(program)
+        .args(args)
+        .envs(
+            env.iter()
+                .map(|(name, value): &(&str, OsString)| (*name, value)),
+        )
+        .current_dir(root)
+        .status()
+        .wrap_err_with(|| format!("spawning `{program} {}`", args.join(" ")))?;
+    if !status.success() {
+        bail!(
+            "`{program} {}` exited with {status}\n  fix: {}",
+            args.join(" "),
+            remediation()
+        );
+    }
+    Ok(())
+}
+
 fn run_checked_owned<F: FnOnce() -> String>(
     root: &Path,
     program: &str,
@@ -723,10 +829,12 @@ fn cargo_bin() -> Utf8PathBuf {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
 
     use super::{
         CrateDir, SELF_CRATE, Scope, ScopedTestCommands, TestTargets, binary_test_command,
-        is_shared_build_input, scoped_test_commands, should_validate_nextest_config, test_targets,
+        cli_executable, is_shared_build_input, scoped_test_commands,
+        should_validate_nextest_config, test_targets,
     };
     use camino::Utf8PathBuf;
 
@@ -811,6 +919,21 @@ mod tests {
             ])))
         );
         Ok(())
+    }
+
+    #[test]
+    fn the_cli_executable_comes_from_its_compiler_artifact_message() {
+        let messages: &str = concat!(
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe_core\"},\"executable\":null}\n",
+            "not json\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe\"},\"executable\":\"/t/debug/disrobe\"}\n",
+            "{\"reason\":\"build-finished\",\"success\":true}\n",
+        );
+        assert_eq!(
+            cli_executable(messages),
+            Some(OsString::from("/t/debug/disrobe"))
+        );
+        assert_eq!(cli_executable("{\"reason\":\"build-finished\"}"), None);
     }
 
     #[test]
