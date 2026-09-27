@@ -122,8 +122,8 @@ pub(crate) enum DotnetCmd {
         #[arg(
             long,
             value_enum,
-            default_value_t = DotnetBackendKind::Auto,
-            help = "decompiler backend; defaults to the first available on PATH"
+            default_value_t = DotnetBackendKind::Native,
+            help = "decompiler backend: the in-house decompiler by default; an external one runs only when named here"
         )]
         backend: DotnetBackendKind,
         #[arg(long, default_value_t = 300, help = "per-backend timeout in seconds")]
@@ -209,7 +209,7 @@ pub(crate) enum DotnetCmd {
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DotnetBackendKind {
-    Auto,
+    Native,
     Ilspy,
     Dnspy,
     DnspyEx,
@@ -348,7 +348,7 @@ fn decompile(
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0432: cannot create out dir: {e}"))?;
 
-    let backend: Option<Backend> = pick_backend(backend_choice);
+    let backend: Option<Backend> = pick_backend(backend_choice)?;
     let (invocation, backend_error): (Option<BackendInvocation>, Option<String>) =
         backend.map_or((None, None), |b: Backend| {
             match invoke_decompile(b, &input, &out_dir, Duration::from_secs(timeout_secs)) {
@@ -1127,27 +1127,21 @@ fn backends() -> miette::Result<()> {
     Ok(())
 }
 
-fn pick_backend(choice: DotnetBackendKind) -> Option<Backend> {
-    let want: Option<Backend> = match choice {
-        DotnetBackendKind::Ilspy => Some(Backend::Ilspy),
-        DotnetBackendKind::Dnspy => Some(Backend::Dnspy),
-        DotnetBackendKind::DnspyEx => Some(Backend::DnspyEx),
-        DotnetBackendKind::De4dot => Some(Backend::De4dot),
-        DotnetBackendKind::Auto => None,
+fn pick_backend(choice: DotnetBackendKind) -> miette::Result<Option<Backend>> {
+    let want: Backend = match choice {
+        DotnetBackendKind::Native => return Ok(None),
+        DotnetBackendKind::Ilspy => Backend::Ilspy,
+        DotnetBackendKind::Dnspy => Backend::Dnspy,
+        DotnetBackendKind::DnspyEx => Backend::DnspyEx,
+        DotnetBackendKind::De4dot => Backend::De4dot,
     };
-    if let Some(b) = want
-        && probe(b)
-    {
-        return Some(b);
+    if probe(want) {
+        Ok(Some(want))
+    } else {
+        Err(miette::miette!(
+            "DR-CLI-0409: --backend {choice:?} is not installed; install it, or omit --backend to use the in-house decompiler"
+        ))
     }
-    [
-        Backend::Ilspy,
-        Backend::DnspyEx,
-        Backend::Dnspy,
-        Backend::De4dot,
-    ]
-    .into_iter()
-    .find(|&b: &Backend| probe(b))
 }
 
 fn format_runtime(summary: &PassSummary) -> String {

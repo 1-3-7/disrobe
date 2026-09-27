@@ -36,7 +36,7 @@ disrobe auto app.apk --out recovered/         # recursively process recognized p
 disrobe auto classes.dex --format json --out recovered/
 ```
 
-Backend routing differs by format. `.dex` and `.apk` write in-house Dalvik source by default and invoke an Android backend only when `--backend jadx` or `--backend dex2-jar` is selected. `.jar` writes in-house per-class source by default, and `--backend auto` also invokes the first available JVM backend. `.class` uses `--backend auto` for the first available JVM backend; add `--emit source` to write the in-house source. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
+Every format writes in-house source by default: Dalvik source for `.dex` and `.apk`, per-class source for `.jar` and `.class`. An external backend runs only when `--backend` names it: `cfr`, `vineflower`, `procyon`, `jd` or `krakatau` for class and jar files, `jadx` or `dex2-jar` for DEX and APK input. A named backend that is not installed, or that does not apply to the input format, fails with an error. `disrobe` validates the classfile itself (format 1.0.2-25) and recovers records, sealed types, and pattern matching where the selected backend supports them, plus Kotlin and Scala idioms.
 
 `disrobe jvm dex2-jar` is the in-house DEX-to-class translator. It writes a deterministic class tree and `classes.jar` without an external executable. `disrobe jvm decompile <dex> --backend dex2-jar` is different: it invokes an installed `d2j-dex2jar` backend and keeps that backend's contract and output separate from the in-house translator.
 

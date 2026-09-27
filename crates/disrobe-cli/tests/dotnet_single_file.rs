@@ -29,7 +29,7 @@ fn run_dotnet_decompile(input: &Path, out: &Path) -> disrobe_core::subprocess::C
         .arg("--out")
         .arg(out)
         .arg("--backend")
-        .arg("auto")
+        .arg("native")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let child: std::process::Child = command

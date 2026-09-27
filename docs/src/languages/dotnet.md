@@ -32,7 +32,7 @@ disrobe dotnet backends                  # report available .NET backends on PAT
 disrobe auto App.exe --out recovered/     # static protector peel + in-house CIL-to-C#
 ```
 
-`decompile` always runs the in-house CIL renderer. Its default `--backend auto` policy may also invoke the first installed external backend in this order: ILSpy, dnSpyEx, dnSpy, then de4dot. `--backend ilspy|dnspy|dnspy-ex|de4dot` requests one explicitly, but the current selector falls back to the same first-installed order if the requested tool is absent. `disrobe auto` stays on the registered in-house pass and does not launch those backends. `analyze` reports the PE and CLR summary, protector detection, and whether ReadyToRun (R2R) or Native AOT is detected. Use `dotnet native-aot` for the detailed AOT report and recovered method bodies.
+`decompile` always runs the in-house CIL renderer. `--backend ilspy|dnspy|dnspy-ex|de4dot` also runs that external decompiler; a named backend that is not installed fails with an error. `disrobe auto` stays on the registered in-house pass and does not launch those backends. `analyze` reports the PE and CLR summary, protector detection, and whether ReadyToRun (R2R) or Native AOT is detected. Use `dotnet native-aot` for the detailed AOT report and recovered method bodies.
 
 ## Coverage and fidelity
 

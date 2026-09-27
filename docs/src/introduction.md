@@ -25,7 +25,7 @@ The live catalog spans <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Py
 
 - No model runs in the recovery path. Metadata bundles are deterministic structured data for downstream tools.
 - Output ordering and serialization are checked by hashing three fixture recoveries across Linux, macOS, Windows, and batch runs with one and four workers.
-- The main CLI ships as one Rust binary. In-house paths launch no external program. Commands with optional backends can invoke installed tools when you select a backend or use that command's `--backend auto` policy.
+- The main CLI ships as one Rust binary. In-house paths launch no external program. Commands with optional backends invoke an installed tool only when you name it with `--backend`.
 - The shared artifact layer can store recovered state in a content-addressed `.dr` envelope with an rkyv payload, postcard sidecar, and BLAKE3 root. Chain runs record topology and per-stage provenance separately.
 - Python's normalized opcode-structure agreement is <!-- m:py_stdlib_full_pct -->95.18%<!-- /m --> on a fixed 574-module CPython 3.14 core population (<!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> code objects), excluding `idlelib` and `turtledemo`. Its pinned 200-module subset reaches <!-- m:py_stdlib_pinned_pct -->96.67%<!-- /m --> (<!-- m:py_stdlib_pinned_count -->6077 of 6286<!-- /m -->). See the [comparison rules](./languages/python.md#measured-opcode-structure).
 

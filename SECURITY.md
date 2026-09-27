@@ -143,8 +143,8 @@ The tables list parser, subprocess, and network surfaces. The attack-surface che
 | `crates/disrobe-core/src/subprocess.rs`, `crates/disrobe-core/src/format/process.rs` | The contained spawn API (`run_captured`, `run_captured_with_env`) the adapters below use, and the native-only format probe. Both spawn through `disrobe-tool-process`. |
 | `crates/disrobe-binfmt/src/external_wrap.rs` | unrar and 7-Zip for external extraction, through a contained, bounded `CommandSpec`. |
 | `crates/disrobe-cli/src/cli/native.rs`, `crates/disrobe-pass-native/src/decompile.rs` | External decompilers for `native decompile`: Ghidra, Rizin, Binary Ninja, IDA, RetDec or the LLVM IR emitter. The Angr backend is refused, because it would run Python over the input. |
-| `crates/disrobe-pass-dotnet/src/backends.rs` | ILSpy, dnSpyEx, dnSpy or de4dot for `dotnet decompile`: the tool `--backend` names if it is installed, otherwise the first installed in that order, each located through its `DISROBE_EXTERNAL_*` variable or `PATH`. |
-| `crates/disrobe-pass-jvm/src/backends.rs` | CFR, Vineflower, Procyon, JD or Krakatau for `jvm decompile`: the one `--backend` names, otherwise the first installed. |
+| `crates/disrobe-pass-dotnet/src/backends.rs` | ILSpy, dnSpyEx, dnSpy or de4dot for `dotnet decompile`, only the tool `--backend` names, located through its `DISROBE_EXTERNAL_*` variable or `PATH`. |
+| `crates/disrobe-pass-jvm/src/backends.rs` | CFR, Vineflower, Procyon, JD or Krakatau for `jvm decompile`, only the one `--backend` names. |
 | `crates/disrobe-pass-py-decompile/src/recompile.rs` | Python, for the `py decompile` recompile check unless `--no-roundtrip` is set. |
 | `crates/disrobe-pass-pyarmor/src/dynamic_hook.rs` | The located Python interpreter against the obfuscated wrapper, only for `--allow-dynamic` PyArmor key extraction. The processes the sample starts are contained with it. |
 | `crates/disrobe-cli/src/cli/install/mod.rs` | `disrobe install`'s package-manager / installer action execution, `sudo`-wrapped when the action is admin-required |

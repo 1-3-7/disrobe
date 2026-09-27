@@ -107,7 +107,7 @@ disrobe <pass> --help      # drill into any pass, e.g. `disrobe py --help`
 
 ## Optional external backends
 
-Disrobe includes its own recovery engines for native code and the supported bytecode languages. External backends add rendering and analysis paths: Ghidra for native decompilation; CFR, Vineflower, Procyon, and JADX for JVM and Android inputs; ILSpy, dnSpy, dnSpyEx, and de4dot for .NET. Backend selection is command-specific. In particular, JVM and .NET `--backend auto` can invoke an installed tool; the corresponding JVM and .NET `disrobe auto` passes use their in-process engines. Recompilation checks have separate compiler/interpreter prerequisites, as listed above.
+Disrobe includes its own recovery engines for native code and the supported bytecode languages. External backends add rendering and analysis paths: Ghidra for native decompilation; CFR, Vineflower, Procyon, and JADX for JVM and Android inputs; ILSpy, dnSpy, dnSpyEx, and de4dot for .NET. Backend selection is command-specific. JVM and .NET decompilation invoke an installed tool only when `--backend` names it; the JVM and .NET `disrobe auto` passes use their in-process engines. Recompilation checks have separate compiler/interpreter prerequisites, as listed above.
 
 Probe what is installed and what is missing:
 

@@ -10,7 +10,7 @@
 
 Give `disrobe auto` an executable, an app package, a script, or a firmware image. It names each layer (installer, archive, packer, freezer, protector, obfuscator, bytecode), removes it with the matching recovery pass, and runs again on what that pass produced until no pass recognizes what is left. One Rust binary covers Python, JavaScript and WebAssembly, Java and Android, .NET, native PE, ELF, and Mach-O code, Go, Lua, PHP, Ruby, Erlang and Elixir, ActionScript, shell scripts and Office macros, React Native and Flutter apps, installers, and firmware. `disrobe catalog` lists the <!-- m:catalog_family_total -->170<!-- /m --> packers, protectors, obfuscators, and bytecode families it recognizes across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems.
 
-The engines are built in. Python bytecode decompiles without a Python installation, JavaScript recovery needs no Node.js, and the Java, Android, and .NET decompilers need no JVM or .NET SDK; with the default `--backend auto`, `jvm decompile` and `dotnet decompile` use an installed external decompiler first. Disrobe does not launch the program it analyzes unless you pass `--allow-dynamic`, which applies only to PyArmor v6 and v7. The [safety model](#safety-model) lists the bounded interpreters that evaluate code taken from an input and the host tools Disrobe starts.
+The engines are built in. Python bytecode decompiles without a Python installation, JavaScript recovery needs no Node.js, and the Java, Android, and .NET decompilers need no JVM or .NET SDK; `jvm decompile` and `dotnet decompile` run an installed external decompiler only when `--backend` names it. Disrobe does not launch the program it analyzes unless you pass `--allow-dynamic`, which applies only to PyArmor v6 and v7. The [safety model](#safety-model) lists the bounded interpreters that evaluate code taken from an input and the host tools Disrobe starts.
 
 It is built for malware analysts, reverse engineers, incident responders, CTF players, and security researchers.
 
@@ -195,7 +195,7 @@ Disrobe is built to open hostile files, but it is not a sandbox. Run it on input
 | Installed archive tools: unrar, 7z, bsdtar, pkgutil, and hdiutil, which mounts the DMG or ISO image | When the built-in reader cannot extract a RAR, PKG, DMG, or ISO file | 180 seconds per extraction |
 | Ghidra headless | `native decompile --backend ghidra` | 10 minutes |
 | Package managers | `install` and `doctor --auto-install` | 10 minutes per package |
-| Installed external decompilers: ILSpy, dnSpy, dnSpyEx, de4dot, CFR, Vineflower, Procyon, JD, Krakatau, JADX, dex2jar | `dotnet decompile` and `jvm decompile` with the default `--backend auto`, or a backend you name | `--timeout-secs`, 300 seconds by default |
+| Installed external decompilers: ILSpy, dnSpy, dnSpyEx, de4dot, CFR, Vineflower, Procyon, JD, Krakatau, JADX, dex2jar | `dotnet decompile` and `jvm decompile` when `--backend` names the tool | `--timeout-secs`, 300 seconds by default |
 | Installed code formatters: ruff, prettier, rustfmt, gofmt, clang-format, and others | By default, on recovered source, when the formatter is on `PATH` | The source goes to the formatter on stdin; 5 seconds per call; the output stays unformatted when the formatter is missing or fails |
 | Installed optional tools, with `--version` | `doctor` and `bug-report` | 3 seconds per tool |
 

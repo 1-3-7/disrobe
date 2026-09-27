@@ -35,7 +35,7 @@ use super::globals;
 #[derive(Subcommand, Debug)]
 pub(crate) enum JvmCmd {
     #[command(
-        about = "decompile a .class / .jar / .dex / .apk through a JVM/Android backend (CFR, Vineflower, Procyon, JADX, ...)"
+        about = "decompile a .class / .jar / .dex / .apk with the in-house decompiler, or an installed one named by --backend"
     )]
     Decompile {
         #[arg(help = "input .class / .jar / .dex / .apk file")]
@@ -45,8 +45,8 @@ pub(crate) enum JvmCmd {
         #[arg(
             long,
             value_enum,
-            default_value_t = JvmBackendKind::Auto,
-            help = "decompiler backend; defaults to the first available on PATH"
+            default_value_t = JvmBackendKind::Native,
+            help = "decompiler backend: the in-house decompiler by default; an external one runs only when named here"
         )]
         backend: JvmBackendKind,
         #[arg(long, default_value_t = 300, help = "per-backend timeout in seconds")]
@@ -145,7 +145,7 @@ pub(crate) enum JvmCmd {
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JvmBackendKind {
-    Auto,
+    Native,
     Cfr,
     Vineflower,
     Procyon,
@@ -1673,8 +1673,7 @@ fn run_jvm_backend(
     out_dir: &std::path::Path,
     timeout_secs: u64,
 ) -> miette::Result<Option<BackendInvocation>> {
-    let backend: Option<JvmBackend> = pick_jvm_backend(caps, choice);
-    let Some(backend): Option<JvmBackend> = backend else {
+    let Some(backend): Option<JvmBackend> = pick_jvm_backend(caps, choice)? else {
         return Ok(None);
     };
     let args: Vec<String> = match backend {
@@ -1714,8 +1713,7 @@ fn run_android_backend(
     out_dir: &std::path::Path,
     timeout_secs: u64,
 ) -> miette::Result<Option<BackendInvocation>> {
-    let backend: Option<AndroidBackend> = pick_android_backend(caps, choice);
-    let Some(backend): Option<AndroidBackend> = backend else {
+    let Some(backend): Option<AndroidBackend> = pick_android_backend(caps, choice)? else {
         return Ok(None);
     };
     let args: Vec<String> = match backend {
@@ -1736,37 +1734,58 @@ fn run_android_backend(
     Ok(Some(invocation))
 }
 
-fn pick_jvm_backend(caps: &BackendCapability, choice: JvmBackendKind) -> Option<JvmBackend> {
-    let want: Option<JvmBackend> = match choice {
-        JvmBackendKind::Cfr => Some(JvmBackend::Cfr),
-        JvmBackendKind::Vineflower => Some(JvmBackend::Vineflower),
-        JvmBackendKind::Procyon => Some(JvmBackend::Procyon),
-        JvmBackendKind::Jd => Some(JvmBackend::JdGui),
-        JvmBackendKind::Krakatau => Some(JvmBackend::Krakatau),
-        _ => None,
+fn pick_jvm_backend(
+    caps: &BackendCapability,
+    choice: JvmBackendKind,
+) -> miette::Result<Option<JvmBackend>> {
+    let want: JvmBackend = match choice {
+        JvmBackendKind::Native => return Ok(None),
+        JvmBackendKind::Cfr => JvmBackend::Cfr,
+        JvmBackendKind::Vineflower => JvmBackend::Vineflower,
+        JvmBackendKind::Procyon => JvmBackend::Procyon,
+        JvmBackendKind::Jd => JvmBackend::JdGui,
+        JvmBackendKind::Krakatau => JvmBackend::Krakatau,
+        JvmBackendKind::Jadx | JvmBackendKind::Dex2Jar => {
+            return Err(miette::miette!(
+                "DR-CLI-0408: --backend {choice:?} decompiles DEX and APK input, not class or jar files"
+            ));
+        }
     };
-    if let Some(b) = want
-        && caps.jvm.contains(&b)
-    {
-        return Some(b);
+    if caps.jvm.contains(&want) {
+        Ok(Some(want))
+    } else {
+        Err(miette::miette!(
+            "DR-CLI-0409: --backend {} is not installed; install it, or omit --backend to use the in-house decompiler",
+            jvm_label(want)
+        ))
     }
-    caps.jvm.first().copied()
 }
 
 fn pick_android_backend(
     caps: &BackendCapability,
     choice: JvmBackendKind,
-) -> Option<AndroidBackend> {
-    let want: Option<AndroidBackend> = match choice {
-        JvmBackendKind::Jadx => Some(AndroidBackend::Jadx),
-        JvmBackendKind::Dex2Jar => Some(AndroidBackend::Dex2Jar),
-        _ => None,
+) -> miette::Result<Option<AndroidBackend>> {
+    let want: AndroidBackend = match choice {
+        JvmBackendKind::Native => return Ok(None),
+        JvmBackendKind::Jadx => AndroidBackend::Jadx,
+        JvmBackendKind::Dex2Jar => AndroidBackend::Dex2Jar,
+        JvmBackendKind::Cfr
+        | JvmBackendKind::Vineflower
+        | JvmBackendKind::Procyon
+        | JvmBackendKind::Jd
+        | JvmBackendKind::Krakatau => {
+            return Err(miette::miette!(
+                "DR-CLI-0408: --backend {choice:?} decompiles class and jar files, not DEX or APK input"
+            ));
+        }
     };
-    let b: AndroidBackend = want?;
-    if caps.android.contains(&b) {
-        return Some(b);
+    if caps.android.contains(&want) {
+        Ok(Some(want))
+    } else {
+        Err(miette::miette!(
+            "DR-CLI-0409: --backend {choice:?} is not installed; install it, or omit --backend to use the in-house decompiler"
+        ))
     }
-    None
 }
 
 const fn jvm_label(b: JvmBackend) -> &'static str {
@@ -2155,7 +2174,7 @@ fn emit_native_artifacts(
     peeled: Option<&PeeledClass>,
 ) -> miette::Result<bool> {
     let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
-    let want_source: bool = spec.contains(EmitKind::Source);
+    let want_source: bool = spec.is_empty() || spec.contains(EmitKind::Source);
     let want_disasm: bool = spec.contains(EmitKind::Disasm);
     if want_source {
         let path: PathBuf = out_dir.join(format!("{stem}.java"));
