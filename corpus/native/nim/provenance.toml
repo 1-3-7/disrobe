@@ -12,5 +12,6 @@ build_mode = "release with runtime checks"
 
 [[artifacts]]
 path = "hello.nim.elf"
-sha256 = "af776eac1850898ff941c918f6929797b1daf68956004f68c0c53f1b23b2a6ed"
+sha256 = "62ee44dc5adede2d9fb0905f9551d774bde7d8c3a340941bfb17601ae1b2214a"
+path_rewrite = "the seven DWARF paths of the Zig glibc stubs had the build host home directory; each was replaced in place with a same-length neutral prefix (C:\\workdir_\\.local\\tools\\), matching the C:\\workdir prefix of the other build paths"
 build_command = "nim c -d:release --mm:orc --cpu:amd64 --os:linux --cc:clang --clang.exe:zig --clang.linkerexe:zig --out:hello.nim.elf hello.nim"
