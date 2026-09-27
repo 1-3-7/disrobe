@@ -299,25 +299,12 @@ mod tests {
         if alt.is_file() {
             return alt;
         }
-        let status: std::process::ExitStatus = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "disrobe-core",
-                "--bin",
-                "disrobe-core-mock-proc",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("spawn cargo build for mock-proc");
-        assert!(
-            status.success(),
-            "cargo build disrobe-core-mock-proc failed"
+        panic!(
+            "{} is not built; cargo builds it with this crate's integration tests, or run `cargo \
+             build -p disrobe-core --bin disrobe-core-mock-proc` first, because this test never \
+             starts cargo",
+            candidate.display()
         );
-        assert!(candidate.is_file(), "mock-proc binary not at expected path");
-        candidate
     }
 
     fn spawn_mock(args: &[&str]) -> Child {
