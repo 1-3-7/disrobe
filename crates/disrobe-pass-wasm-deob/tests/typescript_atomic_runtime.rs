@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use disrobe_core::subprocess::{CapturedOutput, run_captured};
+use disrobe_core::subprocess::{CapturedOutput, run_captured_with_env};
 use disrobe_pass_wasm_deob::{
     AtomicMemoryRefusal, Error, LiftTarget, TypeScriptModuleLift, try_lift_function_from_module,
     try_lift_typescript_module, typescript_runtime_prelude,
@@ -37,9 +37,15 @@ fn run_typescript(source: &str) -> CapturedOutput {
         OsString::from("--no-warnings"),
         source_path.as_os_str().to_owned(),
     ];
-    run_captured(&node(), &args, NODE_TIMEOUT, NODE_CAPTURE)
-        .expect("spawn Node")
-        .expect("Node atomic runtime must finish within its deadline")
+    run_captured_with_env(
+        &node(),
+        &args,
+        [("FORCE_COLOR", "0")],
+        NODE_TIMEOUT,
+        NODE_CAPTURE,
+    )
+    .expect("spawn Node")
+    .expect("Node atomic runtime must finish within its deadline")
 }
 
 #[test]
