@@ -31,7 +31,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
-bytes = { workspace = true }
 
 [features]
 default = []

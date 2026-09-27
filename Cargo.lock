@@ -1913,7 +1913,6 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "color-eyre",
- "console",
  "disrobe-binfmt",
  "disrobe-capabilities",
  "disrobe-core",
@@ -1999,7 +1998,6 @@ dependencies = [
  "wat",
  "zeroize",
  "zip",
- "zstd",
 ]
 
 [[package]]
@@ -2070,8 +2068,6 @@ name = "disrobe-ir"
 version = "0.10.6"
 dependencies = [
  "blake3",
- "bytecheck",
- "bytes",
  "disrobe-core",
  "divan",
  "memmap2",
@@ -2154,14 +2150,6 @@ dependencies = [
  "disrobe-llm-metadata",
  "disrobe-nir",
  "disrobe-pass-native",
- "disrobe-pass-nuitka",
- "disrobe-pass-py-decompile",
- "disrobe-pass-py-deob",
- "disrobe-pass-py-disasm",
- "disrobe-pass-pyarmor",
- "disrobe-pass-pyfreeze",
- "disrobe-pass-pyinstaller",
- "disrobe-pass-sourcedefender",
  "disrobe-pass-wasm-deob",
  "disrobe-passes",
  "disrobe-query",
@@ -2462,7 +2450,6 @@ name = "disrobe-pass-nuitka"
 version = "0.10.6"
 dependencies = [
  "blake3",
- "bytes",
  "disrobe-bytes",
  "disrobe-core",
  "disrobe-pass-native",
@@ -2636,7 +2623,6 @@ version = "0.10.6"
 dependencies = [
  "aes",
  "brotli",
- "bytes",
  "bzip2-rs",
  "ctr",
  "disrobe-capabilities",
@@ -2835,29 +2821,9 @@ name = "disrobe-playground"
 version = "0.10.6"
 dependencies = [
  "blake3",
- "disrobe-binfmt",
  "disrobe-core",
- "disrobe-pass-as3",
- "disrobe-pass-beam",
- "disrobe-pass-dotnet",
- "disrobe-pass-go",
- "disrobe-pass-js-deob",
- "disrobe-pass-jvm",
- "disrobe-pass-lua",
- "disrobe-pass-mobile",
  "disrobe-pass-native",
- "disrobe-pass-nuitka",
- "disrobe-pass-php",
  "disrobe-pass-py-decompile",
- "disrobe-pass-py-deob",
- "disrobe-pass-py-disasm",
- "disrobe-pass-pyarmor",
- "disrobe-pass-pyfreeze",
- "disrobe-pass-pyinstaller",
- "disrobe-pass-ruby",
- "disrobe-pass-shell",
- "disrobe-pass-sourcedefender",
- "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
  "disrobe-passes",
  "disrobe-py-marshal",

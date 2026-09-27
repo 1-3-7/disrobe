@@ -17,11 +17,9 @@ workspace = true
 [dependencies]
 disrobe-core = { workspace = true }
 rkyv = { workspace = true }
-bytecheck = { workspace = true }
 postcard = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }
-bytes = { workspace = true }
 thiserror = { workspace = true }
 memmap2 = { workspace = true }
 

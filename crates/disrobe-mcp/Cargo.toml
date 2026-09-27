@@ -21,15 +21,7 @@ full = ["chain", "js", "wasm", "php", "ruby", "shell", "mobile", "lua", "swift",
 chain = [
     "disrobe-core/chain",
     "disrobe-binfmt/chain",
-    "disrobe-pass-pyarmor/chain",
     "disrobe-pass-native/chain",
-    "disrobe-pass-py-deob/chain",
-    "disrobe-pass-sourcedefender/chain",
-    "disrobe-pass-pyfreeze/chain",
-    "disrobe-pass-nuitka/chain",
-    "disrobe-pass-py-disasm/chain",
-    "disrobe-pass-py-decompile/chain",
-    "disrobe-pass-pyinstaller/chain",
     "dep:disrobe-passes",
     "disrobe-passes/pyarmor",
     "disrobe-passes/native",
@@ -65,15 +57,7 @@ disrobe-core = { workspace = true, features = ["chain"] }
 disrobe-ir = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
 disrobe-binfmt = { workspace = true }
-disrobe-pass-pyarmor = { workspace = true }
 disrobe-pass-native = { workspace = true }
-disrobe-pass-py-deob = { workspace = true }
-disrobe-pass-sourcedefender = { workspace = true }
-disrobe-pass-pyfreeze = { workspace = true }
-disrobe-pass-nuitka = { workspace = true }
-disrobe-pass-py-disasm = { workspace = true }
-disrobe-pass-py-decompile = { workspace = true }
-disrobe-pass-pyinstaller = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true, optional = true }
 disrobe-query = { workspace = true }
 disrobe-passes = { workspace = true, optional = true }
