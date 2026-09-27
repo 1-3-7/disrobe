@@ -144,6 +144,10 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         json: bool,
     },
+    Comments {
+        #[arg(long, default_value = "HEAD")]
+        rev: String,
+    },
     Golden {
         #[command(subcommand)]
         mode: GoldenMode,
@@ -182,6 +186,7 @@ fn main() -> ExitCode {
         Cmd::Prepush { full } => run_prepush(full),
         Cmd::PushGraders { mode } => run_push_graders(mode),
         Cmd::Health { json } => run_health(json),
+        Cmd::Comments { rev } => comments::run_at(&workspace_root()?, &rev),
         Cmd::Golden { mode } => run_golden(mode),
         Cmd::SetupHooks => run_setup_hooks(),
         #[cfg(feature = "playground")]

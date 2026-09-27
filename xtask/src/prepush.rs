@@ -68,6 +68,10 @@ pub(crate) fn run(root: &Path, full: bool) -> Result<()> {
         crate::health::run(root, false)?;
         Ok(GateOutcome::Ran)
     })?;
+    total += gate("comments", || {
+        crate::comments::run_at(root, "HEAD")?;
+        Ok(GateOutcome::Ran)
+    })?;
     total += gate("clippy", || gate_clippy(root, &scope))?;
     total += gate("test", || gate_test(root, &scope))?;
     println!(

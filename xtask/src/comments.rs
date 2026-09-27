@@ -1,11 +1,10 @@
-use std::ffi::OsStr;
-use std::path::{Component, Path, PathBuf};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use eyre::{Result, WrapErr, bail};
+use eyre::{Result, WrapErr, bail, eyre};
 
-use crate::fileio::read_text_bounded;
-
-const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 const SOURCE_TREES: [&str; 4] = ["crates", "xtask", "benches", "fuzz"];
 
@@ -17,6 +16,15 @@ const EXCERPT_CHARS: usize = 96;
 
 const CHAR_LITERAL_BUDGET: usize = 12;
 
+pub(crate) const PINNED_COMMENT_LINES: usize = 0;
+
+const BANNED_WORDS: [&str; 5] = ["TODO", "FIXME", "XXX", "HACK", "NOTE"];
+
+const CODE_OPENERS: [&str; 12] = [
+    "let ", "fn ", "use ", "pub ", "impl ", "mod ", "struct ", "enum ", "const ", "static ",
+    "return", "#[",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lexer {
     Code,
@@ -26,119 +34,251 @@ enum Lexer {
     RawText(usize),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommentKind {
+    Line,
+    Block,
+}
+
 #[derive(Debug, PartialEq, Eq)]
-struct Finding {
+struct Comment {
     source: String,
     line: usize,
     column: usize,
-    token: &'static str,
+    kind: CommentKind,
+    own_line: bool,
+    after_token: String,
     excerpt: String,
 }
 
-impl Finding {
-    fn render(&self) -> String {
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Allowed,
+    Rejected(&'static str),
+}
+
+impl Comment {
+    fn verdict(&self) -> Verdict {
+        if self.kind == CommentKind::Block {
+            return Verdict::Rejected("a block or block doc comment");
+        }
+        if self.after_token.starts_with("//") {
+            return Verdict::Rejected("a `////` comment");
+        }
+        if self.after_token.starts_with('/') {
+            return Verdict::Rejected("a `///` doc comment");
+        }
+        if self.after_token.starts_with('!') {
+            return Verdict::Rejected("a `//!` doc comment");
+        }
+        if !self.own_line {
+            return Verdict::Rejected("a trailing comment");
+        }
+        let content: &str = self.after_token.trim();
+        if content
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .any(|word: &str| BANNED_WORDS.contains(&word))
+        {
+            return Verdict::Rejected("a TODO-class marker");
+        }
+        if content.ends_with([';', '{', '}'])
+            || CODE_OPENERS
+                .iter()
+                .any(|opener: &&str| content.starts_with(opener))
+        {
+            return Verdict::Rejected("code-shaped text");
+        }
+        Verdict::Allowed
+    }
+
+    fn render(&self, reason: &str) -> String {
         format!(
-            "{}:{}:{} opens a `{}` comment: {}",
-            self.source, self.line, self.column, self.token, self.excerpt
+            "{}:{}:{} is {reason}: {}",
+            self.source, self.line, self.column, self.excerpt
         )
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct Tally {
+    rejected: Vec<String>,
+    allowed_lines: usize,
+}
+
 pub(crate) fn run(root: &Path) -> Result<()> {
-    let sources: Vec<PathBuf> = surface(root)?;
+    run_at(root, "HEAD")
+}
+
+pub(crate) fn run_at(root: &Path, rev: &str) -> Result<()> {
+    let sources: Vec<(String, String)> = committed_sources(root, rev)?;
     if sources.len() < MIN_SOURCES {
         bail!(
-            "the rust source surface under {} resolved to {} file(s), fewer than the {MIN_SOURCES} \
+            "the rust source surface of {rev} resolved to {} file(s), fewer than the {MIN_SOURCES} \
              this check requires; a walk that finds almost nothing passes whatever the sources say",
-            root.display(),
             sources.len()
         );
     }
+    let tally: Tally = tally(&sources)?;
+    judge(&tally, PINNED_COMMENT_LINES, rev)?;
+    println!(
+        "xtask comments: {} rust source file(s) at {rev} carry {} own-line `//` comment line(s), \
+         the pinned count, and no doc, block, trailing, TODO-class or code-shaped comment",
+        sources.len(),
+        tally.allowed_lines
+    );
+    Ok(())
+}
 
-    let mut findings: Vec<String> = Vec::new();
-    for path in &sources {
-        let relative: String = path.strip_prefix(root).map_or_else(
-            |_| path.to_string_lossy().into_owned(),
-            |rest: &Path| rest.to_string_lossy().replace('\\', "/"),
-        );
-        let text: String = read_text_bounded(path, MAX_SOURCE_BYTES)
-            .wrap_err_with(|| format!("reading rust source {relative}"))?;
-        let reading: Reading = read(&relative, &text);
+fn tally(sources: &[(String, String)]) -> Result<Tally> {
+    let mut tally: Tally = Tally {
+        rejected: Vec::new(),
+        allowed_lines: 0,
+    };
+    for (path, text) in sources {
+        let reading: Reading = read(path, text);
         if let Some(unclosed) = reading.terminal.unclosed() {
             bail!(
-                "the lexer reached the end of {relative} still inside {unclosed}, so it lost track \
+                "the lexer reached the end of {path} still inside {unclosed}, so it lost track \
                  of what is code and what is data in that file. every comment after the point it \
                  desynchronised would go unreported, and a clean result here would mean nothing. \
                  this is a defect in the check, not in the file"
             );
         }
-        for finding in reading.findings {
-            findings.push(finding.render());
-        }
-    }
-
-    if !findings.is_empty() {
-        bail!(
-            "{} rust source location(s) open a comment. this codebase carries none: naming and the \
-             per-crate notes hold what a comment would say, and a doc comment counts the same as any \
-             other. a comment token inside a string literal, a raw string, or fixture data is not \
-             reported, so every location below is a real comment in real code:\n  {}",
-            findings.len(),
-            findings.join("\n  ")
-        );
-    }
-
-    println!(
-        "xtask regen: {} rust source file(s) open no comment, counting `//`, `///`, `//!` and `/*`, \
-         and reading comment tokens inside string and raw-string literals as the data they are",
-        sources.len()
-    );
-    Ok(())
-}
-
-fn surface(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut sources: Vec<PathBuf> = Vec::new();
-    for tree in SOURCE_TREES {
-        let dir: PathBuf = root.join(tree);
-        if !dir.is_dir() {
-            continue;
-        }
-        for entry in walkdir::WalkDir::new(&dir)
-            .sort_by_file_name()
-            .into_iter()
-            .filter_entry(|dirent: &walkdir::DirEntry| !is_skipped(dirent.path()))
-        {
-            let dirent: walkdir::DirEntry =
-                entry.wrap_err_with(|| format!("walking {}", dir.display()))?;
-            let path: &Path = dirent.path();
-            if path.is_file() && is_rust(path) {
-                sources.push(path.to_path_buf());
+        for comment in reading.comments {
+            match comment.verdict() {
+                Verdict::Allowed => tally.allowed_lines += 1,
+                Verdict::Rejected(reason) => tally.rejected.push(comment.render(reason)),
             }
         }
     }
-    sources.sort();
-    sources.dedup();
-    Ok(sources)
+    Ok(tally)
 }
 
-fn is_skipped(path: &Path) -> bool {
-    path.components().any(|component: Component<'_>| {
-        component
-            .as_os_str()
-            .to_str()
-            .is_some_and(|name: &str| SKIPPED_COMPONENTS.contains(&name))
-    })
+fn judge(tally: &Tally, pinned: usize, rev: &str) -> Result<()> {
+    if !tally.rejected.is_empty() {
+        bail!(
+            "{} rust comment(s) at {rev} take a form the comment rule forbids. only an own-line \
+             `//` comment that says why code that looks wrong is right is allowed; doc, block, \
+             trailing and `////` comments, TODO-class words and commented-out code are not:\n  {}",
+            tally.rejected.len(),
+            tally.rejected.join("\n  ")
+        );
+    }
+    if tally.allowed_lines != pinned {
+        bail!(
+            "the rust sources at {rev} carry {} own-line comment line(s), but xtask/src/comments.rs \
+             pins {pinned}. every change to the count is reviewed: pin the new count in the same \
+             commit as the comment it adds or removes",
+            tally.allowed_lines
+        );
+    }
+    Ok(())
 }
 
-fn is_rust(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext: &OsStr| ext.eq_ignore_ascii_case("rs"))
+fn committed_sources(root: &Path, rev: &str) -> Result<Vec<(String, String)>> {
+    let listing: std::process::Output = Command::new("git")
+        .current_dir(root)
+        .args(["ls-tree", "-r", "-z", "--name-only", rev, "--"])
+        .args(SOURCE_TREES)
+        .output()
+        .wrap_err("listing the rust sources of the commit with git ls-tree")?;
+    if !listing.status.success() {
+        bail!(
+            "git ls-tree {rev} failed: {}",
+            String::from_utf8_lossy(&listing.stderr).trim()
+        );
+    }
+    let paths: Vec<String> = listing
+        .stdout
+        .split(|byte: &u8| *byte == 0)
+        .filter(|name: &&[u8]| !name.is_empty())
+        .map(|name: &[u8]| String::from_utf8_lossy(name).into_owned())
+        .filter(|name: &String| is_rust(name) && !is_skipped(name))
+        .collect();
+    read_blobs(root, rev, paths)
+}
+
+fn read_blobs(root: &Path, rev: &str, paths: Vec<String>) -> Result<Vec<(String, String)>> {
+    let mut child: Child = Command::new("git")
+        .current_dir(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .wrap_err("starting git cat-file --batch")?;
+    let mut stdin: ChildStdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| eyre!("git cat-file has no stdin"))?;
+    let stdout: ChildStdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| eyre!("git cat-file has no stdout"))?;
+    let requests: String = paths
+        .iter()
+        .map(|path: &String| format!("{rev}:{path}\n"))
+        .collect();
+    let blobs: Result<Vec<(String, String)>> = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || -> std::io::Result<()> {
+            stdin.write_all(requests.as_bytes())?;
+            drop(stdin);
+            Ok(())
+        });
+        let mut reader: BufReader<ChildStdout> = BufReader::new(stdout);
+        let mut blobs: Vec<(String, String)> = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let mut header: String = String::new();
+            reader
+                .read_line(&mut header)
+                .wrap_err_with(|| format!("reading the git cat-file header for {path}"))?;
+            let fields: Vec<&str> = header.split_whitespace().collect();
+            let [_, "blob", size] = fields.as_slice() else {
+                bail!("git cat-file answered `{}` for {rev}:{path}", header.trim());
+            };
+            let size: usize = size
+                .parse()
+                .wrap_err_with(|| format!("git cat-file size for {path}"))?;
+            if size > MAX_SOURCE_BYTES {
+                bail!("{path} at {rev} is {size} bytes, above the {MAX_SOURCE_BYTES}-byte cap");
+            }
+            let mut body: Vec<u8> = vec![0; size + 1];
+            reader
+                .read_exact(&mut body)
+                .wrap_err_with(|| format!("reading the blob of {path}"))?;
+            body.truncate(size);
+            let text: String =
+                String::from_utf8(body).map_err(|_| eyre!("{path} at {rev} is not UTF-8"))?;
+            blobs.push((path.clone(), text));
+        }
+        writer
+            .join()
+            .map_err(|_| eyre!("the git cat-file writer panicked"))?
+            .wrap_err("writing requests to git cat-file")?;
+        Ok(blobs)
+    });
+    let status: std::process::ExitStatus = child.wait().wrap_err("waiting for git cat-file")?;
+    if !status.success() {
+        bail!("git cat-file --batch exited with {status}");
+    }
+    blobs
+}
+
+fn is_skipped(path: &str) -> bool {
+    path.split('/')
+        .any(|component: &str| SKIPPED_COMPONENTS.contains(&component))
+}
+
+fn is_rust(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("rs"))
 }
 
 fn read(source: &str, text: &str) -> Reading {
     let chars: Vec<char> = text.chars().collect();
     let lines: Vec<&str> = text.lines().collect();
-    let mut findings: Vec<Finding> = Vec::new();
+    let mut comments: Vec<Comment> = Vec::new();
     let mut state: Lexer = Lexer::Code;
     let mut index: usize = 0;
     let mut line: usize = 1;
@@ -152,11 +292,29 @@ fn read(source: &str, text: &str) -> Reading {
         match state {
             Lexer::Code => {
                 if current == '/' && next == Some('/') {
-                    findings.push(finding(source, &lines, line, column, "//"));
+                    let after_token: String = chars[index + 2..]
+                        .iter()
+                        .take_while(|ch: &&char| **ch != '\n')
+                        .collect();
+                    comments.push(comment(
+                        source,
+                        &lines,
+                        line,
+                        column,
+                        CommentKind::Line,
+                        after_token,
+                    ));
                     state = Lexer::LineComment;
                     step = 2;
                 } else if current == '/' && next == Some('*') {
-                    findings.push(finding(source, &lines, line, column, "/*"));
+                    comments.push(comment(
+                        source,
+                        &lines,
+                        line,
+                        column,
+                        CommentKind::Block,
+                        String::new(),
+                    ));
                     state = Lexer::BlockComment(1);
                     step = 2;
                 } else if current == '"' {
@@ -164,7 +322,10 @@ fn read(source: &str, text: &str) -> Reading {
                 } else if let Some(prefix) = raw_text_prefix(&chars, index) {
                     state = Lexer::RawText(prefix.hashes);
                     step = prefix.width;
-                } else if current == 'b' && next == Some('"') && !joins_identifier(&chars, index) {
+                } else if matches!(current, 'b' | 'c')
+                    && next == Some('"')
+                    && !joins_identifier(&chars, index)
+                {
                     state = Lexer::Text;
                     step = 2;
                 } else if current == '\''
@@ -220,14 +381,14 @@ fn read(source: &str, text: &str) -> Reading {
     }
 
     Reading {
-        findings,
+        comments,
         terminal: state,
     }
 }
 
 #[derive(Debug)]
 struct Reading {
-    findings: Vec<Finding>,
+    comments: Vec<Comment>,
     terminal: Lexer,
 }
 
@@ -253,7 +414,7 @@ fn raw_text_prefix(chars: &[char], index: usize) -> Option<RawPrefix> {
         return None;
     }
     let mut cursor: usize = index;
-    if chars.get(cursor) == Some(&'b') {
+    if matches!(chars.get(cursor), Some('b' | 'c')) {
         cursor += 1;
     }
     if chars.get(cursor) != Some(&'r') {
@@ -304,25 +465,30 @@ fn char_literal_end(chars: &[char], index: usize) -> Option<usize> {
     None
 }
 
-fn finding(
+fn comment(
     source: &str,
     lines: &[&str],
     line: usize,
     column: usize,
-    token: &'static str,
-) -> Finding {
-    let text: &str = lines.get(line - 1).copied().unwrap_or_default().trim();
+    kind: CommentKind,
+    after_token: String,
+) -> Comment {
+    let whole: &str = lines.get(line - 1).copied().unwrap_or_default();
+    let own_line: bool = whole.chars().take(column - 1).all(char::is_whitespace);
+    let text: &str = whole.trim();
     let taken: String = text.chars().take(EXCERPT_CHARS).collect();
     let excerpt: String = if text.chars().count() > EXCERPT_CHARS {
         format!("{taken}...")
     } else {
         taken
     };
-    Finding {
+    Comment {
         source: source.to_owned(),
         line,
         column,
-        token,
+        kind,
+        own_line,
+        after_token,
         excerpt,
     }
 }
@@ -333,15 +499,137 @@ mod tests {
 
     const SRC: &str = "crates/p/src/lib.rs";
 
-    fn scan(source: &str, text: &str) -> Vec<Finding> {
-        read(source, text).findings
+    fn scan(source: &str, text: &str) -> Vec<Comment> {
+        read(source, text).comments
     }
 
     fn tokens(text: &str) -> Vec<(usize, usize, &'static str)> {
         scan(SRC, text)
             .into_iter()
-            .map(|f: Finding| (f.line, f.column, f.token))
+            .map(|c: Comment| {
+                let token: &'static str = match c.kind {
+                    CommentKind::Line => "//",
+                    CommentKind::Block => "/*",
+                };
+                (c.line, c.column, token)
+            })
             .collect()
+    }
+
+    fn verdicts(text: &str) -> Vec<Verdict> {
+        scan(SRC, text).iter().map(Comment::verdict).collect()
+    }
+
+    fn tally_of(text: &str) -> Tally {
+        tally(&[(SRC.to_owned(), text.to_owned())]).expect("lexes")
+    }
+
+    #[test]
+    fn an_own_line_why_comment_is_allowed_and_counted_per_line() {
+        let text: &str = "fn f() {\n    // the header stores the length big-endian despite the spec\n    // because every shipped build does\n    g();\n}\n";
+        assert_eq!(verdicts(text), vec![Verdict::Allowed, Verdict::Allowed]);
+        assert_eq!(tally_of(text).allowed_lines, 2);
+    }
+
+    #[test]
+    fn an_allowed_comment_passes_only_with_its_count_pinned() {
+        let text: &str = "// the loop reads one byte past the header on purpose\nfn f() {}\n";
+        let found: Tally = tally_of(text);
+        assert!(judge(&found, 1, "HEAD").is_ok());
+        let unpinned: String = format!("{:#}", judge(&found, 0, "HEAD").unwrap_err());
+        assert!(
+            unpinned.contains("carry 1 own-line comment line(s)"),
+            "{unpinned}"
+        );
+        assert!(unpinned.contains("pins 0"), "{unpinned}");
+    }
+
+    #[test]
+    fn a_stale_pin_fails_in_both_directions() {
+        let none: Tally = tally_of("fn f() {}\n");
+        assert!(format!("{:#}", judge(&none, 1, "HEAD").unwrap_err()).contains("carry 0"));
+        let two: Tally = tally_of("// one\n// two\nfn f() {}\n");
+        assert!(format!("{:#}", judge(&two, 1, "HEAD").unwrap_err()).contains("carry 2"));
+    }
+
+    #[test]
+    fn narration_passes_the_form_rule_and_is_left_to_review_of_the_count() {
+        assert_eq!(
+            verdicts("// increment the counter\nx += 1;\n"),
+            vec![Verdict::Allowed]
+        );
+    }
+
+    #[test]
+    fn todo_class_words_fail_whatever_the_count() {
+        for word in BANNED_WORDS {
+            let text: String = format!("// {word}: revisit this\nfn f() {{}}\n");
+            assert_eq!(
+                verdicts(&text),
+                vec![Verdict::Rejected("a TODO-class marker")],
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_shaped_text_fails() {
+        for text in [
+            "// let x: u8 = 1;\n",
+            "// if ready {\n",
+            "// }\n",
+            "// fn old() -> u8\n",
+            "// #[inline]\n",
+            "// return x\n",
+        ] {
+            assert_eq!(
+                verdicts(text),
+                vec![Verdict::Rejected("code-shaped text")],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_block_trailing_and_quad_slash_comments_fail() {
+        assert_eq!(
+            verdicts("/// documents f\nfn f() {}\n"),
+            vec![Verdict::Rejected("a `///` doc comment")]
+        );
+        assert_eq!(
+            verdicts("//! module note\n"),
+            vec![Verdict::Rejected("a `//!` doc comment")]
+        );
+        assert_eq!(
+            verdicts("/* why */\nfn f() {}\n"),
+            vec![Verdict::Rejected("a block or block doc comment")]
+        );
+        assert_eq!(
+            verdicts("/** doc */\nfn f() {}\n"),
+            vec![Verdict::Rejected("a block or block doc comment")]
+        );
+        assert_eq!(
+            verdicts("let x: u8 = 1; // trailing why\n"),
+            vec![Verdict::Rejected("a trailing comment")]
+        );
+        assert_eq!(
+            verdicts("//// banner\n"),
+            vec![Verdict::Rejected("a `////` comment")]
+        );
+    }
+
+    #[test]
+    fn comment_tokens_inside_every_literal_form_are_data() {
+        let text: &str = concat!(
+            "const A: &str = \"// s\";\n",
+            "const B: &str = r#\"// r\"#;\n",
+            "const C: &[u8] = b\"// b\";\n",
+            "const D: &[u8] = br#\"/* br */\"#;\n",
+            "const E: &std::ffi::CStr = c\"// c\";\n",
+            "const F: &std::ffi::CStr = cr#\"// cr \"inner\" \"#;\n",
+        );
+        assert!(scan(SRC, text).is_empty(), "{:?}", scan(SRC, text));
+        assert_eq!(read(SRC, text).terminal.unclosed(), None);
     }
 
     #[test]
@@ -350,15 +638,6 @@ mod tests {
             tokens("let x: u8 = 1;\n    // stray note\n"),
             vec![(2, 5, "//")]
         );
-    }
-
-    #[test]
-    fn a_doc_comment_counts_the_same_as_any_other() {
-        assert_eq!(
-            tokens("/// documents the item\npub fn f() {}\n"),
-            vec![(1, 1, "//")]
-        );
-        assert_eq!(tokens("//! module note\n"), vec![(1, 1, "//")]);
     }
 
     #[test]
@@ -416,12 +695,6 @@ mod tests {
     #[test]
     fn an_escaped_quote_does_not_end_the_string_early() {
         let text: &str = "let s: &str = \"he said \\\" // not a comment\";\n";
-        assert!(scan(SRC, text).is_empty(), "{:?}", scan(SRC, text));
-    }
-
-    #[test]
-    fn a_byte_string_and_a_raw_byte_string_are_read_as_literals() {
-        let text: &str = "const A: &[u8] = b\"// bytes\";\nconst B: &[u8] = br#\"/* bytes */\"#;\n";
         assert!(scan(SRC, text).is_empty(), "{:?}", scan(SRC, text));
     }
 
@@ -487,14 +760,48 @@ mod tests {
     }
 
     #[test]
-    fn the_finding_quotes_the_line_it_found() {
-        let found: Vec<Finding> = scan(SRC, "fn f() {}\n  /// documents nothing\n");
+    fn the_rejection_quotes_the_line_it_found() {
+        let found: Vec<Comment> = scan(SRC, "fn f() {}\n  /// documents nothing\n");
         assert_eq!(found.len(), 1, "{found:?}");
-        let rendered: String = found[0].render();
+        let rendered: String = found[0].render("a `///` doc comment");
         assert!(
             rendered.starts_with("crates/p/src/lib.rs:2:3"),
             "{rendered}"
         );
         assert!(rendered.contains("documents nothing"), "{rendered}");
+    }
+
+    #[test]
+    fn the_verdict_reads_the_commit_not_the_working_tree() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        let git = |args: &[&str]| -> Result<()> {
+            let status: std::process::ExitStatus = Command::new("git")
+                .current_dir(root.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(args)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(eyre!("git {args:?} failed"))
+            }
+        };
+        git(&["init", "-q"])?;
+        std::fs::create_dir_all(root.path().join("crates/p/src"))?;
+        std::fs::write(root.path().join("crates/p/src/lib.rs"), "fn f() {}\n")?;
+        git(&["add", "crates"])?;
+        git(&["commit", "-q", "-m", "probe"])?;
+        std::fs::write(
+            root.path().join("crates/p/src/lib.rs"),
+            "/// added after the commit\nfn f() {}\n",
+        )?;
+        let sources: Vec<(String, String)> = committed_sources(root.path(), "HEAD")?;
+        assert_eq!(
+            sources,
+            vec![("crates/p/src/lib.rs".to_owned(), "fn f() {}\n".to_owned())]
+        );
+        let found: Tally = tally(&sources)?;
+        assert!(judge(&found, 0, "HEAD").is_ok());
+        Ok(())
     }
 }

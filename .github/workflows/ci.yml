@@ -147,6 +147,8 @@ jobs:
         run: cargo run -p xtask -- regen --check
       - name: Check workspace structure and dependencies
         run: cargo run -p xtask -- health
+      - name: Check source comments
+        run: cargo run -p xtask -- comments
 
   push-graders:
     if: github.event_name == 'push'
@@ -1346,24 +1348,6 @@ jobs:
             exit 1
           fi
           echo "no committed scratch scaffolding"
-      - name: source comment count stays at or below the string-literal baseline
-        shell: bash
-        run: |
-          baseline=39
-          files=$(git ls-files -- crates xtask | grep '\.rs$')
-          count=$(printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)' | wc -l)
-          echo "line-leading comment-shaped lines: $count (baseline $baseline)"
-          if [ "$count" -gt "$baseline" ]; then
-            echo "this tree carries no source comments. Every one of the $baseline baseline matches is comment-shaped text INSIDE a string literal: embedded Java, Go build pragmas, YARA rule fixtures, emitted IDE plugin templates, the JS fixture text in the js-deob preset-env tests, and the js-deob hazard fixtures whose whole point is that a match sitting in a comment must not be rewritten."
-            echo "the count rose, so a real comment was added. Full list:"
-            printf '%s\n' "$files" | xargs grep -nE '^[[:space:]]*(//|/\*)'
-            exit 1
-          fi
-          if [ "$count" -lt "$baseline" ]; then
-            echo "the count fell to $count, which is an improvement; set baseline=$count in this workflow so it keeps ratcheting down"
-            exit 1
-          fi
-          echo "comment count matches the baseline exactly"
 
   msrv:
     if: github.event_name != 'workflow_dispatch' || (github.event.inputs.scope != 'clippy' && github.event.inputs.scope != 'tests')
