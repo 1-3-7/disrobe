@@ -624,13 +624,19 @@ mod tests {
             .join(rel)
     }
 
+    fn read_corpus(rel: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = corpus(rel);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the committed fixture {} is unreadable; restore it from git: {error}",
+                path.display()
+            )
+        })
+    }
+
     #[test]
     fn pass_run_decompiles_real_bytecode_to_lua_source_not_json() {
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus("lua/luac/hello.5_3.luac"))
-        else {
-            eprintln!("SKIP: lua luac fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/luac/hello.5_3.luac");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = LUA_PASS.run(&a).expect("decompile must succeed");
         assert_eq!(out.rung, Rung::Surface);
@@ -650,11 +656,7 @@ mod tests {
 
     #[test]
     fn extract_children_emits_recovered_source_and_manifest_sidecar() {
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus("lua/luac/hello.5_3.luac"))
-        else {
-            eprintln!("SKIP: lua luac fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/luac/hello.5_3.luac");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = LUA_PASS
             .extract_children(&a)
@@ -693,10 +695,9 @@ mod tests {
         let bytes: Vec<u8> =
             include_bytes!("../../../corpus/lua/obfuscators/hello.prometheus.lua").to_vec();
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-        let Ok(children): CoreResult<Vec<ChildArtifact>> = LUA_PASS.extract_children(&a) else {
-            eprintln!("SKIP: prometheus peel produced no recovery for this sample");
-            return;
-        };
+        let children: Vec<ChildArtifact> = LUA_PASS.extract_children(&a).unwrap_or_else(|error| {
+            panic!("the prometheus peel of the committed sample failed: {error}")
+        });
         let manifest: &ChildArtifact = children
             .iter()
             .find(|c: &&ChildArtifact| c.handle.relative_path == "lua.manifest.json")
@@ -711,22 +712,16 @@ mod tests {
 
     #[test]
     fn pass_run_returns_full_deobfuscated_bytes_for_obfuscated_input() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("lua/ironbrew2/obfuscated/hello.min.lua"))
-        else {
-            eprintln!("SKIP: ironbrew2 fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/ironbrew2/obfuscated/hello.min.lua");
         let ctx_bytes: DetectContext<'_> = ctx(&bytes);
-        if Detector::detect(&LuaDetector, &ctx_bytes).is_none() {
-            eprintln!("SKIP: ironbrew2 fixture not detected as obfuscated");
-            return;
-        }
+        assert!(
+            Detector::detect(&LuaDetector, &ctx_bytes).is_some(),
+            "the committed ironbrew2 sample must be detected as obfuscated"
+        );
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
-        let Ok(out): CoreResult<Artifact> = LUA_PASS.run(&a) else {
-            eprintln!("SKIP: ironbrew2 peel produced no recovered source for this sample");
-            return;
-        };
+        let out: Artifact = LUA_PASS.run(&a).unwrap_or_else(|error| {
+            panic!("the ironbrew2 peel of the committed sample failed: {error}")
+        });
         let s: &str = std::str::from_utf8(&out.envelope)
             .unwrap_or_else(|_| panic!("deobfuscated output should be lua text"));
         assert!(
@@ -748,12 +743,7 @@ mod tests {
 
     #[test]
     fn chain_run_devirtualizes_real_prometheus_greeting() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("lua/obfuscators/hello.prometheus.lua"))
-        else {
-            eprintln!("SKIP: hello.prometheus.lua fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/obfuscators/hello.prometheus.lua");
         let input_text: String = String::from_utf8_lossy(&bytes).into_owned();
         let a: Artifact = Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]);
         let out: Artifact = LUA_PASS
@@ -823,12 +813,7 @@ mod tests {
 
     #[test]
     fn chain_run_recovers_real_hercules_loader() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("lua/hercules/gauntlet/gauntlet_obfuscated.lua"))
-        else {
-            eprintln!("SKIP: gauntlet_obfuscated.lua fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/hercules/gauntlet/gauntlet_obfuscated.lua");
         let verdict: DetectVerdict =
             Detector::detect(&LuaDetector, &ctx(&bytes)).expect("hercules must detect");
         assert_eq!(verdict.format_tag, "lua-obf-hercules");
@@ -851,12 +836,7 @@ mod tests {
 
     #[test]
     fn chain_run_reports_luraph_runtime_wall() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("lua/luraph/signature_header.lua"))
-        else {
-            eprintln!("SKIP: signature_header.lua fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_corpus("lua/luraph/signature_header.lua");
         let verdict: DetectVerdict =
             Detector::detect(&LuaDetector, &ctx(&bytes)).expect("luraph must detect");
         assert_eq!(verdict.format_tag, "lua-obf-luraph");
