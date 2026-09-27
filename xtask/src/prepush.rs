@@ -270,6 +270,7 @@ fn binary_test_command(name: &str, binaries: &BTreeSet<String>) -> Vec<String> {
         "pre-push",
         "--ignore-default-filter",
         "--all-features",
+        "--no-fail-fast",
         "-p",
         name,
     ]
@@ -297,6 +298,7 @@ fn scoped_test_commands(crates: &[String]) -> ScopedTestCommands {
         "--profile".to_owned(),
         "pre-push".to_owned(),
         "--all-features".to_owned(),
+        "--no-fail-fast".to_owned(),
     ];
     let mut doctest: Vec<String> = vec!["test".to_owned(), "--doc".to_owned()];
     for name in selected {
@@ -823,6 +825,7 @@ mod tests {
                 "pre-push",
                 "--ignore-default-filter",
                 "--all-features",
+                "--no-fail-fast",
                 "-p",
                 "c",
                 "--test",
@@ -884,6 +887,7 @@ mod tests {
                     "--profile",
                     "pre-push",
                     "--all-features",
+                    "--no-fail-fast",
                     "-p",
                     "disrobe-bytes",
                     "-p",
@@ -914,7 +918,14 @@ mod tests {
         let actual: ScopedTestCommands = scoped_test_commands(&[SELF_CRATE.to_owned()]);
         assert_eq!(
             actual.nextest,
-            ["nextest", "run", "--profile", "pre-push", "--all-features"]
+            [
+                "nextest",
+                "run",
+                "--profile",
+                "pre-push",
+                "--all-features",
+                "--no-fail-fast"
+            ]
         );
         assert_eq!(actual.doctest, ["test", "--doc"]);
         assert!(actual.self_excluded);
