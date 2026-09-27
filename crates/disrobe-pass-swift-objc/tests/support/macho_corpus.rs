@@ -109,7 +109,7 @@ pub(crate) const SWIFT_HELLO_ORIGINAL: CorpusFixture = tracked(
     "SwiftHello.original",
     BytesPin {
         size_bytes: 61_816,
-        blake3: "49f667381558ef2fc3688c323ff13e502e46e3c464f1df03788114553fb5015c",
+        blake3: "eab359ca1196712b07061121b0ae41dfd11edf501b1eae011953446f2f93877e",
     },
 );
 
@@ -118,7 +118,7 @@ pub(crate) const SWIFT_HELLO_OBFUSCATED: CorpusFixture = tracked(
     "SwiftHello.obfuscated",
     BytesPin {
         size_bytes: 61_432,
-        blake3: "7aaa12a87180f86d30e5c8f7c48892fd2919a5966df10ce3563f9b60f7d9ce8d",
+        blake3: "9b601e481509b4138390a7687b50c99f1200c7229a20deba330c346ec9c08d04",
     },
 );
 

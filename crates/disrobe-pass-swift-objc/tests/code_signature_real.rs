@@ -57,13 +57,13 @@ fn swift_hello_reports_the_adhoc_linker_signature_apple_wrote() {
     );
     assert_eq!(
         directory.cd_hash.as_deref(),
-        Some("e6e926a1ff52ebdb2f5b4069bc741594e2bda52bb54a7fd75d32023351466a02"),
+        Some("cda728f9a73b24e0839f0b18dc21025cca774abd1edffaadf49a7e8500fc1439"),
         "the cdhash is the identity an analyst quotes, so it is pinned to the value an \
          independent sha256 of the directory blob produces"
     );
     assert_eq!(
         directory.cd_hash_truncated.as_deref(),
-        Some("e6e926a1ff52ebdb2f5b4069bc741594e2bda52b")
+        Some("cda728f9a73b24e0839f0b18dc21025cca774abd")
     );
     assert!(
         !signature.has_cms_signature,

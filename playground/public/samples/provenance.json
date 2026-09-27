@@ -69,7 +69,7 @@
       "name": "SwiftHello",
       "source": "corpus/mobile/macho-mac/SwiftHello.original",
       "bytes": 61816,
-      "sha256": "24fd68f9d43a2d4e45462d300023cca1fecc30a62236ec4a74ea15b3ec783bef"
+      "sha256": "b76a70d8d31a33f0ae91f529f5ec8b724ed1cbb02419bcbc5c00c1a7fbf69e7a"
     },
     {
       "name": "esbuild-bundle.js.map",
