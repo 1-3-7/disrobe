@@ -270,15 +270,27 @@ fn grade_pair(
     }
 }
 
+const NATIVE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+
+fn missing_prerequisite(what: &str) {
+    assert!(
+        std::env::var_os(NATIVE_TOOLCHAIN_VAR).is_none(),
+        "{NATIVE_TOOLCHAIN_VAR} is set, so {what} must be callable on PATH"
+    );
+    eprintln!(
+        "UNGRADED: {what} is not callable on PATH; set {NATIVE_TOOLCHAIN_VAR}=1 to fail instead"
+    );
+}
+
 #[test]
 fn stripped_vs_symbolized_reference_matches_are_structurally_grounded() {
     let compilers: Vec<&str> = available_compilers();
     let Some(strip): Option<&str> = x86_toolchain::strip_tool(strip_tool()) else {
-        eprintln!("skipping: no strip tool (llvm-strip/strip) found on PATH");
+        missing_prerequisite("a strip tool (llvm-strip or strip)");
         return;
     };
     if compilers.is_empty() {
-        eprintln!("skipping: neither gcc nor clang found on PATH");
+        missing_prerequisite("a C compiler (gcc or clang)");
         return;
     }
 

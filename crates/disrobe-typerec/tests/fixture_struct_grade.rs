@@ -338,10 +338,22 @@ fn has_indexed_rbp_memory(text: &[u8], base: u64) -> bool {
     false
 }
 
+const NATIVE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+
+fn missing_prerequisite(what: &str) {
+    assert!(
+        std::env::var_os(NATIVE_TOOLCHAIN_VAR).is_none(),
+        "{NATIVE_TOOLCHAIN_VAR} is set, so {what} must be callable on PATH"
+    );
+    eprintln!(
+        "UNGRADED: {what} is not callable on PATH; set {NATIVE_TOOLCHAIN_VAR}=1 to fail instead"
+    );
+}
+
 #[test]
 fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
     if !tool_available("clang") || !tool_available("objcopy") {
-        eprintln!("skipping: clang and objcopy are required for the indexed ELF fixture");
+        missing_prerequisite("clang and objcopy");
         return;
     }
     let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_indexed").expect(
@@ -411,8 +423,10 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         .find(|function: &&dwarf_gt::GroundTruthFunction| function.name == "indexed_pair")
         .cloned()
     else {
-        eprintln!("skipping: this build did not keep indexed_pair as a standalone function");
-        return;
+        panic!(
+            "the O2 build dropped indexed_pair as a standalone function, so this clang no longer \
+             produces the shape the grader is calibrated for"
+        );
     };
     let bytes: &[u8] = image
         .function_bytes(&function)
@@ -436,10 +450,12 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         };
         fields.insert((displacement, cell));
     }
-    if !has_indexed_rbp_memory(&image.text, image.text_base) || fields.len() != 2 {
-        eprintln!("skipping: this build did not emit the expected two scale-8 indexed rbp fields");
-        return;
-    }
+    assert!(
+        has_indexed_rbp_memory(&image.text, image.text_base) && fields.len() == 2,
+        "the O2 build must emit two scale-8 indexed rbp fields, found {}; this clang no longer \
+         produces the shape the grader is calibrated for",
+        fields.len()
+    );
     let report: StructGradeReport = grade::grade_struct_image(&image);
     let cells: BTreeSet<TypeVar> = fields
         .iter()
