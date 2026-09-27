@@ -48,6 +48,7 @@ pub struct MsiExtractable {
     pub cabs: Vec<MsiEmbeddedCab>,
     pub long_names: std::collections::BTreeMap<String, String>,
     pub external_cabinets: Vec<String>,
+    pub violations: Vec<String>,
 }
 
 pub fn read_msi_extractable(bytes: &[u8]) -> Result<MsiExtractable> {
@@ -57,8 +58,10 @@ pub fn read_msi_extractable(bytes: &[u8]) -> Result<MsiExtractable> {
     let mut package: msi::Package<Cursor<&[u8]>> = msi::Package::open(cursor)
         .map_err(|e: std::io::Error| Error::Msi(format!("msi open: {e}")))?;
 
-    let long_names: std::collections::BTreeMap<String, String> = read_long_names(&mut package);
-    let cabinet_refs: Vec<String> = read_media_cabinets(&mut package);
+    let mut violations: Vec<String> = Vec::new();
+    let long_names: std::collections::BTreeMap<String, String> =
+        read_long_names(&mut package, &mut violations);
+    let cabinet_refs: Vec<String> = read_media_cabinets(&mut package, &mut violations);
 
     let mut cabs: Vec<MsiEmbeddedCab> = Vec::new();
     let mut external_cabinets: Vec<String> = Vec::new();
@@ -94,14 +97,50 @@ pub fn read_msi_extractable(bytes: &[u8]) -> Result<MsiExtractable> {
         cabs,
         long_names,
         external_cabinets,
+        violations,
     })
+}
+
+fn missing_columns(
+    package: &msi::Package<Cursor<&[u8]>>,
+    table: &str,
+    columns: &[&str],
+    violations: &mut Vec<String>,
+) -> bool {
+    let Some(schema): Option<&msi::Table> = package.get_table(table) else {
+        return true;
+    };
+    let missing: Vec<&str> = columns
+        .iter()
+        .copied()
+        .filter(|column: &&str| !schema.has_column(column))
+        .collect();
+    if missing.is_empty() {
+        return false;
+    }
+    violations.push(format!(
+        "msi-missing-column: the {table} table lacks {}, so its rows are not read",
+        missing.join(", ")
+    ));
+    true
+}
+
+fn column_str<'row>(row: &'row msi::Row<'_>, column: &str) -> Option<&'row str> {
+    if row.has_column(column) {
+        row[column].as_str()
+    } else {
+        None
+    }
 }
 
 fn read_long_names(
     package: &mut msi::Package<Cursor<&[u8]>>,
+    violations: &mut Vec<String>,
 ) -> std::collections::BTreeMap<String, String> {
     let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    if !package.has_table("File") {
+    if !package.has_table("File")
+        || missing_columns(package, "File", &["File", "FileName"], violations)
+    {
         return map;
     }
     let Ok(rows): std::result::Result<msi::Rows<'_>, std::io::Error> =
@@ -110,8 +149,8 @@ fn read_long_names(
         return map;
     };
     for row in rows {
-        let key: Option<&str> = row["File"].as_str();
-        let filename: Option<&str> = row["FileName"].as_str();
+        let key: Option<&str> = column_str(&row, "File");
+        let filename: Option<&str> = column_str(&row, "FileName");
         if let (Some(key), Some(filename)) = (key, filename) {
             map.insert(key.to_owned(), long_component(filename).to_owned());
         }
@@ -126,9 +165,12 @@ fn long_component(filename: &str) -> &str {
     }
 }
 
-fn read_media_cabinets(package: &mut msi::Package<Cursor<&[u8]>>) -> Vec<String> {
+fn read_media_cabinets(
+    package: &mut msi::Package<Cursor<&[u8]>>,
+    violations: &mut Vec<String>,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if !package.has_table("Media") {
+    if !package.has_table("Media") || missing_columns(package, "Media", &["Cabinet"], violations) {
         return out;
     }
     let Ok(rows): std::result::Result<msi::Rows<'_>, std::io::Error> =
@@ -137,7 +179,7 @@ fn read_media_cabinets(package: &mut msi::Package<Cursor<&[u8]>>) -> Vec<String>
         return out;
     };
     for row in rows {
-        if let Some(cabinet) = row["Cabinet"].as_str()
+        if let Some(cabinet) = column_str(&row, "Cabinet")
             && !cabinet.is_empty()
         {
             out.push(cabinet.to_owned());
@@ -150,6 +192,31 @@ fn read_media_cabinets(package: &mut msi::Package<Cursor<&[u8]>>) -> Vec<String>
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn package_with_file_table(columns: Vec<msi::Column>) -> Vec<u8> {
+        let mut package: msi::Package<Cursor<Vec<u8>>> =
+            msi::Package::create(msi::PackageType::Installer, Cursor::new(Vec::new()))
+                .expect("create package");
+        package
+            .create_table("File", columns)
+            .expect("create File table");
+        package
+            .insert_rows(msi::Insert::into("File").row(vec![msi::Value::from("f1")]))
+            .expect("insert row");
+        package.into_inner().expect("finish package").into_inner()
+    }
+
+    #[test]
+    fn a_file_table_without_file_name_is_a_violation_not_a_panic() {
+        let bytes: Vec<u8> =
+            package_with_file_table(vec![msi::Column::build("File").primary_key().id_string(72)]);
+        let extractable: MsiExtractable = read_msi_extractable(&bytes).expect("read package");
+        assert!(extractable.long_names.is_empty());
+        assert_eq!(
+            extractable.violations,
+            ["msi-missing-column: the File table lacks FileName, so its rows are not read"]
+        );
+    }
 
     #[test]
     fn errors_on_non_msi_bytes() {

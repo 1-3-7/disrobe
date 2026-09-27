@@ -1406,7 +1406,7 @@ fn extract_msi(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     });
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
+    let mut violations: Vec<String> = extractable.violations.clone();
 
     for ext in &extractable.external_cabinets {
         violations.push(format!(
