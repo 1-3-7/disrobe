@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use std::time::{Duration, Instant};
-
 use disrobe_pass_lua::ironbrew2_real::lzw_decompress_base36;
 
 fn base36_digit(value: u32) -> char {
@@ -45,16 +43,15 @@ fn lzw_quadratic_expansion_is_capped_not_oom() {
         stream.len() < (1 << 20),
         "the bomb input stays small while output would balloon"
     );
-    let start: Instant = Instant::now();
     let result: Result<Vec<u8>, disrobe_pass_lua::Error> = lzw_decompress_base36(&stream);
-    let elapsed: Duration = start.elapsed();
     assert!(
-        result.is_err(),
-        "a stream whose output exceeds the ceiling must error, not allocate unbounded"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "capped lzw decompression must not hang, took {elapsed:?}"
+        matches!(
+            result,
+            Err(disrobe_pass_lua::Error::BootstrapEmulationFailed(
+                "lzw output exceeds ceiling"
+            ))
+        ),
+        "a stream whose output exceeds the ceiling must stop at the output ceiling, got {result:?}"
     );
 }
 

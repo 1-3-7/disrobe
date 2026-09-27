@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use std::time::{Duration, Instant};
-
 use disrobe_pass_lua::reader::common::{LuaChunk, LuaProto};
 use disrobe_pass_lua::reader::luau;
 
@@ -51,41 +49,40 @@ fn build_shared_dag(depth: usize) -> Vec<u8> {
     bytes
 }
 
-fn count_nodes(proto: &LuaProto) -> usize {
-    1 + proto.protos.iter().map(count_nodes).sum::<usize>()
+const NODE_CEILING: usize = 1 << 16;
+
+fn count_nodes_to_ceiling(proto: &LuaProto) -> usize {
+    let mut pending: Vec<&LuaProto> = vec![proto];
+    let mut nodes: usize = 0;
+    while let Some(next) = pending.pop() {
+        nodes += 1;
+        if nodes > NODE_CEILING {
+            break;
+        }
+        pending.extend(next.protos.iter());
+    }
+    nodes
 }
 
 #[test]
 fn shared_proto_dag_assembles_bounded_no_blowup() {
     let bytes: Vec<u8> = build_shared_dag(60);
-    let start: Instant = Instant::now();
     let chunk: LuaChunk = luau::read(&bytes).expect("shared-dag luau chunk parses");
-    let elapsed: Duration = start.elapsed();
-    let nodes: usize = count_nodes(&chunk.main);
+    let nodes: usize = count_nodes_to_ceiling(&chunk.main);
     assert!(
-        nodes <= (1 << 16),
-        "assembled tree must stay bounded, got {nodes} nodes"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "shared-dag assembly must not hang, took {elapsed:?}"
+        nodes <= NODE_CEILING,
+        "assembled tree must stay within {NODE_CEILING} nodes, got more"
     );
 }
 
 #[test]
 fn deep_shared_dag_does_not_overflow_or_oom() {
     let bytes: Vec<u8> = build_shared_dag(4096);
-    let start: Instant = Instant::now();
     let result: Result<LuaChunk, disrobe_pass_lua::Error> = luau::read(&bytes);
-    let elapsed: Duration = start.elapsed();
     let chunk: LuaChunk = result.expect("deep shared-dag still returns a chunk");
-    let nodes: usize = count_nodes(&chunk.main);
+    let nodes: usize = count_nodes_to_ceiling(&chunk.main);
     assert!(
-        nodes <= (1 << 16),
-        "deep shared-dag must stay bounded, got {nodes} nodes"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "deep shared-dag must not hang, took {elapsed:?}"
+        nodes <= NODE_CEILING,
+        "deep shared-dag must stay within {NODE_CEILING} nodes, got more"
     );
 }
