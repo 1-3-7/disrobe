@@ -1,0 +1,65 @@
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python, rust]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          category: /language:${{ matrix.language }}
+          output: sarif-results
+          upload: failure-only
+      - name: drop crypto findings scoped to third-party decryptors
+        if: matrix.language == 'rust'
+        uses: advanced-security/filter-sarif@2da736ff05ef065cb2894ac6892e47b5eac2c3c0
+        with:
+          patterns: |
+            -crates/disrobe-binfmt/src/containers/**:rust/hard-coded-cryptographic-value
+            -crates/disrobe-core/src/codec/**:rust/hard-coded-cryptographic-value
+            -crates/disrobe-core/src/codec/**:rust/weak-cryptographic-algorithm
+            -crates/disrobe-core/src/recon/malware_config.rs:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-dotnet/src/peel/**:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-dotnet/src/peel/**:rust/weak-cryptographic-algorithm
+            -crates/disrobe-pass-php/src/decode_loop.rs:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-py-deob/src/cipher.rs:rust/weak-cryptographic-algorithm
+            -crates/disrobe-pass-pyarmor/src/**:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-pyinstaller/src/crypto.rs:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-sourcedefender/src/**:rust/hard-coded-cryptographic-value
+            -crates/disrobe-pass-native/src/authenticode.rs:rust/weak-sensitive-data-hashing
+          input: sarif-results/rust.sarif
+          output: sarif-results/rust.sarif
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2
+        with:
+          sarif_file: sarif-results
+          category: /language:${{ matrix.language }}

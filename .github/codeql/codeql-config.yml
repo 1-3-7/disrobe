@@ -1,0 +1,7 @@
+name: disrobe
+
+paths-ignore:
+  - corpus
+  - crates/disrobe-pass-js-deob/corpus
+  - docs/demo/fixtures
+  - '**/tests/**'
