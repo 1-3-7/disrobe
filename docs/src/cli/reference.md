@@ -132,7 +132,7 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 
 | Command | Purpose |
 |---|---|
-| `disrobe init [--ide <flavor>] [--force]` | Scaffold a `.disrobe/` workspace and optional editor settings. |
+| `disrobe init [--ide <flavor>] [--force]` | Scaffold a `.disrobe/` workspace and optional editor settings. It refuses, naming the files and writing nothing, when any file it would write already exists; `--force` overwrites them. Always: `.disrobe/AGENTS.md`, `.disrobe/manifest.json`. `--ide claude` adds `.claude/settings.json`, `.claude/commands/disrobe-{verify,status,rename,diff}.md`, `.disrobe/skills/<pack>/SKILL.md` for verify-decompilation, recover-symbol-names, reconstruct-imports, confidence-audit, escalate-to-dynamic, diff-against-pypi and patch-and-roundtrip, and `.cursorrules`, `.windsurfrules` and `CLAUDE.md` linked to `.disrobe/AGENTS.md`. `--ide cursor`, `windsurf` and `aider` add `.cursorrules`, `.windsurfrules` or `.aider.conf.yml`. |
 | `disrobe config [show]` | Print the resolved `.disrobe.toml` config (honors `--json`). See [project configuration](./config.md). |
 | `disrobe config init [--out <path>] [--force]` | Write a documented `.disrobe.toml` template. |
 | `disrobe annot refresh\|regenerate` | Rebuild a symbol annotation file. |
@@ -149,4 +149,4 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 | `disrobe completions <shell> [--install] [--rc-file <PATH>]` | Generate shell completions (bash, zsh, fish, PowerShell, elvish). |
 | `disrobe man [--out <dir>]` | Generate man pages (one `.1` per subcommand). |
 | `disrobe bug-report [--out <PATH\|->]` | Collect environment, manifests, and tooling versions into a markdown bug report. |
-| `disrobe self-update [--check-only] [--dry-run]` | Print self-update guidance (source-only distribution; no network by default). |
+| `disrobe self-update [--check-only] [--dry-run]` | Print update guidance: download the release archive from GitHub Releases (no network by default). |

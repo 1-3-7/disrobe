@@ -623,30 +623,59 @@ fn init_claude_emits_settings_and_commands() {
 }
 
 #[test]
-fn init_refuses_to_overwrite_existing_without_force() {
+fn init_claude_leaves_existing_project_files_untouched_without_force() {
     let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-already");
     let work: PathBuf = work_scratch.path().to_path_buf();
-    let _ = std::fs::create_dir_all(work.join(".disrobe"));
+    std::fs::create_dir_all(work.join(".claude")).expect("create .claude");
+    let claude_md: &[u8] = b"# my project instructions
+";
+    let settings: &[u8] = b"{\"permissions\":{\"allow\":[\"Bash(ls)\"]}}
+";
+    std::fs::write(work.join("CLAUDE.md"), claude_md).expect("write CLAUDE.md");
+    std::fs::write(work.join(".claude").join("settings.json"), settings).expect("write settings");
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
-        .arg("init")
+        .args(["init", "--ide", "claude"])
         .current_dir(&work)
         .env_remove("RUST_LOG")
         .output()
         .expect("spawn disrobe");
     assert_ne!(out.status.code().unwrap_or(-1), 0);
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(stderr.contains("DR-CLI-0110") || stderr.contains("already exists"));
+    assert!(
+        stderr.contains("DR-CLI-0110")
+            && stderr.contains("CLAUDE.md")
+            && stderr.contains("settings.json"),
+        "the refusal must name each file it would overwrite: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(work.join("CLAUDE.md")).expect("read CLAUDE.md"),
+        claude_md
+    );
+    assert_eq!(
+        std::fs::read(work.join(".claude").join("settings.json")).expect("read settings"),
+        settings
+    );
+    assert!(
+        !work.join(".disrobe").join("AGENTS.md").exists(),
+        "a refused init writes nothing"
+    );
 }
 
 #[test]
-fn init_force_overwrites() {
+fn init_force_overwrites_and_lists_every_written_file() {
     let work_scratch: disrobe_core::scratch::ScratchDir = temp_dir("init-force");
     let work: PathBuf = work_scratch.path().to_path_buf();
-    let _ = std::fs::create_dir_all(work.join(".disrobe"));
+    std::fs::create_dir_all(work.join(".disrobe")).expect("create .disrobe");
+    std::fs::write(
+        work.join(".disrobe").join("AGENTS.md"),
+        b"old
+",
+    )
+    .expect("write old");
     let bin: PathBuf = cli_binary();
     let out: std::process::Output = Command::new(&bin)
-        .args(["init", "--force"])
+        .args(["init", "--force", "--ide", "cursor"])
         .current_dir(&work)
         .env_remove("RUST_LOG")
         .output()
@@ -656,6 +685,15 @@ fn init_force_overwrites() {
         0,
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
+    for written in ["AGENTS.md", "manifest.json", ".cursorrules"] {
+        assert!(stdout.contains(written), "{written} missing from: {stdout}");
+    }
+    assert_ne!(
+        std::fs::read(work.join(".disrobe").join("AGENTS.md")).expect("read AGENTS.md"),
+        b"old
+"
     );
 }
 

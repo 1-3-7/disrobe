@@ -24,7 +24,7 @@ pub(crate) fn run(
 ) -> miette::Result<()> {
     if dry_run {
         let status: &'static str = if check_only {
-            "source-only-distribution"
+            "manual-update"
         } else {
             "dry-run"
         };
@@ -42,7 +42,7 @@ pub(crate) fn run(
     }
 
     Err(miette::miette!(
-        "DR-CLI-0269: self-update is unavailable; disrobe is distributed as source only. rebuild from git: `git clone https://github.com/1-3-7/disrobe && cd disrobe && cargo build --release`"
+        "DR-CLI-0269: self-update does not replace the binary; download the archive for your platform from https://github.com/1-3-7/disrobe/releases/latest and check it against SHA256SUMS"
     ))
 }
 
@@ -92,13 +92,13 @@ mod tests {
             url: RELEASES_URL,
             current_version: env!("CARGO_PKG_VERSION"),
             latest_version: None,
-            status: "source-only-distribution",
+            status: "manual-update",
             dry_run: true,
             download_path: None,
             cache_hit: false,
             asset_sha256_hex: None,
         };
-        assert_eq!(report.status, "source-only-distribution");
+        assert_eq!(report.status, "manual-update");
         assert!(report.dry_run);
         assert_eq!(report.url, EXPECTED_URL);
         assert!(report.latest_version.is_none());

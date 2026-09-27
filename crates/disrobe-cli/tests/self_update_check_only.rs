@@ -26,7 +26,7 @@ fn check_only_dry_run_json_reports_source_only_and_api_url() {
     let v: serde_json::Value =
         serde_json::from_str(&r.stdout).expect("self-update --json must emit valid json");
     assert_eq!(v["url"], RELEASES_URL);
-    assert_eq!(v["status"], "source-only-distribution");
+    assert_eq!(v["status"], "manual-update");
     assert_eq!(v["dry_run"], true);
     assert_eq!(v["latest_version"], serde_json::Value::Null);
 }

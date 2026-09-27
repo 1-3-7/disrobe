@@ -958,7 +958,7 @@ enum Cmd {
         #[arg(
             long,
             default_value = "auto:8",
-            help = "chain specifier, e.g. 'auto:8' or 'pyarmor+py-decompile'"
+            help = "chain specifier, e.g. 'auto:8' or 'pyarmor,py-decompile'"
         )]
         chain: String,
         #[arg(long = "chain-pin", help = "pin every pass to a specific version")]
@@ -1099,15 +1099,13 @@ enum Cmd {
         #[arg(short, long, help = "output path; pass `-` to write to stdout")]
         out: Option<PathBuf>,
     },
-    #[command(
-        about = "print self-update guidance (disrobe ships as source only; rebuild from git)"
-    )]
+    #[command(about = "print update guidance: releases are downloaded from GitHub Releases")]
     SelfUpdate {
-        #[arg(long, help = "report source-only posture & exit (no network)")]
+        #[arg(long, help = "report the manual update path & exit (no network)")]
         check_only: bool,
         #[arg(
             long,
-            help = "no-op kept for flag compatibility; source-only distribution"
+            help = "no-op kept for flag compatibility; updates are manual downloads"
         )]
         download: bool,
         #[arg(long, help = "report what would happen without touching disk")]

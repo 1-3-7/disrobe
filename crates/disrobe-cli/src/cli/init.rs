@@ -352,7 +352,16 @@ fn try_symlink(_canonical: &Path, _alias: &Path) -> std::io::Result<()> {
 }
 
 fn link_or_copy(canonical: &Path, alias: &Path) -> miette::Result<()> {
-    let _: std::io::Result<()> = std::fs::remove_file(alias);
+    match std::fs::remove_file(alias) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(miette::miette!(
+                "DR-CLI-0115: cannot replace {}: {e}",
+                alias.display()
+            ));
+        }
+    }
     if try_symlink(canonical, alias).is_ok() {
         return Ok(());
     }
@@ -367,97 +376,132 @@ fn link_or_copy(canonical: &Path, alias: &Path) -> miette::Result<()> {
         })
 }
 
+enum Planned {
+    Write { path: PathBuf, contents: String },
+    Alias { path: PathBuf, canonical: PathBuf },
+}
+
+impl Planned {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Write { path, .. } | Self::Alias { path, .. } => path,
+        }
+    }
+}
+
+fn plan(ide: Option<IdeFlavor>, root: &Path) -> miette::Result<Vec<Planned>> {
+    let disrobe_dir: PathBuf = root.join(".disrobe");
+    let agents_path: PathBuf = disrobe_dir.join("AGENTS.md");
+    let mut planned: Vec<Planned> = vec![
+        Planned::Write {
+            path: agents_path.clone(),
+            contents: AGENTS_MD.to_owned(),
+        },
+        Planned::Write {
+            path: disrobe_dir.join("manifest.json"),
+            contents: MANIFEST_JSON.to_owned(),
+        },
+    ];
+    match ide {
+        Some(IdeFlavor::Claude) => {
+            let claude_dir: PathBuf = root.join(".claude");
+            let settings_json: String =
+                serde_json::to_string_pretty(&claude_settings()).map_err(|e| {
+                    miette::miette!("DR-CLI-0114: cannot serialize .claude/settings.json: {e}")
+                })?;
+            planned.push(Planned::Write {
+                path: claude_dir.join("settings.json"),
+                contents: settings_json,
+            });
+            for cmd in SLASH_COMMANDS {
+                planned.push(Planned::Write {
+                    path: claude_dir
+                        .join("commands")
+                        .join(format!("{}.md", cmd.file_stem)),
+                    contents: render_slash_command(cmd),
+                });
+            }
+            for pack in &SKILL_PACKS {
+                planned.push(Planned::Write {
+                    path: disrobe_dir
+                        .join("skills")
+                        .join(pack.dir_name)
+                        .join("SKILL.md"),
+                    contents: render_skill_pack(pack),
+                });
+            }
+            for alias in CLAUDE_ALIASES {
+                planned.push(Planned::Alias {
+                    path: root.join(alias),
+                    canonical: agents_path.clone(),
+                });
+            }
+        }
+        Some(IdeFlavor::Cursor) => planned.push(Planned::Write {
+            path: root.join(".cursorrules"),
+            contents: AGENTS_MD.to_owned(),
+        }),
+        Some(IdeFlavor::Windsurf) => planned.push(Planned::Write {
+            path: root.join(".windsurfrules"),
+            contents: AGENTS_MD.to_owned(),
+        }),
+        Some(IdeFlavor::Aider) => planned.push(Planned::Write {
+            path: root.join(".aider.conf.yml"),
+            contents: AIDER_CONF.to_owned(),
+        }),
+        None => {}
+    }
+    Ok(planned)
+}
+
+const fn ide_label(ide: Option<IdeFlavor>) -> Option<&'static str> {
+    match ide {
+        Some(IdeFlavor::Claude) => Some("claude"),
+        Some(IdeFlavor::Cursor) => Some("cursor"),
+        Some(IdeFlavor::Windsurf) => Some("windsurf"),
+        Some(IdeFlavor::Aider) => Some("aider"),
+        None => None,
+    }
+}
+
 pub(crate) fn run(ide: Option<IdeFlavor>, force: bool, fmt: OutputFormat) -> miette::Result<()> {
     let root: PathBuf = std::env::current_dir()
         .map_err(|e| miette::miette!("DR-CLI-0111: cannot read cwd: {e}"))?;
-    let disrobe_dir: PathBuf = root.join(".disrobe");
-    if disrobe_dir.exists() && !force {
+    let planned: Vec<Planned> = plan(ide, &root)?;
+    let existing: Vec<String> = planned
+        .iter()
+        .map(Planned::path)
+        .filter(|path: &&Path| path.symlink_metadata().is_ok())
+        .map(|path: &Path| path.display().to_string())
+        .collect();
+    if !existing.is_empty() && !force {
         return Err(miette::miette!(
-            "DR-CLI-0110: `.disrobe/` already exists at {} - pass `--force` to overwrite",
-            disrobe_dir.display()
+            "DR-CLI-0110: init would overwrite {} existing file(s): {}; nothing was written, pass `--force` to overwrite them",
+            existing.len(),
+            existing.join(", ")
         ));
     }
-    std::fs::create_dir_all(&disrobe_dir)
-        .map_err(|e| miette::miette!("DR-CLI-0111: cannot create .disrobe: {e}"))?;
-    std::fs::create_dir_all(disrobe_dir.join("notes"))
+    std::fs::create_dir_all(root.join(".disrobe").join("notes"))
         .map_err(|e| miette::miette!("DR-CLI-0111: cannot create .disrobe/notes: {e}"))?;
-
-    let mut created: Vec<PathBuf> = Vec::new();
-
-    let agents_path: PathBuf = disrobe_dir.join("AGENTS.md");
-    write_file(&agents_path, AGENTS_MD)?;
-    created.push(agents_path.clone());
-
-    let manifest_path: PathBuf = disrobe_dir.join("manifest.json");
-    write_file(&manifest_path, MANIFEST_JSON)?;
-    created.push(manifest_path);
-
-    let ide_label: Option<&'static str> = match ide {
-        Some(IdeFlavor::Claude) => {
-            let claude_dir: PathBuf = root.join(".claude");
-            std::fs::create_dir_all(claude_dir.join("commands"))
-                .map_err(|e| miette::miette!("DR-CLI-0111: cannot create .claude/commands: {e}"))?;
-            let settings: PathBuf = claude_dir.join("settings.json");
-            let settings_model: ClaudeSettings = claude_settings();
-            let settings_json: String =
-                serde_json::to_string_pretty(&settings_model).map_err(|e| {
-                    miette::miette!("DR-CLI-0114: cannot serialize .claude/settings.json: {e}")
-                })?;
-            write_file(&settings, &settings_json)?;
-            created.push(settings);
-            for cmd in SLASH_COMMANDS {
-                let rendered: String = render_slash_command(cmd);
-                let p: PathBuf = claude_dir
-                    .join("commands")
-                    .join(format!("{}.md", cmd.file_stem));
-                write_file(&p, &rendered)?;
-                created.push(p);
-            }
-            let skills_root: PathBuf = disrobe_dir.join("skills");
-            for pack in &SKILL_PACKS {
-                let pack_dir: PathBuf = skills_root.join(pack.dir_name);
-                std::fs::create_dir_all(&pack_dir).map_err(|e| {
-                    miette::miette!(
-                        "DR-CLI-0111: cannot create .disrobe/skills/{}: {e}",
-                        pack.dir_name
-                    )
-                })?;
-                let skill_path: PathBuf = pack_dir.join("SKILL.md");
-                write_file(&skill_path, &render_skill_pack(pack))?;
-                created.push(skill_path);
-            }
-            for alias in CLAUDE_ALIASES {
-                let alias_path: PathBuf = root.join(alias);
-                link_or_copy(&agents_path, &alias_path)?;
-                created.push(alias_path);
-            }
-            Some("claude")
+    let mut created: Vec<String> = Vec::with_capacity(planned.len());
+    for item in &planned {
+        let path: &Path = item.path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                miette::miette!("DR-CLI-0111: cannot create {}: {e}", parent.display())
+            })?;
         }
-        Some(IdeFlavor::Cursor) => {
-            let p: PathBuf = root.join(".cursorrules");
-            write_file(&p, AGENTS_MD)?;
-            created.push(p);
-            Some("cursor")
+        match item {
+            Planned::Write { path, contents } => write_file(path, contents)?,
+            Planned::Alias { path, canonical } => link_or_copy(canonical, path)?,
         }
-        Some(IdeFlavor::Windsurf) => {
-            let p: PathBuf = root.join(".windsurfrules");
-            write_file(&p, AGENTS_MD)?;
-            created.push(p);
-            Some("windsurf")
-        }
-        Some(IdeFlavor::Aider) => {
-            let p: PathBuf = root.join(".aider.conf.yml");
-            write_file(&p, AIDER_CONF)?;
-            created.push(p);
-            Some("aider")
-        }
-        None => None,
-    };
+        created.push(path.display().to_string());
+    }
 
     let report: InitReport = InitReport {
         root: root.display().to_string(),
-        created: created.iter().map(|p| p.display().to_string()).collect(),
-        ide: ide_label,
+        created,
+        ide: ide_label(ide),
     };
     emit(fmt, &report, || {
         println!("disrobe init: OK");

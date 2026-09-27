@@ -33,4 +33,4 @@ disrobe guard check some/path --root extra/protected/subtree --root other/protec
 
 Decides whether a path about to be written or edited is inside a protected ground-truth subtree. It denies writes to `out/**/stages`, `out/**/final`, and any `.disrobe-stage-lock`-marked path, and allows writes elsewhere. `--root` adds extra protected subtrees; it is repeatable and also accepts comma-separated values.
 
-This is the command wired into the agent settings hook that `disrobe init --ide claude` generates: a `PreToolUse` hook calls `disrobe guard check` and denies edits to the `01-*/` and `02-*/` stage directories, so a coding agent working in a recovery workspace cannot accidentally rewrite the ground truth it is supposed to be analyzing.
+`disrobe init --ide claude` writes a settings file whose hook calls `disrobe guard check`. That hook does not yet protect the stage directories: the variable it reads is not one Claude Code sets, so treat `guard check` as a command you run yourself.

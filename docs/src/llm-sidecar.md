@@ -102,7 +102,7 @@ disrobe init                    # scaffold .disrobe/
 disrobe init --ide claude       # also generate IDE-specific settings (claude, cursor, windsurf, aider)
 ```
 
-This lays down an `AGENTS.md` forensic-framing template, per-symbol annotation schemas under `.disrobe/annotations/`, skill packs under `.disrobe/skills/`, slash commands, and a settings hook template that denies edits to ground-truth stage directories (see [Diff and guard tooling](./cli/diff-guard.md)). Maintain it with:
+This lays down an `AGENTS.md` forensic-framing template, per-symbol annotation schemas under `.disrobe/annotations/`, skill packs under `.disrobe/skills/`, slash commands, and a settings file (see [Diff and guard tooling](./cli/diff-guard.md) for what its hook does and does not do). Maintain it with:
 
 ```sh
 disrobe annot refresh           # rebuild .disrobe/annotations/<stem>.annot.json
