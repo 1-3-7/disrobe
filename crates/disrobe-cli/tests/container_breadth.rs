@@ -1,26 +1,36 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_binfmt::container::{ContainerKind, detect_container_with_hint};
-use disrobe_binfmt::extract::{ExtractionResult, extract_to};
+use disrobe_binfmt::extract::{
+    EntryCompression, ExtractedEntry, ExtractedEntryOrigin, ExtractionResult, QuotaSummary,
+    extract_to,
+};
+use sha2::{Digest, Sha256};
 
 const EVIDENCE: &str = "tests/golden/container_breadth.txt";
 const REGENERATE: &str = "DISROBE_REGENERATE_CONTAINER_BREADTH";
+const REFERENCE: &str = "tests/golden/container_breadth_reference.tsv";
 
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MIN_INPUT_BYTES: u64 = 4;
 
 const STATUS_EXTRACT: &str = "extract";
+const STATUS_UNVERIFIED: &str = "members-unverified";
 const STATUS_DETECT: &str = "detect-only";
 const STATUS_MISDETECT: &str = "misdetect";
 
 const KNOWN_MISDETECTIONS: usize = 0;
 
 const MISDETECTED_SOURCE_SUFFIXES: [&str; 2] = [".rs", ".pyc"];
+
+const NEGATIVE_CORPUS: &str = "corpus/negative/";
+
+const MIN_REFERENCED_FORMATS: usize = 20;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignFamily {
@@ -140,6 +150,7 @@ struct Reached {
 
 fn measure() -> BTreeMap<&'static str, Reached> {
     let root: PathBuf = repo_root();
+    let references: BTreeMap<(String, String), BTreeSet<String>> = reference_digests();
     let temp: tempfile::TempDir = tempfile::tempdir().expect("temp dir for extraction output");
     let mut reached: BTreeMap<&'static str, Reached> = BTreeMap::new();
     let mut seen: usize = 0;
@@ -151,6 +162,10 @@ fn measure() -> BTreeMap<&'static str, Reached> {
         if !meta.is_file() || meta.len() > MAX_INPUT_BYTES || meta.len() < MIN_INPUT_BYTES {
             continue;
         }
+        let relative: String = relative_to(&root, &path);
+        if relative.starts_with(NEGATIVE_CORPUS) {
+            continue;
+        }
         let Ok(bytes): Result<Vec<u8>, std::io::Error> = std::fs::read(&path) else {
             continue;
         };
@@ -160,7 +175,6 @@ fn measure() -> BTreeMap<&'static str, Reached> {
             continue;
         };
         let label: &'static str = kind.label();
-        let relative: String = relative_to(&root, &path);
         seen += 1;
 
         let out_dir: PathBuf = temp.path().join(format!("{label}-{seen}"));
@@ -171,14 +185,16 @@ fn measure() -> BTreeMap<&'static str, Reached> {
                 out_dir.display()
             )
         });
-        let wrote_members: bool = extract_to(kind, &bytes, &out_dir)
-            .is_ok_and(|result: ExtractionResult| wrote_member_bytes(&result));
+        let digests: BTreeSet<String> = extract_to(kind, &bytes, &out_dir)
+            .map(|result: ExtractionResult| member_digests(&result, &bytes))
+            .unwrap_or_default();
         let status: &'static str = if is_source_text(&relative) {
             STATUS_MISDETECT
-        } else if wrote_members {
-            STATUS_EXTRACT
         } else {
-            STATUS_DETECT
+            classify(
+                &digests,
+                references.get(&(label.to_owned(), relative.clone())),
+            )
         };
 
         let entry: &mut Reached = reached.entry(label).or_insert_with(|| Reached {
@@ -195,19 +211,57 @@ fn measure() -> BTreeMap<&'static str, Reached> {
 
 const fn rank(status: &str) -> u8 {
     match status.as_bytes() {
-        b"extract" => 2,
+        b"extract" => 3,
+        b"members-unverified" => 2,
         b"detect-only" => 1,
         _ => 0,
     }
 }
 
-fn wrote_member_bytes(result: &ExtractionResult) -> bool {
-    result.entries.iter().any(|entry| {
-        entry
-            .disk_path
-            .as_ref()
-            .is_some_and(|path: &PathBuf| path.is_file())
-    })
+fn member_digests(result: &ExtractionResult, input: &[u8]) -> BTreeSet<String> {
+    result
+        .entries
+        .iter()
+        .filter(|entry: &&ExtractedEntry| entry.origin == ExtractedEntryOrigin::ArchiveMember)
+        .filter_map(|entry: &ExtractedEntry| entry.disk_path.as_ref())
+        .filter_map(|path: &PathBuf| std::fs::read(path).ok())
+        .filter(|member: &Vec<u8>| !member.is_empty() && member.as_slice() != input)
+        .map(|member: Vec<u8>| format!("{:x}", Sha256::digest(&member)))
+        .collect()
+}
+
+fn classify(digests: &BTreeSet<String>, reference: Option<&BTreeSet<String>>) -> &'static str {
+    if digests.is_empty() {
+        STATUS_DETECT
+    } else if reference.is_some_and(|expected: &BTreeSet<String>| !digests.is_disjoint(expected)) {
+        STATUS_EXTRACT
+    } else {
+        STATUS_UNVERIFIED
+    }
+}
+
+fn reference_digests() -> BTreeMap<(String, String), BTreeSet<String>> {
+    let path: PathBuf = crate_root().join(REFERENCE);
+    let text: String = std::fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{REFERENCE} holds the member hashes an independent extractor produced for each \
+             credited input (scripts/container_breadth_reference.py); without it no format can be \
+             credited with correct member bytes: {error} at {}",
+            path.display()
+        )
+    });
+    let mut digests: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for line in text.lines().filter(|line: &&str| !line.is_empty()) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let [label, input, digest, _tool] = fields.as_slice() else {
+            panic!("{REFERENCE} row `{line}` is not a label, input, sha256 and tool");
+        };
+        digests
+            .entry(((*label).to_owned(), (*input).to_owned()))
+            .or_default()
+            .insert((*digest).to_owned());
+    }
+    digests
 }
 
 fn rendered(reached: &BTreeMap<&'static str, Reached>) -> String {
@@ -314,9 +368,9 @@ fn the_exercised_figure_is_smaller_than_the_declared_roster_and_neither_is_empty
         .filter(|(_, status, _)| status == STATUS_EXTRACT)
         .count();
     assert!(
-        exercised > 0,
-        "no committed input reaches any container format, so this check would compare an empty \
-         set against an empty set and pass"
+        exercised >= MIN_REFERENCED_FORMATS,
+        "only {exercised} formats have member bytes that match an independent extractor, below the \
+         {MIN_REFERENCED_FORMATS} this suite was calibrated at"
     );
     assert!(
         exercised <= ContainerKind::ALL.len(),
@@ -453,4 +507,75 @@ fn no_committed_source_or_bytecode_file_is_claimed_as_a_container() {
         claimed.len(),
         claimed.join("; ")
     );
+}
+
+fn one_entry_result(origin: ExtractedEntryOrigin, disk_path: PathBuf) -> ExtractionResult {
+    ExtractionResult {
+        kind: ContainerKind::Zip,
+        entries: vec![ExtractedEntry {
+            origin,
+            name: "member".to_owned(),
+            disk_path: Some(disk_path),
+            uncompressed_size: 0,
+            compressed_size: 0,
+            compression: EntryCompression::Stored,
+            is_executable: false,
+        }],
+        encoding: BTreeMap::new(),
+        integrity_violations: Vec::new(),
+        quota: QuotaSummary {
+            entries_accepted: 1,
+            total_uncompressed_bytes: 0,
+            total_compressed_bytes: 0,
+            max_observed_ratio: 0,
+        },
+    }
+}
+
+#[test]
+fn only_an_archive_member_that_differs_from_the_input_counts_as_member_bytes() {
+    let temp: tempfile::TempDir = tempfile::tempdir().expect("temp dir for member files");
+    let input: &[u8] = b"PK container bytes";
+    let cases: [(&str, ExtractedEntryOrigin, &[u8], bool); 4] = [
+        (
+            "member",
+            ExtractedEntryOrigin::ArchiveMember,
+            b"hello",
+            true,
+        ),
+        (
+            "sidecar",
+            ExtractedEntryOrigin::GeneratedSidecar,
+            b"{}",
+            false,
+        ),
+        (
+            "verbatim",
+            ExtractedEntryOrigin::ArchiveMember,
+            input,
+            false,
+        ),
+        ("empty", ExtractedEntryOrigin::ArchiveMember, b"", false),
+    ];
+    for (name, origin, bytes, counted) in cases {
+        let path: PathBuf = temp.path().join(name);
+        std::fs::write(&path, bytes).expect("write member file");
+        assert_eq!(
+            !member_digests(&one_entry_result(origin, path), input).is_empty(),
+            counted,
+            "the `{name}` entry is {} member bytes",
+            if counted { "real" } else { "not" }
+        );
+    }
+}
+
+#[test]
+fn a_format_counts_only_when_a_member_matches_the_independent_reference() {
+    let written: BTreeSet<String> = BTreeSet::from(["aa".to_owned(), "bb".to_owned()]);
+    let matching: BTreeSet<String> = BTreeSet::from(["bb".to_owned()]);
+    let other: BTreeSet<String> = BTreeSet::from(["cc".to_owned()]);
+    assert_eq!(classify(&written, Some(&matching)), STATUS_EXTRACT);
+    assert_eq!(classify(&written, Some(&other)), STATUS_UNVERIFIED);
+    assert_eq!(classify(&written, None), STATUS_UNVERIFIED);
+    assert_eq!(classify(&BTreeSet::new(), Some(&matching)), STATUS_DETECT);
 }

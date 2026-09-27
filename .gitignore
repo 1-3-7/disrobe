@@ -179,6 +179,7 @@ scripts/*
 !scripts/regen-macho-edgecases.sh
 !scripts/test_wiki_sync.py
 !scripts/wiki_sync.py
+!scripts/container_breadth_reference.py
 *.pdb
 !corpus/binfmt/dotnet-single-file/expected/probe.pdb
 
