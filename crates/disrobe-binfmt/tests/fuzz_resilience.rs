@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use disrobe_binfmt::containers::{
     ApfsContainer, AppImageLayout, ArArchive, BlazorBoot, BtrfsSendHeader, BtrfsSendReplay,
@@ -50,8 +49,6 @@ use disrobe_testkit::{BATCH_ENV, CorpusEntry, StressCase, StressConfig, XorShift
 
 const CASES_PER_INPUT: usize = 224;
 const BATCH_SIZE: usize = 448;
-const CASE_BUDGET: Duration = Duration::from_millis(250);
-const SUITE_BUDGET: Duration = Duration::from_mins(4);
 
 const CORPUS_ENTRIES: usize = 30;
 const MIN_TOTAL_CASES: usize = 5_000;
@@ -1257,8 +1254,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

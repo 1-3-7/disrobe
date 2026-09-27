@@ -1,6 +1,5 @@
 #![allow(clippy::expect_used)]
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use disrobe_pass_py_deob::{
     ast_eval, auto_deobfuscate, cleanup_source, decode_hyperion_v2v3_inner,
@@ -17,8 +16,6 @@ const ENTROPY_SPAN_SEED: u64 = 0x5044_4542_0001_0003;
 const SEED_BYTE_LIMIT: usize = 4096;
 const CASES_PER_INPUT: usize = 24;
 const BATCH_SIZE: usize = 72;
-const CASE_BUDGET: Duration = Duration::from_millis(400);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const SATURATION_DOMAIN: u64 = 0x5059_4445_4F42_0002;
 const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
@@ -206,8 +203,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

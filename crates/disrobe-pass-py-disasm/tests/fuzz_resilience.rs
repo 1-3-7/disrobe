@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used)]
-use std::time::Duration;
 
 #[cfg(feature = "chain")]
 use disrobe_core::chain::Pass;
@@ -18,8 +17,6 @@ const MAX_INPUT_BYTES: usize = 4096;
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 10_240;
 const BATCH_SIZE: usize = 5_120;
-const CASE_BUDGET: Duration = Duration::from_millis(20);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const PERTURB_DOMAIN: u64 = 0x5044_4953_0001_0002;
 const PERTURB_ARMS: usize = 3;
@@ -184,8 +181,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

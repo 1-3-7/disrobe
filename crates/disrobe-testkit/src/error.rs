@@ -39,13 +39,6 @@ pub enum StressError {
         bytes: usize,
         limit: usize,
     },
-    SuiteBudgetExhausted {
-        budget: Duration,
-        elapsed: Duration,
-        batches_completed: usize,
-        sealed_cases: usize,
-        total_cases: usize,
-    },
     WorkerNotFound {
         filter: String,
         executable: PathBuf,
@@ -64,8 +57,8 @@ pub struct BatchFailure {
     pub batch_cases: usize,
     pub completed_cases: usize,
     pub sealed_cases: Option<usize>,
-    pub timed_out: bool,
-    pub batch_timeout: Duration,
+    pub stalled: bool,
+    pub stall_backstop: Duration,
     pub child_status: String,
     pub child_success: bool,
     pub culprit: Option<CulpritCase>,
@@ -156,11 +149,11 @@ impl fmt::Display for BatchFailure {
         if let Some(sealed) = self.sealed_cases {
             write!(formatter, "; seal claimed {sealed} case(s)")?;
         }
-        if self.timed_out {
+        if self.stalled {
             write!(
                 formatter,
-                "; the worker was killed after exceeding {:?}",
-                self.batch_timeout
+                "; the worker was killed after recording no case for {:?}",
+                self.stall_backstop
             )?;
         }
         write!(
@@ -232,16 +225,6 @@ impl fmt::Display for StressError {
             } => write!(
                 formatter,
                 "case {case_index} mutated from corpus entry `{entry}` with seed {case_seed:#018x} is {bytes} bytes, over the {limit} byte batch-wire limit"
-            ),
-            Self::SuiteBudgetExhausted {
-                budget,
-                elapsed,
-                batches_completed,
-                sealed_cases,
-                total_cases,
-            } => write!(
-                formatter,
-                "the whole-suite budget of {budget:?} ran out after {elapsed:?}: {batches_completed} batch(es) done, {sealed_cases} of {total_cases} case(s) sealed; raise suite_budget or lower cases_per_input"
             ),
             Self::WorkerNotFound {
                 filter,

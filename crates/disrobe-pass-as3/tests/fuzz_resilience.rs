@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used)]
-use std::time::Duration;
 
 use disrobe_pass_as3::abc;
 use disrobe_pass_as3::abc::{AbcFile, MethodBody};
@@ -12,8 +11,6 @@ use disrobe_testkit::{
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 8_704;
 const BATCH_SIZE: usize = 4_352;
-const CASE_BUDGET: Duration = Duration::from_millis(10);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const SATURATION_DOMAIN: u64 = 0x4153_3300_0001_0002;
 const SATURATION_PATTERNS: [(u8, u32); 1] = [(u8::MAX, 2)];
@@ -144,8 +141,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

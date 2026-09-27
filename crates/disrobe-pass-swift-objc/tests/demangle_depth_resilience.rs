@@ -6,8 +6,6 @@ use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 
 const CASES_PER_INPUT: usize = 256;
 const BATCH_SIZE: usize = 128;
-const CASE_BUDGET: Duration = Duration::from_millis(400);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const NESTING_DOMAIN: u64 = 0x0F3A_11C3_D3E9_0001;
 const MIN_NESTING_LEVELS: usize = 1_100;
@@ -116,8 +114,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

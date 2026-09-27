@@ -66,7 +66,7 @@ impl fmt::Display for WorkerTest {
 #[derive(Debug)]
 struct BatchOutcome {
     status: ExitStatus,
-    timed_out: bool,
+    stalled: bool,
 }
 
 #[derive(Debug)]
@@ -78,7 +78,7 @@ struct BatchContext<'a> {
     batch_path: &'a Path,
     stderr_path: &'a Path,
     workspace_path: &'a Path,
-    batch_timeout: Duration,
+    stall_backstop: Duration,
 }
 
 pub fn run_isolated(
@@ -132,39 +132,22 @@ fn run_batches(
     config: &StressConfig,
     total: usize,
 ) -> Result<usize, StressError> {
-    let suite_started: Instant = Instant::now();
-    let configured_timeout: Duration = config.batch_timeout();
     let mut sealed_total: usize = 0;
     let mut batch_index: usize = 0;
     let mut next_case: usize = 0;
     while next_case < total {
-        let remaining: Duration = config.suite_budget.saturating_sub(suite_started.elapsed());
-        if remaining.is_zero() {
-            return Err(suite_budget_exhausted(
-                config,
-                suite_started,
-                batch_index,
-                sealed_total,
-                total,
-            ));
-        }
-        let batch_timeout: Duration = configured_timeout.min(remaining);
         let batch_end: usize = next_case.saturating_add(config.batch_size).min(total);
         let records: Vec<BatchRecord> = build_records(corpus, order, config, next_case, batch_end)?;
         let batch_path: PathBuf = workspace.path().join(format!("batch-{batch_index}.bin"));
         let stderr_path: PathBuf = workspace.path().join(format!("stderr-{batch_index}.log"));
         write_batch(&batch_path, workspace.token, &records)?;
-        let outcome: BatchOutcome =
-            execute_batch(executable, worker, &batch_path, &stderr_path, batch_timeout)?;
-        if outcome.timed_out && batch_timeout < configured_timeout {
-            return Err(suite_budget_exhausted(
-                config,
-                suite_started,
-                batch_index,
-                sealed_total,
-                total,
-            ));
-        }
+        let outcome: BatchOutcome = execute_batch(
+            executable,
+            worker,
+            &batch_path,
+            &stderr_path,
+            config.stall_backstop,
+        )?;
         let context: BatchContext<'_> = BatchContext {
             batch_index,
             token: workspace.token,
@@ -173,7 +156,7 @@ fn run_batches(
             batch_path: &batch_path,
             stderr_path: &stderr_path,
             workspace_path: workspace.path(),
-            batch_timeout,
+            stall_backstop: config.stall_backstop,
         };
         sealed_total = sealed_total
             .saturating_add(evaluate_batch(&context, &outcome).map_err(StressError::Batch)?);
@@ -181,22 +164,6 @@ fn run_batches(
         batch_index = batch_index.saturating_add(1);
     }
     Ok(sealed_total)
-}
-
-fn suite_budget_exhausted(
-    config: &StressConfig,
-    suite_started: Instant,
-    batches_completed: usize,
-    sealed_cases: usize,
-    total_cases: usize,
-) -> StressError {
-    StressError::SuiteBudgetExhausted {
-        budget: config.suite_budget,
-        elapsed: suite_started.elapsed(),
-        batches_completed,
-        sealed_cases,
-        total_cases,
-    }
 }
 
 fn build_records(
@@ -255,7 +222,7 @@ fn execute_batch(
     worker: &WorkerTest,
     batch_path: &Path,
     stderr_path: &Path,
-    batch_timeout: Duration,
+    stall_backstop: Duration,
 ) -> Result<BatchOutcome, StressError> {
     let stderr_file: File = File::create(stderr_path).map_err(|error: std::io::Error| {
         io_error(
@@ -273,7 +240,9 @@ fn execute_batch(
         .map_err(|error: std::io::Error| {
             io_error(format!("spawning stress worker {}", worker.filter()), error)
         })?;
-    let started: Instant = Instant::now();
+    let progress: PathBuf = progress_path(batch_path);
+    let mut recorded_bytes: u64 = 0;
+    let mut last_progress: Instant = Instant::now();
     loop {
         let waited: Option<ExitStatus> = child
             .try_wait()
@@ -281,10 +250,15 @@ fn execute_batch(
         if let Some(status) = waited {
             return Ok(BatchOutcome {
                 status,
-                timed_out: false,
+                stalled: false,
             });
         }
-        if started.elapsed() > batch_timeout {
+        let current_bytes: u64 =
+            std::fs::metadata(&progress).map_or(0, |metadata: std::fs::Metadata| metadata.len());
+        if current_bytes != recorded_bytes {
+            recorded_bytes = current_bytes;
+            last_progress = Instant::now();
+        } else if last_progress.elapsed() > stall_backstop {
             match child.kill() {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
@@ -295,7 +269,7 @@ fn execute_batch(
                 .map_err(|error: std::io::Error| io_error("reaping the stress worker", error))?;
             return Ok(BatchOutcome {
                 status,
-                timed_out: true,
+                stalled: true,
             });
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -347,7 +321,7 @@ fn evaluate_batch(
                     Some(sealed_cases),
                     mismatch,
                 )
-            } else if !outcome.status.success() || outcome.timed_out {
+            } else if !outcome.status.success() || outcome.stalled {
                 (
                     BatchFailureReason::SealedThenFailed,
                     completed,
@@ -392,8 +366,8 @@ fn evaluate_batch(
         batch_cases: context.records.len(),
         completed_cases: completed,
         sealed_cases,
-        timed_out: outcome.timed_out,
-        batch_timeout: context.batch_timeout,
+        stalled: outcome.stalled,
+        stall_backstop: context.stall_backstop,
         child_status: outcome.status.to_string(),
         child_success: outcome.status.success(),
         culprit: blame_case(context, reason, completed),

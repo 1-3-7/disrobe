@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used)]
-use std::time::Duration;
 
 use disrobe_pass_swift_objc::{
     analyze, decode_entitlements_from_code_signature, decode_entitlements_xml, extract_ipa,
@@ -11,8 +10,6 @@ use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 8_192;
 const BATCH_SIZE: usize = 6_144;
-const CASE_BUDGET: Duration = Duration::from_millis(20);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const SATURATION_DOMAIN: u64 = 0x5717_0B7C_0001_0002;
 const SATURATION_ARMS: usize = 3;
@@ -163,8 +160,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

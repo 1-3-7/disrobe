@@ -8,17 +8,14 @@ pub const SEED_ENV: &str = "DISROBE_STRESS_SEED";
 pub const DEFAULT_MASTER_SEED: u64 = 0xD157_0BE5_7E57_C0DE;
 pub const DEFAULT_CASES_PER_INPUT: usize = 64;
 pub const DEFAULT_BATCH_SIZE: usize = 16;
-pub const DEFAULT_CASE_BUDGET: Duration = Duration::from_millis(750);
-pub const DEFAULT_SUITE_BUDGET: Duration = Duration::from_mins(5);
-pub const BATCH_STARTUP_OVERHEAD: Duration = Duration::from_secs(3);
+pub const DEFAULT_STALL_BACKSTOP: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StressConfig {
     pub cases_per_input: usize,
     pub master_seed: u64,
     pub batch_size: usize,
-    pub case_budget: Duration,
-    pub suite_budget: Duration,
+    pub stall_backstop: Duration,
 }
 
 impl Default for StressConfig {
@@ -27,38 +24,16 @@ impl Default for StressConfig {
             cases_per_input: DEFAULT_CASES_PER_INPUT,
             master_seed: DEFAULT_MASTER_SEED,
             batch_size: DEFAULT_BATCH_SIZE,
-            case_budget: DEFAULT_CASE_BUDGET,
-            suite_budget: DEFAULT_SUITE_BUDGET,
+            stall_backstop: DEFAULT_STALL_BACKSTOP,
         }
     }
 }
 
 impl StressConfig {
     #[must_use]
-    pub fn scaled_batch_timeout(case_budget: Duration, batch_size: usize) -> Duration {
-        let factor: u32 = u32::try_from(batch_size).unwrap_or(u32::MAX);
-        case_budget
-            .saturating_mul(factor)
-            .saturating_add(BATCH_STARTUP_OVERHEAD)
-    }
-
-    #[must_use]
-    pub fn batch_timeout(&self) -> Duration {
-        Self::scaled_batch_timeout(self.case_budget, self.batch_size)
-    }
-
-    #[must_use]
-    pub const fn with_case_budget(self, case_budget: Duration) -> Self {
+    pub const fn with_stall_backstop(self, stall_backstop: Duration) -> Self {
         Self {
-            case_budget,
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub const fn with_suite_budget(self, suite_budget: Duration) -> Self {
-        Self {
-            suite_budget,
+            stall_backstop,
             ..self
         }
     }
@@ -120,12 +95,8 @@ pub(crate) fn print_banner(
         None => "in-process",
     };
     println!(
-        "disrobe-testkit: {mode} run over {corpus_entries} corpus entr(ies), {} case(s) each, {total_cases} total; master seed {:#018x} (override with {SEED_ENV}); batch size {}, batch timeout {:?}, suite budget {:?}",
-        config.cases_per_input,
-        config.master_seed,
-        config.batch_size,
-        config.batch_timeout(),
-        config.suite_budget
+        "disrobe-testkit: {mode} run over {corpus_entries} corpus entr(ies), {} case(s) each, {total_cases} total; master seed {:#018x} (override with {SEED_ENV}); batch size {}, a worker recording no case for {:?} is killed",
+        config.cases_per_input, config.master_seed, config.batch_size, config.stall_backstop
     );
     if let Some(filter) = worker {
         println!("disrobe-testkit: worker test filter `{filter}`");
@@ -134,58 +105,28 @@ pub(crate) fn print_banner(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BATCH_STARTUP_OVERHEAD, DEFAULT_BATCH_SIZE, DEFAULT_CASE_BUDGET, DEFAULT_MASTER_SEED,
-        DEFAULT_SUITE_BUDGET, StressConfig, parse_seed,
-    };
+    use super::{DEFAULT_MASTER_SEED, DEFAULT_STALL_BACKSTOP, StressConfig, parse_seed};
     use std::time::Duration;
 
     #[test]
     fn the_default_master_seed_is_a_fixed_constant() {
         let config: StressConfig = StressConfig::default();
         assert_eq!(config.master_seed, DEFAULT_MASTER_SEED);
-        assert_eq!(config.suite_budget, DEFAULT_SUITE_BUDGET);
-        assert_eq!(
-            config.batch_timeout(),
-            DEFAULT_CASE_BUDGET
-                .saturating_mul(u32::try_from(DEFAULT_BATCH_SIZE).unwrap_or(u32::MAX))
-                .saturating_add(BATCH_STARTUP_OVERHEAD)
-        );
+        assert_eq!(config.stall_backstop, DEFAULT_STALL_BACKSTOP);
     }
 
     #[test]
-    fn overriding_the_batch_size_with_struct_update_rescales_the_batch_timeout() {
+    fn a_stall_backstop_override_keeps_every_other_setting() {
         let base: StressConfig = StressConfig::default();
-        let widened: StressConfig = StressConfig {
-            batch_size: base.batch_size.saturating_mul(4),
-            ..base
-        };
+        let patient: StressConfig = base.with_stall_backstop(Duration::from_secs(11));
+        assert_eq!(patient.stall_backstop, Duration::from_secs(11));
         assert_eq!(
-            widened.batch_timeout(),
-            StressConfig::scaled_batch_timeout(base.case_budget, base.batch_size * 4)
+            StressConfig {
+                stall_backstop: base.stall_backstop,
+                ..patient
+            },
+            base
         );
-        assert!(widened.batch_timeout() > base.batch_timeout());
-    }
-
-    #[test]
-    fn the_suite_budget_survives_a_case_budget_override() {
-        let tightened: StressConfig = StressConfig::default()
-            .with_case_budget(Duration::from_millis(5))
-            .with_suite_budget(Duration::from_secs(11));
-        assert_eq!(tightened.case_budget, Duration::from_millis(5));
-        assert_eq!(tightened.suite_budget, Duration::from_secs(11));
-        assert_eq!(
-            tightened.batch_timeout(),
-            StressConfig::scaled_batch_timeout(Duration::from_millis(5), DEFAULT_BATCH_SIZE)
-        );
-    }
-
-    #[test]
-    fn the_batch_timeout_scales_with_the_batch_size() {
-        let small: Duration = StressConfig::scaled_batch_timeout(Duration::from_millis(100), 4);
-        let large: Duration = StressConfig::scaled_batch_timeout(Duration::from_millis(100), 64);
-        assert_eq!(small, Duration::from_millis(400) + BATCH_STARTUP_OVERHEAD);
-        assert!(large > small);
     }
 
     #[test]

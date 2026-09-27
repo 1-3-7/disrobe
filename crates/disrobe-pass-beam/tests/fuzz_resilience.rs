@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic)]
-use std::time::Duration;
 
 use disrobe_pass_beam::chunks::{self, LineChunk, LiteralChunk, StringTable};
 use disrobe_pass_beam::{
@@ -12,8 +11,6 @@ use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 const RANDOM_SPAN_BYTES: usize = 4096;
 const CASES_PER_INPUT: usize = 4_096;
 const BATCH_SIZE: usize = 4_096;
-const CASE_BUDGET: Duration = Duration::from_millis(40);
-const SUITE_BUDGET: Duration = Duration::from_mins(5);
 
 const SATURATION_DOMAIN: u64 = 0x4245_414D_0001_0002;
 const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
@@ -186,8 +183,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

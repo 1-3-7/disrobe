@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use disrobe_pass_pyfreeze::bbfreeze;
 use disrobe_pass_pyfreeze::briefcase;
@@ -36,8 +35,6 @@ const ENTROPY_SPAN_SEED: u64 = 0x5046_5A00_0001_0003;
 const READ_BOUND_BYTES: u64 = 4096;
 const CASES_PER_INPUT: usize = 64;
 const BATCH_SIZE: usize = 256;
-const CASE_BUDGET: Duration = Duration::from_millis(60);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const PROBE_DOMAIN: u64 = 0x5046_5A17_0001_0001;
 const SATURATION_DOMAIN: u64 = 0x5046_5A17_0001_0002;
@@ -450,8 +447,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

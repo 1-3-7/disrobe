@@ -8,18 +8,17 @@
 use std::time::Duration;
 
 use disrobe_testkit::{
-    BatchFailure, BatchFailureReason, CorpusEntry, CulpritCase, MutationKind, StressConfig,
-    StressError, WorkerTest, mutate, run_isolated,
+    BatchFailure, BatchFailureReason, CorpusEntry, CulpritCase, DEFAULT_STALL_BACKSTOP,
+    MutationKind, StressConfig, StressError, WorkerTest, mutate, run_isolated,
 };
 
 const CASES_PER_INPUT: usize = 3;
 const BATCH_SIZE: usize = 8;
 const MASTER_SEED: u64 = 0x5445_5354_4B49_5401;
 const TOTAL_CASES: usize = 6;
-const PATIENT_CASE_BUDGET: Duration = Duration::from_secs(4);
-const IMPATIENT_CASE_BUDGET: Duration = Duration::from_millis(250);
-const SUITE_BUDGET: Duration = Duration::from_mins(2);
-const CLAMPING_SUITE_BUDGET: Duration = Duration::from_secs(2);
+const PLANTED_HANG_BACKSTOP: Duration = Duration::from_secs(5);
+const SLOW_CASE_BACKSTOP: Duration = Duration::from_secs(5);
+const SLOW_CASE_DURATION: Duration = Duration::from_secs(1);
 
 fn corpus() -> Vec<CorpusEntry> {
     vec![
@@ -28,18 +27,17 @@ fn corpus() -> Vec<CorpusEntry> {
     ]
 }
 
-const fn config(case_budget: Duration) -> StressConfig {
+const fn config(stall_backstop: Duration) -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         master_seed: MASTER_SEED,
         batch_size: BATCH_SIZE,
-        case_budget,
-        suite_budget: SUITE_BUDGET,
+        stall_backstop,
     }
 }
 
-fn expect_batch_failure(worker: &WorkerTest, case_budget: Duration) -> Box<BatchFailure> {
-    expect_batch_failure_with(worker, &config(case_budget))
+fn expect_batch_failure(worker: &WorkerTest, stall_backstop: Duration) -> Box<BatchFailure> {
+    expect_batch_failure_with(worker, &config(stall_backstop))
 }
 
 fn expect_batch_failure_with(worker: &WorkerTest, config: &StressConfig) -> Box<BatchFailure> {
@@ -130,6 +128,17 @@ mod hangs_at_case_one {
     );
 }
 
+mod sleeps_every_case {
+    fn check(_case: &disrobe_testkit::StressCase<'_>) {
+        std::thread::sleep(super::SLOW_CASE_DURATION);
+    }
+
+    disrobe_testkit::stress_suite!(
+        check: check,
+        driven_by: super::a_batch_that_keeps_recording_cases_outlives_its_stall_backstop
+    );
+}
+
 mod panics_at_case_three {
     fn check(case: &disrobe_testkit::StressCase<'_>) {
         assert!(
@@ -189,7 +198,7 @@ mod refuses_a_nested_run {
             disrobe_testkit::WorkerTest::from_module_path("probe::no_such_module");
         let outcome: Result<usize, disrobe_testkit::StressError> = disrobe_testkit::run_isolated(
             &super::corpus(),
-            &super::config(super::PATIENT_CASE_BUDGET),
+            &super::config(disrobe_testkit::DEFAULT_STALL_BACKSTOP),
             &unmatched,
         );
         assert!(
@@ -257,7 +266,7 @@ mod forges_a_seal_with_a_stale_token {
 fn a_worker_that_seals_every_case_is_the_only_way_to_pass() {
     let sealed: usize = run_isolated(
         &corpus(),
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &completes_every_case::stress_worker_test(),
     )
     .expect("a worker that completes and seals every case must pass");
@@ -268,10 +277,10 @@ fn a_worker_that_seals_every_case_is_the_only_way_to_pass() {
 fn a_process_abort_is_detected_and_localized() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &aborts_at_case_two::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealMissing);
-    assert!(!failure.timed_out, "an abort is not a timeout: {failure}");
+    assert!(!failure.stalled, "an abort is not a stall: {failure}");
     assert!(!failure.child_success, "an aborted worker cannot exit zero");
     assert_eq!(failure.completed_cases, 2);
     let culprit: &CulpritCase = failure.culprit.as_ref().expect("an abort blames one case");
@@ -290,10 +299,13 @@ fn a_process_abort_is_detected_and_localized() {
 fn an_infinite_loop_is_killed_and_localized() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &hangs_at_case_one::stress_worker_test(),
-        IMPATIENT_CASE_BUDGET,
+        PLANTED_HANG_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealMissing);
-    assert!(failure.timed_out, "the watchdog did not fire: {failure}");
+    assert!(
+        failure.stalled,
+        "the stall backstop did not fire: {failure}"
+    );
     assert!(!failure.child_success, "a killed worker cannot exit zero");
     assert_eq!(failure.completed_cases, 1);
     let culprit: &CulpritCase = failure.culprit.as_ref().expect("a hang blames one case");
@@ -311,10 +323,10 @@ fn an_infinite_loop_is_killed_and_localized() {
 fn a_panic_partway_through_a_batch_is_detected_and_localized() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &panics_at_case_three::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealMissing);
-    assert!(!failure.timed_out, "a panic is not a timeout: {failure}");
+    assert!(!failure.stalled, "a panic is not a stall: {failure}");
     assert!(
         !failure.child_success,
         "a panicking worker cannot exit zero"
@@ -335,14 +347,14 @@ fn a_panic_partway_through_a_batch_is_detected_and_localized() {
 fn a_worker_that_exits_zero_without_sealing_is_still_a_failure() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &exits_without_sealing::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealMissing);
     assert!(
         failure.child_success,
         "this planted fault exits zero on purpose: {failure}"
     );
-    assert!(!failure.timed_out);
+    assert!(!failure.stalled);
     assert_eq!(failure.completed_cases, 0);
     assert_eq!(failure.sealed_cases, None);
     let culprit: &CulpritCase = failure
@@ -357,7 +369,7 @@ fn a_worker_that_exits_zero_without_sealing_is_still_a_failure() {
 fn a_seal_carrying_another_runs_token_is_rejected() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &forges_a_seal_with_a_stale_token::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealTokenMismatch);
     assert!(
@@ -377,7 +389,7 @@ fn a_seal_carrying_another_runs_token_is_rejected() {
 fn a_filter_matching_no_test_fails_before_any_batch_runs() {
     let worker: WorkerTest =
         WorkerTest::from_module_path("planted_faults::renamed_since_the_filter_was_written");
-    let error: StressError = run_isolated(&corpus(), &config(PATIENT_CASE_BUDGET), &worker)
+    let error: StressError = run_isolated(&corpus(), &config(DEFAULT_STALL_BACKSTOP), &worker)
         .expect_err("a filter matching no test must fail loudly");
     println!("disrobe-testkit: {error}");
     match error {
@@ -395,7 +407,7 @@ fn a_filter_matching_no_test_fails_before_any_batch_runs() {
 fn the_reported_seed_replays_the_dumped_culprit_bytes() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &panics_at_case_four::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     let culprit: &CulpritCase = failure.culprit.as_ref().expect("a panic blames one case");
     assert_eq!(culprit.case_index, 4);
@@ -422,7 +434,7 @@ fn the_reported_seed_replays_the_dumped_culprit_bytes() {
 fn the_worker_process_receives_exactly_the_bytes_its_seed_replays() {
     let sealed: usize = run_isolated(
         &corpus(),
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &replays_its_own_bytes::stress_worker_test(),
     )
     .expect("a separate process must rebuild every case from its seed alone");
@@ -433,7 +445,7 @@ fn the_worker_process_receives_exactly_the_bytes_its_seed_replays() {
 fn a_worker_refuses_to_start_a_nested_run() {
     let sealed: usize = run_isolated(
         &corpus(),
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &refuses_a_nested_run::stress_worker_test(),
     )
     .expect("the nested-run probe runs inside the worker and must seal every case");
@@ -444,7 +456,7 @@ fn a_worker_refuses_to_start_a_nested_run() {
 fn an_empty_plan_is_refused_rather_than_reported_green() {
     let empty_corpus: Result<usize, StressError> = run_isolated(
         &[],
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &completes_every_case::stress_worker_test(),
     );
     assert!(matches!(
@@ -458,7 +470,7 @@ fn an_empty_plan_is_refused_rather_than_reported_green() {
         &corpus(),
         &StressConfig {
             cases_per_input: 0,
-            ..config(PATIENT_CASE_BUDGET)
+            ..config(DEFAULT_STALL_BACKSTOP)
         },
         &completes_every_case::stress_worker_test(),
     );
@@ -475,14 +487,14 @@ fn an_empty_plan_is_refused_rather_than_reported_green() {
 fn a_worker_that_seals_every_case_and_then_aborts_is_not_reported_green() {
     let failure: Box<BatchFailure> = expect_batch_failure(
         &aborts_after_sealing_every_case::stress_worker_test(),
-        PATIENT_CASE_BUDGET,
+        DEFAULT_STALL_BACKSTOP,
     );
     assert_eq!(failure.reason, BatchFailureReason::SealedThenFailed);
     assert!(
         !failure.child_success,
         "an aborted worker cannot exit zero: {failure}"
     );
-    assert!(!failure.timed_out, "an abort is not a timeout: {failure}");
+    assert!(!failure.stalled, "an abort is not a stall: {failure}");
     assert_eq!(failure.completed_cases, TOTAL_CASES);
     assert_eq!(failure.sealed_cases, Some(TOTAL_CASES));
     assert!(
@@ -505,7 +517,7 @@ fn a_parent_aimed_at_a_foreign_modules_worker_is_refused_rather_than_passed() {
         "a bare module name must collapse onto the crate-root worker for this probe to mean anything"
     );
 
-    let failure: Box<BatchFailure> = expect_batch_failure(&mistargeted, PATIENT_CASE_BUDGET);
+    let failure: Box<BatchFailure> = expect_batch_failure(&mistargeted, DEFAULT_STALL_BACKSTOP);
     assert_eq!(failure.reason, BatchFailureReason::WorkerIdentityMismatch);
     assert!(
         failure.child_success,
@@ -528,7 +540,7 @@ fn a_parent_aimed_at_a_foreign_modules_worker_is_refused_rather_than_passed() {
 fn a_correctly_aimed_nested_worker_still_seals_every_case() {
     let sealed: usize = run_isolated(
         &corpus(),
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &nested::stress_worker_test(),
     )
     .expect("a worker aimed at its own module must pass");
@@ -536,62 +548,20 @@ fn a_correctly_aimed_nested_worker_still_seals_every_case() {
 }
 
 #[test]
-fn an_exhausted_suite_budget_stops_the_run_before_a_batch_starts() {
-    let starved: StressConfig = StressConfig {
-        suite_budget: Duration::ZERO,
-        ..config(PATIENT_CASE_BUDGET)
-    };
-    match run_isolated(
-        &corpus(),
-        &starved,
-        &completes_every_case::stress_worker_test(),
-    ) {
-        Err(StressError::SuiteBudgetExhausted {
-            budget,
-            batches_completed,
-            sealed_cases,
-            total_cases,
-            ..
-        }) => {
-            assert_eq!(budget, Duration::ZERO);
-            assert_eq!(batches_completed, 0);
-            assert_eq!(sealed_cases, 0);
-            assert_eq!(total_cases, TOTAL_CASES);
-        }
-        other => panic!("a zero suite budget must refuse the run, got {other:?}"),
-    }
-}
-
-#[test]
-fn a_batch_killed_by_the_suite_deadline_names_the_suite_budget() {
-    let clamped: StressConfig = StressConfig {
-        suite_budget: CLAMPING_SUITE_BUDGET,
-        ..config(PATIENT_CASE_BUDGET)
-    };
+fn a_batch_that_keeps_recording_cases_outlives_its_stall_backstop() {
+    let batch_duration: Duration = SLOW_CASE_DURATION
+        .saturating_mul(u32::try_from(TOTAL_CASES).expect("the planted batch size fits u32"));
     assert!(
-        clamped.batch_timeout() > CLAMPING_SUITE_BUDGET,
-        "this probe needs the suite budget to be the tighter of the two limits"
+        batch_duration > SLOW_CASE_BACKSTOP && SLOW_CASE_DURATION < SLOW_CASE_BACKSTOP,
+        "this probe needs a batch longer than the backstop made of cases shorter than it"
     );
-    match run_isolated(
+    let sealed: usize = run_isolated(
         &corpus(),
-        &clamped,
-        &hangs_at_case_one::stress_worker_test(),
-    ) {
-        Err(StressError::SuiteBudgetExhausted {
-            budget, elapsed, ..
-        }) => {
-            assert_eq!(budget, CLAMPING_SUITE_BUDGET);
-            assert!(
-                elapsed >= CLAMPING_SUITE_BUDGET,
-                "the run stopped after {elapsed:?}, before its {CLAMPING_SUITE_BUDGET:?} budget"
-            );
-        }
-        other => {
-            panic!(
-                "a batch killed by the suite deadline must not read as a per-case hang: {other:?}"
-            )
-        }
-    }
+        &config(SLOW_CASE_BACKSTOP),
+        &sleeps_every_case::stress_worker_test(),
+    )
+    .expect("a worker that records every case before the backstop must pass");
+    assert_eq!(sealed, TOTAL_CASES);
 }
 
 #[test]
@@ -602,7 +572,7 @@ fn a_duplicate_corpus_name_is_refused_before_any_case_runs() {
     ];
     match run_isolated(
         &ambiguous,
-        &config(PATIENT_CASE_BUDGET),
+        &config(DEFAULT_STALL_BACKSTOP),
         &completes_every_case::stress_worker_test(),
     ) {
         Err(StressError::DuplicateCorpusEntry { name, .. }) => assert_eq!(name, "same"),

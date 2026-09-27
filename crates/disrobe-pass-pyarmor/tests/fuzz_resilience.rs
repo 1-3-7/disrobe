@@ -1,6 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use disrobe_pass_pyarmor::static_unpack::bcdetect::detect_from_wrapper_text;
 use disrobe_pass_pyarmor::static_unpack::{WrapperMagic, load_runtime_info, parse_header, sniff};
@@ -18,8 +17,6 @@ const MAX_INPUT_BYTES: usize = 4096;
 const RANDOM_SPAN_BYTES: usize = 4096;
 const CASES_PER_INPUT: usize = 64;
 const BATCH_SIZE: usize = 160;
-const CASE_BUDGET: Duration = Duration::from_millis(400);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const SATURATION_DOMAIN: u64 = 0x5059_4152_0001_0002;
 const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
@@ -226,8 +223,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

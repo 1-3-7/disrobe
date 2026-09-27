@@ -1,9 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-use std::time::Duration;
-
 use disrobe_testkit::{
-    CorpusEntry, MutationKind, StressCase, StressConfig, StressError, XorShift64, mutate, run_cases,
+    CorpusEntry, DEFAULT_STALL_BACKSTOP, MutationKind, StressCase, StressConfig, StressError,
+    XorShift64, mutate, run_cases,
 };
 
 const FINGERPRINT_ENTRIES: usize = 4;
@@ -115,8 +114,7 @@ fn the_in_process_runner_hands_the_check_replayable_cases() {
         cases_per_input: 16,
         master_seed: 0x1234_5678_9ABC_DEF0,
         batch_size: 4,
-        case_budget: Duration::from_millis(500),
-        suite_budget: Duration::from_secs(30),
+        stall_backstop: DEFAULT_STALL_BACKSTOP,
     };
     let executed: usize = run_cases(&corpus(), &config, record).expect("no case panics");
     assert_eq!(executed, corpus().len() * 16);

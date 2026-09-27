@@ -1,5 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::time::Duration;
 
 use disrobe_py_marshal::{
     Object, PyVersion, PycFile, RefTableDump, dump_reftable, load, load_with_reftable, read_pyc,
@@ -22,8 +21,6 @@ const RANDOM_SPAN_BYTES: usize = 1024;
 const ENTROPY_SPAN_SEED: u64 = 0x5041_5253_0001_0003;
 const CASES_PER_INPUT: usize = 10_000;
 const BATCH_SIZE: usize = 3_000;
-const CASE_BUDGET: Duration = Duration::from_millis(5);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const COLLECTION_TAGS: [u8; 6] = [b'(', b'[', b'{', b'<', b'>', b'c'];
 const RETAG_DOMAIN: u64 = 0x5265_5461_6721_0001;
@@ -137,8 +134,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

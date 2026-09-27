@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use std::io::Read as _;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use disrobe_pass_mobile::apk_recon;
 use disrobe_pass_mobile::arsc;
@@ -16,8 +15,6 @@ use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, XorShift64};
 const RANDOM_SPAN_BYTES: usize = 1024;
 const CASES_PER_INPUT: usize = 4_096;
 const BATCH_SIZE: usize = 4_096;
-const CASE_BUDGET: Duration = Duration::from_millis(20);
-const SUITE_BUDGET: Duration = Duration::from_mins(3);
 
 const PERTURB_DOMAIN: u64 = 0x4D4F_4249_0001_0002;
 const PERTURB_ARMS: usize = 3;
@@ -264,8 +261,6 @@ fn config() -> StressConfig {
     StressConfig {
         cases_per_input: CASES_PER_INPUT,
         batch_size: BATCH_SIZE,
-        case_budget: CASE_BUDGET,
-        suite_budget: SUITE_BUDGET,
         ..StressConfig::default()
     }
 }

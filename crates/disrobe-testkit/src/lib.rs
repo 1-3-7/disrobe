@@ -15,8 +15,8 @@ mod wire;
 mod workspace;
 
 pub use config::{
-    BATCH_STARTUP_OVERHEAD, DEFAULT_BATCH_SIZE, DEFAULT_CASE_BUDGET, DEFAULT_CASES_PER_INPUT,
-    DEFAULT_MASTER_SEED, DEFAULT_SUITE_BUDGET, SEED_ENV, StressConfig,
+    DEFAULT_BATCH_SIZE, DEFAULT_CASES_PER_INPUT, DEFAULT_MASTER_SEED, DEFAULT_STALL_BACKSTOP,
+    SEED_ENV, StressConfig,
 };
 pub use corpus::{CheckFn, CorpusEntry, CorpusSource, StressCase};
 pub use error::{BatchFailure, BatchFailureReason, CulpritCase, StressError};
