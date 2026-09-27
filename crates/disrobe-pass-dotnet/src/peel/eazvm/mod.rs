@@ -439,30 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn writes_recovered_cil_artifact() {
-        use std::fmt::Write as _;
-        let image: Vec<u8> = eazvm_image();
-        let recovery: EazVmRecovery = devirtualize(&image).expect("devirtualize");
-        let mut out: String = String::new();
-        for m in &recovery.methods {
-            let ret: &str = if m.info.returns_void { "void" } else { "i4" };
-            writeln!(
-                out,
-                "method {} params={} locals={} ret={}",
-                m.name, m.info.param_count, m.info.local_count, ret
-            )
-            .unwrap();
-            for line in m.lifted.render() {
-                writeln!(out, "{line}").unwrap();
-            }
-            writeln!(out, "end").unwrap();
-        }
-        let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../corpus/dotnet/eazvm/EazSample.recovered.cil");
-        std::fs::write(&path, out).expect("write recovered cil artifact");
-    }
-
-    #[test]
     fn full_decode_surfaces_zero_undecoded_and_no_failure() {
         let image: Vec<u8> = eazvm_image();
         let recovery: EazVmRecovery = devirtualize(&image).expect("devirtualize");

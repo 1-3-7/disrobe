@@ -29,9 +29,9 @@ const STACK_UNDERFLOW: &str = "__stack_underflow";
 const STACK_UNDERFLOW_GOLDEN_REL: &str = "golden/dotnet_stack_underflow.tsv";
 const UNPARSED_GOLDEN_REL: &str = "golden/dotnet_unparsed_images.tsv";
 const STACK_UNDERFLOW_UPDATE_ENV: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN";
-const CORPUS_IMAGES: usize = 49;
-const CORPUS_ASSEMBLIES: usize = 46;
-const CORPUS_METHOD_FLOOR: usize = 3121;
+const CORPUS_IMAGES: usize = 48;
+const CORPUS_ASSEMBLIES: usize = 45;
+const CORPUS_METHOD_FLOOR: usize = 3120;
 const BUILD_OUTPUT_DIRS: [&str; 2] = ["bin", "obj"];
 const REFRESH_COMMAND: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN=1 cargo test -p disrobe-pass-dotnet --test type_fidelity";
 

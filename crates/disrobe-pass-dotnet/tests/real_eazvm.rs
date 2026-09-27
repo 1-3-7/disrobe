@@ -7,7 +7,7 @@
     clippy::print_stderr
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -46,8 +46,6 @@ fn corpus(rel: &str) -> Vec<u8> {
 }
 
 const TINY_HEADER_CODE_LIMIT: usize = 64;
-const FAT_HEADER_FLAGS: u16 = 0x3003;
-const FAT_HEADER_MAX_STACK: u16 = 8;
 
 fn opcode_byte(op: CilOp) -> u8 {
     let key: &str = op.handler_key();
@@ -124,21 +122,14 @@ fn encode_code(method: &str, body: &LiftedBody) -> Vec<u8> {
 
 fn method_body(method: &str, body: &LiftedBody) -> MethodBody {
     let code: Vec<u8> = encode_code(method, body);
-    let mut image: Vec<u8> = Vec::with_capacity(code.len() + 12);
-    if code.len() < TINY_HEADER_CODE_LIMIT {
-        image.push(u8::try_from((code.len() << 2) | 0x02).expect("a tiny header fits a byte"));
-    } else {
-        image.extend_from_slice(&FAT_HEADER_FLAGS.to_le_bytes());
-        image.extend_from_slice(&FAT_HEADER_MAX_STACK.to_le_bytes());
-        image.extend_from_slice(
-            &u32::try_from(code.len())
-                .expect("code size fits u32")
-                .to_le_bytes(),
-        );
-        image.extend_from_slice(&0_u32.to_le_bytes());
-    }
+    assert!(
+        code.len() < TINY_HEADER_CODE_LIMIT,
+        "{method}: code exceeds the tiny-header limit"
+    );
+    let mut image: Vec<u8> = Vec::with_capacity(code.len() + 1);
+    image.push(u8::try_from((code.len() << 2) | 0x02).expect("a tiny header fits a byte"));
     image.extend_from_slice(&code);
-    parse_method_body(&image).unwrap_or_else(|error| {
+    parse_method_body(&image).unwrap_or_else(|error: disrobe_pass_dotnet::Error| {
         panic!("{method}: the re-encoded CIL body does not decode: {error}")
     })
 }
@@ -199,6 +190,7 @@ fn lifted_from_rendered(method: &str, lines: &[String]) -> LiftedBody {
                     panic!("{method}: {line} has operand {found:?} where {key} needs {expected:?}")
                 }
             };
+            assert_eq!(fields.next(), None, "{method}: trailing operand in {line}");
             LiftedInstr { op, operand }
         })
         .collect();
@@ -479,7 +471,9 @@ fn mixed_differential_rejects_a_deliberate_operator_mutation() {
             evaluate("Mixed", &recovered, &[argument, -1]),
             Ok(reference)
         );
-        assert_ne!(evaluate("Mixed", &mutated, &[argument, -1]), Ok(reference));
+        let changed: i32 = evaluate("Mixed", &mutated, &[argument, -1])
+            .expect("the mutated CIL must still execute");
+        assert_ne!(changed, reference);
     }
 }
 
@@ -664,6 +658,29 @@ fn disagreements(method: &str, body: &LiftedBody) -> Vec<String> {
 #[test]
 fn every_recovered_branch_is_graded_on_both_sides() {
     let bodies: BTreeMap<String, LiftedBody> = recovered_bodies();
+    let recovered_branches: BTreeSet<(&str, usize)> = bodies
+        .iter()
+        .flat_map(|(method, body): (&String, &LiftedBody)| {
+            body.instrs.iter().enumerate().filter_map(
+                move |(index, instr): (usize, &LiftedInstr)| {
+                    instr.op.is_branch().then_some((method.as_str(), index))
+                },
+            )
+        })
+        .collect();
+    let graded_branches: BTreeSet<(&str, usize)> = BRANCH_CASES
+        .iter()
+        .map(|case: &BranchCase| (case.method, case.index))
+        .collect();
+    assert_eq!(
+        graded_branches.len(),
+        BRANCH_CASES.len(),
+        "duplicate branch grade"
+    );
+    assert_eq!(
+        recovered_branches, graded_branches,
+        "every recovered branch needs a mutation grade"
+    );
     for method in ["Classify", "Max3", "SumTo"] {
         let body: &LiftedBody = bodies
             .get(method)

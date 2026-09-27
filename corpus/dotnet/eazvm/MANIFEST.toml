@@ -40,13 +40,6 @@ kind = "sidecar-keymap"
 provenance = "self-virtualized"
 description = "the per-build opcode map and crypto keys emitted by our in-repo virtualizer; used ONLY as an independent cross-check, never read by the devirtualizer (which recovers the map from the in-assembly dispatch table)"
 
-[[fixture]]
-name = "EazSample.recovered.cil"
-path = "EazSample.recovered.cil"
-kind = "recovered-listing"
-provenance = "derived"
-description = "the CIL the devirtualizer lifts out of EazSample.eazvm.dll, written by the devirtualizer"
-
 [virtualized_methods]
 Add = "(int a, int b) => a + b; Add(2,3)=5"
 Poly = "(int x) => x*x + 3*x - 1; Poly(7)=69"
