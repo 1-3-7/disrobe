@@ -57,7 +57,7 @@ Graded against an unstripped sibling's DWARF on an `-O0` corpus, integer width a
 
 ### AArch64 symbolic devirtualizer
 
-On the AArch64 path a symbolic devirtualizer runs before structuring, on by default in a full build and disabled with `--no-devirt`. It folds conditional arms it can prove dead against the path constraints, then hands the simplified function to the structurer. The fold is transactional: on any proof miss or budget exhaustion it reverts to the original function, so it can only ever replace a construct with a proven-equivalent one and never invents an edge. Per-function fold counts and status land in the decompile `manifest.json` under `devirt`.
+On the AArch64 path a symbolic devirtualizer runs before structuring, on by default in a full build and disabled with `--no-devirt`. It folds conditional arms it can prove dead against the path constraints, then hands the simplified function to the structurer. The fold is transactional: on any proof miss or budget exhaustion it reverts to the original function, so it replaces a construct only with a proven-equivalent one and adds no edges. Per-function fold counts and status land in the decompile `manifest.json` under `devirt`.
 
 ### Auto-vectorized loops
 

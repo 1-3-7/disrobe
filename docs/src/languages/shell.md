@@ -53,7 +53,7 @@ Source recovery has a separate comparison against the authored `.bas` files, pre
 
 ### Excel 4.0 (XLM) macros
 
-`disrobe shell deob book.xls` recovers Excel 4.0 macro-sheet formulas from a BIFF8 (`.xls`) or BIFF12 (`.xlsb`) workbook. It decodes the Ptg RPN token stream back to formula text over the full Ftab and Cetab function tables, resolves shared-formula masters to per-cell absolute references, and flags the built-in auto-run names (`Auto_Open`, `Auto_Close`, `Auto_Activate`, `Auto_Deactivate`) as execution entry points, so a `=EXEC("...")` or `=FORMULA(...)` macro reads back in full. A token the decoder does not recognize is emitted as an explicit unknown marker rather than a fabricated formula. Recovery is graded against hand-built BIFF fixtures with known formulas, covering BIFF12's wider reference fields, shared-formula relative-to-absolute resolution, and the `Auto_Open` entry point (`xlm_fixtures.rs`).
+`disrobe shell deob book.xls` recovers Excel 4.0 macro-sheet formulas from a BIFF8 (`.xls`) or BIFF12 (`.xlsb`) workbook. It decodes the Ptg RPN token stream back to formula text over the full Ftab and Cetab function tables, resolves shared-formula masters to per-cell absolute references, and flags the built-in auto-run names (`Auto_Open`, `Auto_Close`, `Auto_Activate`, `Auto_Deactivate`) as execution entry points, so a `=EXEC("...")` or `=FORMULA(...)` macro reads back in full. A token the decoder does not recognize is emitted as an explicit unknown marker, not as a guessed formula. Recovery is graded against hand-built BIFF fixtures with known formulas, covering BIFF12's wider reference fields, shared-formula relative-to-absolute resolution, and the `Auto_Open` entry point (`xlm_fixtures.rs`).
 
 ### Haxe HashLink, Perl, R, and Tcl
 

@@ -45,6 +45,6 @@ For `.jsc`, Disrobe recovers user strings and structure and detects serializer v
 
 ## Limits
 
-- `.jsc` internalized identifiers (most variable and property names, for example `console` and `log`) are serialized as references into V8's read-only snapshot heap, not as inline bytes in the `.jsc`. Resolving them needs the exact V8 binary's RO heap. `disrobe` reports that as a lossy-internalized-roots boundary rather than fabricating past it.
+- `.jsc` internalized identifiers (most variable and property names, for example `console` and `log`) are serialized as references into V8's read-only snapshot heap, not as inline bytes in the `.jsc`. Resolving them needs the exact V8 binary's RO heap. `disrobe` reports that as a lossy-internalized-roots boundary and does not decode past it.
 - TypeScript `async` recovery assumes the global `Promise` is the built-in one when the module runs. A module that visibly rebinds `Promise` is left compiled; a replacement installed by another script (for example zone.js) is outside a single-file check. State-machine shapes the rule cannot prove equivalent, such as terser's conditional instruction returns, also stay compiled.
-- For V8 snapshots `disrobe` reports a `SnapshotDeserializeWall`: the format prevents full bytecode recovery, so it scrapes the string pool (tunable via `--scrape-min`) and states the boundary rather than fabricating past it.
+- For V8 snapshots `disrobe` reports a `SnapshotDeserializeWall`: the format prevents full bytecode recovery, so it scrapes the string pool (tunable via `--scrape-min`) and states the boundary; it does not decode past it.
