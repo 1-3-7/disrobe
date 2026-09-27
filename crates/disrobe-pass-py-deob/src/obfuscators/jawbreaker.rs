@@ -140,7 +140,7 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         }
     }
     let lossy_notes: Vec<String> = vec![if remote_loader_confirmed {
-        "Jawbreaker upstream: triple-encoded b16(b32(b64(...))) shell decoded statically to a urllib.request.urlopen loader. The user's source is fetched at runtime from a remote Hastebin paste (URL reassembled from runtime fragments; paste expires ~30 days). No user source is present in the artifact - recovery requires the live network fetch, so this is honest detect-only.".to_owned()
+        "Jawbreaker upstream: triple-encoded b16(b32(b64(...))) shell decoded statically to a urllib.request.urlopen loader. The user's source is fetched at runtime from a remote Hastebin paste (URL reassembled from runtime fragments; paste expires ~30 days). No user source is present in the artifact - recovery requires the live network fetch, so this is detect-only.".to_owned()
     } else {
         "Jawbreaker upstream: triple-encoded shell detected; inner loader did not expose a static user-source payload. Classified detect-only.".to_owned()
     }];

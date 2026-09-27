@@ -729,7 +729,7 @@ fn dispatch_unpack(packer: Packer, artifact: &Artifact) -> CoreResult<PackerReco
         UnpackerStatus::Implemented => run_rust_unpacker(packer, artifact),
         UnpackerStatus::StubEvalPending => Err(CoreError::PassFailure(format!(
             "DR-NAT-0902: native.packer-unpack: {label} detected; stub emulator validated against a \
-             synthetic stub, real packed-sample recovery unproven (detection is production-grade, \
+             synthetic stub, real packed-sample recovery unproven (detection works; \
              byte recovery on a captured sample not yet confirmed)",
             label = packer.label(),
         ))),

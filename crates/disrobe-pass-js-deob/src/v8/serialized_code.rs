@@ -87,7 +87,7 @@ const LOSSY_INTERNALIZED_ROOTS: &str = "user-defined identifiers, property names
      node --print-bytecode). The only residue is a small set of common builtin/single-character \
      root strings (e.g. length, push, console, log, \"!\") that V8 serializes as RootArray / \
      ReadOnlyHeapRef indices; these resolve through the pinned per-release root-name table, and a \
-     root string from a V8 build whose table is not pinned stays an index (reported honestly, not \
+     root string from a V8 build whose table is not pinned stays an index (reported as such, not \
      guessed)";
 
 const LOSSY_LAZY_BODIES: &str = "lazily-compiled inner functions have no BytecodeArray in the .jsc until first runtime call; \

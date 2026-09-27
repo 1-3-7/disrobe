@@ -520,7 +520,7 @@ pub fn unpack_kkrunchy(packed_bytes: &[u8]) -> Result<KkrunchyUnpackOutput> {
                                 "kkrunchy structural unpack: identified {variant_label} variant, section 'kkrunchy' at file offset {:#x} ({} bytes raw, vsize {:#x}). \
                                  The k7 context-mixing range decoder (kkrunchy_k7_cm::rangecoder_depack) and DisFilter inverse (dis_unfilter) are both \
                                  implemented in-tree, but no decodable k7 range stream was located inside this section's payload, so the verbatim packed \
-                                 section is surfaced rather than a fabricated decode.",
+                                 section is surfaced unchanged.",
                                 header.section_raw_offset,
                                 header.section_raw_size,
                                 header.section_vsize,

@@ -12,8 +12,8 @@ const NATIVE_VM_SECTIONS: &[&str] = &[".vmp0", ".vmp1", ".themida", ".winlice", 
 
 const BASE_RATIONALE: &str = "Themida-.NET wraps the managed assembly inside the Oreans native VM. Protected method bodies \
      are translated into native VM bytecode and decrypted into RWX memory only at runtime. This is \
-     genuine native virtualization; per project policy disrobe does not ship a native-VM \
-     devirtualizer (VMP/Themida class). The native-VM-protected methods are walled, not fabricated.";
+     native virtualization; per project policy disrobe does not ship a native-VM \
+     devirtualizer (VMP/Themida class). The native-VM-protected methods are reported as walled.";
 
 pub fn peel_themida_dotnet(bytes: &[u8]) -> Result<PeelReport> {
     let mut report: PeelReport =

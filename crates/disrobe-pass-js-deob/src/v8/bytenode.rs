@@ -285,7 +285,7 @@ const GRAPH_SUPPORTED_NOTE: &str = "the payload is a CodeSerializer object graph
      literals are serialized inline in that pool and are recovered as readable names; only common \
      builtin and single-character root strings (length, push, console, \"!\", ...) are RootArray / \
      ReadOnlyHeapRef indices, resolved through a pinned per-release root-name table, and an \
-     unpinned-build root stays an index honestly.";
+     unpinned-build root stays an index.";
 
 #[must_use]
 pub fn scrape_payload_strings(payload: &[u8], min_run: usize) -> ScrapedConstantPool {
