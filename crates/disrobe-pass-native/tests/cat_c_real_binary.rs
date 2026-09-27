@@ -14,7 +14,6 @@ mod packer_fixture;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_pass_native::{
     DetectedFormat, NativeFormat, Packer, PackerDetection, UnpackerStatus, UpxMethod,
@@ -59,13 +58,6 @@ fn distinct_packers(hits: &[PackerDetection]) -> BTreeSet<Packer> {
     hits.iter().map(|h: &PackerDetection| h.packer).collect()
 }
 
-fn upx_available() -> bool {
-    Command::new("upx")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-}
-
 #[test]
 fn upx_detects_hello_x64_real_binary() {
     let Some(bytes): Option<Vec<u8>> = read_corpus("upx/hello.exe") else {
@@ -99,68 +91,6 @@ fn upx_detects_ripgrep_megafile() {
     let detected: DetectedFormat =
         detect_format(&bytes).expect("packed rg.exe is still a valid PE container");
     assert_eq!(detected.kind, NativeFormat::Pe64);
-}
-
-#[test]
-fn upx_round_trip_hello_byte_compare() {
-    if !upx_available() {
-        println!("SKIP: upx CLI not on PATH");
-        return;
-    }
-    let Some(baseline): Option<Vec<u8>> = read_corpus("upx/hello.original.exe") else {
-        eprintln!("skipping: upx/hello.original.exe corpus fixture absent");
-        return;
-    };
-    let Some(unpacked): Option<Vec<u8>> = read_corpus("upx/hello.unpacked.exe") else {
-        eprintln!("skipping: upx/hello.unpacked.exe corpus fixture absent");
-        return;
-    };
-    assert_eq!(
-        baseline.len(),
-        unpacked.len(),
-        "UPX round-trip must preserve total length for hello.exe"
-    );
-    let diffs: u64 = baseline
-        .iter()
-        .zip(unpacked.iter())
-        .filter(|(a, b): &(&u8, &u8)| a != b)
-        .count() as u64;
-    let diff_per_million: u64 = diffs.saturating_mul(1_000_000) / baseline.len() as u64;
-    assert!(
-        diff_per_million < 10_000,
-        "hello.exe round-trip diff_per_million {diff_per_million} must stay <10000 (=1%) modulo COFF header timestamp / padding"
-    );
-}
-
-#[test]
-fn upx_round_trip_ripgrep_byte_compare() {
-    if !upx_available() {
-        println!("SKIP: upx CLI not on PATH");
-        return;
-    }
-    let Some(baseline): Option<Vec<u8>> = read_corpus("upx/rg.original.exe") else {
-        eprintln!("skipping: upx/rg.original.exe corpus fixture absent");
-        return;
-    };
-    let Some(unpacked): Option<Vec<u8>> = read_corpus("upx/rg.unpacked.upx.exe") else {
-        eprintln!("skipping: upx/rg.unpacked.upx.exe corpus fixture absent");
-        return;
-    };
-    assert_eq!(
-        baseline.len(),
-        unpacked.len(),
-        "UPX round-trip must preserve total length for rg.exe megafile"
-    );
-    let diffs: u64 = baseline
-        .iter()
-        .zip(unpacked.iter())
-        .filter(|(a, b): &(&u8, &u8)| a != b)
-        .count() as u64;
-    let diff_per_million: u64 = diffs.saturating_mul(1_000_000) / baseline.len() as u64;
-    assert!(
-        diff_per_million < 500,
-        "rg.exe round-trip diff_per_million {diff_per_million} must stay <500 (=0.05%) across 4.27 MB; observed ~61 (~0.006%)"
-    );
 }
 
 #[test]

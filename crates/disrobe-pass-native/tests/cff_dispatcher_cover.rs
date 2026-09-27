@@ -17,6 +17,7 @@ use disrobe_pass_native::{
 };
 use iced_x86::code_asm::{CodeAssembler, CodeLabel};
 use iced_x86::{Code, Decoder, DecoderOptions, FlowControl, Instruction, Register};
+use sha2::{Digest, Sha256};
 
 const BASE: u64 = 0x1000;
 const RECOVERED_BASE: u64 = 0x40_0000;
@@ -26,26 +27,32 @@ const RETURN_SENTINEL: u64 = 0x00DE_AD00;
 const STEP_BUDGET: u32 = 200_000;
 
 const DIFFERENTIAL_INPUTS: [i32; 15] = [-7, -1, 0, 1, 2, 3, 5, 9, 10, 11, 12, 15, 32, 64, 100];
+const AUTHORED_REFERENCE: &str = include_str!("../../../corpus/native/ollvm/probe_src.c");
+const AUTHORED_REFERENCE_SHA256: &str =
+    "f90fe3aa7874c44e0a04803b47034738d113f5b393e66a7c437377fde4245813";
 
 struct Sample {
     file: &'static str,
+    sha256: &'static str,
     entry_point: &'static str,
     dispatcher_states: u32,
-    source: fn(i32) -> i32,
+    reference: fn(i32) -> i32,
 }
 
 const SAMPLES: [Sample; 2] = [
     Sample {
         file: "classify_fla.bin",
+        sha256: "9f7e22d77539ddc3ac5cc3dc8d03bc16bfdba9dea564ce674de7fd86c6c13c2e",
         entry_point: "classify",
         dispatcher_states: 4,
-        source: classify_from_source,
+        reference: classify_from_source,
     },
     Sample {
         file: "sumto_fla.bin",
+        sha256: "a909449cee06ccbdbaf9f4b5814cb756a8b19887deeb02d75010245c81707dca",
         entry_point: "sum_to",
         dispatcher_states: 5,
-        source: sum_to_from_source,
+        reference: sum_to_from_source,
     },
 ];
 
@@ -78,16 +85,34 @@ fn corpus(name: &str) -> PathBuf {
     path
 }
 
+fn assert_fixture_identity(label: &str, fixture: &[u8], expected_sha256: &str) {
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fixture)),
+        expected_sha256,
+        "{label} changed without revalidating its pinned reference"
+    );
+}
+
+fn assert_authored_reference_identity() {
+    assert_fixture_identity(
+        "authored OLLVM source",
+        AUTHORED_REFERENCE.as_bytes(),
+        AUTHORED_REFERENCE_SHA256,
+    );
+}
+
 fn read_sample(sample: &Sample) -> Vec<u8> {
     let path: PathBuf = corpus(sample.file);
-    std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
         panic!(
             "git tracks {}, so its absence is a defect in this checkout rather than a fact \
              about this host, and skipping here would print a line nobody reads while the run \
              went green: {err}",
             path.display()
         )
-    })
+    });
+    assert_fixture_identity(sample.file, &bytes, sample.sha256);
+    bytes
 }
 
 fn recover(bytes: &[u8]) -> CffRecovery {
@@ -648,7 +673,8 @@ fn emit_transition(
 }
 
 #[test]
-fn a_bounded_differential_agrees_with_the_committed_source_on_every_input_it_runs() {
+fn recovered_code_matches_the_pinned_authored_reference_on_every_input() {
+    assert_authored_reference_identity();
     let mut executions: u32 = 0;
     let mut samples_graded: u32 = 0;
     for sample in &SAMPLES {
@@ -662,24 +688,16 @@ fn a_bounded_differential_agrees_with_the_committed_source_on_every_input_it_run
             recovered.len()
         );
         for argument in DIFFERENTIAL_INPUTS {
-            let expected: i32 = (sample.source)(argument);
-            let flattened: RunOutcome = run_function(&bytes, BASE, argument);
+            let expected: i32 = (sample.reference)(argument);
             let deflattened: RunOutcome = run_function(&recovered, RECOVERED_BASE, argument);
             assert_eq!(
-                flattened,
+                deflattened,
                 RunOutcome::Returned(expected),
-                "{}({argument}) is {expected} in corpus/native/ollvm/probe_src.c, which is the \
-                 reference this differential grades against. The flattened bytes disagreeing means \
-                 the emulator or the argument register is wrong, not that the recovery is right",
+                "{}({argument}): recovered code must match the pinned reference built from \
+                 corpus/native/ollvm/probe_src.c",
                 sample.entry_point
             );
-            assert_eq!(
-                deflattened, flattened,
-                "{}({argument}): the recovered program must observe the same return value as the \
-                 flattened one",
-                sample.entry_point
-            );
-            executions += 2;
+            executions += 1;
         }
         samples_graded += 1;
     }
@@ -690,12 +708,12 @@ fn a_bounded_differential_agrees_with_the_committed_source_on_every_input_it_run
     );
     assert_eq!(
         executions,
-        2 * (SAMPLES.len() as u32) * (DIFFERENTIAL_INPUTS.len() as u32),
-        "the differential population must be the full input set on both programs"
+        (SAMPLES.len() as u32) * (DIFFERENTIAL_INPUTS.len() as u32),
+        "the grade must execute every input against every recovered program"
     );
     println!(
         "differential population: {} arguments per function over {samples_graded} functions, run \
-         on the flattened bytes and on the recovered bytes, {executions} executions in total. \
+         only on recovered bytes, {executions} executions in total. \
          Budget per execution: {STEP_BUDGET} instruction steps and a {STACK_BYTES}-byte stack. \
          This establishes agreement on those {} arguments and on nothing else",
         DIFFERENTIAL_INPUTS.len(),
@@ -778,14 +796,16 @@ fn the_differential_does_not_grade_the_order_of_a_two_way_state_select() {
 }
 
 #[test]
-fn a_flattened_loop_that_outruns_the_step_budget_is_reported_rather_than_hung() {
+fn a_recovered_loop_that_outruns_the_step_budget_is_reported_rather_than_hung() {
     let bytes: Vec<u8> = read_sample(&SAMPLES[1]);
-    let outcome: RunOutcome = run_function(&bytes, BASE, i32::MAX);
+    let recovery: CffRecovery = recover(&bytes);
+    let recovered: Vec<u8> = emit_recovered(&bytes, &recovery);
+    let outcome: RunOutcome = run_function(&recovered, RECOVERED_BASE, i32::MAX);
     assert_eq!(
         outcome,
         RunOutcome::BudgetExhausted,
-        "sum_to(i32::MAX) runs about two billion iterations, so the differential must stop at its \
-         step budget and say so rather than pin the machine"
+        "the recovered sum_to(i32::MAX) runs about two billion iterations, so the grader must \
+         stop at its step budget and say so rather than pin the machine"
     );
 }
 
