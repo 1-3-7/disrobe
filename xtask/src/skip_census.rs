@@ -17,15 +17,14 @@ const SKIP_CEILING: &[(&str, usize)] = &[
     ("disrobe-mba", 3),
     ("disrobe-nir-lift", 6),
     ("disrobe-pass-dotnet", 7),
-    ("disrobe-pass-native", 281),
+    ("disrobe-pass-native", 273),
     ("disrobe-pass-nativelang", 2),
     ("disrobe-pass-php", 3),
     ("disrobe-pass-py-decompile", 7),
     ("disrobe-pass-py-disasm", 1),
     ("disrobe-pass-pyinstaller", 2),
     ("disrobe-pass-shell", 2),
-    ("disrobe-pass-swift-objc", 1),
-    ("disrobe-pass-wasm-deob", 13),
+    ("disrobe-pass-wasm-deob", 12),
     ("disrobe-pyarmor-cextract", 5),
 ];
 
