@@ -110,6 +110,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_generator_disjointness(root, &mut report);
     check_feature_hidden_tests(root, &mut report);
     check_wasm_build_records(root, &mut report);
+    check_private_references(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -214,6 +215,105 @@ fn check_generator_disjointness(root: &Path, report: &mut Report) {
         }));
     }
     report.fact("corpus_generators", json!(audited));
+}
+
+const PRIVATE_REFERENCE_EXEMPT: [&str; 1] = [".gitignore"];
+const PRIVATE_DIR: &str = concat!(".develop", "er/");
+const MAX_SCANNED_TEXT_BYTES: u64 = 8 * 1024 * 1024;
+const FINDING_ID_PREFIXES: [&str; 9] = [
+    "SEC-", "HYG-", "BUG-", "FEAT-", "CPF-", "NAT-", "WIRE-", "TEST-", "BLN-",
+];
+
+fn check_private_references(root: &Path, report: &mut Report) {
+    const CHECK: &str = "private-reference";
+    let files: BTreeSet<String> = match tracked_or_nonignored_files(root) {
+        Ok(files) => files,
+        Err(error) => {
+            report.fail(CHECK, format!("could not list tracked files: {error:#}"));
+            return;
+        }
+    };
+    check_private_references_with_files(root, &files, report);
+}
+
+fn check_private_references_with_files(root: &Path, files: &BTreeSet<String>, report: &mut Report) {
+    const CHECK: &str = "private-reference";
+    let mut hits: Vec<String> = Vec::new();
+    for file in files {
+        if PRIVATE_REFERENCE_EXEMPT.contains(&file.as_str()) {
+            continue;
+        }
+        let Ok(bytes) = read_bytes_bounded(&root.join(file), MAX_SCANNED_TEXT_BYTES) else {
+            continue;
+        };
+        if bytes.iter().take(8192).any(|byte: &u8| *byte == 0) {
+            continue;
+        }
+        let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&bytes);
+        for found in private_references(&text) {
+            hits.push(format!("{file}: {found}"));
+        }
+    }
+    report.fact("private_references", json!(hits.len()));
+    if !hits.is_empty() {
+        report.fail(
+            CHECK,
+            format!(
+                "{} private path or internal work-item reference(s) in tracked files; describe the fact instead of citing a private file or an internal id: {}",
+                hits.len(),
+                hits.join("; ")
+            ),
+        );
+    }
+}
+
+fn private_references(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    if text.contains(PRIVATE_DIR) {
+        found.push(format!("{PRIVATE_DIR} path"));
+    }
+    let bytes: &[u8] = text.as_bytes();
+    for (start, _) in text.char_indices() {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let rest: &str = &text[start..];
+        if let Some(id) = internal_id(rest) {
+            found.push(id);
+        }
+    }
+    found
+}
+
+fn internal_id(rest: &str) -> Option<String> {
+    let digits_then_boundary = |tail: &str, min: usize, max: usize| -> Option<usize> {
+        let count: usize = tail.bytes().take_while(u8::is_ascii_digit).count();
+        let boundary: bool = tail
+            .as_bytes()
+            .get(count)
+            .is_none_or(|byte: &u8| !byte.is_ascii_alphanumeric());
+        (count >= min && count <= max && boundary).then_some(count)
+    };
+    if let Some(tail) = rest.strip_prefix("T-P")
+        && let Some(phase) = tail.bytes().next().filter(u8::is_ascii_digit)
+        && tail.as_bytes().get(1) == Some(&b'-')
+        && let Some(count) = digits_then_boundary(&tail[2..], 1, 3)
+    {
+        return Some(format!("T-P{}-{}", char::from(phase), &tail[2..2 + count]));
+    }
+    if let Some(tail) = rest.strip_prefix("D-0")
+        && let Some(count) = digits_then_boundary(tail, 2, 2)
+    {
+        return Some(format!("D-0{}", &tail[..count]));
+    }
+    for prefix in FINDING_ID_PREFIXES {
+        if let Some(tail) = rest.strip_prefix(prefix)
+            && let Some(count) = digits_then_boundary(tail, 3, 3)
+        {
+            return Some(format!("{prefix}{}", &tail[..count]));
+        }
+    }
+    None
 }
 
 const WASM_BUILD_RECORDS_SCHEMA: &str = "disrobe.wasm.build-records/v2";
@@ -1323,6 +1423,76 @@ origin.built.rebuilt_sha256 = "{rebuilt_sha256}"
             )),
             "{:?}",
             audit.problems
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn private_references_find_paths_and_internal_ids_but_not_lookalikes() {
+        let probe: String = format!(
+            "see {PRIVATE_DIR}scratch/x.md and {}, {}, {}, {}.",
+            concat!("T-", "P1-48"),
+            concat!("D-", "041"),
+            concat!("SEC-", "05X"),
+            concat!("BUG-", "072")
+        );
+        assert_eq!(
+            private_references(&probe),
+            vec![
+                format!("{PRIVATE_DIR} path"),
+                concat!("T-", "P1-48").to_owned(),
+                concat!("D-", "041").to_owned(),
+                concat!("BUG-", "072").to_owned()
+            ]
+        );
+        assert!(
+            private_references("DR-CLI-0110, UTF-8, x86-64, ADD-0123, HD-0123, TEST-1234")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_tracked_file_citing_a_private_path_fails_health() -> Result<()> {
+        let root: tempfile::TempDir = tempfile::tempdir()?;
+        std::fs::write(
+            root.path().join("notes.md"),
+            format!(
+                "built from {PRIVATE_DIR}tools/x
+"
+            ),
+        )?;
+        std::fs::write(
+            root.path().join(".gitignore"),
+            format!(
+                "{PRIVATE_DIR}
+"
+            ),
+        )?;
+        let files: BTreeSet<String> =
+            BTreeSet::from(["notes.md".to_owned(), ".gitignore".to_owned()]);
+        let mut report: Report = Report::default();
+        check_private_references_with_files(root.path(), &files, &mut report);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding: &Finding| finding.check == "private-reference"
+                    && finding
+                        .detail
+                        .contains(&format!("notes.md: {PRIVATE_DIR} path"))),
+            "{:?}",
+            report
+                .findings
+                .iter()
+                .map(|f: &Finding| &f.detail)
+                .collect::<Vec<&String>>()
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding: &Finding| !finding.detail.contains(".gitignore")),
+            "the ignore rule itself is exempt"
         );
         Ok(())
     }
