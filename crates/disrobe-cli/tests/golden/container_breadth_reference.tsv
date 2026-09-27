@@ -135,7 +135,9 @@ wim	corpus/binfmt/wim/files_lzx.wim	3d6a6b717055ad2163b67874f0135631365cd26c9ee3
 wim	corpus/binfmt/wim/files_lzx.wim	9d06cf6f06bb443f9d68b585be0e11b1b6886a1893ce123db578218033a9ea39	7z
 wim	corpus/binfmt/wim/files_lzx.wim	e8027d6b2b22a26a23a0f237ccc836c2f1e946d66d24f3ceb931d48debc762ac	7z
 xz	corpus/r/objects/altrep_intseq.v2.xz.rds	bb2119dfe2f062ce56ffce0d71607ebbb2fa170a3eeacf7ef0b7aa69eaa454bd	xz
-gz	corpus/binfmt/bare-stream/payload-multi.gz	7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38	gzip
+gz	corpus/binfmt/bare-stream/payload-multi.gz	351eeee64493b10579053c04cc80367f9c99cc84c29360b51dbc5ad9d25a3d80	zlib-gzip-members
+gz	corpus/binfmt/bare-stream/payload-multi.gz	39656c6a283cb6a778ff5196159689fa811fbb2b29ccacf2be083547a1fca3a1	zlib-gzip-members
+gz	corpus/binfmt/bare-stream/payload-multi.gz	7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38	zlib-gzip-members
 bz2	corpus/binfmt/bare-stream/payload.bz2	7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38	bzip2
 zst	corpus/binfmt/bare-stream/payload.zst	7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38	zstd
 lzma	corpus/binfmt/bare-stream/payload.lzma	7a683063a515d8ed3e627f9da660cf35cc3f22a7956ab2b2aa7b088c2da91f38	xz

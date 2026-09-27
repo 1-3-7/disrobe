@@ -63,8 +63,24 @@ def member_hashes(directory: pathlib.Path) -> set[str]:
     return hashes
 
 
+def gzip_member_hashes(data: bytes) -> set[str]:
+    hashes: set[str] = set()
+    whole = b""
+    rest = data
+    while rest.startswith(b"\x1f\x8b"):
+        decoder = zlib.decompressobj(31)
+        member = decoder.decompress(rest)
+        hashes.add(hashlib.sha256(member).hexdigest())
+        whole += member
+        rest = decoder.unused_data
+    hashes.add(hashlib.sha256(whole).hexdigest())
+    return hashes
+
+
 def reference(label: str, source: pathlib.Path) -> tuple[str, set[str]] | None:
     data = source.read_bytes()
+    if label == "gz":
+        return ("zlib-gzip-members", gzip_member_hashes(data))
     if label in STREAMS:
         argv = STREAMS[label]
         out = run([tool(argv[0]), *argv[1:]], stdin=data)
