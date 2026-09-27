@@ -1,7 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::PathBuf;
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     DecompSourceKind, ExactNuitkaVersion, NuitkaDecompilation, SurfaceFidelity, SurfaceFunction,
@@ -388,53 +391,9 @@ fn default_value_and_annotation_recovered_for_accumulate() {
     );
 }
 
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python(py: &str, code: &str, file: &Path) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &file.to_string_lossy()]);
-    cmd.output().expect("spawn cpython 3.14")
-}
-
-fn run_python2(py: &str, code: &str, a: &Path, b: &Path) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &a.to_string_lossy(), &b.to_string_lossy()]);
-    cmd.output().expect("spawn cpython 3.14")
-}
-
 #[test]
 fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
 
     let decomp: NuitkaDecompilation = decompile();
     let source: String = emit_python(surface(&decomp));
@@ -446,11 +405,11 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
     let file: PathBuf = dir.join("recovered_gauntlet.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered .py");
 
-    let compile_out: Output = run_python(
+    let compile_out: Output = common::run_python(
         &py,
         "import sys; src=open(sys.argv[1], encoding='utf-8').read(); \
          compile(src, sys.argv[1], 'exec')",
-        &file,
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -458,7 +417,7 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
         String::from_utf8_lossy(&compile_out.stderr)
     );
 
-    let ast_out: Output = run_python(
+    let ast_out: Output = common::run_python(
         &py,
         "import ast, sys\n\
          m = ast.parse(open(sys.argv[1], encoding='utf-8').read())\n\
@@ -483,7 +442,7 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
          assert ann(fns['squares'].returns) == 'dict'\n\
          assert not fns['main'].args.args\n\
          assert ann(fns['main'].returns) == 'int'\n",
-        &file,
+        &[&file],
     );
     assert!(
         ast_out.status.success(),
@@ -494,10 +453,7 @@ fn emitted_python_compiles_and_ast_matches_original_on_cpython_314() {
 
 #[test]
 fn recovered_main_body_ast_equals_clean_original_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
 
     let decomp: NuitkaDecompilation = decompile();
     let source: String = emit_python(surface(&decomp));
@@ -509,7 +465,7 @@ fn recovered_main_body_ast_equals_clean_original_on_cpython_314() {
     let recovered: PathBuf = dir.join("recovered_gauntlet.py");
     std::fs::write(&recovered, source.as_bytes()).expect("write recovered .py");
 
-    let out: Output = run_python2(
+    let out: Output = common::run_python(
         &py,
         "import ast, sys\n\
          class StripAnn(ast.NodeTransformer):\n\
@@ -529,8 +485,7 @@ fn recovered_main_body_ast_equals_clean_original_on_cpython_314() {
          rec = body_of(sys.argv[1], 'main')\n\
          orig = body_of(sys.argv[2], 'main')\n\
          assert rec == orig, 'MAIN BODY MISMATCH\\nRECOVERED:\\n%s\\nORIGINAL:\\n%s' % (rec, orig)\n",
-        &recovered,
-        &repo_path(ORIGINAL),
+        &[&recovered, &common::tracked("module/gauntlet.src.py")],
     );
     assert!(
         out.status.success(),

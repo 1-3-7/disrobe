@@ -630,13 +630,7 @@ mod tests {
     #[test]
     fn real_corpus_binds_typed_signatures_correctly() {
         use crate::const_blob::parse_constants;
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let skeleton: NuitkaSkeleton = reconstruct(&parse_constants(&image));
         let core: &SkeletonModule = skeleton
             .modules
@@ -691,13 +685,7 @@ mod tests {
     #[test]
     fn real_corpus_binds_dedup_and_locals_function_names() {
         use crate::const_blob::parse_constants;
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let skeleton: NuitkaSkeleton = reconstruct(&parse_constants(&image));
         let names: BTreeSet<String> = skeleton
             .modules
@@ -740,13 +728,7 @@ mod tests {
     #[test]
     fn real_corpus_reconstructs_classes_and_omits_invented_constants() {
         use crate::const_blob::parse_constants;
-        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let skeleton: NuitkaSkeleton = reconstruct(&parse_constants(&image));
         let models: &SkeletonModule = skeleton
             .modules

@@ -231,6 +231,9 @@ mod tests {
     const CONSOLE_MANIFEST: &[u8] = include_bytes!(
         "../../../corpus/python/nuitka/console-disable/hello.build/blobs/__constant.txt"
     );
+    const CONSOLE_MAIN_CONST: &[u8] = include_bytes!(
+        "../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.const"
+    );
 
     #[test]
     fn module_manifest_parses_with_expected_entries() {
@@ -257,7 +260,7 @@ mod tests {
         let m: ConstantManifest = parse_constant_manifest(CONSOLE_MANIFEST).expect("parse");
         let main: &ConstantBlobEntry = m.by_blob_name("__main__").expect("__main__ entry");
         assert_eq!(main.source_file, "module.__main__.const");
-        assert_eq!(main.input_size, 353);
+        assert_eq!(main.input_size, CONSOLE_MAIN_CONST.len() as u64);
     }
 
     #[test]

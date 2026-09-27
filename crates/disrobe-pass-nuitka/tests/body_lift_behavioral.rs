@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+
+mod common;
+
+use std::path::PathBuf;
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, LiftFidelity, SurfaceModule, build_surface, build_surface_with_python_abi,
@@ -132,47 +135,6 @@ fn skeleton_functions_do_not_claim_body_recovered() {
     );
 }
 
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python_with_file(py: &str, code: &str, file: &Path) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &file.to_string_lossy()]);
-    cmd.output().expect("spawn cpython 3.14")
-}
-
-fn run_python_code(py: &str, code: &str) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code]);
-    cmd.output().expect("spawn cpython 3.14")
-}
-
 fn parse_labeled_output(stdout: &str) -> std::collections::BTreeMap<String, String> {
     let mut map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for line in stdout.lines() {
@@ -185,10 +147,7 @@ fn parse_labeled_output(stdout: &str) -> std::collections::BTreeMap<String, Stri
 
 #[test]
 fn behavioral_gate_fib_greet_main_against_cpython() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 found on PATH");
-        return;
-    };
+    let py: PathBuf = common::python314();
 
     let s: SurfaceModule = build_with_lifting();
     let source: String = emit_python(&s);
@@ -200,12 +159,12 @@ fn behavioral_gate_fib_greet_main_against_cpython() {
     let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered.py");
 
-    let compile_out: Output = run_python_with_file(
+    let compile_out: Output = common::run_python(
         &py,
         "import sys; \
          src = open(sys.argv[1], encoding='utf-8').read(); \
          compile(src, sys.argv[1], 'exec')",
-        &file,
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -223,7 +182,7 @@ spec.loader.exec_module(mod)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     r = mod.main()
-print('MAIN_STDOUT:' + buf.getvalue().strip())
+print('MAIN_STDOUT:' + repr(buf.getvalue()))
 print('FIB10:' + str(mod.fib(10)))
 print('FIB20:' + str(mod.fib(20)))
 print('GREET:' + mod.greet('world'))
@@ -240,7 +199,7 @@ print('FIB_HAS_FOR:' + str(has_for))
 print('FIB_IS_STUB:' + str(is_stub))
 ";
 
-    let probe_out: Output = run_python_with_file(&py, probe_code.trim(), &file);
+    let probe_out: Output = common::run_python(&py, probe_code.trim(), &[&file]);
     assert!(
         probe_out.status.success(),
         "behavioral probe failed: {}",
@@ -260,14 +219,7 @@ print('FIB_IS_STUB:' + str(is_stub))
         .get("GREET")
         .expect("GREET label missing from probe output");
 
-    let expected_fib10_code: &str = "import sys; print(str(__import__('functools').reduce(lambda a,b:b[1],[None]*(max(0,int(sys.argv[1]))+1),(0,1))[0] if int(sys.argv[1])>=2 else int(sys.argv[1])))";
-    let expected_fib10_out: Output = run_python_code(
-        &py,
-        &format!("import sys; sys.argv=['','{fib10}']; {expected_fib10_code}"),
-    );
-    let _ = expected_fib10_out;
-
-    let expected_from_reference: Output = run_python_code(
+    let expected_from_reference: Output = common::run_python(
         &py,
         r"
 def fib_ref(n):
@@ -278,8 +230,11 @@ def fib_ref(n):
 print('FIB10:' + str(fib_ref(10)))
 print('FIB20:' + str(fib_ref(20)))
 print('GREET:hello, world')
+print('MAIN_STDOUT:' + repr('hello, disrobe\n' + str(fib_ref(20)) + '\n'))
+print('MAIN_RET:0')
 "
         .trim(),
+        &[],
     );
 
     assert!(
@@ -289,8 +244,13 @@ print('GREET:hello, world')
     let ref_stdout: String = String::from_utf8_lossy(&expected_from_reference.stdout).into_owned();
     let ref_labels: std::collections::BTreeMap<String, String> = parse_labeled_output(&ref_stdout);
 
-    let ref_fib10: &str = ref_labels.get("FIB10").expect("ref FIB10");
-    let ref_fib20: &str = ref_labels.get("FIB20").expect("ref FIB20");
+    let reference = |label: &str| -> &str {
+        ref_labels
+            .get(label)
+            .unwrap_or_else(|| panic!("reference {label} missing: {ref_stdout}"))
+    };
+    let ref_fib10: &str = reference("FIB10");
+    let ref_fib20: &str = reference("FIB20");
 
     assert_eq!(
         fib10, ref_fib10,
@@ -300,9 +260,20 @@ print('GREET:hello, world')
         fib20, ref_fib20,
         "fib(20) from recovered module must equal reference"
     );
-    assert!(
-        greet_result.contains("world"),
-        "greet('world') must return a string containing 'world'; got {greet_result:?}"
+    assert_eq!(
+        greet_result,
+        reference("GREET"),
+        "greet('world') from recovered module must equal reference"
+    );
+    assert_eq!(
+        labels.get("MAIN_STDOUT").map(String::as_str),
+        Some(reference("MAIN_STDOUT")),
+        "main() output from recovered module must equal reference"
+    );
+    assert_eq!(
+        labels.get("MAIN_RET").map(String::as_str),
+        Some(reference("MAIN_RET")),
+        "main() return from recovered module must equal reference"
     );
 
     let fib_has_if: &str = labels.get("FIB_HAS_IF").expect("FIB_HAS_IF label missing");

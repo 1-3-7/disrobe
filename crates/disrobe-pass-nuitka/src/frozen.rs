@@ -212,11 +212,6 @@ fn module_name_from_filename(filename: &Object) -> String {
 mod tests {
     use super::*;
 
-    fn corpus_standalone() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe")
-    }
-
     #[test]
     fn huge_marshal_length_after_marker_does_not_oom() {
         let mut blob: Vec<u8> = Vec::new();
@@ -246,12 +241,7 @@ mod tests {
 
     #[test]
     fn recovers_real_frozen_stdlib_to_source() {
-        let path: std::path::PathBuf = corpus_standalone();
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let frozen: FrozenModules =
             recover_frozen_bytecode(&image, Some((3, 14))).expect("frozen stream recovered");
         assert_eq!(frozen.marshal_version, (3, 14));

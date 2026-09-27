@@ -39,12 +39,36 @@ fn gt_strings_module() -> BTreeSet<String> {
 
 fn gt_strings_console() -> BTreeSet<String> {
     [
-        "hello, ", "a", "greet", "disrobe", "fib", "name", "return", "n", "main", "b", "_",
-        "builtins", "str", "int", "hello.py", "<module>",
+        "hello, ",
+        "a",
+        "greet",
+        "disrobe",
+        "fib",
+        "name",
+        "return",
+        "n",
+        "main",
+        "b",
+        "_",
+        "builtins",
+        "str",
+        "int",
+        "<frozen __main__>",
+        "<module>",
+        "MARKER",
+        "DISROBE_NUITKA_FIXTURE_MARKER_8f3a1c",
+        "]",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+
+fn declared_constants(c_source: &str) -> usize {
+    c_source
+        .lines()
+        .filter(|line: &&str| line.trim_start().starts_with("PyObject *const_"))
+        .count()
 }
 
 fn gt_ints() -> BTreeSet<i64> {
@@ -91,9 +115,16 @@ fn console_disable_const_recovers_superset_and_consumes_all_bytes() {
     assert_eq!(
         pool.bytes_consumed,
         bytes.len(),
-        "must consume all 353 bytes (shared-memo)"
+        "must consume every byte (shared-memo)"
     );
-    assert_eq!(pool.stream_count, 16);
+    let c_source: String =
+        std::fs::read_to_string(fixture("console-disable/hello.build/module.__main__.c"))
+            .expect("read module.__main__.c");
+    assert_eq!(
+        pool.stream_count,
+        declared_constants(&c_source),
+        "one stream per constant the compiler declared in module.__main__.c"
+    );
     assert!(
         pool.strings.is_superset(&gt_strings_console()),
         "missing: {:?}",

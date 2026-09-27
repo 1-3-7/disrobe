@@ -891,11 +891,6 @@ pub fn constants_unparsable(image: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    fn corpus_standalone() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe")
-    }
-
     const QUALNAME_BLOB: &[u8] = include_bytes!("../tests/fixtures/qualname_codeobjects.bin");
 
     #[test]
@@ -1156,15 +1151,7 @@ mod tests {
 
     #[test]
     fn recovers_real_standalone_modules_and_functions() {
-        let path: std::path::PathBuf = corpus_standalone();
-        if !path.is_file() {
-            eprintln!(
-                "skipping: real nuitka corpus exe absent at {}",
-                path.display()
-            );
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let constants: NuitkaConstants = parse_constants(&image);
         let names: Vec<String> = constants.module_names();
         for expected in [

@@ -5,8 +5,10 @@
     clippy::print_stdout
 )]
 
+mod common;
+
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
@@ -15,68 +17,54 @@ use disrobe_pass_nuitka::{
 
 const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
-struct Fixture {
-    module: &'static str,
-}
-
-const FIXTURES: &[Fixture] = &[
-    Fixture { module: "arith" },
-    Fixture { module: "compares" },
-    Fixture { module: "loops" },
-    Fixture { module: "strops" },
-    Fixture {
-        module: "datastruct",
-    },
-    Fixture { module: "multi" },
-    Fixture { module: "advanced" },
-    Fixture {
-        module: "era_patterns",
-    },
+const MODULES: [&str; 8] = [
+    "arith",
+    "compares",
+    "loops",
+    "strops",
+    "datastruct",
+    "multi",
+    "advanced",
+    "era_patterns",
 ];
 
-fn corpus_module(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("python");
-    p.push("nuitka");
-    p.push("module");
-    p.push(name);
-    p
-}
-
-fn build_module(name: &str) -> Option<SurfaceModule> {
-    let c_path: PathBuf = corpus_module(&format!("{name}.build")).join(format!("module.{name}.c"));
-    let const_path: PathBuf =
-        corpus_module(&format!("{name}.build")).join(format!("module.{name}.const"));
-    let c_src: String = std::fs::read_to_string(&c_path).ok()?;
-    let const_bytes: Vec<u8> = std::fs::read(&const_path).ok()?;
+fn build_module(name: &str) -> SurfaceModule {
+    let c_src: String = common::read_tracked_text(&format!("module/{name}.build/module.{name}.c"));
+    let const_bytes: Vec<u8> =
+        common::read_tracked(&format!("module/{name}.build/module.{name}.const"));
     let cmod: CModuleStructure =
         parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse c module");
     let pool: ConstantsPool =
         decode_const_file(&const_bytes, &format!("module.{name}.const"), name)
             .expect("decode const blob");
-    Some(
-        build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
-            .expect("build surface"),
-    )
+    build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
+        .expect("build surface")
 }
 
 #[test]
 fn widened_corpus_emits_and_prints_recovery_census() {
     let mut total: usize = 0;
     let mut full: usize = 0;
-    let mut present: usize = 0;
     let mut partial: Vec<String> = Vec::new();
-    for fx in FIXTURES {
-        let Some(surface): Option<SurfaceModule> = build_module(fx.module) else {
-            eprintln!("skip: {} fixture absent", fx.module);
-            continue;
-        };
-        present += 1;
+    for module in MODULES {
+        let surface: SurfaceModule = build_module(module);
+        let original: String = common::read_tracked_text(&format!("module/{module}.src.py"));
+        let original_names: Vec<&str> = original
+            .lines()
+            .filter_map(|line: &str| line.strip_prefix("def "))
+            .filter_map(|rest: &str| rest.split_once('(').map(|(name, _): (&str, &str)| name))
+            .collect();
+        let recovered_names: Vec<&str> = surface
+            .functions
+            .iter()
+            .map(|f: &SurfaceFunction| f.name.as_str())
+            .collect();
+        assert_eq!(
+            recovered_names, original_names,
+            "{module}: recovered functions must be exactly the top-level defs of {module}.src.py"
+        );
         let emitted: String = emit_python(&surface);
-        println!("===== module {} =====", fx.module);
+        println!("===== module {module} =====");
         println!("{emitted}");
         for f in &surface.functions {
             total += 1;
@@ -84,30 +72,19 @@ fn widened_corpus_emits_and_prints_recovery_census() {
                 full += 1;
             } else {
                 partial.push(format!(
-                    "{}::{} fidelity={:?} unrecognized={:?}",
-                    fx.module, f.name, f.lift_fidelity, f.unrecognized_c_lines
+                    "{module}::{} fidelity={:?} unrecognized={:?}",
+                    f.name, f.lift_fidelity, f.unrecognized_c_lines
                 ));
             }
         }
     }
-    let pct: f64 = if total == 0 {
-        0.0
-    } else {
-        (full as f64) * 100.0 / (total as f64)
-    };
-    println!("WIDENED CENSUS full_body={full}/{total} ({pct:.2}%)");
-    assert!(total > 0, "at least one widened fixture must be present");
+    println!("WIDENED CENSUS full_body={full}/{total}");
+    assert_eq!(total, 37, "the widened corpus contributes 37 lifted bodies");
     assert_eq!(
         full, total,
-        "every present widened-corpus body must reach FullBody (behaviorally proven per module); \
+        "every widened-corpus body must reach FullBody (behaviorally proven per module); \
          remaining partials: {partial:?}"
     );
-    if present == FIXTURES.len() {
-        assert_eq!(
-            total, 37,
-            "with all widened fixtures present the corpus contributes 37 lifted bodies"
-        );
-    }
 }
 
 fn function<'a>(surface: &'a SurfaceModule, name: &str) -> &'a SurfaceFunction {
@@ -120,10 +97,7 @@ fn function<'a>(surface: &'a SurfaceModule, name: &str) -> &'a SurfaceFunction {
 
 #[test]
 fn arith_bodies_are_fully_recovered() {
-    let Some(surface): Option<SurfaceModule> = build_module("arith") else {
-        eprintln!("skip: arith fixture absent");
-        return;
-    };
+    let surface: SurfaceModule = build_module("arith");
     for name in ["add", "sub", "mul", "addmul", "neg"] {
         let f: &SurfaceFunction = function(&surface, name);
         assert_eq!(
@@ -133,48 +107,7 @@ fn arith_bodies_are_fully_recovered() {
             f.unrecognized_c_lines
         );
     }
-    let emitted: String = emit_python(&surface);
-    assert!(emitted.contains("return a + b"), "add body: {emitted}");
-    assert!(emitted.contains("return a - b"), "sub body");
-    assert!(emitted.contains("return a * b"), "mul body");
-    assert!(emitted.contains("return -a"), "neg body");
-    assert!(
-        emitted.contains("return a + b * c") || emitted.contains("return a + (b * c)"),
-        "addmul body preserves precedence: {emitted}"
-    );
-}
-
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python(py: &str, code: &str, args: &[&str]) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code]);
-    cmd.args(args);
-    cmd.output().expect("spawn cpython 3.14")
+    common::assert_functions_match_original_ast(&emit_python(&surface), "arith", &[]);
 }
 
 const ORACLE_PROBE: &str = r"
@@ -246,20 +179,10 @@ if matched != graded:
     sys.exit(2)
 ";
 
-fn run_behavioral_oracle(module: &str) {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
-    let Some(surface): Option<SurfaceModule> = build_module(module) else {
-        eprintln!("skip: {module} fixture absent");
-        return;
-    };
-    let orig_path: PathBuf = corpus_module(&format!("{module}.src.py"));
-    if !orig_path.is_file() {
-        eprintln!("skip: {module}.src.py original absent");
-        return;
-    }
+fn run_behavioral_oracle(module: &str, cases: usize) {
+    let py: PathBuf = common::python314();
+    let surface: SurfaceModule = build_module(module);
+    let orig_path: PathBuf = common::tracked(&format!("module/{module}.src.py"));
 
     let recovered: String = emit_python(&surface);
     let purpose: String = format!("disrobe-nuitka-oracle-{module}-{}", std::process::id());
@@ -269,52 +192,49 @@ fn run_behavioral_oracle(module: &str) {
     let recov_path: PathBuf = dir.join(format!("recovered_{module}.py"));
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
-    let out: Output = run_python(
-        &py,
-        ORACLE_PROBE.trim(),
-        &[&orig_path.to_string_lossy(), &recov_path.to_string_lossy()],
-    );
+    let out: Output = common::run_python(&py, ORACLE_PROBE.trim(), &[&orig_path, &recov_path]);
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         out.status.success(),
         "behavioral oracle for {module} failed:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nRECOVERED:\n{recovered}"
     );
-    assert!(
-        stdout.contains("ORACLE"),
-        "oracle did not report a census for {module}: {stdout}"
+    assert_eq!(
+        stdout.trim(),
+        format!("ORACLE {cases}/{cases}"),
+        "the {module} oracle grades {cases} cases derived from {module}.src.py"
     );
     println!("module {module}: {}", stdout.trim());
 }
 
 #[test]
 fn arith_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("arith");
+    run_behavioral_oracle("arith", 180);
 }
 
 #[test]
 fn compares_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("compares");
+    run_behavioral_oracle("compares", 68);
 }
 
 #[test]
 fn loops_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("loops");
+    run_behavioral_oracle("loops", 24);
 }
 
 #[test]
 fn strops_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("strops");
+    run_behavioral_oracle("strops", 14);
 }
 
 #[test]
 fn datastruct_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("datastruct");
+    run_behavioral_oracle("datastruct", 91);
 }
 
 #[test]
 fn multi_recovered_matches_original_on_cpython() {
-    run_behavioral_oracle("multi");
+    run_behavioral_oracle("multi", 88);
 }
 
 const ADVANCED_PROBE: &str = r"
@@ -365,19 +285,9 @@ if matched != graded:
 
 #[test]
 fn advanced_body_faithful_subset_matches_original_on_cpython() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
-    let Some(surface): Option<SurfaceModule> = build_module("advanced") else {
-        eprintln!("skip: advanced fixture absent");
-        return;
-    };
-    let orig_path: PathBuf = corpus_module("advanced.src.py");
-    if !orig_path.is_file() {
-        eprintln!("skip: advanced.src.py absent");
-        return;
-    }
+    let py: PathBuf = common::python314();
+    let surface: SurfaceModule = build_module("advanced");
+    let orig_path: PathBuf = common::tracked("module/advanced.src.py");
     let recovered: String = emit_python(&surface);
     let purpose: String = format!("disrobe-nuitka-adv-{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -386,11 +296,7 @@ fn advanced_body_faithful_subset_matches_original_on_cpython() {
     let recov_path: PathBuf = dir.join("recovered_advanced.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
-    let out: Output = run_python(
-        &py,
-        ADVANCED_PROBE.trim(),
-        &[&orig_path.to_string_lossy(), &recov_path.to_string_lossy()],
-    );
+    let out: Output = common::run_python(&py, ADVANCED_PROBE.trim(), &[&orig_path, &recov_path]);
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
@@ -398,39 +304,22 @@ fn advanced_body_faithful_subset_matches_original_on_cpython() {
         "advanced body-faithful subset (comprehensions, try/except, default args) must \
          match original on CPython:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nRECOVERED:\n{recovered}"
     );
+    assert_eq!(
+        stdout.trim(),
+        "ORACLE 19/19",
+        "the advanced oracle grades 19 cases derived from advanced.src.py"
+    );
     println!("module advanced (body-faithful subset): {}", stdout.trim());
 }
 
 #[test]
 fn varargs_star_signature_is_recovered() {
-    let Some(surface): Option<SurfaceModule> = build_module("advanced") else {
-        eprintln!("skip: advanced fixture absent");
-        return;
-    };
-    let recovered: String = emit_python(&surface);
-    assert!(
-        recovered.contains("def varargs(*nums"),
-        "CO_VARARGS code-object flag must restore the star parameter: {recovered}"
-    );
-    assert!(
-        recovered.contains("for x in nums"),
-        "varargs body must iterate the star param: {recovered}"
-    );
+    let surface: SurfaceModule = build_module("advanced");
+    common::assert_functions_match_original_ast(&emit_python(&surface), "advanced", &["varargs"]);
 }
 
 #[test]
-fn closure_body_lifts_but_nested_def_structure_is_the_remaining_limit() {
-    let Some(surface): Option<SurfaceModule> = build_module("advanced") else {
-        eprintln!("skip: advanced fixture absent");
-        return;
-    };
-    let recovered: String = emit_python(&surface);
-    assert!(
-        recovered.contains("return inner(n)"),
-        "closure body must lift the inner call from C: {recovered}"
-    );
-    assert!(
-        recovered.contains("return x + n"),
-        "the nested inner body must lift the cell-variable expression x + n: {recovered}"
-    );
+fn closure_with_nested_def_matches_original_ast() {
+    let surface: SurfaceModule = build_module("advanced");
+    common::assert_functions_match_original_ast(&emit_python(&surface), "advanced", &["closure"]);
 }

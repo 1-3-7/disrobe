@@ -170,19 +170,9 @@ pub fn disassemble_module_stats(module_name: &str, image: &[u8]) -> Option<Nativ
 mod tests {
     use super::*;
 
-    fn corpus_standalone() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe")
-    }
-
     #[test]
     fn streams_real_standalone_text_to_file() {
-        let path: std::path::PathBuf = corpus_standalone();
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let purpose: String = format!("disrobe-nuitka-disasm-{}", std::process::id());
         let (scratch, _file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
             disrobe_core::scratch::ScratchFile::create(&purpose, "asm")

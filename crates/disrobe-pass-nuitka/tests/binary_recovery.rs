@@ -225,10 +225,12 @@ fn large_corpus(rel: &str) -> PathBuf {
 #[ignore = "heavy: requires the ~756MB scale-gate onefile (set DISROBE_NUITKA_SCALE_CORPUS); run with --ignored"]
 fn large_onefile_recovers_without_oom() {
     let path: PathBuf = large_corpus("large_onefile_798/big_app.exe");
-    if !path.is_file() {
-        eprintln!("skipping: scale-gate onefile absent at {}", path.display());
-        return;
-    }
+    assert!(
+        path.is_file(),
+        "the scale-gate onefile {} is absent; this ignored test runs only when asked for, so \
+         point DISROBE_NUITKA_SCALE_CORPUS at the directory holding large_onefile_798",
+        path.display()
+    );
     let bytes: Vec<u8> = std::fs::read(&path).expect("read scale-gate onefile");
     let decomp: NuitkaDecompilation =
         disrobe_pass_nuitka::decompile_bytes(&bytes).expect("large onefile must decompile");

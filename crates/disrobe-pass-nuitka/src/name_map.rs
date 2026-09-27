@@ -200,19 +200,9 @@ pub fn map_names(module_name: &str, image: &[u8], names: &[String]) -> Option<Na
 mod tests {
     use super::*;
 
-    fn corpus_standalone() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real/sample_app-standalone.exe")
-    }
-
     #[test]
     fn maps_recovered_names_to_text_references_on_real_binary() {
-        let path: std::path::PathBuf = corpus_standalone();
-        if !path.is_file() {
-            eprintln!("skipping: real nuitka corpus exe absent");
-            return;
-        }
-        let image: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+        let image: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let constants: crate::const_blob::NuitkaConstants =
             crate::const_blob::parse_constants(&image);
         let mut names: Vec<String> = Vec::new();

@@ -1,19 +1,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_nuitka::{ConstantsPool, decode_const_file};
-
-fn fixture(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../corpus/python/nuitka")
-        .join(rel)
-}
-
-fn fixture_present(rel: &str) -> Option<PathBuf> {
-    let path: PathBuf = fixture(rel);
-    path.exists().then_some(path)
-}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct GroundTruth {
@@ -158,13 +150,44 @@ fn annotation_identifiers_from_pyi(pyi_source: &str) -> BTreeSet<String> {
 fn ground_truth(c_path: &Path, pyi_path: Option<&Path>) -> GroundTruth {
     let c_source: String = std::fs::read_to_string(c_path).expect("read .c ground-truth source");
     let mut gt: GroundTruth = ground_truth_from_c_source(&c_source);
-    if let Some(pyi) = pyi_path
-        && let Ok(pyi_source) = std::fs::read_to_string(pyi)
-    {
+    if let Some(pyi) = pyi_path {
+        let pyi_source: String = std::fs::read_to_string(pyi).expect("read .pyi ground truth");
         gt.identifiers
             .extend(annotation_identifiers_from_pyi(&pyi_source));
     }
     gt
+}
+
+fn string_digests_from_c_source(c_path: &Path) -> BTreeSet<String> {
+    let c_source: String = std::fs::read_to_string(c_path).expect("read .c ground-truth source");
+    c_source
+        .lines()
+        .filter_map(|line: &str| {
+            line.trim()
+                .strip_prefix("PyObject *const_str_digest_")
+                .map(|digest: &str| digest.trim_end_matches(';').trim().to_owned())
+        })
+        .collect()
+}
+
+fn assert_exact_ints_and_digests(pool: &ConstantsPool, gt: &GroundTruth, c_path: &Path) {
+    assert_eq!(
+        pool.ints,
+        gt.ints,
+        "recovered ints must equal the int constants the compiler declared in {}",
+        c_path.display()
+    );
+    let declared: BTreeSet<String> = string_digests_from_c_source(c_path);
+    let unresolved: Vec<&String> = declared
+        .iter()
+        .filter(|digest: &&String| !pool.digest_to_string.contains_key(digest.as_str()))
+        .collect();
+    assert!(
+        !declared.is_empty() && unresolved.is_empty(),
+        "every const_str_digest_ symbol declared in {} must resolve to a recovered string; \
+         unresolved {unresolved:?} of {declared:?}",
+        c_path.display()
+    );
 }
 
 fn assert_pool_superset(pool: &ConstantsPool, gt: &GroundTruth) {
@@ -193,12 +216,9 @@ fn assert_pool_superset(pool: &ConstantsPool, gt: &GroundTruth) {
 
 #[test]
 fn ground_truth_extractor_is_nonempty_and_parser_independent() {
-    let c_path: PathBuf = fixture("module/hello.build/module.hello.c");
-    if !c_path.exists() {
-        eprintln!("skip: {} absent", c_path.display());
-        return;
-    }
-    let gt: GroundTruth = ground_truth(&c_path, fixture_present("module/hello.pyi").as_deref());
+    let c_path: PathBuf = common::tracked("module/hello.build/module.hello.c");
+    let pyi_path: PathBuf = common::tracked("module/hello.pyi");
+    let gt: GroundTruth = ground_truth(&c_path, Some(&pyi_path));
     assert!(
         gt.identifiers.len() >= 6,
         "C ModuleConstants struct must yield real identifiers, got {:?}",
@@ -219,15 +239,9 @@ fn ground_truth_extractor_is_nonempty_and_parser_independent() {
 
 #[test]
 fn module_const_recovery_is_superset_of_compiler_ground_truth() {
-    let Some(const_path) = fixture_present("module/hello.build/module.hello.const") else {
-        eprintln!("skip: module.hello.const absent");
-        return;
-    };
-    let c_path: PathBuf = fixture("module/hello.build/module.hello.c");
-    if !c_path.exists() {
-        eprintln!("skip: module.hello.c ground-truth absent");
-        return;
-    }
+    let const_path: PathBuf = common::tracked("module/hello.build/module.hello.const");
+    let c_path: PathBuf = common::tracked("module/hello.build/module.hello.c");
+    let pyi_path: PathBuf = common::tracked("module/hello.pyi");
 
     let bytes: Vec<u8> = std::fs::read(&const_path).expect("read module.hello.const");
     let pool: ConstantsPool = decode_const_file(&bytes, "module.hello.const", "hello")
@@ -239,8 +253,9 @@ fn module_const_recovery_is_superset_of_compiler_ground_truth() {
         "shared-memo decode must consume every byte (a per-stream memo reset drops trailing streams)"
     );
 
-    let gt: GroundTruth = ground_truth(&c_path, fixture_present("module/hello.pyi").as_deref());
+    let gt: GroundTruth = ground_truth(&c_path, Some(&pyi_path));
     assert_pool_superset(&pool, &gt);
+    assert_exact_ints_and_digests(&pool, &gt, &c_path);
 
     assert!(
         pool.globals
@@ -254,16 +269,8 @@ fn module_const_recovery_is_superset_of_compiler_ground_truth() {
 
 #[test]
 fn console_disable_const_recovery_is_superset_of_compiler_ground_truth() {
-    let Some(const_path) = fixture_present("console-disable/hello.build/module.__main__.const")
-    else {
-        eprintln!("skip: module.__main__.const absent");
-        return;
-    };
-    let c_path: PathBuf = fixture("console-disable/hello.build/module.__main__.c");
-    if !c_path.exists() {
-        eprintln!("skip: module.__main__.c ground-truth absent");
-        return;
-    }
+    let const_path: PathBuf = common::tracked("console-disable/hello.build/module.__main__.const");
+    let c_path: PathBuf = common::tracked("console-disable/hello.build/module.__main__.c");
 
     let bytes: Vec<u8> = std::fs::read(&const_path).expect("read module.__main__.const");
     let pool: ConstantsPool = decode_const_file(&bytes, "module.__main__.const", "__main__")
@@ -277,17 +284,28 @@ fn console_disable_const_recovery_is_superset_of_compiler_ground_truth() {
 
     let gt: GroundTruth = ground_truth(&c_path, None);
     assert_pool_superset(&pool, &gt);
+    assert_exact_ints_and_digests(&pool, &gt, &c_path);
+    for planted in [
+        "MARKER",
+        "DISROBE_NUITKA_FIXTURE_MARKER_8f3a1c",
+        "greet",
+        "fib",
+        "main",
+    ] {
+        assert!(
+            gt.identifiers.contains(planted),
+            "the regen.ps1 source names {planted:?}, so the C ground truth must declare it: {:?}",
+            gt.identifiers
+        );
+    }
 }
 
 #[test]
 fn ground_truth_uses_real_source_symbols_not_parser_echo() {
-    let c_path: PathBuf = fixture("module/hello.build/module.hello.c");
-    let const_path: PathBuf = fixture("module/hello.build/module.hello.const");
-    if !c_path.exists() || !const_path.exists() {
-        eprintln!("skip: fixtures absent");
-        return;
-    }
-    let gt: GroundTruth = ground_truth(&c_path, fixture_present("module/hello.pyi").as_deref());
+    let c_path: PathBuf = common::tracked("module/hello.build/module.hello.c");
+    let const_path: PathBuf = common::tracked("module/hello.build/module.hello.const");
+    let pyi_path: PathBuf = common::tracked("module/hello.pyi");
+    let gt: GroundTruth = ground_truth(&c_path, Some(&pyi_path));
     let bytes: Vec<u8> = std::fs::read(&const_path).expect("read const");
     let pool: ConstantsPool =
         decode_const_file(&bytes, "module.hello.const", "hello").expect("decode");

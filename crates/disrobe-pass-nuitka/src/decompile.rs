@@ -1285,12 +1285,6 @@ mod tests {
             .join(rel)
     }
 
-    fn corpus(rel: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../corpus/python/nuitka/real")
-            .join(rel)
-    }
-
     fn assert_real_recovery(d: &NuitkaDecompilation) {
         let skeleton: &NuitkaSkeleton = d.skeleton.as_ref().expect("skeleton recovered");
         let names: Vec<&str> = skeleton
@@ -1359,12 +1353,7 @@ mod tests {
 
     #[test]
     fn skeleton_only_standalone_attaches_names_only_surface() {
-        let path: std::path::PathBuf = corpus("sample_app-standalone.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real standalone corpus absent");
-            return;
-        }
-        let bytes: Vec<u8> = std::fs::read(&path).expect("read standalone");
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let d: NuitkaDecompilation = decompile_bytes(&bytes).expect("decompile standalone");
         assert_eq!(d.source_kind, DecompSourceKind::EmbeddedStandalone);
         assert!(
@@ -1414,24 +1403,14 @@ mod tests {
 
     #[test]
     fn real_standalone_binary_recovers_modules_and_signatures() {
-        let path: std::path::PathBuf = corpus("sample_app-standalone.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real standalone corpus absent");
-            return;
-        }
-        let bytes: Vec<u8> = std::fs::read(&path).expect("read standalone");
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let d: NuitkaDecompilation = decompile_bytes(&bytes).expect("decompile standalone");
         assert_real_recovery(&d);
     }
 
     #[test]
     fn real_onefile_binary_recovers_modules_and_signatures() {
-        let path: std::path::PathBuf = corpus("sample_app-onefile.exe");
-        if !path.is_file() {
-            eprintln!("skipping: real onefile corpus absent");
-            return;
-        }
-        let bytes: Vec<u8> = std::fs::read(&path).expect("read onefile");
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-onefile.exe");
         let d: NuitkaDecompilation = decompile_bytes(&bytes).expect("decompile onefile");
         assert_eq!(d.source_kind, DecompSourceKind::OnefilePayload);
         assert_real_recovery(&d);

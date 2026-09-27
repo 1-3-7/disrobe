@@ -5,8 +5,10 @@
     clippy::print_stdout
 )]
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
+
+use std::path::PathBuf;
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
@@ -17,10 +19,13 @@ const MODULE_HELLO_C: &str =
     include_str!("../../../corpus/python/nuitka/module/hello.build/module.hello.c");
 const MODULE_HELLO_CONST: &[u8] =
     include_bytes!("../../../corpus/python/nuitka/module/hello.build/module.hello.const");
+const MAIN_C: &str =
+    include_str!("../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.c");
 const MAIN_CONST: &[u8] = include_bytes!(
     "../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.const"
 );
 const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
+const MAIN_PYTHON_ABI: (u8, u8) = (3u8, 14u8);
 
 #[derive(Debug, Clone)]
 struct BodyCensus {
@@ -49,17 +54,6 @@ impl BodyCensus {
     }
 }
 
-fn corpus(parts: &[&str]) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    for part in parts {
-        p.push(part);
-    }
-    p
-}
-
 fn build_from_committed(
     c_src: &str,
     const_bytes: &[u8],
@@ -74,39 +68,21 @@ fn build_from_committed(
         .expect("build surface from committed c")
 }
 
-fn build_main_from_runtime_path() -> Option<SurfaceModule> {
-    let c_path: PathBuf = corpus(&[
-        "python",
-        "nuitka",
-        "onefile",
-        "hello.build",
-        "module.__main__.c",
-    ]);
-    let Ok(c_src): Result<String, std::io::Error> = std::fs::read_to_string(&c_path) else {
-        eprintln!(
-            "skip: __main__.c local-only fixture absent at {} (gitignored; expected absent in CI)",
-            c_path.display()
-        );
-        return None;
-    };
+fn build_main_from_console_disable() -> SurfaceModule {
     let cmod: CModuleStructure =
-        parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse __main__.c");
+        parse_c_module_with_python_abi(MAIN_C, MAIN_PYTHON_ABI).expect("parse __main__.c");
     assert_eq!(
         cmod.module_name, "__main__",
         "module.__main__.c must derive module_name `__main__`"
     );
     let pool: ConstantsPool = decode_const_file(MAIN_CONST, "module.__main__.const", "__main__")
         .expect("decode __main__ const blob");
-    Some(
-        build_surface_with_python_abi(&cmod, &pool, Some(&c_src), FIXTURE_PYTHON_ABI)
-            .expect("build surface from __main__.c"),
-    )
+    build_surface_with_python_abi(&cmod, &pool, Some(MAIN_C), MAIN_PYTHON_ABI)
+        .expect("build surface from __main__.c")
 }
 
 #[test]
 fn aggregate_body_recovery_spans_all_distinct_corpus_c_bodies() {
-    let mut census: Vec<BodyCensus> = Vec::new();
-
     let hello: SurfaceModule = build_from_committed(
         MODULE_HELLO_C,
         MODULE_HELLO_CONST,
@@ -114,17 +90,11 @@ fn aggregate_body_recovery_spans_all_distinct_corpus_c_bodies() {
         "hello",
     );
     assert_eq!(hello.module_name, "hello");
-    census.push(BodyCensus::from_surface("module/hello.c", &hello));
-
-    if let Some(main_surface) = build_main_from_runtime_path() {
-        census.push(BodyCensus::from_surface(
-            "onefile/__main__.c",
-            &main_surface,
-        ));
-    }
-
-    let total: usize = census.iter().map(|c: &BodyCensus| c.total).sum();
-    let recovered: usize = census.iter().map(|c: &BodyCensus| c.recovered).sum();
+    let main_surface: SurfaceModule = build_main_from_console_disable();
+    let census: [BodyCensus; 2] = [
+        BodyCensus::from_surface("module/hello.c", &hello),
+        BodyCensus::from_surface("console-disable/__main__.c", &main_surface),
+    ];
 
     for c in &census {
         println!(
@@ -132,162 +102,99 @@ fn aggregate_body_recovery_spans_all_distinct_corpus_c_bodies() {
             c.program, c.module_name, c.recovered, c.total
         );
     }
-    let pct: f64 = if total == 0 {
-        0.0
-    } else {
-        (recovered as f64) * 100.0 / (total as f64)
-    };
-    println!("AGGREGATE TOTAL body_recovered={recovered}/{total} ({pct:.2}%)");
+    let total: usize = census.iter().map(|c: &BodyCensus| c.total).sum();
+    let recovered: usize = census.iter().map(|c: &BodyCensus| c.recovered).sum();
+    println!("AGGREGATE TOTAL body_recovered={recovered}/{total}");
 
+    let names = |surface: &SurfaceModule| -> Vec<String> {
+        surface
+            .functions
+            .iter()
+            .map(|f: &SurfaceFunction| f.name.clone())
+            .collect()
+    };
     assert_eq!(
-        hello.functions.len(),
-        3,
+        names(&hello),
+        ["greet", "fib", "main"],
         "module/hello.c must expose greet/fib/main"
     );
-    let hello_census: &BodyCensus = census
-        .iter()
-        .find(|c: &&BodyCensus| c.program == "module/hello.c")
-        .expect("hello census present");
     assert_eq!(
-        hello_census.recovered, 3,
-        "module/hello.c must recover all 3 bodies (regression floor)"
+        names(&main_surface),
+        ["greet", "fib", "main"],
+        "console-disable/__main__.c must expose the greet/fib/main of the regen.ps1 source"
     );
-
-    if let Some(main_census) = census
-        .iter()
-        .find(|c: &&BodyCensus| c.program == "onefile/__main__.c")
-    {
-        assert_eq!(
-            main_census.total, 3,
-            "onefile/__main__.c must expose greet/fib/main"
-        );
-        assert_eq!(
-            main_census.recovered, 3,
-            "onefile/__main__.c must recover all 3 bodies to FullBody"
-        );
-        assert_eq!(
-            recovered, 6,
-            "with both distinct C bodies present, aggregate must be 6/6"
-        );
-        assert_eq!(total, 6, "two distinct programs contribute 6 functions");
-    } else {
-        assert_eq!(
-            recovered, 3,
-            "committed-only aggregate (CI) must be 3/3 from module/hello.c"
-        );
-        assert_eq!(total, 3);
-    }
-}
-
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python_with_file(py: &str, code: &str, file: &Path) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &file.to_string_lossy()]);
-    cmd.output().expect("spawn cpython 3.14")
+    assert_eq!(
+        (census[0].recovered, census[0].total),
+        (3, 3),
+        "module/hello.c must recover all 3 bodies"
+    );
+    assert_eq!(
+        (census[1].recovered, census[1].total),
+        (3, 3),
+        "console-disable/__main__.c must recover all 3 bodies to FullBody"
+    );
+    assert_eq!((recovered, total), (6, 6), "aggregate must be 6/6");
 }
 
 #[test]
-fn lifted_main_bodies_behave_correctly_on_cpython_314() {
-    let Some(main_surface): Option<SurfaceModule> = build_main_from_runtime_path() else {
-        return;
-    };
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
-
+fn lifted_main_bodies_behave_like_the_regen_source_on_cpython_314() {
+    let py: PathBuf = common::python314();
+    let main_surface: SurfaceModule = build_main_from_console_disable();
     let source: String = emit_python(&main_surface);
 
     let purpose: String = format!("disrobe-nuitka-main-body-{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-    let file: PathBuf = dir.join("recovered_main.py");
-    std::fs::write(&file, source.as_bytes()).expect("write recovered_main.py");
-
-    let compile_out: Output = run_python_with_file(
-        &py,
-        "import sys; src=open(sys.argv[1], encoding='utf-8').read(); \
-         compile(src, sys.argv[1], 'exec')",
-        &file,
-    );
-    assert!(
-        compile_out.status.success(),
-        "recovered __main__ must compile on CPython 3.14: {}",
-        String::from_utf8_lossy(&compile_out.stderr)
-    );
+    let recovered: PathBuf = dir.join("recovered_main.py");
+    std::fs::write(&recovered, source.as_bytes()).expect("write recovered_main.py");
+    let original: PathBuf = dir.join("original_main.py");
+    std::fs::write(&original, common::regen_hello_source().as_bytes())
+        .expect("write original_main.py");
 
     let probe_code: &str = r"
 import importlib.util, sys, io, contextlib, ast
 
-spec = importlib.util.spec_from_file_location('recovered_main', sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-buf = io.StringIO()
-with contextlib.redirect_stdout(buf):
-    ret = mod.main()
-out = buf.getvalue().strip().splitlines()
+def observe(path, name):
+    mod = load(name, path)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ret = mod.main()
+    tree = ast.parse(open(path, encoding='utf-8').read())
+    return {
+        'functions': sorted(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
+        'greet': [mod.greet(v) for v in ('disrobe', '', 'x y')],
+        'fib': [mod.fib(n) for n in range(0, 26)],
+        'main_stdout': buf.getvalue(),
+        'main_return': ret,
+    }
 
-def fib_ref(n):
-    if n < 2:
-        return n
-    a, b = 0, 1
-    for _ in range(n - 1):
-        a, b = b, a + b
-    return b
-
-assert mod.greet('disrobe') == 'hello, disrobe', mod.greet('disrobe')
-assert mod.fib(10) == fib_ref(10), mod.fib(10)
-assert mod.fib(20) == fib_ref(20), mod.fib(20)
-assert ret == 0, ret
-assert out == ['hello, disrobe', str(fib_ref(20))], out
-
-tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
-fns = {f.name: f for f in tree.body if isinstance(f, ast.FunctionDef)}
-assert set(fns) == {'greet', 'fib', 'main'}, sorted(fns)
-fib_body = fns['fib'].body
-assert any(isinstance(n, ast.If) for n in fib_body), 'fib must have if'
-assert any(isinstance(n, ast.For) for n in fib_body), 'fib must have for'
-assert not (len(fib_body) == 1 and isinstance(fib_body[0], ast.Expr)
-            and isinstance(fib_body[0].value, ast.Constant)), 'fib must not be a stub'
+orig = observe(sys.argv[1], 'original_main')
+recov = observe(sys.argv[2], 'recovered_main')
+for key in orig:
+    if orig[key] != recov[key]:
+        print(f'MISMATCH {key}: original={orig[key]!r} recovered={recov[key]!r}')
+        sys.exit(2)
 print('MAIN_BODY_OK')
 ";
 
-    let probe_out: Output = run_python_with_file(&py, probe_code.trim(), &file);
-    assert!(
-        probe_out.status.success(),
-        "recovered __main__ behavioral oracle failed: {}",
-        String::from_utf8_lossy(&probe_out.stderr)
-    );
+    let probe_out: Output = common::run_python(&py, probe_code.trim(), &[&original, &recovered]);
     let stdout: String = String::from_utf8_lossy(&probe_out.stdout).into_owned();
     assert!(
-        stdout.contains("MAIN_BODY_OK"),
-        "behavioral oracle did not confirm: {stdout}"
+        probe_out.status.success(),
+        "recovered __main__ must behave like the regen.ps1 source on CPython 3.14:\nSTDOUT:\n\
+         {stdout}\nSTDERR:\n{}\nRECOVERED:\n{source}",
+        String::from_utf8_lossy(&probe_out.stderr)
+    );
+    assert_eq!(
+        stdout.trim(),
+        "MAIN_BODY_OK",
+        "behavioral oracle output: {stdout}"
     );
 }

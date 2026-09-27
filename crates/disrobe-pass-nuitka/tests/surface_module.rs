@@ -1,5 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::process::Command;
+
+mod common;
+
+use std::path::PathBuf;
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, SurfaceModule, build_surface_with_python_abi, decode_const_file, emit_python,
@@ -74,57 +78,23 @@ fn emitted_signatures_equal_pyi_signatures() {
     assert_eq!(emitted, expected, "emitted defs must equal .pyi defs");
 }
 
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output) = Command::new(cmd).args(args).output() else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python(py: &str, code: &str, file: &std::path::Path) -> std::process::Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &file.to_string_lossy()]);
-    cmd.output().expect("spawn python")
-}
-
 #[test]
 fn emitted_python_compiles_and_parses_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let s: SurfaceModule = build();
     let source: String = emit_python(&s);
 
     let purpose: String = format!("disrobe-surface-{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
-    let dir: std::path::PathBuf = scratch.path().to_path_buf();
-    let file: std::path::PathBuf = dir.join("recovered_hello.py");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
-    let compile_out: std::process::Output = run_python(
+    let compile_out: Output = common::run_python(
         &py,
-        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
-        &file,
+        "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')",
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -132,15 +102,10 @@ fn emitted_python_compiles_and_parses_on_cpython_314() {
         String::from_utf8_lossy(&compile_out.stderr)
     );
 
-    let ast_out: std::process::Output = run_python(
+    let ast_out: Output = common::run_python(
         &py,
-        "import ast,sys; m=ast.parse(open(sys.argv[1]).read()); \
-         fns={f.name:f for f in m.body if isinstance(f,ast.FunctionDef)}; \
-         assert set(fns)=={'greet','fib','main'}, fns.keys(); \
-         assert fns['greet'].args.args[0].annotation.id=='str'; \
-         assert fns['fib'].returns.id=='int'; \
-         assert fns['main'].returns.id=='int'",
-        &file,
+        common::SIGNATURE_PROBE,
+        &[&file, &common::tracked("module/hello.pyi")],
     );
     assert!(
         ast_out.status.success(),
@@ -151,10 +116,7 @@ fn emitted_python_compiles_and_parses_on_cpython_314() {
 
 #[test]
 fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let mut surface: SurfaceModule = build();
     surface.functions[0].return_annotation = Some(r"'\x'".to_owned());
     let source: String = emit_python(&surface);
@@ -165,14 +127,14 @@ fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
     );
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
-    let dir: std::path::PathBuf = scratch.path().to_path_buf();
-    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let file: PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
-    let compile_out: std::process::Output = run_python(
+    let compile_out: Output = common::run_python(
         &py,
-        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
-        &file,
+        "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')",
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -183,10 +145,7 @@ fn malformed_quoted_annotation_emits_compilable_python_on_cpython_314() {
 
 #[test]
 fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let mut surface: SurfaceModule = build();
     surface.functions[0].return_annotation = Some("'a\0b'".to_owned());
     let source: String = emit_python(&surface);
@@ -194,14 +153,14 @@ fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
     let purpose: String = format!("disrobe-surface-nul-annotation-{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
-    let dir: std::path::PathBuf = scratch.path().to_path_buf();
-    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let file: PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
-    let compile_out: std::process::Output = run_python(
+    let compile_out: Output = common::run_python(
         &py,
-        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
-        &file,
+        "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')",
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -212,10 +171,7 @@ fn nul_quoted_annotation_emits_compilable_python_on_cpython_314() {
 
 #[test]
 fn integer_attribute_annotation_emits_compilable_python_on_cpython_314() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let mut surface: SurfaceModule = build();
     surface.functions[0].return_annotation = Some("1.foo".to_owned());
     let source: String = emit_python(&surface);
@@ -223,14 +179,14 @@ fn integer_attribute_annotation_emits_compilable_python_on_cpython_314() {
     let purpose: String = format!("disrobe-surface-integer-annotation-{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
-    let dir: std::path::PathBuf = scratch.path().to_path_buf();
-    let file: std::path::PathBuf = dir.join("recovered_annotation.py");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let file: PathBuf = dir.join("recovered_annotation.py");
     std::fs::write(&file, source.as_bytes()).expect("write temp py");
 
-    let compile_out: std::process::Output = run_python(
+    let compile_out: Output = common::run_python(
         &py,
-        "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
-        &file,
+        "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')",
+        &[&file],
     );
     assert!(
         compile_out.status.success(),

@@ -5,8 +5,10 @@
     clippy::print_stdout
 )]
 
+mod common;
+
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFunction, SurfaceModule,
@@ -15,25 +17,11 @@ use disrobe_pass_nuitka::{
 
 const FIXTURE_PYTHON_ABI: (u8, u8) = (3u8, 12u8);
 
-fn corpus_module(name: &str) -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p.push("corpus");
-    p.push("python");
-    p.push("nuitka");
-    p.push("module");
-    p.push(name);
-    p
-}
-
 fn build_era() -> SurfaceModule {
     let name: &str = "era_patterns";
-    let c_path: PathBuf = corpus_module(&format!("{name}.build")).join(format!("module.{name}.c"));
-    let const_path: PathBuf =
-        corpus_module(&format!("{name}.build")).join(format!("module.{name}.const"));
-    let c_src: String = std::fs::read_to_string(&c_path).expect("read era_patterns c");
-    let const_bytes: Vec<u8> = std::fs::read(&const_path).expect("read era_patterns const");
+    let c_src: String = common::read_tracked_text(&format!("module/{name}.build/module.{name}.c"));
+    let const_bytes: Vec<u8> =
+        common::read_tracked(&format!("module/{name}.build/module.{name}.const"));
     let cmod: CModuleStructure =
         parse_c_module_with_python_abi(&c_src, FIXTURE_PYTHON_ABI).expect("parse era_patterns c");
     let pool: ConstantsPool =
@@ -111,39 +99,6 @@ fn generator_body_lifts_from_context_function_to_full_body() {
     );
 }
 
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python(py: &str, code: &str, args: &[&str]) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code]);
-    cmd.args(args);
-    cmd.output().expect("spawn cpython 3.14")
-}
-
 const ORACLE_PROBE: &str = r"
 import importlib.util, sys
 
@@ -188,16 +143,9 @@ if matched != graded:
 
 #[test]
 fn recovered_gap_constructs_match_original_on_cpython() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let surface: SurfaceModule = build_era();
-    let orig_path: PathBuf = corpus_module("era_patterns.src.py");
-    if !orig_path.is_file() {
-        eprintln!("skip: era_patterns.src.py absent");
-        return;
-    }
+    let orig_path: PathBuf = common::tracked("module/era_patterns.src.py");
 
     let recovered: String = emit_python(&surface);
     let purpose: String = format!("disrobe-era-oracle-{}", std::process::id());
@@ -207,11 +155,7 @@ fn recovered_gap_constructs_match_original_on_cpython() {
     let recov_path: PathBuf = dir.join("recovered_era_patterns.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
-    let out: Output = run_python(
-        &py,
-        ORACLE_PROBE.trim(),
-        &[&orig_path.to_string_lossy(), &recov_path.to_string_lossy()],
-    );
+    let out: Output = common::run_python(&py, ORACLE_PROBE.trim(), &[&orig_path, &recov_path]);
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
@@ -219,9 +163,10 @@ fn recovered_gap_constructs_match_original_on_cpython() {
         "era_patterns gap-construct oracle (set comp, multi-except, except-as) must match \
          original on CPython:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nRECOVERED:\n{recovered}"
     );
-    assert!(
-        stdout.contains("ORACLE 14/14"),
-        "all 14 graded cases must match: {stdout}"
+    assert_eq!(
+        stdout.trim(),
+        "ORACLE 14/14",
+        "all 14 graded cases must match"
     );
     println!("era_patterns gap constructs: {}", stdout.trim());
 }
@@ -266,16 +211,9 @@ if matched != graded:
 
 #[test]
 fn recovered_generator_yields_match_original_on_cpython() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
+    let py: PathBuf = common::python314();
     let surface: SurfaceModule = build_era();
-    let orig_path: PathBuf = corpus_module("era_patterns.src.py");
-    if !orig_path.is_file() {
-        eprintln!("skip: era_patterns.src.py absent");
-        return;
-    }
+    let orig_path: PathBuf = common::tracked("module/era_patterns.src.py");
 
     let recovered: String = emit_python(&surface);
     let purpose: String = format!("disrobe-era-gen-oracle-{}", std::process::id());
@@ -285,11 +223,7 @@ fn recovered_generator_yields_match_original_on_cpython() {
     let recov_path: PathBuf = dir.join("recovered_era_patterns.py");
     std::fs::write(&recov_path, recovered.as_bytes()).expect("write recovered");
 
-    let out: Output = run_python(
-        &py,
-        GENERATOR_PROBE.trim(),
-        &[&orig_path.to_string_lossy(), &recov_path.to_string_lossy()],
-    );
+    let out: Output = common::run_python(&py, GENERATOR_PROBE.trim(), &[&orig_path, &recov_path]);
     let stdout: String = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
@@ -297,9 +231,10 @@ fn recovered_generator_yields_match_original_on_cpython() {
         "recovered gen_squares must be a real generator producing identical values as the \
          original on CPython:\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\nRECOVERED:\n{recovered}"
     );
-    assert!(
-        stdout.contains("ORACLE 7/7"),
-        "all 7 generator materializations must match: {stdout}"
+    assert_eq!(
+        stdout.trim(),
+        "ORACLE 7/7",
+        "all 7 generator materializations must match"
     );
     println!("era_patterns generator: {}", stdout.trim());
 }

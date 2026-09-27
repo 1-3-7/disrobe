@@ -1,7 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+mod common;
+
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::PathBuf;
+use std::process::Output;
 
 use disrobe_pass_nuitka::{
     CModuleStructure, ConstantsPool, LiftFidelity, SurfaceFidelity, SurfaceModule, build_surface,
@@ -183,44 +186,9 @@ fn fib_reference(n: i64) -> i64 {
     b
 }
 
-fn locate_python_314() -> Option<String> {
-    let candidates: [(&str, &[&str]); 3] = [
-        ("py", &["-3.14", "--version"]),
-        ("python3.14", &["--version"]),
-        ("python", &["--version"]),
-    ];
-    for (cmd, args) in candidates {
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.contains("3.14") || banner.contains("3.15") {
-            return Some(cmd.to_owned());
-        }
-    }
-    None
-}
-
-fn run_python_with_file(py: &str, code: &str, file: &Path) -> Output {
-    let mut cmd: Command = Command::new(py);
-    if py == "py" {
-        cmd.arg("-3.14");
-    }
-    cmd.args(["-c", code, &file.to_string_lossy()]);
-    cmd.output().expect("spawn cpython")
-}
-
 #[test]
 fn recovered_python_fib_matches_handwritten_reference_on_cpython() {
-    let Some(py): Option<String> = locate_python_314() else {
-        eprintln!("skip: no python3.14 on PATH");
-        return;
-    };
+    let py: PathBuf = common::python314();
 
     let surface: SurfaceModule = build();
     let source: String = emit_python(&surface);
@@ -232,11 +200,11 @@ fn recovered_python_fib_matches_handwritten_reference_on_cpython() {
     let file: PathBuf = dir.join("recovered_hello.py");
     std::fs::write(&file, source.as_bytes()).expect("write recovered.py");
 
-    let compile_out: Output = run_python_with_file(
+    let compile_out: Output = common::run_python(
         &py,
         "import sys; src=open(sys.argv[1], encoding='utf-8').read(); \
          compile(src, sys.argv[1], 'exec')",
-        &file,
+        &[&file],
     );
     assert!(
         compile_out.status.success(),
@@ -244,13 +212,13 @@ fn recovered_python_fib_matches_handwritten_reference_on_cpython() {
         String::from_utf8_lossy(&compile_out.stderr)
     );
 
-    let probe: Output = run_python_with_file(
+    let probe: Output = common::run_python(
         &py,
         "import importlib.util, sys; \
          spec=importlib.util.spec_from_file_location('hello', sys.argv[1]); \
          mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); \
          print('FIB10:'+str(mod.fib(10))); print('FIB20:'+str(mod.fib(20)))",
-        &file,
+        &[&file],
     );
     assert!(
         probe.status.success(),

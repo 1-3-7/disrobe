@@ -1,4 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -108,50 +111,28 @@ impl TestDir {
     }
 }
 
-fn locate_python() -> Option<(String, Vec<String>)> {
-    let candidates: [(&str, &[&str]); 3] = [("py", &["-3.14"]), ("python", &[]), ("python3", &[])];
-    for (cmd, prefix) in candidates {
-        let mut args: Vec<String> = prefix.iter().map(|s: &&str| (*s).to_owned()).collect();
-        args.push("--version".to_owned());
-        let Ok(output): Result<Output, std::io::Error> = Command::new(cmd).args(&args).output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let banner: String = String::from_utf8_lossy(&output.stdout).into_owned()
-            + String::from_utf8_lossy(&output.stderr).as_ref();
-        if banner.starts_with("Python 3.14.") {
-            return Some((
-                cmd.to_owned(),
-                prefix.iter().map(|s: &&str| (*s).to_owned()).collect(),
-            ));
-        }
-    }
-    None
+fn run_python(py: &Path, extra: &[&str]) -> Output {
+    Command::new(py)
+        .env("PYTHONIOENCODING", "utf-8")
+        .args(extra)
+        .output()
+        .unwrap_or_else(|error: std::io::Error| panic!("spawn {}: {error}", py.display()))
 }
 
-fn run_python(py: &(String, Vec<String>), extra: &[&str]) -> Option<Output> {
-    let mut cmd: Command = Command::new(&py.0);
-    cmd.env("PYTHONIOENCODING", "utf-8");
-    cmd.args(&py.1);
-    cmd.args(extra);
-    cmd.output().ok()
-}
-
-fn nuitka_version(py: &(String, Vec<String>)) -> Option<String> {
-    let output: Output = run_python(py, &["-m", "nuitka", "--version"])?;
-    if !output.status.success() {
-        return None;
-    }
-    let text: String = String::from_utf8_lossy(&output.stdout).into_owned()
-        + String::from_utf8_lossy(&output.stderr).as_ref();
-    text.lines()
+fn nuitka_version(py: &Path) -> String {
+    let output: Output = run_python(py, &["-m", "nuitka", "--version"]);
+    assert!(
+        output.status.success(),
+        "`{} -m nuitka --version` failed: {}",
+        py.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
         .next()
         .map(str::trim)
-        .filter(|version: &&str| !version.is_empty())
-        .map(str::to_owned)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn shape_of(function: &NativeFunctionBody) -> Option<(u32, Option<usize>)> {
@@ -176,16 +157,12 @@ fn shape_of(function: &NativeFunctionBody) -> Option<(u32, Option<usize>)> {
 
 #[test]
 fn native_body_lift_behavioral_differential_against_cpython() {
-    let Some(py): Option<(String, Vec<String>)> = locate_python() else {
-        eprintln!("skip: no python 3.14 on PATH");
-        return;
-    };
-    let Some(nuitka_version): Option<String> = nuitka_version(&py) else {
-        eprintln!("skip: nuitka not importable in the located python");
+    let Some(py): Option<PathBuf> = common::python314_with_nuitka() else {
         return;
     };
     assert_eq!(
-        nuitka_version, "4.1.1",
+        nuitka_version(&py),
+        "4.1.1",
         "fresh producer test requires Nuitka 4.1.1"
     );
 
@@ -194,7 +171,7 @@ fn native_body_lift_behavioral_differential_against_cpython() {
     std::fs::write(&src, MODULE_SOURCE.as_bytes()).expect("write source module");
 
     let out_dir: PathBuf = dir.path().join("out");
-    let build: Option<Output> = run_python(
+    let build: Output = run_python(
         &py,
         &[
             "-m",
@@ -208,17 +185,11 @@ fn native_body_lift_behavioral_differential_against_cpython() {
             "--quiet",
         ],
     );
-    let Some(build): Option<Output> = build else {
-        eprintln!("skip: could not spawn nuitka");
-        return;
-    };
-    if !build.status.success() {
-        eprintln!(
-            "skip: nuitka build failed (no working C compiler?): {}",
-            String::from_utf8_lossy(&build.stderr)
-        );
-        return;
-    }
+    assert!(
+        build.status.success(),
+        "Nuitka build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
 
     let pyd: Option<PathBuf> = std::fs::read_dir(&out_dir).ok().and_then(|entries| {
         entries
@@ -268,25 +239,26 @@ fn native_body_lift_behavioral_differential_against_cpython() {
         ground_truth.len()
     );
 
-    assert!(
-        reconstructed_shapes.len() >= 2,
-        "expected at least 2 behaviorally-exact native body reconstructions, got {}",
-        reconstructed_shapes.len()
+    assert_eq!(
+        unique, ground_truth,
+        "every pass-through or None-returning source function must be reconstructed from the \
+         native body, each exactly once"
+    );
+    assert_eq!(
+        reconstructed_shapes.len(),
+        ground_truth.len(),
+        "each source shape belongs to exactly one function, so no shape may be reconstructed twice"
     );
 }
 
 #[test]
 fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
-    let Some(py): Option<(String, Vec<String>)> = locate_python() else {
-        eprintln!("skip: no python 3.14 on PATH");
-        return;
-    };
-    let Some(nuitka_version): Option<String> = nuitka_version(&py) else {
-        eprintln!("skip: nuitka not importable in the located python");
+    let Some(py): Option<PathBuf> = common::python314_with_nuitka() else {
         return;
     };
     assert_eq!(
-        nuitka_version, "4.1.1",
+        nuitka_version(&py),
+        "4.1.1",
         "fresh producer test requires Nuitka 4.1.1"
     );
 
@@ -301,8 +273,7 @@ fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
             "import hashlib, inspect, runpy, sys; module = runpy.run_path(sys.argv[1]); value = module['payload'](); print(value.hex()); print(hashlib.md5(repr(value).encode('utf-8')).hexdigest()); print(repr(module['text_payload']())); print(hashlib.md5(repr(module['text_payload']()).encode('utf-8')).hexdigest()); print(repr(module['control_text_payload']())); print(hashlib.md5(repr(module['control_text_payload']()).encode('utf-8')).hexdigest()); print(module['marker']() is None); print(module['truth']()); print(module['falsity']()); print(module['ignored'](object())); print(module['keyword_payload']().hex()); print(module['structured_keyword_defaults']()); print(inspect.signature(module['structured_keyword_defaults'])); print(module['long_constant_return_function_name_for_digest_metadata'](object()).hex())",
             &src.to_string_lossy(),
         ],
-    )
-    .expect("run original source on CPython");
+    );
     assert!(
         source_probe.status.success(),
         "CPython source oracle failed: {}",
@@ -343,8 +314,7 @@ fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
             "--assume-yes-for-downloads",
             "--quiet",
         ],
-    )
-    .expect("run nuitka");
+    );
     assert!(
         build.status.success(),
         "Nuitka build failed: {}",
@@ -612,8 +582,7 @@ fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
             &src.to_string_lossy(),
             &recovered_source.to_string_lossy(),
         ],
-    )
-    .expect("run CPython AST comparison");
+    );
     assert!(
         ast_check.status.success(),
         "CPython AST oracle rejected recovered source: {}",
@@ -621,7 +590,7 @@ fn real_nuitka_bytes_constants_match_cpython_and_digest_symbol() {
     );
 }
 
-fn probe_source_shapes(py: &(String, Vec<String>), src: &Path) -> BTreeSet<(u32, Option<usize>)> {
+fn probe_source_shapes(py: &Path, src: &Path) -> BTreeSet<(u32, Option<usize>)> {
     let code: &str = r#"
 import importlib.util, sys, inspect
 spec = importlib.util.spec_from_file_location("gradmod", sys.argv[1])
@@ -652,9 +621,12 @@ for name, fn in inspect.getmembers(mod, inspect.isfunction):
         out.append(f"{n}:{idx}")
 print("\n".join(out))
 "#;
-    let Some(output): Option<Output> = run_python(py, &["-c", code, &src.to_string_lossy()]) else {
-        return BTreeSet::new();
-    };
+    let output: Output = run_python(py, &["-c", code, &src.to_string_lossy()]);
+    assert!(
+        output.status.success(),
+        "ground-truth probe of the source module failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut shapes: BTreeSet<(u32, Option<usize>)> = BTreeSet::new();
     for line in stdout.lines() {
@@ -674,7 +646,7 @@ print("\n".join(out))
 }
 
 fn assert_behaviorally_equivalent(
-    py: &(String, Vec<String>),
+    py: &Path,
     function: &NativeFunctionBody,
     shape: (u32, Option<usize>),
 ) {
@@ -693,7 +665,7 @@ fn assert_behaviorally_equivalent(
         |index: usize| format!("{}", 1000 + index as u32),
     );
     let code: String = format!("{recovered}\nprint(repr(rec({})))\n", sentinels.join(", "));
-    let output: Output = run_python(py, &["-c", &code]).expect("run recovered body");
+    let output: Output = run_python(py, &["-c", &code]);
     assert!(
         output.status.success(),
         "recovered body for {} failed to run: {}",

@@ -609,18 +609,7 @@ mod tests {
 
     #[test]
     fn pass_run_emits_text_manifest_not_json() {
-        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("python")
-            .join("nuitka")
-            .join("onefile")
-            .join("hello.exe");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!("SKIP: nuitka onefile fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("onefile/hello.exe");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = NUITKA_PASS.run(&a).expect("nuitka run must succeed");
         let s: &str = std::str::from_utf8(&out.envelope).expect("utf8 manifest");
@@ -643,21 +632,7 @@ mod tests {
 
     #[test]
     fn extract_children_surfaces_real_onefile_entries() {
-        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("python")
-            .join("nuitka")
-            .join("onefile")
-            .join("hello.exe");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!(
-                "SKIP: nuitka onefile fixture missing at {}",
-                fixture.display()
-            );
-            return;
-        };
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("onefile/hello.exe");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = NUITKA_PASS
             .extract_children(&a)
@@ -675,24 +650,9 @@ mod tests {
         );
     }
 
-    fn real_standalone_fixture() -> Option<Vec<u8>> {
-        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("python")
-            .join("nuitka")
-            .join("real")
-            .join("sample_app-standalone.exe");
-        std::fs::read(&fixture).ok()
-    }
-
     #[test]
     fn auto_chain_emits_frozen_real_source_and_skeleton() {
-        let Some(bytes): Option<Vec<u8>> = real_standalone_fixture() else {
-            eprintln!("SKIP: real standalone fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = crate::test_corpus::read_tracked("real/sample_app-standalone.exe");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> = NUITKA_PASS
             .extract_children(&a)
@@ -725,21 +685,12 @@ mod tests {
     }
 
     fn compiled_module_fixture() -> Option<Vec<u8>> {
-        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("corpus")
-            .join("python")
-            .join("nuitka")
-            .join("module")
-            .join("hello.cp314-win_amd64.pyd");
-        std::fs::read(&fixture).ok()
+        crate::test_corpus::read_local_only("module/hello.cp314-win_amd64.pyd")
     }
 
     #[test]
     fn extract_children_decompiles_compiled_module_to_constants_child() {
         let Some(bytes): Option<Vec<u8>> = compiled_module_fixture() else {
-            eprintln!("SKIP: compiled nuitka module fixture missing");
             return;
         };
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
@@ -765,7 +716,6 @@ mod tests {
     #[test]
     fn recovered_constants_child_does_not_re_detect_as_nuitka() {
         let Some(bytes): Option<Vec<u8>> = compiled_module_fixture() else {
-            eprintln!("SKIP: compiled nuitka module fixture missing");
             return;
         };
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
@@ -786,7 +736,6 @@ mod tests {
     #[test]
     fn standalone_confidence_beats_native_packer_high() {
         let Some(bytes): Option<Vec<u8>> = compiled_module_fixture() else {
-            eprintln!("SKIP: compiled nuitka module fixture missing");
             return;
         };
         let v: DetectVerdict = NuitkaDetector

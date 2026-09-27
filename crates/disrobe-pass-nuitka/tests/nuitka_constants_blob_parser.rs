@@ -11,7 +11,16 @@ const GLOBAL_CONST: &[u8] =
 const CONSOLE_CONST: &[u8] = include_bytes!(
     "../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.const"
 );
+const CONSOLE_C: &str =
+    include_str!("../../../corpus/python/nuitka/console-disable/hello.build/module.__main__.c");
 const PYI: &str = include_str!("../../../corpus/python/nuitka/module/hello.pyi");
+
+fn declared_constants(c_source: &str) -> usize {
+    c_source
+        .lines()
+        .filter(|line: &&str| line.trim_start().starts_with("PyObject *const_"))
+        .count()
+}
 
 fn identifiers_from_pyi(pyi: &str) -> BTreeSet<String> {
     let mut ids: BTreeSet<String> = BTreeSet::new();
@@ -146,7 +155,11 @@ fn global_and_console_blobs_consume_every_byte() {
         CONSOLE_CONST.len(),
         "console-disable blob must fully consume"
     );
-    assert_eq!(console.stream_count, 16);
+    assert_eq!(
+        console.stream_count,
+        declared_constants(CONSOLE_C),
+        "one stream per constant the compiler declared in module.__main__.c"
+    );
     for id in ["greet", "fib", "disrobe", "main"] {
         assert!(
             console.strings.contains(id),

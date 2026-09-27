@@ -33,6 +33,8 @@ mod signed;
 mod skeleton;
 mod surface;
 mod symbols;
+#[cfg(test)]
+mod test_corpus;
 pub(crate) mod util;
 mod variant;
 mod version_db;
