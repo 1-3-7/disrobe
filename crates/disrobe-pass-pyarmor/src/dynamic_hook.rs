@@ -1,9 +1,9 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use disrobe_core::scratch::ScratchFile;
+use disrobe_core::subprocess::{CaptureOutcome, CommandSpec, Completion};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -159,6 +159,16 @@ pub fn run_dynamic_hook_with_target(
         });
     }
 
+    run_dynamic_hook_with_interpreter(wrapper, out_dir, options, &spec, version)
+}
+
+fn run_dynamic_hook_with_interpreter(
+    wrapper: &Path,
+    out_dir: &Path,
+    options: DynamicHookOptions,
+    spec: &InterpreterSpec,
+    version: (u8, u8, u8),
+) -> Result<DynamicHookResult> {
     let (helper_guard, mut helper_handle): (ScratchFile, std::fs::File) =
         ScratchFile::create(HELPER_SCRATCH_PURPOSE, "py")?;
     helper_handle.write_all(HELPER_SCRIPT.as_bytes())?;
@@ -176,16 +186,12 @@ pub fn run_dynamic_hook_with_target(
     let wrapper_abs: PathBuf = wrapper.canonicalize()?;
     let out_abs: PathBuf = out_dir.canonicalize()?;
 
-    let mut cmd: Command = Command::new(&spec.exe);
-    for arg in &spec.version_args {
-        cmd.arg(arg);
-    }
-    cmd.arg(&helper_abs)
-        .arg(&wrapper_abs)
-        .arg(&out_abs)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let command: CommandSpec = CommandSpec::new(&spec.exe, options.timeout)
+        .args(spec.version_args.iter().map(String::as_str))
+        .arg(helper_abs)
+        .arg(wrapper_abs)
+        .arg(out_abs.clone())
+        .current_dir(out_abs.clone())
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env(
@@ -196,24 +202,19 @@ pub fn run_dynamic_hook_with_target(
             "DISROBE_DISABLE_CEXTRACT",
             if options.disable_cextract { "1" } else { "0" },
         )
-        .current_dir(&out_abs);
-
-    let child: std::process::Child = cmd.spawn().map_err(|e| {
-        Error::KeyExtraction(format!("failed to spawn dynamic hook interpreter: {e}"))
+        .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE);
+    let execution = command.run().map_err(|e| {
+        Error::KeyExtraction(format!("failed to launch dynamic hook interpreter: {e}"))
     })?;
-    let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> =
-        disrobe_core::subprocess::wait_with_output_timeout(
-            child,
-            options.timeout,
-            MAX_DYNAMIC_CAPTURE,
-        )
-    else {
+    let Completion::Exited(status) = execution.completion else {
         return Err(Error::DynamicHookTimedOut {
             secs: options.timeout.as_secs(),
         });
     };
-    let stderr_excerpt: String = String::from_utf8_lossy(&captured.stderr).into_owned();
-    let exit_code: Option<i32> = captured.exit_code;
+    let _stdout: Vec<u8> = capture_complete(execution.stdout, "stdout")?;
+    let stderr: Vec<u8> = capture_complete(execution.stderr, "stderr")?;
+    let stderr_excerpt: String = String::from_utf8_lossy(&stderr).into_owned();
+    let exit_code: Option<i32> = status.code();
 
     let manifest_path: PathBuf = out_abs.join("manifest.json");
     let manifest_bytes: Vec<u8> = read_file_bounded(&manifest_path, MAX_JSON_FILE_BYTES)
@@ -237,7 +238,7 @@ pub fn run_dynamic_hook_with_target(
 
     let interpreter_label: String = spec.display_label();
     Ok(DynamicHookResult {
-        interpreter: spec.exe,
+        interpreter: spec.exe.clone(),
         interpreter_label,
         interpreter_version: version,
         manifest_path,
@@ -274,7 +275,7 @@ fn locate_python(target: Option<(u8, u8)>) -> Result<InterpreterSpec> {
             return Ok(candidate);
         }
         let candidate2: InterpreterSpec = InterpreterSpec {
-            exe: PathBuf::from(format!("python{maj}.{min}")),
+            exe: versioned_python(*maj, *min),
             version_args: Vec::new(),
         };
         if probe(&candidate2, &mut searched) {
@@ -299,38 +300,38 @@ fn locate_python(target: Option<(u8, u8)>) -> Result<InterpreterSpec> {
     Err(Error::DynamicHookNoPython { searched })
 }
 
+fn versioned_python(major: u8, minor: u8) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(format!("python{major}.{minor}.exe"))
+    } else {
+        PathBuf::from(format!("python{major}.{minor}"))
+    }
+}
+
 fn probe(spec: &InterpreterSpec, searched: &mut Vec<String>) -> bool {
     let label: String = spec.display_label();
     searched.push(label);
-    let mut cmd: Command = Command::new(&spec.exe);
-    for arg in &spec.version_args {
-        cmd.arg(arg);
-    }
-    cmd.arg("-c").arg("print(0)");
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS))
+    let mut args: Vec<String> = spec.version_args.clone();
+    args.extend(["-c".to_owned(), "print(0)".to_owned()]);
+    run_probe_capped(&spec.exe, &args, Duration::from_secs(PROBE_TIMEOUT_SECS))
         .is_some_and(|(success, _stdout, _stderr): (bool, Vec<u8>, Vec<u8>)| success)
 }
 
 fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
-    let mut cmd: Command = Command::new(&spec.exe);
-    for arg in &spec.version_args {
-        cmd.arg(arg);
-    }
-    cmd.arg("-c").arg(
-        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')",
-    );
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut args: Vec<String> = spec.version_args.clone();
+    args.extend([
+        "-c".to_owned(),
+        "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')"
+            .to_owned(),
+    ]);
     let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
-        run_probe_capped(&mut cmd, Duration::from_secs(PROBE_TIMEOUT_SECS)).ok_or_else(|| {
-            Error::KeyExtraction(format!(
-                "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
-            ))
-        })?;
+        run_probe_capped(&spec.exe, &args, Duration::from_secs(PROBE_TIMEOUT_SECS)).ok_or_else(
+            || {
+                Error::KeyExtraction(format!(
+                    "python version probe timed out after {PROBE_TIMEOUT_SECS}s"
+                ))
+            },
+        )?;
     if !success {
         return Err(Error::KeyExtraction(
             "could not query python version".to_owned(),
@@ -341,15 +342,52 @@ fn python_version(spec: &InterpreterSpec) -> Result<(u8, u8, u8)> {
         .ok_or_else(|| Error::KeyExtraction(format!("could not parse python version: {text:?}")))
 }
 
-fn run_probe_capped(cmd: &mut Command, timeout: Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
-    let child: std::process::Child = cmd.spawn().ok()?;
+fn run_probe_capped(
+    program: &Path,
+    args: &[String],
+    timeout: Duration,
+) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     let captured: disrobe_core::subprocess::CapturedOutput =
-        disrobe_core::subprocess::wait_with_output_timeout(child, timeout, MAX_DYNAMIC_CAPTURE)?;
+        disrobe_core::subprocess::run_captured(program, args, timeout, MAX_DYNAMIC_CAPTURE)
+            .ok()
+            .flatten()?;
     Some((
         captured.exit_code == Some(0),
         captured.stdout,
         captured.stderr,
     ))
+}
+
+fn capture_complete(outcome: CaptureOutcome, stream: &'static str) -> Result<Vec<u8>> {
+    match outcome {
+        CaptureOutcome::Complete(captured) if !captured.truncated => Ok(captured.bytes),
+        CaptureOutcome::Complete(_) => Err(Error::KeyExtraction(format!(
+            "dynamic hook {stream} exceeded the configured capture limit"
+        ))),
+        CaptureOutcome::Failed { source, .. } => Err(Error::KeyExtraction(format!(
+            "failed to capture dynamic hook {stream}: {source}"
+        ))),
+        CaptureOutcome::NotStarted => Err(Error::KeyExtraction(format!(
+            "dynamic hook {stream} capture did not start"
+        ))),
+        CaptureOutcome::WorkerPanicked => Err(Error::KeyExtraction(format!(
+            "dynamic hook {stream} capture worker panicked"
+        ))),
+        CaptureOutcome::WorkerUnresponsive => Err(Error::KeyExtraction(format!(
+            "dynamic hook {stream} capture worker did not finish"
+        ))),
+    }
+}
+
+#[cfg(test)]
+fn run_command_spec_capped(command: CommandSpec) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    let execution = command.run().ok()?;
+    let Completion::Exited(status) = execution.completion else {
+        return None;
+    };
+    let stdout: Vec<u8> = capture_complete(execution.stdout, "stdout").ok()?;
+    let stderr: Vec<u8> = capture_complete(execution.stderr, "stderr").ok()?;
+    Some((status.success(), stdout, stderr))
 }
 
 fn parse_version(s: &str) -> Option<(u8, u8, u8)> {
@@ -423,39 +461,24 @@ mod tests {
         if alt.is_file() {
             return alt;
         }
-        let status: std::process::ExitStatus = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "disrobe-pass-pyarmor",
-                "--bin",
-                "disrobe-pass-pyarmor-mock-proc",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("spawn cargo build for mock-proc");
-        assert!(status.success(), "cargo build mock-proc failed");
-        assert!(candidate.is_file(), "mock-proc binary not at expected path");
-        candidate
+        panic!(
+            "{} is not built; cargo builds it with this crate's integration tests, or run `cargo \
+             build -p disrobe-pass-pyarmor --bin disrobe-pass-pyarmor-mock-proc` first, because \
+             this test never starts cargo",
+            candidate.display()
+        );
     }
 
-    fn mock_cmd(args: &[&str]) -> Command {
-        let mut cmd: Command = Command::new(mock_bin_path());
-        cmd.args(args);
-        cmd
+    fn mock_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg: &&str| (*arg).to_owned()).collect()
     }
 
     #[test]
     fn probe_capped_timeout_actually_kills_a_sleeping_child() {
-        let mut cmd: Command = mock_cmd(&["sleep", "5"]);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let args: Vec<String> = mock_args(&["sleep", "5"]);
         let start: Instant = Instant::now();
         let result: Option<(bool, Vec<u8>, Vec<u8>)> =
-            run_probe_capped(&mut cmd, Duration::from_millis(300));
+            run_probe_capped(&mock_bin_path(), &args, Duration::from_millis(300));
         let elapsed: Duration = start.elapsed();
         eprintln!(
             "[evidence] pyarmor timeout test: elapsed={elapsed:?} deadline=300ms sleep_requested=5s killed={}",
@@ -472,24 +495,18 @@ mod tests {
     }
 
     #[test]
-    fn probe_capped_output_cap_truncates_a_flooding_child() {
+    fn probe_capped_output_cap_refuses_a_flooding_child() {
         let flood_bytes: usize = MAX_DYNAMIC_CAPTURE * 2;
-        let mut cmd: Command = mock_cmd(&["flood", &flood_bytes.to_string()]);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
-            run_probe_capped(&mut cmd, Duration::from_secs(20))
-                .expect("flood child must complete within timeout");
-        assert!(success);
+        let args: Vec<String> = mock_args(&["flood", &flood_bytes.to_string()]);
+        let result: Option<(bool, Vec<u8>, Vec<u8>)> =
+            run_probe_capped(&mock_bin_path(), &args, Duration::from_secs(20));
         eprintln!(
-            "[evidence] pyarmor cap test: child_wrote={flood_bytes} captured={} cap={MAX_DYNAMIC_CAPTURE}",
-            stdout.len()
+            "[evidence] pyarmor cap test: child_wrote={flood_bytes} cap={MAX_DYNAMIC_CAPTURE} refused={}",
+            result.is_none()
         );
-        assert_eq!(
-            stdout.len(),
-            MAX_DYNAMIC_CAPTURE,
-            "captured stdout must be truncated to the cap, not the full {flood_bytes} bytes written"
+        assert!(
+            result.is_none(),
+            "a probe whose output exceeds the capture limit must be refused"
         );
     }
 
@@ -501,12 +518,9 @@ mod tests {
         let weird_path: PathBuf = scratch.path().join(weird_name);
         std::fs::write(&weird_path, b"payload").expect("write metachar file");
 
-        let mut cmd: Command = mock_cmd(&["echo-args", &weird_path.to_string_lossy()]);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let args: Vec<String> = mock_args(&["echo-args", &weird_path.to_string_lossy()]);
         let (success, stdout, _stderr): (bool, Vec<u8>, Vec<u8>) =
-            run_probe_capped(&mut cmd, Duration::from_secs(5))
+            run_probe_capped(&mock_bin_path(), &args, Duration::from_secs(5))
                 .expect("echo-args child must complete");
         assert!(success);
         let reported: String = String::from_utf8_lossy(&stdout).trim_end().to_owned();
@@ -595,6 +609,16 @@ mod tests {
     }
 
     #[test]
+    fn a_versioned_interpreter_name_keeps_its_windows_executable_suffix() {
+        let expected: &str = if cfg!(windows) {
+            "python3.12.exe"
+        } else {
+            "python3.12"
+        };
+        assert_eq!(versioned_python(3, 12), PathBuf::from(expected));
+    }
+
+    #[test]
     fn successful_hotpatch_session_is_uninstalled_and_drained() {
         let spec: InterpreterSpec =
             locate_python(Some((3, 12))).expect("Python 3.12 is required for the hotpatch gate");
@@ -650,25 +674,21 @@ def drain_into_manifest():
         std::fs::write(&wrapper_path, "wrapper_value = 7\n").expect("write benign wrapper");
         std::fs::write(&shim_path, shim).expect("write cextract protocol shim");
 
-        let mut command: Command = Command::new(&spec.exe);
-        command.args(&spec.version_args);
-        command
-            .arg(&helper_path)
+        let command: CommandSpec = CommandSpec::new(&spec.exe, Duration::from_secs(30))
+            .args(spec.version_args.iter().map(String::as_str))
+            .arg(helper_path)
             .arg(&wrapper_path)
             .arg(&out_dir)
-            .current_dir(root)
+            .current_dir(root.to_path_buf())
             .env("PYTHONPATH", root)
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("DISROBE_DISABLE_PYTRACE", "1")
             .env("DISROBE_DISABLE_CEXTRACT", "0")
             .env("DISROBE_CEXTRACT_ORDER_MARKER", &marker_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let (success, stdout, stderr): (bool, Vec<u8>, Vec<u8>) =
-            run_probe_capped(&mut command, Duration::from_secs(30))
-                .expect("hotpatch helper must complete within the watchdog");
+            .capture_limits(MAX_DYNAMIC_CAPTURE, MAX_DYNAMIC_CAPTURE);
+        let (success, stdout, stderr): (bool, Vec<u8>, Vec<u8>) = run_command_spec_capped(command)
+            .expect("hotpatch helper must complete within the watchdog");
         let stdout_text: String = String::from_utf8_lossy(&stdout).into_owned();
         let stderr_text: String = String::from_utf8_lossy(&stderr).into_owned();
         assert!(
@@ -793,5 +813,57 @@ def drain_into_manifest():
     fn dynamic_hook_default_is_disabled() {
         let opts: DynamicHookOptions = DynamicHookOptions::default();
         assert!(!opts.allow_dynamic);
+    }
+
+    fn dynamic_hook_mock_inputs() -> (disrobe_core::scratch::ScratchDir, PathBuf, PathBuf) {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("pyarmor-dynamic-mock")
+                .expect("create dynamic mock scratch directory");
+        let wrapper: PathBuf = scratch.path().join("wrapper.py");
+        let out_dir: PathBuf = scratch.path().join("out");
+        std::fs::write(&wrapper, "value = 1\n").expect("write authored wrapper");
+        std::fs::create_dir_all(&out_dir).expect("create dynamic mock output directory");
+        (scratch, wrapper, out_dir)
+    }
+
+    #[test]
+    fn dynamic_hook_timeout_is_reported_through_the_contained_launcher() {
+        let (_scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
+        let spec: InterpreterSpec = InterpreterSpec {
+            exe: mock_bin_path(),
+            version_args: vec!["sleep".to_owned(), "5".to_owned()],
+        };
+        let options: DynamicHookOptions = DynamicHookOptions {
+            allow_dynamic: true,
+            timeout: Duration::from_millis(100),
+            disable_pytrace: true,
+            disable_cextract: true,
+        };
+        let error: Error =
+            run_dynamic_hook_with_interpreter(&wrapper, &out_dir, options, &spec, (3, 12, 0))
+                .expect_err("contained mock interpreter must time out");
+        assert!(matches!(error, Error::DynamicHookTimedOut { secs: 0 }));
+    }
+
+    #[test]
+    fn dynamic_hook_overflow_is_refused_through_the_contained_launcher() {
+        let (_scratch, wrapper, out_dir) = dynamic_hook_mock_inputs();
+        let spec: InterpreterSpec = InterpreterSpec {
+            exe: mock_bin_path(),
+            version_args: vec!["flood".to_owned(), (MAX_DYNAMIC_CAPTURE * 2).to_string()],
+        };
+        let options: DynamicHookOptions = DynamicHookOptions {
+            allow_dynamic: true,
+            timeout: Duration::from_secs(10),
+            disable_pytrace: true,
+            disable_cextract: true,
+        };
+        let error: Error =
+            run_dynamic_hook_with_interpreter(&wrapper, &out_dir, options, &spec, (3, 12, 0))
+                .expect_err("contained mock interpreter output must be refused");
+        assert!(
+            matches!(error, Error::KeyExtraction(ref message) if message.contains("stdout exceeded")),
+            "unexpected overflow error: {error:?}"
+        );
     }
 }
