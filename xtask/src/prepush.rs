@@ -169,7 +169,22 @@ fn gate_clippy(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         }
         Scope::All | Scope::Changed(_) => args.push("--workspace".to_owned()),
     }
-    args.extend(["--all-targets", "--", "-D", "warnings"].map(str::to_owned));
+    args.extend(
+        [
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+            "-W",
+            "unreachable_pub",
+            "-W",
+            "missing_debug_implementations",
+            "-W",
+            "unused",
+        ]
+        .map(str::to_owned),
+    );
     run_checked_owned(root, cargo_bin().as_str(), &args, || {
         "resolve the clippy findings above, then re-run the push".to_owned()
     })?;
@@ -193,11 +208,6 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         Scope::Changed(paths) => test_targets(root, &members, paths)?,
         Scope::Skip => return Ok(GateOutcome::Skipped("no push content".to_owned())),
     };
-    let chain: BTreeSet<String> = members
-        .iter()
-        .filter(|member: &&CrateDir| member.chain)
-        .map(|member: &CrateDir| member.name.clone())
-        .collect();
     for (name, targets) in &plan {
         let TestTargets::Binaries(binaries) = targets else {
             continue;
@@ -205,7 +215,7 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         if name == SELF_CRATE || binaries.is_empty() {
             continue;
         }
-        let args: Vec<String> = binary_test_command(name, binaries, chain.contains(name));
+        let args: Vec<String> = binary_test_command(name, binaries);
         println!("    {name}: running only the changed test binaries {binaries:?}");
         run_checked_owned(root, cargo_bin().as_str(), &args, || {
             format!("a changed test binary of {name} failed; fix it, then re-run the push")
@@ -216,7 +226,7 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
         .filter(|(_, targets): &(&String, &TestTargets)| **targets == TestTargets::Crate)
         .map(|(name, _): (&String, &TestTargets)| name.clone())
         .collect();
-    let commands: ScopedTestCommands = scoped_test_commands(&crates, &chain);
+    let commands: ScopedTestCommands = scoped_test_commands(&crates);
     if commands.self_excluded {
         println!(
             "    {SELF_CRATE}'s own tests are not run by this gate, because the gate executes as \
@@ -252,28 +262,26 @@ fn gate_test(root: &Path, scope: &Scope) -> Result<GateOutcome> {
     Ok(GateOutcome::Ran)
 }
 
-fn binary_test_command(name: &str, binaries: &BTreeSet<String>, chain: bool) -> Vec<String> {
+fn binary_test_command(name: &str, binaries: &BTreeSet<String>) -> Vec<String> {
     let mut args: Vec<String> = [
         "nextest",
         "run",
         "--profile",
         "pre-push",
         "--ignore-default-filter",
+        "--all-features",
         "-p",
         name,
     ]
     .map(str::to_owned)
     .to_vec();
-    if chain {
-        args.extend(["--features".to_owned(), format!("{name}/chain")]);
-    }
     for binary in binaries {
         args.extend(["--test".to_owned(), binary.clone()]);
     }
     args
 }
 
-fn scoped_test_commands(crates: &[String], chain: &BTreeSet<String>) -> ScopedTestCommands {
+fn scoped_test_commands(crates: &[String]) -> ScopedTestCommands {
     let self_excluded: bool = crates.iter().any(|name: &String| name == SELF_CRATE);
     let mut selected: Vec<&str> = crates
         .iter()
@@ -288,14 +296,12 @@ fn scoped_test_commands(crates: &[String], chain: &BTreeSet<String>) -> ScopedTe
         "run".to_owned(),
         "--profile".to_owned(),
         "pre-push".to_owned(),
+        "--all-features".to_owned(),
     ];
     let mut doctest: Vec<String> = vec!["test".to_owned(), "--doc".to_owned()];
     for name in selected {
         nextest.extend(["-p".to_owned(), name.to_owned()]);
         doctest.extend(["-p".to_owned(), name.to_owned()]);
-        if chain.contains(name) {
-            nextest.extend(["--features".to_owned(), format!("{name}/chain")]);
-        }
     }
     ScopedTestCommands {
         nextest,
@@ -549,7 +555,6 @@ fn workspace_crates(root: &Path) -> Result<Vec<String>> {
 struct CrateDir {
     name: String,
     dir: String,
-    chain: bool,
     test_targets: Vec<(String, String)>,
 }
 
@@ -595,7 +600,6 @@ fn crate_dirs(root: &Path) -> Result<Vec<CrateDir>> {
             })
             .collect();
         members.push(CrateDir {
-            chain: package.features.contains_key("chain"),
             name: package.name,
             dir: normalized,
             test_targets,
@@ -614,8 +618,6 @@ struct Metadata {
 struct MetaPackage {
     name: String,
     manifest_path: String,
-    #[serde(default)]
-    features: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     targets: Vec<MetaTarget>,
 }
@@ -740,7 +742,6 @@ mod tests {
         let members: Vec<CrateDir> = vec![CrateDir {
             name: "c".to_owned(),
             dir: "crates/c".to_owned(),
-            chain: true,
             test_targets: vec![
                 ("a".to_owned(), "crates/c/tests/a.rs".to_owned()),
                 ("b".to_owned(), "crates/c/tests/b.rs".to_owned()),
@@ -787,7 +788,6 @@ mod tests {
         let members: Vec<CrateDir> = vec![CrateDir {
             name: "c".to_owned(),
             dir: "crates/c".to_owned(),
-            chain: false,
             test_targets: vec![
                 ("sweep".to_owned(), "crates/c/tests/sweep.rs".to_owned()),
                 ("vm".to_owned(), "crates/c/tests/vm.rs".to_owned()),
@@ -812,20 +812,19 @@ mod tests {
     }
 
     #[test]
-    fn binary_commands_select_the_chain_feature_and_each_binary() {
+    fn binary_commands_select_every_feature_and_each_binary() {
         let binaries: BTreeSet<String> = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
         assert_eq!(
-            binary_test_command("c", &binaries, true),
+            binary_test_command("c", &binaries),
             [
                 "nextest",
                 "run",
                 "--profile",
                 "pre-push",
                 "--ignore-default-filter",
+                "--all-features",
                 "-p",
                 "c",
-                "--features",
-                "c/chain",
                 "--test",
                 "a",
                 "--test",
@@ -875,7 +874,7 @@ mod tests {
             "disrobe-bytes".to_owned(),
             "disrobe-pass-jvm".to_owned(),
         ];
-        let actual: ScopedTestCommands = scoped_test_commands(&crates, &BTreeSet::new());
+        let actual: ScopedTestCommands = scoped_test_commands(&crates);
         assert_eq!(
             actual,
             ScopedTestCommands {
@@ -884,6 +883,7 @@ mod tests {
                     "run",
                     "--profile",
                     "pre-push",
+                    "--all-features",
                     "-p",
                     "disrobe-bytes",
                     "-p",
@@ -911,9 +911,11 @@ mod tests {
 
     #[test]
     fn scoped_test_commands_exclude_the_running_xtask() {
-        let actual: ScopedTestCommands =
-            scoped_test_commands(&[SELF_CRATE.to_owned()], &BTreeSet::new());
-        assert_eq!(actual.nextest, ["nextest", "run", "--profile", "pre-push"]);
+        let actual: ScopedTestCommands = scoped_test_commands(&[SELF_CRATE.to_owned()]);
+        assert_eq!(
+            actual.nextest,
+            ["nextest", "run", "--profile", "pre-push", "--all-features"]
+        );
         assert_eq!(actual.doctest, ["test", "--doc"]);
         assert!(actual.self_excluded);
         assert_eq!(actual.selected_crates, 0);
