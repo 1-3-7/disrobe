@@ -574,10 +574,12 @@ mod tests {
             .join("php")
             .join("phar")
             .join("hello.phar");
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&fixture) else {
-            eprintln!("SKIP: phar fixture missing at {}", fixture.display());
-            return;
-        };
+        let bytes: Vec<u8> = std::fs::read(&fixture).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "the tracked fixture {} must be readable: {error}",
+                fixture.display()
+            )
+        });
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = PHP_PASS.run(&a).expect("phar run must succeed");
         let manifest: &str = std::str::from_utf8(&out.envelope).expect("utf8 manifest");
