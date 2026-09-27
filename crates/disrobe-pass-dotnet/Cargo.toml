@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-dotnet"
-description = ".NET/CIL deobfuscation pass: CIL disasm, Dotfuscator/SmartAssembly/de4dot/ConfuserEx2 reversers, R2R + Native AOT walkers, ILSpy/dnSpy wraps."
+description = ".NET/CIL deobfuscation pass: CIL disasm, Dotfuscator/SmartAssembly/ConfuserEx2 reversers, R2R + Native AOT walkers, ILSpy/dnSpy wraps."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

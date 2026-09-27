@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-playground"
-description = "Anti-gaming accuracy playground: manifest-pinned oracles, per-oracle-kind reporting, and a circular-test detector that makes faked or self-referential accuracy impossible."
+description = "Anti-gaming accuracy playground: manifest-pinned oracles, per-oracle-kind reporting, and a circular-test detector that rejects self-referential accuracy checks."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-typerec"
-description = "Static type recovery for the disrobe decompiler: a union-find constraint solver over a TIE-derived numeric lattice that recovers integer width and signedness from x86-64 instruction semantics, graded against an unstripped sibling's DWARF."
+description = "Static type recovery for the disrobe decompiler: a union-find constraint solver over a numeric lattice that recovers integer width and signedness from x86-64 instruction semantics, graded against an unstripped sibling's DWARF."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

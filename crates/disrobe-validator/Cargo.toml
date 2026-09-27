@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-validator"
-description = "Production validator + benchmark harness for the disrobe suite. Walks the sample corpus, runs each pass end-to-end, asserts byte-level deterministic output, captures size + entropy + symbol-recovery metrics, and exports a HTML/JSON report. Baselines via `divan` against the Lil-House reference (when available)."
+description = "Production validator + benchmark harness for the disrobe suite. Walks the sample corpus, runs each pass end-to-end, asserts byte-level deterministic output, captures size + entropy + symbol-recovery metrics, and exports a HTML/JSON report."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

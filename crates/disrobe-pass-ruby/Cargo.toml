@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-ruby"
-description = "Ruby ecosystem deobfuscation: MRI source AST-lite, YARV bytecode reader + disasm parity + surface decompile (Reversal port), mruby (.mrb) reader + decompile, JRuby class delegation, TruffleRuby AOT walk, ruby2exe/ocra extract."
+description = "Ruby ecosystem deobfuscation: MRI source AST-lite, YARV bytecode reader + disasm parity + surface decompile, mruby (.mrb) reader + decompile, JRuby class delegation, TruffleRuby AOT walk, ruby2exe/ocra extract."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

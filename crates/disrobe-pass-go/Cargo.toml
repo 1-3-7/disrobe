@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-go"
-description = "Go binary recovery pass: GoReSym port, redress port, pclntab versioned reader (1.2-1.25), type-metadata extractor, Garble (Ungarble + GoResolver) undo, embed-fs extractor."
+description = "Go binary recovery pass: function and package names from stripped binaries, versioned pclntab reader (1.2-1.25), module-data and type-metadata extractor, garble literal recovery, embed.FS extractor."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-swift-objc"
-description = "iOS Swift + Objective-C recovery: IPA extract, Mach-O fat walker, Swift class-dump (dsdump semantics), ObjC __objc_classlist + __objc_methlist, Swift demangle, FairPlay detection."
+description = "iOS Swift + Objective-C recovery: IPA extract, Mach-O fat walker, Swift class-dump, ObjC __objc_classlist + __objc_methlist, Swift demangle, FairPlay detection."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-beam"
-description = "BEAM (Erlang/Elixir) bytecode parser + disassembler + Core Erlang lift + Elixir Dbgi recovery + Erlang-Prism port + EZ archive extract."
+description = "BEAM (Erlang/Elixir) bytecode parser + disassembler + Core Erlang lift + Elixir Dbgi recovery + Erlang source rendering + EZ archive extract."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

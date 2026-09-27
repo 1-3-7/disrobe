@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-js-deob"
-description = "JavaScript / TypeScript deobfuscator for the disrobe suite. Targets obfuscator.io, javascript-obfuscator, JSObfu, Jscrambler-style transforms, modern bundler reversal (Vite/Rollup/esbuild/Turbopack/Bun/webpack). Built on oxc (the post-swc parser used by Rolldown)."
+description = "JavaScript / TypeScript deobfuscator for the disrobe suite. Targets obfuscator.io, javascript-obfuscator, JSObfu, Jscrambler-style transforms, modern bundler reversal (Vite/Rollup/esbuild/Turbopack/Bun/webpack). Built on the oxc parser."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

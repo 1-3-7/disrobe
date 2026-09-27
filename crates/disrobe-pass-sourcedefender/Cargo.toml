@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-sourcedefender"
-description = "SOURCEdefender (.pye) commercial Python source-protection decryptor. Reverse-engineered AES-256 + BLAKE2b key-derivation per published FOSS unpackers (vxnetrip, Gerald-tech2, GuardianN06)."
+description = "SOURCEdefender (.pye) commercial Python source-protection decryptor: AES-256 decryption with BLAKE2b key derivation."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true

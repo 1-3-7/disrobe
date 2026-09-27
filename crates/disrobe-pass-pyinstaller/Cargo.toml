@@ -1,6 +1,6 @@
 [package]
 name = "disrobe-pass-pyinstaller"
-description = "PyInstaller CArchive + PYZ extractor for the disrobe deobfuscation suite. Our Rust implementation covers PyInstaller 2.x through 6.x, recovers the in-artifact AES key from the marshalled crypto-key code object, decrypts AES-128-CTR (>= 4.0) and AES-128-CFB-8 (< 4.0) encrypted PYZ archives, and reconstructs deterministic `.pyc` files across all CPython versions."
+description = "PyInstaller CArchive + PYZ extractor for the disrobe deobfuscation suite. Covers PyInstaller 2.x through 6.x, recovers the in-artifact AES key from the marshalled crypto-key code object, decrypts AES-128-CTR (>= 4.0) and AES-128-CFB-8 (< 4.0) encrypted PYZ archives, and reconstructs deterministic `.pyc` files across all CPython versions."
 version.workspace = true
 readme.workspace = true
 edition.workspace = true
