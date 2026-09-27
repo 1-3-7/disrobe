@@ -18,15 +18,16 @@ pub struct VbsReport {
 static CHR_CALL: LazyLock<Regex> =
     LazyLock::new(|| crate::regex_util::safe_regex(r"(?i)Chr(?:W|B)?\s*\(\s*(\d{1,5})\s*\)"));
 
-static STRREVERSE: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#"(?i)StrReverse\s*\(\s*"([^"]*)"\s*\)"#));
+static STRREVERSE: LazyLock<Regex> = LazyLock::new(|| {
+    crate::regex_util::safe_regex(r#"(?i)StrReverse\s*\(\s*"((?:[^"]|"")*)"\s*\)"#)
+});
 
 static EXECUTE: LazyLock<Regex> = LazyLock::new(|| {
     crate::regex_util::safe_regex(r#"(?is)Execute(?:Global)?\s*\(\s*"((?:[^"]|"")*)"\s*\)"#)
 });
 
 static CONCAT: LazyLock<Regex> =
-    LazyLock::new(|| crate::regex_util::safe_regex(r#""([^"]*)"\s*&\s*"([^"]*)""#));
+    LazyLock::new(|| crate::regex_util::safe_regex(r#""((?:[^"]|"")*)"\s*&\s*"((?:[^"]|"")*)""#));
 
 #[must_use]
 pub fn deobfuscate_vbs(input: &str) -> VbsReport {
@@ -44,7 +45,7 @@ pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsRep
                 .get(1)
                 .and_then(|m: regex::Match<'_>| m.as_str().parse::<u32>().ok())
                 .unwrap_or(0);
-            char::from_u32(n).map_or_else(|| String::new(), |ch: char| format!("\"{ch}\""))
+            char::from_u32(n).map_or_else(String::new, |ch: char| vbs_literal(&ch.to_string()))
         })
         .into_owned();
     for _ in 0..16usize {
@@ -58,8 +59,8 @@ pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsRep
     current = STRREVERSE
         .replace_all(&current, |c: &regex::Captures<'_>| {
             rev_subs += 1;
-            let s: &str = c.get(1).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
-            format!("\"{}\"", s.chars().rev().collect::<String>())
+            let body: &str = c.get(1).map(|m: regex::Match<'_>| m.as_str()).unwrap_or("");
+            vbs_literal(&body.replace("\"\"", "\"").chars().rev().collect::<String>())
         })
         .into_owned();
     let mut exec_subs: usize = 0;
@@ -98,6 +99,10 @@ pub fn deobfuscate_vbs_with_policy(input: &str, policy: DynamicPolicy) -> VbsRep
     }
 }
 
+fn vbs_literal(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +113,14 @@ mod tests {
         let r: VbsReport = deobfuscate_vbs(src);
         assert!(r.chr_substitutions >= 2);
         assert!(r.output.contains("\"Hi\""));
+    }
+
+    #[test]
+    fn folded_quote_characters_stay_escaped_vbs_literals() {
+        let r: VbsReport = deobfuscate_vbs(r#"x = "say " & Chr(34) & "hi" & Chr(34)"#);
+        assert_eq!(r.output, r#"x = "say ""hi""""#);
+        let r: VbsReport = deobfuscate_vbs(r#"y = StrReverse("""ih"" yas")"#);
+        assert_eq!(r.output, r#"y = "say ""hi""""#);
     }
 
     #[test]

@@ -1011,9 +1011,13 @@ mod tests {
             "chain must emit the same deobfuscated VBS the CLI deobfuscate_vbs produces"
         );
         assert_eq!(
-            chained.lines().take(2).collect::<Vec<&str>>(),
-            ["Dim cmd", "cmd = \"WScript.Echo\""],
-            "deobfuscated VBS must fold the twelve-call Chr() chain to the WScript.Echo literal"
+            chained.lines().collect::<Vec<&str>>(),
+            [
+                "Dim cmd",
+                "cmd = \"WScript.Echo\"",
+                "Execute(cmd & \" \"\"hello\"\"\")"
+            ],
+            "deobfuscated VBS must fold the Chr() chains to valid literals, Chr(34) as an escaped quote"
         );
     }
 
