@@ -1,0 +1,7 @@
+#!/bin/sh
+subject=$(sed -n '1p' "$1")
+case "$subject" in
+  ''|'#'*|fixup!*|squash!*|Merge*|Revert*) exit 0 ;;
+esac
+. "$(git rev-parse --show-toplevel)/.githooks/commit_rules.sh"
+check_message commit-msg "$1"

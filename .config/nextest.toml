@@ -1,6 +1,20 @@
 nextest-version = "0.9.115"
 
 [profile.pre-push]
+default-filter = '''
+not (
+  binary_id(=xtask::python_bindings_e2e)
+  | binary_id(=disrobe-taint::graded_corpus)
+  | binary_id(=disrobe-pass-dotnet::default_feature_boundary)
+  | binary_id(=disrobe-pass-nativelang::body_recovery_oracle)
+  | binary_id(=disrobe-pass-nativelang::body_equivalence)
+  | binary_id(=disrobe-pass-nativelang::oracle)
+  | binary_id(=disrobe-pass-nativelang::dwarf_dewall)
+  | binary_id(=disrobe-pass-js-deob::obfuscator_io_e2e)
+  | binary_id(=disrobe-pass-js-deob::obfuscator_io_differential_oracle)
+  | binary_id(=disrobe-pass-js-deob::reeval_corpus_oracle)
+)
+'''
 retries = 0
 test-threads = 12
 slow-timeout = { period = "30s", terminate-after = 4, grace-period = "10s" }
@@ -12,6 +26,7 @@ final-status-level = "fail"
 
 [profile.push-graders]
 inherits = "pre-push"
+default-filter = "all()"
 retries = 0
 
 [profile.push-graders.junit]

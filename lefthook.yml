@@ -3,10 +3,7 @@ pre-commit:
   commands:
     fmt:
       glob: '*.rs'
-      run: cargo fmt --all -- --check
-    clippy:
-      glob: '*.rs'
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: rustfmt --edition 2024 --check {staged_files}
     typos:
       run: typos
     no-root-garbage:
@@ -34,6 +31,8 @@ pre-commit:
 
 commit-msg:
   commands:
+    rules:
+      run: sh .githooks/commit-msg {1}
     committed:
       run: committed --commit-file {1}
 
