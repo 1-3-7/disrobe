@@ -679,10 +679,6 @@ impl CondKind {
         matches!(self, Self::S | Self::Ns | Self::E | Self::Ne)
     }
 
-    const fn is_overflow(self) -> bool {
-        matches!(self, Self::Vs | Self::Vc)
-    }
-
     const fn negate(self) -> Self {
         match self {
             Self::E => Self::Ne,
@@ -702,6 +698,277 @@ impl CondKind {
             Self::P => Self::Np,
             Self::Np => Self::P,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    Greater,
+    GreaterEqual,
+    Less,
+    LessEqual,
+}
+
+impl Order {
+    const fn c_op(self) -> BinaryOp {
+        match self {
+            Self::Greater => BinaryOp::Gt,
+            Self::GreaterEqual => BinaryOp::Ge,
+            Self::Less => BinaryOp::Lt,
+            Self::LessEqual => BinaryOp::Le,
+        }
+    }
+
+    const fn rs_op(self) -> (RBinOp, &'static str) {
+        match self {
+            Self::Greater => (RBinOp::Gt, ">"),
+            Self::GreaterEqual => (RBinOp::Ge, ">="),
+            Self::Less => (RBinOp::Lt, "<"),
+            Self::LessEqual => (RBinOp::Le, "<="),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignZero {
+    Equal,
+    NotEqual,
+    Sign,
+    NotSign,
+}
+
+impl SignZero {
+    const fn c_op(self) -> BinaryOp {
+        match self {
+            Self::Equal => BinaryOp::Eq,
+            Self::NotEqual => BinaryOp::Ne,
+            Self::Sign => BinaryOp::Lt,
+            Self::NotSign => BinaryOp::Ge,
+        }
+    }
+
+    const fn rs_op(self) -> (RBinOp, &'static str) {
+        match self {
+            Self::Equal => (RBinOp::Eq, "=="),
+            Self::NotEqual => (RBinOp::Ne, "!="),
+            Self::Sign => (RBinOp::Lt, "<"),
+            Self::NotSign => (RBinOp::Ge, ">="),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZeroTest {
+    Zero,
+    NonZero,
+}
+
+impl ZeroTest {
+    const fn c_op(self) -> BinaryOp {
+        match self {
+            Self::Zero => BinaryOp::Eq,
+            Self::NonZero => BinaryOp::Ne,
+        }
+    }
+
+    const fn rs_op(self) -> (RBinOp, &'static str) {
+        match self {
+            Self::Zero => (RBinOp::Eq, "=="),
+            Self::NonZero => (RBinOp::Ne, "!="),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntCondition {
+    Unsigned(Order),
+    Signed(Order),
+    Overflow { set: bool },
+    SignZero(SignZero),
+}
+
+impl IntCondition {
+    const fn of(kind: CondKind) -> Option<Self> {
+        match kind {
+            CondKind::E => Some(Self::SignZero(SignZero::Equal)),
+            CondKind::Ne => Some(Self::SignZero(SignZero::NotEqual)),
+            CondKind::S => Some(Self::SignZero(SignZero::Sign)),
+            CondKind::Ns => Some(Self::SignZero(SignZero::NotSign)),
+            CondKind::G => Some(Self::Signed(Order::Greater)),
+            CondKind::Ge => Some(Self::Signed(Order::GreaterEqual)),
+            CondKind::L => Some(Self::Signed(Order::Less)),
+            CondKind::Le => Some(Self::Signed(Order::LessEqual)),
+            CondKind::A => Some(Self::Unsigned(Order::Greater)),
+            CondKind::Ae => Some(Self::Unsigned(Order::GreaterEqual)),
+            CondKind::B => Some(Self::Unsigned(Order::Less)),
+            CondKind::Be => Some(Self::Unsigned(Order::LessEqual)),
+            CondKind::Vs => Some(Self::Overflow { set: true }),
+            CondKind::Vc => Some(Self::Overflow { set: false }),
+            CondKind::P | CondKind::Np => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddCondition {
+    Carry(Order),
+    Overflow { set: bool },
+    SignZero(SignZero),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SoundCondition<'a> {
+    Cmp {
+        cond: IntCondition,
+        lhs: RegRef,
+        rhs: &'a Source,
+    },
+    CmpMem {
+        cond: IntCondition,
+        lhs: MemRef,
+        rhs: &'a Source,
+    },
+    Add {
+        cond: AddCondition,
+        lhs: RegRef,
+        rhs: &'a Source,
+    },
+    Test {
+        cond: IntCondition,
+        operand: RegRef,
+    },
+    TestImm {
+        test: ZeroTest,
+        operand: RegRef,
+        mask: i64,
+    },
+    Sign {
+        cond: SignZero,
+        result: RegRef,
+    },
+    FpCmp {
+        kind: CondKind,
+        lhs: Xmm,
+        rhs: FpOperand,
+        width: FpWidth,
+        model: FpUnorderedModel,
+    },
+    Snapshot {
+        test: ZeroTest,
+        var: u32,
+    },
+    CondCmp {
+        precond: Box<Self>,
+        taken: Box<Self>,
+        else_holds: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionRefusal {
+    ParityOverIntegerFlags,
+    SignedOrderAfterAdd,
+    MaskedTestBeyondEquality,
+    SignFlagsBeyondSignZero,
+}
+
+fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
+    sound_condition(kind, flags).is_ok()
+}
+
+fn sound_condition(
+    kind: CondKind,
+    flags: &Flags,
+) -> std::result::Result<SoundCondition<'_>, ConditionRefusal> {
+    let integer = || -> std::result::Result<IntCondition, ConditionRefusal> {
+        IntCondition::of(kind).ok_or(ConditionRefusal::ParityOverIntegerFlags)
+    };
+    match flags {
+        Flags::Cmp { lhs, rhs } => Ok(SoundCondition::Cmp {
+            cond: integer()?,
+            lhs: *lhs,
+            rhs,
+        }),
+        Flags::CmpMem { lhs, rhs } => Ok(SoundCondition::CmpMem {
+            cond: integer()?,
+            lhs: *lhs,
+            rhs,
+        }),
+        Flags::Add { lhs, rhs } => {
+            let cond: AddCondition = match integer()? {
+                IntCondition::Unsigned(order) => AddCondition::Carry(order),
+                IntCondition::Overflow { set } => AddCondition::Overflow { set },
+                IntCondition::SignZero(sign_zero) => AddCondition::SignZero(sign_zero),
+                IntCondition::Signed(_) => return Err(ConditionRefusal::SignedOrderAfterAdd),
+            };
+            Ok(SoundCondition::Add {
+                cond,
+                lhs: *lhs,
+                rhs,
+            })
+        }
+        Flags::Test { operand } => Ok(SoundCondition::Test {
+            cond: integer()?,
+            operand: *operand,
+        }),
+        Flags::TestImm { operand, mask } => {
+            let test: ZeroTest = match integer()? {
+                IntCondition::SignZero(SignZero::Equal) => ZeroTest::Zero,
+                IntCondition::SignZero(SignZero::NotEqual) => ZeroTest::NonZero,
+                IntCondition::SignZero(SignZero::Sign | SignZero::NotSign)
+                | IntCondition::Unsigned(_)
+                | IntCondition::Signed(_)
+                | IntCondition::Overflow { .. } => {
+                    return Err(ConditionRefusal::MaskedTestBeyondEquality);
+                }
+            };
+            Ok(SoundCondition::TestImm {
+                test,
+                operand: *operand,
+                mask: *mask,
+            })
+        }
+        Flags::Sign { result } => match integer()? {
+            IntCondition::SignZero(cond) => Ok(SoundCondition::Sign {
+                cond,
+                result: *result,
+            }),
+            IntCondition::Unsigned(_) | IntCondition::Signed(_) | IntCondition::Overflow { .. } => {
+                Err(ConditionRefusal::SignFlagsBeyondSignZero)
+            }
+        },
+        Flags::FpCmp {
+            lhs,
+            rhs,
+            width,
+            model,
+        } => Ok(SoundCondition::FpCmp {
+            kind,
+            lhs: *lhs,
+            rhs: *rhs,
+            width: *width,
+            model: *model,
+        }),
+        Flags::Snapshot { var } => {
+            let test: ZeroTest = match integer()? {
+                IntCondition::SignZero(SignZero::Equal) => ZeroTest::Zero,
+                IntCondition::SignZero(SignZero::NotEqual | SignZero::Sign | SignZero::NotSign)
+                | IntCondition::Unsigned(_)
+                | IntCondition::Signed(_)
+                | IntCondition::Overflow { .. } => ZeroTest::NonZero,
+            };
+            Ok(SoundCondition::Snapshot { test, var: *var })
+        }
+        Flags::CondCmp {
+            prior,
+            precond,
+            taken,
+            nzcv,
+        } => Ok(SoundCondition::CondCmp {
+            taken: Box::new(sound_condition(kind, taken)?),
+            precond: Box::new(sound_condition(*precond, prior)?),
+            else_holds: nzcv_condition_holds(kind, *nzcv),
+        }),
     }
 }
 
@@ -7996,7 +8263,7 @@ impl<'a> StraightLifter<'a> {
                     insn.mnemonic, insn.address
                 )));
             };
-            if !condition_is_sound(kind, &live_flags) {
+            if sound_condition(kind, &live_flags).is_err() {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
                     insn.mnemonic, insn.address
@@ -8046,7 +8313,7 @@ impl<'a> StraightLifter<'a> {
                     insn.mnemonic, insn.address
                 )));
             };
-            if !condition_is_sound(kind, &live_flags) {
+            if sound_condition(kind, &live_flags).is_err() {
                 return Err(Error::LlvmIr(format!(
                     "condition `{}` not sound against tracked flags at {:#x}",
                     insn.mnemonic, insn.address
@@ -14377,9 +14644,8 @@ fn resolve_conditional_flags(
             "condition not sound against tracked flags at {addr:#x}"
         )));
     };
-    if condition_is_sound(kind, &live_flags)
-        && comparison_operand_clobbered(items, flags_mark, &live_flags)
-    {
+    let sound: bool = sound_condition(kind, &live_flags).is_ok();
+    if sound && comparison_operand_clobbered(items, flags_mark, &live_flags) {
         let var: u32 = *next_sel;
         *next_sel += 1;
         let at: usize = flags_mark.min(items.len());
@@ -14397,7 +14663,7 @@ fn resolve_conditional_flags(
         );
         return Ok((CondKind::Ne, Flags::Snapshot { var }));
     }
-    if condition_is_sound(kind, &live_flags) {
+    if sound {
         return Ok((kind, live_flags));
     }
     if let Some(repaired) = snapshot_repair(items, kind, &live_flags, next_sel) {
@@ -14899,28 +15165,6 @@ fn canonicalize_x86_fp_condition(kind: CondKind, flags: &Flags) -> Option<CondKi
         | CondKind::Ns
         | CondKind::Vs
         | CondKind::Vc => None,
-    }
-}
-
-fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
-    if matches!(kind, CondKind::P | CondKind::Np) {
-        return matches!(flags, Flags::FpCmp { .. });
-    }
-    match flags {
-        Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
-        Flags::Add { .. } => {
-            kind.sign_zero_only() || kind.is_overflow() || kind.is_unsigned_order()
-        }
-        Flags::TestImm { .. } => matches!(kind, CondKind::E | CondKind::Ne),
-        Flags::Sign { .. } => kind.sign_zero_only(),
-        Flags::FpCmp { .. } => true,
-        Flags::Snapshot { .. } => true,
-        Flags::CondCmp {
-            prior,
-            precond,
-            taken,
-            ..
-        } => condition_is_sound(kind, taken) && condition_is_sound(*precond, prior),
     }
 }
 
@@ -22535,13 +22779,11 @@ fn outer_resume_cstmts(
     }
     let stmts = |cx: &mut Cx<'_>, index: usize| -> Option<Vec<CStmt>> {
         let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
-        Some(
-            block
-                .stmts
-                .iter()
-                .map(|stmt: &Stmt| stmt_to_cstmt(cx, stmt, aggregates))
-                .collect(),
-        )
+        block
+            .stmts
+            .iter()
+            .map(|stmt: &Stmt| stmt_to_cstmt(cx, stmt, aggregates))
+            .collect()
     };
     let condition = |cx: &mut Cx<'_>, index: usize, negate: bool| -> Option<CExpr> {
         let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
@@ -22549,7 +22791,7 @@ fn outer_resume_cstmts(
             return None;
         };
         let kind: CondKind = if negate { kind.negate() } else { *kind };
-        Some(cx.var(&cond_expr(kind, flags, aggregates)))
+        Some(cx.var(&cond_expr(kind, flags, aggregates)?))
     };
     let action: &str = "outer_resume_action";
     let mut result: Vec<CStmt> = vec![decl_with_init(cx, "uint64_t", action, CExpr::int(0))];
@@ -22650,13 +22892,13 @@ fn node_to_cstmt(
     aggregates: &AggregatePlan,
 ) -> Option<CStmt> {
     let stmt: CStmt = match node {
-        Node::Stmt(stmt) => stmt_to_cstmt(cx, stmt, aggregates),
+        Node::Stmt(stmt) => stmt_to_cstmt(cx, stmt, aggregates)?,
         Node::If {
             cond,
             then_body,
             else_body,
         } => {
-            let cond_text: String = if_cond_expr(cond, aggregates);
+            let cond_text: String = if_cond_expr(cond, aggregates)?;
             let then_cstmt: CStmt = braced_block(cx, then_body, ret_expr, aggregates)?;
             let els_cstmt: Option<Box<CStmt>> = match else_body {
                 Some(body) => Some(Box::new(braced_block(cx, body, ret_expr, aggregates)?)),
@@ -22670,7 +22912,7 @@ fn node_to_cstmt(
         }
         Node::DoWhile { body, cond } => {
             let cond_text: String = match cond {
-                LoopCond::Direct { cond, flags } => cond_expr(*cond, flags, aggregates),
+                LoopCond::Direct { cond, flags } => cond_expr(*cond, flags, aggregates)?,
                 LoopCond::Snapshot { var } => loop_cond_var(*var),
             };
             CStmt::DoWhile {
@@ -22681,7 +22923,7 @@ fn node_to_cstmt(
         Node::While { body, cond } => {
             let condition: CExpr = match cond {
                 Some(LoopCond::Direct { cond, flags }) => {
-                    let cond_text: String = cond_expr(*cond, flags, aggregates);
+                    let cond_text: String = cond_expr(*cond, flags, aggregates)?;
                     cx.var(&cond_text)
                 }
                 Some(LoopCond::Snapshot { var }) => cx.var(&loop_cond_var(*var)),
@@ -22709,7 +22951,7 @@ fn node_to_cstmt(
             }
         }
         Node::CondSnapshot { var, cond, flags } => {
-            let cond_text: String = cond_expr(*cond, flags, aggregates);
+            let cond_text: String = cond_expr(*cond, flags, aggregates)?;
             assign_cstmt(cx, &loop_cond_var(*var), &cond_text)
         }
         Node::Break => CStmt::Break,
@@ -23045,8 +23287,8 @@ fn c_fp_rint(kind: FpRoundKind, value: &str, width: FpWidth) -> String {
     })
 }
 
-fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CStmt {
-    match stmt {
+fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> Option<CStmt> {
+    let lowered: CStmt = match stmt {
         Stmt::Assign { dest, src } => {
             let body: String = source_expr(src, dest.width, aggregates);
             let var: &'static str = reg_var(dest.reg);
@@ -23091,7 +23333,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             kind,
             flags,
         } => {
-            let cond: String = cond_expr(*kind, flags, aggregates);
+            let cond: String = cond_expr(*kind, flags, aggregates)?;
             let chosen: String = source_expr(src, dest.width, aggregates);
             let var: &'static str = reg_var(dest.reg);
             let taken: String = reg_write_rhs(var, dest.width, &chosen);
@@ -23103,7 +23345,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, var, &body)
         }
         Stmt::SetCc { dest, kind, flags } => {
-            let cond: String = cond_expr(*kind, flags, aggregates);
+            let cond: String = cond_expr(*kind, flags, aggregates)?;
             let var: &'static str = reg_var(dest.reg);
             let rhs: String = c_render(|cx| {
                 let kept: CExpr = c_bin(
@@ -23123,7 +23365,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, var, &rhs)
         }
         Stmt::FlagSnapshot { var, kind, flags } => {
-            let cond: String = cond_expr(*kind, flags, aggregates);
+            let cond: String = cond_expr(*kind, flags, aggregates)?;
             assign_cstmt(cx, &sel_var(*var), &cond)
         }
         Stmt::Store { addr, src } => {
@@ -23131,7 +23373,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &value);
             if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &masked) {
-                return write;
+                return Some(write);
             }
             let target: String =
                 slot_typed_lvalue(addr, aggregates).unwrap_or_else(|| deref_expr(addr, aggregates));
@@ -23170,7 +23412,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &body);
             if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &masked) {
-                return write;
+                return Some(write);
             }
             assign_cstmt(cx, &target, &masked)
         }
@@ -23254,7 +23496,11 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     FpOp::Div => 3,
                 };
                 let computed: String = format!("fp_h_bin({lhs_val}, {rhs_val}, {operation}u)");
-                return assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width));
+                return Some(assign_cstmt(
+                    cx,
+                    xmm_var(*dest),
+                    &fp_store_expr(&computed, *width),
+                ));
             }
             let bin_op: BinaryOp = fp_binary_op(*op);
             let computed: String = c_render(|cx| c_bin(bin_op, cx.var(&lhs_val), cx.var(&rhs_val)));
@@ -23262,7 +23508,11 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         }
         Stmt::FpMov { dest, src, width } => {
             if *width == FpWidth::F16 {
-                return assign_cstmt(cx, xmm_var(*dest), &fp_half_bits(src, aggregates));
+                return Some(assign_cstmt(
+                    cx,
+                    xmm_var(*dest),
+                    &fp_half_bits(src, aggregates),
+                ));
             }
             let value: String = fp_load(src, *width, aggregates);
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
@@ -23270,7 +23520,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         Stmt::FpStore { addr, src, width } => {
             let bits: String = xmm_bits(*src, *width);
             if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &bits) {
-                return write;
+                return Some(write);
             }
             if let Some((target, _)) =
                 aggregate_c_mem_expr(addr, aggregates, AggregateScalar::Float(*width))
@@ -23485,7 +23735,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             flags,
             width,
         } => {
-            let cond: String = cond_expr(*kind, flags, aggregates);
+            let cond: String = cond_expr(*kind, flags, aggregates)?;
             if *width == FpWidth::F16 {
                 let taken: String = fp_half_bits(if_true, aggregates);
                 let untaken: String = fp_half_bits(if_false, aggregates);
@@ -23494,7 +23744,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     then: Box::new(c_opaque(cx, &taken)),
                     els: Box::new(c_opaque(cx, &untaken)),
                 });
-                return assign_cstmt(cx, xmm_var(*dest), &computed);
+                return Some(assign_cstmt(cx, xmm_var(*dest), &computed));
             }
             let taken: String = fp_load(if_true, *width, aggregates);
             let untaken: String = fp_load(if_false, *width, aggregates);
@@ -23531,7 +23781,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                     FpUnaryOp::Neg => format!("(({bits}) ^ 0x8000u)"),
                     FpUnaryOp::Abs => format!("(({bits}) & 0x7fffu)"),
                 };
-                return assign_cstmt(cx, xmm_var(*dest), &computed);
+                return Some(assign_cstmt(cx, xmm_var(*dest), &computed));
             }
             let value: String = fp_load(src, *width, aggregates);
             let computed: String = match op {
@@ -23597,7 +23847,8 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, var, &rhs)
         }
         Stmt::Vector(vec) => vec_stmt_cstmt(cx, vec),
-    }
+    };
+    Some(lowered)
 }
 
 fn vec_var(reg: u8) -> String {
@@ -24551,144 +24802,117 @@ fn unsigned_operand(expr: &str, width: Width) -> String {
     }
 }
 
-fn compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
-    if kind.is_unsigned_order() {
-        let a: String = unsigned_operand(lhs_expr, width);
-        let b: String = unsigned_operand(rhs_expr, width);
-        let op: BinaryOp = match kind {
-            CondKind::A => BinaryOp::Gt,
-            CondKind::Ae => BinaryOp::Ge,
-            CondKind::B => BinaryOp::Lt,
-            CondKind::Be => BinaryOp::Le,
-            _ => unreachable!(),
-        };
-        c_render(|cx| c_bin(op, cx.var(&a), cx.var(&b)))
-    } else if kind.is_signed_order() {
-        let a: String = signed_operand(lhs_expr, width);
-        let b: String = signed_operand(rhs_expr, width);
-        let op: BinaryOp = match kind {
-            CondKind::G => BinaryOp::Gt,
-            CondKind::Ge => BinaryOp::Ge,
-            CondKind::L => BinaryOp::Lt,
-            CondKind::Le => BinaryOp::Le,
-            _ => unreachable!(),
-        };
-        c_render(|cx| c_bin(op, cx.var(&a), cx.var(&b)))
-    } else if kind.is_overflow() {
-        overflow_expr_c(
-            lhs_expr,
-            rhs_expr,
-            width,
-            false,
-            matches!(kind, CondKind::Vs),
-        )
-    } else {
-        let a: String = signed_operand(lhs_expr, width);
-        let b: String = signed_operand(rhs_expr, width);
-        match kind {
-            CondKind::E => c_render(|cx| c_bin(BinaryOp::Eq, cx.var(&a), cx.var(&b))),
-            CondKind::Ne => c_render(|cx| c_bin(BinaryOp::Ne, cx.var(&a), cx.var(&b))),
-            CondKind::S => {
-                let diff: String = sign_truncated_diff(lhs_expr, rhs_expr, width);
-                c_render(|cx| c_bin(BinaryOp::Lt, cx.var(&diff), CExpr::int(0)))
-            }
-            CondKind::Ns => {
-                let diff: String = sign_truncated_diff(lhs_expr, rhs_expr, width);
-                c_render(|cx| c_bin(BinaryOp::Ge, cx.var(&diff), CExpr::int(0)))
-            }
-            _ => unreachable!(),
+fn compare_expr(cond: IntCondition, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    match cond {
+        IntCondition::Unsigned(order) => {
+            let a: String = unsigned_operand(lhs_expr, width);
+            let b: String = unsigned_operand(rhs_expr, width);
+            c_render(|cx| c_bin(order.c_op(), cx.var(&a), cx.var(&b)))
+        }
+        IntCondition::Signed(order) => {
+            let a: String = signed_operand(lhs_expr, width);
+            let b: String = signed_operand(rhs_expr, width);
+            c_render(|cx| c_bin(order.c_op(), cx.var(&a), cx.var(&b)))
+        }
+        IntCondition::Overflow { set } => overflow_expr_c(lhs_expr, rhs_expr, width, false, set),
+        IntCondition::SignZero(sign_zero @ (SignZero::Equal | SignZero::NotEqual)) => {
+            let a: String = signed_operand(lhs_expr, width);
+            let b: String = signed_operand(rhs_expr, width);
+            c_render(|cx| c_bin(sign_zero.c_op(), cx.var(&a), cx.var(&b)))
+        }
+        IntCondition::SignZero(sign_zero @ (SignZero::Sign | SignZero::NotSign)) => {
+            let diff: String = sign_truncated_diff(lhs_expr, rhs_expr, width);
+            c_render(|cx| c_bin(sign_zero.c_op(), cx.var(&diff), CExpr::int(0)))
         }
     }
 }
 
-fn if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> String {
+fn if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> Option<String> {
     match cond {
         Cond::Leaf { kind, flags } => cond_expr(*kind, flags, aggregates),
         Cond::And(lhs, rhs) => {
-            let l: String = if_cond_expr(lhs, aggregates);
-            let r: String = if_cond_expr(rhs, aggregates);
-            c_render(|cx| c_bin(BinaryOp::LogAnd, c_opaque(cx, &l), c_opaque(cx, &r)))
+            let l: String = if_cond_expr(lhs, aggregates)?;
+            let r: String = if_cond_expr(rhs, aggregates)?;
+            Some(c_render(|cx| {
+                c_bin(BinaryOp::LogAnd, c_opaque(cx, &l), c_opaque(cx, &r))
+            }))
         }
         Cond::Or(lhs, rhs) => {
-            let l: String = if_cond_expr(lhs, aggregates);
-            let r: String = if_cond_expr(rhs, aggregates);
-            c_render(|cx| c_bin(BinaryOp::LogOr, c_opaque(cx, &l), c_opaque(cx, &r)))
+            let l: String = if_cond_expr(lhs, aggregates)?;
+            let r: String = if_cond_expr(rhs, aggregates)?;
+            Some(c_render(|cx| {
+                c_bin(BinaryOp::LogOr, c_opaque(cx, &l), c_opaque(cx, &r))
+            }))
         }
     }
 }
 
-fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> String {
-    match flags {
-        Flags::Cmp { lhs, rhs } => {
+fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Option<String> {
+    let cond: SoundCondition<'_> = sound_condition(kind, flags).ok()?;
+    Some(sound_cond_expr(&cond, aggregates))
+}
+
+fn sound_cond_expr(cond: &SoundCondition<'_>, aggregates: &AggregatePlan) -> String {
+    match cond {
+        SoundCondition::Cmp { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = source_expr(rhs, width, aggregates);
-            compare_expr(kind, lhs_expr, &rhs_expr, width)
+            compare_expr(*cond, lhs_expr, &rhs_expr, width)
         }
-        Flags::Add { lhs, rhs } => {
+        SoundCondition::Add { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = source_expr(rhs, width, aggregates);
-            add_cond_expr(kind, lhs_expr, &rhs_expr, width)
+            add_cond_expr(*cond, lhs_expr, &rhs_expr, width)
         }
-        Flags::CmpMem { lhs, rhs } => {
+        SoundCondition::CmpMem { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: String = deref_expr(lhs, aggregates);
             let rhs_expr: String = source_expr(rhs, width, aggregates);
-            compare_expr(kind, &lhs_expr, &rhs_expr, width)
+            compare_expr(*cond, &lhs_expr, &rhs_expr, width)
         }
-        Flags::TestImm { operand, mask } => {
+        SoundCondition::TestImm {
+            test,
+            operand,
+            mask,
+        } => {
             let width: Width = operand.width;
             let uop: String = unsigned_operand(reg_var(operand.reg), width);
             let mask_val: u128 = u128::from((*mask as u64) & ((1u128 << width.bits()) - 1) as u64);
-            let cmp: BinaryOp = match kind {
-                CondKind::E => BinaryOp::Eq,
-                CondKind::Ne => BinaryOp::Ne,
-                _ => unreachable!(),
-            };
             c_render(|cx| {
                 let masked: CExpr = c_bin(BinaryOp::BitAnd, cx.var(&uop), c_hex_mask(mask_val));
-                c_bin(cmp, masked, CExpr::int(0))
+                c_bin(test.c_op(), masked, CExpr::int(0))
             })
         }
-        Flags::Test { operand } => {
+        SoundCondition::Test { cond, operand } => {
             let width: Width = operand.width;
             let var: &'static str = reg_var(operand.reg);
             let sop: String = signed_operand(var, width);
-            match kind {
-                CondKind::E | CondKind::Be => {
-                    c_render(|cx| c_bin(BinaryOp::Eq, cx.var(&sop), CExpr::int(0)))
-                }
-                CondKind::Ne | CondKind::A => {
-                    c_render(|cx| c_bin(BinaryOp::Ne, cx.var(&sop), CExpr::int(0)))
-                }
-                CondKind::G => c_render(|cx| c_bin(BinaryOp::Gt, cx.var(&sop), CExpr::int(0))),
-                CondKind::Ge | CondKind::Ns => {
-                    c_render(|cx| c_bin(BinaryOp::Ge, cx.var(&sop), CExpr::int(0)))
-                }
-                CondKind::L | CondKind::S => {
-                    c_render(|cx| c_bin(BinaryOp::Lt, cx.var(&sop), CExpr::int(0)))
-                }
-                CondKind::Le => c_render(|cx| c_bin(BinaryOp::Le, cx.var(&sop), CExpr::int(0))),
-                CondKind::Ae | CondKind::Vc => "1".to_owned(),
-                CondKind::B | CondKind::Vs => "0".to_owned(),
-                CondKind::P | CondKind::Np => {
-                    unreachable!("parity has no sound rendering over an integer test")
+            let against_zero =
+                |op: BinaryOp| -> String { c_render(|cx| c_bin(op, cx.var(&sop), CExpr::int(0))) };
+            match cond {
+                IntCondition::SignZero(SignZero::Equal)
+                | IntCondition::Unsigned(Order::LessEqual) => against_zero(BinaryOp::Eq),
+                IntCondition::SignZero(SignZero::NotEqual)
+                | IntCondition::Unsigned(Order::Greater) => against_zero(BinaryOp::Ne),
+                IntCondition::Signed(order) => against_zero(order.c_op()),
+                IntCondition::SignZero(SignZero::NotSign) => against_zero(BinaryOp::Ge),
+                IntCondition::SignZero(SignZero::Sign) => against_zero(BinaryOp::Lt),
+                IntCondition::Unsigned(Order::GreaterEqual)
+                | IntCondition::Overflow { set: false } => "1".to_owned(),
+                IntCondition::Unsigned(Order::Less) | IntCondition::Overflow { set: true } => {
+                    "0".to_owned()
                 }
             }
         }
-        Flags::Sign { result } => {
+        SoundCondition::Sign { cond, result } => {
             let width: Width = result.width;
             let var: String = signed_operand(reg_var(result.reg), width);
-            match kind {
-                CondKind::S => c_render(|cx| c_bin(BinaryOp::Lt, cx.var(&var), CExpr::int(0))),
-                CondKind::Ns => c_render(|cx| c_bin(BinaryOp::Ge, cx.var(&var), CExpr::int(0))),
-                CondKind::E => c_render(|cx| c_bin(BinaryOp::Eq, cx.var(&var), CExpr::int(0))),
-                CondKind::Ne => c_render(|cx| c_bin(BinaryOp::Ne, cx.var(&var), CExpr::int(0))),
-                _ => unreachable!(),
-            }
+            c_render(|cx| c_bin(cond.c_op(), cx.var(&var), CExpr::int(0)))
         }
-        Flags::FpCmp {
+        SoundCondition::FpCmp {
+            kind,
             lhs,
             rhs,
             width,
@@ -24697,30 +24921,23 @@ fn cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Strin
             let a: String = fp_load(&FpOperand::Xmm(*lhs), *width, aggregates);
             let b: String = fp_load(rhs, *width, aggregates);
             let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
-            fp_compare_c(kind, &a, &b, same, *model)
+            fp_compare_c(*kind, &a, &b, same, *model)
         }
-        Flags::Snapshot { var } => {
-            let cmp: BinaryOp = if matches!(kind, CondKind::E) {
-                BinaryOp::Eq
-            } else {
-                BinaryOp::Ne
-            };
+        SoundCondition::Snapshot { test, var } => {
             let sv: String = sel_var(*var);
-            c_render(|cx| c_bin(cmp, cx.var(&sv), CExpr::int(0)))
+            c_render(|cx| c_bin(test.c_op(), cx.var(&sv), CExpr::int(0)))
         }
-        Flags::CondCmp {
-            prior,
+        SoundCondition::CondCmp {
             precond,
             taken,
-            nzcv,
+            else_holds,
         } => {
-            let precond_expr: String = cond_expr(*precond, prior, aggregates);
-            let taken_expr: String = cond_expr(kind, taken, aggregates);
-            let else_holds: bool = nzcv_condition_holds(kind, *nzcv);
+            let precond_expr: String = sound_cond_expr(precond, aggregates);
+            let taken_expr: String = sound_cond_expr(taken, aggregates);
             let ternary: String = c_render(|cx| CExpr::Ternary {
                 cond: Box::new(c_opaque(cx, &precond_expr)),
                 then: Box::new(c_opaque(cx, &taken_expr)),
-                els: Box::new(CExpr::int(u64::from(else_holds))),
+                els: Box::new(CExpr::int(u64::from(*else_holds))),
             });
             format!("({ternary})")
         }
@@ -24869,56 +25086,44 @@ fn overflow_expr_c(
     })
 }
 
-fn add_cond_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
-    if kind.is_overflow() {
-        return overflow_expr_c(
-            lhs_expr,
-            rhs_expr,
-            width,
-            true,
-            matches!(kind, CondKind::Vs),
-        );
-    }
-    if kind.is_unsigned_order() {
-        let lhs: String = unsigned_operand(lhs_expr, width);
-        let rhs: String = unsigned_operand(rhs_expr, width);
-        let bits: u32 = width.bits();
-        return c_render(|cx: &mut Cx<'_>| {
-            let make_lhs = |cx: &mut Cx<'_>| -> CExpr { cx.var(&lhs) };
-            let make_sum = |cx: &mut Cx<'_>| -> CExpr {
-                let combined: CExpr = c_bin(BinaryOp::Add, cx.var(&lhs), cx.var(&rhs));
-                c_cast(cx, &format!("uint{bits}_t"), combined)
-            };
-            let carry: CExpr = c_bin(BinaryOp::Lt, make_sum(cx), make_lhs(cx));
-            let nonzero: CExpr = c_bin(BinaryOp::Ne, make_sum(cx), CExpr::int(0));
-            match kind {
-                CondKind::A => c_bin(BinaryOp::LogAnd, carry, nonzero),
-                CondKind::Ae => carry,
-                CondKind::B => CExpr::Unary {
-                    op: UnaryOp::Not,
-                    operand: Box::new(carry),
-                },
-                CondKind::Be => c_bin(
-                    BinaryOp::LogOr,
-                    CExpr::Unary {
+fn add_cond_expr(cond: AddCondition, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    match cond {
+        AddCondition::Overflow { set } => overflow_expr_c(lhs_expr, rhs_expr, width, true, set),
+        AddCondition::Carry(order) => {
+            let lhs: String = unsigned_operand(lhs_expr, width);
+            let rhs: String = unsigned_operand(rhs_expr, width);
+            let bits: u32 = width.bits();
+            c_render(|cx: &mut Cx<'_>| {
+                let make_lhs = |cx: &mut Cx<'_>| -> CExpr { cx.var(&lhs) };
+                let make_sum = |cx: &mut Cx<'_>| -> CExpr {
+                    let combined: CExpr = c_bin(BinaryOp::Add, cx.var(&lhs), cx.var(&rhs));
+                    c_cast(cx, &format!("uint{bits}_t"), combined)
+                };
+                let carry: CExpr = c_bin(BinaryOp::Lt, make_sum(cx), make_lhs(cx));
+                let nonzero: CExpr = c_bin(BinaryOp::Ne, make_sum(cx), CExpr::int(0));
+                match order {
+                    Order::Greater => c_bin(BinaryOp::LogAnd, carry, nonzero),
+                    Order::GreaterEqual => carry,
+                    Order::Less => CExpr::Unary {
                         op: UnaryOp::Not,
                         operand: Box::new(carry),
                     },
-                    c_bin(BinaryOp::Eq, make_sum(cx), CExpr::int(0)),
-                ),
-                _ => unreachable!(),
-            }
-        });
+                    Order::LessEqual => c_bin(
+                        BinaryOp::LogOr,
+                        CExpr::Unary {
+                            op: UnaryOp::Not,
+                            operand: Box::new(carry),
+                        },
+                        c_bin(BinaryOp::Eq, make_sum(cx), CExpr::int(0)),
+                    ),
+                }
+            })
+        }
+        AddCondition::SignZero(sign_zero) => {
+            let sum: String = sign_truncated_sum(lhs_expr, rhs_expr, width);
+            c_render(|cx| c_bin(sign_zero.c_op(), cx.var(&sum), CExpr::int(0)))
+        }
     }
-    let sum: String = sign_truncated_sum(lhs_expr, rhs_expr, width);
-    let op: BinaryOp = match kind {
-        CondKind::E => BinaryOp::Eq,
-        CondKind::Ne => BinaryOp::Ne,
-        CondKind::S => BinaryOp::Lt,
-        CondKind::Ns => BinaryOp::Ge,
-        _ => unreachable!(),
-    };
-    c_render(|cx| c_bin(op, cx.var(&sum), CExpr::int(0)))
 }
 
 const fn rs_int_ty(width: Width) -> &'static str {
@@ -28212,52 +28417,31 @@ fn fp_nan_test_rust(a: &str, b: &str, same_operand: bool, unordered: bool) -> St
     }
 }
 
-fn rs_compare_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
-    if kind.is_unsigned_order() {
-        let a: String = rs_unsigned_operand(lhs_expr, width);
-        let b: String = rs_unsigned_operand(rhs_expr, width);
-        let (op, op_text): (RBinOp, &str) = match kind {
-            CondKind::A => (RBinOp::Gt, ">"),
-            CondKind::Ae => (RBinOp::Ge, ">="),
-            CondKind::B => (RBinOp::Lt, "<"),
-            CondKind::Be => (RBinOp::Le, "<="),
-            _ => unreachable!(),
-        };
-        rs_binary_text(&a, &b, op, op_text)
-    } else if kind.is_signed_order() {
-        let a: String = rs_signed_operand(lhs_expr, width);
-        let b: String = rs_signed_operand(rhs_expr, width);
-        let (op, op_text): (RBinOp, &str) = match kind {
-            CondKind::G => (RBinOp::Gt, ">"),
-            CondKind::Ge => (RBinOp::Ge, ">="),
-            CondKind::L => (RBinOp::Lt, "<"),
-            CondKind::Le => (RBinOp::Le, "<="),
-            _ => unreachable!(),
-        };
-        rs_binary_text(&a, &b, op, op_text)
-    } else if kind.is_overflow() {
-        rs_overflow_expr(
-            lhs_expr,
-            rhs_expr,
-            width,
-            false,
-            matches!(kind, CondKind::Vs),
-        )
-    } else {
-        let a: String = rs_signed_operand(lhs_expr, width);
-        let b: String = rs_signed_operand(rhs_expr, width);
-        match kind {
-            CondKind::E => rs_binary_text(&a, &b, RBinOp::Eq, "=="),
-            CondKind::Ne => rs_binary_text(&a, &b, RBinOp::Ne, "!="),
-            CondKind::S => {
-                let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
-                rs_binary_text(&diff, "0", RBinOp::Lt, "<")
-            }
-            CondKind::Ns => {
-                let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
-                rs_binary_text(&diff, "0", RBinOp::Ge, ">=")
-            }
-            _ => unreachable!(),
+fn rs_compare_expr(cond: IntCondition, lhs_expr: &str, rhs_expr: &str, width: Width) -> String {
+    match cond {
+        IntCondition::Unsigned(order) => {
+            let a: String = rs_unsigned_operand(lhs_expr, width);
+            let b: String = rs_unsigned_operand(rhs_expr, width);
+            let (op, op_text): (RBinOp, &str) = order.rs_op();
+            rs_binary_text(&a, &b, op, op_text)
+        }
+        IntCondition::Signed(order) => {
+            let a: String = rs_signed_operand(lhs_expr, width);
+            let b: String = rs_signed_operand(rhs_expr, width);
+            let (op, op_text): (RBinOp, &str) = order.rs_op();
+            rs_binary_text(&a, &b, op, op_text)
+        }
+        IntCondition::Overflow { set } => rs_overflow_expr(lhs_expr, rhs_expr, width, false, set),
+        IntCondition::SignZero(sign_zero @ (SignZero::Equal | SignZero::NotEqual)) => {
+            let a: String = rs_signed_operand(lhs_expr, width);
+            let b: String = rs_signed_operand(rhs_expr, width);
+            let (op, op_text): (RBinOp, &str) = sign_zero.rs_op();
+            rs_binary_text(&a, &b, op, op_text)
+        }
+        IntCondition::SignZero(sign_zero @ (SignZero::Sign | SignZero::NotSign)) => {
+            let diff: String = rs_sign_truncated_diff(lhs_expr, rhs_expr, width);
+            let (op, op_text): (RBinOp, &str) = sign_zero.rs_op();
+            rs_binary_text(&diff, "0", op, op_text)
         }
     }
 }
@@ -28306,49 +28490,37 @@ fn rs_overflow_expr(lhs: &str, rhs: &str, width: Width, is_add: bool, set: bool)
     format!("((({inner}) as {ity}) {cmp} 0)")
 }
 
-fn rs_add_cond_expr(kind: CondKind, lhs: &str, rhs: &str, width: Width) -> Option<String> {
-    if kind.is_overflow() {
-        return Some(rs_overflow_expr(
-            lhs,
-            rhs,
-            width,
-            true,
-            matches!(kind, CondKind::Vs),
-        ));
-    }
-    if kind.is_unsigned_order() {
-        let unsigned_type: &str = rs_uint_ty(width);
-        let lhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(lhs, width));
-        let rhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(rhs, width));
-        let sum: String = match (parse_expr(&lhs), parse_expr(&rhs)) {
-            (Some(left), Some(right)) => {
-                render_rust_expr(&method_call(left, "wrapping_add", vec![right]))
+fn rs_add_cond_expr(cond: AddCondition, lhs: &str, rhs: &str, width: Width) -> String {
+    match cond {
+        AddCondition::Overflow { set } => rs_overflow_expr(lhs, rhs, width, true, set),
+        AddCondition::Carry(order) => {
+            let unsigned_type: &str = rs_uint_ty(width);
+            let lhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(lhs, width));
+            let rhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(rhs, width));
+            let sum: String = match (parse_expr(&lhs), parse_expr(&rhs)) {
+                (Some(left), Some(right)) => {
+                    render_rust_expr(&method_call(left, "wrapping_add", vec![right]))
+                }
+                _ => format!("({lhs}).wrapping_add({rhs})"),
+            };
+            let carry: String = rs_binary_text(&sum, &lhs, RBinOp::Lt, "<");
+            let nonzero: String = rs_binary_text(&sum, "0", RBinOp::Ne, "!=");
+            match order {
+                Order::Greater => rs_binary_text(&carry, &nonzero, RBinOp::And, "&&"),
+                Order::GreaterEqual => carry,
+                Order::Less => format!("!({carry})"),
+                Order::LessEqual => {
+                    let zero: String = rs_binary_text(&sum, "0", RBinOp::Eq, "==");
+                    rs_binary_text(&format!("!({carry})"), &zero, RBinOp::Or, "||")
+                }
             }
-            _ => format!("({lhs}).wrapping_add({rhs})"),
-        };
-        let carry: String = rs_binary_text(&sum, &lhs, RBinOp::Lt, "<");
-        let nonzero: String = rs_binary_text(&sum, "0", RBinOp::Ne, "!=");
-        let condition: String = match kind {
-            CondKind::A => rs_binary_text(&carry, &nonzero, RBinOp::And, "&&"),
-            CondKind::Ae => carry,
-            CondKind::B => format!("!({carry})"),
-            CondKind::Be => {
-                let zero: String = rs_binary_text(&sum, "0", RBinOp::Eq, "==");
-                rs_binary_text(&format!("!({carry})"), &zero, RBinOp::Or, "||")
-            }
-            _ => return None,
-        };
-        return Some(condition);
+        }
+        AddCondition::SignZero(sign_zero) => {
+            let sum: String = rs_sign_truncated_sum(lhs, rhs, width);
+            let (op, op_text): (RBinOp, &str) = sign_zero.rs_op();
+            rs_binary_text(&sum, "0", op, op_text)
+        }
     }
-    let sum: String = rs_sign_truncated_sum(lhs, rhs, width);
-    let (op, op_text): (RBinOp, &str) = match kind {
-        CondKind::E => (RBinOp::Eq, "=="),
-        CondKind::Ne => (RBinOp::Ne, "!="),
-        CondKind::S => (RBinOp::Lt, "<"),
-        CondKind::Ns => (RBinOp::Ge, ">="),
-        _ => return None,
-    };
-    Some(rs_binary_text(&sum, "0", op, op_text))
 }
 
 fn rs_if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> Option<String> {
@@ -28367,28 +28539,37 @@ fn rs_if_cond_expr(cond: &Cond, aggregates: &AggregatePlan) -> Option<String> {
     }
 }
 
-#[allow(clippy::option_if_let_else)]
 fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Option<String> {
-    match flags {
-        Flags::Cmp { lhs, rhs } => {
+    let cond: SoundCondition<'_> = sound_condition(kind, flags).ok()?;
+    rs_sound_cond_expr(&cond, aggregates)
+}
+
+#[allow(clippy::option_if_let_else)]
+fn rs_sound_cond_expr(cond: &SoundCondition<'_>, aggregates: &AggregatePlan) -> Option<String> {
+    match cond {
+        SoundCondition::Cmp { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
-            Some(rs_compare_expr(kind, lhs_expr, &rhs_expr, width))
+            Some(rs_compare_expr(*cond, lhs_expr, &rhs_expr, width))
         }
-        Flags::Add { lhs, rhs } => {
+        SoundCondition::Add { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: &'static str = reg_var(lhs.reg);
             let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
-            rs_add_cond_expr(kind, lhs_expr, &rhs_expr, width)
+            Some(rs_add_cond_expr(*cond, lhs_expr, &rhs_expr, width))
         }
-        Flags::CmpMem { lhs, rhs } => {
+        SoundCondition::CmpMem { cond, lhs, rhs } => {
             let width: Width = lhs.width;
             let lhs_expr: String = rs_deref_read(lhs, aggregates);
             let rhs_expr: String = rs_source_expr(rhs, width, aggregates)?;
-            Some(rs_compare_expr(kind, &lhs_expr, &rhs_expr, width))
+            Some(rs_compare_expr(*cond, &lhs_expr, &rhs_expr, width))
         }
-        Flags::TestImm { operand, mask } => {
+        SoundCondition::TestImm {
+            test,
+            operand,
+            mask,
+        } => {
             let width: Width = operand.width;
             let maskval: u64 = (*mask as u64) & ((1u128 << width.bits()) - 1) as u64;
             let unsigned: String = rs_unsigned_operand(reg_var(operand.reg), width);
@@ -28400,42 +28581,47 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
                 )),
                 None => format!("({unsigned} & 0x{maskval:x}u64)"),
             };
-            match kind {
-                CondKind::E => Some(rs_binary_text(&masked, "0", RBinOp::Eq, "==")),
-                CondKind::Ne => Some(rs_binary_text(&masked, "0", RBinOp::Ne, "!=")),
-                _ => None,
-            }
+            let (op, op_text): (RBinOp, &str) = test.rs_op();
+            Some(rs_binary_text(&masked, "0", op, op_text))
         }
-        Flags::Test { operand } => {
+        SoundCondition::Test { cond, operand } => {
             let width: Width = operand.width;
             let var: String = rs_signed_operand(reg_var(operand.reg), width);
-            let expr: String = match kind {
-                CondKind::E | CondKind::Be => rs_binary_text(&var, "0", RBinOp::Eq, "=="),
-                CondKind::Ne | CondKind::A => rs_binary_text(&var, "0", RBinOp::Ne, "!="),
-                CondKind::G => rs_binary_text(&var, "0", RBinOp::Gt, ">"),
-                CondKind::Ge | CondKind::Ns => rs_binary_text(&var, "0", RBinOp::Ge, ">="),
-                CondKind::L | CondKind::S => rs_binary_text(&var, "0", RBinOp::Lt, "<"),
-                CondKind::Le => rs_binary_text(&var, "0", RBinOp::Le, "<="),
-                CondKind::Ae | CondKind::Vc => "true".to_owned(),
-                CondKind::B | CondKind::Vs => "false".to_owned(),
-                CondKind::P | CondKind::Np => {
-                    unreachable!("parity has no sound rendering over an integer test")
+            let expr: String = match cond {
+                IntCondition::SignZero(SignZero::Equal)
+                | IntCondition::Unsigned(Order::LessEqual) => {
+                    rs_binary_text(&var, "0", RBinOp::Eq, "==")
+                }
+                IntCondition::SignZero(SignZero::NotEqual)
+                | IntCondition::Unsigned(Order::Greater) => {
+                    rs_binary_text(&var, "0", RBinOp::Ne, "!=")
+                }
+                IntCondition::Signed(order) => {
+                    let (op, op_text): (RBinOp, &str) = order.rs_op();
+                    rs_binary_text(&var, "0", op, op_text)
+                }
+                IntCondition::SignZero(SignZero::NotSign) => {
+                    rs_binary_text(&var, "0", RBinOp::Ge, ">=")
+                }
+                IntCondition::SignZero(SignZero::Sign) => {
+                    rs_binary_text(&var, "0", RBinOp::Lt, "<")
+                }
+                IntCondition::Unsigned(Order::GreaterEqual)
+                | IntCondition::Overflow { set: false } => "true".to_owned(),
+                IntCondition::Unsigned(Order::Less) | IntCondition::Overflow { set: true } => {
+                    "false".to_owned()
                 }
             };
             Some(expr)
         }
-        Flags::Sign { result } => {
+        SoundCondition::Sign { cond, result } => {
             let width: Width = result.width;
             let var: String = rs_signed_operand(reg_var(result.reg), width);
-            match kind {
-                CondKind::S => Some(rs_binary_text(&var, "0", RBinOp::Lt, "<")),
-                CondKind::Ns => Some(rs_binary_text(&var, "0", RBinOp::Ge, ">=")),
-                CondKind::E => Some(rs_binary_text(&var, "0", RBinOp::Eq, "==")),
-                CondKind::Ne => Some(rs_binary_text(&var, "0", RBinOp::Ne, "!=")),
-                _ => None,
-            }
+            let (op, op_text): (RBinOp, &str) = cond.rs_op();
+            Some(rs_binary_text(&var, "0", op, op_text))
         }
-        Flags::FpCmp {
+        SoundCondition::FpCmp {
+            kind,
             lhs,
             rhs,
             width,
@@ -28444,25 +28630,19 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
             let a: String = rs_fp_load_xmm(*lhs, *width);
             let b: String = rs_fp_load(rhs, *width, aggregates);
             let same: bool = matches!(rhs, FpOperand::Xmm(operand) if operand == lhs);
-            Some(fp_compare_rust(kind, &a, &b, same, *model))
+            Some(fp_compare_rust(*kind, &a, &b, same, *model))
         }
-        Flags::Snapshot { var } => {
-            let (op, op_text): (RBinOp, &str) = if matches!(kind, CondKind::E) {
-                (RBinOp::Eq, "==")
-            } else {
-                (RBinOp::Ne, "!=")
-            };
+        SoundCondition::Snapshot { test, var } => {
+            let (op, op_text): (RBinOp, &str) = test.rs_op();
             Some(rs_binary_text(&sel_var(*var), "0", op, op_text))
         }
-        Flags::CondCmp {
-            prior,
+        SoundCondition::CondCmp {
             precond,
             taken,
-            nzcv,
+            else_holds,
         } => {
-            let precond_expr: String = rs_cond_expr(*precond, prior, aggregates)?;
-            let taken_expr: String = rs_cond_expr(kind, taken, aggregates)?;
-            let else_holds: bool = nzcv_condition_holds(kind, *nzcv);
+            let precond_expr: String = rs_sound_cond_expr(precond, aggregates)?;
+            let taken_expr: String = rs_sound_cond_expr(taken, aggregates)?;
             Some(format!(
                 "(if {precond_expr} {{ {taken_expr} }} else {{ {else_holds} }})"
             ))
@@ -37854,11 +38034,11 @@ mod structuring_corpus {
             Box::new(leaf(Reg::Rdx, CondKind::L)),
         );
         assert!(
-            if_cond_expr(&and, &AggregatePlan::default()).contains("&&"),
+            if_cond_expr(&and, &AggregatePlan::default()).is_some_and(|s: String| s.contains("&&")),
             "fused AND must render `&&`"
         );
         assert!(
-            if_cond_expr(&or, &AggregatePlan::default()).contains("||"),
+            if_cond_expr(&or, &AggregatePlan::default()).is_some_and(|s: String| s.contains("||")),
             "fused OR must render `||`"
         );
         assert!(
@@ -37871,6 +38051,198 @@ mod structuring_corpus {
                 .is_some_and(|s: String| s.contains("||")),
             "fused OR must render `||` in rust"
         );
+    }
+
+    #[test]
+    fn rejected_conditions_render_as_typed_refusals_without_panicking() {
+        use super::ConditionRefusal::{
+            MaskedTestBeyondEquality, ParityOverIntegerFlags, SignFlagsBeyondSignZero,
+            SignedOrderAfterAdd,
+        };
+        use super::{
+            CStmt, CondKind, ConditionRefusal, Cx, Flags, FpOperand, FpUnorderedModel, FpWidth,
+            Interner, MemRef, Reg, RegRef, Source, Stmt, Width, Xmm, cond_expr, condition_is_sound,
+            rs_cond_expr, sound_condition, stmt_to_cstmt,
+        };
+        type Expectation = Box<dyn Fn(CondKind) -> Option<ConditionRefusal>>;
+        const ALL: [CondKind; 16] = [
+            CondKind::E,
+            CondKind::Ne,
+            CondKind::G,
+            CondKind::Ge,
+            CondKind::L,
+            CondKind::Le,
+            CondKind::A,
+            CondKind::Ae,
+            CondKind::B,
+            CondKind::Be,
+            CondKind::S,
+            CondKind::Ns,
+            CondKind::Vs,
+            CondKind::Vc,
+            CondKind::P,
+            CondKind::Np,
+        ];
+        let reg: RegRef = RegRef {
+            reg: Reg::Rcx,
+            width: Width::W32,
+        };
+        let cmp: Flags = Flags::Cmp {
+            lhs: reg,
+            rhs: Source::Imm(7),
+        };
+        let sign: Flags = Flags::Sign { result: reg };
+        let parity = |kind: CondKind| -> bool { matches!(kind, CondKind::P | CondKind::Np) };
+        let signed_order = |kind: CondKind| -> bool {
+            matches!(
+                kind,
+                CondKind::G | CondKind::Ge | CondKind::L | CondKind::Le
+            )
+        };
+        let sign_zero = |kind: CondKind| -> bool {
+            matches!(
+                kind,
+                CondKind::E | CondKind::Ne | CondKind::S | CondKind::Ns
+            )
+        };
+        let integer = move |kind: CondKind| -> Option<ConditionRefusal> {
+            parity(kind).then_some(ParityOverIntegerFlags)
+        };
+        let sign_only = move |kind: CondKind| -> Option<ConditionRefusal> {
+            if parity(kind) {
+                Some(ParityOverIntegerFlags)
+            } else if sign_zero(kind) {
+                None
+            } else {
+                Some(SignFlagsBeyondSignZero)
+            }
+        };
+        let cases: Vec<(&str, Flags, Expectation)> = vec![
+            ("cmp", cmp.clone(), Box::new(integer)),
+            (
+                "cmp-mem",
+                Flags::CmpMem {
+                    lhs: MemRef {
+                        base: Some(Reg::Rdx),
+                        index: None,
+                        disp: 8,
+                        width: Width::W32,
+                    },
+                    rhs: Source::Reg(reg),
+                },
+                Box::new(integer),
+            ),
+            ("test", Flags::Test { operand: reg }, Box::new(integer)),
+            (
+                "add",
+                Flags::Add {
+                    lhs: reg,
+                    rhs: Source::Imm(1),
+                },
+                Box::new(move |kind: CondKind| -> Option<ConditionRefusal> {
+                    if parity(kind) {
+                        Some(ParityOverIntegerFlags)
+                    } else {
+                        signed_order(kind).then_some(SignedOrderAfterAdd)
+                    }
+                }),
+            ),
+            (
+                "test-imm",
+                Flags::TestImm {
+                    operand: reg,
+                    mask: 0x10,
+                },
+                Box::new(move |kind: CondKind| -> Option<ConditionRefusal> {
+                    if parity(kind) {
+                        Some(ParityOverIntegerFlags)
+                    } else if matches!(kind, CondKind::E | CondKind::Ne) {
+                        None
+                    } else {
+                        Some(MaskedTestBeyondEquality)
+                    }
+                }),
+            ),
+            ("sign", sign.clone(), Box::new(sign_only)),
+            (
+                "fp-cmp",
+                Flags::FpCmp {
+                    lhs: Xmm::Xmm0,
+                    rhs: FpOperand::Xmm(Xmm::Xmm1),
+                    width: FpWidth::F64,
+                    model: FpUnorderedModel::UnorderedIsEqual,
+                },
+                Box::new(|_: CondKind| -> Option<ConditionRefusal> { None }),
+            ),
+            ("snapshot", Flags::Snapshot { var: 3 }, Box::new(integer)),
+            (
+                "cond-cmp-taken-sign",
+                Flags::CondCmp {
+                    prior: Box::new(cmp.clone()),
+                    precond: CondKind::E,
+                    taken: Box::new(sign.clone()),
+                    nzcv: 0b0100,
+                },
+                Box::new(sign_only),
+            ),
+            (
+                "cond-cmp-prior-sign",
+                Flags::CondCmp {
+                    prior: Box::new(sign),
+                    precond: CondKind::G,
+                    taken: Box::new(cmp),
+                    nzcv: 0,
+                },
+                Box::new(move |kind: CondKind| -> Option<ConditionRefusal> {
+                    Some(if parity(kind) {
+                        ParityOverIntegerFlags
+                    } else {
+                        SignFlagsBeyondSignZero
+                    })
+                }),
+            ),
+        ];
+        let aggregates: AggregatePlan = AggregatePlan::default();
+        let mut refused: usize = 0;
+        for (name, flags, expected) in &cases {
+            for kind in ALL {
+                let refusal: Option<ConditionRefusal> = sound_condition(kind, flags).err();
+                assert_eq!(refusal, expected(kind), "{name} {kind:?}");
+                assert_eq!(condition_is_sound(kind, flags), refusal.is_none());
+                let c_text: Option<String> = cond_expr(kind, flags, &aggregates);
+                let rust_text: Option<String> = rs_cond_expr(kind, flags, &aggregates);
+                let mut interner: Interner = Interner::new();
+                let set_cc: Option<CStmt> = stmt_to_cstmt(
+                    &mut Cx::new(&mut interner),
+                    &Stmt::SetCc {
+                        dest: RegRef {
+                            reg: Reg::Rax,
+                            width: Width::W8,
+                        },
+                        kind,
+                        flags: flags.clone(),
+                    },
+                    &aggregates,
+                );
+                if refusal.is_some() {
+                    refused += 1;
+                    assert_eq!(c_text, None, "{name} {kind:?} must not render as C");
+                    assert_eq!(rust_text, None, "{name} {kind:?} must not render as Rust");
+                    assert!(set_cc.is_none(), "{name} {kind:?} setcc must refuse");
+                } else {
+                    assert!(
+                        c_text.is_some_and(|text: String| !text.is_empty()),
+                        "{name} {kind:?} must render as C"
+                    );
+                    assert!(
+                        rust_text.is_some_and(|text: String| !text.is_empty()),
+                        "{name} {kind:?} must render as Rust"
+                    );
+                    assert!(set_cc.is_some(), "{name} {kind:?} setcc must render");
+                }
+            }
+        }
+        assert_eq!(refused, 68);
     }
 
     #[cfg(feature = "chain")]
