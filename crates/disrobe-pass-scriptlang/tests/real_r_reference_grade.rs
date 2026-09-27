@@ -8,10 +8,12 @@
 )]
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_scriptlang::lang::r_rds::{
     RdsAltrep, RdsClosure, RdsComplexVector, RdsContainer, RdsEncoding, RdsEnvironmentInfo,
     RdsObject, RdsRawVector, RdsS4Object,
@@ -28,9 +30,11 @@ use disrobe_pass_scriptlang::lang::{ScriptArtifact, ScriptLang, analyze, classif
 )]
 mod r_toolchain;
 
-use r_toolchain::{RRuntime, require_r, run_bounded, workspace_root};
+use r_toolchain::{RRuntime, require_r, workspace_root};
 
 const GRADED: &str = "the R serialization reader compared against what real R reports";
+const R_REFERENCE_TIMEOUT: Duration = Duration::from_secs(45);
+const R_REFERENCE_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Default, Clone)]
 struct Reference {
@@ -537,17 +541,34 @@ fn absent<'a>(declared: &[&'a str], observed: &BTreeSet<String>) -> Vec<&'a str>
 }
 
 fn describe_corpus(runtime: &RRuntime, describe: &Path, corpus: &Path) -> String {
-    let mut command: Command = Command::new(&runtime.rscript);
-    command.arg("--vanilla").arg(describe).arg(corpus);
-    let Some((success, out, err)): Option<(bool, String, String)> = run_bounded(command) else {
+    let arguments: [&OsStr; 3] = [
+        OsStr::new("--vanilla"),
+        describe.as_os_str(),
+        corpus.as_os_str(),
+    ];
+    let Some(output): Option<CapturedOutput> = run_captured(
+        &runtime.rscript,
+        &arguments,
+        R_REFERENCE_TIMEOUT,
+        R_REFERENCE_CAPTURE_LIMIT,
+    )
+    .unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "Rscript {} {} could not start under the bounded launcher: {error}",
+            describe.display(),
+            corpus.display()
+        )
+    }) else {
         panic!(
             "Rscript {} {} did not finish within the call timeout, so nothing was graded",
             describe.display(),
             corpus.display()
         );
     };
+    let out: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let err: String = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
-        success,
+        output.exit_code == Some(0),
         "Rscript could not describe the committed corpus, so there is no reference to grade \
          against. stdout: {}\nstderr: {}",
         out.trim(),
