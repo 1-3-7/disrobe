@@ -55,7 +55,7 @@ source = "the plain programs are not committed. pyobfuscate_com_xor_real.rs pins
 "edge_typing_generic" = { path = "corpus/python/obfuscators/berserker/edge-cases/real_typing_generic.py", sha256 = "26c52bed0ae6533149f2fe859af3b9a2936196b294db731e31c26c81efc470b2", bytes = 2307 }
 
 [obfuscators.blankobf.metadata]
-tool_version = "2 (Blank-c/BlankOBF, commit at .developer/v0.8-scratch/clones/BlankOBF)"
+tool_version = "2 (Blank-c/BlankOBF; the build commit was not recorded)"
 runtime = "python 3.14"
 
 [obfuscators.blankobf.fixtures]
