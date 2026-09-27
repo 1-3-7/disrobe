@@ -7,7 +7,6 @@
 - [Installation](./installation.md)
 - [Quickstart](./quickstart.md)
 - [Reading a result](./reading-a-result.md)
-- [Capability map](./capabilities.md)
 
 # Architecture
 
@@ -50,7 +49,6 @@
 
 # Reference
 
-- [CLI overview](./cli/overview.md)
 - [Global flags](./cli/global-flags.md)
 - [Command reference](./cli/reference.md)
 - [Project configuration](./cli/config.md)

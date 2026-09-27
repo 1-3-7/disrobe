@@ -14,7 +14,7 @@ function captureErrors(page: Page): string[] {
 
 test("two neutral themes switch, survive navigation, and load their assets", async ({ page }): Promise<void> => {
   const errors: string[] = captureErrors(page);
-  await page.goto("/capabilities.html");
+  await page.goto("/introduction.html");
   const picker = page.getByRole("combobox", { name: "Color theme" });
   await expect(picker.locator("option")).toHaveText(["Dark", "Light"]);
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(17, 17, 17)");
@@ -46,7 +46,7 @@ test("theme changes work when saving browser preferences is unavailable", async 
   await page.addInitScript((): void => {
     Storage.prototype.setItem = (): never => { throw new DOMException("Storage unavailable", "QuotaExceededError"); };
   });
-  await page.goto("/capabilities.html");
+  await page.goto("/introduction.html");
   const picker = page.getByRole("combobox", { name: "Color theme" });
   await picker.selectOption({ label: "Light" });
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
@@ -59,7 +59,7 @@ test("theme changes work when saving browser preferences is unavailable", async 
 test("a saved legacy theme migrates to one of the two choices", async ({ page }): Promise<void> => {
   const errors: string[] = captureErrors(page);
   await page.addInitScript((): void => { localStorage.setItem("mdbook-theme", "navy"); });
-  await page.goto("/capabilities.html");
+  await page.goto("/introduction.html");
   const picker = page.getByRole("combobox", { name: "Color theme" });
   await expect(picker.locator("option:checked")).toHaveText("Dark");
   await expect(page.locator("body")).toHaveCSS("background-color", "rgb(17, 17, 17)");
@@ -69,7 +69,7 @@ test("a saved legacy theme migrates to one of the two choices", async ({ page })
 });
 
 test("syntax tokens have distinct colors on both neutral themes", async ({ page }): Promise<void> => {
-  await page.goto("/capabilities.html");
+  await page.goto("/introduction.html");
   await page.evaluate((): void => {
     const sample: HTMLPreElement = document.createElement("pre");
     sample.id = "syntax-colors";

@@ -158,4 +158,4 @@ lower bytecode. The browser build excludes the PyArmor dynamic-capture path and 
 Use the CLI for directories, recursive archive workflows, automatic recovery chains, native executable decompilation,
 external backends, and offline forensic reports. Recompilation and runtime comparisons use
 separate host toolchains; they are not performed by the playground. See the
-[capability map](./capabilities.md) and [library APIs](./library.md) for those entry points.
+[command reference](./cli/reference.md) and [library APIs](./library.md) for those entry points.

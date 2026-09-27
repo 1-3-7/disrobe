@@ -34,3 +34,7 @@ heading-split-level = 3
 [output.html.fold]
 enable = true
 level = 1
+
+[output.html.redirect]
+"/capabilities.html" = "cli/reference.html"
+"/cli/overview.html" = "reference.html"

@@ -15,7 +15,6 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 - [Installation](https://1-3-7.github.io/disrobe/latest/installation.html): Install disrobe from GitHub Releases or build the CLI from source.
 - [Quickstart](https://1-3-7.github.io/disrobe/latest/quickstart.html): This walkthrough takes a local file through automatic recovery, inspects the result, and shows how to select a direct command when you know the format.
 - [Reading a result](https://1-3-7.github.io/disrobe/latest/reading-a-result.html): Start by confirming the input identity, then inspect the recovered artifacts and the stages that stopped.
-- [Capability map](https://1-3-7.github.io/disrobe/latest/capabilities.html): Find commands, supported inputs and integration guides below.
 
 ## Architecture
 
@@ -58,9 +57,8 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 
 ## Reference
 
-- [CLI overview](https://1-3-7.github.io/disrobe/latest/cli/overview.html): Ecosystem command families usually nest an action:
 - [Global flags](https://1-3-7.github.io/disrobe/latest/cli/global-flags.html): These flags are accepted on every subcommand (they are declared global = true on the root parser).
-- [Command reference](https://1-3-7.github.io/disrobe/latest/cli/reference.html): The authoritative source is always disrobe <command> --help for the binary you are running.
+- [Command reference](https://1-3-7.github.io/disrobe/latest/cli/reference.html): disrobe <command> --help is authoritative for the binary you are running; the surface changes with optional build features.
 - [Project configuration](https://1-3-7.github.io/disrobe/latest/cli/config.html): disrobe reads an optional .disrobe.toml so a project can set its own defaults instead of repeating the same global flags on every invocation.
 - [Batch directory processing](https://1-3-7.github.io/disrobe/latest/cli/batch.html): disrobe auto accepts a directory as well as a single file.
 - [Run reports](https://1-3-7.github.io/disrobe/latest/cli/report.html): ﻿# Run reports (disrobe report)

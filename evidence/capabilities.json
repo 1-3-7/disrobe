@@ -8,7 +8,7 @@
     "command_detail": "docs/src/cli/reference.md",
     "capability_catalog": "docs/src/catalog.md",
     "evidence_registry": "evidence/README.md",
-    "published_guide": "docs/src/capabilities.md"
+    "published_guide": "docs/src/cli/reference.md"
   },
   "status_definitions": {
     "working": "Validated for the input and consumer named in accepted_result.",
