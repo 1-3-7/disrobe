@@ -203,22 +203,27 @@ fn every_rule_maps_to_a_distinct_sonar_id() {
     }
 }
 
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+const REQUIRE_ESLINT_VAR: &str = "DISROBE_REQUIRE_ESLINT";
+
+fn node() -> Command {
+    let mut command: Command = Command::new("node");
+    command.env_remove("FORCE_COLOR").env("NO_COLOR", "1");
+    command
 }
 
-fn eslint_available() -> bool {
-    Command::new("node")
+fn eslint_resolves() -> bool {
+    node()
         .arg("-e")
         .arg("require.resolve('eslint')")
         .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("node is required on PATH (CI provisions Node 24): {error}")
+        })
+        .status
+        .success()
 }
 
-fn eslint_flagged_lines(fixture_source: &str) -> Option<BTreeSet<u32>> {
+fn eslint_flagged_lines(fixture_source: &str) -> BTreeSet<u32> {
     let script: &str = r"
 const { Linter } = require('eslint');
 const fs = require('fs');
@@ -242,35 +247,44 @@ const messages = linter.verify(code, {
 process.stdout.write(JSON.stringify(messages.map((m) => m.line)));
 ";
     let (scratch, mut f): (disrobe_core::scratch::ScratchFile, fs::File) =
-        disrobe_core::scratch::ScratchFile::create("disrobe_hotspot", "js").ok()?;
+        disrobe_core::scratch::ScratchFile::create("disrobe_hotspot", "js")
+            .expect("create scratch fixture");
     let src_path: PathBuf = scratch.path().to_path_buf();
-    f.write_all(fixture_source.as_bytes()).ok()?;
+    f.write_all(fixture_source.as_bytes())
+        .expect("write scratch fixture");
     drop(f);
-    let output: std::process::Output = Command::new("node")
+    let output: std::process::Output = node()
         .arg("-e")
         .arg(script)
         .arg(&src_path)
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw: String = String::from_utf8(output.stdout).ok()?;
-    let lines: Vec<u32> = serde_json::from_str(&raw).ok()?;
-    Some(lines.into_iter().collect())
+        .expect("node ran for eslint_resolves, so it must run the eslint script");
+    assert!(
+        output.status.success(),
+        "eslint resolves but its Linter run failed: exit {:?}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let raw: String = String::from_utf8(output.stdout).expect("eslint line list is utf-8");
+    let lines: Vec<u32> = serde_json::from_str(&raw)
+        .unwrap_or_else(|error: serde_json::Error| panic!("eslint line list {raw:?}: {error}"));
+    lines.into_iter().collect()
 }
 
 #[test]
 fn differential_against_real_eslint_dynamic_code() {
-    if !node_available() || !eslint_available() {
-        println!("[differential] node/eslint absent, skipped");
+    if !eslint_resolves() {
+        assert!(
+            std::env::var_os(REQUIRE_ESLINT_VAR).is_none(),
+            "{REQUIRE_ESLINT_VAR} is set, so the eslint package must resolve from node"
+        );
+        eprintln!(
+            "UNGRADED: the eslint package does not resolve from node; set {REQUIRE_ESLINT_VAR}=1 to fail instead"
+        );
         return;
     }
     let source: String = read_fixture("dynamic_code.js");
-    let Some(eslint_lines): Option<BTreeSet<u32>> = eslint_flagged_lines(&source) else {
-        println!("[differential] eslint invocation failed, skipped");
-        return;
-    };
+    let eslint_lines: BTreeSet<u32> = eslint_flagged_lines(&source);
     let findings: Vec<HotspotFinding> = analyze_hotspots(&source);
     let disrobe_lines: BTreeSet<u32> = findings
         .iter()

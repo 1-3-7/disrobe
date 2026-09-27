@@ -16,12 +16,14 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 fn deobfuscate_full(source: &str) -> ObfuscatorIoOutput {
@@ -31,9 +33,7 @@ fn deobfuscate_full(source: &str) -> ObfuscatorIoOutput {
 
 #[test]
 fn real_hello_world_recovers_readable_source() {
-    let Some(src): Option<String> = load("javascript-obfuscator/obfuscated.js") else {
-        return;
-    };
+    let src: String = load("javascript-obfuscator/obfuscated.js");
     assert!(
         src.contains(SELF_DEFENDING_REGEX),
         "fixture precondition: input must carry the self-defending regex marker",
@@ -85,9 +85,7 @@ fn real_hello_world_recovers_readable_source() {
 
 #[test]
 fn real_megafile_strips_self_defending_and_recovers_symbols() {
-    let Some(src): Option<String> = load("javascript-obfuscator/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("javascript-obfuscator/obfuscated.megafile.js");
     assert!(
         src.contains("_0x") && !src.contains("function greet("),
         "fixture precondition: megafile input must be obfuscated (hex idents, greet not yet visible)",
@@ -124,9 +122,7 @@ fn real_megafile_strips_self_defending_and_recovers_symbols() {
 
 #[test]
 fn real_string_array_wrapper_is_gone() {
-    let Some(src): Option<String> = load("javascript-obfuscator/obfuscated.js") else {
-        return;
-    };
+    let src: String = load("javascript-obfuscator/obfuscated.js");
     let out: ObfuscatorIoOutput = deobfuscate_full(&src);
     let recovered: &str = &out.source;
 

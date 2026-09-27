@@ -17,13 +17,17 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
+
+const SOURCE_MODULE_IDS: [&str; 3] = ["./src/util.js", "./src/math.js", "./src/index.js"];
 
 fn module_by_id<'a>(result: &'a UnbundleResult, id: &str) -> &'a ExtractedModule {
     result
@@ -43,9 +47,7 @@ fn ids(result: &UnbundleResult) -> Vec<String> {
 
 #[test]
 fn real_webpack5_concat_bundle_splits_into_per_module_files() {
-    let Some(src): Option<String> = load("webpack5/bundle.js") else {
-        return;
-    };
+    let src: String = load("webpack5/bundle.js");
     assert!(
         src.contains(";// ./src/util.js"),
         "fixture precondition: bundle must use webpack module-concatenation path comments",
@@ -54,10 +56,10 @@ fn real_webpack5_concat_bundle_splits_into_per_module_files() {
     let result: UnbundleResult =
         unbundle(BundlerKind::Webpack5, &src).expect("webpack5 unbundle must succeed");
 
-    assert!(
-        result.modules.len() >= 3,
-        "expected at least the three source modules; got {:?}",
+    assert_eq!(
         ids(&result),
+        SOURCE_MODULE_IDS,
+        "the main chunk concatenates exactly util, math and index; lazy.js lives in chunk 899",
     );
     for expected in ["./src/util.js", "./src/math.js", "./src/index.js"] {
         let module: &ExtractedModule = module_by_id(&result, expected);
@@ -96,13 +98,15 @@ fn real_webpack5_concat_bundle_splits_into_per_module_files() {
 
 #[test]
 fn real_webpack5_auto_unbundle_picks_webpack_and_emits_module_map() {
-    let Some(src): Option<String> = load("webpack5/bundle.js") else {
-        return;
-    };
+    let src: String = load("webpack5/bundle.js");
     let result: UnbundleResult = auto_unbundle(&src).expect("auto unbundle must succeed");
     assert_eq!(result.kind, BundlerKind::Webpack5);
     assert!(result.detection.matched, "webpack5 must be detected");
-    assert!(result.modules.len() >= 3, "auto path must extract modules");
+    assert_eq!(
+        ids(&result),
+        SOURCE_MODULE_IDS,
+        "auto path must extract exactly the main chunk's source modules"
+    );
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-js-unbundle").expect("create scratch");
@@ -125,18 +129,16 @@ fn real_webpack5_auto_unbundle_picks_webpack_and_emits_module_map() {
 
 #[test]
 fn webpack5_crlf_bundle_extracts_every_module_with_bodies() {
-    let Some(lf): Option<String> = load("webpack5/bundle.js") else {
-        return;
-    };
+    let lf: String = load("webpack5/bundle.js");
     let crlf: String = lf.replace("\r\n", "\n").replace('\n', "\r\n");
     assert!(crlf.contains('\r'), "fixture must be converted to CRLF");
 
     let result: UnbundleResult =
         unbundle(BundlerKind::Webpack5, &crlf).expect("crlf webpack5 unbundle must succeed");
-    assert!(
-        result.modules.len() >= 3,
-        "CRLF input must still split the three source modules; got {:?}",
+    assert_eq!(
         ids(&result),
+        SOURCE_MODULE_IDS,
+        "CRLF input must still split exactly the three source modules",
     );
     for expected in ["./src/util.js", "./src/math.js", "./src/index.js"] {
         let module: &ExtractedModule = module_by_id(&result, expected);
@@ -163,9 +165,7 @@ fn webpack5_crlf_bundle_extracts_every_module_with_bodies() {
 
 #[test]
 fn webpack5_unbundle_is_deterministic_across_repeated_calls() {
-    let Some(src): Option<String> = load("webpack5/bundle.js") else {
-        return;
-    };
+    let src: String = load("webpack5/bundle.js");
     let first: UnbundleResult =
         unbundle(BundlerKind::Webpack5, &src).expect("first unbundle must succeed");
     let second: UnbundleResult =

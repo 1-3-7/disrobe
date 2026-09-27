@@ -1097,21 +1097,20 @@ fn discover_javascript_under(
     Ok(())
 }
 
-fn discover_requested_javascript() -> Result<Option<BTreeSet<String>>, String> {
+fn discover_requested_javascript() -> Result<BTreeSet<String>, String> {
     let corpus_root: PathBuf = corpus_path("");
     let mut discovered: BTreeSet<String> = BTreeSet::new();
     for relative_root in REQUESTED_ROOTS {
         let requested_root: PathBuf = corpus_root.join(relative_root);
         if !requested_root.is_dir() {
-            eprintln!(
-                "requested corpus root unavailable: {}; execution differential skipped",
+            return Err(format!(
+                "tracked corpus root {} is required",
                 requested_root.display()
-            );
-            return Ok(None);
+            ));
         }
         discover_javascript_under(&corpus_root, &requested_root, &mut discovered)?;
     }
-    Ok(Some(discovered))
+    Ok(discovered)
 }
 
 struct RequestedManifest {
@@ -1302,12 +1301,8 @@ fn sample_roster_size_is_pinned_by_equality() {
 
 #[test]
 fn requested_manifest_classifies_every_javascript_file() {
-    let discovered: Option<BTreeSet<String>> =
-        discover_requested_javascript().expect("requested corpus census must be readable");
-    let Some(discovered): Option<BTreeSet<String>> = discovered else {
-        eprintln!("requested corpus unavailable; execution differential coverage test skipped");
-        return;
-    };
+    let discovered: BTreeSet<String> = discover_requested_javascript()
+        .unwrap_or_else(|error: String| panic!("requested corpus census: {error}"));
     let manifest: RequestedManifest =
         requested_manifest().expect("requested manifest paths must be valid and unique");
     let classified: BTreeSet<String> = manifest.all_paths();
@@ -1581,12 +1576,11 @@ fn legacy_capture_preserves_primitive_javascript_rendering() {
 #[test]
 #[ignore = "invoked only as bounded corpus subprocess worker"]
 fn boa_eval_subprocess_worker() {
-    let Some(request_path): Option<PathBuf> =
-        std::env::var_os(WORKER_REQUEST_ENV).map(PathBuf::from)
-    else {
-        eprintln!("Boa evaluation worker request unavailable; worker test skipped");
-        return;
-    };
+    let request_path: PathBuf = std::env::var_os(WORKER_REQUEST_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!("the Boa evaluation worker needs {WORKER_REQUEST_ENV} naming its request file")
+        });
     let response_path: PathBuf = std::env::var_os(WORKER_RESPONSE_ENV)
         .map(PathBuf::from)
         .expect("Boa evaluation worker response path must be set");
@@ -2122,12 +2116,8 @@ fn is_requested(sample: &Sample) -> bool {
 
 #[test]
 fn corpus_wide_differential_reexec() {
-    let discovered: Option<BTreeSet<String>> =
-        discover_requested_javascript().expect("requested corpus census must be readable");
-    let Some(discovered): Option<BTreeSet<String>> = discovered else {
-        eprintln!("requested corpus unavailable; execution differential skipped");
-        return;
-    };
+    let discovered: BTreeSet<String> = discover_requested_javascript()
+        .unwrap_or_else(|error: String| panic!("requested corpus census: {error}"));
     let manifest: RequestedManifest =
         requested_manifest().expect("requested manifest paths must be valid and unique");
     let classified: BTreeSet<String> = manifest.all_paths();

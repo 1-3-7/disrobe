@@ -30,17 +30,9 @@ fn assert_real_jsc_matches_exactly(
     expected_header_size: usize,
 ) {
     let path: PathBuf = fixture_path(label);
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-        eprintln!(
-            "FIXTURE PENDING: no real .jsc for node-{label} at {}; \
-             only the locally-installed Node major can be regenerated (this host has Node 24). \
-             Regenerate via `node -e \"require('fs').writeFileSync('hello-{label}.jsc', \
-             new (require('vm').Script)(src,{{produceCachedData:true}}).cachedData)\"` on a real \
-             Node {label} install and drop it into corpus/v8/node-{label}/.",
-            path.display()
-        );
-        return;
-    };
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
     let header: BytenodeCacheHeader = parse_bytenode_header(&bytes)
         .unwrap_or_else(|e| panic!("real .jsc {label} should parse but errored: {e}"));
     assert_eq!(
@@ -117,20 +109,5 @@ fn node_24_real_fixture_parses_with_exact_real_magic_and_v12_layout() {
         V8_MAGIC_NODE_24,
         HeaderLayout::V12,
         V8_HEADER_SIZE_V12,
-    );
-}
-
-#[test]
-fn at_least_one_real_jsc_fixture_is_present_and_validated() {
-    let labels: [&str; 4] = ["18", "20", "22", "24"];
-    let present: usize = labels
-        .iter()
-        .filter(|label: &&&str| fixture_path(label).is_file())
-        .count();
-    assert!(
-        present > 0,
-        "no real .jsc fixtures under corpus/v8/node-{{18,20,22,24}}; the V8 deserializer \
-         track requires at least one genuine V8-produced fixture (this host can regenerate \
-         the node-24 one via `node`)"
     );
 }

@@ -14,46 +14,40 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 #[test]
 fn real_javascript_obfuscator_megafile_detects() {
-    let Some(src): Option<String> = load("javascript-obfuscator/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("javascript-obfuscator/obfuscated.megafile.js");
     let det: ObfuscatorIoDetection = obfuscator_io_detect(&src);
     assert!(
-        det.matched || !det.controls.is_empty(),
-        "real javascript-obfuscator megafile output must show controls; got {det:?}",
+        det.matched,
+        "real javascript-obfuscator megafile output must be detected; got {det:?}",
     );
 }
 
 #[test]
 fn real_javascript_obfuscator_hello_world_detects() {
-    let Some(src): Option<String> = load("javascript-obfuscator/obfuscated.js") else {
-        return;
-    };
+    let src: String = load("javascript-obfuscator/obfuscated.js");
     let det: ObfuscatorIoDetection = obfuscator_io_detect(&src);
     assert!(
-        det.matched || !det.controls.is_empty(),
-        "real javascript-obfuscator hello-world output must show controls; got {det:?}",
+        det.matched,
+        "real javascript-obfuscator hello-world output must be detected; got {det:?}",
     );
 }
 
 #[test]
 fn real_javascript_obfuscator_megafile_is_distinct_from_input() {
-    let Some(obf): Option<String> = load("javascript-obfuscator/obfuscated.megafile.js") else {
-        return;
-    };
-    let Some(input): Option<String> = load("javascript-obfuscator/edge_cases.js") else {
-        return;
-    };
+    let obf: String = load("javascript-obfuscator/obfuscated.megafile.js");
+    let input: String = load("javascript-obfuscator/edge_cases.js");
     assert_ne!(obf, input);
     assert!(obf.len() > input.len() / 2);
 }

@@ -7,7 +7,7 @@ use disrobe_pass_js_deob::{
     unbundle_with_graph, vite_manifest_to_graph,
 };
 
-fn corpus(rel: &str) -> Option<String> {
+fn corpus(rel: &str) -> String {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let p: PathBuf = manifest
         .join("..")
@@ -15,7 +15,12 @@ fn corpus(rel: &str) -> Option<String> {
         .join("corpus")
         .join("js")
         .join(rel);
-    fs::read_to_string(p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 #[test]
@@ -41,9 +46,7 @@ fn webpack5_magic_comment_annotates_dynamic_chunk() {
 
 #[test]
 fn real_vite_manifest_infers_entry_and_dynamic_kinds() {
-    let Some(raw): Option<String> = corpus("vite/manifest.json") else {
-        return;
-    };
+    let raw: String = corpus("vite/manifest.json");
     let manifest = parse_vite_manifest(&raw).expect("parse real vite manifest");
     let graph: ModuleGraph = vite_manifest_to_graph(&manifest);
 

@@ -14,18 +14,20 @@ fn corpus_root() -> PathBuf {
         .join("corpus")
 }
 
-fn read_corpus(rel: &str) -> Option<String> {
+fn read_corpus(rel: &str) -> String {
     let path: PathBuf = corpus_root().join(rel);
-    fs::read(&path)
-        .ok()
-        .map(|b: Vec<u8>| String::from_utf8_lossy(&b).into_owned())
+    let bytes: Vec<u8> = fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            path.display()
+        )
+    });
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[test]
 fn jjencode_megafile_does_not_overflow_process() {
-    let Some(src) = read_corpus("js/jjencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = read_corpus("js/jjencode/obfuscated.megafile.js");
     assert!(
         detect_jjencode(&src).matched,
         "fixture must classify as jjencode"
@@ -36,9 +38,7 @@ fn jjencode_megafile_does_not_overflow_process() {
 
 #[test]
 fn aaencode_megafile_does_not_overflow_process() {
-    let Some(src) = read_corpus("js/aaencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = read_corpus("js/aaencode/obfuscated.megafile.js");
     assert!(
         detect_aaencode(&src).matched,
         "fixture must classify as aaencode"
@@ -49,9 +49,7 @@ fn aaencode_megafile_does_not_overflow_process() {
 
 #[test]
 fn jsfuck_megafile_does_not_overflow_process() {
-    let Some(src) = read_corpus("js/jsfuck/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = read_corpus("js/jsfuck/obfuscated.megafile.js");
     let _ = detect_jsfuck(&src);
     let decoded = decode_jsfuck(&src);
     let _ = decoded.recovered;

@@ -226,15 +226,17 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
-fn load_graph(fx: &VersionFixture) -> Option<(BytenodeCacheBody, CodeSerializerGraph)> {
+fn load_graph(fx: &VersionFixture) -> (BytenodeCacheBody, CodeSerializerGraph) {
     let path: PathBuf = jsc_path(fx.dir, fx.file);
-    let bytes: Vec<u8> = std::fs::read(&path).ok()?;
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
     let body: BytenodeCacheBody = parse_bytenode_full(&bytes)
         .unwrap_or_else(|e| panic!("{} .jsc header must parse: {e}", fx.dir));
     assert_eq!(body.header.version_hash.node, fx.node);
     let graph: CodeSerializerGraph = parse_code_serializer_graph(&body)
         .unwrap_or_else(|e| panic!("{} .jsc code-serializer graph must parse: {e}", fx.dir));
-    Some((body, graph))
+    (body, graph)
 }
 
 fn find_array<'a>(graph: &'a CodeSerializerGraph, hex: &str) -> &'a RecoveredBytecodeArray {
@@ -259,11 +261,7 @@ fn find_array<'a>(graph: &'a CodeSerializerGraph, hex: &str) -> &'a RecoveredByt
 fn every_version_graph_walks_to_completion() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         assert_eq!(graph.node_version, fx.node);
         assert!(
             graph.object_count > 10usize,
@@ -279,9 +277,10 @@ fn every_version_graph_walks_to_completion() {
         );
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
@@ -289,11 +288,7 @@ fn every_version_graph_walks_to_completion() {
 fn every_version_recovers_exactly_two_user_bytecode_arrays() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         assert_eq!(
             graph.bytecode_arrays.len(),
             2usize,
@@ -303,9 +298,10 @@ fn every_version_recovers_exactly_two_user_bytecode_arrays() {
         );
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
@@ -313,11 +309,7 @@ fn every_version_recovers_exactly_two_user_bytecode_arrays() {
 fn every_version_greet_bytecode_is_byte_exact_against_v8_print_bytecode() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
         assert_eq!(greet.frame_size, 24i32, "{} greet frame size", fx.dir);
         assert_eq!(
@@ -328,9 +320,10 @@ fn every_version_greet_bytecode_is_byte_exact_against_v8_print_bytecode() {
         assert_eq!(greet.bytecode.len(), 33usize, "{} greet length", fx.dir);
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
@@ -338,11 +331,7 @@ fn every_version_greet_bytecode_is_byte_exact_against_v8_print_bytecode() {
 fn every_version_top_level_bytecode_is_byte_exact_against_v8_print_bytecode() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let top: &RecoveredBytecodeArray = find_array(&graph, fx.top_level_hex);
         assert_eq!(top.frame_size, 40i32, "{} top-level frame size", fx.dir);
         assert_eq!(
@@ -358,9 +347,10 @@ fn every_version_top_level_bytecode_is_byte_exact_against_v8_print_bytecode() {
         );
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
@@ -368,11 +358,7 @@ fn every_version_top_level_bytecode_is_byte_exact_against_v8_print_bytecode() {
 fn every_version_greet_disassembles_to_v8_mnemonic_sequence() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
         let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
         assert_eq!(
@@ -394,9 +380,10 @@ fn every_version_greet_disassembles_to_v8_mnemonic_sequence() {
         );
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
@@ -404,11 +391,7 @@ fn every_version_greet_disassembles_to_v8_mnemonic_sequence() {
 fn every_version_top_level_disassembles_to_v8_mnemonic_sequence() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let top: &RecoveredBytecodeArray = find_array(&graph, fx.top_level_hex);
         let disasm: Disassembly = disassemble(&top.bytecode, fx.node);
         assert_eq!(
@@ -430,20 +413,17 @@ fn every_version_top_level_disassembles_to_v8_mnemonic_sequence() {
         );
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
 #[test]
 fn node24_recovered_greet_lifts_to_readable_surface() {
     let fx: &VersionFixture = &FIXTURES[3];
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-    else {
-        eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
     let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
     let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
     let lifted: LiftedFunction = lift_disassembly(&disasm);
@@ -522,11 +502,7 @@ fn pool_names(arr: &RecoveredBytecodeArray) -> Vec<String> {
 #[test]
 fn node24_greet_constant_pool_links_user_identifiers_against_print_bytecode() {
     let fx: &VersionFixture = &FIXTURES[3];
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-    else {
-        eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
     let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
     assert_eq!(
         pool_names(greet),
@@ -545,11 +521,7 @@ fn node24_greet_constant_pool_links_user_identifiers_against_print_bytecode() {
 #[test]
 fn node24_greet_lift_replaces_placeholders_with_real_names() {
     let fx: &VersionFixture = &FIXTURES[3];
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-    else {
-        eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
     let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
     let disasm: Disassembly = disassemble(&greet.bytecode, fx.node);
     let linked: String =
@@ -575,11 +547,7 @@ fn node24_greet_lift_replaces_placeholders_with_real_names() {
 fn every_version_builtin_root_strings_resolve_through_pinned_table() {
     let mut exercised: usize = 0usize;
     for fx in &FIXTURES {
-        let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph(fx)
-        else {
-            eprintln!("FIXTURE PENDING: corpus/v8/{}/{} absent", fx.dir, fx.file);
-            continue;
-        };
+        let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph(fx);
         let greet: &RecoveredBytecodeArray = find_array(&graph, fx.greet_hex);
         let length_entry: &ConstantPoolEntry = greet
             .constant_pool
@@ -602,19 +570,19 @@ fn every_version_builtin_root_strings_resolve_through_pinned_table() {
         }
         exercised += 1usize;
     }
-    assert!(
-        exercised > 0usize,
-        "no corpus/v8 .jsc fixtures present; this differential must exercise at least one"
+    assert_eq!(
+        exercised,
+        FIXTURES.len(),
+        "every tracked corpus/v8 .jsc fixture must be exercised"
     );
 }
 
 #[test]
 fn node24_multi_inner_functions_recover_literals_and_inner_fn_refs() {
     let path: PathBuf = workspace_root_multi();
-    let Some(bytes): Option<Vec<u8>> = std::fs::read(&path).ok() else {
-        eprintln!("FIXTURE PENDING: {} absent", path.display());
-        return;
-    };
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
     let body: BytenodeCacheBody = parse_bytenode_full(&bytes).expect("multi-24 header parses");
     let graph: CodeSerializerGraph =
         parse_code_serializer_graph(&body).expect("multi-24 graph parses");

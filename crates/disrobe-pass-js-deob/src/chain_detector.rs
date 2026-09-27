@@ -1199,21 +1199,17 @@ mod tests {
 
     #[test]
     fn extract_children_emits_recovery_for_real_string_array_sample() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("src/javascript/string-array-basic.js"))
-        else {
-            eprintln!("SKIP: string-array-basic.js fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = required_corpus("src/javascript/string-array-basic.js");
         let a: Artifact = Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]);
         let children: Vec<ChildArtifact> =
             JS_OBF_PASS.extract_children(&a).expect("extract_children");
-        let Ok(Some(_)): crate::error::Result<Option<StringArrayRecovery>> =
+        let direct: Option<StringArrayRecovery> =
             recover_string_array(std::str::from_utf8(&bytes).expect("utf8 sample"))
-        else {
-            eprintln!("SKIP: sample has no recoverable string array");
-            return;
-        };
+                .expect("string-array recovery must not error on the tracked sample");
+        assert!(
+            direct.is_some(),
+            "string-array-basic.js is a string-array sample, so direct recovery must succeed"
+        );
         let recovery: &ChildArtifact = children
             .iter()
             .find(|c: &&ChildArtifact| c.handle.relative_path == "js-deob.recovery.json")
@@ -1252,12 +1248,7 @@ mod tests {
 
     #[test]
     fn extract_children_emits_jsconfuser_recovery_stats_sidecar() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("js/jsconfuser/recovery/obf_statesum.real.js"))
-        else {
-            eprintln!("SKIP: obf_statesum.real.js fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = required_corpus("js/jsconfuser/recovery/obf_statesum.real.js");
         assert_eq!(detect_obfuscator(&bytes).family, JsObfuscator::JsConfuser);
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let children: Vec<ChildArtifact> =
@@ -1367,13 +1358,19 @@ mod tests {
             .join(rel)
     }
 
+    fn required_corpus(rel: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = corpus(rel);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "tracked corpus fixture {} is required: {error}",
+                path.display()
+            )
+        })
+    }
+
     #[test]
     fn chain_run_splits_real_webpack_bundle_into_modules_not_input() {
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(corpus("js/webpack5/bundle.js"))
-        else {
-            eprintln!("SKIP: webpack5/bundle.js fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = required_corpus("js/webpack5/bundle.js");
         let det: Detection = detect_obfuscator(&bytes);
         assert_eq!(
             det.family,
@@ -1391,25 +1388,23 @@ mod tests {
         );
         let recovered: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered modules");
         let module_count: usize = recovered.matches("// disrobe-unbundle module").count();
-        assert!(
-            module_count >= 2,
-            "chain output must split into multiple per-module sources; got {module_count} banners in {:?}",
+        assert_eq!(
+            module_count,
+            3,
+            "the main chunk concatenates util, math and index; got {module_count} banners in {:?}",
             recovered.chars().take(120).collect::<String>(),
         );
-        assert!(
-            recovered.contains("./src/index.js") && recovered.contains("./src/math.js"),
-            "recovered modules must carry their real source-path ids, not synthetic placeholders",
-        );
+        for id in ["./src/util.js", "./src/math.js", "./src/index.js"] {
+            assert!(
+                recovered.contains(id),
+                "recovered modules must carry their real source-path id {id}",
+            );
+        }
     }
 
     #[test]
     fn chain_run_splits_real_webpack4_sample_into_modules_not_input() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("src/javascript/webpack4-sample.js"))
-        else {
-            eprintln!("SKIP: webpack4-sample.js fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = required_corpus("src/javascript/webpack4-sample.js");
         assert_eq!(detect_obfuscator(&bytes).family, JsObfuscator::Webpack);
         let a: Artifact = Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]);
         let out: Artifact = JS_OBF_PASS
@@ -1418,20 +1413,16 @@ mod tests {
         assert_eq!(out.rung, Rung::Surface);
         assert_ne!(out.envelope, bytes, "must not echo the bundled input");
         let recovered: &str = std::str::from_utf8(&out.envelope).expect("utf8 recovered modules");
-        assert!(
-            recovered.matches("// disrobe-unbundle module").count() >= 2,
-            "webpack4 bundle must split into multiple modules",
+        assert_eq!(
+            recovered.matches("// disrobe-unbundle module").count(),
+            2,
+            "the webpack4 sample's module array holds exactly two functions",
         );
     }
 
     #[test]
     fn chain_run_splits_real_vite_bundle_into_modules_not_input() {
-        let Ok(bytes): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("src/javascript/vite-sample.js"))
-        else {
-            eprintln!("SKIP: vite-sample.js fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = required_corpus("src/javascript/vite-sample.js");
         assert_eq!(
             detect_obfuscator(&bytes).family,
             JsObfuscator::Vite,
@@ -1456,12 +1447,7 @@ mod tests {
 
     #[test]
     fn chain_run_beautifies_real_minified_bundle_not_input() {
-        let Ok(raw): std::io::Result<Vec<u8>> =
-            std::fs::read(corpus("src/javascript/minified-bundle.js"))
-        else {
-            eprintln!("SKIP: minified-bundle.js fixture missing");
-            return;
-        };
+        let raw: Vec<u8> = required_corpus("src/javascript/minified-bundle.js");
         let line_end: usize = raw
             .iter()
             .position(|&b: &u8| b == b'\n')

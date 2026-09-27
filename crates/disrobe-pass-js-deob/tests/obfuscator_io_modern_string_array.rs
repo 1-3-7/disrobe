@@ -38,11 +38,13 @@ const CONTROL_INLINE_FLOORS: [(&str, usize); 17] = [
     ("unicodeEscape", 13),
 ];
 
-fn read_if_present(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
-    }
-    fs::read_to_string(path).ok()
+fn read_required(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            path.display()
+        )
+    })
 }
 
 fn control_fixture_stems_on_disk() -> Vec<String> {
@@ -86,8 +88,7 @@ fn recovers_string_array_across_control_fixtures() {
     let mut graded: usize = 0;
     for (stem, inline_floor) in CONTROL_INLINE_FLOORS {
         let path: PathBuf = controls_dir().join(format!("{stem}.js"));
-        let src: String = read_if_present(&path)
-            .unwrap_or_else(|| panic!("control fixture {} is required", path.display()));
+        let src: String = read_required(&path);
         let rec: StringArrayRecovery = recover_string_array(&src)
             .expect("recover ok")
             .unwrap_or_else(|| panic!("{stem}: a string-array recovery is required"));
@@ -117,9 +118,7 @@ fn recovers_string_array_across_control_fixtures() {
 
 #[test]
 fn recovers_low_preset_string_array() {
-    let Some(src) = read_if_present(&presets_dir().join("low.js")) else {
-        return;
-    };
+    let src: String = read_required(&presets_dir().join("low.js"));
     let rec: StringArrayRecovery = recover_string_array(&src)
         .expect("recover ok")
         .expect("low preset must yield a recovery");
@@ -133,9 +132,7 @@ fn recovers_low_preset_string_array() {
 
 #[test]
 fn recovers_decoded_literals_are_readable() {
-    let Some(src) = read_if_present(&controls_dir().join("stringArrayRotate.js")) else {
-        return;
-    };
+    let src: String = read_required(&controls_dir().join("stringArrayRotate.js"));
     let rec: StringArrayRecovery = recover_string_array(&src)
         .expect("recover ok")
         .expect("rotate fixture must recover");
@@ -152,9 +149,7 @@ fn recovers_decoded_literals_are_readable() {
 
 #[test]
 fn modern_recovery_is_deterministic() {
-    let Some(src) = read_if_present(&controls_dir().join("stringArrayBase64.js")) else {
-        return;
-    };
+    let src: String = read_required(&controls_dir().join("stringArrayBase64.js"));
     let first: Option<StringArrayRecovery> = recover_string_array(&src).expect("ok");
     let second: Option<StringArrayRecovery> = recover_string_array(&src).expect("ok");
     match (first, second) {

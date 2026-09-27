@@ -26,12 +26,23 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
-    let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+fn load(rel: &str) -> String {
+    let p: PathBuf = required_corpus_path(rel);
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is unreadable: {error}",
+            p.display()
+        )
+    })
+}
+
+fn reparses(source: &str) -> bool {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
+    let source_type: oxc_span::SourceType =
+        oxc_span::SourceType::from_path("check.js").unwrap_or_default();
+    let parsed: oxc_parser::ParserReturn<'_> =
+        oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    parsed.errors.is_empty() && !parsed.panicked
 }
 
 fn required_corpus_path(rel: &str) -> PathBuf {
@@ -241,50 +252,66 @@ fn compare_emitted_outputs(output_dir: &Path) -> Result<(), String> {
 }
 
 #[test]
-fn real_terser_megafile_restore_runs_without_panic() {
-    let Some(src): Option<String> = load("terser/obfuscated.megafile.js") else {
-        return;
-    };
-    match restore_terser_mangled(&src) {
-        Ok(report) => {
-            let _: TerserRestoreReport = report;
-        }
-        Err(error) => assert!(matches!(
-            error,
-            Error::SyntaxLimit {
-                kind: "JavaScript source bytes",
-                observed,
-                maximum: 1_048_576,
-            } if observed == src.len()
-        )),
-    }
+fn real_terser_megafile_restore_rewrites_into_parseable_source() {
+    let src: String = load("terser/obfuscated.megafile.js");
+    assert!(
+        src.len() < 1_048_576,
+        "the terser megafile must stay under the restore source limit"
+    );
+    let report: TerserRestoreReport = restore_terser_mangled(&src)
+        .unwrap_or_else(|error: Error| panic!("terser restore must accept the megafile: {error}"));
+    assert!(
+        reparses(&report.rewritten),
+        "restored terser output must parse"
+    );
 }
 
-#[test]
-fn real_closure_simple_megafile_undo_runs_without_panic() {
-    let Some(src): Option<String> = load("closure/obfuscated.megafile.simple.js") else {
-        return;
-    };
+fn assert_closure_undo(rel: &str) {
+    let src: String = load(rel);
     let report: ClosureAdvancedReport = undo_closure_advanced(&src);
-    let _ = report;
+    assert!(
+        report.detected,
+        "{rel}: real Closure output must be detected"
+    );
+    assert!(
+        report.rewritten != src && reparses(&report.rewritten),
+        "{rel}: Closure undo must rewrite the input into source that parses"
+    );
 }
 
 #[test]
-fn real_closure_whitespace_megafile_undo_runs_without_panic() {
-    let Some(src): Option<String> = load("closure/obfuscated.megafile.whitespace.js") else {
-        return;
-    };
-    let report: ClosureAdvancedReport = undo_closure_advanced(&src);
-    let _ = report;
+fn real_closure_simple_megafile_undo_rewrites_detected_output() {
+    assert_closure_undo("closure/obfuscated.megafile.simple.js");
 }
 
 #[test]
-fn real_babel_preset_env_megafile_undo_runs_without_panic() {
-    let Some(src): Option<String> = load("babel-preset-env/obfuscated.megafile.js") else {
-        return;
-    };
+fn real_closure_whitespace_megafile_undo_rewrites_detected_output() {
+    assert_closure_undo("closure/obfuscated.megafile.whitespace.js");
+}
+
+#[test]
+fn real_babel_preset_env_megafile_undo_restores_nothing_yet() {
+    let src: String = load("babel-preset-env/obfuscated.megafile.js");
     let report: PresetEnvUndoResult = undo_preset_env(&src);
-    let _ = report;
+    assert_eq!(
+        report.rewritten, src,
+        "preset-env undo is a no-op on the real Babel megafile; a restoration here must update this row"
+    );
+    assert!(
+        report.helpers_removed.is_empty(),
+        "{:?}",
+        report.helpers_removed
+    );
+    assert_eq!(
+        (
+            report.spreads_restored,
+            report.classes_restored,
+            report.async_restored,
+            report.optional_chains_restored,
+            report.nullish_coalesce_restored,
+        ),
+        (0, 0, 0, 0, 0)
+    );
 }
 
 #[test]
@@ -330,18 +357,14 @@ fn typescript_output_oracle_rejects_corrupted_input() {
 
 #[test]
 fn real_outputs_distinct_from_input() {
-    let Some(input): Option<String> = load("terser/edge_cases.js") else {
-        return;
-    };
+    let input: String = load("terser/edge_cases.js");
     for rel in [
         "terser/obfuscated.megafile.js",
         "closure/obfuscated.megafile.simple.js",
         "closure/obfuscated.megafile.whitespace.js",
         "babel-preset-env/obfuscated.megafile.js",
     ] {
-        let Some(out): Option<String> = load(rel) else {
-            continue;
-        };
+        let out: String = load(rel);
         assert_ne!(out, input, "{rel} must not equal input");
     }
 }

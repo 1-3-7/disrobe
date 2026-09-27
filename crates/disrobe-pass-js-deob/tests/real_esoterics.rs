@@ -18,19 +18,19 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 #[test]
 fn real_jsfuck_megafile_detects_as_jsfuck() {
-    let Some(src): Option<String> = load("jsfuck/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("jsfuck/obfuscated.megafile.js");
     let det: JsFuckDetection = detect_jsfuck(&src);
     assert!(det.matched, "real jsfuck megafile must match: {det:?}");
     assert!(det.purity_ratio >= 0.95);
@@ -38,9 +38,7 @@ fn real_jsfuck_megafile_detects_as_jsfuck() {
 
 #[test]
 fn real_jsfuck_classification_routes_to_jsfuck_family() {
-    let Some(src): Option<String> = load("jsfuck/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("jsfuck/obfuscated.megafile.js");
     let classification: EsotericClassification = classify_esoteric(&src);
     assert_eq!(classification.family, EsotericFamily::JsFuck);
     assert!(classification.confidence >= 0.9);
@@ -48,9 +46,7 @@ fn real_jsfuck_classification_routes_to_jsfuck_family() {
 
 #[test]
 fn real_aaencode_megafile_detects_as_aaencode() {
-    let Some(src): Option<String> = load("aaencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("aaencode/obfuscated.megafile.js");
     let det: AaEncodeDetection = detect_aaencode(&src);
     assert!(det.matched, "real aaencode megafile must match: {det:?}");
     assert!(det.banner_hits >= 1);
@@ -58,18 +54,14 @@ fn real_aaencode_megafile_detects_as_aaencode() {
 
 #[test]
 fn real_aaencode_classification_routes_to_aaencode_family() {
-    let Some(src): Option<String> = load("aaencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("aaencode/obfuscated.megafile.js");
     let classification: EsotericClassification = classify_esoteric(&src);
     assert_eq!(classification.family, EsotericFamily::AaEncode);
 }
 
 #[test]
 fn real_jjencode_megafile_detects_as_jjencode() {
-    let Some(src): Option<String> = load("jjencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("jjencode/obfuscated.megafile.js");
     let det: JjEncodeDetection = detect_jjencode(&src);
     assert!(det.matched, "real jjencode megafile must match: {det:?}");
     assert_eq!(det.global_var.as_deref(), Some("$"));
@@ -78,18 +70,14 @@ fn real_jjencode_megafile_detects_as_jjencode() {
 
 #[test]
 fn real_jjencode_classification_routes_to_jjencode_family() {
-    let Some(src): Option<String> = load("jjencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("jjencode/obfuscated.megafile.js");
     let classification: EsotericClassification = classify_esoteric(&src);
     assert_eq!(classification.family, EsotericFamily::JjEncode);
 }
 
 #[test]
 fn real_packer_megafile_detects_as_dean_edwards_packer() {
-    let Some(src): Option<String> = load("packer/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("packer/obfuscated.megafile.js");
     let det: PackerDetection = detect_packer(&src);
     assert!(det.matched, "real packer megafile must match: {det:?}");
     assert!(det.base >= 36, "expected base>=36, got {}", det.base);
@@ -98,9 +86,7 @@ fn real_packer_megafile_detects_as_dean_edwards_packer() {
 
 #[test]
 fn real_packer_classification_routes_to_packer_family() {
-    let Some(src): Option<String> = load("packer/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = load("packer/obfuscated.megafile.js");
     let classification: EsotericClassification = classify_esoteric(&src);
     assert_eq!(classification.family, EsotericFamily::DeanEdwardsPacker);
 }

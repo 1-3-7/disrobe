@@ -38,9 +38,8 @@ const CONTROL_DETECTION: [(&str, bool, usize); 17] = [
     ("unicodeEscape", true, 4),
 ];
 
-fn load_preset_fixture(name: &str) -> Option<String> {
-    let path: PathBuf = fixture_root().join("presets").join(format!("{name}.js"));
-    read_if_present(&path)
+fn load_preset_fixture(name: &str) -> String {
+    read_required(&fixture_root().join("presets").join(format!("{name}.js")))
 }
 
 fn control_fixture_stems_on_disk() -> Vec<String> {
@@ -69,16 +68,16 @@ fn control_fixture_stems_on_disk() -> Vec<String> {
 }
 
 fn load_control_fixture(name: &str) -> String {
-    let path: PathBuf = fixture_root().join("controls").join(format!("{name}.js"));
-    read_if_present(&path)
-        .unwrap_or_else(|| panic!("control fixture {} is required", path.display()))
+    read_required(&fixture_root().join("controls").join(format!("{name}.js")))
 }
 
-fn read_if_present(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
-    }
-    fs::read_to_string(path).ok()
+fn read_required(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            path.display()
+        )
+    })
 }
 
 fn assert_calculator_strings_recovered(
@@ -103,13 +102,11 @@ fn assert_calculator_strings_recovered(
 
 #[test]
 fn e2e_low_preset_recovers_real_string_array() {
-    let Some(src) = load_preset_fixture("low") else {
-        return;
-    };
+    let src: String = load_preset_fixture("low");
     let det = obfuscator_io_detect(&src);
     assert!(
-        det.matched || !det.controls.is_empty(),
-        "detection must fire on real low-preset output"
+        det.matched,
+        "detection must fire on real low-preset output: {det:?}"
     );
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::Low).expect("ok");
@@ -128,13 +125,11 @@ fn e2e_low_preset_recovers_real_string_array() {
 
 #[test]
 fn e2e_medium_preset_recovers_real_string_array() {
-    let Some(src) = load_preset_fixture("medium") else {
-        return;
-    };
+    let src: String = load_preset_fixture("medium");
     let det = obfuscator_io_detect(&src);
     assert!(
-        det.matched || !det.controls.is_empty(),
-        "detection must fire on real medium-preset output"
+        det.matched,
+        "detection must fire on real medium-preset output: {det:?}"
     );
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::Medium).expect("ok");
@@ -153,9 +148,7 @@ fn e2e_medium_preset_recovers_real_string_array() {
 
 #[test]
 fn e2e_high_preset_recovers_real_string_array() {
-    let Some(src) = load_preset_fixture("high") else {
-        return;
-    };
+    let src: String = load_preset_fixture("high");
     let det = obfuscator_io_detect(&src);
     assert!(
         det.matched,

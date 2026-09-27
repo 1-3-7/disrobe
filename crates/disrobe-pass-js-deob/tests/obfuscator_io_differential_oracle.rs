@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use disrobe_pass_js_deob::{
     ObfuscatorIoOptions, ObfuscatorIoOutput, ObfuscatorIoPreset, obfuscator_io_deobfuscate,
@@ -19,7 +19,16 @@ fn corpus_root() -> PathBuf {
         .join("obfuscator-io-samples")
 }
 
-fn clean_source() -> Option<String> {
+fn read_required(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            path.display()
+        )
+    })
+}
+
+fn clean_source() -> String {
     let manifest: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let p: PathBuf = manifest
         .join("..")
@@ -28,17 +37,15 @@ fn clean_source() -> Option<String> {
         .join("src")
         .join("javascript")
         .join("obfuscator-io-high.js");
-    fs::read_to_string(p).ok()
+    read_required(&p)
 }
 
-fn read_preset(name: &str) -> Option<String> {
-    let p: PathBuf = corpus_root().join("presets").join(format!("{name}.js"));
-    fs::read_to_string(p).ok()
+fn read_preset(name: &str) -> String {
+    read_required(&corpus_root().join("presets").join(format!("{name}.js")))
 }
 
-fn read_control(name: &str) -> Option<String> {
-    let p: PathBuf = corpus_root().join("controls").join(format!("{name}.js"));
-    fs::read_to_string(p).ok()
+fn read_control(name: &str) -> String {
+    read_required(&corpus_root().join("controls").join(format!("{name}.js")))
 }
 
 struct CleanTokens {
@@ -210,12 +217,9 @@ fn run_full(src: &str) -> ObfuscatorIoOutput {
 
 #[test]
 fn differential_oracle_reports_recovery_rate() {
-    let clean: String = clean_source().expect(
-        "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
-    );
+    let clean: String = clean_source();
     let tokens: CleanTokens = derive_clean_tokens(&clean);
 
-    let mut missing: Vec<String> = Vec::new();
     let mut graded: usize = 0;
     let mut total_hits: usize = 0;
     let mut total_restored: usize = 0;
@@ -223,10 +227,7 @@ fn differential_oracle_reports_recovery_rate() {
     let mut inline_total: usize = 0;
 
     for (preset_name, restored_floor, wall) in PRESET_RECOVERY {
-        let Some(src): Option<String> = read_preset(preset_name) else {
-            missing.push(format!("presets/{preset_name}.js"));
-            continue;
-        };
+        let src: String = read_preset(preset_name);
         graded += 1;
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
@@ -262,10 +263,7 @@ fn differential_oracle_reports_recovery_rate() {
     }
 
     for (control_name, restored_floor, wall) in CONTROL_RECOVERY {
-        let Some(src): Option<String> = read_control(control_name) else {
-            missing.push(format!("controls/{control_name}.js"));
-            continue;
-        };
+        let src: String = read_control(control_name);
         graded += 1;
         let out: ObfuscatorIoOutput = run_full(&src);
         let (hits, possible): (usize, usize) = recovery_rate(&out.source, &tokens);
@@ -296,11 +294,6 @@ fn differential_oracle_reports_recovery_rate() {
         );
     }
 
-    assert!(
-        missing.is_empty(),
-        "every tracked obfuscator sample must be readable under {}; missing {missing:?}",
-        corpus_root().display()
-    );
     assert_eq!(
         graded, 20,
         "the recovery rate must be measured over all 20 tracked samples; graded {graded}"
@@ -327,9 +320,7 @@ fn count_residual_decoder_calls(source: &str) -> usize {
 
 #[test]
 fn high_preset_recovers_operator_semantics_via_cfo() {
-    let Some(src): Option<String> = read_preset("high") else {
-        return;
-    };
+    let src: String = read_preset("high");
     let out: ObfuscatorIoOutput = run_full(&src);
     assert!(
         out.control_flow_objects_merged > 0,
@@ -352,9 +343,7 @@ fn high_preset_recovers_operator_semantics_via_cfo() {
 
 #[test]
 fn cfo_recovers_operator_semantics_on_medium() {
-    let Some(src): Option<String> = read_preset("medium") else {
-        return;
-    };
+    let src: String = read_preset("medium");
     let with_cfo: ObfuscatorIoOutput = run_full(&src);
     assert!(
         with_cfo.control_flow_objects_merged > 0,
@@ -371,12 +360,7 @@ fn cfo_recovers_operator_semantics_on_medium() {
 fn decoder_inline_rate_is_high_on_presets() {
     let mut graded: usize = 0;
     for (name, call_floor) in PRESET_DECODER_CALL_FLOORS {
-        let src: String = read_preset(name).unwrap_or_else(|| {
-            panic!(
-                "preset fixture presets/{name}.js is required under {}",
-                corpus_root().display()
-            )
-        });
+        let src: String = read_preset(name);
         let before: usize = count_residual_decoder_calls(&src);
         assert!(
             before >= call_floor,
@@ -402,15 +386,8 @@ fn decoder_inline_rate_is_high_on_presets() {
 
 #[test]
 fn high_preset_route_decodes_the_tokens_it_encodes() {
-    let clean: String = clean_source().expect(
-        "clean reference corpus/src/javascript/obfuscator-io-high.js is required to build the token set",
-    );
-    let src: String = read_preset("high").unwrap_or_else(|| {
-        panic!(
-            "preset fixture presets/high.js is required under {}",
-            corpus_root().display()
-        )
-    });
+    let clean: String = clean_source();
+    let src: String = read_preset("high");
     let tokens: CleanTokens = derive_clean_tokens(&clean);
     let out: ObfuscatorIoOutput =
         obfuscator_io_deobfuscate_preset(&src, ObfuscatorIoPreset::High).expect("ok");
@@ -463,9 +440,7 @@ fn balanced(source: &str) -> bool {
 
 #[test]
 fn scope_proxy_merges_iife_objects_without_corruption() {
-    let Some(src): Option<String> = read_preset("high") else {
-        return;
-    };
+    let src: String = read_preset("high");
     let out: ObfuscatorIoOutput = run_full(&src);
     assert!(
         out.scope_proxy_objects_merged >= 2,

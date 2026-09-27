@@ -14,31 +14,41 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
+}
+
+fn reparses(source: &str) -> bool {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
+    let source_type: oxc_span::SourceType =
+        oxc_span::SourceType::from_path("check.js").unwrap_or_default();
+    let parsed: oxc_parser::ParserReturn<'_> =
+        oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    parsed.errors.is_empty() && !parsed.panicked
 }
 
 #[test]
 fn megafile_is_parseable_by_oxc() {
-    let Some(src): Option<String> = load("megafile/edge_cases.js") else {
-        return;
-    };
+    let src: String = load("megafile/edge_cases.js");
+    assert!(reparses(&src), "the edge-case canvas itself must parse");
     let formatted: String = format_javascript(&src);
-    assert!(
-        !formatted.is_empty(),
-        "format_javascript must emit non-empty output"
+    assert!(reparses(&formatted), "formatted megafile must still parse");
+    assert_eq!(
+        format_javascript(&formatted),
+        formatted,
+        "formatting must be idempotent on its own output"
     );
 }
 
 #[test]
 fn megafile_contains_expected_es2024_features() {
-    let Some(src): Option<String> = load("megafile/edge_cases.js") else {
-        return;
-    };
+    let src: String = load("megafile/edge_cases.js");
     let markers: &[&str] = &[
         "async function",
         "async function*",

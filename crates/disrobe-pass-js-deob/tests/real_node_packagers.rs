@@ -17,22 +17,19 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load_bytes(rel: &str) -> Option<Vec<u8>> {
+fn load_bytes(rel: &str) -> Vec<u8> {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read(&p).ok()
+    fs::read(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 #[test]
 fn real_sea_prep_blob_parses_via_node_sea_parser_with_real_magic() {
-    let Some(bytes): Option<Vec<u8>> = load_bytes("sea/sea-prep.blob") else {
-        panic!(
-            "missing real SEA fixture corpus/js/sea/sea-prep.blob; \
-             regenerate with `node --experimental-sea-config sea-config.json`"
-        );
-    };
+    let bytes: Vec<u8> = load_bytes("sea/sea-prep.blob");
     assert!(
         bytes.len() >= 10,
         "real sea-prep.blob must have at least 10 header bytes; got {}",
@@ -56,9 +53,7 @@ fn real_sea_prep_blob_parses_via_node_sea_parser_with_real_magic() {
 
 #[test]
 fn real_pkg_header_has_mz_pe_signature() {
-    let Some(bytes): Option<Vec<u8>> = load_bytes("pkg/hello-pkg-header.bin") else {
-        return;
-    };
+    let bytes: Vec<u8> = load_bytes("pkg/hello-pkg-header.bin");
     assert!(bytes.len() >= 2);
     assert_eq!(
         &bytes[..2],
@@ -69,9 +64,7 @@ fn real_pkg_header_has_mz_pe_signature() {
 
 #[test]
 fn real_pkg_tail_has_payload_markers() {
-    let Some(bytes): Option<Vec<u8>> = load_bytes("pkg/hello-pkg-tail.bin") else {
-        return;
-    };
+    let bytes: Vec<u8> = load_bytes("pkg/hello-pkg-tail.bin");
     assert!(
         bytes.len() > 1024,
         "pkg tail must contain real payload bytes"
@@ -90,10 +83,12 @@ fn real_bytenode_node18_jsc_parses_via_header_parser() {
             .join("node-18")
             .join("hello-18.jsc")
     };
-    if !p.exists() {
-        return;
-    }
-    let bytes: Vec<u8> = fs::read(&p).expect("read jsc");
+    let bytes: Vec<u8> = fs::read(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    });
     assert!(bytes.len() > 16, "bytenode .jsc must have V8 header bytes");
     let header: BytenodeCacheHeader = parse_bytenode_header(&bytes).expect("real jsc parses");
     assert_eq!(

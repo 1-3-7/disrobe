@@ -15,35 +15,38 @@ use disrobe_pass_js_deob::{
     recover_source_map_json, recover_source_tree_from_js, write_recovered_sources,
 };
 
-fn npx() -> Option<String> {
+fn npx() -> String {
+    let mut failures: Vec<String> = Vec::new();
     for candidate in ["npx", "npx.cmd"] {
-        let probe: std::io::Result<std::process::Output> =
-            Command::new(candidate).arg("--version").output();
-        if probe.is_ok_and(|o: std::process::Output| o.status.success()) {
-            return Some(candidate.to_owned());
+        match Command::new(candidate).arg("--version").output() {
+            Ok(output) if output.status.success() => return candidate.to_owned(),
+            Ok(output) => failures.push(format!("{candidate} exited {:?}", output.status.code())),
+            Err(error) => failures.push(format!("{candidate}: {error}")),
         }
     }
-    None
+    panic!(
+        "npx is required on PATH to build real esbuild source maps (CI provisions Node with npm); {}",
+        failures.join("; ")
+    )
 }
 
-fn run_esbuild(npx_bin: &str, args: &[&str], cwd: &Path) -> Option<std::process::Output> {
-    let mut command: Command = Command::new(npx_bin);
-    command.arg("-y").arg("esbuild").args(args).current_dir(cwd);
-    match command.output() {
-        Ok(out) if out.status.success() => Some(out),
-        Ok(out) => {
-            eprintln!(
-                "skip: esbuild exited {:?}: {}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            None
-        }
-        Err(e) => {
-            eprintln!("skip: cannot spawn esbuild via {npx_bin}: {e}");
-            None
-        }
-    }
+fn run_esbuild(npx_bin: &str, args: &[&str], cwd: &Path) {
+    let output: std::process::Output = Command::new(npx_bin)
+        .arg("-y")
+        .arg("esbuild")
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("FORCE_COLOR")
+        .output()
+        .unwrap_or_else(|error: std::io::Error| {
+            panic!("esbuild must be runnable through {npx_bin} -y esbuild: {error}")
+        });
+    assert!(
+        output.status.success(),
+        "esbuild via {npx_bin} -y esbuild exited {:?}: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -53,10 +56,7 @@ fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
 
 #[test]
 fn esbuild_map_recovers_original_sources_byte_for_byte() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("esbuild");
     let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
@@ -68,7 +68,7 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
     std::fs::write(src.join("util.js"), util_body).expect("write util");
 
     let out_js: PathBuf = work.join("bundle.js");
-    let Some(_) = run_esbuild(
+    run_esbuild(
         &npx_bin,
         &[
             "src/index.js",
@@ -77,9 +77,7 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
             &format!("--outfile={}", out_js.display()),
         ],
         &work,
-    ) else {
-        return;
-    };
+    );
 
     let map_path: PathBuf = work.join("bundle.js.map");
     assert!(
@@ -135,16 +133,13 @@ fn esbuild_map_recovers_original_sources_byte_for_byte() {
 
 #[test]
 fn esbuild_inline_map_extracted_from_js_comment() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("inline");
     let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("only.js"), "export const greeting = 'hi';\n").expect("write only");
 
     let out_js: PathBuf = work.join("inline.js");
-    let Some(_) = run_esbuild(
+    run_esbuild(
         &npx_bin,
         &[
             "only.js",
@@ -153,9 +148,7 @@ fn esbuild_inline_map_extracted_from_js_comment() {
             &format!("--outfile={}", out_js.display()),
         ],
         &work,
-    ) else {
-        return;
-    };
+    );
 
     let js_text: String = std::fs::read_to_string(&out_js).expect("read inline bundle");
     let info = find_source_map(&js_text).expect("inline sourceMappingURL must be present");
@@ -174,10 +167,7 @@ fn esbuild_inline_map_extracted_from_js_comment() {
 
 #[test]
 fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("tree");
     let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
@@ -206,7 +196,7 @@ fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
     }
 
     let out_js: PathBuf = work.join("bundle.js");
-    let Some(_) = run_esbuild(
+    run_esbuild(
         &npx_bin,
         &[
             "src/index.js",
@@ -215,9 +205,7 @@ fn esbuild_full_tree_reconstructed_from_js_sourcemapping_url_trailer() {
             &format!("--outfile={}", out_js.display()),
         ],
         &work,
-    ) else {
-        return;
-    };
+    );
 
     let bundle_text: String = std::fs::read_to_string(&out_js).expect("read bundle");
     let map_dir: PathBuf = out_js.parent().expect("bundle has a parent").to_path_buf();
@@ -287,10 +275,7 @@ fn count_lines(text: &str) -> usize {
 
 #[test]
 fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH; cannot generate real esbuild maps");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("sectioned");
     let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
@@ -314,7 +299,7 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
     let out_a: PathBuf = work.join("a.js");
     let out_b: PathBuf = work.join("b.js");
     for (entry, out) in [("src/entry_a.js", &out_a), ("src/entry_b.js", &out_b)] {
-        let Some(_) = run_esbuild(
+        run_esbuild(
             &npx_bin,
             &[
                 entry,
@@ -323,9 +308,7 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
                 &format!("--outfile={}", out.display()),
             ],
             &work,
-        ) else {
-            return;
-        };
+        );
     }
 
     let bundle_a: String = std::fs::read_to_string(&out_a).expect("read a.js");
@@ -373,15 +356,12 @@ fn real_esbuild_maps_wrapped_in_indexed_section_map_reconstruct_both_sections() 
 
 #[test]
 fn real_esbuild_map_with_injected_debug_id_is_surfaced() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH; cannot generate a real esbuild map");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("debugid");
     let work: PathBuf = scratch.path().to_path_buf();
     std::fs::write(work.join("only.js"), "export const greeting = 'hi';\n").expect("write only");
     let out_js: PathBuf = work.join("out.js");
-    let Some(_) = run_esbuild(
+    run_esbuild(
         &npx_bin,
         &[
             "only.js",
@@ -390,9 +370,7 @@ fn real_esbuild_map_with_injected_debug_id_is_surfaced() {
             &format!("--outfile={}", out_js.display()),
         ],
         &work,
-    ) else {
-        return;
-    };
+    );
     let raw_json: String = std::fs::read_to_string(work.join("out.js.map")).expect("read map");
     let debug_id: &str = "85314830-023f-4cf1-a267-535f4e37bb17";
     let with_id: String = raw_json
@@ -429,10 +407,7 @@ fn locate_token(haystack: &str, token: &str) -> Option<(u32, u32)> {
 
 #[test]
 fn esbuild_map_resolves_generated_position_to_original_line_col() {
-    let Some(npx_bin): Option<String> = npx() else {
-        eprintln!("skip: npx not on PATH; cannot generate a real esbuild source map");
-        return;
-    };
+    let npx_bin: String = npx();
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("resolve");
     let work: PathBuf = scratch.path().to_path_buf();
     let src: PathBuf = work.join("src");
@@ -445,7 +420,7 @@ fn esbuild_map_resolves_generated_position_to_original_line_col() {
     std::fs::write(src.join("util.js"), util_body).expect("write util");
 
     let out_js: PathBuf = work.join("bundle.js");
-    let Some(_) = run_esbuild(
+    run_esbuild(
         &npx_bin,
         &[
             "src/index.js",
@@ -454,9 +429,7 @@ fn esbuild_map_resolves_generated_position_to_original_line_col() {
             &format!("--outfile={}", out_js.display()),
         ],
         &work,
-    ) else {
-        return;
-    };
+    );
 
     let bundle_text: String = std::fs::read_to_string(&out_js).expect("read bundle");
     let map_path: PathBuf = work.join("bundle.js.map");

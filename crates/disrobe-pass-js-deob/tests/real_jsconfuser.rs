@@ -14,50 +14,55 @@ fn corpus_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
-fn load(rel: &str) -> Option<String> {
+fn load(rel: &str) -> String {
     let p: PathBuf = corpus_path(rel);
-    if !p.exists() {
-        return None;
-    }
-    fs::read_to_string(&p).ok()
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
+}
+
+fn reparses(source: &str) -> bool {
+    let allocator: oxc_allocator::Allocator = oxc_allocator::Allocator::default();
+    let source_type: oxc_span::SourceType =
+        oxc_span::SourceType::from_path("check.js").unwrap_or_default();
+    let parsed: oxc_parser::ParserReturn<'_> =
+        oxc_parser::Parser::new(&allocator, source, source_type).parse();
+    parsed.errors.is_empty() && !parsed.panicked
 }
 
 #[test]
 fn real_jsconfuser_low_runs_without_panic() {
-    let Some(src): Option<String> = load("jsconfuser/obfuscated.megafile.low.js") else {
-        return;
-    };
+    let src: String = load("jsconfuser/obfuscated.megafile.low.js");
     let opts: DeobOptions = DeobOptions::all();
     let out: DeobOutput = deobfuscate_all(&src, &opts);
     assert!(
-        !out.source.is_empty(),
-        "low preset output must be non-empty"
+        out.source != src && reparses(&out.source),
+        "low preset recovery must rewrite the input into source that parses"
     );
 }
 
 #[test]
 fn real_jsconfuser_medium_runs_without_panic() {
-    let Some(src): Option<String> = load("jsconfuser/obfuscated.megafile.medium.js") else {
-        return;
-    };
+    let src: String = load("jsconfuser/obfuscated.megafile.medium.js");
     let opts: DeobOptions = DeobOptions::all();
     let out: DeobOutput = deobfuscate_all(&src, &opts);
     assert!(
-        !out.source.is_empty(),
-        "medium preset output must be non-empty"
+        out.source != src && reparses(&out.source),
+        "medium preset recovery must rewrite the input into source that parses"
     );
 }
 
 #[test]
 fn real_jsconfuser_high_runs_without_panic() {
-    let Some(src): Option<String> = load("jsconfuser/obfuscated.megafile.high.js") else {
-        return;
-    };
+    let src: String = load("jsconfuser/obfuscated.megafile.high.js");
     let opts: DeobOptions = DeobOptions::all();
     let out: DeobOutput = deobfuscate_all(&src, &opts);
     assert!(
-        !out.source.is_empty(),
-        "high preset output must be non-empty"
+        out.source != src && reparses(&out.source),
+        "high preset recovery must rewrite the input into source that parses"
     );
     assert!(
         out.string_compression_blocks_reversed > 0,
@@ -72,17 +77,13 @@ fn real_jsconfuser_high_runs_without_panic() {
 
 #[test]
 fn real_jsconfuser_outputs_are_distinct_from_input() {
-    let Some(input): Option<String> = load("jsconfuser/edge_cases.js") else {
-        return;
-    };
+    let input: String = load("jsconfuser/edge_cases.js");
     for rel in [
         "jsconfuser/obfuscated.megafile.low.js",
         "jsconfuser/obfuscated.megafile.medium.js",
         "jsconfuser/obfuscated.megafile.high.js",
     ] {
-        let Some(obf): Option<String> = load(rel) else {
-            continue;
-        };
+        let obf: String = load(rel);
         assert_ne!(obf, input, "{rel} must not equal input");
         assert!(
             obf.len() > input.len() / 2,

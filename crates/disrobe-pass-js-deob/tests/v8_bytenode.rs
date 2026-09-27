@@ -136,9 +136,9 @@ fn real_node_jsc_fixtures_emit_honest_snapshot_wall_and_scrape_source_strings() 
     let mut checked: usize = 0usize;
     for (label, basename, expect_node, expect_magic, expect_layout, expect_hs) in cases {
         let path: PathBuf = corpus_jsc_path(label, basename);
-        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-            continue;
-        };
+        let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!("tracked V8 fixture {} is required: {error}", path.display())
+        });
         let body: BytenodeCacheBody =
             parse_bytenode_full(&bytes).unwrap_or_else(|e| panic!("parse {label}: {e}"));
         assert_eq!(
@@ -187,20 +187,19 @@ fn real_node_jsc_fixtures_emit_honest_snapshot_wall_and_scrape_source_strings() 
         );
         checked = checked.saturating_add(1);
     }
-    assert!(
-        checked > 0,
-        "no real .jsc fixtures found under corpus/v8/node-{{18,20,22,24}} - \
-         this test exists to PROVE real recovery and has nothing to prove without fixtures"
+    assert_eq!(
+        checked,
+        cases.len(),
+        "every tracked .jsc fixture under corpus/v8/node-{{18,20,22,24}} must be checked"
     );
 }
 
 #[test]
 fn real_node_24_snapshot_payload_is_not_a_clean_bytecode_array() {
     let path: PathBuf = corpus_jsc_path("24", "hello-24.jsc");
-    let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
-        eprintln!("FIXTURE PENDING: corpus/v8/node-24/hello-24.jsc absent");
-        return;
-    };
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
     let body: BytenodeCacheBody = parse_bytenode_full(&bytes).expect("parse node-24");
     let disasm: Disassembly = disassemble(&body.payload, NodeVersion::Node24);
     let unknown_total: usize = disasm.unknown_opcode_counts.values().copied().sum();

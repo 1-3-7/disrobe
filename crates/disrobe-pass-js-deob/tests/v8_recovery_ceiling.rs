@@ -65,15 +65,17 @@ fn workspace_root() -> PathBuf {
         .unwrap_or(manifest)
 }
 
-fn load_graph() -> Option<(BytenodeCacheBody, CodeSerializerGraph)> {
+fn load_graph() -> (BytenodeCacheBody, CodeSerializerGraph) {
     let path: PathBuf = workspace_root().join(FIXTURE);
-    let bytes: Vec<u8> = std::fs::read(&path).ok()?;
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
     let body: BytenodeCacheBody =
         parse_bytenode_full(&bytes).expect("multi-24 .jsc header must parse");
     assert_eq!(body.header.version_hash.node, NodeVersion::Node24);
     let graph: CodeSerializerGraph =
         parse_code_serializer_graph(&body).expect("multi-24 .jsc graph must parse");
-    Some((body, graph))
+    (body, graph)
 }
 
 fn mnemonics_of(arr: &RecoveredBytecodeArray) -> Vec<&'static str> {
@@ -116,11 +118,7 @@ fn find_by_mnemonics<'a>(
 
 #[test]
 fn recovers_all_four_eagerly_compiled_user_functions() {
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph()
-    else {
-        eprintln!("FIXTURE PENDING: {FIXTURE} absent; regenerate via node vm produceCachedData");
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph();
     assert_eq!(
         graph.bytecode_arrays.len(),
         4,
@@ -131,11 +129,7 @@ fn recovers_all_four_eagerly_compiled_user_functions() {
 
 #[test]
 fn each_user_function_disassembles_byte_exact_to_v8_print_bytecode() {
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph()
-    else {
-        eprintln!("FIXTURE PENDING: {FIXTURE} absent");
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph();
     let classify: &RecoveredBytecodeArray = find_by_mnemonics(&graph, CLASSIFY_MNEMONICS);
     assert_eq!(classify.bytecode.len(), 21, "classify body length per V8");
     let accumulate: &RecoveredBytecodeArray = find_by_mnemonics(&graph, ACCUMULATE_MNEMONICS);
@@ -150,11 +144,7 @@ fn each_user_function_disassembles_byte_exact_to_v8_print_bytecode() {
 
 #[test]
 fn aggregate_disassembly_is_fully_clean_and_lift_meets_floor() {
-    let Some((_body, graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph()
-    else {
-        eprintln!("FIXTURE PENDING: {FIXTURE} absent");
-        return;
-    };
+    let (_body, graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph();
     let mut total_ins: usize = 0;
     let mut total_unknown: usize = 0;
     let mut total_trailing: usize = 0;
@@ -192,11 +182,7 @@ fn aggregate_disassembly_is_fully_clean_and_lift_meets_floor() {
 
 #[test]
 fn structural_recovery_surfaces_names_and_documents_the_real_residue() {
-    let Some((body, _graph)): Option<(BytenodeCacheBody, CodeSerializerGraph)> = load_graph()
-    else {
-        eprintln!("FIXTURE PENDING: {FIXTURE} absent");
-        return;
-    };
+    let (body, _graph): (BytenodeCacheBody, CodeSerializerGraph) = load_graph();
     let recovery: StructuralRecovery =
         recover_structure(&body.payload, body.header.version_hash.node);
     let names: Vec<&str> = recovery.function_name_candidates();

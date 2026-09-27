@@ -17,18 +17,18 @@ fn corpus_dir() -> PathBuf {
         .join("corpus/v8/node-24")
 }
 
-fn load_real_jsc() -> Option<BytenodeCacheBody> {
+fn load_real_jsc() -> BytenodeCacheBody {
     let path: PathBuf = corpus_dir().join("hello-24.jsc");
-    let bytes: Vec<u8> = std::fs::read(&path).ok()?;
-    parse_bytenode_full(&bytes).ok()
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!("tracked V8 fixture {} is required: {error}", path.display())
+    });
+    parse_bytenode_full(&bytes)
+        .unwrap_or_else(|error| panic!("tracked V8 fixture {} must parse: {error}", path.display()))
 }
 
 #[test]
 fn real_node_24_jsc_recovers_eager_function_names_and_literals() {
-    let Some(body): Option<BytenodeCacheBody> = load_real_jsc() else {
-        eprintln!("FIXTURE PENDING: corpus/v8/node-24/hello-24.jsc absent; regenerate via node vm");
-        return;
-    };
+    let body: BytenodeCacheBody = load_real_jsc();
     assert_eq!(body.header.version_hash.node, NodeVersion::Node24);
     let recovery: StructuralRecovery =
         recover_structure(&body.payload, body.header.version_hash.node);
@@ -66,9 +66,7 @@ fn real_node_24_jsc_recovers_eager_function_names_and_literals() {
 
 #[test]
 fn recovered_strings_are_bounded_not_naive_runs() {
-    let Some(body): Option<BytenodeCacheBody> = load_real_jsc() else {
-        return;
-    };
+    let body: BytenodeCacheBody = load_real_jsc();
     let strings: Vec<_> = extract_framed_strings(&body.payload);
     for s in &strings {
         assert!(s.byte_length as usize == s.value.len());
@@ -82,9 +80,7 @@ fn recovered_strings_are_bounded_not_naive_runs() {
 
 #[test]
 fn root_strings_are_not_inline_but_resolve_through_the_graph_linker() {
-    let Some(body): Option<BytenodeCacheBody> = load_real_jsc() else {
-        return;
-    };
+    let body: BytenodeCacheBody = load_real_jsc();
     let recovery: StructuralRecovery =
         recover_structure(&body.payload, body.header.version_hash.node);
     let scraped: Vec<&str> = recovery
@@ -134,9 +130,7 @@ fn root_strings_are_not_inline_but_resolve_through_the_graph_linker() {
 
 #[test]
 fn classes_partition_cleanly() {
-    let Some(body): Option<BytenodeCacheBody> = load_real_jsc() else {
-        return;
-    };
+    let body: BytenodeCacheBody = load_real_jsc();
     let strings: Vec<_> = extract_framed_strings(&body.payload);
     let seq: usize = strings
         .iter()

@@ -6,18 +6,19 @@ use disrobe_pass_js_deob::{
     AaEncodeDecode, JjEncodeDecode, PackerDecode, decode_aaencode, decode_jjencode, unpack_packer,
 };
 
-fn corpus(rel: &str) -> Option<String> {
+fn corpus(rel: &str) -> String {
     let p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("corpus")
         .join("js")
         .join(rel);
-    if p.exists() {
-        fs::read_to_string(&p).ok()
-    } else {
-        None
-    }
+    fs::read_to_string(&p).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "tracked corpus fixture {} is required: {error}",
+            p.display()
+        )
+    })
 }
 
 fn reparses(source: &str) -> bool {
@@ -58,9 +59,7 @@ fn assert_recovers_canonical_source(recovered: &str, family: &str) {
 
 #[test]
 fn aaencode_real_sample_recovers_original_source() {
-    let Some(src): Option<String> = corpus("aaencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = corpus("aaencode/obfuscated.megafile.js");
     let decoded: AaEncodeDecode = decode_aaencode(&src);
     assert!(decoded.detection.matched, "aaencode detection precondition");
     let Some(recovered): Option<String> = decoded.recovered else {
@@ -71,9 +70,7 @@ fn aaencode_real_sample_recovers_original_source() {
 
 #[test]
 fn jjencode_real_sample_recovers_original_source() {
-    let Some(src): Option<String> = corpus("jjencode/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = corpus("jjencode/obfuscated.megafile.js");
     let decoded: JjEncodeDecode = decode_jjencode(&src);
     assert!(decoded.detection.matched, "jjencode detection precondition");
     let Some(recovered): Option<String> = decoded.recovered else {
@@ -84,9 +81,7 @@ fn jjencode_real_sample_recovers_original_source() {
 
 #[test]
 fn packer_real_sample_recovers_original_source() {
-    let Some(src): Option<String> = corpus("packer/obfuscated.megafile.js") else {
-        return;
-    };
+    let src: String = corpus("packer/obfuscated.megafile.js");
     let decoded: PackerDecode = unpack_packer(&src);
     assert!(decoded.detection.matched, "packer detection precondition");
     let Some(recovered): Option<String> = decoded.recovered else {
