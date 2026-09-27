@@ -27,10 +27,7 @@ fn legal_stance_is_amber_detect_only() {
     assert_eq!(ARXAN_LEGAL, LegalStance::AmberDetectOnly);
     assert_eq!(ARXAN_LEGAL, ARXAN_FAMILY.legal_stance());
     assert!(ARXAN_LEGAL.allows_bypass_with_authorization());
-    assert_eq!(
-        ARXAN_FAMILY.stance_doc(),
-        "docs/src/legal.md#arxan"
-    );
+    assert_eq!(ARXAN_FAMILY.stance_doc(), "docs/src/legal.md#arxan");
 }
 
 #[test]
